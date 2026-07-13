@@ -13,12 +13,14 @@ import android.net.Uri;
  */
 public final class PublicStreamIntent {
     public static final String ACTION_STREAM = "com.limelight.action.STREAM";
+    public static final String ACTION_OPEN_SETTINGS = "com.limelight.action.OPEN_SETTINGS";
 
     public static final String EXTRA_HOST_UUID = "com.limelight.extra.HOST_UUID";
     public static final String EXTRA_HOST_NAME = "com.limelight.extra.HOST_NAME";
     public static final String EXTRA_APP_ID = "com.limelight.extra.APP_ID";
     public static final String EXTRA_APP_NAME = "com.limelight.extra.APP_NAME";
     public static final String EXTRA_QUICK_LAUNCH = "com.limelight.extra.QUICK_LAUNCH";
+    public static final String EXTRA_EXTERNAL_FRONTEND = "com.limelight.extra.EXTERNAL_FRONTEND";
 
     public static final String URI_SCHEME = "moonlightx";
     public static final String URI_HOST = "stream";
@@ -47,6 +49,22 @@ public final class PublicStreamIntent {
         }
 
         return normalized;
+    }
+
+    /**
+     * Copies the shell-launch contract to the internal streaming Activity. When enabled,
+     * Moonlight must not place PcView behind the stream. This allows the external frontend
+     * to become visible again as soon as the stream task finishes.
+     */
+    public static Intent copyFrontendContract(Intent source, Intent target) {
+        if (source.getBooleanExtra(EXTRA_EXTERNAL_FRONTEND, false)) {
+            target.putExtra(EXTRA_EXTERNAL_FRONTEND, true);
+        }
+        return target;
+    }
+
+    public static boolean isExternalFrontend(Intent intent) {
+        return intent != null && intent.getBooleanExtra(EXTRA_EXTERNAL_FRONTEND, false);
     }
 
     private static boolean isSupportedDeepLink(Uri uri) {

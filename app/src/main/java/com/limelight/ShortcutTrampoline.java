@@ -37,6 +37,7 @@ public class ShortcutTrampoline extends Activity {
     private String uuidString;
     private NvApp app;
     private String quickLaunchKey;
+    private boolean externalFrontend;
     private final ArrayList<Intent> intentStack = new ArrayList<>();
 
     private int wakeHostTries = 10;
@@ -132,14 +133,10 @@ public class ShortcutTrampoline extends Activity {
                                             // Launch game if provided app ID, otherwise launch app view
                                             if (app != null) {
                                                 if (details.runningGameId == 0 || details.runningGameId == app.getAppId()) {
-                                                    // Add the PC view at the back (and clear the task)
-                                                    Intent i = new Intent(ShortcutTrampoline.this, PcView.class);
-                                                    i.setAction(Intent.ACTION_MAIN);
-                                                    i.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_NEW_TASK);
-                                                    intentStack.add(i);
+                                                    addMoonlightRootIfNeeded();
 
                                                     // Add the game intent
-                                                    intentStack.add(ServerHelper.createStartIntent(ShortcutTrampoline.this, app, details, managerBinder, quickLaunchKey, false));
+                                                    intentStack.add(createFrontendAwareStartIntent(app, details, quickLaunchKey));
 
                                                     // Close this activity
                                                     finish();
@@ -151,7 +148,7 @@ public class ShortcutTrampoline extends Activity {
                                                 } else {
                                                     // Create the start intent immediately, so we can safely unbind the managerBinder
                                                     // below before we return.
-                                                    final Intent startIntent = ServerHelper.createStartIntent(ShortcutTrampoline.this, app, details, managerBinder, quickLaunchKey, false);
+                                                    final Intent startIntent = createFrontendAwareStartIntent(app, details, quickLaunchKey);
 
                                                     // Stop polling and unbind BEFORE showing the dialog to prevent it from flashing
                                                     managerBinder.stopPolling();
@@ -161,11 +158,7 @@ public class ShortcutTrampoline extends Activity {
                                                     UiHelper.displayQuitConfirmationDialog(ShortcutTrampoline.this, new Runnable() {
                                                         @Override
                                                         public void run() {
-                                                            // Add the PC view at the back (and clear the task)
-                                                            Intent i = new Intent(ShortcutTrampoline.this, PcView.class);
-                                                            i.setAction(Intent.ACTION_MAIN);
-                                                            i.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_NEW_TASK);
-                                                            intentStack.add(i);
+                                                            addMoonlightRootIfNeeded();
 
                                                             // Add the game intent
                                                             intentStack.add(startIntent);
@@ -193,12 +186,10 @@ public class ShortcutTrampoline extends Activity {
                                                 // Close this activity
                                                 finish();
 
-                                                // Add the PC view at the back (and clear the task)
+                                                // The host-only contract still opens Moonlight's app browser.
+                                                // External frontends normally provide an app ID and skip this path.
                                                 Intent i;
-                                                i = new Intent(ShortcutTrampoline.this, PcView.class);
-                                                i.setAction(Intent.ACTION_MAIN);
-                                                i.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_NEW_TASK);
-                                                intentStack.add(i);
+                                                addMoonlightRootIfNeeded();
 
                                                 // Take this intent's data and create an intent to start the app view
                                                 i = new Intent(getIntent());
@@ -207,8 +198,8 @@ public class ShortcutTrampoline extends Activity {
 
                                                 // If a game is running, we'll make the stream the top level activity
                                                 if (details.runningGameId != 0) {
-                                                    intentStack.add(ServerHelper.createStartIntent(ShortcutTrampoline.this,
-                                                            new NvApp(null, details.runningGameId, false), details, managerBinder, null, false));
+                                                    intentStack.add(createFrontendAwareStartIntent(
+                                                            new NvApp(null, details.runningGameId, false), details, null));
                                                 }
 
                                                 // Now start the activities
@@ -308,6 +299,7 @@ public class ShortcutTrampoline extends Activity {
         // shortcut launch contract. This keeps all launch paths on the same WoL
         // and host readiness implementation.
         setIntent(PublicStreamIntent.normalize(getIntent()));
+        externalFrontend = PublicStreamIntent.isExternalFrontend(getIntent());
 
         UiHelper.notifyNewRootView(this);
         ComputerDatabaseManager dbManager = new ComputerDatabaseManager(this);
@@ -424,6 +416,23 @@ public class ShortcutTrampoline extends Activity {
 
         blockingLoadSpinner = SpinnerDialog.displayDialog(this, getResources().getString(R.string.conn_establishing_title),
                 getResources().getString(R.string.applist_connect_msg), true);
+    }
+
+    private void addMoonlightRootIfNeeded() {
+        if (externalFrontend) {
+            return;
+        }
+        Intent root = new Intent(this, PcView.class);
+        root.setAction(Intent.ACTION_MAIN);
+        root.setFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK | Intent.FLAG_ACTIVITY_NEW_TASK);
+        intentStack.add(root);
+    }
+
+    private Intent createFrontendAwareStartIntent(NvApp targetApp, ComputerDetails details,
+                                                   String targetQuickLaunchKey) {
+        Intent startIntent = ServerHelper.createStartIntent(
+                this, targetApp, details, managerBinder, targetQuickLaunchKey, false);
+        return PublicStreamIntent.copyFrontendContract(getIntent(), startIntent);
     }
 
     @Override

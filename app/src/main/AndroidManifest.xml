@@ -7,6 +7,9 @@
     <permission
         android:name="${applicationId}.permission.READ_STREAM_STATUS"
         android:protectionLevel="signature" />
+    <permission
+        android:name="${applicationId}.permission.READ_SAVED_APPS"
+        android:protectionLevel="signature" />
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
@@ -82,6 +85,12 @@
             android:exported="true"
             android:readPermission="${applicationId}.permission.READ_STREAM_STATUS" />
 
+        <provider
+            android:name=".computers.SavedAppsProvider"
+            android:authorities="apps.${applicationId}"
+            android:exported="true"
+            android:readPermission="${applicationId}.permission.READ_SAVED_APPS" />
+
         <!-- Samsung multi-window support -->
         <uses-library
             android:name="com.sec.android.app.multiwindow"
@@ -145,6 +154,17 @@
                     android:scheme="moonlightx"
                     android:host="stream"
                     android:path="/v1" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".PublicSettingsTrampoline"
+            android:noHistory="true"
+            android:exported="true"
+            android:theme="@style/AppTheme">
+            <intent-filter>
+                <action android:name="com.limelight.action.OPEN_SETTINGS" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>
 
