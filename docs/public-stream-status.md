@@ -6,7 +6,7 @@ signature-protected `ContentProvider`.
 ## Permission and URI
 
 ```xml
-<uses-permission android:name="com.limelight.permission.READ_STREAM_STATUS" />
+<uses-permission android:name="com.limelight.unofficial.permission.READ_STREAM_STATUS" />
 ```
 
 Debug package:
@@ -18,12 +18,17 @@ content://streamstatus.com.limelight.debug/current
 Release package:
 
 ```text
-content://streamstatus.com.limelight/current
+content://streamstatus.com.limelight.unofficial/current
 ```
 
 The caller must be signed with the same certificate as Moonlight X. Consumers
 can register a `ContentObserver` for the URI; Moonlight sends a change
 notification for every state or bitrate update.
+
+Both the provider authority and its signature permission are derived from the
+installed Moonlight package ID. Development builds therefore use
+`com.limelight.debug.permission.READ_STREAM_STATUS`, while the normal unofficial
+release uses `com.limelight.unofficial.permission.READ_STREAM_STATUS`.
 
 ## Columns
 

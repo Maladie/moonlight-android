@@ -2,10 +2,10 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
     <permission
-        android:name="com.limelight.permission.READ_SAVED_HOSTS"
+        android:name="${applicationId}.permission.READ_SAVED_HOSTS"
         android:protectionLevel="signature" />
     <permission
-        android:name="com.limelight.permission.READ_STREAM_STATUS"
+        android:name="${applicationId}.permission.READ_STREAM_STATUS"
         android:protectionLevel="signature" />
 
     <uses-permission android:name="android.permission.INTERNET" />
@@ -74,13 +74,13 @@
             android:name=".computers.SavedHostsProvider"
             android:authorities="hosts.${applicationId}"
             android:exported="true"
-            android:readPermission="com.limelight.permission.READ_SAVED_HOSTS" />
+            android:readPermission="${applicationId}.permission.READ_SAVED_HOSTS" />
 
         <provider
             android:name=".computers.StreamStatusProvider"
             android:authorities="streamstatus.${applicationId}"
             android:exported="true"
-            android:readPermission="com.limelight.permission.READ_STREAM_STATUS" />
+            android:readPermission="${applicationId}.permission.READ_STREAM_STATUS" />
 
         <!-- Samsung multi-window support -->
         <uses-library

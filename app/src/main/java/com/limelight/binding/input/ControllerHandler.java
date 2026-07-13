@@ -307,7 +307,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     @Override
     public void onInputDeviceAdded(int deviceId) {
-        // Nothing happening here yet
+        trackInputDeviceIfGamepad(InputDevice.getDevice(deviceId));
     }
 
     @Override
@@ -357,19 +357,61 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     }
 
     public List<ControllerBatteryInfo> getControllerBatteryInfo() {
+        // Input contexts are normally created lazily on the first InputEvent. The
+        // overlay must also show connected controllers that have not been used yet.
+        for (int deviceId : InputDevice.getDeviceIds()) {
+            trackInputDeviceIfGamepad(InputDevice.getDevice(deviceId));
+        }
+
         List<ControllerBatteryInfo> result = new ArrayList<>();
+        boolean[] displayedControllerNumbers = new boolean[MAX_GAMEPADS];
+
+        // Preserve real player numbers for controllers that have already sent input.
         for (int i = 0; i < inputDeviceContexts.size(); i++) {
             InputDeviceContext context = inputDeviceContexts.valueAt(i);
             if (!context.assignedControllerNumber) {
                 continue;
             }
+            displayedControllerNumbers[context.controllerNumber] = true;
             int percentage = Float.isNaN(context.lastReportedBatteryCapacity) ? -1 :
                     Math.max(0, Math.min(100, Math.round(context.lastReportedBatteryCapacity * 100.f)));
             result.add(new ControllerBatteryInfo(context.controllerNumber + 1,
                     context.name != null ? context.name : "Controller",
                     percentage, context.lastReportedBatteryStatus));
         }
+
+        // Give unused controllers stable temporary labels without assigning protocol
+        // player numbers or reporting arrivals to the host prematurely.
+        int nextDisplayNumber = 0;
+        for (int i = 0; i < inputDeviceContexts.size(); i++) {
+            InputDeviceContext context = inputDeviceContexts.valueAt(i);
+            if (context.assignedControllerNumber || !context.hasJoystickAxes) {
+                continue;
+            }
+            while (nextDisplayNumber < displayedControllerNumbers.length &&
+                    displayedControllerNumbers[nextDisplayNumber]) {
+                nextDisplayNumber++;
+            }
+            if (nextDisplayNumber >= displayedControllerNumbers.length) {
+                break;
+            }
+            displayedControllerNumbers[nextDisplayNumber] = true;
+            int percentage = Float.isNaN(context.lastReportedBatteryCapacity) ? -1 :
+                    Math.max(0, Math.min(100, Math.round(context.lastReportedBatteryCapacity * 100.f)));
+            result.add(new ControllerBatteryInfo(nextDisplayNumber + 1,
+                    context.name != null ? context.name : "Controller",
+                    percentage, context.lastReportedBatteryStatus));
+        }
+
+        result.sort((left, right) -> Integer.compare(left.controllerNumber, right.controllerNumber));
         return result;
+    }
+
+    private void trackInputDeviceIfGamepad(InputDevice device) {
+        if (device != null && hasJoystickAxes(device) &&
+                inputDeviceContexts.get(device.getId()) == null) {
+            inputDeviceContexts.put(device.getId(), createInputDeviceContextForDevice(device));
+        }
     }
 
     public void refreshControllerBatteryInfo(Runnable completion) {
@@ -1344,10 +1386,19 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             return;
         }
 
-        updateControllerBatteryWarning(context, currentBatteryStatus, currentBatteryCapacity);
+        if (context.assignedControllerNumber) {
+            updateControllerBatteryWarning(context, currentBatteryStatus, currentBatteryCapacity);
+        }
 
-        if (currentBatteryStatus != context.lastReportedBatteryStatus ||
-                !areBatteryCapacitiesEqual(currentBatteryCapacity, context.lastReportedBatteryCapacity)) {
+        boolean batteryStateChanged = currentBatteryStatus != context.lastReportedBatteryStatus ||
+                !areBatteryCapacitiesEqual(currentBatteryCapacity, context.lastReportedBatteryCapacity);
+        if (!context.assignedControllerNumber) {
+            context.lastReportedBatteryStatus = currentBatteryStatus;
+            context.lastReportedBatteryCapacity = currentBatteryCapacity;
+            return;
+        }
+
+        if (!context.batteryStateReportedToHost || batteryStateChanged) {
             byte state;
             byte percentage;
 
@@ -1387,6 +1438,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
             context.lastReportedBatteryStatus = currentBatteryStatus;
             context.lastReportedBatteryCapacity = currentBatteryCapacity;
+            context.batteryStateReportedToHost = true;
         }
     }
 
@@ -3387,6 +3439,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         // These are BatteryState values, not Moonlight values
         public volatile int lastReportedBatteryStatus = BatteryState.STATUS_UNKNOWN;
         public volatile float lastReportedBatteryCapacity = Float.NaN;
+        public boolean batteryStateReportedToHost;
         public int lastBatteryWarningLevel;
 
         public int leftStickXAxis = -1;
@@ -3640,6 +3693,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             // InputDevice (DualSense touchpad/sensor changes can trigger this migration).
             this.lastReportedBatteryStatus = oldContext.lastReportedBatteryStatus;
             this.lastReportedBatteryCapacity = oldContext.lastReportedBatteryCapacity;
+            this.batteryStateReportedToHost = oldContext.batteryStateReportedToHost;
             this.lastBatteryWarningLevel = oldContext.lastBatteryWarningLevel;
 
             // We may have set this device to use the built-in sensor manager. If so, do that again.

@@ -2436,6 +2436,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void stopConnection() {
+        stopConnection(null);
+    }
+
+    private void stopConnection(Runnable afterStopped) {
         if (connecting || connected) {
             StreamStatusStore.update(this,
                     bitrateReconnectPending ? StreamStatusStore.STATE_RECONNECTING : StreamStatusStore.STATE_ENDED,
@@ -2456,6 +2460,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             new Thread() {
                 public void run() {
                     conn.stop();
+                    if (afterStopped != null) {
+                        runOnUiThread(afterStopped);
+                    }
                 }
             }.start();
 
@@ -2464,6 +2471,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 controllerHandler.pendingApplicationQuit = false;
                 this.doQuit();
             }
+        }
+        else if (afterStopped != null) {
+            runOnUiThread(afterStopped);
         }
     }
 
@@ -2535,6 +2545,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         (errorCode == MoonBridge.ML_ERROR_GRACEFUL_TERMINATION ?
                                 StreamStatusStore.STATE_ENDED : StreamStatusStore.STATE_ERROR),
                 bitrateReconnectPending ? "applying_bitrate" : "connection_terminated", errorCode);
+
+        // An intentional bitrate reconnect is completed by the callback passed to
+        // stopConnection(). Do not let the normal termination path finish this Activity
+        // or display a transient connection error while the old transport is stopping.
+        if (bitrateReconnectPending) {
+            return;
+        }
+
         // Perform a connection test if the failure could be due to a blocked port
         // This does network I/O, so don't do it on the main thread.
         final int portFlags = MoonBridge.getPortFlagsFromTerminationErrorCode(errorCode);
@@ -3064,11 +3082,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 getString(R.string.overlay_bitrate_reconnecting, Math.round(targetBitrate / 1000f)),
                 Toast.LENGTH_LONG).show();
         overlayMenuView.closeMenu();
-        stopConnection();
-
-        new Handler().postDelayed(() -> {
-            if (!isFinishing() && !isDestroyed()) recreate();
-        }, 1200);
+        stopConnection(() -> {
+            if (!isFinishing() && !isDestroyed()) {
+                recreate();
+            }
+        });
     }
 
     /**
