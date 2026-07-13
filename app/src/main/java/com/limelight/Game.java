@@ -99,6 +99,7 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Locale;
+import java.lang.ref.WeakReference;
 
 
 public class Game extends Activity implements SurfaceHolder.Callback,
@@ -106,6 +107,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         OnSystemUiVisibilityChangeListener, GameGestures, StreamView.InputCallbacks,
         PerfOverlayListener, UsbDriverService.UsbDriverStateListener, View.OnKeyListener {
     private int lastButtonState = 0;
+    private static WeakReference<Game> activeInstance = new WeakReference<>(null);
 
     // Only 2 touches are supported
     private final TouchContext[] touchContextMap = new TouchContext[2];
@@ -228,6 +230,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        activeInstance = new WeakReference<>(this);
 
         UiHelper.setLocale(this);
 
@@ -1164,6 +1167,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             externalLoadingView.stop();
             externalLoadingView = null;
         }
+        if (activeInstance.get() == this) {
+            activeInstance.clear();
+        }
         super.onDestroy();
 
         // Unregister broadcast receiver
@@ -1205,6 +1211,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (externalFrontend && connected && !grabbedInput) {
+            setInputGrabState(true);
+        }
+    }
+
+    @Override
     protected void onPause() {
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (!pm.isInteractive() && connected && !userInitiatedDisconnect) {
@@ -1228,6 +1242,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // Ungrab input to prevent further input device notifications
             setInputGrabState(false);
         }
+        else if (externalFrontend && connected && grabbedInput) {
+            // A TV frontend may temporarily cover the stream to present session controls.
+            // Release local input capture while its UI is in the foreground, but keep the
+            // transport alive so RETURN_STREAM can reveal this Activity again.
+            setInputGrabState(false);
+        }
 
         super.onPause();
     }
@@ -1241,6 +1261,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         if (virtualController != null) {
             virtualController.hide();
+        }
+
+        PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        boolean frontendTemporarilyCoveringStream = externalFrontend && !isFinishing()
+                && powerManager.isInteractive() && (connecting || connected);
+        if (frontendTemporarilyCoveringStream) {
+            LimeLog.info("Keeping external-frontend stream alive while Game is backgrounded");
+            return;
         }
 
         if (conn != null) {
@@ -2462,6 +2490,22 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void stopConnection() {
         stopConnection(null);
+    }
+
+    public static boolean bringActiveStreamToFront(Context context) {
+        Game game = activeInstance.get();
+        if (game == null || game.isFinishing() || game.isDestroyed()) return false;
+        Intent intent = new Intent(context, Game.class);
+        intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT |
+                Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        context.startActivity(intent);
+        return true;
+    }
+
+    public static boolean hasActiveStream() {
+        Game game = activeInstance.get();
+        return game != null && !game.isFinishing() && !game.isDestroyed();
     }
 
     private void stopConnection(Runnable afterStopped) {

@@ -44,11 +44,15 @@ height         Requested stream height
 fps            Requested stream frame rate
 hdr            1 when HDR was requested, otherwise 0
 error_code     Last connection error, or 0
+activity_alive 1 while the stream Activity is alive, otherwise 0
+started_at     Session start time in Unix milliseconds
 updated_at     Unix time in milliseconds
 ```
 
 `ended` and `error` remain available after the activity exits so the launcher
 can explain what happened. The next stream changes the state to `connecting`.
+Consumers should combine `state` with `activity_alive` before presenting a
+return-to-stream action because a persisted state may outlive the process.
 
 ## Runtime bitrate control
 

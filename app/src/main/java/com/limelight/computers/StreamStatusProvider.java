@@ -1,5 +1,7 @@
 package com.limelight.computers;
 
+import com.limelight.Game;
+
 import android.content.ContentProvider;
 import android.content.ContentValues;
 import android.content.SharedPreferences;
@@ -10,7 +12,8 @@ import android.net.Uri;
 public final class StreamStatusProvider extends ContentProvider {
     public static final String[] COLUMNS = {
             "state", "stage", "host", "computer", "app", "bitrate_kbps",
-            "width", "height", "fps", "hdr", "error_code", "updated_at"
+            "width", "height", "fps", "hdr", "error_code", "activity_alive",
+            "started_at", "updated_at"
     };
 
     @Override public boolean onCreate() { return true; }
@@ -38,6 +41,8 @@ public final class StreamStatusProvider extends ContentProvider {
             case "computer":
             case "app": return prefs.getString(column, "");
             case "hdr": return prefs.getBoolean(column, false) ? 1 : 0;
+            case "activity_alive": return Game.hasActiveStream() ? 1 : 0;
+            case "started_at":
             case "updated_at": return prefs.getLong(column, 0L);
             default: return prefs.getInt(column, 0);
         }

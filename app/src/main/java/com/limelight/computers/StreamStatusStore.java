@@ -31,6 +31,7 @@ public final class StreamStatusStore {
                 .putInt("fps", fps)
                 .putBoolean("hdr", hdr)
                 .putInt("error_code", 0)
+                .putLong("started_at", System.currentTimeMillis())
                 .putLong("updated_at", System.currentTimeMillis())
                 .apply();
         notifyChanged(context);

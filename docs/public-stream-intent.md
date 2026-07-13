@@ -71,6 +71,19 @@ com.limelight.action.OPEN_SETTINGS
 
 Pressing Back returns to the calling frontend.
 
+## Return to an active stream
+
+An external TV frontend can reveal the existing streaming activity without
+starting the host application again:
+
+```text
+com.limelight.action.RETURN_STREAM
+```
+
+Restrict the Intent to the installed Moonlight package. The action is useful
+only while `activity_alive=1` in the public stream-status provider. If no stream
+activity exists, Moonlight displays a short message and returns immediately.
+
 ## Cached applications provider
 
 Same-signature frontends can query the applications cached for a saved host:
