@@ -46,6 +46,8 @@ com.limelight.extra.APP_ID
 com.limelight.extra.APP_NAME
 com.limelight.extra.QUICK_LAUNCH
 com.limelight.extra.EXTERNAL_FRONTEND
+com.limelight.extra.EXTERNAL_FRONTEND_PACKAGE
+com.limelight.extra.EXTERNAL_FRONTEND_MESSAGE
 ```
 
 Host UUID and app ID are the stable preferred identifiers. Names are convenient
@@ -54,10 +56,16 @@ The caller cannot provide an address or arbitrary command: the host must already
 exist in Moonlight X and be paired.
 
 `EXTERNAL_FRONTEND` is a boolean intended for full-screen TV shells. When true,
-Moonlight does not place its own `PcView` behind the streaming activity. Ending
-the stream therefore reveals the calling frontend instead of Moonlight's host
-browser. The caller should launch Moonlight as a separate task while keeping its
-own activity alive underneath.
+Moonlight does not place its own `PcView` behind the streaming activity. The
+caller should also provide its package name in `EXTERNAL_FRONTEND_PACKAGE`.
+Moonlight then hands HOME and BACK navigation directly to that frontend while
+keeping the stream activity alive. If Android destroys the visible window
+surface during the handoff, decoding continues on a drained background surface;
+`RETURN_STREAM` restores the decoder to the original task and new window
+surface without starting another host session. Explicit disconnect and quit actions remain
+available through the session controls described below. A frontend can pass its
+current loading caption in `EXTERNAL_FRONTEND_MESSAGE` so Moonlight preserves
+the same loading surface during the cross-application hand-off.
 
 ## Public settings entry point
 
@@ -83,6 +91,26 @@ com.limelight.action.RETURN_STREAM
 Restrict the Intent to the installed Moonlight package. The action is useful
 only while `activity_alive=1` in the public stream-status provider. If no stream
 activity exists, Moonlight displays a short message and returns immediately.
+
+## Control an active stream
+
+Same-signature frontends can disconnect the current client while leaving the
+host application running:
+
+```text
+com.limelight.action.DISCONNECT_STREAM
+```
+
+They can also disconnect and request that the host application exits:
+
+```text
+com.limelight.action.QUIT_STREAM_APP
+```
+
+Both actions require the signature-level
+`${applicationId}.permission.CONTROL_STREAM` permission. Callers should scope
+the Intent to the installed Moonlight package and ask for confirmation before
+using `QUIT_STREAM_APP`.
 
 ## Cached applications provider
 

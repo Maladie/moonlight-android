@@ -106,7 +106,14 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
         statusParams.topMargin = dp(14);
         copy.addView(statusView, statusParams);
 
-        rotateMessage.run();
+        TextView cancelHint = text("Press BACK to return to Wake & Play", 14, 0xBFFFFFFF, false);
+        cancelHint.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams hintParams = row();
+        hintParams.topMargin = dp(34);
+        copy.addView(cancelHint, hintParams);
+
+        messageView.setText("Preparing your game...");
+        handler.postDelayed(rotateMessage, MESSAGE_INTERVAL_MS);
     }
 
     public void setLoadingTitle(String title) {
@@ -123,6 +130,14 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
             return;
         }
         if (!stopped && status != null && !status.isEmpty()) statusView.setText(status);
+    }
+
+    public void setMessage(String message) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(() -> setMessage(message));
+            return;
+        }
+        if (!stopped && message != null && !message.isEmpty()) messageView.setText(message);
     }
 
     public void revealStream() {

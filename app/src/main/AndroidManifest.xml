@@ -10,11 +10,15 @@
     <permission
         android:name="${applicationId}.permission.READ_SAVED_APPS"
         android:protectionLevel="signature" />
+    <permission
+        android:name="${applicationId}.permission.CONTROL_STREAM"
+        android:protectionLevel="signature" />
 
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <uses-permission android:name="android.permission.REORDER_TASKS" />
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="com.android.providers.tv.permission.READ_EPG_DATA"/>
     <uses-permission android:name="com.android.providers.tv.permission.WRITE_EPG_DATA"/>
@@ -175,6 +179,19 @@
             android:theme="@style/AppTheme">
             <intent-filter>
                 <action android:name="com.limelight.action.RETURN_STREAM" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+        </activity>
+
+        <activity
+            android:name=".PublicStreamControlTrampoline"
+            android:noHistory="true"
+            android:exported="true"
+            android:permission="${applicationId}.permission.CONTROL_STREAM"
+            android:theme="@android:style/Theme.NoDisplay">
+            <intent-filter>
+                <action android:name="com.limelight.action.DISCONNECT_STREAM" />
+                <action android:name="com.limelight.action.QUIT_STREAM_APP" />
                 <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </activity>

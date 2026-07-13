@@ -25,6 +25,9 @@ import com.limelight.utils.TrafficStatsHelper;
 import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Context;
+import android.graphics.ImageFormat;
+import android.media.Image;
+import android.media.ImageReader;
 import android.media.MediaCodec;
 import android.media.MediaCodecInfo;
 import android.media.MediaFormat;
@@ -75,6 +78,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private int initialWidth, initialHeight;
     private int videoFormat;
     private SurfaceHolder renderTarget;
+    private volatile Surface activeRenderSurface;
+    private ImageReader backgroundImageReader;
+    private HandlerThread backgroundImageReaderThread;
     private volatile boolean stopping;
     private CrashListener crashListener;
     private boolean reportedCrash;
@@ -306,6 +312,68 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
     public void setRenderTarget(SurfaceHolder renderTarget) {
         this.renderTarget = renderTarget;
+        this.activeRenderSurface = renderTarget.getSurface();
+    }
+
+    public boolean switchToBackgroundSurface() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || videoDecoder == null) {
+            return false;
+        }
+
+        try {
+            ensureBackgroundImageReader();
+            Surface surface = backgroundImageReader.getSurface();
+            videoDecoder.setOutputSurface(surface);
+            activeRenderSurface = surface;
+            LimeLog.info("Decoder output moved to background surface");
+            return true;
+        } catch (RuntimeException error) {
+            LimeLog.warning("Unable to move decoder output to background surface: " + error);
+            return false;
+        }
+    }
+
+    public boolean switchToRenderTarget(SurfaceHolder renderTarget) {
+        Surface surface = renderTarget.getSurface();
+        this.renderTarget = renderTarget;
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || videoDecoder == null ||
+                surface == null || !surface.isValid()) {
+            return false;
+        }
+
+        try {
+            videoDecoder.setOutputSurface(surface);
+            activeRenderSurface = surface;
+            applySurfaceFrameRate(surface, refreshRate);
+            LimeLog.info("Decoder output restored to foreground surface");
+            return true;
+        } catch (RuntimeException error) {
+            LimeLog.warning("Unable to restore decoder output surface: " + error);
+            return false;
+        }
+    }
+
+    private void ensureBackgroundImageReader() {
+        if (backgroundImageReader != null) {
+            return;
+        }
+
+        backgroundImageReaderThread = new HandlerThread("MoonlightBackgroundVideo");
+        backgroundImageReaderThread.start();
+        backgroundImageReader = ImageReader.newInstance(
+                Math.max(initialWidth, 16), Math.max(initialHeight, 16),
+                ImageFormat.PRIVATE, 3);
+        backgroundImageReader.setOnImageAvailableListener(reader -> {
+            Image image = null;
+            try {
+                image = reader.acquireLatestImage();
+            } catch (IllegalStateException ignored) {
+            } finally {
+                if (image != null) {
+                    image.close();
+                }
+            }
+        }, new Handler(backgroundImageReaderThread.getLooper()));
     }
 
     public MediaCodecDecoderRenderer(Activity activity, PreferenceConfiguration prefs,
@@ -558,7 +626,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         LimeLog.info("Configuring with format: "+format);
 
-        Surface renderSurface = renderTarget.getSurface();
+        Surface renderSurface = activeRenderSurface != null ?
+                activeRenderSurface : renderTarget.getSurface();
 
         videoDecoder.configure(format, renderSurface, null, 0);
 
@@ -1343,6 +1412,15 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     @Override
     public void cleanup() {
         videoDecoder.release();
+        if (backgroundImageReader != null) {
+            backgroundImageReader.close();
+            backgroundImageReader = null;
+        }
+        if (backgroundImageReaderThread != null) {
+            backgroundImageReaderThread.quitSafely();
+            backgroundImageReaderThread = null;
+        }
+        activeRenderSurface = null;
     }
 
     @Override

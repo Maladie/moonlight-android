@@ -47,6 +47,7 @@ import com.limelight.utils.UiHelper;
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.app.Activity;
+import android.app.ActivityManager;
 import android.app.PictureInPictureParams;
 import android.app.Service;
 import android.app.UiModeManager;
@@ -135,6 +136,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private SpinnerDialog spinner;
     private ExternalFrontendLoadingView externalLoadingView;
     private boolean externalFrontend;
+    private String externalFrontendPackage;
+    private boolean handingOffToExternalFrontend;
     private boolean displayedFailureDialog = false;
     private boolean connecting = false;
     private boolean connected = false;
@@ -280,9 +283,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         setContentView(R.layout.activity_game);
 
         externalFrontend = PublicStreamIntent.isExternalFrontend(getIntent());
+        externalFrontendPackage = PublicStreamIntent.getExternalFrontendPackage(getIntent());
         if (externalFrontend) {
             externalLoadingView = new ExternalFrontendLoadingView(
                     this, getIntent().getStringExtra(EXTRA_APP_NAME));
+            externalLoadingView.setMessage(
+                    getIntent().getStringExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_MESSAGE));
             ((FrameLayout)findViewById(android.R.id.content)).addView(externalLoadingView,
                     new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT));
@@ -841,6 +847,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void onUserLeaveHint() {
         super.onUserLeaveHint();
 
+        // HOME on Android TV would normally expose the opaque system launcher,
+        // destroying the decoder Surface and ending the stream. Hand control back
+        // to the frontend immediately so its translucent window can cover Game
+        // while the streaming Activity and transport remain alive.
+        if (externalFrontend && (connecting || connected) && returnToExternalFrontend()) {
+            return;
+        }
+
         // PiP is only supported on Oreo and later, and we don't need to manually enter PiP on
         // Android S and later. On Android R, we will use onPictureInPictureRequested() instead.
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O && Build.VERSION.SDK_INT < Build.VERSION_CODES.R) {
@@ -1213,8 +1227,46 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onResume() {
         super.onResume();
+        handingOffToExternalFrontend = false;
         if (externalFrontend && connected && !grabbedInput) {
             setInputGrabState(true);
+        }
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (externalFrontend && (connecting || connected) && returnToExternalFrontend()) {
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    private boolean returnToExternalFrontend() {
+        if (handingOffToExternalFrontend || externalFrontendPackage == null ||
+                externalFrontendPackage.isEmpty() || isFinishing()) {
+            return false;
+        }
+
+        Intent frontendIntent = getPackageManager().getLeanbackLaunchIntentForPackage(externalFrontendPackage);
+        if (frontendIntent == null) {
+            frontendIntent = getPackageManager().getLaunchIntentForPackage(externalFrontendPackage);
+        }
+        if (frontendIntent == null) {
+            LimeLog.warning("External frontend is not launchable: " + externalFrontendPackage);
+            return false;
+        }
+
+        handingOffToExternalFrontend = true;
+        frontendIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        try {
+            startActivity(frontendIntent);
+            overridePendingTransition(0, 0);
+            return true;
+        } catch (RuntimeException error) {
+            handingOffToExternalFrontend = false;
+            LimeLog.warning("Unable to return to external frontend: " + error);
+            return false;
         }
     }
 
@@ -2495,6 +2547,20 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static boolean bringActiveStreamToFront(Context context) {
         Game game = activeInstance.get();
         if (game == null || game.isFinishing() || game.isDestroyed()) return false;
+
+        ActivityManager activityManager =
+                (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
+        if (activityManager != null) {
+            try {
+                activityManager.moveTaskToFront(game.getTaskId(), ActivityManager.MOVE_TASK_WITH_HOME);
+                game.overridePendingTransition(0, 0);
+                LimeLog.info("Moved active external-frontend stream task to foreground");
+                return true;
+            } catch (RuntimeException error) {
+                LimeLog.warning("Unable to move active stream task to foreground: " + error);
+            }
+        }
+
         Intent intent = new Intent(context, Game.class);
         intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
                 Intent.FLAG_ACTIVITY_REORDER_TO_FRONT |
@@ -2506,6 +2572,25 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static boolean hasActiveStream() {
         Game game = activeInstance.get();
         return game != null && !game.isFinishing() && !game.isDestroyed();
+    }
+
+    public static boolean controlActiveStream(String action) {
+        Game game = activeInstance.get();
+        if (game == null || game.isFinishing() || game.isDestroyed()) return false;
+        if (!PublicStreamIntent.ACTION_DISCONNECT_STREAM.equals(action) &&
+                !PublicStreamIntent.ACTION_QUIT_STREAM_APP.equals(action)) return false;
+        game.runOnUiThread(() -> game.performExternalStreamControl(action));
+        return true;
+    }
+
+    private void performExternalStreamControl(String action) {
+        if (isFinishing() || isDestroyed()) return;
+        userInitiatedDisconnect = true;
+        if (PublicStreamIntent.ACTION_QUIT_STREAM_APP.equals(action) && controllerHandler != null) {
+            controllerHandler.pendingApplicationQuit = true;
+        }
+        stopConnection();
+        finish();
     }
 
     private void stopConnection(Runnable afterStopped) {
@@ -2907,6 +2992,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         surfaceCreated = true;
 
+        if (externalFrontend && attemptedConnection && connected) {
+            if (!decoderRenderer.switchToRenderTarget(holder)) {
+                LimeLog.warning("Unable to restore stream Surface after frontend handoff");
+            }
+        }
+
         // Android will pick the lowest matching refresh rate for a given frame rate value, so we want
         // to report the true FPS value if refresh rate reduction is enabled. We also report the true
         // FPS value if there's no suitable matching refresh rate. In that case, Android could try to
@@ -2944,6 +3035,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         if (attemptedConnection) {
+            if (externalFrontend && !isFinishing() && (handingOffToExternalFrontend || connected) &&
+                    decoderRenderer.switchToBackgroundSurface()) {
+                surfaceCreated = false;
+                LimeLog.info("Keeping external-frontend stream alive without a window Surface");
+                return;
+            }
+
             // Let the decoder know immediately that the surface is gone
             decoderRenderer.prepareForStop();
 
@@ -2951,6 +3049,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 stopConnection();
             }
         }
+
+        surfaceCreated = false;
     }
 
     @Override

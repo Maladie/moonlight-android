@@ -299,6 +299,9 @@ public class ShortcutTrampoline extends Activity {
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
+        if (PublicStreamIntent.isExternalFrontend(getIntent())) {
+            setTheme(R.style.StreamTheme);
+        }
         super.onCreate(savedInstanceState);
 
         // Normalize the versioned public Intent/deep-link API into the existing
@@ -309,6 +312,8 @@ public class ShortcutTrampoline extends Activity {
         if (externalFrontend) {
             externalLoadingView = new ExternalFrontendLoadingView(
                     this, getIntent().getStringExtra(Game.EXTRA_APP_NAME));
+            externalLoadingView.setMessage(
+                    getIntent().getStringExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_MESSAGE));
             externalLoadingView.setStatus("Contacting saved streaming host…");
             setContentView(externalLoadingView);
         }

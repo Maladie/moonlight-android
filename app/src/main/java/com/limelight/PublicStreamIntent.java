@@ -14,6 +14,8 @@ import android.net.Uri;
 public final class PublicStreamIntent {
     public static final String ACTION_STREAM = "com.limelight.action.STREAM";
     public static final String ACTION_OPEN_SETTINGS = "com.limelight.action.OPEN_SETTINGS";
+    public static final String ACTION_DISCONNECT_STREAM = "com.limelight.action.DISCONNECT_STREAM";
+    public static final String ACTION_QUIT_STREAM_APP = "com.limelight.action.QUIT_STREAM_APP";
 
     public static final String EXTRA_HOST_UUID = "com.limelight.extra.HOST_UUID";
     public static final String EXTRA_HOST_NAME = "com.limelight.extra.HOST_NAME";
@@ -21,6 +23,8 @@ public final class PublicStreamIntent {
     public static final String EXTRA_APP_NAME = "com.limelight.extra.APP_NAME";
     public static final String EXTRA_QUICK_LAUNCH = "com.limelight.extra.QUICK_LAUNCH";
     public static final String EXTRA_EXTERNAL_FRONTEND = "com.limelight.extra.EXTERNAL_FRONTEND";
+    public static final String EXTRA_EXTERNAL_FRONTEND_PACKAGE = "com.limelight.extra.EXTERNAL_FRONTEND_PACKAGE";
+    public static final String EXTRA_EXTERNAL_FRONTEND_MESSAGE = "com.limelight.extra.EXTERNAL_FRONTEND_MESSAGE";
 
     public static final String URI_SCHEME = "moonlightx";
     public static final String URI_HOST = "stream";
@@ -59,12 +63,24 @@ public final class PublicStreamIntent {
     public static Intent copyFrontendContract(Intent source, Intent target) {
         if (source.getBooleanExtra(EXTRA_EXTERNAL_FRONTEND, false)) {
             target.putExtra(EXTRA_EXTERNAL_FRONTEND, true);
+            String packageName = source.getStringExtra(EXTRA_EXTERNAL_FRONTEND_PACKAGE);
+            if (packageName != null && !packageName.isEmpty()) {
+                target.putExtra(EXTRA_EXTERNAL_FRONTEND_PACKAGE, packageName);
+            }
+            String message = source.getStringExtra(EXTRA_EXTERNAL_FRONTEND_MESSAGE);
+            if (message != null && !message.isEmpty()) {
+                target.putExtra(EXTRA_EXTERNAL_FRONTEND_MESSAGE, message);
+            }
         }
         return target;
     }
 
     public static boolean isExternalFrontend(Intent intent) {
         return intent != null && intent.getBooleanExtra(EXTRA_EXTERNAL_FRONTEND, false);
+    }
+
+    public static String getExternalFrontendPackage(Intent intent) {
+        return intent != null ? intent.getStringExtra(EXTRA_EXTERNAL_FRONTEND_PACKAGE) : null;
     }
 
     private static boolean isSupportedDeepLink(Uri uri) {
