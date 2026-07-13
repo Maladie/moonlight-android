@@ -52,6 +52,8 @@ import org.cgutman.shieldcontrollerextensions.SceConnectionType;
 import org.cgutman.shieldcontrollerextensions.SceManager;
 
 import java.lang.reflect.InvocationTargetException;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 
 public class ControllerHandler implements InputManager.InputDeviceListener, UsbDriverListener {
@@ -81,6 +83,23 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
          * Called when select button is released before 3 seconds (cancel).
          */
         void onOverlayMenuCancel();
+    }
+
+    public static final class ControllerBatteryInfo {
+        public final int controllerNumber;
+        public final String controllerName;
+        public final int percentage;
+        public final int status;
+
+        ControllerBatteryInfo(int controllerNumber, String controllerName, int percentage, int status) {
+            this.controllerNumber = controllerNumber;
+            this.controllerName = controllerName;
+            this.percentage = percentage;
+            this.status = status;
+        }
+
+        public boolean isCharging() { return status == BatteryState.STATUS_CHARGING; }
+        public boolean isFull() { return status == BatteryState.STATUS_FULL; }
     }
 
     private static final int MAXIMUM_BUMPER_UP_DELAY_MS = 100;
@@ -335,6 +354,37 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     public void setOverlayMenuListener(OverlayMenuListener listener) {
         this.overlayMenuListener = listener;
+    }
+
+    public List<ControllerBatteryInfo> getControllerBatteryInfo() {
+        List<ControllerBatteryInfo> result = new ArrayList<>();
+        for (int i = 0; i < inputDeviceContexts.size(); i++) {
+            InputDeviceContext context = inputDeviceContexts.valueAt(i);
+            if (!context.assignedControllerNumber) {
+                continue;
+            }
+            int percentage = Float.isNaN(context.lastReportedBatteryCapacity) ? -1 :
+                    Math.max(0, Math.min(100, Math.round(context.lastReportedBatteryCapacity * 100.f)));
+            result.add(new ControllerBatteryInfo(context.controllerNumber + 1,
+                    context.name != null ? context.name : "Controller",
+                    percentage, context.lastReportedBatteryStatus));
+        }
+        return result;
+    }
+
+    public void refreshControllerBatteryInfo(Runnable completion) {
+        List<InputDeviceContext> contexts = new ArrayList<>();
+        for (int i = 0; i < inputDeviceContexts.size(); i++) {
+            contexts.add(inputDeviceContexts.valueAt(i));
+        }
+        backgroundThreadHandler.post(() -> {
+            for (InputDeviceContext context : contexts) {
+                if (!stopped && context.inputDevice != null) {
+                    sendControllerBatteryPacket(context);
+                }
+            }
+            if (completion != null) { mainThreadHandler.post(completion); }
+        });
     }
 
     /**
@@ -1185,6 +1235,51 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
     }
 
+    private int getBatteryWarningLevel(int percentage) {
+        if (prefConfig.gamepadBatteryWarningThreshold <= 0 ||
+                percentage > prefConfig.gamepadBatteryWarningThreshold) {
+            return 0;
+        }
+
+        if (percentage <= 5) {
+            return 3;
+        }
+        else if (percentage <= 10) {
+            return 2;
+        }
+        else {
+            return 1;
+        }
+    }
+
+    private void updateControllerBatteryWarning(InputDeviceContext context,
+                                                int batteryStatus,
+                                                float batteryCapacity) {
+        if (batteryStatus == BatteryState.STATUS_CHARGING ||
+                batteryStatus == BatteryState.STATUS_FULL ||
+                Float.isNaN(batteryCapacity)) {
+            context.lastBatteryWarningLevel = 0;
+            return;
+        }
+
+        int percentage = Math.max(0, Math.min(100, Math.round(batteryCapacity * 100.f)));
+        int warningLevel = getBatteryWarningLevel(percentage);
+
+        // A rising battery level rearms warnings that are no longer active.
+        if (warningLevel < context.lastBatteryWarningLevel) {
+            context.lastBatteryWarningLevel = warningLevel;
+        }
+
+        if (warningLevel > context.lastBatteryWarningLevel) {
+            context.lastBatteryWarningLevel = warningLevel;
+            final int controllerNumber = context.controllerNumber + 1;
+            mainThreadHandler.post(() -> Toast.makeText(activityContext,
+                    activityContext.getString(R.string.controller_battery_low,
+                            controllerNumber, percentage),
+                    Toast.LENGTH_LONG).show());
+        }
+    }
+
     // This must not be called on the main thread due to risk of ANRs!
     private void sendControllerBatteryPacket(InputDeviceContext context) {
         int currentBatteryStatus;
@@ -1248,6 +1343,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         else {
             return;
         }
+
+        updateControllerBatteryWarning(context, currentBatteryStatus, currentBatteryCapacity);
 
         if (currentBatteryStatus != context.lastReportedBatteryStatus ||
                 !areBatteryCapacitiesEqual(currentBatteryCapacity, context.lastReportedBatteryCapacity)) {
@@ -3288,8 +3385,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         public LightsManager.LightsSession lightsSession;
 
         // These are BatteryState values, not Moonlight values
-        public int lastReportedBatteryStatus;
-        public float lastReportedBatteryCapacity;
+        public volatile int lastReportedBatteryStatus = BatteryState.STATUS_UNKNOWN;
+        public volatile float lastReportedBatteryCapacity = Float.NaN;
+        public int lastBatteryWarningLevel;
 
         public int leftStickXAxis = -1;
         public int leftStickYAxis = -1;
@@ -3537,6 +3635,12 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             this.assignedControllerNumber = oldContext.assignedControllerNumber;
             this.reservedControllerNumber = oldContext.reservedControllerNumber;
             this.controllerNumber = oldContext.controllerNumber;
+
+            // Preserve the last known battery state while Android rebuilds the logical
+            // InputDevice (DualSense touchpad/sensor changes can trigger this migration).
+            this.lastReportedBatteryStatus = oldContext.lastReportedBatteryStatus;
+            this.lastReportedBatteryCapacity = oldContext.lastReportedBatteryCapacity;
+            this.lastBatteryWarningLevel = oldContext.lastBatteryWarningLevel;
 
             // We may have set this device to use the built-in sensor manager. If so, do that again.
             if (oldContext.sensorManager == deviceSensorManager) {

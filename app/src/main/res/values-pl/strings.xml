@@ -271,4 +271,9 @@
     <string name="videoformat_auto">Automatycznie (zalecane)</string>
     <string name="videoformat_av1always">Preferowany AV1 (eksperymentalny)</string>
     <string name="summary_setup_guide">Wyświetl instrukcje, jak skonfigurować komputer do gier do streamowania</string>
+    <string name="overlay_bitrate_decrease">−5 Mb/s</string>
+    <string name="overlay_bitrate_increase">+5 Mb/s</string>
+    <string name="overlay_bitrate_current">%1$d Mb/s</string>
+    <string name="overlay_bitrate_apply">%1$d Mb/s · ZASTOSUJ</string>
+    <string name="overlay_bitrate_reconnecting">Ponowne łączenie z szybkością %1$d Mb/s…</string>
 </resources>

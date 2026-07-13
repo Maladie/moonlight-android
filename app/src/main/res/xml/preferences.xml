@@ -130,6 +130,13 @@
             android:title="@string/title_checkbox_gamepad_motion_fallback"
             android:summary="@string/summary_checkbox_gamepad_motion_fallback"
             android:defaultValue="false" />
+        <ListPreference
+            android:key="list_gamepad_battery_warning"
+            android:title="@string/title_gamepad_battery_warning"
+            android:summary="@string/summary_gamepad_battery_warning"
+            android:entries="@array/gamepad_battery_warning_names"
+            android:entryValues="@array/gamepad_battery_warning_values"
+            android:defaultValue="20" />
     </PreferenceCategory>
     <PreferenceCategory android:title="@string/category_overlay_menu"
         android:key="category_overlay_menu">
