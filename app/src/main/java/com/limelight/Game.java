@@ -27,6 +27,7 @@ import com.limelight.nvstream.input.ControllerPacket;
 import com.limelight.nvstream.input.KeyboardPacket;
 import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.nvstream.jni.MoonBridge;
+import com.limelight.computers.StreamStatusStore;
 import com.limelight.preferences.AppPreferences;
 import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
@@ -135,6 +136,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean autoEnterPip = false;
     private boolean surfaceCreated = false;
     private boolean attemptedConnection = false;
+    private boolean bitrateReconnectPending = false;
+    private int runtimeBitrateKbps;
     private int suppressPipRefCount = 0;
     private String pcName;
     private String appName;
@@ -215,6 +218,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_SERVER_CERT = "ServerCert";
     public static final String EXTRA_QUICK_LAUNCH_APP_KEY = "QuickLaunchAppKey";
     public static final String EXTRA_APPLY_PREFERENCE_OVERRIDES = "ApplyPreferenceOverrides";
+    public static final String EXTRA_RUNTIME_BITRATE_KBPS = "RuntimeBitrateKbps";
     public static final String ACTION_QUIT_APP = "com.limelight.QUIT_STREAMING_APP";
 
     @Override
@@ -283,6 +287,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         String quickLaunchAppKey = Game.this.getIntent().getStringExtra(EXTRA_QUICK_LAUNCH_APP_KEY);
         boolean applyPreferenceOverrides = Game.this.getIntent().getBooleanExtra(EXTRA_APPLY_PREFERENCE_OVERRIDES, true);
         prefConfig = AppPreferences.getEffectivePreferences(this, appKey, quickLaunchAppKey, applyPreferenceOverrides);
+        int requestedRuntimeBitrate = Game.this.getIntent().getIntExtra(EXTRA_RUNTIME_BITRATE_KBPS, 0);
+        if (requestedRuntimeBitrate > 0) {
+            prefConfig.bitrate = Math.max(1000, Math.min(150000, requestedRuntimeBitrate));
+        }
+        runtimeBitrateKbps = prefConfig.bitrate;
         tombstonePrefs = Game.this.getSharedPreferences("DecoderTombstone", 0);
 
         // Enter landscape unless we're on a square screen
@@ -406,6 +415,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             finish();
             return;
         }
+
+        StreamStatusStore.begin(this, host, pcName, appName, runtimeBitrateKbps,
+                prefConfig.width, prefConfig.height, prefConfig.fps, prefConfig.enableHdr);
 
         // Initialize the MediaCodec helper before creating the decoder
         GlPreferences glPrefs = GlPreferences.readPreferences(this);
@@ -2242,7 +2254,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         // All fingers up
                         if (event.getEventTime() - threeFingerDownTime < THREE_FINGER_TAP_THRESHOLD) {
                             // This is a 3 finger tap to bring up the overlay menu
-                            runOnUiThread(() -> overlayMenuView.show());
+                            runOnUiThread(this::showOverlayMenuWithBattery);
                             return true;
                         }
                     }
@@ -2408,6 +2420,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void stageStarting(final String stage) {
+        StreamStatusStore.update(this, StreamStatusStore.STATE_CONNECTING, stage, 0);
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -2424,6 +2437,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void stopConnection() {
         if (connecting || connected) {
+            StreamStatusStore.update(this,
+                    bitrateReconnectPending ? StreamStatusStore.STATE_RECONNECTING : StreamStatusStore.STATE_ENDED,
+                    bitrateReconnectPending ? "applying_bitrate" : "stopped", 0);
             connecting = connected = false;
             updatePipAutoEnter();
 
@@ -2473,6 +2489,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void stageFailed(final String stage, final int portFlags, final int errorCode) {
+        StreamStatusStore.update(this, StreamStatusStore.STATE_ERROR, stage, errorCode);
         // Perform a connection test if the failure could be due to a blocked port
         // This does network I/O, so don't do it on the main thread.
         final int portTestResult = MoonBridge.testClientConnectivity(ServerHelper.CONNECTION_TEST_SERVER, 443, portFlags);
@@ -2513,6 +2530,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void connectionTerminated(final int errorCode) {
+        StreamStatusStore.update(this,
+                bitrateReconnectPending ? StreamStatusStore.STATE_RECONNECTING :
+                        (errorCode == MoonBridge.ML_ERROR_GRACEFUL_TERMINATION ?
+                                StreamStatusStore.STATE_ENDED : StreamStatusStore.STATE_ERROR),
+                bitrateReconnectPending ? "applying_bitrate" : "connection_terminated", errorCode);
         // Perform a connection test if the failure could be due to a blocked port
         // This does network I/O, so don't do it on the main thread.
         final int portFlags = MoonBridge.getPortFlagsFromTerminationErrorCode(errorCode);
@@ -2604,6 +2626,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 }
 
                 if (connectionStatus == MoonBridge.CONN_STATUS_POOR) {
+                    StreamStatusStore.update(Game.this, StreamStatusStore.STATE_STREAMING, "network_poor", 0);
                     if (prefConfig.bitrate > 5000) {
                         notificationOverlayView.setText(getResources().getString(R.string.slow_connection_msg));
                     }
@@ -2614,6 +2637,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     requestedNotificationOverlayVisibility = View.VISIBLE;
                 }
                 else if (connectionStatus == MoonBridge.CONN_STATUS_OKAY) {
+                    StreamStatusStore.update(Game.this, StreamStatusStore.STATE_STREAMING, "streaming", 0);
                     requestedNotificationOverlayVisibility = View.GONE;
                 }
 
@@ -2636,6 +2660,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 connected = true;
                 connecting = false;
+                StreamStatusStore.update(Game.this, StreamStatusStore.STATE_STREAMING, "streaming", 0);
                 updatePipAutoEnter();
 
                 // Hide the mouse cursor now after a short delay.
@@ -2937,7 +2962,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         controllerHandler.setOverlayMenuListener(new ControllerHandler.OverlayMenuListener() {
             @Override
             public void onOverlayMenuOpen() {
-                runOnUiThread(() -> overlayMenuView.show());
+                runOnUiThread(Game.this::showOverlayMenuWithBattery);
             }
 
             @Override
@@ -2994,6 +3019,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             @Override
+            public void onApplyBitrate(int bitrateKbps) {
+                applyBitrateAndReconnect(bitrateKbps);
+            }
+
+            @Override
             public void onCustomCommand(CustomCommand command) {
                 if (command.getPostAction() == CustomCommand.POST_ACTION_CLOSE_MENU) {
                     overlayMenuView.closeMenu();
@@ -3008,6 +3038,37 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 // Menu closed, no additional action needed
             }
         });
+    }
+
+    private void showOverlayMenuWithBattery() {
+        overlayMenuView.setControllerBatteryInfo(controllerHandler.getControllerBatteryInfo());
+        overlayMenuView.setBitrateKbps(runtimeBitrateKbps);
+        overlayMenuView.show();
+        controllerHandler.refreshControllerBatteryInfo(() -> {
+            if (overlayMenuView.getVisibility() == View.VISIBLE) {
+                overlayMenuView.setControllerBatteryInfo(controllerHandler.getControllerBatteryInfo());
+            }
+        });
+    }
+
+    private void applyBitrateAndReconnect(int bitrateKbps) {
+        int targetBitrate = Math.max(1000, Math.min(150000, bitrateKbps));
+        if (targetBitrate == runtimeBitrateKbps) return;
+
+        runtimeBitrateKbps = targetBitrate;
+        getIntent().putExtra(EXTRA_RUNTIME_BITRATE_KBPS, targetBitrate);
+        bitrateReconnectPending = true;
+        StreamStatusStore.updateBitrate(this, targetBitrate);
+        StreamStatusStore.update(this, StreamStatusStore.STATE_RECONNECTING, "applying_bitrate", 0);
+        Toast.makeText(this,
+                getString(R.string.overlay_bitrate_reconnecting, Math.round(targetBitrate / 1000f)),
+                Toast.LENGTH_LONG).show();
+        overlayMenuView.closeMenu();
+        stopConnection();
+
+        new Handler().postDelayed(() -> {
+            if (!isFinishing() && !isDestroyed()) recreate();
+        }, 1200);
     }
 
     /**
