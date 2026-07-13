@@ -201,9 +201,10 @@ public class OverlayMenuView extends LinearLayout {
         }
 
         List<CustomCommand> customCommands = commandsManager.getCommands();
-        for (CustomCommand command : customCommands) {
+        for (int commandIndex = 0; commandIndex < customCommands.size(); commandIndex++) {
+            CustomCommand command = customCommands.get(commandIndex);
             addHorizontalButton(command.getIconResId(), command.getName(),
-                ACTION_CUSTOM_BASE + horizontalButtons.size(), spacing);
+                ACTION_CUSTOM_BASE + commandIndex, spacing);
         }
         addHorizontalButton(0,
             getContext().getString(R.string.overlay_menu_close), ACTION_CLOSE, 0);

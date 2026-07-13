@@ -3181,11 +3181,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void sendCustomKeyCommand(CustomCommand command, Runnable onComplete) {
         CustomCommand.KeyCombination keyCombination = command.getKeyCombination();
 
-        // Windows virtual key codes for modifier keys
-        final short VK_CONTROL = 0x11;
-        final short VK_MENU = 0x12;    // Alt key
-        final short VK_SHIFT = 0x10;
-        final short VK_LWIN = 0x5B;    // Windows/Meta key
+        // Keyboard packets use Moonlight's prefixed key-code format, not raw
+        // Windows VK values. Reuse KeyboardTranslator so modifier packets have
+        // the same representation as physical keyboard input.
+        final short controlKeyCode = keyboardTranslator.translate(KeyEvent.KEYCODE_CTRL_LEFT, -1);
+        final short altKeyCode = keyboardTranslator.translate(KeyEvent.KEYCODE_ALT_LEFT, -1);
+        final short shiftKeyCode = keyboardTranslator.translate(KeyEvent.KEYCODE_SHIFT_LEFT, -1);
+        final short metaKeyCode = keyboardTranslator.translate(KeyEvent.KEYCODE_META_LEFT, -1);
 
         // Build modifier flags
         byte modifierFlags = 0;
@@ -3215,16 +3217,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Step 1: Send modifier keys DOWN first (to mimic human key press)
         if (keyCombination.isCtrl()) {
-            conn.sendKeyboardInput(VK_CONTROL, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            conn.sendKeyboardInput(controlKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
         if (keyCombination.isAlt()) {
-            conn.sendKeyboardInput(VK_MENU, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            conn.sendKeyboardInput(altKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
         if (keyCombination.isShift()) {
-            conn.sendKeyboardInput(VK_SHIFT, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            conn.sendKeyboardInput(shiftKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
         if (keyCombination.isMeta()) {
-            conn.sendKeyboardInput(VK_LWIN, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            conn.sendKeyboardInput(metaKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
 
         // Step 2: Wait 50ms, then send main key DOWN (with modifier flags set)
@@ -3238,16 +3240,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 // Step 4: Wait 50ms, then send modifier keys UP (in reverse order)
                 handler.postDelayed(() -> {
                     if (keyCombination.isMeta()) {
-                        conn.sendKeyboardInput(VK_LWIN, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        conn.sendKeyboardInput(metaKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
                     if (keyCombination.isShift()) {
-                        conn.sendKeyboardInput(VK_SHIFT, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        conn.sendKeyboardInput(shiftKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
                     if (keyCombination.isAlt()) {
-                        conn.sendKeyboardInput(VK_MENU, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        conn.sendKeyboardInput(altKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
                     if (keyCombination.isCtrl()) {
-                        conn.sendKeyboardInput(VK_CONTROL, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        conn.sendKeyboardInput(controlKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
 
                     if (onComplete != null) {
