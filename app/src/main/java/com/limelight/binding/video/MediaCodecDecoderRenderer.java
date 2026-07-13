@@ -7,6 +7,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
 
 import org.jcodec.codecs.h264.H264Utils;
@@ -81,6 +82,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private String glRenderer;
     private boolean foreground = true;
     private PerfOverlayListener perfListener;
+    private final Runnable firstFrameRenderedCallback;
+    private final AtomicBoolean firstFrameReported = new AtomicBoolean();
 
     private static final int CR_MAX_TRIES = 10;
     private static final int CR_RECOVERY_TYPE_NONE = 0;
@@ -308,7 +311,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     public MediaCodecDecoderRenderer(Activity activity, PreferenceConfiguration prefs,
                                      CrashListener crashListener, int consecutiveCrashCount,
                                      boolean meteredData, boolean requestedHdr,
-                                     String glRenderer, PerfOverlayListener perfListener) {
+                                     String glRenderer, PerfOverlayListener perfListener,
+                                     Runnable firstFrameRenderedCallback) {
         //dumpDecoders();
 
         this.context = activity;
@@ -318,6 +322,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         this.consecutiveCrashCount = consecutiveCrashCount;
         this.glRenderer = glRenderer;
         this.perfListener = perfListener;
+        this.firstFrameRenderedCallback = firstFrameRenderedCallback;
 
         this.activeWindowVideoStats = new VideoStats();
         this.lastWindowVideoStats = new VideoStats();
@@ -707,21 +712,36 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         LimeLog.info(MediaCodecHelper.getMediaFormatLog());
 
-        if (USE_FRAME_RENDER_TIME && Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
             videoDecoder.setOnFrameRenderedListener(new MediaCodec.OnFrameRenderedListener() {
                 @Override
                 public void onFrameRendered(MediaCodec mediaCodec, long presentationTimeUs, long renderTimeNanos) {
-                    long delta = (renderTimeNanos / 1000000L) - (presentationTimeUs / 1000);
-                    if (delta >= 0 && delta < 1000) {
-                        if (USE_FRAME_RENDER_TIME) {
+                    if (USE_FRAME_RENDER_TIME) {
+                        long delta = (renderTimeNanos / 1000000L) - (presentationTimeUs / 1000);
+                        if (delta >= 0 && delta < 1000) {
                             activeWindowVideoStats.totalTimeMs += delta;
                         }
+                    }
+                    reportFirstFrameRendered();
+                    // We only need this callback for the first-frame hand-off.
+                    // Avoid a Java callback for every frame during the stream.
+                    if (!USE_FRAME_RENDER_TIME) {
+                        try {
+                            mediaCodec.setOnFrameRenderedListener(null, null);
+                        } catch (IllegalStateException ignored) { }
                     }
                 }
             }, null);
         }
 
         return 0;
+    }
+
+    private void reportFirstFrameRendered() {
+        if (firstFrameRenderedCallback != null && firstFrameReported.compareAndSet(false, true)) {
+            LimeLog.info("First video frame rendered");
+            firstFrameRenderedCallback.run();
+        }
     }
 
     @Override
@@ -1027,6 +1047,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
                     lastRenderedFrameTimeNanos = frameTimeNanos;
                     activeWindowVideoStats.totalFramesRendered++;
+                    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+                        reportFirstFrameRendered();
+                    }
                 } catch (IllegalStateException ignored) {
                     try {
                         // Try to avoid leaking the output buffer by releasing it without rendering
@@ -1119,6 +1142,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                                 }
 
                                 activeWindowVideoStats.totalFramesRendered++;
+                                if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+                                    reportFirstFrameRendered();
+                                }
                             }
                             else {
                                 // For balanced frame pacing case, the Choreographer callback will handle rendering.

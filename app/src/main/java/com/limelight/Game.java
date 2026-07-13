@@ -32,6 +32,7 @@ import com.limelight.preferences.AppPreferences;
 import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.ui.BrightnessSliderView;
+import com.limelight.ui.ExternalFrontendLoadingView;
 import com.limelight.ui.GameGestures;
 import com.limelight.ui.StreamView;
 import com.limelight.ui.overlay.CustomCommand;
@@ -81,6 +82,7 @@ import android.view.View;
 import android.view.View.OnGenericMotionListener;
 import android.view.View.OnSystemUiVisibilityChangeListener;
 import android.view.View.OnTouchListener;
+import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
@@ -129,6 +131,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private NvConnection conn;
     private SpinnerDialog spinner;
+    private ExternalFrontendLoadingView externalLoadingView;
+    private boolean externalFrontend;
     private boolean displayedFailureDialog = false;
     private boolean connecting = false;
     private boolean connected = false;
@@ -272,9 +276,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Inflate the content
         setContentView(R.layout.activity_game);
 
-        // Start the spinner
-        spinner = SpinnerDialog.displayDialog(this, getResources().getString(R.string.conn_establishing_title),
-                getResources().getString(R.string.conn_establishing_msg), true);
+        externalFrontend = PublicStreamIntent.isExternalFrontend(getIntent());
+        if (externalFrontend) {
+            externalLoadingView = new ExternalFrontendLoadingView(
+                    this, getIntent().getStringExtra(EXTRA_APP_NAME));
+            ((FrameLayout)findViewById(android.R.id.content)).addView(externalLoadingView,
+                    new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT));
+            externalLoadingView.bringToFront();
+            externalLoadingView.setStatus("Initializing Moonlight streaming pipeline…");
+        }
+        else {
+            // Preserve the stock Moonlight connection dialog for normal launches.
+            spinner = SpinnerDialog.displayDialog(this, getResources().getString(R.string.conn_establishing_title),
+                    getResources().getString(R.string.conn_establishing_msg), true);
+        }
 
         // Get the app ID
         int appId = Game.this.getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
@@ -476,7 +492,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 connMgr.isActiveNetworkMetered(),
                 willStreamHdr,
                 glPrefs.glRenderer,
-                this);
+                this,
+                this::onFirstVideoFrameRendered);
 
         // Don't stream HDR if the decoder can't support it
         if (willStreamHdr && !decoderRenderer.isHevcMain10Hdr10Supported() && !decoderRenderer.isAv1Main10Supported()) {
@@ -1143,6 +1160,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        if (externalLoadingView != null) {
+            externalLoadingView.stop();
+            externalLoadingView = null;
+        }
         super.onDestroy();
 
         // Unregister broadcast receiver
@@ -2425,6 +2446,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                if (externalLoadingView != null) {
+                    externalLoadingView.setStatus(friendlyLoadingStage(stage));
+                }
                 if (spinner != null) {
                     spinner.setMessage(getResources().getString(R.string.conn_starting) + " " + stage);
                 }
@@ -2508,6 +2532,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                if (externalLoadingView != null) {
+                    externalLoadingView.stop();
+                    externalLoadingView.setVisibility(View.GONE);
+                }
                 if (spinner != null) {
                     spinner.dismiss();
                     spinner = null;
@@ -2672,6 +2700,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                if (externalLoadingView != null) {
+                    externalLoadingView.setStatus("Waiting for the first video frame…");
+                    // onFrameRendered() is the authoritative hand-off signal. Keep a
+                    // conservative fallback for unusual vendor decoders that never
+                    // deliver that callback despite displaying video.
+                    externalLoadingView.postDelayed(() -> {
+                        if (externalLoadingView != null) externalLoadingView.revealStream();
+                    }, 8000);
+                }
                 if (spinner != null) {
                     spinner.dismiss();
                     spinner = null;
@@ -2718,6 +2755,26 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // This may be null if launched from the "Resume Session" PC context menu item
             shortcutHelper.reportGameLaunched(computer, app);
         }
+    }
+
+    private void onFirstVideoFrameRendered() {
+        runOnUiThread(() -> {
+            if (externalLoadingView != null) {
+                externalLoadingView.setStatus("Stream ready");
+                externalLoadingView.revealStream();
+            }
+        });
+    }
+
+    private String friendlyLoadingStage(String stage) {
+        if (stage == null || stage.isEmpty()) return "Preparing stream…";
+        String lower = stage.toLowerCase(Locale.ROOT);
+        if (lower.contains("rtsp")) return "Starting RTSP handshake…";
+        if (lower.contains("video")) return "Initializing video decoder…";
+        if (lower.contains("audio")) return "Starting audio stream…";
+        if (lower.contains("control")) return "Connecting controller uplink…";
+        if (lower.contains("input")) return "Preparing input channel…";
+        return "Starting " + stage + "…";
     }
 
     @Override

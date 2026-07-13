@@ -22,6 +22,7 @@ import com.limelight.utils.QuickLaunchManager;
 import com.limelight.utils.ServerHelper;
 import com.limelight.utils.SpinnerDialog;
 import com.limelight.utils.UiHelper;
+import com.limelight.ui.ExternalFrontendLoadingView;
 
 import org.xmlpull.v1.XmlPullParserException;
 
@@ -43,6 +44,7 @@ public class ShortcutTrampoline extends Activity {
     private int wakeHostTries = 10;
     private ComputerDetails computer;
     private SpinnerDialog blockingLoadSpinner;
+    private ExternalFrontendLoadingView externalLoadingView;
 
     private ComputerManagerService.ComputerManagerBinder managerBinder;
 
@@ -56,6 +58,7 @@ public class ShortcutTrampoline extends Activity {
                 @Override
                 public void run() {
                     // Wait for the binder to be ready
+                    updateExternalLoadingStatus("Loading saved host details…");
                     localBinder.waitForReady();
 
                     // Now make the binder visible
@@ -98,6 +101,7 @@ public class ShortcutTrampoline extends Activity {
                             // Try to wake the target PC if it's offline (up to some retry limit)
                             if (details.state == ComputerDetails.State.OFFLINE && details.macAddress != null && --wakeHostTries >= 0) {
                                 try {
+                                    updateExternalLoadingStatus("Waking " + computer.name + "…");
                                     // Make a best effort attempt to wake the target PC
                                     WakeOnLanSender.sendWolPacket(computer);
 
@@ -129,6 +133,8 @@ public class ShortcutTrampoline extends Activity {
                                         }
 
                                         if (details.state == ComputerDetails.State.ONLINE && details.pairState == PairingManager.PairState.PAIRED) {
+                                            updateExternalLoadingStatus("Host ready. Opening " +
+                                                    (app != null ? app.getAppName() : "Moonlight") + "…");
 
                                             // Launch game if provided app ID, otherwise launch app view
                                             if (app != null) {
@@ -300,6 +306,12 @@ public class ShortcutTrampoline extends Activity {
         // and host readiness implementation.
         setIntent(PublicStreamIntent.normalize(getIntent()));
         externalFrontend = PublicStreamIntent.isExternalFrontend(getIntent());
+        if (externalFrontend) {
+            externalLoadingView = new ExternalFrontendLoadingView(
+                    this, getIntent().getStringExtra(Game.EXTRA_APP_NAME));
+            externalLoadingView.setStatus("Contacting saved streaming host…");
+            setContentView(externalLoadingView);
+        }
 
         UiHelper.notifyNewRootView(this);
         ComputerDatabaseManager dbManager = new ComputerDatabaseManager(this);
@@ -338,6 +350,9 @@ public class ShortcutTrampoline extends Activity {
                 .putExtra(AppView.UUID_EXTRA, uuidString)
                 .putExtra(Game.EXTRA_APP_ID, appIdString)
                 .putExtra(Game.EXTRA_APP_NAME, appNameString));
+            if (externalLoadingView != null) {
+                externalLoadingView.setLoadingTitle(appNameString);
+            }
         }
 
         if (!validateInput(uuidString, appIdString, nameString)) {
@@ -414,8 +429,14 @@ public class ShortcutTrampoline extends Activity {
         bindService(new Intent(this, ComputerManagerService.class), serviceConnection,
                 Service.BIND_AUTO_CREATE);
 
-        blockingLoadSpinner = SpinnerDialog.displayDialog(this, getResources().getString(R.string.conn_establishing_title),
-                getResources().getString(R.string.applist_connect_msg), true);
+        if (!externalFrontend) {
+            blockingLoadSpinner = SpinnerDialog.displayDialog(this, getResources().getString(R.string.conn_establishing_title),
+                    getResources().getString(R.string.applist_connect_msg), true);
+        }
+    }
+
+    private void updateExternalLoadingStatus(String status) {
+        if (externalLoadingView != null) externalLoadingView.setStatus(status);
     }
 
     private void addMoonlightRootIfNeeded() {
@@ -438,6 +459,11 @@ public class ShortcutTrampoline extends Activity {
     @Override
     protected void onStop() {
         super.onStop();
+
+        if (externalLoadingView != null) {
+            externalLoadingView.stop();
+            externalLoadingView = null;
+        }
 
         if (blockingLoadSpinner != null) {
             blockingLoadSpinner.dismiss();
