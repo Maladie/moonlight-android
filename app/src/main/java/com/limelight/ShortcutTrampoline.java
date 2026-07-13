@@ -304,6 +304,11 @@ public class ShortcutTrampoline extends Activity {
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
 
+        // Normalize the versioned public Intent/deep-link API into the existing
+        // shortcut launch contract. This keeps all launch paths on the same WoL
+        // and host readiness implementation.
+        setIntent(PublicStreamIntent.normalize(getIntent()));
+
         UiHelper.notifyNewRootView(this);
         ComputerDatabaseManager dbManager = new ComputerDatabaseManager(this);
         ComputerDetails _computer = null;

@@ -1,0 +1,71 @@
+package com.limelight;
+
+import android.content.Intent;
+import android.net.Uri;
+
+/**
+ * Public, versioned launch contract for starting a saved host or application.
+ *
+ * External callers should use either ACTION_STREAM with the public extras below,
+ * or a moonlightx://stream/v1 deep link. The result is normalized to the legacy
+ * extras consumed by ShortcutTrampoline so both entry points share the same WoL,
+ * host polling, pairing validation, and stream launch path.
+ */
+public final class PublicStreamIntent {
+    public static final String ACTION_STREAM = "com.limelight.action.STREAM";
+
+    public static final String EXTRA_HOST_UUID = "com.limelight.extra.HOST_UUID";
+    public static final String EXTRA_HOST_NAME = "com.limelight.extra.HOST_NAME";
+    public static final String EXTRA_APP_ID = "com.limelight.extra.APP_ID";
+    public static final String EXTRA_APP_NAME = "com.limelight.extra.APP_NAME";
+    public static final String EXTRA_QUICK_LAUNCH = "com.limelight.extra.QUICK_LAUNCH";
+
+    public static final String URI_SCHEME = "moonlightx";
+    public static final String URI_HOST = "stream";
+    public static final String URI_VERSION_PATH = "/v1";
+
+    private PublicStreamIntent() {}
+
+    public static Intent normalize(Intent source) {
+        Intent normalized = new Intent(source);
+        Uri uri = source.getData();
+
+        if (isSupportedDeepLink(uri)) {
+            putIfPresent(normalized, EXTRA_HOST_UUID, uri.getQueryParameter("host_uuid"));
+            putIfPresent(normalized, EXTRA_HOST_NAME, uri.getQueryParameter("host_name"));
+            putIfPresent(normalized, EXTRA_APP_ID, uri.getQueryParameter("app_id"));
+            putIfPresent(normalized, EXTRA_APP_NAME, uri.getQueryParameter("app_name"));
+            putIfPresent(normalized, EXTRA_QUICK_LAUNCH, uri.getQueryParameter("quick_launch"));
+        }
+
+        if (ACTION_STREAM.equals(source.getAction()) || isSupportedDeepLink(uri)) {
+            copyPublicExtra(normalized, EXTRA_HOST_UUID, AppView.UUID_EXTRA);
+            copyPublicExtra(normalized, EXTRA_HOST_NAME, AppView.NAME_EXTRA);
+            copyPublicExtra(normalized, EXTRA_APP_ID, Game.EXTRA_APP_ID);
+            copyPublicExtra(normalized, EXTRA_APP_NAME, Game.EXTRA_APP_NAME);
+            copyPublicExtra(normalized, EXTRA_QUICK_LAUNCH, ShortcutTrampoline.EXTRA_QUICK_LAUNCH_NAME);
+        }
+
+        return normalized;
+    }
+
+    private static boolean isSupportedDeepLink(Uri uri) {
+        return uri != null &&
+                URI_SCHEME.equalsIgnoreCase(uri.getScheme()) &&
+                URI_HOST.equalsIgnoreCase(uri.getHost()) &&
+                URI_VERSION_PATH.equals(uri.getPath());
+    }
+
+    private static void putIfPresent(Intent intent, String key, String value) {
+        if (value != null && !value.isEmpty()) {
+            intent.putExtra(key, value);
+        }
+    }
+
+    private static void copyPublicExtra(Intent intent, String publicKey, String internalKey) {
+        String value = intent.getStringExtra(publicKey);
+        if (value != null && !value.isEmpty()) {
+            intent.putExtra(internalKey, value);
+        }
+    }
+}

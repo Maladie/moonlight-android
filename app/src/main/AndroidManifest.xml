@@ -1,6 +1,13 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <permission
+        android:name="com.limelight.permission.READ_SAVED_HOSTS"
+        android:protectionLevel="signature" />
+    <permission
+        android:name="com.limelight.permission.READ_STREAM_STATUS"
+        android:protectionLevel="signature" />
+
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.VIBRATE" />
@@ -63,6 +70,18 @@
             android:exported="true">
         </provider>
 
+        <provider
+            android:name=".computers.SavedHostsProvider"
+            android:authorities="hosts.${applicationId}"
+            android:exported="true"
+            android:readPermission="com.limelight.permission.READ_SAVED_HOSTS" />
+
+        <provider
+            android:name=".computers.StreamStatusProvider"
+            android:authorities="streamstatus.${applicationId}"
+            android:exported="true"
+            android:readPermission="com.limelight.permission.READ_STREAM_STATUS" />
+
         <!-- Samsung multi-window support -->
         <uses-library
             android:name="com.sec.android.app.multiwindow"
@@ -114,6 +133,19 @@
             android:configChanges="mcc|mnc|locale|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|orientation|screenSize|smallestScreenSize|layoutDirection">
             <meta-data android:name="WindowManagerPreference:FreeformWindowSize" android:value="system-default" />
             <meta-data android:name="WindowManagerPreference:FreeformWindowOrientation" android:value="landscape" />
+            <intent-filter>
+                <action android:name="com.limelight.action.STREAM" />
+                <category android:name="android.intent.category.DEFAULT" />
+            </intent-filter>
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data
+                    android:scheme="moonlightx"
+                    android:host="stream"
+                    android:path="/v1" />
+            </intent-filter>
         </activity>
 
         <!-- Activity for creating Quick Launch shortcuts -->
