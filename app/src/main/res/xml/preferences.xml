@@ -154,6 +154,11 @@
             android:entries="@array/overlay_hold_duration_names"
             android:entryValues="@array/overlay_hold_duration_values"
             android:defaultValue="1500" />
+        <CheckBoxPreference
+            android:key="checkbox_runtime_bitrate_control"
+            android:title="@string/title_runtime_bitrate_control"
+            android:summary="@string/summary_runtime_bitrate_control"
+            android:defaultValue="false" />
         <Preference
             android:key="overlay_custom_commands"
             android:title="@string/title_overlay_custom_commands"

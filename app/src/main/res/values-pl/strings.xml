@@ -276,4 +276,6 @@
     <string name="overlay_bitrate_current">%1$d Mb/s</string>
     <string name="overlay_bitrate_apply">%1$d Mb/s · ZASTOSUJ</string>
     <string name="overlay_bitrate_reconnecting">Ponowne łączenie z szybkością %1$d Mb/s…</string>
+    <string name="title_runtime_bitrate_control">Zmiana bitrate podczas gry</string>
+    <string name="summary_runtime_bitrate_control">Pokazuje eksperymentalne sterowanie bitrate w overlayu. Zastosowanie zmiany na krótko ponownie łączy strumień.</string>
 </resources>

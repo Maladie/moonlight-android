@@ -353,6 +353,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Initialize overlay menu view (setup will be done after controllerHandler is initialized)
         overlayMenuView = findViewById(R.id.overlayMenuView);
         overlayMenuView.setFlipFaceButtons(prefConfig.flipFaceButtons);
+        overlayMenuView.setBitrateControlEnabled(prefConfig.runtimeBitrateControl);
 
         inputCaptureProvider = InputCaptureManager.getInputCaptureProvider(this, this);
 
@@ -3070,6 +3071,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void applyBitrateAndReconnect(int bitrateKbps) {
+        if (!prefConfig.runtimeBitrateControl) {
+            return;
+        }
+
         int targetBitrate = Math.max(1000, Math.min(150000, bitrateKbps));
         if (targetBitrate == runtimeBitrateKbps) return;
 
@@ -3084,7 +3089,22 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         overlayMenuView.closeMenu();
         stopConnection(() -> {
             if (!isFinishing() && !isDestroyed()) {
-                recreate();
+                Intent restartIntent = new Intent(getIntent());
+                restartIntent.setClass(Game.this, Game.class);
+                restartIntent.putExtra(EXTRA_RUNTIME_BITRATE_KBPS, targetBitrate);
+                restartIntent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+
+                // Game is a no-history, singleTask activity. Activity.recreate() can
+                // expose the previous AppView instead of creating a fresh streaming
+                // instance on Android TV. Finish the stopped instance explicitly,
+                // then launch the same session intent so NvConnection resumes the
+                // already-running host application with the new bitrate.
+                LimeLog.info("Restarting stream activity at " + targetBitrate + " Kbps");
+                bitrateReconnectPending = false;
+                userInitiatedDisconnect = true;
+                finish();
+                startActivity(restartIntent);
+                overridePendingTransition(0, 0);
             }
         });
     }

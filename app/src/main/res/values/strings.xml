@@ -205,6 +205,8 @@
     <string name="summary_overlay_trigger_button">Choose which button opens the overlay menu when held</string>
     <string name="title_overlay_hold_duration">Trigger button hold duration</string>
     <string name="summary_overlay_hold_duration">How long to hold the button before the overlay menu opens</string>
+    <string name="title_runtime_bitrate_control">Runtime bitrate controls</string>
+    <string name="summary_runtime_bitrate_control">Show experimental bitrate controls in the in-game overlay. Applying a change briefly reconnects the stream.</string>
 
     <string name="category_input_settings">Input Settings</string>
     <string name="title_checkbox_touchscreen_trackpad">Use the touchscreen as a trackpad</string>

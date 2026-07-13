@@ -52,8 +52,9 @@ can explain what happened. The next stream changes the state to `connecting`.
 
 ## Runtime bitrate control
 
-The stream protocol negotiates bitrate while creating the connection. The
-overlay therefore stages changes in 5 Mbps increments and labels the new value
-`APPLY`. Applying a change reconnects the transport while leaving the host
-application running. The override lasts for the current Android activity only;
-it does not overwrite the saved per-app or global profile.
+The stream protocol negotiates bitrate while creating the connection. When the
+experimental **Runtime bitrate controls** setting is enabled, the overlay stages
+changes in 5 Mbps increments and labels the new value `APPLY`. Applying a change
+reconnects the transport while leaving the host application running. The option
+is disabled by default. The override lasts for the restarted stream activity
+only; it does not overwrite the saved per-app or global profile.

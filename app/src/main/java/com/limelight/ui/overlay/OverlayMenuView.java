@@ -81,6 +81,7 @@ public class OverlayMenuView extends LinearLayout {
     private int currentBitrateKbps = 10000;
     private int pendingBitrateKbps = 10000;
     private OverlayMenuButton bitrateValueButton;
+    private boolean bitrateControlEnabled;
 
     public OverlayMenuView(Context context) {
         super(context);
@@ -190,11 +191,14 @@ public class OverlayMenuView extends LinearLayout {
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         renderBatteryInfo(spacing);
 
-        addHorizontalButton(0, getContext().getString(R.string.overlay_bitrate_decrease),
-                ACTION_BITRATE_DOWN, spacing);
-        bitrateValueButton = addHorizontalButton(0, bitrateLabel(), ACTION_BITRATE_APPLY, spacing);
-        addHorizontalButton(0, getContext().getString(R.string.overlay_bitrate_increase),
-                ACTION_BITRATE_UP, spacing);
+        bitrateValueButton = null;
+        if (bitrateControlEnabled) {
+            addHorizontalButton(0, getContext().getString(R.string.overlay_bitrate_decrease),
+                    ACTION_BITRATE_DOWN, spacing);
+            bitrateValueButton = addHorizontalButton(0, bitrateLabel(), ACTION_BITRATE_APPLY, spacing);
+            addHorizontalButton(0, getContext().getString(R.string.overlay_bitrate_increase),
+                    ACTION_BITRATE_UP, spacing);
+        }
 
         List<CustomCommand> customCommands = commandsManager.getCommands();
         for (CustomCommand command : customCommands) {
@@ -283,6 +287,10 @@ public class OverlayMenuView extends LinearLayout {
         currentBitrateKbps = clampBitrate(bitrateKbps);
         pendingBitrateKbps = currentBitrateKbps;
         updateBitrateLabel();
+    }
+
+    public void setBitrateControlEnabled(boolean enabled) {
+        bitrateControlEnabled = enabled;
     }
 
     private void adjustBitrate(int deltaKbps) {
