@@ -35,16 +35,36 @@ Updated: 2026-07-14
   by default); duplicate shortcuts are resolved by disabling Leave rather than
   firing two actions. Shortcuts are active only while the overlay is open, so
   normal gameplay input is not intercepted.
-- Discord voice state is fetched asynchronously only while the overlay is
-  visible, at a two-second cadence. Network callbacks update the Discord card
-  in place and never rebuild or move menu focus.
+- Discord voice state is fetched asynchronously while the overlay or pinned
+  participant list is visible, at a two-second cadence. Network callbacks
+  update Discord state in place and never rebuild or move menu focus.
 - Gateway requests use the Wake & Play token plus the pinned leaf-certificate
   fingerprint. The token is never logged, and mutating actions include unique
   request IDs.
+- The Discord card is rendered in a separate top-right overlay layer. Stream
+  controls remain at the bottom-left. The overlay includes a
+  deterministic `Back to Wake & Play` action for external-frontend streams,
+  `Rejoin` for the most recent voice channel, and a persistent Pin/Unpin people
+  control. A pinned participant list remains visible after the overlay closes
+  and continues its two-second asynchronous voice refresh.
+- Returning to Wake & Play proactively moves decoder output to the background
+  surface before launching the frontend, reducing the surface-destruction race
+  that could otherwise stop the connection. The ordinary Back path and the
+  explicit overlay action share this implementation.
+- During an external-frontend session, Back is always consumed while connecting
+  or connected. If Wake & Play is temporarily unavailable, Moonlight shows a
+  toast and keeps the stream alive instead of falling through to Activity finish.
+- Android TV landscape and fullscreen geometry are applied before content
+  inflation. The opaque external loader remains for 650 ms after the first
+  decoder frame so unstable initial Surface sizing is not exposed.
 
 ## Latest end-to-end verification
 
-The latest verified session used Steam Big Picture. Real video output was detected before pressing remote Back. Afterwards the game activity remained stopped in the background rather than finishing, the decoder moved to its background surface, and Wake & Play displayed an active streaming session with a return-to-game action.
+The latest verified session used Baba Is You. Real video output was detected before
+pressing remote Back. Two consecutive Back -> Wake & Play -> Return to game cycles
+left the game activity stopped in the background rather than finishing, moved the
+decoder to its background surface, and preserved Wake & Play's active streaming
+session and return-to-game action.
 
 Do not use the `Sleep PC` entry for automated or manual stream testing. Use `Baba Is You` or `Steam Big Picture` only.
 

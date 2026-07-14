@@ -92,6 +92,7 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -118,6 +119,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private static WeakReference<Game> activeInstance = new WeakReference<>(null);
     private static final String EXTERNAL_FRONTEND_PREFS = "external_frontend_contract";
     private static final String EXTERNAL_FRONTEND_PACKAGE_KEY = "package";
+    private static final String DISCORD_OVERLAY_PREFS = "discord_overlay_state";
+    private static final String DISCORD_DOCK_ENABLED_KEY = "dock_enabled";
 
     // Only 2 touches are supported
     private final TouchContext[] touchContextMap = new TouchContext[2];
@@ -180,6 +183,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private TextView performanceOverlayView;
     private BrightnessSliderView brightnessSliderView;
     private OverlayMenuView overlayMenuView;
+    private LinearLayout discordDockView;
     private final Handler discordOverlayHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService discordOverlayExecutor = Executors.newSingleThreadExecutor();
     private final AtomicBoolean discordRefreshInFlight = new AtomicBoolean(false);
@@ -187,10 +191,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private final DiscordGatewayClient discordGatewayClient = new DiscordGatewayClient();
     private DiscordGatewayClient.Connection discordGatewayConnection;
     private DiscordGatewayClient.VoiceState discordVoiceState;
+    private DiscordGatewayClient.ChannelTarget lastDiscordChannel;
+    private boolean discordDockEnabled;
     private final Runnable discordRefreshRunnable = new Runnable() {
         @Override
         public void run() {
-            if (overlayMenuView != null && overlayMenuView.getVisibility() == View.VISIBLE) {
+            if (overlayMenuView != null && (overlayMenuView.getVisibility() == View.VISIBLE ||
+                    discordDockEnabled)) {
                 refreshDiscordOverlay(false);
             }
         }
@@ -292,6 +299,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Detect Android TV
         UiModeManager uiModeManager = (UiModeManager) this.getBaseContext().getSystemService(Context.UI_MODE_SERVICE);
         isAndroidTV = uiModeManager.getCurrentModeType() == Configuration.UI_MODE_TYPE_TELEVISION;
+        if (isAndroidTV) {
+            // Establish landscape before the loading layer and SurfaceView are
+            // inflated. Re-requesting it after the first layout produces a
+            // short full-screen resize on some TV launchers.
+            setRequestedOrientation(ActivityInfo.SCREEN_ORIENTATION_USER_LANDSCAPE);
+        }
 
         // Change volume button behavior
         setVolumeControlStream(AudioManager.STREAM_MUSIC);
@@ -403,8 +416,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Initialize overlay menu view (setup will be done after controllerHandler is initialized)
         overlayMenuView = findViewById(R.id.overlayMenuView);
+        discordDockView = findViewById(R.id.discordDockView);
+        discordDockEnabled = getSharedPreferences(DISCORD_OVERLAY_PREFS, MODE_PRIVATE)
+                .getBoolean(DISCORD_DOCK_ENABLED_KEY, false);
         overlayMenuView.setFlipFaceButtons(prefConfig.flipFaceButtons);
         overlayMenuView.setBitrateControlEnabled(prefConfig.runtimeBitrateControl);
+        overlayMenuView.setExternalFrontend(externalFrontend);
+        overlayMenuView.setDiscordDocked(discordDockEnabled);
         configureDiscordOverlay();
 
         inputCaptureProvider = InputCaptureManager.getInputCaptureProvider(this, this);
@@ -1306,7 +1324,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void onBackPressed() {
-        if (externalFrontend && (connecting || connected) && returnToExternalFrontend()) {
+        if (externalFrontend && (connecting || connected)) {
+            if (!returnToExternalFrontend()) {
+                Toast.makeText(this, "Wake & Play is temporarily unavailable",
+                        Toast.LENGTH_SHORT).show();
+            }
             return;
         }
         super.onBackPressed();
@@ -1359,6 +1381,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         handingOffToExternalFrontend = true;
+        // Move decoder output before launching Wake & Play. Waiting for
+        // surfaceDestroyed() leaves a vendor-dependent race where the Surface
+        // can disappear first and the connection is torn down as a fallback.
+        if (decoderRenderer != null && (connecting || connected)) {
+            decoderRenderer.switchToBackgroundSurface();
+        }
         frontendIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
                 Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP |
                 Intent.FLAG_ACTIVITY_NO_ANIMATION);
@@ -3399,6 +3427,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             @Override
+            public void onReturnToFrontend() {
+                if (!returnToExternalFrontend()) {
+                    Toast.makeText(Game.this, "Wake & Play is unavailable",
+                            Toast.LENGTH_LONG).show();
+                }
+            }
+
+            @Override
             public void onDiscordMute() {
                 runDiscordOverlayAction(true);
             }
@@ -3409,8 +3445,24 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             @Override
+            public void onDiscordRejoin() {
+                runDiscordRejoin();
+            }
+
+            @Override
+            public void onDiscordDockToggle() {
+                setDiscordDockEnabled(!discordDockEnabled);
+            }
+
+            @Override
             public void onMenuClosed() {
-                discordOverlayHandler.removeCallbacks(discordRefreshRunnable);
+                renderDiscordDock();
+                if (discordDockEnabled) {
+                    discordOverlayHandler.removeCallbacks(discordRefreshRunnable);
+                    discordOverlayHandler.post(discordRefreshRunnable);
+                } else {
+                    discordOverlayHandler.removeCallbacks(discordRefreshRunnable);
+                }
             }
         });
     }
@@ -3419,6 +3471,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         overlayMenuView.setControllerBatteryInfo(controllerHandler.getControllerBatteryInfo());
         overlayMenuView.setBitrateKbps(runtimeBitrateKbps);
         overlayMenuView.show();
+        renderDiscordDock();
         if (discordGatewayConnection != null) refreshDiscordOverlay(true);
         controllerHandler.refreshControllerBatteryInfo(() -> {
             if (overlayMenuView.getVisibility() == View.VISIBLE) {
@@ -3449,28 +3502,47 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void refreshDiscordOverlay(boolean force) {
         if (discordGatewayConnection == null || overlayMenuView == null ||
-                overlayMenuView.getVisibility() != View.VISIBLE ||
+                (overlayMenuView.getVisibility() != View.VISIBLE && !discordDockEnabled) ||
                 !discordRefreshInFlight.compareAndSet(false, true)) {
             return;
         }
-        overlayMenuView.setDiscordState(discordVoiceState, null, true);
+        if (overlayMenuView.getVisibility() == View.VISIBLE) {
+            overlayMenuView.setDiscordState(discordVoiceState, null, true);
+        }
         discordOverlayExecutor.execute(() -> {
             DiscordGatewayClient.VoiceState state = null;
+            DiscordGatewayClient.ChannelTarget recentChannel = lastDiscordChannel;
             String errorMessage = null;
             try {
                 state = discordGatewayClient.getVoice(discordGatewayConnection, force);
+                if (state.connected && !state.channelId.isEmpty() && !state.guildId.isEmpty()) {
+                    recentChannel = new DiscordGatewayClient.ChannelTarget(
+                            state.channelId, state.channelName, state.guildId, "Discord");
+                } else if (recentChannel == null) {
+                    recentChannel = discordGatewayClient.getRecentChannel(discordGatewayConnection);
+                }
             } catch (Exception error) {
                 errorMessage = discordOverlayError(error);
             }
             final DiscordGatewayClient.VoiceState result = state;
+            final DiscordGatewayClient.ChannelTarget resultRecentChannel = recentChannel;
             final String resultError = errorMessage;
             runOnUiThread(() -> {
                 discordRefreshInFlight.set(false);
                 if (result != null) discordVoiceState = result;
-                if (overlayMenuView != null &&
-                        overlayMenuView.getVisibility() == View.VISIBLE) {
+                if (resultRecentChannel != null) lastDiscordChannel = resultRecentChannel;
+                if (overlayMenuView != null) {
+                    boolean connected = discordVoiceState != null && discordVoiceState.connected;
+                    overlayMenuView.setDiscordRejoinTarget(!connected && lastDiscordChannel != null,
+                            lastDiscordChannel != null ? lastDiscordChannel.channelName : "");
+                }
+                if (overlayMenuView != null && overlayMenuView.getVisibility() == View.VISIBLE) {
                     overlayMenuView.setDiscordState(discordVoiceState, resultError, false);
-                    discordOverlayHandler.removeCallbacks(discordRefreshRunnable);
+                }
+                renderDiscordDock();
+                discordOverlayHandler.removeCallbacks(discordRefreshRunnable);
+                if ((overlayMenuView != null && overlayMenuView.getVisibility() == View.VISIBLE) ||
+                        discordDockEnabled) {
                     discordOverlayHandler.postDelayed(discordRefreshRunnable, 2000);
                 }
             });
@@ -3485,6 +3557,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         if (!discordActionInFlight.compareAndSet(false, true)) return;
+        if (!mute && discordVoiceState != null && discordVoiceState.connected &&
+                !discordVoiceState.channelId.isEmpty() && !discordVoiceState.guildId.isEmpty()) {
+            lastDiscordChannel = new DiscordGatewayClient.ChannelTarget(
+                    discordVoiceState.channelId, discordVoiceState.channelName,
+                    discordVoiceState.guildId, "Discord");
+        }
         discordOverlayExecutor.execute(() -> {
             String errorMessage = null;
             DiscordGatewayClient.VoiceState state = null;
@@ -3500,14 +3578,110 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             runOnUiThread(() -> {
                 discordActionInFlight.set(false);
                 if (result != null) discordVoiceState = result;
-                if (overlayMenuView != null &&
-                        overlayMenuView.getVisibility() == View.VISIBLE) {
+                if (overlayMenuView != null && overlayMenuView.getVisibility() == View.VISIBLE) {
                     overlayMenuView.setDiscordState(discordVoiceState, resultError, false);
                 } else if (resultError != null) {
                     Toast.makeText(Game.this, resultError, Toast.LENGTH_LONG).show();
                 }
+                if (overlayMenuView != null) {
+                    boolean connected = discordVoiceState != null && discordVoiceState.connected;
+                    overlayMenuView.setDiscordRejoinTarget(!connected && lastDiscordChannel != null,
+                            lastDiscordChannel != null ? lastDiscordChannel.channelName : "");
+                }
+                renderDiscordDock();
             });
         });
+    }
+
+    private void runDiscordRejoin() {
+        if (discordGatewayConnection == null || lastDiscordChannel == null ||
+                !discordActionInFlight.compareAndSet(false, true)) {
+            Toast.makeText(this, R.string.overlay_discord_no_recent_channel,
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        DiscordGatewayClient.ChannelTarget target = lastDiscordChannel;
+        discordOverlayExecutor.execute(() -> {
+            String errorMessage = null;
+            DiscordGatewayClient.VoiceState state = null;
+            try {
+                discordGatewayClient.joinChannel(discordGatewayConnection, target);
+                state = discordGatewayClient.getVoice(discordGatewayConnection, true);
+            } catch (Exception error) {
+                errorMessage = discordOverlayError(error);
+            }
+            final DiscordGatewayClient.VoiceState result = state;
+            final String resultError = errorMessage;
+            runOnUiThread(() -> {
+                discordActionInFlight.set(false);
+                if (result != null) discordVoiceState = result;
+                if (overlayMenuView != null) {
+                    overlayMenuView.setDiscordState(discordVoiceState, resultError, false);
+                    overlayMenuView.setDiscordRejoinTarget(false, target.channelName);
+                }
+                renderDiscordDock();
+                if (resultError != null) {
+                    Toast.makeText(Game.this, resultError, Toast.LENGTH_LONG).show();
+                }
+            });
+        });
+    }
+
+    private void setDiscordDockEnabled(boolean enabled) {
+        discordDockEnabled = enabled;
+        getSharedPreferences(DISCORD_OVERLAY_PREFS, MODE_PRIVATE).edit()
+                .putBoolean(DISCORD_DOCK_ENABLED_KEY, enabled).apply();
+        overlayMenuView.setDiscordDocked(enabled);
+        renderDiscordDock();
+        if (enabled) refreshDiscordOverlay(true);
+    }
+
+    private void renderDiscordDock() {
+        if (discordDockView == null) return;
+        discordDockView.removeAllViews();
+        boolean overlayVisible = overlayMenuView != null &&
+                overlayMenuView.getVisibility() == View.VISIBLE;
+        if ((!discordDockEnabled && !overlayVisible) || discordGatewayConnection == null) {
+            discordDockView.setVisibility(View.GONE);
+            return;
+        }
+        discordDockView.setVisibility(View.VISIBLE);
+        boolean connected = discordVoiceState != null && discordVoiceState.connected;
+        discordDockView.addView(discordDockLine(connected
+                        ? "DISCORD  ·  " + (discordVoiceState.channelName.isEmpty()
+                                ? "VOICE" : discordVoiceState.channelName)
+                        : "DISCORD",
+                14, 0xFFB69CFF, true));
+        if (!connected) {
+            String status = lastDiscordChannel != null
+                    ? "Disconnected  ·  Rejoin " + lastDiscordChannel.channelName
+                    : "Not connected to a voice channel";
+            discordDockView.addView(discordDockLine(status, 13, 0xFFC5C8D3, false));
+            return;
+        }
+        int shown = 0;
+        for (DiscordGatewayClient.Participant participant : discordVoiceState.participants) {
+            if (shown++ >= 8) break;
+            String name = (participant.speaking ? "●  " : "   ") + participant.name +
+                    (participant.self ? "  ·  YOU" : "");
+            discordDockView.addView(discordDockLine(name, 13,
+                    participant.speaking ? 0xFF69F0AE : 0xFFE6E1E9, false));
+        }
+    }
+
+    private TextView discordDockLine(String text, float size, int color, boolean bold) {
+        TextView view = new TextView(this);
+        view.setText(text);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        view.setSingleLine(true);
+        view.setIncludeFontPadding(false);
+        if (bold) view.setTypeface(view.getTypeface(), android.graphics.Typeface.BOLD);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        params.bottomMargin = Math.round(5 * getResources().getDisplayMetrics().density);
+        view.setLayoutParams(params);
+        return view;
     }
 
     private String discordOverlayError(Exception error) {

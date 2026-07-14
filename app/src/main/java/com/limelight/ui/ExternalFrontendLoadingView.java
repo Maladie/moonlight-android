@@ -162,7 +162,11 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
             // is still reallocating its buffers, which appears as a black flash.
             // Switch atomically after multiple composed video frames instead.
             setVisibility(GONE);
-        }, 180L)));
+        // The first decoder callback can arrive while the TV compositor still
+        // presents an old-size Surface buffer. Keep the opaque, already-final
+        // fullscreen geometry for several additional frames so the first
+        // visible stream frame is presented at its stable size.
+        }, 650L)));
     }
 
     public void stop() {

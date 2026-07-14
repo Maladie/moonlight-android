@@ -85,18 +85,37 @@ public final class DiscordGatewayClient {
 
     public static final class VoiceState {
         public final boolean connected;
+        public final String channelId;
         public final String channelName;
+        public final String guildId;
         public final boolean muted;
         public final boolean deafened;
         public final List<Participant> participants;
 
-        VoiceState(boolean connected, String channelName, boolean muted, boolean deafened,
+        VoiceState(boolean connected, String channelId, String channelName, String guildId,
+                   boolean muted, boolean deafened,
                    List<Participant> participants) {
             this.connected = connected;
+            this.channelId = channelId;
             this.channelName = channelName;
+            this.guildId = guildId;
             this.muted = muted;
             this.deafened = deafened;
             this.participants = Collections.unmodifiableList(participants);
+        }
+    }
+
+    public static final class ChannelTarget {
+        public final String channelId;
+        public final String channelName;
+        public final String guildId;
+        public final String guildName;
+
+        public ChannelTarget(String channelId, String channelName, String guildId, String guildName) {
+            this.channelId = channelId;
+            this.channelName = channelName;
+            this.guildId = guildId;
+            this.guildName = guildName;
         }
     }
 
@@ -134,10 +153,49 @@ public final class DiscordGatewayClient {
         }
         return new VoiceState(
                 voice.optBoolean("connected", false),
+                channel != null ? channel.optString("id", "") : "",
                 channel != null ? channel.optString("name", "") : "",
+                channel != null ? channel.optString("guild_id", "") : "",
                 voice.optBoolean("mute", false),
                 voice.optBoolean("deafen", false),
                 participants);
+    }
+
+    public ChannelTarget getRecentChannel(Connection connection) throws IOException {
+        JSONObject response = request(connection, "/api/v1/discord/home", "GET", null);
+        JSONObject home = response.optJSONObject("home");
+        JSONArray recent = home != null ? home.optJSONArray("recent") : null;
+        if (recent == null) return null;
+        for (int index = 0; index < recent.length(); index++) {
+            JSONObject value = recent.optJSONObject(index);
+            if (value == null) continue;
+            String channelId = value.optString("channel_id", "");
+            String guildId = value.optString("guild_id", "");
+            if (!channelId.matches("[0-9]{5,32}") || !guildId.matches("[0-9]{5,32}")) {
+                continue;
+            }
+            return new ChannelTarget(channelId,
+                    value.optString("channel_name", "Voice channel"), guildId,
+                    value.optString("guild_name", "Discord"));
+        }
+        return null;
+    }
+
+    public void joinChannel(Connection connection, ChannelTarget target) throws IOException {
+        if (target == null || !target.channelId.matches("[0-9]{5,32}") ||
+                !target.guildId.matches("[0-9]{5,32}")) {
+            throw new IOException("No recent Discord channel is available.");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("channel_id", target.channelId);
+            body.put("channel_name", target.channelName);
+            body.put("guild_id", target.guildId);
+            body.put("guild_name", target.guildName);
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        request(connection, "/api/v1/discord/join", "POST", body);
     }
 
     public void toggleMute(Connection connection) throws IOException {

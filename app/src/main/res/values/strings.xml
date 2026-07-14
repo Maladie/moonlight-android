@@ -385,7 +385,13 @@
     <string name="overlay_discord_mute">Mute</string>
     <string name="overlay_discord_unmute">Unmute</string>
     <string name="overlay_discord_leave">Leave channel</string>
+    <string name="overlay_discord_rejoin">Rejoin last channel</string>
+    <string name="overlay_discord_rejoin_channel">Rejoin %1$s</string>
+    <string name="overlay_discord_dock">Pin people</string>
+    <string name="overlay_discord_undock">Unpin people</string>
+    <string name="overlay_discord_no_recent_channel">No recent Discord channel is available</string>
     <string name="overlay_discord_unavailable">Discord controls are unavailable</string>
+    <string name="overlay_return_to_wake">Back to Wake &amp; Play</string>
     <string name="title_discord_mute_shortcut">Discord mute shortcut</string>
     <string name="title_discord_leave_shortcut">Discord leave shortcut</string>
     <string name="summary_discord_shortcut">Used while the streaming overlay is open</string>
