@@ -44,6 +44,65 @@ Baseline build commands:
 .\gradlew.bat :app:assembleNonRootRelease
 ```
 
+## Current feature inventory at the tagged baseline
+
+The following behavior exists before the unified-console migration. The later
+checklists define both preservation tests and stronger acceptance criteria for
+the replacement path.
+
+### Wake & Play Home
+
+- host and cached Moonlight application catalog with active-session status;
+- prominent resume action with focus preserved during asynchronous refresh;
+- selected cached poster shown immediately in stable FIT_CENTER geometry;
+- separately decoded blurred backdrop loaded and crossfaded asynchronously;
+- controller discovery and fixed poster viewport;
+- exit confirmation for remote Back/controller B;
+- explicit launch/return contract carrying host UUID, Gateway, certificate pin,
+  token and integration profile.
+
+### Profiles and host control
+
+- Gateway pairing over pinned HTTPS;
+- per-host integration-profile selector;
+- separate Gateway, Discord Bridge and Vibepollo Bridge health rows;
+- profile-scoped Discord, Vibepollo, Audio and VirtualHere requests;
+- versioned host-services containing Gateway and canonical Bridge sources;
+- controlled missing-profile-endpoint and Discord RPC conflict states.
+
+### Discord and devices in Wake
+
+- Discord server -> channel -> detail/People navigation;
+- Join, Leave, local microphone and non-disconnecting Back navigation;
+- speaking/local markers, per-user mute and serialized 0-200% volume sliders;
+- auto-start Discord and optional auto-join remembered channel per host/profile;
+- Windows master audio plus allow-listed Discord/Windows input/output selection;
+- VirtualHere health, device connect/disconnect, auto-use and client restart;
+- Vibepollo FIX status, confirmed restart, display reset and log export.
+
+### Moonlight X session and overlay
+
+- external-frontend metadata persistence and session status providers;
+- background decoder surface used during the two-application handoff;
+- connecting/connected transport kept alive while Game is backgrounded;
+- explicit return-to-Wake and return-to-active-stream entry points;
+- fullscreen opaque loader held briefly after the first decoded frame;
+- Discord voice card, Mute, Leave, Rejoin and Pin in the top-right overlay;
+- direct DPAD navigation from main controls to Discord;
+- configurable overlay shortcuts and asynchronously refreshed pinned people;
+- runtime stream controls, controller routing and native Moonlight decoder stack;
+- official public `moonlight-common-c` revision compatible with Vibepollo/Apollo's
+  standard streaming protocol.
+
+### Not present at the baseline
+
+- one APK or one Activity;
+- a single in-process session/state repository shared by Home and stream;
+- Playnite library/Bridge/readiness gating;
+- guaranteed desktop hiding after the first decoder frame;
+- complete elimination of Android's Activity/task scale frame;
+- fully reliable physical remote Back on the tested TV.
+
 ## Severity and evidence
 
 - **P0**: stream termination, input loss, data loss, desktop/privacy exposure,
@@ -248,4 +307,3 @@ reserve and later test these behaviors without weakening the P0 session suite:
 Do not delete the legacy external-frontend intents, providers, session status or
 background-surface fallback until the equivalent unified path passes sections
 A-F on the TV. Remove one compatibility path per separately revertible commit.
-
