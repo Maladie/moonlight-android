@@ -169,7 +169,7 @@ public final class DiscordGatewayClient {
             http.setRequestMethod(method);
             http.setRequestProperty("Accept", "application/json");
             http.setRequestProperty("Authorization", "Bearer " + connection.token);
-            http.setRequestProperty("X-Discord-Profile-Id", connection.profileId);
+            http.setRequestProperty("X-WakePlay-Profile", connection.profileId);
             http.setRequestProperty("Connection", "close");
             if ("POST".equals(method)) {
                 byte[] payload = (body != null ? body : new JSONObject()).toString()

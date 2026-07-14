@@ -6,8 +6,8 @@ Updated: 2026-07-14
 
 - Project: Moonlight Android
 - Branch: `feature/android-tv-session-controls`
-- Push remote: `fork` (`Maladie/moonlight-android`)
-- Upstream remote: `origin` (`MoreOrLessSoftware/moonlight-android`)
+- Push remote: `origin` (`Maladie/moonlight-android`)
+- No separate upstream remote is currently configured in this checkout.
 - Companion project: Wake & Play for Android TV, branch `main`
 
 ## Implemented behavior
@@ -24,8 +24,9 @@ Updated: 2026-07-14
   connection through the explicit stream contract. Moonlight retains this
   private connection across session resume and refreshes it when an active
   external-frontend stream is brought back to the foreground. The stable
-  Discord profile ID is propagated separately for the future Gateway profile
-  registry.
+  integration profile ID is propagated separately and sent to Gateway as
+  `X-WakePlay-Profile`, keeping the overlay on the profile selected in Wake &
+  Play.
 - When a Gateway connection is present, the streaming overlay shows a compact
   Discord card with the current voice channel, speaking markers, participants,
   local mute state and per-user local volume/mute information.
@@ -57,6 +58,13 @@ Run from the repository root:
 
 The non-root debug APK is produced under `app/build/outputs/apk/nonRoot/debug/`.
 
+For updates to the TV installation used by Wake & Play, build
+`:app:assembleNonRootRelease`. The debug build has application ID
+`com.limelight.debug`, while Wake & Play's existing host/session data and the
+active TV task use `com.limelight.unofficial`. The release APK is unsigned and
+must be aligned and signed with the same historical development certificate as
+the installed package before `adb install -r`.
+
 ## Continuation notes
 
 - Preserve the external-frontend contract when touching launch, resume, Back, lifecycle, or surface code.
@@ -64,13 +72,26 @@ The non-root debug APK is produced under `app/build/outputs/apk/nonRoot/debug/`.
 - Test activity lifecycle and video-surface behavior together; a successful UI return alone does not prove that the transport survived.
 - Validate changes together with Wake & Play because session state and return behavior span both applications.
 - The Discord overlay has not yet been exercised during a live stream because
-  stream testing was not authorized for this iteration. Java/resource
-  compilation and `assembleNonRootDebug` passed locally. The APK deliberately
-  reused the existing, previously built native `.so` artifacts; the checkout's
-  configured `moonlight-common-c` gitlink
-  `ba7b4c8dabf1aeb346dec63866b9ec45c33568eb` is no longer available from its
-  configured remote, so a clean NDK rebuild remains unavailable. Do not silently
-  substitute a newer native core.
+  stream testing was not authorized for this iteration.
+- The profile-aware `com.limelight.unofficial` release was built, signed with
+  the matching installed certificate and installed on the TV. The earlier
+  report of missing Discord buttons came from the active
+  `com.limelight.unofficial` task while the overlay changes had only been
+  installed as the separate `com.limelight.debug` package. A new stream was
+  deliberately not started, so live button/voice-state verification remains.
+- The inaccessible `moonlight-common-c` gitlink
+  `ba7b4c8dabf1aeb346dec63866b9ec45c33568eb` was replaced with the public
+  official revision `7b026e77be62175104640e7e722b758df6d3d0d7`. This revision
+  retains the microsecond timestamp contract expected by the current JNI layer,
+  uses nanors/SIMDe FEC, and includes later upstream fixes. A clean NDK build
+  succeeded for `arm64-v8a`, `armeabi-v7a`, `x86`, and `x86_64`, followed by a
+  successful `assembleNonRootDebug`.
+- Vibepollo controls in Wake & Play use the profile-scoped Vibepollo Bridge and
+  Gateway API, not Artemis-specific native Control Stream extensions. Vibepollo
+  remains compatible with this official core through the standard streaming
+  protocol. If Apollo-only client protocol features are added later, port the
+  narrowly required Artemis commits onto the official core rather than replacing
+  the core wholesale.
 - `lintNonRootDebug` currently reports seven pre-existing errors outside the
   Discord changes (API-21 compatibility and broadcast receiver flags). The
   Discord Gateway client only triggered certificate-pinning false positives,
