@@ -1,10 +1,12 @@
-# Unified console regression baseline
+# MoonWaker Game App regression baseline
 
 Updated: 2026-07-15
 
 This document describes the observable behavior that must be protected while
-Wake & Play and Moonlight X are migrated into one Android TV application and,
-ultimately, one Activity. It complements both `docs/CODEX_HANDOFF.md` files.
+Wake & Play and Moonlight X are migrated into one Android TV application named
+**MoonWaker Game App** and, ultimately, one Activity. It complements both
+`docs/CODEX_HANDOFF.md` files. The user-facing name does not change the retained
+production application ID `com.limelight.unofficial` during migration.
 
 ## Immutable return point
 
