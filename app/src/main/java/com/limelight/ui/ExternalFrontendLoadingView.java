@@ -1,7 +1,5 @@
 package com.limelight.ui;
 
-import android.animation.Animator;
-import android.animation.AnimatorListenerAdapter;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Color;
@@ -36,6 +34,8 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
     private final TextView statusView;
     private int lastMessageIndex = -1;
     private boolean stopped;
+    private boolean revealRequested;
+    private final boolean reducedMotion;
 
     private final String[] messages = {
             "Loading content…",
@@ -59,27 +59,32 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
         @Override
         public void run() {
             if (stopped || getVisibility() != VISIBLE) return;
-            messageView.animate().alpha(0f).setDuration(160).withEndAction(() -> {
-                if (stopped) return;
-                int next;
-                do {
-                    next = random.nextInt(messages.length);
-                } while (messages.length > 1 && next == lastMessageIndex);
-                lastMessageIndex = next;
-                messageView.setText(messages[next]);
-                messageView.animate().alpha(1f).setDuration(240).start();
-            }).start();
+            int next;
+            do {
+                next = random.nextInt(messages.length);
+            } while (messages.length > 1 && next == lastMessageIndex);
+            lastMessageIndex = next;
+            messageView.setText(messages[next]);
             handler.postDelayed(this, MESSAGE_INTERVAL_MS);
         }
     };
 
-    public ExternalFrontendLoadingView(Context context, String title) {
+    public ExternalFrontendLoadingView(Context context, String title, long animationEpoch,
+                                       boolean reducedMotion) {
         super(context);
+        this.reducedMotion = reducedMotion;
         setClickable(true);
         setFocusable(false);
         setBackgroundColor(Color.rgb(5, 6, 10));
+        // Compose the complete loader as one opaque layer. The Sony/MediaTek TV
+        // compositor can otherwise mix partial View damage with the SurfaceView
+        // beneath it while the decoder is starting.
+        setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
-        addView(new AnimatedBackdrop(context), match());
+        // Preserve the hand-off phase from Wake & Play but keep this side static.
+        // Continuous invalidation over a live SurfaceView produces torn/black
+        // loader frames on some Android TV compositors.
+        addView(new AnimatedBackdrop(context, animationEpoch, false), match());
         View shade = new View(context);
         shade.setBackgroundColor(0x57000000);
         addView(shade, match());
@@ -113,7 +118,7 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
         copy.addView(cancelHint, hintParams);
 
         messageView.setText("Preparing your game...");
-        handler.postDelayed(rotateMessage, MESSAGE_INTERVAL_MS);
+        if (!reducedMotion) handler.postDelayed(rotateMessage, MESSAGE_INTERVAL_MS);
     }
 
     public void setLoadingTitle(String title) {
@@ -145,14 +150,19 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
             handler.post(this::revealStream);
             return;
         }
-        if (stopped) return;
-        stopAnimations();
-        animate().alpha(0f).setDuration(220).setListener(new AnimatorListenerAdapter() {
-            @Override
-            public void onAnimationEnd(Animator animation) {
-                setVisibility(GONE);
-            }
-        }).start();
+        if (stopped || revealRequested) return;
+        revealRequested = true;
+        // Let the Surface commit more than one composed frame before removing the
+        // opaque hand-off layer. This avoids revealing a transient black or
+        // not-yet-scaled Surface frame on Android TV compositors.
+        postOnAnimation(() -> postOnAnimation(() -> postDelayed(() -> {
+            if (stopped) return;
+            stopAnimations();
+            // A full-layer alpha fade exposes the decoder Surface while Android
+            // is still reallocating its buffers, which appears as a black flash.
+            // Switch atomically after multiple composed video frames instead.
+            setVisibility(GONE);
+        }, 180L)));
     }
 
     public void stop() {
@@ -168,7 +178,6 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
         if (stopped) return;
         stopped = true;
         handler.removeCallbacksAndMessages(null);
-        messageView.animate().cancel();
     }
 
     private TextView text(String value, float size, int color, boolean bold) {
@@ -176,6 +185,7 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
         view.setText(value);
         view.setTextSize(size);
         view.setTextColor(color);
+        view.setIncludeFontPadding(false);
         if (bold) view.setTypeface(android.graphics.Typeface.DEFAULT, android.graphics.Typeface.BOLD);
         return view;
     }
@@ -194,17 +204,20 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
 
     private static final class AnimatedBackdrop extends View {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final long startedAt = SystemClock.uptimeMillis();
+        private final long startedAt;
+        private final boolean animate;
 
-        AnimatedBackdrop(Context context) {
+        AnimatedBackdrop(Context context, long animationEpoch, boolean animate) {
             super(context);
+            this.startedAt = animationEpoch > 0L ? animationEpoch : SystemClock.uptimeMillis();
+            this.animate = animate;
         }
 
         @Override
         protected void onDraw(Canvas canvas) {
             int width = getWidth();
             int height = getHeight();
-            float phase = (SystemClock.uptimeMillis() - startedAt) / 9000f;
+            float phase = animate ? (SystemClock.uptimeMillis() - startedAt) / 9000f : 0f;
 
             paint.setShader(new LinearGradient(0, 0, width, height,
                     new int[]{0xFF090B14, 0xFF171633, 0xFF311A58}, null, Shader.TileMode.CLAMP));
@@ -217,7 +230,7 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
             paint.setColor(0x2937B5FF);
             canvas.drawCircle(width * (.20f + .04f * (float)Math.cos(phase * .8f)),
                     height * (.84f + .04f * (float)Math.sin(phase * .8f)), height * .52f, paint);
-            postInvalidateDelayed(32);
+            if (animate) postInvalidateDelayed(32);
         }
     }
 }

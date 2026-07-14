@@ -126,6 +126,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private long lastTimestampUs;
     private int lastFrameNumber;
     private int refreshRate;
+    private boolean seamlessFrameRateOnly;
     private PreferenceConfiguration prefs;
 
     private long lastNetDataNum = 0;
@@ -313,6 +314,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     public void setRenderTarget(SurfaceHolder renderTarget) {
         this.renderTarget = renderTarget;
         this.activeRenderSurface = renderTarget.getSurface();
+    }
+
+    public void setSeamlessFrameRateOnly(boolean seamlessFrameRateOnly) {
+        this.seamlessFrameRateOnly = seamlessFrameRateOnly;
     }
 
     public boolean switchToBackgroundSurface() {
@@ -2134,7 +2139,15 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         if (surface == null) return;
         try {
             // API 30+ supports Surface.setFrameRate; for older, attempt View-based call elsewhere.
-            if (android.os.Build.VERSION.SDK_INT >= 30) {
+            if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S) {
+                surface.setFrameRate(surfaceFrameRate,
+                        android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT,
+                        seamlessFrameRateOnly ? android.view.Surface.CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS :
+                                android.view.Surface.CHANGE_FRAME_RATE_ALWAYS);
+                LimeLog.info("Applied Surface frame rate: " + surfaceFrameRate +
+                        " Hz (seamlessOnly=" + seamlessFrameRateOnly + ")");
+            }
+            else if (android.os.Build.VERSION.SDK_INT >= 30) {
                 surface.setFrameRate(surfaceFrameRate,
                         android.view.Surface.FRAME_RATE_COMPATIBILITY_DEFAULT);
                 LimeLog.info("Applied Surface frame rate: " + surfaceFrameRate + " Hz");

@@ -286,7 +286,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         externalFrontendPackage = PublicStreamIntent.getExternalFrontendPackage(getIntent());
         if (externalFrontend) {
             externalLoadingView = new ExternalFrontendLoadingView(
-                    this, getIntent().getStringExtra(EXTRA_APP_NAME));
+                    this,
+                    getIntent().getStringExtra(EXTRA_APP_NAME),
+                    getIntent().getLongExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_ANIMATION_EPOCH, 0L),
+                    getIntent().getBooleanExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION, false));
             externalLoadingView.setMessage(
                     getIntent().getStringExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_MESSAGE));
             ((FrameLayout)findViewById(android.R.id.content)).addView(externalLoadingView,
@@ -444,6 +447,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         StreamStatusStore.begin(this, host, pcName, appName, runtimeBitrateKbps,
                 prefConfig.width, prefConfig.height, prefConfig.fps, prefConfig.enableHdr);
+        connecting = true;
 
         // Initialize the MediaCodec helper before creating the decoder
         GlPreferences glPrefs = GlPreferences.readPreferences(this);
@@ -503,6 +507,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 glPrefs.glRenderer,
                 this,
                 this::onFirstVideoFrameRendered);
+        decoderRenderer.setSeamlessFrameRateOnly(externalFrontend);
 
         // Don't stream HDR if the decoder can't support it
         if (willStreamHdr && !decoderRenderer.isHevcMain10Hdr10Supported() && !decoderRenderer.isAv1Main10Supported()) {
@@ -1025,6 +1030,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             LimeLog.info("Best display mode: "+bestMode.getPhysicalWidth()+"x"+
                     bestMode.getPhysicalHeight()+"x"+bestMode.getRefreshRate());
 
+            if (externalFrontend && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+                    display.getMode().getModeId() != bestMode.getModeId() &&
+                    (display.getMode().getPhysicalWidth() != bestMode.getPhysicalWidth() ||
+                            display.getMode().getPhysicalHeight() != bestMode.getPhysicalHeight())) {
+                // A resolution mode switch is never seamless on the TVs this
+                // frontend targets. Keep the current output mode and let the
+                // Surface scale the stream instead of producing an HDMI blackout.
+                LimeLog.info("Keeping current display resolution for seamless external-frontend handoff");
+                bestMode = display.getMode();
+            }
+
             // Only apply new window layout parameters if we've actually changed the display mode
             if (display.getMode().getModeId() != bestMode.getModeId()) {
                 // If we only changed refresh rate and we're on an OS that supports Surface.setFrameRate()
@@ -1239,6 +1255,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         super.onBackPressed();
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (externalFrontend && externalLoadingView != null &&
+                externalLoadingView.getVisibility() == View.VISIBLE &&
+                event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0 &&
+                event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B) {
+            onBackPressed();
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
     }
 
     private boolean returnToExternalFrontend() {
@@ -3015,12 +3043,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Tell the OS about our frame rate to allow it to adapt the display refresh rate appropriately
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            // We want to change frame rate even if it's not seamless, since prepareDisplayForRendering()
-            // will not set the display mode on S+ if it only differs by the refresh rate. It depends
-            // on us to trigger the frame rate switch here.
+            // External TV frontends prioritize a continuous handoff. A forced
+            // non-seamless frame-rate switch blanks many HDMI displays for a
+            // moment, so only permit it when the platform reports it as seamless.
             holder.getSurface().setFrameRate(desiredFrameRate,
                     Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE,
-                    Surface.CHANGE_FRAME_RATE_ALWAYS);
+                    externalFrontend ? Surface.CHANGE_FRAME_RATE_ONLY_IF_SEAMLESS :
+                            Surface.CHANGE_FRAME_RATE_ALWAYS);
         }
         else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             holder.getSurface().setFrameRate(desiredFrameRate,

@@ -7,6 +7,7 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.os.Bundle;
 import android.os.IBinder;
+import android.view.KeyEvent;
 
 import com.limelight.computers.ComputerDatabaseManager;
 import com.limelight.computers.ComputerManagerListener;
@@ -311,7 +312,10 @@ public class ShortcutTrampoline extends Activity {
         externalFrontend = PublicStreamIntent.isExternalFrontend(getIntent());
         if (externalFrontend) {
             externalLoadingView = new ExternalFrontendLoadingView(
-                    this, getIntent().getStringExtra(Game.EXTRA_APP_NAME));
+                    this,
+                    getIntent().getStringExtra(Game.EXTRA_APP_NAME),
+                    getIntent().getLongExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_ANIMATION_EPOCH, 0L),
+                    getIntent().getBooleanExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION, false));
             externalLoadingView.setMessage(
                     getIntent().getStringExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_MESSAGE));
             externalLoadingView.setStatus("Contacting saved streaming host…");
@@ -459,6 +463,43 @@ public class ShortcutTrampoline extends Activity {
         Intent startIntent = ServerHelper.createStartIntent(
                 this, targetApp, details, managerBinder, targetQuickLaunchKey, false);
         return PublicStreamIntent.copyFrontendContract(getIntent(), startIntent);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (externalFrontend && returnToExternalFrontend()) {
+            return;
+        }
+        super.onBackPressed();
+    }
+
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (externalFrontend && event.getAction() == KeyEvent.ACTION_DOWN &&
+                event.getRepeatCount() == 0 && event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B) {
+            onBackPressed();
+            return true;
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    private boolean returnToExternalFrontend() {
+        String packageName = PublicStreamIntent.getExternalFrontendPackage(getIntent());
+        if (packageName == null || packageName.isEmpty() || isFinishing()) return false;
+        Intent frontendIntent = getPackageManager().getLeanbackLaunchIntentForPackage(packageName);
+        if (frontendIntent == null) {
+            frontendIntent = getPackageManager().getLaunchIntentForPackage(packageName);
+        }
+        if (frontendIntent == null) return false;
+        frontendIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        try {
+            startActivity(frontendIntent);
+            overridePendingTransition(0, 0);
+            return true;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     @Override

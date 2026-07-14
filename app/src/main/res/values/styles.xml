@@ -23,8 +23,8 @@
     </style>
 
     <style name="StreamBaseTheme" parent="AppBaseTheme">
-        <!-- Transparent streaming background to avoid extra overdraw -->
-        <item name="android:windowBackground">@android:color/transparent</item>
+        <!-- Match the external frontend hand-off surface until the first frame is composed. -->
+        <item name="android:windowBackground">@drawable/stream_handoff_background</item>
     </style>
 
     <!-- Stream activity theme -->
@@ -32,7 +32,7 @@
         <!-- All customizations that are NOT specific to a particular API-level can go here. -->
         <item name="android:windowActionBar">false</item>
         <item name="android:windowNoTitle">true</item>
-        <item name="android:windowDisablePreview">true</item>
+        <item name="android:windowDisablePreview">false</item>
         <item name="android:windowAnimationStyle">@null</item>
     </style>
 

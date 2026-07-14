@@ -25,6 +25,8 @@ public final class PublicStreamIntent {
     public static final String EXTRA_EXTERNAL_FRONTEND = "com.limelight.extra.EXTERNAL_FRONTEND";
     public static final String EXTRA_EXTERNAL_FRONTEND_PACKAGE = "com.limelight.extra.EXTERNAL_FRONTEND_PACKAGE";
     public static final String EXTRA_EXTERNAL_FRONTEND_MESSAGE = "com.limelight.extra.EXTERNAL_FRONTEND_MESSAGE";
+    public static final String EXTRA_EXTERNAL_FRONTEND_ANIMATION_EPOCH = "com.limelight.extra.EXTERNAL_FRONTEND_ANIMATION_EPOCH";
+    public static final String EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION = "com.limelight.extra.EXTERNAL_FRONTEND_REDUCED_MOTION";
 
     public static final String URI_SCHEME = "moonlightx";
     public static final String URI_HOST = "stream";
@@ -71,6 +73,12 @@ public final class PublicStreamIntent {
             if (message != null && !message.isEmpty()) {
                 target.putExtra(EXTRA_EXTERNAL_FRONTEND_MESSAGE, message);
             }
+            long animationEpoch = source.getLongExtra(EXTRA_EXTERNAL_FRONTEND_ANIMATION_EPOCH, 0L);
+            if (animationEpoch > 0L) {
+                target.putExtra(EXTRA_EXTERNAL_FRONTEND_ANIMATION_EPOCH, animationEpoch);
+            }
+            target.putExtra(EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION,
+                    source.getBooleanExtra(EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION, false));
         }
         return target;
     }
