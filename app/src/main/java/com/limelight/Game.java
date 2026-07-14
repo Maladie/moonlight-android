@@ -2686,6 +2686,24 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         game.attachExternalFrontend(frontendIntent);
 
+        // With an external TV frontend, Game normally lives in the same task as
+        // Wake & Play. Reorder the existing activity inside that task instead of
+        // moving/animating a separate task. Apart from making RETURN_STREAM work
+        // for the shared-task layout, this avoids Android TV's unavoidable task
+        // zoom animation during the initial hand-off.
+        if (context instanceof Activity &&
+                ((Activity) context).getTaskId() == game.getTaskId()) {
+            Intent intent = new Intent(context, Game.class);
+            intent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT |
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP |
+                    Intent.FLAG_ACTIVITY_NO_ANIMATION);
+            context.startActivity(intent,
+                    ActivityOptions.makeCustomAnimation(context, 0, 0).toBundle());
+            ((Activity) context).overridePendingTransition(0, 0);
+            LimeLog.info("Reordered active external-frontend stream within shared task");
+            return true;
+        }
+
         ActivityManager activityManager =
                 (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
         if (activityManager != null) {
@@ -3641,7 +3659,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         discordDockView.removeAllViews();
         boolean overlayVisible = overlayMenuView != null &&
                 overlayMenuView.getVisibility() == View.VISIBLE;
-        if ((!discordDockEnabled && !overlayVisible) || discordGatewayConnection == null) {
+        // While the menu is open, OverlayMenuView owns the full Discord card
+        // and its controls in the top-right corner. This separate layer is only
+        // the persistent people list shown after the menu closes.
+        if (overlayVisible || !discordDockEnabled || discordGatewayConnection == null) {
             discordDockView.setVisibility(View.GONE);
             return;
         }

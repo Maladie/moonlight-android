@@ -66,6 +66,21 @@ left the game activity stopped in the background rather than finishing, moved th
 decoder to its background surface, and preserved Wake & Play's active streaming
 session and return-to-game action.
 
+On 2026-07-15 the external launch was additionally recorded with Android TV's
+`screenrecord`. The visible startup zoom was isolated to the Activity/task surface
+handoff rather than decoder output: the 1920x1080 loader was briefly composed inside
+smaller task bounds before returning to fullscreen. Direct single-Activity launch,
+`singleTop`/`REORDER_TO_FRONT` reuse, and keeping the trampoline alive until the Game
+launch reduced the artifact from roughly 0.7 seconds to one sampled frame (about
+0.25 seconds), but did not remove it completely. Eliminating the last compositor
+frame would require a larger refactor that runs host negotiation and stream rendering
+in one Activity.
+
+The same build was verified with a live Baba Is You session: Wake & Play covered the
+stream, Moonlight kept the Game Activity alive, and the public `RETURN_STREAM` intent
+restored real video output. Do not revert Game to a separate `singleTask` solely to
+change launch animation without rechecking this lifecycle.
+
 Do not use the `Sleep PC` entry for automated or manual stream testing. Use `Baba Is You` or `Steam Big Picture` only.
 
 ## Approved next task: Playnite readiness gate
@@ -111,8 +126,21 @@ the installed package before `adb install -r`.
 - Do not restore the old behavior that releases the decoder merely because the window surface is destroyed during a handoff.
 - Test activity lifecycle and video-surface behavior together; a successful UI return alone does not prove that the transport survived.
 - Validate changes together with Wake & Play because session state and return behavior span both applications.
-- The Discord overlay has not yet been exercised during a live stream because
-  stream testing was not authorized for this iteration.
+- Discord actions now live with the top-right Discord card instead of extending
+  the crowded bottom tool strip. The card owns a 2x2 action grid (Mute, Leave,
+  Rejoin, Pin), while the separately rendered participant layer is reserved for
+  the pinned view after the overlay closes. From the main vertical tool column,
+  DPAD Right enters Discord directly and DPAD Left returns to the main column;
+  users no longer need to traverse the full bottom strip. Asynchronous participant
+  refresh only rebuilds the non-focusable content container and does not recreate
+  the action buttons.
+- `Back to Wake & Play` now uses the overlay gamepad icon. Remote/gamepad Back
+  behavior was deliberately left unchanged after the user accepted its remaining
+  device-specific instability.
+- The Discord layout and navigation build was installed and stream lifecycle was
+  exercised, but ADB could not synthesize the configured long-Select overlay gesture;
+  final visual/focus verification of the open overlay still needs a physical remote
+  or controller pass.
 - The profile-aware `com.limelight.unofficial` release was built, signed with
   the matching installed certificate and installed on the TV. The earlier
   report of missing Discord buttons came from the active

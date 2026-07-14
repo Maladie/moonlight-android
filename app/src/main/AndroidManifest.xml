@@ -259,7 +259,7 @@
             android:supportsPictureInPicture="true"
             android:resizeableActivity="true"
             android:enableOnBackInvokedCallback="false"
-            android:launchMode="singleTask"
+            android:launchMode="singleTop"
             android:excludeFromRecents="true"
             android:theme="@style/StreamTheme"
             android:preferMinimalPostProcessing="true">

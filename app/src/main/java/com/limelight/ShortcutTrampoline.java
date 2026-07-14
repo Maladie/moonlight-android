@@ -152,15 +152,17 @@ public class ShortcutTrampoline extends Activity {
                                                     // Add the game intent
                                                     intentStack.add(createFrontendAwareStartIntent(app, details, quickLaunchKey));
 
-                                                    // Close this activity
-                                                    finish();
-
-                                                    // Now start the activities
-                                                    startActivities(intentStack.toArray(new Intent[]{}),
-                                                            ActivityOptions.makeCustomAnimation(
-                                                                    ShortcutTrampoline.this, 0, 0).toBundle());
+                                                    // External frontends only have the stream activity in this
+                                                    // stack. Launch it directly while our full-screen hand-off
+                                                    // window is still alive, so Android TV doesn't animate a
+                                                    // temporary shrunken task surface between the two windows.
+                                                    launchIntentStackWithoutAnimation();
                                                     // Disable transition animation for seamless launch
                                                     overridePendingTransition(0, 0);
+
+                                                    // Close the hand-off activity only after the target window
+                                                    // has been submitted to ActivityTaskManager.
+                                                    finish();
                                                 } else {
                                                     // Create the start intent immediately, so we can safely unbind the managerBinder
                                                     // below before we return.
@@ -179,15 +181,10 @@ public class ShortcutTrampoline extends Activity {
                                                             // Add the game intent
                                                             intentStack.add(startIntent);
 
-                                                            // Close this activity
-                                                            finish();
-
-                                                            // Now start the activities
-                                                            startActivities(intentStack.toArray(new Intent[]{}),
-                                                                    ActivityOptions.makeCustomAnimation(
-                                                                            ShortcutTrampoline.this, 0, 0).toBundle());
+                                                            launchIntentStackWithoutAnimation();
                                                             // Disable transition animation for seamless launch
                                                             overridePendingTransition(0, 0);
+                                                            finish();
                                                         }
                                                     }, new Runnable() {
                                                         @Override
@@ -512,9 +509,20 @@ public class ShortcutTrampoline extends Activity {
                 this, targetApp, details, managerBinder, targetQuickLaunchKey, false);
         PublicStreamIntent.copyFrontendContract(getIntent(), startIntent);
         if (externalFrontend) {
-            startIntent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+            startIntent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION |
+                    Intent.FLAG_ACTIVITY_REORDER_TO_FRONT |
+                    Intent.FLAG_ACTIVITY_SINGLE_TOP);
         }
         return startIntent;
+    }
+
+    private void launchIntentStackWithoutAnimation() {
+        Bundle options = ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle();
+        if (externalFrontend && intentStack.size() == 1) {
+            startActivity(intentStack.get(0), options);
+        } else {
+            startActivities(intentStack.toArray(new Intent[]{}), options);
+        }
     }
 
     @Override

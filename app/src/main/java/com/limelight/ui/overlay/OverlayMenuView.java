@@ -53,16 +53,21 @@ public class OverlayMenuView extends LinearLayout {
     private HorizontalScrollView horizontalScrollView;
     private LinearLayout horizontalContainer;
     private LinearLayout discordContainer;
+    private LinearLayout discordContentContainer;
+    private LinearLayout discordActionsContainer;
 
     private List<OverlayMenuButton> verticalButtons;
     private List<Integer> verticalActions;
     private List<OverlayMenuButton> horizontalButtons;
     private List<Integer> horizontalActions;
+    private List<OverlayMenuButton> discordButtons;
+    private List<Integer> discordActions;
 
-    private enum Region { VERTICAL, HORIZONTAL }
+    private enum Region { VERTICAL, HORIZONTAL, DISCORD }
     private Region activeRegion = Region.VERTICAL;
     private int verticalIndex = 0;
     private int horizontalIndex = 0;
+    private int discordIndex = 0;
 
     private MenuActionListener actionListener;
     private CustomCommandsManager commandsManager;
@@ -127,6 +132,7 @@ public class OverlayMenuView extends LinearLayout {
     private void init(Context context) {
         setOrientation(LinearLayout.HORIZONTAL);
         setGravity(Gravity.BOTTOM);
+        setPadding(dp(20), dp(18), dp(18), dp(20));
         setFocusable(true);
         setFocusableInTouchMode(true);
         setBackgroundDrawable(null);
@@ -149,8 +155,6 @@ public class OverlayMenuView extends LinearLayout {
         discordBackground.setColor(0xE6101118);
         discordBackground.setStroke(dp(1), 0x667C4DFF);
         discordContainer.setBackground(discordBackground);
-        // The visible Discord card is rendered by Game in a separate
-        // top-right layer. This view retains only its state and action buttons.
         addView(verticalContainer, new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
@@ -177,14 +181,38 @@ public class OverlayMenuView extends LinearLayout {
             LinearLayout.LayoutParams.WRAP_CONTENT
         ));
 
+        View spacer = new View(context);
+        addView(spacer, new LinearLayout.LayoutParams(0, 0, 1f));
+
+        discordContentContainer = new LinearLayout(context);
+        discordContentContainer.setOrientation(LinearLayout.VERTICAL);
+        discordContainer.addView(discordContentContainer, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        discordActionsContainer = new LinearLayout(context);
+        discordActionsContainer.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout.LayoutParams discordActionsParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        discordActionsParams.topMargin = dp(8);
+        discordContainer.addView(discordActionsContainer, discordActionsParams);
+        LinearLayout.LayoutParams discordParams = new LinearLayout.LayoutParams(
+                dp(420), LinearLayout.LayoutParams.WRAP_CONTENT);
+        discordParams.leftMargin = dp(BUTTON_SPACING_DP);
+        discordParams.gravity = Gravity.TOP;
+        addView(discordContainer, discordParams);
+
         verticalButtons = new ArrayList<>();
         verticalActions = new ArrayList<>();
         horizontalButtons = new ArrayList<>();
         horizontalActions = new ArrayList<>();
+        discordButtons = new ArrayList<>();
+        discordActions = new ArrayList<>();
 
         activeRegion = Region.VERTICAL;
         verticalIndex = 0;
         horizontalIndex = 0;
+        discordIndex = 0;
 
         commandsManager = new CustomCommandsManager(context);
 
@@ -203,6 +231,8 @@ public class OverlayMenuView extends LinearLayout {
         verticalActions.clear();
         horizontalButtons.clear();
         horizontalActions.clear();
+        discordButtons.clear();
+        discordActions.clear();
 
         float density = getContext().getResources().getDisplayMetrics().density;
         int spacing = (int) (BUTTON_SPACING_DP * density);
@@ -221,7 +251,8 @@ public class OverlayMenuView extends LinearLayout {
         addVerticalButton(R.drawable.ic_overlay_monitor,
             getContext().getString(R.string.overlay_menu_disconnect), ACTION_DISCONNECT, 0);
         if (externalFrontend) {
-            addVerticalButton(0, getContext().getString(R.string.overlay_return_to_wake),
+            addVerticalButton(R.drawable.ic_overlay_gamepad,
+                    getContext().getString(R.string.overlay_return_to_wake),
                     ACTION_RETURN_TO_FRONTEND, spacing);
         }
 
@@ -239,16 +270,7 @@ public class OverlayMenuView extends LinearLayout {
         discordLeaveButton = null;
         discordRejoinButton = null;
         discordDockButton = null;
-        if (discordConfigured) {
-            discordMuteButton = addHorizontalButton(R.drawable.ic_overlay_microphone,
-                    discordMuteLabel(), ACTION_DISCORD_MUTE, spacing);
-            discordLeaveButton = addHorizontalButton(R.drawable.ic_overlay_close,
-                    discordLeaveLabel(), ACTION_DISCORD_LEAVE, spacing);
-            discordRejoinButton = addHorizontalButton(0, discordRejoinLabel(),
-                    ACTION_DISCORD_REJOIN, spacing);
-            discordDockButton = addHorizontalButton(0, discordDockLabel(),
-                    ACTION_DISCORD_DOCK, spacing);
-        }
+        buildDiscordActions(spacing);
         if (bitrateControlEnabled) {
             addHorizontalButton(0, getContext().getString(R.string.overlay_bitrate_decrease),
                     ACTION_BITRATE_DOWN, spacing);
@@ -319,6 +341,57 @@ public class OverlayMenuView extends LinearLayout {
             if (hasFocus) {
                 activeRegion = Region.HORIZONTAL;
                 horizontalIndex = index;
+                button.setSelected(true);
+            } else {
+                button.setSelected(false);
+            }
+        });
+        return button;
+    }
+
+    private void buildDiscordActions(int spacing) {
+        discordActionsContainer.removeAllViews();
+        if (!discordConfigured) return;
+
+        LinearLayout firstRow = new LinearLayout(getContext());
+        firstRow.setOrientation(LinearLayout.HORIZONTAL);
+        discordActionsContainer.addView(firstRow, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        discordMuteButton = addDiscordButton(firstRow, R.drawable.ic_overlay_microphone,
+                discordMuteLabel(), ACTION_DISCORD_MUTE, spacing);
+        discordLeaveButton = addDiscordButton(firstRow, R.drawable.ic_overlay_close,
+                discordLeaveLabel(), ACTION_DISCORD_LEAVE, 0);
+
+        LinearLayout secondRow = new LinearLayout(getContext());
+        secondRow.setOrientation(LinearLayout.HORIZONTAL);
+        LinearLayout.LayoutParams secondRowParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT);
+        secondRowParams.topMargin = spacing;
+        discordActionsContainer.addView(secondRow, secondRowParams);
+        discordRejoinButton = addDiscordButton(secondRow, R.drawable.ic_overlay_play,
+                discordRejoinLabel(), ACTION_DISCORD_REJOIN, spacing);
+        discordDockButton = addDiscordButton(secondRow, R.drawable.ic_overlay_restore,
+                discordDockLabel(), ACTION_DISCORD_DOCK, 0);
+    }
+
+    private OverlayMenuButton addDiscordButton(LinearLayout row, int iconResId,
+                                                String label, int action, int rightMarginPx) {
+        OverlayMenuButton button = OverlayMenuButton.create(getContext(), iconResId, label);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        params.rightMargin = rightMarginPx;
+        row.addView(button, params);
+
+        discordButtons.add(button);
+        discordActions.add(action);
+        final int index = discordButtons.size() - 1;
+        button.setOnClickListener(v -> selectAndActivate(Region.DISCORD, index));
+        button.setOnFocusChangeListener((v, hasFocus) -> {
+            if (hasFocus) {
+                activeRegion = Region.DISCORD;
+                discordIndex = index;
                 button.setSelected(true);
             } else {
                 button.setSelected(false);
@@ -398,27 +471,27 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     private void renderDiscordCard() {
-        if (discordContainer == null) return;
-        discordContainer.removeAllViews();
+        if (discordContainer == null || discordContentContainer == null) return;
+        discordContentContainer.removeAllViews();
         discordContainer.setVisibility(discordConfigured ? VISIBLE : GONE);
         if (!discordConfigured) return;
 
         TextView title = discordLine(getContext().getString(R.string.overlay_discord_title),
                 13, 0xFFB69CFF, true);
-        discordContainer.addView(title);
+        discordContentContainer.addView(title);
 
         if (discordLoading && discordVoice == null) {
-            discordContainer.addView(discordLine(
+            discordContentContainer.addView(discordLine(
                     getContext().getString(R.string.overlay_discord_loading),
                     14, 0xFFC5C8D3, false));
             return;
         }
         if (discordError != null && !discordError.isEmpty()) {
-            discordContainer.addView(discordLine(discordError, 13, 0xFFFFB4AB, false));
+            discordContentContainer.addView(discordLine(discordError, 13, 0xFFFFB4AB, false));
             return;
         }
         if (discordVoice == null || !discordVoice.connected) {
-            discordContainer.addView(discordLine(
+            discordContentContainer.addView(discordLine(
                     getContext().getString(R.string.overlay_discord_disconnected),
                     14, 0xFFC5C8D3, false));
             return;
@@ -426,7 +499,7 @@ public class OverlayMenuView extends LinearLayout {
 
         String channel = discordVoice.channelName == null || discordVoice.channelName.isEmpty() ?
                 "Voice" : discordVoice.channelName;
-        discordContainer.addView(discordLine(getContext().getString(
+        discordContentContainer.addView(discordLine(getContext().getString(
                 R.string.overlay_discord_channel, channel, discordVoice.participants.size()),
                 15, Color.WHITE, true));
 
@@ -445,16 +518,16 @@ public class OverlayMenuView extends LinearLayout {
             } else if (!participant.self && participant.volume != 100) {
                 name += " · " + participant.volume + "%";
             }
-            discordContainer.addView(discordLine(name, 14,
+            discordContentContainer.addView(discordLine(name, 14,
                     participant.speaking ? 0xFF69F0AE : 0xFFE6E1E9, false));
             shown++;
         }
         if (discordVoice.participants.size() <= 1) {
-            discordContainer.addView(discordLine(
+            discordContentContainer.addView(discordLine(
                     getContext().getString(R.string.overlay_discord_empty),
                     12, 0xFF9FA3B2, false));
         } else if (discordVoice.participants.size() > shown) {
-            discordContainer.addView(discordLine(
+            discordContentContainer.addView(discordLine(
                     "+" + (discordVoice.participants.size() - shown),
                     12, 0xFF9FA3B2, false));
         }
@@ -558,6 +631,21 @@ public class OverlayMenuView extends LinearLayout {
 
     private int dp(int value) {
         return Math.round(value * getContext().getResources().getDisplayMetrics().density);
+    }
+
+    @Override
+    protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+        super.onLayout(changed, left, top, right, bottom);
+        if (discordContainer != null && discordContainer.getVisibility() != GONE) {
+            // The bottom command row can be wider than the screen. Position the
+            // Discord card independently so it always stays in the top-right
+            // corner instead of being pushed off-screen by that row.
+            int cardRight = getWidth() - getPaddingRight();
+            int cardLeft = cardRight - discordContainer.getMeasuredWidth();
+            int cardTop = getPaddingTop();
+            discordContainer.layout(cardLeft, cardTop, cardRight,
+                    cardTop + discordContainer.getMeasuredHeight());
+        }
     }
 
     private void adjustBitrate(int deltaKbps) {
@@ -823,12 +911,15 @@ public class OverlayMenuView extends LinearLayout {
             if (!verticalButtons.isEmpty()) {
                 setVerticalIndex((verticalIndex - 1 + verticalButtons.size()) % verticalButtons.size());
             }
-        } else {
+        } else if (activeRegion == Region.HORIZONTAL) {
             // From horizontal → Up: jump to button above Disconnect (second-to-last in vertical)
             clearHorizontalSelection();
             activeRegion = Region.VERTICAL;
             int target = verticalButtons.size() >= 2 ? verticalButtons.size() - 2 : 0;
             setVerticalIndex(target);
+        } else if (!discordButtons.isEmpty()) {
+            setDiscordIndex(discordIndex >= 2 ? discordIndex - 2 :
+                    Math.min(discordIndex + 2, discordButtons.size() - 1));
         }
     }
 
@@ -837,16 +928,27 @@ public class OverlayMenuView extends LinearLayout {
             if (!verticalButtons.isEmpty()) {
                 setVerticalIndex((verticalIndex + 1) % verticalButtons.size());
             }
-        } else {
+        } else if (activeRegion == Region.HORIZONTAL) {
             // From horizontal → Down: jump to topmost vertical button
             clearHorizontalSelection();
             activeRegion = Region.VERTICAL;
             setVerticalIndex(0);
+        } else if (!discordButtons.isEmpty()) {
+            setDiscordIndex(discordIndex + 2 < discordButtons.size() ?
+                    discordIndex + 2 : discordIndex % 2);
         }
     }
 
     private void navigateLeft() {
-        if (activeRegion == Region.HORIZONTAL) {
+        if (activeRegion == Region.DISCORD) {
+            if (discordIndex % 2 == 1) {
+                setDiscordIndex(discordIndex - 1);
+            } else {
+                clearDiscordSelection();
+                activeRegion = Region.VERTICAL;
+                setVerticalIndex(Math.min(verticalIndex, verticalButtons.size() - 1));
+            }
+        } else if (activeRegion == Region.HORIZONTAL) {
             if (horizontalIndex > 0) {
                 setHorizontalIndex(horizontalIndex - 1);
             } else {
@@ -866,8 +968,24 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     private void navigateRight() {
-        if (activeRegion == Region.VERTICAL) {
-            if (!horizontalButtons.isEmpty()) {
+        if (activeRegion == Region.DISCORD) {
+            if (discordIndex % 2 == 0 && discordIndex + 1 < discordButtons.size()) {
+                setDiscordIndex(discordIndex + 1);
+            } else {
+                clearDiscordSelection();
+                activeRegion = Region.VERTICAL;
+                setVerticalIndex(0);
+            }
+        } else if (activeRegion == Region.VERTICAL) {
+            // Discord is a top-level panel on the right, so it must be reachable
+            // directly from the main column. Requiring users to traverse every
+            // item in the crowded bottom strip made the most common voice
+            // controls needlessly difficult to reach with a controller.
+            if (!discordButtons.isEmpty()) {
+                clearVerticalSelection();
+                activeRegion = Region.DISCORD;
+                setDiscordIndex(0);
+            } else if (!horizontalButtons.isEmpty()) {
                 clearVerticalSelection();
                 activeRegion = Region.HORIZONTAL;
                 setHorizontalIndex(0);
@@ -875,6 +993,10 @@ public class OverlayMenuView extends LinearLayout {
         } else {
             if (horizontalIndex < horizontalButtons.size() - 1) {
                 setHorizontalIndex(horizontalIndex + 1);
+            } else if (!discordButtons.isEmpty()) {
+                clearHorizontalSelection();
+                activeRegion = Region.DISCORD;
+                setDiscordIndex(0);
             } else {
                 // At rightmost horizontal button — cross to Disconnect (last vertical button)
                 clearHorizontalSelection();
@@ -908,6 +1030,14 @@ public class OverlayMenuView extends LinearLayout {
         horizontalButtons.get(index).requestFocus();
     }
 
+    private void setDiscordIndex(int index) {
+        if (index < 0 || index >= discordButtons.size()) return;
+        for (OverlayMenuButton button : discordButtons) button.setSelected(false);
+        discordIndex = index;
+        discordButtons.get(index).setSelected(true);
+        discordButtons.get(index).requestFocus();
+    }
+
     private void clearVerticalSelection() {
         for (OverlayMenuButton b : verticalButtons) {
             b.setSelected(false);
@@ -920,12 +1050,18 @@ public class OverlayMenuView extends LinearLayout {
         }
     }
 
+    private void clearDiscordSelection() {
+        for (OverlayMenuButton button : discordButtons) button.setSelected(false);
+    }
+
     private void selectAndActivate(Region region, int index) {
         activeRegion = region;
         if (region == Region.VERTICAL) {
             setVerticalIndex(index);
-        } else {
+        } else if (region == Region.HORIZONTAL) {
             setHorizontalIndex(index);
+        } else {
+            setDiscordIndex(index);
         }
         activateSelected();
     }
@@ -935,9 +1071,12 @@ public class OverlayMenuView extends LinearLayout {
         if (activeRegion == Region.VERTICAL) {
             if (verticalIndex < 0 || verticalIndex >= verticalActions.size()) return;
             action = verticalActions.get(verticalIndex);
-        } else {
+        } else if (activeRegion == Region.HORIZONTAL) {
             if (horizontalIndex < 0 || horizontalIndex >= horizontalActions.size()) return;
             action = horizontalActions.get(horizontalIndex);
+        } else {
+            if (discordIndex < 0 || discordIndex >= discordActions.size()) return;
+            action = discordActions.get(discordIndex);
         }
 
         if (action == ACTION_BITRATE_DOWN) {
