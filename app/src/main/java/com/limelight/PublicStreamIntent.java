@@ -27,6 +27,10 @@ public final class PublicStreamIntent {
     public static final String EXTRA_EXTERNAL_FRONTEND_MESSAGE = "com.limelight.extra.EXTERNAL_FRONTEND_MESSAGE";
     public static final String EXTRA_EXTERNAL_FRONTEND_ANIMATION_EPOCH = "com.limelight.extra.EXTERNAL_FRONTEND_ANIMATION_EPOCH";
     public static final String EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION = "com.limelight.extra.EXTERNAL_FRONTEND_REDUCED_MOTION";
+    public static final String EXTRA_HOST_GATEWAY_ENDPOINT = "com.limelight.extra.HOST_GATEWAY_ENDPOINT";
+    public static final String EXTRA_HOST_GATEWAY_TOKEN = "com.limelight.extra.HOST_GATEWAY_TOKEN";
+    public static final String EXTRA_HOST_GATEWAY_CERTIFICATE = "com.limelight.extra.HOST_GATEWAY_CERTIFICATE";
+    public static final String EXTRA_DISCORD_PROFILE_ID = "com.limelight.extra.DISCORD_PROFILE_ID";
 
     public static final String URI_SCHEME = "moonlightx";
     public static final String URI_HOST = "stream";
@@ -80,6 +84,10 @@ public final class PublicStreamIntent {
             target.putExtra(EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION,
                     source.getBooleanExtra(EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION, false));
         }
+        copyStringExtra(source, target, EXTRA_HOST_GATEWAY_ENDPOINT);
+        copyStringExtra(source, target, EXTRA_HOST_GATEWAY_TOKEN);
+        copyStringExtra(source, target, EXTRA_HOST_GATEWAY_CERTIFICATE);
+        copyStringExtra(source, target, EXTRA_DISCORD_PROFILE_ID);
         return target;
     }
 
@@ -108,6 +116,13 @@ public final class PublicStreamIntent {
         String value = intent.getStringExtra(publicKey);
         if (value != null && !value.isEmpty()) {
             intent.putExtra(internalKey, value);
+        }
+    }
+
+    private static void copyStringExtra(Intent source, Intent target, String key) {
+        String value = source.getStringExtra(key);
+        if (value != null && !value.isEmpty()) {
+            target.putExtra(key, value);
         }
     }
 }

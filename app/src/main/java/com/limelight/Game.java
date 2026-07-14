@@ -36,6 +36,7 @@ import com.limelight.ui.ExternalFrontendLoadingView;
 import com.limelight.ui.GameGestures;
 import com.limelight.ui.StreamView;
 import com.limelight.ui.overlay.CustomCommand;
+import com.limelight.ui.overlay.DiscordGatewayClient;
 import com.limelight.ui.overlay.OverlayMenuView;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.ServerHelper;
@@ -71,6 +72,7 @@ import android.os.PowerManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.text.Html;
 import android.util.Rational;
 import android.view.Display;
@@ -103,6 +105,9 @@ import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Locale;
 import java.lang.ref.WeakReference;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
 public class Game extends Activity implements SurfaceHolder.Callback,
@@ -175,6 +180,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private TextView performanceOverlayView;
     private BrightnessSliderView brightnessSliderView;
     private OverlayMenuView overlayMenuView;
+    private final Handler discordOverlayHandler = new Handler(Looper.getMainLooper());
+    private final ExecutorService discordOverlayExecutor = Executors.newSingleThreadExecutor();
+    private final AtomicBoolean discordRefreshInFlight = new AtomicBoolean(false);
+    private final AtomicBoolean discordActionInFlight = new AtomicBoolean(false);
+    private final DiscordGatewayClient discordGatewayClient = new DiscordGatewayClient();
+    private DiscordGatewayClient.Connection discordGatewayConnection;
+    private DiscordGatewayClient.VoiceState discordVoiceState;
+    private final Runnable discordRefreshRunnable = new Runnable() {
+        @Override
+        public void run() {
+            if (overlayMenuView != null && overlayMenuView.getVisibility() == View.VISIBLE) {
+                refreshDiscordOverlay(false);
+            }
+        }
+    };
     private boolean isImeVisible = false;
     private boolean isAndroidTV = false;
 
@@ -385,6 +405,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         overlayMenuView = findViewById(R.id.overlayMenuView);
         overlayMenuView.setFlipFaceButtons(prefConfig.flipFaceButtons);
         overlayMenuView.setBitrateControlEnabled(prefConfig.runtimeBitrateControl);
+        configureDiscordOverlay();
 
         inputCaptureProvider = InputCaptureManager.getInputCaptureProvider(this, this);
 
@@ -1225,6 +1246,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        discordOverlayHandler.removeCallbacks(discordRefreshRunnable);
+        discordOverlayExecutor.shutdownNow();
         if (externalLoadingView != null) {
             externalLoadingView.stop();
             externalLoadingView = null;
@@ -2672,6 +2695,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         rememberExternalFrontendPackage(packageName);
         getIntent().putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND, true);
         getIntent().putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_PACKAGE, packageName);
+        if (frontendIntent != null) {
+            PublicStreamIntent.copyFrontendContract(frontendIntent, getIntent());
+        }
+        if (overlayMenuView != null) configureDiscordOverlay();
         if (decoderRenderer != null) {
             decoderRenderer.setSeamlessFrameRateOnly(true);
         }
@@ -3372,8 +3399,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             @Override
+            public void onDiscordMute() {
+                runDiscordOverlayAction(true);
+            }
+
+            @Override
+            public void onDiscordLeave() {
+                runDiscordOverlayAction(false);
+            }
+
+            @Override
             public void onMenuClosed() {
-                // Menu closed, no additional action needed
+                discordOverlayHandler.removeCallbacks(discordRefreshRunnable);
             }
         });
     }
@@ -3382,11 +3419,104 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         overlayMenuView.setControllerBatteryInfo(controllerHandler.getControllerBatteryInfo());
         overlayMenuView.setBitrateKbps(runtimeBitrateKbps);
         overlayMenuView.show();
+        if (discordGatewayConnection != null) refreshDiscordOverlay(true);
         controllerHandler.refreshControllerBatteryInfo(() -> {
             if (overlayMenuView.getVisibility() == View.VISIBLE) {
                 overlayMenuView.setControllerBatteryInfo(controllerHandler.getControllerBatteryInfo());
             }
         });
+    }
+
+    private void configureDiscordOverlay() {
+        overlayMenuView.setDiscordShortcuts(prefConfig.discordMuteShortcut,
+                prefConfig.discordLeaveShortcut);
+        String endpoint = getIntent().getStringExtra(
+                PublicStreamIntent.EXTRA_HOST_GATEWAY_ENDPOINT);
+        String token = getIntent().getStringExtra(
+                PublicStreamIntent.EXTRA_HOST_GATEWAY_TOKEN);
+        String certificate = getIntent().getStringExtra(
+                PublicStreamIntent.EXTRA_HOST_GATEWAY_CERTIFICATE);
+        String profileId = getIntent().getStringExtra(
+                PublicStreamIntent.EXTRA_DISCORD_PROFILE_ID);
+        try {
+            discordGatewayConnection = new DiscordGatewayClient.Connection(
+                    endpoint, token, certificate, profileId);
+        } catch (IllegalArgumentException error) {
+            discordGatewayConnection = null;
+        }
+        overlayMenuView.setDiscordConfigured(discordGatewayConnection != null);
+    }
+
+    private void refreshDiscordOverlay(boolean force) {
+        if (discordGatewayConnection == null || overlayMenuView == null ||
+                overlayMenuView.getVisibility() != View.VISIBLE ||
+                !discordRefreshInFlight.compareAndSet(false, true)) {
+            return;
+        }
+        overlayMenuView.setDiscordState(discordVoiceState, null, true);
+        discordOverlayExecutor.execute(() -> {
+            DiscordGatewayClient.VoiceState state = null;
+            String errorMessage = null;
+            try {
+                state = discordGatewayClient.getVoice(discordGatewayConnection, force);
+            } catch (Exception error) {
+                errorMessage = discordOverlayError(error);
+            }
+            final DiscordGatewayClient.VoiceState result = state;
+            final String resultError = errorMessage;
+            runOnUiThread(() -> {
+                discordRefreshInFlight.set(false);
+                if (result != null) discordVoiceState = result;
+                if (overlayMenuView != null &&
+                        overlayMenuView.getVisibility() == View.VISIBLE) {
+                    overlayMenuView.setDiscordState(discordVoiceState, resultError, false);
+                    discordOverlayHandler.removeCallbacks(discordRefreshRunnable);
+                    discordOverlayHandler.postDelayed(discordRefreshRunnable, 2000);
+                }
+            });
+        });
+    }
+
+    private void runDiscordOverlayAction(boolean mute) {
+        if (discordGatewayConnection == null || discordVoiceState == null ||
+                !discordVoiceState.connected) {
+            Toast.makeText(this, R.string.overlay_discord_disconnected,
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!discordActionInFlight.compareAndSet(false, true)) return;
+        discordOverlayExecutor.execute(() -> {
+            String errorMessage = null;
+            DiscordGatewayClient.VoiceState state = null;
+            try {
+                if (mute) discordGatewayClient.toggleMute(discordGatewayConnection);
+                else discordGatewayClient.leaveVoice(discordGatewayConnection);
+                state = discordGatewayClient.getVoice(discordGatewayConnection, true);
+            } catch (Exception error) {
+                errorMessage = discordOverlayError(error);
+            }
+            final DiscordGatewayClient.VoiceState result = state;
+            final String resultError = errorMessage;
+            runOnUiThread(() -> {
+                discordActionInFlight.set(false);
+                if (result != null) discordVoiceState = result;
+                if (overlayMenuView != null &&
+                        overlayMenuView.getVisibility() == View.VISIBLE) {
+                    overlayMenuView.setDiscordState(discordVoiceState, resultError, false);
+                } else if (resultError != null) {
+                    Toast.makeText(Game.this, resultError, Toast.LENGTH_LONG).show();
+                }
+            });
+        });
+    }
+
+    private String discordOverlayError(Exception error) {
+        String message = error != null ? error.getMessage() : null;
+        if (message == null || message.trim().isEmpty()) {
+            return getString(R.string.overlay_discord_unavailable);
+        }
+        message = message.trim();
+        return message.length() <= 120 ? message : message.substring(0, 117) + "…";
     }
 
     private void applyBitrateAndReconnect(int bitrateKbps) {

@@ -26,6 +26,10 @@ public class SessionResumeManager {
     private static final String KEY_APPLY_OVERRIDES = "applyOverrides";
     private static final String KEY_EXTERNAL_FRONTEND = "externalFrontend";
     private static final String KEY_EXTERNAL_FRONTEND_PACKAGE = "externalFrontendPackage";
+    private static final String KEY_HOST_GATEWAY_ENDPOINT = "hostGatewayEndpoint";
+    private static final String KEY_HOST_GATEWAY_TOKEN = "hostGatewayToken";
+    private static final String KEY_HOST_GATEWAY_CERTIFICATE = "hostGatewayCertificate";
+    private static final String KEY_DISCORD_PROFILE_ID = "discordProfileId";
 
     public static void save(Context ctx, Intent gameIntent) {
         Log.d("SessionResume", "save() — appId=" + gameIntent.getIntExtra(Game.EXTRA_APP_ID, -1)
@@ -49,6 +53,14 @@ public class SessionResumeManager {
                 gameIntent.getBooleanExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND, false));
         editor.putString(KEY_EXTERNAL_FRONTEND_PACKAGE,
                 gameIntent.getStringExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_PACKAGE));
+        editor.putString(KEY_HOST_GATEWAY_ENDPOINT,
+                gameIntent.getStringExtra(PublicStreamIntent.EXTRA_HOST_GATEWAY_ENDPOINT));
+        editor.putString(KEY_HOST_GATEWAY_TOKEN,
+                gameIntent.getStringExtra(PublicStreamIntent.EXTRA_HOST_GATEWAY_TOKEN));
+        editor.putString(KEY_HOST_GATEWAY_CERTIFICATE,
+                gameIntent.getStringExtra(PublicStreamIntent.EXTRA_HOST_GATEWAY_CERTIFICATE));
+        editor.putString(KEY_DISCORD_PROFILE_ID,
+                gameIntent.getStringExtra(PublicStreamIntent.EXTRA_DISCORD_PROFILE_ID));
 
         String quickLaunchKey = gameIntent.getStringExtra(Game.EXTRA_QUICK_LAUNCH_APP_KEY);
         if (quickLaunchKey != null) {
@@ -105,6 +117,14 @@ public class SessionResumeManager {
             intent.putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_PACKAGE,
                     externalFrontendPackage);
         }
+        copyStoredString(prefs, intent, KEY_HOST_GATEWAY_ENDPOINT,
+                PublicStreamIntent.EXTRA_HOST_GATEWAY_ENDPOINT);
+        copyStoredString(prefs, intent, KEY_HOST_GATEWAY_TOKEN,
+                PublicStreamIntent.EXTRA_HOST_GATEWAY_TOKEN);
+        copyStoredString(prefs, intent, KEY_HOST_GATEWAY_CERTIFICATE,
+                PublicStreamIntent.EXTRA_HOST_GATEWAY_CERTIFICATE);
+        copyStoredString(prefs, intent, KEY_DISCORD_PROFILE_ID,
+                PublicStreamIntent.EXTRA_DISCORD_PROFILE_ID);
 
         String quickLaunchKey = prefs.getString(KEY_QUICK_LAUNCH, null);
         if (quickLaunchKey != null) {
@@ -117,6 +137,12 @@ public class SessionResumeManager {
         }
 
         return intent;
+    }
+
+    private static void copyStoredString(SharedPreferences prefs, Intent intent,
+                                         String preferenceKey, String extraKey) {
+        String value = prefs.getString(preferenceKey, null);
+        if (value != null && !value.isEmpty()) intent.putExtra(extraKey, value);
     }
 
     public static void clear(Context ctx) {
