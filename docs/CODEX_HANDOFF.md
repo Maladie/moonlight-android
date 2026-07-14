@@ -68,6 +68,26 @@ session and return-to-game action.
 
 Do not use the `Sleep PC` entry for automated or manual stream testing. Use `Baba Is You` or `Steam Big Picture` only.
 
+## Approved next task: Playnite readiness gate
+
+No Playnite-specific Moonlight code has been implemented yet. The approved next
+stage keeps the existing opaque `ExternalFrontendLoadingView` visible after the
+first decoded frame until a profile-scoped host Console Bridge also reports that
+the requested Playnite game window is foreground, correctly sized on the
+streamed display and stable. The first frame remains a required signal, but is
+no longer sufficient by itself for Playnite-managed launches.
+
+The gate needs a bounded timeout and controller-operable recovery actions rather
+than an unconditional reveal. The same privacy surface should be reusable when
+a game exits: cover any desktop transition, wait until Playnite Fullscreen is
+stable again, then reveal it without disconnecting or recreating the stream.
+
+Add a non-destructive `Return to Playnite` overlay action through the existing
+certificate-pinned Gateway contract. It must not call the current quit-app path,
+which sets `pendingApplicationQuit`, stops the connection and finishes Game.
+Preserve the external-frontend background surface and Back behavior throughout
+this work.
+
 ## Build
 
 Run from the repository root:
