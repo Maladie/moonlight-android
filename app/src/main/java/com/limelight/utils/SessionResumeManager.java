@@ -7,6 +7,7 @@ import android.util.Base64;
 import android.util.Log;
 
 import com.limelight.Game;
+import com.limelight.PublicStreamIntent;
 
 public class SessionResumeManager {
     private static final String PREFS_NAME = "SessionResume";
@@ -23,6 +24,8 @@ public class SessionResumeManager {
     private static final String KEY_SERVER_CERT   = "serverCert";
     private static final String KEY_QUICK_LAUNCH  = "quickLaunchKey";
     private static final String KEY_APPLY_OVERRIDES = "applyOverrides";
+    private static final String KEY_EXTERNAL_FRONTEND = "externalFrontend";
+    private static final String KEY_EXTERNAL_FRONTEND_PACKAGE = "externalFrontendPackage";
 
     public static void save(Context ctx, Intent gameIntent) {
         Log.d("SessionResume", "save() — appId=" + gameIntent.getIntExtra(Game.EXTRA_APP_ID, -1)
@@ -42,6 +45,10 @@ public class SessionResumeManager {
         editor.putString(KEY_PC_NAME,    gameIntent.getStringExtra(Game.EXTRA_PC_NAME));
         editor.putBoolean(KEY_APPLY_OVERRIDES,
                 gameIntent.getBooleanExtra(Game.EXTRA_APPLY_PREFERENCE_OVERRIDES, false));
+        editor.putBoolean(KEY_EXTERNAL_FRONTEND,
+                gameIntent.getBooleanExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND, false));
+        editor.putString(KEY_EXTERNAL_FRONTEND_PACKAGE,
+                gameIntent.getStringExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_PACKAGE));
 
         String quickLaunchKey = gameIntent.getStringExtra(Game.EXTRA_QUICK_LAUNCH_APP_KEY);
         if (quickLaunchKey != null) {
@@ -91,6 +98,13 @@ public class SessionResumeManager {
         intent.putExtra(Game.EXTRA_PC_NAME,    prefs.getString(KEY_PC_NAME, null));
         intent.putExtra(Game.EXTRA_APPLY_PREFERENCE_OVERRIDES,
                 prefs.getBoolean(KEY_APPLY_OVERRIDES, false));
+        intent.putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND,
+                prefs.getBoolean(KEY_EXTERNAL_FRONTEND, false));
+        String externalFrontendPackage = prefs.getString(KEY_EXTERNAL_FRONTEND_PACKAGE, null);
+        if (externalFrontendPackage != null && !externalFrontendPackage.isEmpty()) {
+            intent.putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_PACKAGE,
+                    externalFrontendPackage);
+        }
 
         String quickLaunchKey = prefs.getString(KEY_QUICK_LAUNCH, null);
         if (quickLaunchKey != null) {

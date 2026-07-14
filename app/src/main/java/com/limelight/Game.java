@@ -47,6 +47,7 @@ import com.limelight.utils.UiHelper;
 import android.annotation.SuppressLint;
 import android.annotation.TargetApi;
 import android.app.Activity;
+import android.app.ActivityOptions;
 import android.app.ActivityManager;
 import android.app.PictureInPictureParams;
 import android.app.Service;
@@ -86,6 +87,7 @@ import android.view.View.OnTouchListener;
 import android.view.ViewGroup;
 import android.view.Window;
 import android.view.WindowInsets;
+import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.view.inputmethod.InputMethodManager;
@@ -109,6 +111,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         PerfOverlayListener, UsbDriverService.UsbDriverStateListener, View.OnKeyListener {
     private int lastButtonState = 0;
     private static WeakReference<Game> activeInstance = new WeakReference<>(null);
+    private static final String EXTERNAL_FRONTEND_PREFS = "external_frontend_contract";
+    private static final String EXTERNAL_FRONTEND_PACKAGE_KEY = "package";
 
     // Only 2 touches are supported
     private final TouchContext[] touchContextMap = new TouchContext[2];
@@ -240,17 +244,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // We don't want a title bar
         requestWindowFeature(Window.FEATURE_NO_TITLE);
 
-        // Full-screen
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN);
-
-        // If we're going to use immersive mode, we want to have
-        // the entire screen
-        getWindow().getDecorView().setSystemUiVisibility(
-                View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
-                        View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
-                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN);
-
-        getWindow().addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
+        // Establish the final stream geometry before inflating any content. If immersive mode is
+        // only enabled after the first layout, Android briefly measures the hand-off screen inside
+        // the system-bar insets and then stretches it to the display, which looks like a zoom.
+        applyFullscreenWindowState();
 
         // Listen for UI visibility events
         getWindow().getDecorView().setOnSystemUiVisibilityChangeListener(this);
@@ -284,6 +281,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         externalFrontend = PublicStreamIntent.isExternalFrontend(getIntent());
         externalFrontendPackage = PublicStreamIntent.getExternalFrontendPackage(getIntent());
+        if (externalFrontend && externalFrontendPackage != null &&
+                !externalFrontendPackage.isEmpty()) {
+            rememberExternalFrontendPackage(externalFrontendPackage);
+        }
+        android.util.Log.i("ExternalFrontend", "Game created: enabled=" + externalFrontend +
+                " package=" + externalFrontendPackage);
         if (externalFrontend) {
             externalLoadingView = new ExternalFrontendLoadingView(
                     this,
@@ -890,6 +893,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void onWindowFocusChanged(boolean hasFocus) {
         super.onWindowFocusChanged(hasFocus);
 
+        if (hasFocus && !(Build.VERSION.SDK_INT >= Build.VERSION_CODES.N && isInMultiWindowMode())) {
+            // Reassert synchronously so the first focused frame cannot be laid out with insets.
+            applyFullscreenWindowState();
+        }
+
         // We can't guarantee the state of modifiers keys which may have
         // lifted while focus was not on us. Clear the modifier state.
         this.modifierFlags = 0;
@@ -1161,6 +1169,30 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
     };
 
+    private void applyFullscreenWindowState() {
+        Window window = getWindow();
+        window.addFlags(WindowManager.LayoutParams.FLAG_FULLSCREEN |
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN);
+
+        window.getDecorView().setSystemUiVisibility(
+                View.SYSTEM_UI_FLAG_LAYOUT_STABLE |
+                        View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION |
+                        View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN |
+                        View.SYSTEM_UI_FLAG_HIDE_NAVIGATION |
+                        View.SYSTEM_UI_FLAG_FULLSCREEN |
+                        View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY);
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            window.setDecorFitsSystemWindows(false);
+            WindowInsetsController controller = window.getInsetsController();
+            if (controller != null) {
+                controller.hide(WindowInsets.Type.systemBars());
+                controller.setSystemBarsBehavior(
+                        WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE);
+            }
+        }
+    }
+
     private void hideSystemUi(int delay) {
         Handler h = getWindow().getDecorView().getHandler();
         if (h != null) {
@@ -1259,6 +1291,25 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        // A physical Android TV remote can be classified as a controller-like
+        // input device. In that case Moonlight's normal input pipeline consumes
+        // KEYCODE_BACK and forwards it to the host before Activity can invoke
+        // onBackPressed(). Handle the Android BACK key at the Activity boundary
+        // for external-frontend sessions and consume its matching key-up event.
+        int keyCode = event.getKeyCode();
+        InputDevice inputDevice = event.getDevice();
+        boolean nonGamepadB = keyCode == KeyEvent.KEYCODE_BUTTON_B &&
+                (inputDevice == null || !ControllerHandler.isGameControllerDevice(inputDevice));
+        boolean frontendBackKey = keyCode == KeyEvent.KEYCODE_BACK ||
+                keyCode == KeyEvent.KEYCODE_ESCAPE || nonGamepadB;
+        if (externalFrontend && (connecting || connected) && frontendBackKey) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                LimeLog.info("Returning to external frontend for back key " + keyCode +
+                        " from " + (inputDevice != null ? inputDevice.getName() : "virtual input"));
+                onBackPressed();
+            }
+            return true;
+        }
         if (externalFrontend && externalLoadingView != null &&
                 externalLoadingView.getVisibility() == View.VISIBLE &&
                 event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0 &&
@@ -1286,9 +1337,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         handingOffToExternalFrontend = true;
         frontendIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
-                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP |
+                Intent.FLAG_ACTIVITY_NO_ANIMATION);
         try {
-            startActivity(frontendIntent);
+            startActivity(frontendIntent,
+                    ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle());
             overridePendingTransition(0, 0);
             return true;
         } catch (RuntimeException error) {
@@ -2573,8 +2626,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     public static boolean bringActiveStreamToFront(Context context) {
+        return bringActiveStreamToFront(context, null);
+    }
+
+    public static boolean bringActiveStreamToFront(Context context, Intent frontendIntent) {
         Game game = activeInstance.get();
         if (game == null || game.isFinishing() || game.isDestroyed()) return false;
+
+        game.attachExternalFrontend(frontendIntent);
 
         ActivityManager activityManager =
                 (ActivityManager) context.getSystemService(Context.ACTIVITY_SERVICE);
@@ -2595,6 +2654,35 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 Intent.FLAG_ACTIVITY_SINGLE_TOP);
         context.startActivity(intent);
         return true;
+    }
+
+    private void attachExternalFrontend(Intent frontendIntent) {
+        String packageName = PublicStreamIntent.getExternalFrontendPackage(frontendIntent);
+        if (packageName == null || packageName.isEmpty()) {
+            packageName = getSharedPreferences(EXTERNAL_FRONTEND_PREFS, MODE_PRIVATE)
+                    .getString(EXTERNAL_FRONTEND_PACKAGE_KEY, null);
+        }
+        if (packageName == null || packageName.isEmpty()) {
+            android.util.Log.w("ExternalFrontend", "No saved frontend package for return request");
+            return;
+        }
+
+        externalFrontend = true;
+        externalFrontendPackage = packageName;
+        rememberExternalFrontendPackage(packageName);
+        getIntent().putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND, true);
+        getIntent().putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_PACKAGE, packageName);
+        if (decoderRenderer != null) {
+            decoderRenderer.setSeamlessFrameRateOnly(true);
+        }
+        LimeLog.info("Attached external frontend " + packageName + " to active stream");
+        android.util.Log.i("ExternalFrontend", "Attached frontend package=" + packageName);
+    }
+
+    private void rememberExternalFrontendPackage(String packageName) {
+        getSharedPreferences(EXTERNAL_FRONTEND_PREFS, MODE_PRIVATE).edit()
+                .putString(EXTERNAL_FRONTEND_PACKAGE_KEY, packageName)
+                .apply();
     }
 
     public static boolean hasActiveStream() {
@@ -3064,7 +3152,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         if (attemptedConnection) {
-            if (externalFrontend && !isFinishing() && (handingOffToExternalFrontend || connected) &&
+            if (externalFrontend && !isFinishing() &&
+                    (handingOffToExternalFrontend || connecting || connected) &&
                     decoderRenderer.switchToBackgroundSurface()) {
                 surfaceCreated = false;
                 LimeLog.info("Keeping external-frontend stream alive without a window Surface");

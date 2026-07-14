@@ -321,14 +321,19 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     }
 
     public boolean switchToBackgroundSurface() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || videoDecoder == null) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             return false;
         }
 
         try {
             ensureBackgroundImageReader();
             Surface surface = backgroundImageReader.getSurface();
-            videoDecoder.setOutputSurface(surface);
+            // During connection startup the Activity can be backgrounded before
+            // MediaCodec exists. Remember the background target now so the later
+            // decoder configuration never binds to the destroyed window Surface.
+            if (videoDecoder != null) {
+                videoDecoder.setOutputSurface(surface);
+            }
             activeRenderSurface = surface;
             LimeLog.info("Decoder output moved to background surface");
             return true;

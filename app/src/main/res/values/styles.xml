@@ -25,6 +25,8 @@
     <style name="StreamBaseTheme" parent="AppBaseTheme">
         <!-- Match the external frontend hand-off surface until the first frame is composed. -->
         <item name="android:windowBackground">@drawable/stream_handoff_background</item>
+        <!-- The preview window must use the same full-screen bounds as the stream Activity. -->
+        <item name="android:windowFullscreen">true</item>
     </style>
 
     <!-- Stream activity theme -->

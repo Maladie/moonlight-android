@@ -9,7 +9,7 @@ public final class PublicReturnStreamTrampoline extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        if (!Game.bringActiveStreamToFront(this)) {
+        if (!Game.bringActiveStreamToFront(this, getIntent())) {
             Toast.makeText(this, "No active Moonlight stream", Toast.LENGTH_SHORT).show();
         }
         finish();
