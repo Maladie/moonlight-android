@@ -17,6 +17,7 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
         void onStatus(String status);
         void onConnectionStatus(int status);
         void onMessage(String message, boolean transientMessage);
+        void onOverlayOpen();
     }
 
     private final ControllerHandler controllers;
@@ -37,6 +38,15 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
                 Objects.requireNonNull(preferences, "preferences"));
         this.renderer = Objects.requireNonNull(renderer, "renderer");
         this.presentation = Objects.requireNonNull(presentation, "presentation");
+        controllers.setOverlayMenuListener(new ControllerHandler.OverlayMenuListener() {
+            @Override public void onOverlayMenuOpen() {
+                presentation.onOverlayOpen();
+            }
+
+            @Override public void onOverlayMenuCancel() {
+                // No progress indicator is shown by the unified console.
+            }
+        });
     }
 
     @Override public synchronized boolean handleKeyEvent(KeyEvent event) {

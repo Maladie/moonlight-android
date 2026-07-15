@@ -28,6 +28,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.limelight.LimeLog;
+import com.limelight.binding.input.ControllerHandler;
 import com.limelight.preferences.StreamSettings;
 import com.limelight.ui.StreamView;
 
@@ -213,10 +214,16 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0 &&
-                (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B ||
-                        event.getKeyCode() == KeyEvent.KEYCODE_BACK)) {
-            onBackPressed();
+        int keyCode = event.getKeyCode();
+        android.view.InputDevice device = event.getDevice();
+        boolean gamepadB = keyCode == KeyEvent.KEYCODE_BUTTON_B && device != null &&
+                ControllerHandler.isGameControllerDevice(device);
+        boolean navigationBack = ConsoleKeyRouting.isNavigationBack(
+                keyCode, inputRouter.isGameplayCaptured(), gamepadB);
+        if (navigationBack) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                onBackPressed();
+            }
             return true;
         }
         if (inputRouter.isGameplayCaptured() && unifiedSessionInput != null &&
@@ -870,6 +877,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                 Toast.makeText(ConsoleActivity.this,
                                         "Keyboard overlay is not available in Console yet.",
                                         Toast.LENGTH_SHORT).show();
+                            }
+
+                            @Override public void onOverlayOpen() {
+                                ConsoleStateMachine.Transition transition = stateMachine.dispatch(
+                                        ConsoleStateMachine.Event.OPEN_OVERLAY);
+                                applyState(transition.current);
                             }
                         });
         MoonlightConsoleSessionFactory sessionFactory =

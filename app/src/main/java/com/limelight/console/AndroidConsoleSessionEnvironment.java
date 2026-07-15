@@ -31,6 +31,7 @@ final class AndroidConsoleSessionEnvironment implements
         void onMessage(String message, boolean transientMessage);
         void onConfigurationPlanned(StreamSessionConfigurationPlanner.Plan plan);
         void toggleKeyboard();
+        void onOverlayOpen();
     }
 
     private static final String TOMBSTONE_PREFS = "DecoderTombstone";
@@ -116,6 +117,10 @@ final class AndroidConsoleSessionEnvironment implements
                             String message, boolean transientMessage) {
                         activity.runOnUiThread(() -> callbacks.onMessage(
                                 message, transientMessage));
+                    }
+
+                    @Override public void onOverlayOpen() {
+                        activity.runOnUiThread(callbacks::onOverlayOpen);
                     }
                 };
         return new AndroidConsoleSessionInput(
