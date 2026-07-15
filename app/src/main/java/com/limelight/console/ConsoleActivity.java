@@ -1,7 +1,6 @@
 package com.limelight.console;
 
 import android.app.Activity;
-import android.app.ActivityOptions;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
@@ -27,7 +26,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.limelight.LimeLog;
-import com.limelight.PublicReturnStreamTrampoline;
 import com.limelight.preferences.StreamSettings;
 
 import java.util.List;
@@ -55,6 +53,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private HostGatewayStore hostGatewayStore;
     private HostAvailabilityProbeController hostAvailabilityProbeController;
     private ConsoleHostLaunchPreparationController launchPreparationController;
+    private ConsoleStreamRuntime streamRuntime;
     private ConsoleSelectionStore selectionStore;
     private ConsoleLaunchHistoryStore launchHistoryStore;
     private ConsoleHostSelectionController hostSelectionController;
@@ -93,6 +92,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         applyTvWindow();
         repository = new ConsoleDataRepository(this);
         hostGatewayStore = new HostGatewayStore(this);
+        streamRuntime = new LegacyConsoleStreamRuntime(this, hostGatewayStore);
         hostAvailabilityProbeController = new HostAvailabilityProbeController();
         launchPreparationController = new ConsoleHostLaunchPreparationController();
         selectionStore = new ConsoleSelectionStore(this);
@@ -557,9 +557,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                       ConsoleDataRepository.App app) {
         ConsoleLaunchContract.Request request =
                 ConsoleLaunchContract.create(host, app, getPackageName());
-        Intent intent = ConsoleLaunchContract.legacyIntent(this, request, hostGatewayStore);
-        startActivity(intent, ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle());
-        overridePendingTransition(0, 0);
+        streamRuntime.launch(request);
     }
 
     private void renderControllers() {
@@ -635,10 +633,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         ConsoleStateMachine.Transition transition =
                 stateMachine.dispatch(event);
         applyState(transition.current);
-        Intent intent = new Intent(this, PublicReturnStreamTrampoline.class)
-                .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
-        startActivity(intent, ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle());
-        overridePendingTransition(0, 0);
+        streamRuntime.returnToActiveStream();
     }
 
     private void openConsoleHome() {
