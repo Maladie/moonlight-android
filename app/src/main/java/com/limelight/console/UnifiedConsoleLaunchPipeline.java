@@ -66,6 +66,19 @@ final class UnifiedConsoleLaunchPipeline {
         runtime.cancelPendingConnection();
     }
 
+    synchronized void showStream() {
+        runtime.showStream();
+    }
+
+    synchronized void showHome() {
+        runtime.showHome();
+    }
+
+    synchronized void close() {
+        cancel();
+        runtime.close();
+    }
+
     private synchronized void connect(int launchGeneration,
                                       StreamLaunchParameters parameters,
                                       Listener listener) {
