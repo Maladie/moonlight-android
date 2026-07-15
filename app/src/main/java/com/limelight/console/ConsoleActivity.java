@@ -398,8 +398,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
         TextView options = card("⚙  OPTIONS", dp(150), dp(44));
         options.setId(View.generateViewId());
-        options.setContentDescription("Open Moonlight streaming options");
-        options.setOnClickListener(view -> startActivity(new Intent(this, StreamSettings.class)));
+        options.setContentDescription("Open MoonWaker options");
+        options.setOnClickListener(view -> showOptions());
         LinearLayout topActions = new LinearLayout(this);
         topActions.setOrientation(LinearLayout.HORIZONTAL);
         topActions.setGravity(Gravity.CENTER_VERTICAL);
@@ -943,6 +943,24 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 this::returnToActiveStream,
                 () -> endActiveSession(false),
                 () -> endActiveSession(true));
+    }
+
+    private void showOptions() {
+        android.content.SharedPreferences preferences =
+                getSharedPreferences("launch_history", MODE_PRIVATE);
+        boolean uiSounds = preferences.getBoolean("ui_sounds", true);
+        boolean reducedMotion = preferences.getBoolean("reduced_motion", false);
+        modalController.showOptions(getCurrentFocus(), uiSounds, reducedMotion,
+                () -> {
+                    preferences.edit().putBoolean("ui_sounds", !uiSounds).apply();
+                    showOptions();
+                },
+                () -> {
+                    preferences.edit().putBoolean("reduced_motion", !reducedMotion).apply();
+                    showOptions();
+                },
+                this::showHostIntegrations,
+                () -> startActivity(new Intent(this, StreamSettings.class)));
     }
 
     private void endActiveSession(boolean quitHostApplication) {
