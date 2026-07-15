@@ -22,6 +22,7 @@ import com.limelight.console.StreamBitratePolicy;
 import com.limelight.console.StreamFrameRatePolicy;
 import com.limelight.console.StreamHdrDisplayPolicy;
 import com.limelight.console.StreamPreferenceContext;
+import com.limelight.console.StreamRendererConfiguration;
 import com.limelight.console.StreamSessionConfigurationPlanner;
 import com.limelight.console.ActiveStreamSurfaceBridge;
 import com.limelight.console.InputRouter;
@@ -562,9 +563,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 command -> new Thread(command, "MoonWaker transport stop").start(),
                 this::runOnUiThread,
                 this::doQuit);
+        StreamRendererConfiguration rendererConfiguration =
+                new StreamRendererConfiguration(
+                        prefConfig,
+                        tombstonePrefs.getInt("CrashCount", 0),
+                        connMgr.isActiveNetworkMetered(),
+                        willStreamHdr,
+                        glPrefs.glRenderer);
         decoderRenderer = sessionController.prepareRenderer(
                 this,
-                prefConfig,
+                rendererConfiguration,
                 new CrashListener() {
                     @Override
                     public void notifyCrash(Exception e) {
@@ -576,10 +584,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         reportedCrash = true;
                     }
                 },
-                tombstonePrefs.getInt("CrashCount", 0),
-                connMgr.isActiveNetworkMetered(),
-                willStreamHdr,
-                glPrefs.glRenderer,
                 this,
                 this::onFirstVideoFrameRendered);
         ActiveStreamSurfaceBridge.attachSession(sessionController);

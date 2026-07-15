@@ -282,6 +282,18 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
   type tests plus Java compilation.
 - Removal: none; display HDR eligibility remains shared.
 
+### P017 - Shared renderer configuration boundary
+
+- Surface: `Game.java`.
+- Reason: group preferences, decoder crash history, metered-network state, HDR
+  request, and GL renderer identity in immutable `StreamRendererConfiguration`.
+  The in-Activity runtime can prepare the same renderer without copying Game's
+  field layout.
+- Risk: missing an input could alter decoder selection or crash recovery.
+- Regression: focused normalization/mapping tests, full JVM suite, and Java
+  compilation.
+- Removal: none; this is the shared renderer creation contract.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.

@@ -79,6 +79,24 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
         return videoRenderer;
     }
 
+    public synchronized MediaCodecDecoderRenderer prepareRenderer(
+            Activity activity,
+            StreamRendererConfiguration configuration,
+            CrashListener crashListener,
+            PerfOverlayListener performanceListener,
+            Runnable firstFrameRenderedCallback) {
+        Objects.requireNonNull(configuration, "configuration");
+        return prepareRenderer(activity,
+                configuration.preferences,
+                crashListener,
+                configuration.consecutiveCrashCount,
+                configuration.meteredData,
+                configuration.requestedHdr,
+                configuration.glRenderer,
+                performanceListener,
+                firstFrameRenderedCallback);
+    }
+
     public synchronized void initializeTransport(
             Context appContext,
             Context audioContext,
