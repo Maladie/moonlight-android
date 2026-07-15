@@ -478,7 +478,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void configureDiscordStreamOverlay() {
         GatewayConnection stored = selectedHost == null ? null :
-                hostGatewayStore.load(selectedHost.uuid);
+                hostGatewayStore.loadForHost(selectedHost.uuid, selectedHost.address);
         try {
             discordOverlayConnection = stored == null ? null :
                     new DiscordGatewayClient.Connection(stored.endpoint, stored.token,
@@ -963,7 +963,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void confirmSleepHost(ConsoleDataRepository.Host host) {
         HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid);
+                hostGatewayStore.loadClientConnection(host.uuid, host.address);
         if (connection == null) {
             Toast.makeText(this, "Pair this host's Gateway before using Sleep.",
                     Toast.LENGTH_LONG).show();
@@ -1696,7 +1696,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
 
         HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid);
+                hostGatewayStore.loadClientConnection(host.uuid, host.address);
         int request = integrationPanelRequest.incrementAndGet();
         TextView status = modalController.wakeStatus("Gateway: checking\u2026");
         TextView profile = modalController.wakeAction("INTEGRATION PROFILE  \u00B7  " +
@@ -1884,7 +1884,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private HostGatewayClient.Connection selectedGatewayConnection() {
         return selectedHost == null ? null :
-                hostGatewayStore.loadClientConnection(selectedHost.uuid);
+                hostGatewayStore.loadClientConnection(selectedHost.uuid, selectedHost.address);
     }
 
     private void showDiscordPanel() {
