@@ -1834,7 +1834,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         TextView loading = modalController.wakeStatus("Loading your Discord servers\u2026");
         modalController.showWakePanel(getCurrentFocus(), "DISCORD", "Servers",
                 host.name + "  \u00B7  Profile " + connection.profileId,
-                this::showHostIntegrations, loading);
+                null, loading);
         integrationExecutor.execute(() -> {
             try {
                 HostGatewayClient.DiscordHome home =
@@ -1897,13 +1897,13 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     }
                     modalController.showWakePanel(getCurrentFocus(), "DISCORD", "Servers",
                             host.name + "  \u00B7  Profile " + connection.profileId,
-                            this::showHostIntegrations, actions.toArray(new View[0]));
+                            null, actions.toArray(new View[0]));
                 });
             } catch (Exception error) {
                 mainHandler.post(() -> showDiscordLoadError(
                         "Servers", error,
                         () -> showDiscordServersPanel(host, connection, true),
-                        this::showHostIntegrations));
+                        null));
             }
         });
     }
