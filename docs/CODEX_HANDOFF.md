@@ -120,7 +120,7 @@ runtime selector bypass the `Game` Activity launch.
 
 - JDK: `C:\Users\Basia\.jdks\openjdk-17.0.2` (the system Java 24 is not
   compatible with Gradle 8.7/AGP 8.5.1).
-- `:app:testNonRootDebugUnitTest`: 160/160 passed; state, privacy readiness, surface
+- `:app:testNonRootDebugUnitTest`: 167/167 passed; state, privacy readiness, surface
   lifetime, legacy ownership, disconnect/quit separation, input routing, and
   input-boundary initialization plus cross-Activity render-target handoff are
   covered, including diagnostic generation, failed-switch visibility, Gateway
@@ -131,7 +131,8 @@ runtime selector bypass the `Game` Activity launch.
   presentation, host availability, WOL packet construction, bounded wake timing,
   cancellable host preparation, launch resolution, unified pipeline/runtime
   cancellation, configuration planning, codec/HDR negotiation, frame pacing,
-  gamepad masks, refresh parsing, bitrate bounds, and transport event routing.
+  gamepad masks, refresh parsing, bitrate bounds, transport event routing,
+  display HDR eligibility, and renderer/transport input boundaries.
 - `:app:compileNonRootDebugJavaWithJavac` and the unit-test task passed after
   `3339ca61`. The most recent full `:app:assembleNonRootDebug` passed earlier in
   the same series at `7a0d4706`; full builds are intentionally grouped rather
