@@ -11,7 +11,8 @@ final class ConsoleStreamLaunchResolutionPolicy {
         HOST_ID_MISMATCH,
         HOST_NOT_PAIRED,
         HOST_ADDRESS_UNAVAILABLE,
-        CLIENT_ID_UNAVAILABLE
+        CLIENT_ID_UNAVAILABLE,
+        RESOLUTION_FAILED
     }
 
     static final class Result {
