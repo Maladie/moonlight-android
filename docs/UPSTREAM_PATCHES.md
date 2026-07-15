@@ -234,6 +234,18 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
   Java compilation.
 - Removal: none; this planner is the configuration core of the unified runtime.
 
+### P013 - Shared stream preference context
+
+- Surface: `Game.java`.
+- Reason: select global, per-app, Quick Launch, and override preference layers
+  through `StreamPreferenceContext`. Both runtimes now use the same legacy app
+  key and `AppPreferences` precedence.
+- Risk: a different app key or override flag could silently select incorrect
+  quality, input, or audio settings.
+- Regression: app-key contract tests, existing preference tests, and Java
+  compilation.
+- Removal: none; preference selection remains shared after Game is retired.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.

@@ -19,6 +19,7 @@ import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
 import com.limelight.console.StreamFrameRatePolicy;
+import com.limelight.console.StreamPreferenceContext;
 import com.limelight.console.StreamSessionConfigurationPlanner;
 import com.limelight.console.ActiveStreamSurfaceBridge;
 import com.limelight.console.InputRouter;
@@ -36,7 +37,6 @@ import com.limelight.nvstream.input.KeyboardPacket;
 import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.nvstream.jni.MoonBridge;
 import com.limelight.computers.StreamStatusStore;
-import com.limelight.preferences.AppPreferences;
 import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.ui.BrightnessSliderView;
@@ -383,10 +383,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         String computerId = Game.this.getIntent().getStringExtra(EXTRA_PC_UUID);
 
         // Read the stream preferences (per-app if configured, otherwise global)
-        String appKey = computerId + ":" + appId;
         String quickLaunchAppKey = Game.this.getIntent().getStringExtra(EXTRA_QUICK_LAUNCH_APP_KEY);
         boolean applyPreferenceOverrides = Game.this.getIntent().getBooleanExtra(EXTRA_APPLY_PREFERENCE_OVERRIDES, true);
-        prefConfig = AppPreferences.getEffectivePreferences(this, appKey, quickLaunchAppKey, applyPreferenceOverrides);
+        prefConfig = StreamPreferenceContext.load(this, computerId, appId,
+                quickLaunchAppKey, applyPreferenceOverrides);
         int requestedRuntimeBitrate = Game.this.getIntent().getIntExtra(EXTRA_RUNTIME_BITRATE_KBPS, 0);
         if (requestedRuntimeBitrate > 0) {
             prefConfig.bitrate = Math.max(1000, Math.min(150000, requestedRuntimeBitrate));
