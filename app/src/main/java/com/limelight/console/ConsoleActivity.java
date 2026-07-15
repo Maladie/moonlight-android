@@ -6,6 +6,7 @@ import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
+import android.hardware.input.InputManager;
 import android.os.Bundle;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -34,6 +35,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final ConsoleStateMachine stateMachine = new ConsoleStateMachine();
     private final InputRouter inputRouter = new InputRouter(InputRouter.Region.HOME);
     private final StreamSurfaceHost streamSurfaceHost = new StreamSurfaceHost();
+    private final InputManager.InputDeviceListener controllerDeviceListener =
+            new InputManager.InputDeviceListener() {
+                @Override public void onInputDeviceAdded(int deviceId) { renderControllers(); }
+                @Override public void onInputDeviceRemoved(int deviceId) { renderControllers(); }
+                @Override public void onInputDeviceChanged(int deviceId) { renderControllers(); }
+            };
 
     private ConsoleDataRepository repository;
     private HostGatewayStore hostGatewayStore;
@@ -44,6 +51,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleModalController modalController;
     private ConsoleOverlayController overlayController;
     private GatewayProfileRefreshController gatewayProfileRefreshController;
+    private ConsoleControllerRepository controllerRepository;
+    private InputManager inputManager;
+    private boolean controllerListenerRegistered;
     private FrameLayout root;
     private SurfaceView streamSurface;
     private View privacyLayer;
@@ -55,6 +65,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private TextView returnToGame;
     private LinearLayout hostRow;
     private LinearLayout appRow;
+    private LinearLayout controllerRow;
+    private TextView controllersLabel;
     private View overlayLayer;
     private View modalLayer;
     private ConsoleDataRepository.Host selectedHost;
@@ -72,11 +84,18 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         modalController = new ConsoleModalController(
                 this, (FrameLayout) modalLayer, inputRouter, consoleTheme);
         gatewayProfileRefreshController = new GatewayProfileRefreshController();
+        controllerRepository = new ConsoleControllerRepository();
+        inputManager = (InputManager) getSystemService(INPUT_SERVICE);
         renderSnapshot();
     }
 
     @Override protected void onResume() {
         super.onResume();
+        if (inputManager != null && !controllerListenerRegistered) {
+            inputManager.registerInputDeviceListener(controllerDeviceListener, null);
+            controllerListenerRegistered = true;
+        }
+        renderControllers();
         ActiveStreamSurfaceBridge.setConsoleForeground(true);
         if (repository != null && sessionStatus != null) {
             ConsoleDataRepository.Session session = repository.session();
@@ -93,6 +112,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     @Override protected void onPause() {
         ActiveStreamSurfaceBridge.setConsoleForeground(false);
+        if (inputManager != null && controllerListenerRegistered) {
+            inputManager.unregisterInputDeviceListener(controllerDeviceListener);
+            controllerListenerRegistered = false;
+        }
         super.onPause();
     }
 
@@ -251,7 +274,17 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         returnToGame.setNextFocusRightId(integrations.getId());
         integrations.setNextFocusLeftId(returnToGame.getId());
 
-        content.addView(section("STREAMING HOSTS"), top(dp(16)));
+        controllersLabel = section("CONTROLLERS · NONE");
+        content.addView(controllersLabel, top(dp(11)));
+        HorizontalScrollView controllerScroll = horizontalScroll();
+        controllerRow = horizontalRow();
+        controllerScroll.addView(controllerRow);
+        LinearLayout.LayoutParams controllerParams =
+                new LinearLayout.LayoutParams(matchWidth(), dp(58));
+        controllerParams.topMargin = dp(5);
+        content.addView(controllerScroll, controllerParams);
+
+        content.addView(section("STREAMING HOSTS"), top(dp(11)));
         HorizontalScrollView hostScroll = horizontalScroll();
         hostRow = horizontalRow();
         hostScroll.addView(hostRow);
@@ -278,6 +311,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void renderSnapshot() {
+        renderControllers();
         ConsoleHomeSnapshot snapshot = ConsoleHomeSnapshot.load(
                 repository, hostGatewayStore, selectionStore);
         renderSession(snapshot.session);
@@ -394,6 +428,31 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         Intent intent = ConsoleLaunchContract.legacyIntent(this, request, hostGatewayStore);
         startActivity(intent, ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle());
         overridePendingTransition(0, 0);
+    }
+
+    private void renderControllers() {
+        if (controllerRepository == null || controllerRow == null) return;
+        List<ConsoleControllerRepository.Controller> controllers = controllerRepository.load();
+        controllerRow.removeAllViews();
+        controllersLabel.setText(controllers.isEmpty() ? "CONTROLLERS · NONE" : "CONTROLLERS");
+        int player = 1;
+        for (ConsoleControllerRepository.Controller controller : controllers) {
+            LinearLayout chip = new LinearLayout(this);
+            chip.setOrientation(LinearLayout.VERTICAL);
+            chip.setGravity(Gravity.CENTER_VERTICAL);
+            chip.setPadding(dp(16), dp(5), dp(16), dp(5));
+            chip.setMinimumWidth(dp(220));
+            chip.setMinimumHeight(dp(50));
+            chip.setBackground(consoleTheme.cardBackground());
+            chip.addView(label("P" + player++ + "  " + controller.name,
+                    14, Color.WHITE, true), wrap());
+            int batteryColor = controller.batteryPercentage < 0 ? 0xFFB3B8C8 :
+                    controller.charging ? 0xFF64B5F6 :
+                            controller.batteryPercentage <= 10 ? 0xFFFF5252 :
+                                    controller.batteryPercentage <= 30 ? 0xFFFFB74D : 0xFF69F0AE;
+            chip.addView(label(controller.batteryLabel(), 12, batteryColor, false), wrap());
+            controllerRow.addView(chip, cardParams());
+        }
     }
 
     private void renderGatewayProfile(ConsoleDataRepository.Host host) {
