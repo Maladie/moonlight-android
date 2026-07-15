@@ -209,7 +209,8 @@ final class ConsoleModalController {
 
     void showHostIntegrations(View focusToRestore, String hostUuid, String hostName,
                               HostIntegrationSummary summary,
-                              Runnable useDefaultProfile, Runnable dismissAction) {
+                              Runnable pairGateway, Runnable useDefaultProfile,
+                              Runnable dismissAction) {
         begin(focusToRestore);
         integrationHostUuid = hostUuid;
         onDismiss = dismissAction;
@@ -226,9 +227,14 @@ final class ConsoleModalController {
         panel.addView(profileStatus, top(dp(14)));
         panel.addView(servicesStatus, top(dp(20)));
 
+        TextView pair = card("PAIR HOST GATEWAY", dp(340), dp(56));
+        pair.setVisibility(summary.gatewayPaired ? View.GONE : View.VISIBLE);
+        pair.setOnClickListener(view -> pairGateway.run());
+        panel.addView(pair, top(dp(26)));
+
         chooseProfile = card("CHOOSE PROFILE", dp(340), dp(56));
         chooseProfile.setVisibility(View.GONE);
-        panel.addView(chooseProfile, top(dp(26)));
+        panel.addView(chooseProfile, top(summary.gatewayPaired ? dp(26) : dp(12)));
 
         TextView useDefault = card("USE DEFAULT PROFILE", dp(340), dp(56));
         boolean canUseDefault = summary.gatewayPaired &&
@@ -241,7 +247,7 @@ final class ConsoleModalController {
         close.setOnClickListener(view -> hide());
         panel.addView(close, top(dp(12)));
         layer.addView(panel, new FrameLayout.LayoutParams(dp(720), matchHeight(), Gravity.RIGHT));
-        showAndFocus(canUseDefault ? useDefault : close);
+        showAndFocus(!summary.gatewayPaired ? pair : canUseDefault ? useDefault : close);
     }
 
     boolean updateHostIntegrations(String hostUuid, HostIntegrationSummary summary,

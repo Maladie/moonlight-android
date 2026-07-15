@@ -1,6 +1,7 @@
 package com.limelight.console;
 
 import android.app.Activity;
+import android.app.AlertDialog;
 import android.content.Intent;
 import android.graphics.Bitmap;
 import android.graphics.Color;
@@ -19,6 +20,7 @@ import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -34,6 +36,8 @@ import java.util.Collections;
 import java.util.HashMap;
 import java.util.Locale;
 import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /** Milestone-1 Android TV console shell with a persistent stream surface layer. */
 public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
@@ -50,6 +54,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 @Override public void onInputDeviceChanged(int deviceId) { renderControllers(); }
             };
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final ExecutorService integrationExecutor = Executors.newSingleThreadExecutor();
+    private final HostGatewayClient hostGatewayClient = new HostGatewayClient();
     private final Runnable sessionRefresh = this::refreshVisibleSession;
 
     private ConsoleDataRepository repository;
@@ -166,6 +172,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     @Override protected void onDestroy() {
         if (loadingController != null) loadingController.stop();
+        integrationExecutor.shutdownNow();
         ActiveStreamSurfaceBridge.setConsoleForeground(false);
         if (streamSurface != null) {
             ActiveStreamSurfaceBridge.releaseConsoleSurface(streamSurface.getHolder());
@@ -990,7 +997,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         HostIntegrationSummary summary = HostIntegrationSummary.from(connection);
         String hostUuid = selectedHost.uuid;
         modalController.showHostIntegrations(getCurrentFocus(), hostUuid,
-                selectedHost.name, summary, () -> {
+                selectedHost.name, summary, this::showGatewayPairing, () -> {
             hostGatewayStore.setSelectedIntegrationProfileId(
                     hostUuid, GatewayConnection.DEFAULT_PROFILE_ID);
             if (selectedHost != null && hostUuid.equals(selectedHost.uuid)) {
@@ -999,6 +1006,58 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             }
         }, gatewayProfileRefreshController::cancel);
         if (connection != null) refreshHostIntegrations(hostUuid, connection);
+    }
+
+    private void showGatewayPairing() {
+        ConsoleDataRepository.Host host = selectedHost;
+        if (host == null || host.address == null || host.address.isEmpty()) return;
+        EditText code = new EditText(this);
+        code.setHint("Six-digit code");
+        code.setSingleLine(true);
+        code.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+        code.setPadding(dp(24), dp(12), dp(24), dp(12));
+        new AlertDialog.Builder(this)
+                .setTitle("Pair Host Gateway")
+                .setMessage("Enter the code displayed by Start-WakePlayGateway.ps1 on the host PC.")
+                .setView(code)
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Pair", (dialog, which) ->
+                        pairGateway(host, code.getText().toString().trim()))
+                .show();
+    }
+
+    private void pairGateway(ConsoleDataRepository.Host host, String code) {
+        if (!code.matches("[0-9]{6}")) {
+            Toast.makeText(this, "The pairing code must contain six digits.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        Toast.makeText(this, "Pairing Host Gateway...", Toast.LENGTH_SHORT).show();
+        integrationExecutor.execute(() -> {
+            try {
+                HostGatewayClient.Pairing pairing = hostGatewayClient.pair(
+                        HostGatewayClient.endpointForHost(host.address), code,
+                        "MoonWaker Game App");
+                hostGatewayStore.save(host.uuid, pairing.connection);
+                mainHandler.post(() -> {
+                    if (selectedHost != null && host.uuid.equals(selectedHost.uuid)) {
+                        renderGatewayProfile(selectedHost);
+                        showHostIntegrations();
+                    }
+                    Toast.makeText(this, "Host Gateway paired.", Toast.LENGTH_SHORT).show();
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> Toast.makeText(this,
+                        "Pairing failed: " + friendlyGatewayError(error),
+                        Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
+    private static String friendlyGatewayError(Throwable error) {
+        String message = error == null ? null : error.getMessage();
+        return message == null || message.trim().isEmpty() ?
+                "Host Gateway is unavailable." : message;
     }
 
     private void refreshHostIntegrations(String hostUuid, GatewayConnection connection) {
