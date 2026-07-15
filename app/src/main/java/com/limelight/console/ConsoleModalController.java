@@ -17,6 +17,11 @@ final class ConsoleModalController {
     private final ConsoleTheme theme;
     private final float density;
     private View returnFocus;
+    private String integrationHostUuid;
+    private TextView gatewayStatus;
+    private TextView profileStatus;
+    private TextView servicesStatus;
+    private Runnable onDismiss;
 
     ConsoleModalController(Context context, FrameLayout layer,
                            InputRouter inputRouter, ConsoleTheme theme) {
@@ -35,6 +40,7 @@ final class ConsoleModalController {
 
     void showExitConfirmation(View focusToRestore, Runnable exitAction) {
         begin(focusToRestore);
+        integrationHostUuid = null;
         LinearLayout panel = panel();
         panel.addView(label("EXIT MOONWAKER?", 24, Color.WHITE, true), wrap());
         panel.addView(label("An active host application will not be stopped.",
@@ -49,19 +55,24 @@ final class ConsoleModalController {
         showAndFocus(cancel);
     }
 
-    void showHostIntegrations(View focusToRestore, String hostName,
+    void showHostIntegrations(View focusToRestore, String hostUuid, String hostName,
                               HostIntegrationSummary summary,
-                              Runnable useDefaultProfile) {
+                              Runnable useDefaultProfile, Runnable dismissAction) {
         begin(focusToRestore);
+        integrationHostUuid = hostUuid;
+        onDismiss = dismissAction;
         LinearLayout panel = panel();
         panel.setPadding(dp(42), dp(48), dp(42), dp(38));
         panel.setBackgroundColor(0xFF111522);
         panel.addView(label("HOST INTEGRATIONS", 26, Color.WHITE, true), wrap());
         panel.addView(label(hostName, 16, 0xFFB99CFF, true), top(dp(8)));
-        panel.addView(label(summary.gatewayLabel(), 15,
-                summary.gatewayPaired ? 0xFF69F0AE : 0xFFFFB74D, true), top(dp(28)));
-        panel.addView(label(summary.profileLabel(), 14, 0xFFE1E5F2, true), top(dp(14)));
-        panel.addView(label(summary.servicesLabel(), 14, 0xFF9CA6C5, false), top(dp(20)));
+        gatewayStatus = label(summary.gatewayLabel(), 15,
+                summary.gatewayPaired ? 0xFF69F0AE : 0xFFFFB74D, true);
+        profileStatus = label(summary.profileLabel(), 14, 0xFFE1E5F2, true);
+        servicesStatus = label(summary.servicesLabel(), 14, 0xFF9CA6C5, false);
+        panel.addView(gatewayStatus, top(dp(28)));
+        panel.addView(profileStatus, top(dp(14)));
+        panel.addView(servicesStatus, top(dp(20)));
 
         TextView useDefault = card("USE DEFAULT PROFILE", dp(340), dp(56));
         boolean canUseDefault = summary.gatewayPaired &&
@@ -77,18 +88,39 @@ final class ConsoleModalController {
         showAndFocus(canUseDefault ? useDefault : close);
     }
 
+    boolean updateHostIntegrations(String hostUuid, HostIntegrationSummary summary) {
+        if (layer.getVisibility() != View.VISIBLE || integrationHostUuid == null ||
+                !integrationHostUuid.equals(hostUuid) || summary == null) return false;
+        gatewayStatus.setText(summary.gatewayLabel());
+        gatewayStatus.setTextColor(summary.gatewayPaired ? 0xFF69F0AE : 0xFFFFB74D);
+        profileStatus.setText(summary.profileLabel());
+        servicesStatus.setText(summary.servicesLabel());
+        return true;
+    }
+
     void hide() {
         layer.removeAllViews();
         layer.setVisibility(View.GONE);
         inputRouter.routeTo(InputRouter.Region.HOME);
         View restore = returnFocus;
         returnFocus = null;
+        integrationHostUuid = null;
+        gatewayStatus = null;
+        profileStatus = null;
+        servicesStatus = null;
+        Runnable dismissAction = onDismiss;
+        onDismiss = null;
+        if (dismissAction != null) dismissAction.run();
         if (restore != null && restore.isShown()) restore.requestFocus();
     }
 
     private void begin(View focusToRestore) {
         boolean replacingVisiblePanel = layer.getVisibility() == View.VISIBLE;
         layer.removeAllViews();
+        gatewayStatus = null;
+        profileStatus = null;
+        servicesStatus = null;
+        onDismiss = null;
         if (!replacingVisiblePanel || returnFocus == null) returnFocus = focusToRestore;
         View dim = new View(context);
         dim.setBackgroundColor(0xA005060A);

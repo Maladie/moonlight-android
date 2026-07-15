@@ -43,6 +43,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleTheme consoleTheme;
     private ConsoleModalController modalController;
     private ConsoleOverlayController overlayController;
+    private GatewayProfileRefreshController gatewayProfileRefreshController;
     private FrameLayout root;
     private SurfaceView streamSurface;
     private View privacyLayer;
@@ -70,6 +71,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         artworkController = new ConsoleArtworkController(this, artworkBackdrop, artworkHero);
         modalController = new ConsoleModalController(
                 this, (FrameLayout) modalLayer, inputRouter, consoleTheme);
+        gatewayProfileRefreshController = new GatewayProfileRefreshController();
         renderSnapshot();
     }
 
@@ -108,6 +110,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             streamSurface.getHolder().removeCallback(this);
         }
         if (artworkController != null) artworkController.destroy();
+        if (gatewayProfileRefreshController != null) gatewayProfileRefreshController.destroy();
         super.onDestroy();
     }
 
@@ -420,14 +423,35 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         GatewayConnection connection = hostGatewayStore.load(selectedHost.uuid);
         HostIntegrationSummary summary = HostIntegrationSummary.from(connection);
         String hostUuid = selectedHost.uuid;
-        modalController.showHostIntegrations(getCurrentFocus(), selectedHost.name, summary, () -> {
+        modalController.showHostIntegrations(getCurrentFocus(), hostUuid,
+                selectedHost.name, summary, () -> {
             hostGatewayStore.setSelectedIntegrationProfileId(
                     hostUuid, GatewayConnection.DEFAULT_PROFILE_ID);
             if (selectedHost != null && hostUuid.equals(selectedHost.uuid)) {
                 renderGatewayProfile(selectedHost);
                 showHostIntegrations();
             }
-        });
+        }, gatewayProfileRefreshController::cancel);
+        if (connection != null) refreshHostIntegrations(hostUuid, connection);
+    }
+
+    private void refreshHostIntegrations(String hostUuid, GatewayConnection connection) {
+        gatewayProfileRefreshController.refresh(connection,
+                new GatewayProfileRefreshController.Callback() {
+                    @Override public void onLoaded(IntegrationProfileCatalog catalog) {
+                        if (selectedHost == null || !hostUuid.equals(selectedHost.uuid)) return;
+                        IntegrationProfileStatus profile = catalog.find(connection.profileId);
+                        HostIntegrationSummary refreshed =
+                                HostIntegrationSummary.from(connection, profile);
+                        if (modalController.updateHostIntegrations(hostUuid, refreshed)) {
+                            renderGatewayProfile(selectedHost, refreshed);
+                        }
+                    }
+
+                    @Override public void onUnavailable() {
+                        // The existing local summary already communicates refresh availability.
+                    }
+                });
     }
 
     private void applyTvWindow() {
