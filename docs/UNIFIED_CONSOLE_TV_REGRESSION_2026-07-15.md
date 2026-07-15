@@ -125,3 +125,25 @@ Material differences:
 4. Add Retry/Home/Disconnect recovery and distinct Disconnect/Quit actions.
 5. Repeat A-F, including screen off/on, active video/input verification and the
    physical overlay gesture, before enabling the unified runtime by default.
+
+## v10 corrective run — 2026-07-15
+
+This run supersedes the earlier black-screen and lifecycle results above where
+they conflict. Candidate v10 contains `82aaed86`, `f9a0dee2`, and `01d283af`.
+
+| Result | Scenario | Direct evidence |
+| --- | --- | --- |
+| PASS | Full Home composition after focus change | ADB capture after DPAD focus change retained the complete Home; no focused-card-only damage remained. |
+| PASS | Initial decoder target | `target_console_staged` occurred before connect with one successful target change and zero failures. The prior null `SurfaceHolder` crash no longer occurred. |
+| PASS | Real stream image | TV capture contained the Windows lock-screen image at 1920x1080 rather than a black frame. |
+| PASS | Stream → Home | Home became opaque and reported `SESSION · STREAMING` while the same session remained connected. |
+| PASS | Home → Stream | `RETURN TO GAME` exposed the same live image without a second connection or Activity. |
+| PASS | Disconnect transport | Confirmed `DISCONNECT STREAM` produced `disconnect_requested`, clean stream shutdown, decoder teardown and `session_detached`; Home returned to `SESSION · ENDED`. |
+| PASS | Host app preserved by disconnect | Only transport disconnect was invoked; the distinct quit-host action was not selected. Home retained `RESUME LAST`. |
+
+The black-screen root cause was a combination of two regressions: opaque/persistent
+Android hardware layers over the `SurfaceView`, and deferring the initial render
+target until after MediaCodec creation even though MediaCodec requires that target
+during `setup()`. The unified path now mirrors the proven `Game` ordering: stage
+the initial holder first, then use runtime output-surface switching only after the
+decoder exists.
