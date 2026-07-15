@@ -16,10 +16,17 @@ final class ConsoleDataRepository {
         final String uuid;
         final String name;
         final String address;
+        final int port;
+        final String macAddress;
         Host(String uuid, String name, String address) {
+            this(uuid, name, address, 0, null);
+        }
+        Host(String uuid, String name, String address, int port, String macAddress) {
             this.uuid = uuid;
             this.name = name;
             this.address = address;
+            this.port = port;
+            this.macAddress = macAddress;
         }
     }
 
@@ -74,8 +81,10 @@ final class ConsoleDataRepository {
                 String local = text(cursor, "local_address");
                 String manual = text(cursor, "manual_address");
                 if (uuid != null && name != null) {
-                    result.add(new Host(uuid, name,
-                            local != null && !local.isEmpty() ? local : manual));
+                    boolean useLocal = local != null && !local.isEmpty();
+                    result.add(new Host(uuid, name, useLocal ? local : manual,
+                            number(cursor, useLocal ? "local_port" : "manual_port", 0),
+                            text(cursor, "mac_address")));
                 }
             }
         }
