@@ -185,6 +185,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         hostSelectionController = new ConsoleHostSelectionController(
                 repository, selectionStore, launchHistoryStore);
         consoleTheme = new ConsoleTheme(this);
+        applyInterfacePreferences();
         setContentView(buildRoot());
         streamRuntime = createStreamRuntime();
         artworkController = new ConsoleArtworkController(this, artworkBackdrop, artworkHero);
@@ -1598,16 +1599,25 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         boolean uiSounds = preferences.getBoolean("ui_sounds", true);
         boolean reducedMotion = preferences.getBoolean("reduced_motion", false);
         modalController.showOptions(getCurrentFocus(), uiSounds, reducedMotion,
-                () -> {
-                    preferences.edit().putBoolean("ui_sounds", !uiSounds).apply();
-                    showOptions();
+                enabled -> {
+                    preferences.edit().putBoolean("ui_sounds", enabled).apply();
+                    applyInterfacePreferences();
                 },
-                () -> {
-                    preferences.edit().putBoolean("reduced_motion", !reducedMotion).apply();
-                    showOptions();
+                enabled -> {
+                    preferences.edit().putBoolean("reduced_motion", enabled).apply();
+                    applyInterfacePreferences();
                 },
                 this::showHostIntegrations,
                 () -> startActivity(new Intent(this, StreamSettings.class)));
+    }
+
+    private void applyInterfacePreferences() {
+        android.content.SharedPreferences preferences =
+                getSharedPreferences("launch_history", MODE_PRIVATE);
+        consoleTheme.setInterfacePreferences(
+                preferences.getBoolean("ui_sounds", true),
+                preferences.getBoolean("reduced_motion", false));
+        consoleTheme.applyInterfacePreferences(root);
     }
 
     private void endActiveSession(boolean quitHostApplication) {
@@ -1918,12 +1928,28 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                             null, actions.toArray(new View[0]));
                 });
             } catch (Exception error) {
-                mainHandler.post(() -> showDiscordLoadError(
-                        "Servers", error,
-                        () -> showDiscordServersPanel(host, connection, true),
-                        null));
+                mainHandler.post(() -> showDiscordStartupPanel(
+                        host, connection, error));
             }
         });
+    }
+
+    private void showDiscordStartupPanel(ConsoleDataRepository.Host host,
+                                         HostGatewayClient.Connection connection,
+                                         Throwable error) {
+        TextView status = modalController.wakeStatus(
+                "Discord is not ready on this host.\n" + friendlyGatewayError(error));
+        TextView start = modalController.wakeAction("START DISCORD ON HOST");
+        TextView retry = modalController.wakeAction("RETRY");
+        start.setOnClickListener(view -> runGatewayOperation("Starting Discord\u2026",
+                () -> hostGatewayClient.startDiscord(connection),
+                () -> mainHandler.postDelayed(
+                        () -> showDiscordServersPanel(host, connection, true), 2_500L)));
+        retry.setOnClickListener(view ->
+                showDiscordServersPanel(host, connection, true));
+        modalController.showWakePanel(getCurrentFocus(), "DISCORD", "Start Discord",
+                host.name + "  \u00B7  Profile " + connection.profileId,
+                null, status, start, retry);
     }
 
     private void showDiscordChannelsPanel(ConsoleDataRepository.Host host,

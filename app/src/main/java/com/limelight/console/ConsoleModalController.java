@@ -86,15 +86,28 @@ final class ConsoleModalController {
     }
 
     void showOptions(View focusToRestore, boolean uiSounds, boolean reducedMotion,
-                     Runnable toggleSounds, Runnable toggleMotion,
+                     Consumer<Boolean> setSounds, Consumer<Boolean> setMotion,
                      Runnable hostIntegrations, Runnable moonlightSettings) {
         begin(focusToRestore);
         integrationHostUuid = null;
         TextView sounds = wakeAction("UI SOUNDS  \u00B7  " + (uiSounds ? "ON" : "OFF"));
-        sounds.setOnClickListener(view -> toggleSounds.run());
+        boolean[] soundsEnabled = {uiSounds};
+        sounds.setOnClickListener(view -> {
+            soundsEnabled[0] = !soundsEnabled[0];
+            setSounds.accept(soundsEnabled[0]);
+            sounds.setText("UI SOUNDS  \u00B7  " + (soundsEnabled[0] ? "ON" : "OFF"));
+            theme.prepareInteractiveView(sounds);
+            sounds.requestFocus();
+        });
         TextView motion = wakeAction("REDUCED MOTION  \u00B7  " +
                 (reducedMotion ? "ON" : "OFF"));
-        motion.setOnClickListener(view -> toggleMotion.run());
+        boolean[] motionReduced = {reducedMotion};
+        motion.setOnClickListener(view -> {
+            motionReduced[0] = !motionReduced[0];
+            setMotion.accept(motionReduced[0]);
+            motion.setText("REDUCED MOTION  \u00B7  " + (motionReduced[0] ? "ON" : "OFF"));
+            motion.requestFocus();
+        });
         TextView integrations = wakeAction("HOST INTEGRATIONS  \u203A");
         integrations.setOnClickListener(view -> hostIntegrations.run());
         TextView moonlight = wakeAction("MOONLIGHT SETTINGS  \u203A");
@@ -474,7 +487,7 @@ final class ConsoleModalController {
         TextView action = label(value, 14, 0xFFF0E9FF, true);
         action.setFocusable(true);
         action.setClickable(true);
-        action.setSoundEffectsEnabled(false);
+        theme.prepareInteractiveView(action);
         action.setMinHeight(dp(44));
         action.setPadding(dp(16), dp(7), dp(16), dp(7));
         action.setOnFocusChangeListener((view, focused) -> styleWakeAction(action, focused));
@@ -502,6 +515,7 @@ final class ConsoleModalController {
         TextView action = label(value, 14, Color.WHITE, true);
         action.setFocusable(true);
         action.setClickable(true);
+        theme.prepareInteractiveView(action);
         action.setMinHeight(dp(48));
         action.setGravity(Gravity.CENTER_VERTICAL);
         action.setPadding(dp(16), dp(8), dp(16), dp(8));
@@ -644,6 +658,7 @@ final class ConsoleModalController {
         view.setPadding(dp(16), dp(8), dp(16), dp(8));
         view.setFocusable(true);
         view.setClickable(true);
+        theme.prepareInteractiveView(view);
         view.setMinWidth(width);
         view.setMinHeight(height);
         view.setBackground(theme.cardBackground());

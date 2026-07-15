@@ -4,13 +4,36 @@ import android.content.Context;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.view.View;
+import android.view.ViewGroup;
 
 /** Wake-derived glass card focus and pressed states for the unified Home. */
 final class ConsoleTheme {
     private final float density;
+    private boolean uiSounds = true;
+    private boolean reducedMotion;
 
     ConsoleTheme(Context context) {
         density = context.getResources().getDisplayMetrics().density;
+    }
+
+    void setInterfacePreferences(boolean uiSounds, boolean reducedMotion) {
+        this.uiSounds = uiSounds;
+        this.reducedMotion = reducedMotion;
+    }
+
+    void prepareInteractiveView(View view) {
+        view.setSoundEffectsEnabled(uiSounds);
+    }
+
+    void applyInterfacePreferences(View root) {
+        if (root == null) return;
+        if (root.isClickable() || root.isFocusable()) prepareInteractiveView(root);
+        if (root instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) root;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                applyInterfacePreferences(group.getChildAt(index));
+            }
+        }
     }
 
     StateListDrawable cardBackground() {
@@ -31,11 +54,12 @@ final class ConsoleTheme {
     }
 
     void onCardFocus(View card, boolean focused) {
+        prepareInteractiveView(card);
         card.animate().cancel();
         card.setElevation(dp(focused ? 9 : 3));
         card.setTranslationZ(dp(focused ? 2 : 0));
         float scale = focused ? 1.018f : 1f;
-        if (card.isLaidOut()) {
+        if (!reducedMotion && card.isLaidOut()) {
             card.animate().scaleX(scale).scaleY(scale).setDuration(120).start();
         }
         else {
