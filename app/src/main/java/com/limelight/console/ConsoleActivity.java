@@ -371,18 +371,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void renderSession(ConsoleDataRepository.Session session) {
-        if (session == null || session.state == null) {
-            sessionStatus.setText("SESSION · STATUS UNAVAILABLE");
-            returnToGame.setVisibility(View.GONE);
-            return;
-        }
-        StringBuilder text = new StringBuilder("SESSION · ").append(session.state.toUpperCase(Locale.ROOT));
-        if (session.app != null && !session.app.isEmpty()) text.append(" · ").append(session.app);
-        if (session.width > 0) text.append(" · ").append(session.width).append('×').append(session.height)
-                .append(" @ ").append(session.fps);
-        sessionStatus.setText(text);
-        sessionStatus.setTextColor(session.alive ? 0xFF69F0AE : 0xFF9CA6C5);
-        returnToGame.setVisibility(session.alive ? View.VISIBLE : View.GONE);
+        ConsoleSessionSummary summary = ConsoleSessionSummary.from(session);
+        sessionStatus.setText(summary.label);
+        sessionStatus.setTextColor(summary.alive ? 0xFF69F0AE : 0xFF9CA6C5);
+        returnToGame.setVisibility(summary.alive ? View.VISIBLE : View.GONE);
     }
 
     private void returnToActiveStream() {
