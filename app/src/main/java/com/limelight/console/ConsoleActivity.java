@@ -904,25 +904,40 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void confirmSleepHost(ConsoleDataRepository.Host host) {
-        ConsoleDataRepository.App sleepApp = findSleepApp(host);
-        if (sleepApp == null) {
-            Toast.makeText(this, "Sleep PC is not available for " + host.name,
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(host.uuid);
+        if (connection == null) {
+            Toast.makeText(this, "Pair this host's Gateway before using Sleep.",
                     Toast.LENGTH_LONG).show();
             return;
         }
         new AlertDialog.Builder(this)
                 .setTitle("Sleep " + host.name + "?")
-                .setMessage("MoonWaker will run the existing Sleep PC action from Moonlight.")
+                .setMessage("The host will sleep without starting a Moonlight stream.")
                 .setNegativeButton("CANCEL", null)
-                .setPositiveButton("SLEEP", (dialog, which) -> launchLegacy(host, sleepApp))
+                .setPositiveButton("SLEEP", (dialog, which) ->
+                        requestHostSleep(host, connection))
                 .show();
     }
 
-    private ConsoleDataRepository.App findSleepApp(ConsoleDataRepository.Host host) {
-        for (ConsoleDataRepository.App app : repository.apps(host)) {
-            if ("Sleep PC".equalsIgnoreCase(app.name.trim())) return app;
-        }
-        return null;
+    private void requestHostSleep(ConsoleDataRepository.Host host,
+                                  HostGatewayClient.Connection connection) {
+        Toast.makeText(this, "Requesting sleep for " + host.name + "…",
+                Toast.LENGTH_SHORT).show();
+        integrationExecutor.execute(() -> {
+            try {
+                hostGatewayClient.sleepHost(connection);
+                runOnUiThread(() -> {
+                    Toast.makeText(this, "Sleep request accepted by " + host.name,
+                            Toast.LENGTH_LONG).show();
+                    mainHandler.postDelayed(this::refreshHostAvailability, 1_500L);
+                });
+            } catch (Exception error) {
+                runOnUiThread(() -> Toast.makeText(this,
+                        "Unable to sleep " + host.name + ": " + friendlyGatewayError(error),
+                        Toast.LENGTH_LONG).show());
+            }
+        });
     }
 
     private View addHostCard() {

@@ -435,6 +435,11 @@ final class HostGatewayClient {
                 "export-logs".equals(action) ? 25_000 : 8_000);
     }
 
+    JSONObject sleepHost(Connection connection) throws IOException {
+        return request(connection.endpoint, "/api/v1/system/sleep", "POST",
+                new JSONObject(), connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+    }
+
     DiscordStatus getDiscordStatus(Connection connection) throws IOException {
         JSONObject response = request(connection.endpoint, "/api/v1/discord/status", "GET",
                 null, connection, pinnedTrust(connection), READ_TIMEOUT_MS);
@@ -905,4 +910,3 @@ final class HostGatewayClient {
         }
     }
 }
-
