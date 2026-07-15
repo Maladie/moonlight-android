@@ -61,7 +61,8 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
     }
 
     @Override public synchronized boolean handleKeyEvent(KeyEvent event) {
-        if (closed || event == null) return false;
+        if (closed || event == null ||
+                !ControllerHandler.isGameControllerDevice(event.getDevice())) return false;
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             return controllers.handleButtonDown(event);
         }
@@ -73,7 +74,15 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
 
     @Override public synchronized boolean handleMotionEvent(MotionEvent event) {
         if (closed || event == null) return false;
-        return controllers.handleMotionEvent(event) || controllers.tryHandleTouchpadEvent(event);
+        int source = event.getSource();
+        int deviceSources = event.getDevice() != null ? event.getDevice().getSources() : 0;
+        if ((source & android.view.InputDevice.SOURCE_CLASS_JOYSTICK) != 0) {
+            return controllers.handleMotionEvent(event);
+        }
+        if ((deviceSources & android.view.InputDevice.SOURCE_CLASS_JOYSTICK) != 0) {
+            return controllers.tryHandleTouchpadEvent(event);
+        }
+        return false;
     }
 
     @Override public synchronized List<ControllerHandler.ControllerBatteryInfo>

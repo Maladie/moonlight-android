@@ -58,7 +58,8 @@ final class ConsoleControllerRepository {
                     if (!Float.isNaN(battery.getCapacity())) {
                         percentage = Math.round(battery.getCapacity() * 100f);
                     }
-                    charging = battery.getStatus() == BatteryState.STATUS_CHARGING;
+                    charging = battery.getStatus() == BatteryState.STATUS_CHARGING ||
+                            battery.getStatus() == BatteryState.STATUS_FULL;
                 }
             }
             controllers.add(new Controller(device.getId(), device.getName(), percentage, charging));
@@ -73,8 +74,10 @@ final class ConsoleControllerRepository {
 
     static boolean isGamepad(InputDevice device) {
         int sources = device.getSources();
-        return (sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
-                (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
+        return ((sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+                (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK) &&
+                device.getMotionRange(android.view.MotionEvent.AXIS_X) != null &&
+                device.getMotionRange(android.view.MotionEvent.AXIS_Y) != null;
     }
 
     private static boolean isVirtual(String name) {

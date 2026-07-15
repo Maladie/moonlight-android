@@ -98,7 +98,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             this.status = status;
         }
 
-        public boolean isCharging() { return status == BatteryState.STATUS_CHARGING; }
+        public boolean isCharging() {
+            return status == BatteryState.STATUS_CHARGING || status == BatteryState.STATUS_FULL;
+        }
         public boolean isFull() { return status == BatteryState.STATUS_FULL; }
     }
 
@@ -369,7 +371,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         // Preserve real player numbers for controllers that have already sent input.
         for (int i = 0; i < inputDeviceContexts.size(); i++) {
             InputDeviceContext context = inputDeviceContexts.valueAt(i);
-            if (!context.assignedControllerNumber) {
+            if (!context.assignedControllerNumber || !context.hasJoystickAxes) {
                 continue;
             }
             displayedControllerNumbers[context.controllerNumber] = true;
