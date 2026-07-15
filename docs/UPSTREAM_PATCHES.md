@@ -143,6 +143,19 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
 - Removal: move the shared pinned request transport out of the Discord UI package
   when the final Gateway controller replaces both legacy clients.
 
+### P006 - Shared decoder video-format policy
+
+- Surface: `Game.java`.
+- Reason: move the pure HDR/HEVC/AV1 bitmask decision into
+  `StreamVideoFormatPolicy`, so the compatibility Game adapter and the future
+  in-Activity Console runtime use identical decoder negotiation.
+- Risk: an incorrect bitmask could advertise a codec/profile the decoder cannot
+  render or unnecessarily disable HDR.
+- Regression: exhaustive H.264/HEVC/AV1/Main10 policy tests, Java compilation,
+  and the existing decoder capability checks in `Game`.
+- Removal: none; this is a neutral session policy and should remain shared after
+  the Game Activity adapter is removed.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.
