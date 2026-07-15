@@ -59,6 +59,30 @@ final class ConsoleModalController {
         showAndFocus(cancel);
     }
 
+    void showSessionDetails(View focusToRestore, ConsoleSessionSummary summary,
+                            Runnable returnToGame) {
+        begin(focusToRestore);
+        integrationHostUuid = null;
+        LinearLayout panel = panel();
+        panel.setPadding(dp(42), dp(44), dp(42), dp(38));
+        panel.setBackgroundColor(0xFF111522);
+        panel.addView(label("ACTIVE SESSION", 26, Color.WHITE, true), wrap());
+        panel.addView(label(summary.label, 16, 0xFF69F0AE, true), top(dp(18)));
+        panel.addView(label("The stream transport remains connected while Console Home is open.",
+                14, 0xFF9CA6C5, false), top(dp(14)));
+        TextView resume = card("▶  RETURN TO GAME", dp(360), dp(58));
+        resume.setOnClickListener(view -> {
+            hide();
+            returnToGame.run();
+        });
+        panel.addView(resume, top(dp(28)));
+        TextView close = card("CLOSE", dp(360), dp(58));
+        close.setOnClickListener(view -> hide());
+        panel.addView(close, top(dp(10)));
+        layer.addView(panel, new FrameLayout.LayoutParams(dp(720), matchHeight(), Gravity.RIGHT));
+        showAndFocus(resume);
+    }
+
     void showHostIntegrations(View focusToRestore, String hostUuid, String hostName,
                               HostIntegrationSummary summary,
                               Runnable useDefaultProfile, Runnable dismissAction) {

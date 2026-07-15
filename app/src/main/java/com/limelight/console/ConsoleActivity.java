@@ -63,6 +63,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private TextView sessionStatus;
     private TextView integrationStatus;
     private TextView returnToGame;
+    private TextView sessionButton;
+    private ConsoleDataRepository.Session currentSession;
     private LinearLayout hostRow;
     private LinearLayout appRow;
     private LinearLayout controllerRow;
@@ -264,6 +266,15 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         returnToGame.setOnClickListener(view -> returnToActiveStream());
         quickActions.addView(returnToGame, wrap());
 
+        sessionButton = card("SESSION", dp(190), dp(54));
+        sessionButton.setId(View.generateViewId());
+        sessionButton.setContentDescription("Open active session details");
+        sessionButton.setVisibility(View.GONE);
+        sessionButton.setOnClickListener(view -> showSessionDetails());
+        LinearLayout.LayoutParams sessionButtonParams = wrap();
+        sessionButtonParams.leftMargin = dp(10);
+        quickActions.addView(sessionButton, sessionButtonParams);
+
         TextView integrations = card("HOST INTEGRATIONS  ›", dp(280), dp(54));
         integrations.setId(View.generateViewId());
         integrations.setContentDescription("Open host integrations");
@@ -271,8 +282,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         LinearLayout.LayoutParams integrationActionParams = wrap();
         integrationActionParams.leftMargin = dp(10);
         quickActions.addView(integrations, integrationActionParams);
-        returnToGame.setNextFocusRightId(integrations.getId());
-        integrations.setNextFocusLeftId(returnToGame.getId());
+        returnToGame.setNextFocusRightId(sessionButton.getId());
+        sessionButton.setNextFocusLeftId(returnToGame.getId());
+        sessionButton.setNextFocusRightId(integrations.getId());
+        integrations.setNextFocusLeftId(sessionButton.getId());
 
         controllersLabel = section("CONTROLLERS · NONE");
         content.addView(controllersLabel, top(dp(11)));
@@ -480,10 +493,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void renderSession(ConsoleDataRepository.Session session) {
+        currentSession = session;
         ConsoleSessionSummary summary = ConsoleSessionSummary.from(session);
         sessionStatus.setText(summary.label);
         sessionStatus.setTextColor(summary.alive ? 0xFF69F0AE : 0xFF9CA6C5);
         returnToGame.setVisibility(summary.alive ? View.VISIBLE : View.GONE);
+        sessionButton.setVisibility(summary.alive ? View.VISIBLE : View.GONE);
     }
 
     private void returnToActiveStream() {
@@ -522,6 +537,13 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void showExitConfirmation() {
         modalController.showExitConfirmation(getCurrentFocus(), this::finish);
+    }
+
+    private void showSessionDetails() {
+        ConsoleSessionSummary summary = ConsoleSessionSummary.from(currentSession);
+        if (!summary.alive) return;
+        modalController.showSessionDetails(getCurrentFocus(), summary,
+                this::returnToActiveStream);
     }
 
     private void showHostIntegrations() {
