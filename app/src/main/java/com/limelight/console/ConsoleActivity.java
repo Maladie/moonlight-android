@@ -121,8 +121,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ImageView artworkHero;
     private TextView sessionStatus;
     private TextView integrationStatus;
-    private TextView returnToGame;
-    private TextView sessionButton;
+    private LinearLayout returnToGame;
+    private TextView returnToGameTitle;
+    private TextView returnToGameSubtitle;
+    private LinearLayout sessionButton;
+    private TextView communityButton;
+    private TextView appsLabel;
     private ConsoleDataRepository.Session currentSession;
     private LinearLayout hostRow;
     private LinearLayout appRow;
@@ -666,16 +670,16 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         content.setClipChildren(false);
         content.setClipToPadding(false);
 
-        TextView title = label("MOONWAKER GAME APP", 30, Color.WHITE, true);
+        TextView title = label("MOONWAKER", 30, Color.WHITE, true);
         content.addView(title, wrap());
         TextView subtitle = label(
-                "Choose a host and application. MoonWaker will prepare and protect the stream.",
+                "Choose a host and application. We will wake the PC and start the stream.",
                 15, 0xFFBCC3DD, false);
         content.addView(subtitle, top(dp(5)));
 
-        sessionStatus = label("SESSION · LOADING", 13, 0xFF9CA6C5, true);
+        sessionStatus = label("MOONLIGHT · IDLE", 13, 0xFF9CA6C5, true);
         LinearLayout.LayoutParams sessionParams = wrap();
-        sessionParams.topMargin = dp(10);
+        sessionParams.topMargin = dp(9);
         content.addView(sessionStatus, sessionParams);
 
         integrationStatus = label("HOST INTEGRATIONS · SELECT A HOST", 12, 0xFF9CA6C5, true);
@@ -683,9 +687,24 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         LinearLayout quickActions = new LinearLayout(this);
         quickActions.setOrientation(LinearLayout.HORIZONTAL);
         quickActions.setGravity(Gravity.CENTER_VERTICAL);
-        content.addView(quickActions, top(dp(8)));
+        content.addView(quickActions, top(dp(6)));
 
-        returnToGame = card("▶  RETURN TO GAME", dp(280), dp(54));
+        returnToGame = new LinearLayout(this);
+        returnToGame.setOrientation(LinearLayout.VERTICAL);
+        returnToGame.setGravity(Gravity.CENTER_VERTICAL);
+        returnToGame.setFocusable(true);
+        returnToGame.setClickable(true);
+        returnToGame.setSoundEffectsEnabled(false);
+        returnToGame.setMinimumWidth(dp(260));
+        returnToGame.setMinimumHeight(dp(54));
+        returnToGame.setPadding(dp(20), dp(6), dp(20), dp(6));
+        returnToGameTitle = label("\u25B6  RETURN TO GAME", 15, 0xFFF7F2FF, true);
+        returnToGameSubtitle = label("", 11, 0xFFC8BCE8, false);
+        returnToGame.addView(returnToGameTitle, wrap());
+        returnToGame.addView(returnToGameSubtitle, top(dp(2)));
+        returnToGame.setOnFocusChangeListener((view, focused) ->
+                stylePrimaryButton(returnToGame, focused));
+        stylePrimaryButton(returnToGame, false);
         returnToGame.setId(View.generateViewId());
         returnToGame.setContentDescription("Return to active game");
         returnToGame.setVisibility(View.GONE);
@@ -698,7 +717,25 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         });
         quickActions.addView(returnToGame, wrap());
 
-        sessionButton = card("SESSION", dp(190), dp(54));
+        sessionButton = new LinearLayout(this);
+        sessionButton.setOrientation(LinearLayout.HORIZONTAL);
+        sessionButton.setGravity(Gravity.CENTER);
+        sessionButton.setFocusable(true);
+        sessionButton.setClickable(true);
+        sessionButton.setSoundEffectsEnabled(false);
+        sessionButton.setMinimumHeight(dp(54));
+        sessionButton.setPadding(dp(16), dp(6), dp(16), dp(6));
+        ImageView sessionIcon = new ImageView(this);
+        sessionIcon.setImageResource(com.limelight.R.drawable.ic_active_session);
+        sessionIcon.setColorFilter(0xFFDCCFFF);
+        LinearLayout.LayoutParams sessionIconParams =
+                new LinearLayout.LayoutParams(dp(24), dp(24));
+        sessionIconParams.rightMargin = dp(9);
+        sessionButton.addView(sessionIcon, sessionIconParams);
+        sessionButton.addView(label("SESSION", 14, 0xFFF1EAFF, true), wrap());
+        sessionButton.setOnFocusChangeListener((view, focused) ->
+                styleCompactButton(sessionButton, focused));
+        styleCompactButton(sessionButton, false);
         sessionButton.setId(View.generateViewId());
         sessionButton.setContentDescription("Open active session details");
         sessionButton.setVisibility(View.GONE);
@@ -707,10 +744,6 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         sessionButtonParams.leftMargin = dp(10);
         quickActions.addView(sessionButton, sessionButtonParams);
 
-        TextView integrations = card("INTEGRATIONS", dp(170), dp(44));
-        integrations.setId(View.generateViewId());
-        integrations.setContentDescription("Open host integrations");
-        integrations.setOnClickListener(view -> showHostIntegrations());
         returnToGame.setNextFocusRightId(sessionButton.getId());
         sessionButton.setNextFocusLeftId(returnToGame.getId());
 
@@ -733,7 +766,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         hostScrollParams.topMargin = dp(6);
         content.addView(hostScroll, hostScrollParams);
 
-        content.addView(section("APPS"), top(dp(10)));
+        appsLabel = section("APPS");
+        content.addView(appsLabel, top(dp(10)));
         HorizontalScrollView appScroll = horizontalScroll();
         appScroll.setPadding(0, 0, dp(12), dp(10));
         appRow = horizontalRow();
@@ -745,20 +779,25 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
         home.addView(content, new FrameLayout.LayoutParams(matchWidth(), matchHeight()));
 
-        TextView options = card("⚙  OPTIONS", dp(150), dp(44));
+        communityButton = compactHomeAction("\u25CF  DISCORD");
+        communityButton.setVisibility(View.GONE);
+        communityButton.setContentDescription("Open Discord");
+        communityButton.setOnClickListener(view -> showDiscordPanel());
+        TextView options = compactHomeAction("\u2699  OPTIONS");
         options.setId(View.generateViewId());
         options.setContentDescription("Open MoonWaker options");
         options.setOnClickListener(view -> showOptions());
         LinearLayout topActions = new LinearLayout(this);
         topActions.setOrientation(LinearLayout.HORIZONTAL);
         topActions.setGravity(Gravity.CENTER_VERTICAL);
-        LinearLayout.LayoutParams integrationsParams = wrap();
-        integrationsParams.rightMargin = dp(10);
-        topActions.addView(integrations, integrationsParams);
+        communityButton.setId(View.generateViewId());
+        LinearLayout.LayoutParams communityParams = wrap();
+        communityParams.rightMargin = dp(10);
+        topActions.addView(communityButton, communityParams);
         topActions.addView(options, wrap());
-        integrations.setNextFocusRightId(options.getId());
-        options.setNextFocusLeftId(integrations.getId());
-        integrations.setNextFocusDownId(returnToGame.getId());
+        communityButton.setNextFocusRightId(options.getId());
+        options.setNextFocusLeftId(communityButton.getId());
+        communityButton.setNextFocusDownId(returnToGame.getId());
         options.setNextFocusDownId(returnToGame.getId());
         FrameLayout.LayoutParams optionsParams = new FrameLayout.LayoutParams(
                 wrapSize(), wrapSize(), Gravity.TOP | Gravity.RIGHT);
@@ -856,7 +895,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                         result.get(host.uuid);
                 TextView status = hostStatusViews.get(host.uuid);
                 if (availability != null && status != null) {
-                    status.setText(availability.label());
+                    String played = launchHistoryStore.hostMetadata(
+                            host.uuid, System.currentTimeMillis());
+                    status.setText(availability.label() +
+                            (played.isEmpty() ? "" : " · " + played));
                     status.setTextColor(availability.color());
                 }
             }
@@ -889,6 +931,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private void renderApps(ConsoleDataRepository.Host host,
                             List<ConsoleDataRepository.App> apps) {
         appRow.removeAllViews();
+        appsLabel.setText(host == null ? "APPS" :
+                "APPS · " + host.name.toUpperCase(Locale.ROOT));
         if (apps.isEmpty()) {
             appRow.addView(label("No cached applications. Refresh this host in Moonlight.",
                     16, 0xFFFFB74D, false), cardParams());
@@ -1111,31 +1155,38 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         if (integrationStatus == null) return;
         if (host == null) {
             integrationStatus.setText("HOST INTEGRATIONS · SELECT A HOST");
+            communityButton.setVisibility(View.GONE);
             return;
         }
         if (!summary.gatewayPaired) {
             integrationStatus.setText("HOST INTEGRATIONS · GATEWAY NOT PAIRED");
             integrationStatus.setTextColor(0xFF9CA6C5);
+            communityButton.setVisibility(View.GONE);
         }
         else {
             integrationStatus.setText("HOST INTEGRATIONS · PROFILE " +
                     summary.profileId.toUpperCase(Locale.ROOT) + " · GATEWAY PAIRED");
             integrationStatus.setTextColor(0xFF69F0AE);
+            communityButton.setVisibility(View.VISIBLE);
         }
     }
 
     private void renderSession(ConsoleDataRepository.Session session) {
         currentSession = session;
         ConsoleSessionSummary summary = ConsoleSessionSummary.from(session);
-        sessionStatus.setText(summary.label);
+        String state = session != null && session.state != null ?
+                session.state.toUpperCase(Locale.ROOT) : "IDLE";
+        sessionStatus.setText("MOONLIGHT · " + state);
         sessionStatus.setTextColor(summary.alive ? 0xFF69F0AE : 0xFF9CA6C5);
         if (summary.alive) {
             String app = session != null && session.app != null ? session.app : "ACTIVE SESSION";
-            returnToGame.setText("▶  RETURN TO GAME\n" + app);
+            returnToGameTitle.setText("\u25B6  RETURN TO GAME");
+            returnToGameSubtitle.setText(app);
             returnToGame.setContentDescription("Return to active game, " + app);
             returnToGame.setVisibility(View.VISIBLE);
         } else if (resumeHost != null && resumeApp != null) {
-            returnToGame.setText("▶  RESUME LAST\n" + resumeApp.name);
+            returnToGameTitle.setText("\u25B6  RESUME LAST");
+            returnToGameSubtitle.setText(resumeApp.name);
             returnToGame.setContentDescription("Resume last game, " + resumeApp.name);
             returnToGame.setVisibility(View.VISIBLE);
         } else {
@@ -2399,6 +2450,56 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
     }
 
+    private TextView compactHomeAction(String value) {
+        TextView action = label(value, 13, 0xFFD2C4FF, true);
+        action.setFocusable(true);
+        action.setClickable(true);
+        action.setSoundEffectsEnabled(false);
+        action.setPadding(dp(12), dp(5), dp(12), dp(5));
+        action.setOnFocusChangeListener((view, focused) ->
+                styleCompactButton(action, focused));
+        styleCompactButton(action, false);
+        return action;
+    }
+
+    private void stylePrimaryButton(View button, boolean focused) {
+        int top = ConsolePalette.withAlpha(ConsolePalette.blend(
+                0xFF644FA0, ConsolePalette.ACCENT, 0.42f), focused ? 0xE0 : 0xA9);
+        int bottom = ConsolePalette.withAlpha(ConsolePalette.blend(
+                0xFF42366D, ConsolePalette.ACCENT, 0.28f), focused ? 0xCA : 0x8F);
+        GradientDrawable background = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM, new int[]{top, bottom});
+        background.setCornerRadius(dp(12));
+        background.setStroke(dp(focused ? 2 : 1),
+                focused ? 0xFFF0EBFF : 0x706E5AA4);
+        button.setBackground(background);
+        button.setElevation(dp(focused ? 8 : 3));
+        button.animate().cancel();
+        float scale = focused ? 1.01f : 1f;
+        if (button.isLaidOut()) {
+            button.animate().scaleX(scale).scaleY(scale).setDuration(120).start();
+        } else {
+            button.setScaleX(scale);
+            button.setScaleY(scale);
+        }
+    }
+
+    private void styleCompactButton(View button, boolean focused) {
+        int top = ConsolePalette.withAlpha(ConsolePalette.blend(
+                0xFF58478F, ConsolePalette.ACCENT, 0.38f), focused ? 0xC7 : 0x32);
+        int bottom = ConsolePalette.withAlpha(ConsolePalette.blend(
+                0xFF342B59, ConsolePalette.ACCENT, 0.22f), focused ? 0xB0 : 0x65);
+        GradientDrawable background = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM, new int[]{top, bottom});
+        background.setCornerRadius(dp(10));
+        background.setStroke(dp(focused ? 2 : 1),
+                focused ? 0xFFE9E3FF : 0x387C89B2);
+        button.setBackground(background);
+        button.animate().cancel();
+        button.setScaleX(1f);
+        button.setScaleY(1f);
+    }
+
     private TextView card(String value, int width, int height) {
         TextView view = label(value, 15, Color.WHITE, true);
         view.setGravity(Gravity.CENTER_VERTICAL);
@@ -2412,7 +2513,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         return view;
     }
 
-    private TextView section(String value) { return label(value, 12, 0xFFB99CFF, true); }
+    private TextView section(String value) { return label(value, 13, 0xFF9CA6C5, true); }
     private TextView label(String value, int sp, int color, boolean bold) {
         TextView view = new TextView(this);
         view.setText(value);

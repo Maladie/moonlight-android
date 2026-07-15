@@ -73,6 +73,16 @@ final class ConsoleLaunchHistoryStore {
                 formatRelative(Math.max(0L, now - timestamp)).toUpperCase(Locale.ROOT) : "READY";
     }
 
+    String hostMetadata(String hostUuid, long now) {
+        long timestamp = preferences.getLong(hostKey(hostUuid), 0L);
+        if (timestamp <= 0 && hostUuid != null &&
+                hostUuid.equals(preferences.getString(LAST_HOST_UUID, null))) {
+            timestamp = preferences.getLong(LAST_LAUNCH_AT, 0L);
+        }
+        return timestamp > 0 ? "Played " +
+                formatRelative(Math.max(0L, now - timestamp)) : "";
+    }
+
     static String formatRelative(long milliseconds) {
         long minutes = Math.max(0L, milliseconds / 60_000L);
         if (minutes < 1) return "just now";

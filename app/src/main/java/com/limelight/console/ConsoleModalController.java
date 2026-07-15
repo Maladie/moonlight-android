@@ -61,7 +61,7 @@ final class ConsoleModalController {
         showWakePanel("MOONWAKER", "Close MoonWaker?",
                 streamActive ? "The active stream will be disconnected." :
                         "Return to Android TV?",
-                null, wakeActionRow(cancel, exit));
+                () -> { }, wakeActionRow(cancel, exit));
     }
 
     void showSessionDetails(View focusToRestore, ConsoleSessionSummary summary,
