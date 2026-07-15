@@ -97,6 +97,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleTheme consoleTheme;
     private ConsoleModalController modalController;
     private OverlayMenuView overlayMenuView;
+    private TextView performanceOverlayView;
     private PreferenceConfiguration overlayPreferences;
     private LinearLayout discordDockView;
     private DiscordGatewayClient.Connection discordOverlayConnection;
@@ -301,6 +302,19 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         homeLayer.setElevation(dp(32));
         root.addView(homeLayer, match());
 
+        performanceOverlayView = label("", 10, Color.WHITE, false);
+        performanceOverlayView.setTypeface(android.graphics.Typeface.MONOSPACE);
+        performanceOverlayView.setGravity(Gravity.LEFT);
+        performanceOverlayView.setPadding(dp(2), dp(2), dp(2), dp(2));
+        performanceOverlayView.setBackgroundColor(0x60000000);
+        performanceOverlayView.setVisibility(View.GONE);
+        performanceOverlayView.setElevation(dp(38));
+        FrameLayout.LayoutParams performanceParams = new FrameLayout.LayoutParams(
+                wrapSize(), wrapSize(), Gravity.LEFT | Gravity.TOP);
+        performanceParams.leftMargin = dp(5);
+        performanceParams.topMargin = dp(5);
+        root.addView(performanceOverlayView, performanceParams);
+
         overlayMenuView = new OverlayMenuView(this);
         overlayMenuView.setVisibility(View.GONE);
         overlayLayer = overlayMenuView;
@@ -349,11 +363,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
             @Override public void onToggleStats() {
                 overlayPreferences.enablePerfOverlay = !overlayPreferences.enablePerfOverlay;
-                Toast.makeText(ConsoleActivity.this,
-                        overlayPreferences.enablePerfOverlay ?
-                                "Performance statistics enabled" :
-                                "Performance statistics disabled",
-                        Toast.LENGTH_SHORT).show();
+                updatePerformanceOverlayVisibility();
             }
 
             @Override public void onToggleMouseEmulation() {
@@ -422,6 +432,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void refreshDiscordStreamOverlay(boolean force) {
+        mainHandler.removeCallbacks(discordOverlayRefresh);
         if (discordOverlayConnection == null ||
                 !discordOverlayRefreshInFlight.compareAndSet(false, true)) return;
         DiscordGatewayClient.Connection connection = discordOverlayConnection;
@@ -458,8 +469,19 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     overlayMenuView.setDiscordState(discordOverlayVoice, resultError, false);
                 }
                 renderDiscordStreamDock();
+                scheduleDiscordStreamOverlayRefresh();
             });
         });
+    }
+
+    private void scheduleDiscordStreamOverlayRefresh() {
+        mainHandler.removeCallbacks(discordOverlayRefresh);
+        if (discordOverlayConnection != null &&
+                (overlayMenuView.getVisibility() == View.VISIBLE || discordDockEnabled) &&
+                (stateMachine.getState() == ConsoleStateMachine.State.STREAM ||
+                        stateMachine.getState() == ConsoleStateMachine.State.OVERLAY)) {
+            mainHandler.postDelayed(discordOverlayRefresh, 2000L);
+        }
     }
 
     private void runDiscordStreamOverlayAction(boolean mute) {
@@ -511,6 +533,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         overlayMenuView.setDiscordDocked(enabled);
         renderDiscordStreamDock();
         if (enabled) refreshDiscordStreamOverlay(true);
+        else scheduleDiscordStreamOverlayRefresh();
     }
 
     private void renderDiscordStreamDock() {
@@ -547,6 +570,16 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         view.setTextColor(color);
         if (bold) view.setTypeface(view.getTypeface(), android.graphics.Typeface.BOLD);
         return view;
+    }
+
+    private void updatePerformanceOverlayVisibility() {
+        if (performanceOverlayView == null || overlayPreferences == null) return;
+        ConsoleStateMachine.State state = stateMachine.getState();
+        boolean streamVisible = state == ConsoleStateMachine.State.STREAM ||
+                state == ConsoleStateMachine.State.OVERLAY;
+        performanceOverlayView.setVisibility(
+                overlayPreferences.enablePerfOverlay && streamVisible ?
+                        View.VISIBLE : View.GONE);
     }
 
     private void closeMoonlightOverlayState() {
@@ -1143,6 +1176,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             overlayMenuView.hide(null);
         }
         renderDiscordStreamDock();
+        updatePerformanceOverlayVisibility();
+        scheduleDiscordStreamOverlayRefresh();
         inputRouter.routeTo(layers.inputRegion);
         updateUnifiedInputSensors();
         if ((state == ConsoleStateMachine.State.HOME ||
@@ -1174,7 +1209,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                             }
 
                             @Override public void onPerformanceUpdate(String text) {
-                                LimeLog.info("Unified stream performance: " + text);
+                                if (performanceOverlayView != null) {
+                                    performanceOverlayView.setText(text);
+                                }
                             }
 
                             @Override public void onStatus(String status) {
