@@ -169,6 +169,18 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
 - Removal: none; this policy remains shared after the compatibility Game
   Activity is retired.
 
+### P008 - Shared initial gamepad mask policy
+
+- Surface: `Game.java`.
+- Reason: centralize how physical pads, single-controller compatibility mode,
+  and the on-screen controller determine the initial gamepad mask advertised to
+  the host. The unified runtime can now preserve the exact legacy behavior.
+- Risk: a wrong mask could hide an attached controller or expose extra player
+  slots to games with fragile hot-plug support.
+- Regression: focused tests for multi-controller, forced primary controller,
+  on-screen controller, and empty-mask cases, followed by Java compilation.
+- Removal: none; this is transport configuration shared by both runtimes.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.

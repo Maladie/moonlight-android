@@ -19,6 +19,7 @@ import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
 import com.limelight.console.StreamFrameRatePolicy;
+import com.limelight.console.StreamGamepadMaskPolicy;
 import com.limelight.console.StreamVideoFormatPolicy;
 import com.limelight.console.ActiveStreamSurfaceBridge;
 import com.limelight.console.InputRouter;
@@ -616,17 +617,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         int supportedVideoFormats = videoFormats.supportedFormats;
 
-        int gamepadMask = ControllerHandler.getAttachedControllerMask(this);
-        if (!prefConfig.multiController) {
-            // Always set gamepad 1 present for when multi-controller is
-            // disabled for games that don't properly support detection
-            // of gamepads removed and replugged at runtime.
-            gamepadMask = 1;
-        }
-        if (prefConfig.onscreenController) {
-            // If we're using OSC, always set at least gamepad 1.
-            gamepadMask |= 1;
-        }
+        int gamepadMask = StreamGamepadMaskPolicy.evaluate(
+                ControllerHandler.getAttachedControllerMask(this),
+                prefConfig.multiController,
+                prefConfig.onscreenController);
 
         // Set to the optimal mode for streaming
         float displayRefreshRate = prepareDisplayForRendering();
