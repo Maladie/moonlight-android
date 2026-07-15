@@ -222,6 +222,18 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
 - Removal: delete only the Intent mapping when the compatibility Game Activity
   is removed; retain the validated launch model.
 
+### P012 - Shared session configuration planner
+
+- Surface: `Game.java`.
+- Reason: combine decoder negotiation, display pacing, controller advertisement,
+  warnings, and transport configuration in one `StreamSessionConfigurationPlanner`.
+  Console can invoke this same boundary after preparing its renderer.
+- Risk: orchestration order changes could advertise the wrong codec, miss a
+  compatibility warning, or apply a stale frame-pacing mode.
+- Regression: focused combined-plan tests plus all individual policy tests and
+  Java compilation.
+- Removal: none; this planner is the configuration core of the unified runtime.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.

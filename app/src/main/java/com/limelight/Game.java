@@ -18,10 +18,8 @@ import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
-import com.limelight.console.StreamConfigurationFactory;
 import com.limelight.console.StreamFrameRatePolicy;
-import com.limelight.console.StreamGamepadMaskPolicy;
-import com.limelight.console.StreamVideoFormatPolicy;
+import com.limelight.console.StreamSessionConfigurationPlanner;
 import com.limelight.console.ActiveStreamSurfaceBridge;
 import com.limelight.console.InputRouter;
 import com.limelight.console.LegacyGameLifecyclePolicy;
@@ -594,59 +592,47 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         ActiveStreamSurfaceBridge.attachSession(sessionController);
         decoderRenderer.setSeamlessFrameRateOnly(externalFrontend);
 
-        StreamVideoFormatPolicy.Result videoFormats = StreamVideoFormatPolicy.evaluate(
-                willStreamHdr,
-                decoderRenderer.isHevcSupported(),
-                decoderRenderer.isHevcMain10Hdr10Supported(),
-                decoderRenderer.isAv1Supported(),
-                decoderRenderer.isAv1Main10Supported());
-        // Don't stream HDR if the decoder can't support it
-        if (willStreamHdr && !videoFormats.hdrEnabled) {
+        float displayRefreshRate = prepareDisplayForRendering();
+        LimeLog.info("Display refresh rate: "+displayRefreshRate);
+        StreamSessionConfigurationPlanner.DecoderCapabilities decoderCapabilities =
+                new StreamSessionConfigurationPlanner.DecoderCapabilities(
+                        decoderRenderer.isHevcSupported(),
+                        decoderRenderer.isHevcMain10Hdr10Supported(),
+                        decoderRenderer.isAv1Supported(),
+                        decoderRenderer.isAv1Main10Supported(),
+                        decoderRenderer.getPreferredColorSpace(),
+                        decoderRenderer.getPreferredColorRange());
+        StreamSessionConfigurationPlanner.Plan sessionPlan =
+                StreamSessionConfigurationPlanner.plan(
+                        prefConfig, app, willStreamHdr, displayRefreshRate,
+                        ControllerHandler.getAttachedControllerMask(this),
+                        decoderCapabilities);
+        if (sessionPlan.hdrDecoderUnavailable) {
             Toast.makeText(this, "Decoder does not support HDR10 profile", Toast.LENGTH_LONG).show();
         }
-        willStreamHdr = videoFormats.hdrEnabled;
+        willStreamHdr = sessionPlan.hdrEnabled;
 
-        // Display a message to the user if HEVC was forced on but we still didn't find a decoder
-        if (prefConfig.videoFormat == PreferenceConfiguration.FormatOption.FORCE_HEVC && !decoderRenderer.isHevcSupported()) {
+        if (sessionPlan.forcedHevcUnavailable) {
             Toast.makeText(this, "No HEVC decoder found", Toast.LENGTH_LONG).show();
         }
-
-        // Display a message to the user if AV1 was forced on but we still didn't find a decoder
-        if (prefConfig.videoFormat == PreferenceConfiguration.FormatOption.FORCE_AV1 && !decoderRenderer.isAv1Supported()) {
+        if (sessionPlan.forcedAv1Unavailable) {
             Toast.makeText(this, "No AV1 decoder found", Toast.LENGTH_LONG).show();
         }
 
-        int supportedVideoFormats = videoFormats.supportedFormats;
-
-        int gamepadMask = StreamGamepadMaskPolicy.evaluate(
-                ControllerHandler.getAttachedControllerMask(this),
-                prefConfig.multiController,
-                prefConfig.onscreenController);
-
-        // Set to the optimal mode for streaming
-        float displayRefreshRate = prepareDisplayForRendering();
-        LimeLog.info("Display refresh rate: "+displayRefreshRate);
-
-        StreamFrameRatePolicy.Result frameRate = StreamFrameRatePolicy.evaluate(
-                prefConfig.fps, prefConfig.framePacing, displayRefreshRate);
-        prefConfig.framePacing = frameRate.framePacing;
-        if (frameRate.adjustment == StreamFrameRatePolicy.Adjustment.FALL_BACK_ABOVE_DISPLAY) {
+        prefConfig.framePacing = sessionPlan.effectiveFramePacing;
+        if (sessionPlan.frameRateAdjustment ==
+                StreamFrameRatePolicy.Adjustment.FALL_BACK_ABOVE_DISPLAY) {
             LimeLog.info("Using drop mode for FPS > Hz");
-        } else if (frameRate.adjustment ==
+        } else if (sessionPlan.frameRateAdjustment ==
                 StreamFrameRatePolicy.Adjustment.FALL_BACK_INVALID_REFRESH_RATE) {
             LimeLog.info("Bogus refresh rate: " + Math.round(displayRefreshRate));
-        } else if (frameRate.adjustment == StreamFrameRatePolicy.Adjustment.CAP_TO_DISPLAY) {
-            LimeLog.info("Adjusting FPS target for screen to " + frameRate.frameRate);
+        } else if (sessionPlan.frameRateAdjustment ==
+                StreamFrameRatePolicy.Adjustment.CAP_TO_DISPLAY) {
+            LimeLog.info("Adjusting FPS target for screen to " +
+                    sessionPlan.configuration.getRefreshRate());
         }
 
-        StreamConfiguration config = StreamConfigurationFactory.build(
-                prefConfig,
-                app,
-                frameRate.frameRate,
-                supportedVideoFormats,
-                gamepadMask,
-                decoderRenderer.getPreferredColorSpace(),
-                decoderRenderer.getPreferredColorRange());
+        StreamConfiguration config = sessionPlan.configuration;
 
         // Complete phase two only after decoder capabilities have shaped the stream config.
         // Game remains the listener and Android input adapter until the next migration slice.
