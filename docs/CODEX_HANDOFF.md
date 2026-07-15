@@ -22,6 +22,18 @@ Implemented on this branch:
   FIT_CENTER cached poster preview, an asynchronously prepared backdrop, active
   host/app/session status, Return to Game, and an exit confirmation that does
   not stop the host application.
+- Home now remembers the selected host and the selected app per host without
+  allowing asynchronous refreshes to steal focus. Poster/backdrop request
+  cancellation is owned by `ConsoleArtworkController`, while Wake-style glass
+  card focus, pressed, stroke, elevation, and scale states are centralized in
+  `ConsoleTheme`. Modal composition and focus restoration are likewise isolated
+  in `ConsoleModalController` instead of accumulating in `ConsoleActivity`.
+- Host-scoped Gateway connections use Wake's existing preference schema and
+  validate HTTPS endpoints, non-empty bearer tokens, pinned SHA-256 leaf
+  certificates, and stable profile IDs before entering the private launch
+  contract. Home exposes an offline Host Integrations panel with independent
+  Discord, Vibepollo, and VirtualHere status per profile. No token or certificate
+  value is rendered, logged, or included in diagnostic summaries.
 - `ConsoleStateMachine` covers HOME, CONNECTING, STREAM,
   CONSOLE_OVER_STREAM, OVERLAY, RECOVERY, and DISCONNECTING. Back, input target,
   session reattachment after Activity recreation, and disconnect are explicit.
@@ -73,11 +85,16 @@ destruction. Only after that evidence may the `Game` Activity launch be bypassed
 
 - JDK: `C:\Users\Basia\.jdks\openjdk-17.0.2` (the system Java 24 is not
   compatible with Gradle 8.7/AGP 8.5.1).
-- `:app:testNonRootDebugUnitTest`: 39/39 passed; state, privacy readiness, surface
+- `:app:testNonRootDebugUnitTest`: 62/62 passed; state, privacy readiness, surface
   lifetime, legacy ownership, disconnect/quit separation, input routing, and
   input-boundary initialization plus cross-Activity render-target handoff are
-  covered, including diagnostic generation and failed-switch visibility.
-- `:app:assembleNonRootDebug`: passed.
+  covered, including diagnostic generation, failed-switch visibility, Gateway
+  validation/storage, focus memory, artwork request ordering, Wake card design
+  tokens, and profile-scoped integration health.
+- `:app:compileNonRootDebugJavaWithJavac` and the unit-test task passed at
+  `a9666b10`. The most recent full `:app:assembleNonRootDebug` passed earlier in
+  the same series at `7a0d4706`; full builds are intentionally grouped rather
+  than run after every local refactor.
 - `:app:assembleNonRootRelease`: passed.
 - Latest signed privacy-recovery release identity: `com.limelight.unofficial`, certificate SHA-256
   `745d86be25583505b45da74343bd9f868e8f77884fa6e0aaf49fba330b277740`,
