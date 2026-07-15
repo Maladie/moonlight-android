@@ -345,3 +345,54 @@ the installed package before `adb install -r`.
   Discord changes (API-21 compatibility and broadcast receiver flags). The
   Discord Gateway client only triggered certificate-pinning false positives,
   which are locally suppressed with an explicit explanation in its design.
+
+## Unified MoonWaker console status — 2026-07-15
+
+Branch `feature/moonwaker-unified-console` is pushed through `58eb916b`. The TV
+has the signed release through `415f12ff`; the only later code change moves the
+Bluetooth permission request from opening the controller menu to the confirmed
+Power off/Unpair action and is compile/test verified but not installed.
+
+The active `ConsoleActivity` now owns Home, the persistent stream surface, the
+opaque loading gate, the existing Moonlight X `OverlayMenuView`, the Discord
+dock and Wake-style right panels in one activity. A live Steam Big Picture run
+produced a real 1920x1080 frame, then returned to Home and displayed the active
+Session panel without creating a second transport or decoder.
+
+Wake UI and behavior now reused in the unified activity include:
+
+- the full-height exit panel with initial Cancel focus and red Exit action;
+- the active Session panel with host, resolution/FPS, Return, Disconnect and
+  End App as separate actions;
+- the horizontal controller card, original AlertDialog action order, explicit
+  unavailable explanations and confirmed power-off/unpair flow;
+- Host Integrations, Discord server/channel/detail/People/settings/audio,
+  Vibepollo FIX and VirtualHere panel trees with Wake focus navigation;
+- the existing Moonlight X overlay instead of a second Console overlay. Its
+  performance view now consumes the live decoder callback, and Discord voice
+  state refreshes every two seconds while the menu or pinned dock is visible.
+
+The paired Gateway at the selected host/profile reported Gateway, Vibepollo
+Bridge and Discord Bridge online. Live Discord guild/channel navigation and the
+VirtualHere zero-device state passed. Vibepollo's panel rendered correctly but
+the endpoint returned `Vibepollo API unavailable`; destructive integration
+actions were not selected.
+
+The complete 196-test `testNonRootDebugUnitTest` suite passes with
+`unifiedConsoleRuntime=true`. The gate test now verifies the selected build
+variant instead of hard-coding the obsolete disabled state. Superseded panel
+implementations were deleted after the Wake paths became authoritative.
+
+Two controller results remain explicitly NOT RUN: physical DualSense Circle in
+gameplay and the configured 1500 ms overlay-button hold. Sony blocks synthetic
+input-event access and ADB key injection is not equivalent to the physical
+gamepad source/hold duration. Do not mark either PASS without a human controller
+test. Runtime bitrate control also remains hidden: the unified session contract
+does not yet expose an asynchronous stop-completion callback, so reconnecting
+immediately could overlap native sessions.
+
+Next safe step: add an explicit asynchronous `reconnectAtBitrate()` contract
+through `ConsoleStreamRuntime` → bootstrap → resolved runtime → session, with a
+unit test proving that the new session is not created until the previous native
+disconnect callback completes. Only then enable Moonlight X's existing bitrate
+control in `ConsoleActivity`.
