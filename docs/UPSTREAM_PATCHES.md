@@ -24,8 +24,8 @@ upstream surface changed, regression evidence, and removal condition.
 
 - Surface: small calls or interface implementation in `Game.java` only when the
   extraction reaches that class.
-- Reason: expose state and surface lifetime to non-owning console adapters while
-  retaining the existing `NvConnection`, decoder, and background fallback.
+- Reason: expose state and surface lifetime to console adapters while retaining
+  the existing decoder and background fallback during transport extraction.
 - Risk: duplicate session ownership or changed `surfaceDestroyed()` behavior.
 - Regression: unit tests prohibit adapter start of a second owner; existing
   external-frontend lifecycle test plus two live Home cycles with changing video.
@@ -42,6 +42,19 @@ shared `InputRouter`. Renderer/input-provider calls remain in `Game`, while the
 decision about which region owns input is now explicit and unit tested. The
 same router is used by `ConsoleActivity` for Home, overlay, modal, and gameplay
 states.
+
+The third extraction moves construction, one-shot start, asynchronous stop, and
+lifecycle state of the real `NvConnection` into
+`MoonlightStreamSessionController`. `Game` supplies configuration and remains
+the `NvConnectionListener`, but no longer calls `new NvConnection`,
+`NvConnection.start()`, or `NvConnection.stop()`. Four characteristic tests
+cover single-owner start, off-caller stop, repeated disconnect, and the strict
+separation of Quit Host Application from transport stop.
+
+Existing keyboard, mouse, touch, pen, and controller senders temporarily obtain
+the controller-owned connection through the named `legacyConnection()` escape
+hatch. This does not transfer lifetime ownership. Replace that escape hatch with
+an `InputSender` boundary before moving the controller into `ConsoleActivity`.
 
 ### P003 - User-visible product label and JVM test dependency
 

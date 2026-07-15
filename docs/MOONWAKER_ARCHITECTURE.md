@@ -53,11 +53,13 @@ active session therefore has exactly one `NvConnection` and decoder. The
 Activity and visual layers observe it; they do not infer disconnect from view
 visibility or surface callbacks.
 
-During milestone 1, `LegacyGameSessionAdapter` characterizes and delegates the
-existing `Game` lifecycle. `Game` still owns the real `NvConnection`. The
-adapter is deliberately non-owning and cannot start a second session. The
-existing background-surface fallback is retained until the unified path passes
-the P0 A-F regression suite on TV.
+During milestone 1, `LegacyGameSessionAdapter` characterized the existing
+`Game` lifecycle. The next extraction introduced
+`MoonlightStreamSessionController` as the real owner of `NvConnection`
+construction, start, stop, and transport state. `Game` remains the listener,
+decoder view adapter, and temporary input sender; it cannot start a second
+connection. The existing background-surface fallback is retained until the
+unified path passes the P0 A-F regression suite on TV.
 
 ## Input and focus routing
 
