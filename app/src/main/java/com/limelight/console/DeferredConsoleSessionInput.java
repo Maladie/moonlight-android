@@ -3,6 +3,11 @@ package com.limelight.console;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 
+import com.limelight.binding.input.ControllerHandler;
+import com.limelight.ui.overlay.CustomCommand;
+
+import java.util.Collections;
+import java.util.List;
 import java.util.Objects;
 
 /** Breaks the transport-listener/input-sender initialization cycle without losing callbacks. */
@@ -28,6 +33,28 @@ final class DeferredConsoleSessionInput implements ConsoleSessionInput {
 
     @Override public synchronized boolean handleMotionEvent(MotionEvent event) {
         return delegate != null && delegate.handleMotionEvent(event);
+    }
+
+    @Override public synchronized List<ControllerHandler.ControllerBatteryInfo>
+            controllerBatteryInfo() {
+        return delegate != null ? delegate.controllerBatteryInfo() : Collections.emptyList();
+    }
+
+    @Override public synchronized void refreshControllerBatteryInfo(Runnable completion) {
+        if (delegate != null) delegate.refreshControllerBatteryInfo(completion);
+    }
+
+    @Override public synchronized void toggleMouseEmulation() {
+        if (delegate != null) delegate.toggleMouseEmulation();
+    }
+
+    @Override public synchronized void sendGuideButton() {
+        if (delegate != null) delegate.sendGuideButton();
+    }
+
+    @Override public synchronized void sendCustomCommand(
+            CustomCommand command, Runnable completion) {
+        if (delegate != null) delegate.sendCustomCommand(command, completion);
     }
 
     @Override public synchronized void enableSensors() {

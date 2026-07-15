@@ -19,6 +19,7 @@ import android.view.ViewGroup;
 import android.view.WindowInsets;
 import android.view.WindowInsetsController;
 import android.view.WindowManager;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
 import android.widget.EditText;
 import android.widget.HorizontalScrollView;
@@ -29,8 +30,11 @@ import android.widget.Toast;
 
 import com.limelight.LimeLog;
 import com.limelight.binding.input.ControllerHandler;
+import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.preferences.StreamSettings;
 import com.limelight.ui.StreamView;
+import com.limelight.ui.overlay.CustomCommand;
+import com.limelight.ui.overlay.OverlayMenuView;
 
 import java.util.List;
 import java.util.ArrayList;
@@ -76,7 +80,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleArtworkController artworkController;
     private ConsoleTheme consoleTheme;
     private ConsoleModalController modalController;
-    private ConsoleOverlayController overlayController;
+    private OverlayMenuView overlayMenuView;
+    private PreferenceConfiguration overlayPreferences;
     private ConsoleLoadingController loadingController;
     private GatewayProfileRefreshController gatewayProfileRefreshController;
     private ConsoleControllerRepository controllerRepository;
@@ -216,6 +221,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
+        if (overlayMenuView != null && overlayMenuView.getVisibility() == View.VISIBLE &&
+                overlayMenuView.dispatchKeyEvent(event)) {
+            return true;
+        }
         int keyCode = event.getKeyCode();
         android.view.InputDevice device = event.getDevice();
         boolean gamepadB = keyCode == KeyEvent.KEYCODE_BUTTON_B && device != null &&
@@ -236,6 +245,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     @Override public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if (overlayMenuView != null && overlayMenuView.getVisibility() == View.VISIBLE &&
+                overlayMenuView.onGenericMotionEvent(event)) {
+            return true;
+        }
         if (inputRouter.isGameplayCaptured() && unifiedSessionInput != null &&
                 unifiedSessionInput.handleMotionEvent(event)) {
             return true;
@@ -266,11 +279,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         homeLayer.setElevation(dp(32));
         root.addView(homeLayer, match());
 
-        overlayController = new ConsoleOverlayController(this, consoleTheme);
-        overlayLayer = overlayController.build(
-                this::returnToActiveStream,
-                this::openConsoleHome,
-                this::showHostIntegrations);
+        overlayMenuView = new OverlayMenuView(this);
+        overlayMenuView.setVisibility(View.GONE);
+        overlayLayer = overlayMenuView;
+        configureMoonlightOverlay();
         overlayLayer.setElevation(dp(40));
         root.addView(overlayLayer, match());
 
@@ -280,6 +292,110 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         modalLayer.setVisibility(View.GONE);
         root.addView(modalLayer, match());
         return root;
+    }
+
+    private void configureMoonlightOverlay() {
+        overlayPreferences = PreferenceConfiguration.readPreferences(this);
+        overlayMenuView.setFlipFaceButtons(overlayPreferences.flipFaceButtons);
+        // Runtime bitrate changes require reconnecting the in-Activity pipeline. Keep the
+        // existing Moonlight X control hidden until that reconnect path is connected.
+        overlayMenuView.setBitrateControlEnabled(false);
+        overlayMenuView.setExternalFrontend(true);
+        overlayMenuView.setDiscordShortcuts(overlayPreferences.discordMuteShortcut,
+                overlayPreferences.discordLeaveShortcut);
+        overlayMenuView.setDiscordConfigured(false);
+        overlayMenuView.setMenuActionListener(new OverlayMenuView.MenuActionListener() {
+            @Override public void onDisconnect() { endActiveSession(false); }
+
+            @Override public void onQuitSession() { endActiveSession(true); }
+
+            @Override public void onToggleStats() {
+                overlayPreferences.enablePerfOverlay = !overlayPreferences.enablePerfOverlay;
+                Toast.makeText(ConsoleActivity.this,
+                        overlayPreferences.enablePerfOverlay ?
+                                "Performance statistics enabled" :
+                                "Performance statistics disabled",
+                        Toast.LENGTH_SHORT).show();
+            }
+
+            @Override public void onToggleMouseEmulation() {
+                if (unifiedSessionInput != null) unifiedSessionInput.toggleMouseEmulation();
+            }
+
+            @Override public void onShowKeyboard() { toggleStreamKeyboard(); }
+
+            @Override public void onSendGuideButton() {
+                if (unifiedSessionInput != null) unifiedSessionInput.sendGuideButton();
+            }
+
+            @Override public void onApplyBitrate(int bitrateKbps) {
+                // Hidden until the unified reconnect path supports runtime bitrate changes.
+            }
+
+            @Override public void onCustomCommand(CustomCommand command) {
+                runOverlayCustomCommand(command);
+            }
+
+            @Override public void onReturnToFrontend() { openConsoleHome(); }
+
+            @Override public void onDiscordMute() { showDiscordPanel(); }
+
+            @Override public void onDiscordLeave() { showDiscordPanel(); }
+
+            @Override public void onDiscordRejoin() { showDiscordPanel(); }
+
+            @Override public void onDiscordDockToggle() { showDiscordPanel(); }
+
+            @Override public void onMenuClosed() { closeMoonlightOverlayState(); }
+        });
+    }
+
+    private void showMoonlightOverlay() {
+        if (overlayMenuView == null) return;
+        if (unifiedSessionInput != null) {
+            overlayMenuView.setControllerBatteryInfo(
+                    unifiedSessionInput.controllerBatteryInfo());
+            unifiedSessionInput.refreshControllerBatteryInfo(() -> runOnUiThread(() -> {
+                if (overlayMenuView.getVisibility() == View.VISIBLE &&
+                        unifiedSessionInput != null) {
+                    overlayMenuView.setControllerBatteryInfo(
+                            unifiedSessionInput.controllerBatteryInfo());
+                }
+            }));
+        }
+        overlayMenuView.show();
+    }
+
+    private void closeMoonlightOverlayState() {
+        if (stateMachine.getState() != ConsoleStateMachine.State.OVERLAY) return;
+        ConsoleStateMachine.Transition transition = stateMachine.dispatch(
+                ConsoleStateMachine.Event.CLOSE_OVERLAY);
+        applyState(transition.current);
+    }
+
+    private void toggleStreamKeyboard() {
+        InputMethodManager keyboard = (InputMethodManager)
+                getSystemService(INPUT_METHOD_SERVICE);
+        if (keyboard != null) keyboard.toggleSoftInput(0, 0);
+    }
+
+    private void runOverlayCustomCommand(CustomCommand command) {
+        if (unifiedSessionInput == null || command == null) return;
+        Runnable postAction = null;
+        switch (command.getPostAction()) {
+            case CustomCommand.POST_ACTION_CLOSE_MENU:
+                postAction = overlayMenuView::closeMenu;
+                break;
+            case CustomCommand.POST_ACTION_DISCONNECT:
+                postAction = () -> endActiveSession(false);
+                break;
+            case CustomCommand.POST_ACTION_QUIT:
+                postAction = () -> endActiveSession(true);
+                break;
+            default:
+                break;
+        }
+        unifiedSessionInput.sendCustomCommand(command, postAction);
     }
 
     @Override public void surfaceCreated(SurfaceHolder holder) {
@@ -741,7 +857,6 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private void renderGatewayProfile(ConsoleDataRepository.Host host,
                                       HostIntegrationSummary summary) {
         if (integrationStatus == null) return;
-        if (overlayController != null) overlayController.render(host == null ? null : summary);
         if (host == null) {
             integrationStatus.setText("HOST INTEGRATIONS · SELECT A HOST");
             return;
@@ -811,16 +926,17 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 overlayLayer.getVisibility() != View.VISIBLE;
         homeLayer.setVisibility(layers.homeVisible ? View.VISIBLE : View.GONE);
         privacyLayer.setVisibility(layers.privacyVisible ? View.VISIBLE : View.GONE);
-        overlayLayer.setVisibility(layers.overlayVisible ? View.VISIBLE : View.GONE);
+        if (layers.overlayVisible) {
+            if (openingOverlay) showMoonlightOverlay();
+        } else if (overlayMenuView != null) {
+            overlayMenuView.hide(null);
+        }
         inputRouter.routeTo(layers.inputRegion);
         updateUnifiedInputSensors();
         if ((state == ConsoleStateMachine.State.HOME ||
                 state == ConsoleStateMachine.State.CONSOLE_OVER_STREAM) &&
                 streamRuntime instanceof UnifiedConsoleRuntimeBootstrap) {
             ((UnifiedConsoleRuntimeBootstrap) streamRuntime).showHome();
-        }
-        if (openingOverlay && overlayLayer.getTag() instanceof View) {
-            ((View) overlayLayer.getTag()).requestFocus();
         }
         // streamSurface intentionally remains VISIBLE and attached.
     }
