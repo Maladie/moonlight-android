@@ -246,6 +246,17 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
   compilation.
 - Removal: none; preference selection remains shared after Game is retired.
 
+### P014 - Shared bitrate bounds
+
+- Surface: `Game.java`.
+- Reason: use `StreamBitratePolicy` for both restored runtime bitrate and overlay
+  changes. Console can apply the same 1-150 Mbps range without duplicating
+  numeric limits.
+- Risk: incorrect bounds could overload a link or force unexpectedly low image
+  quality.
+- Regression: focused lower/upper boundary tests and Java compilation.
+- Removal: none; bitrate safety bounds remain shared.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.

@@ -18,6 +18,7 @@ import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
+import com.limelight.console.StreamBitratePolicy;
 import com.limelight.console.StreamFrameRatePolicy;
 import com.limelight.console.StreamPreferenceContext;
 import com.limelight.console.StreamSessionConfigurationPlanner;
@@ -389,7 +390,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 quickLaunchAppKey, applyPreferenceOverrides);
         int requestedRuntimeBitrate = Game.this.getIntent().getIntExtra(EXTRA_RUNTIME_BITRATE_KBPS, 0);
         if (requestedRuntimeBitrate > 0) {
-            prefConfig.bitrate = Math.max(1000, Math.min(150000, requestedRuntimeBitrate));
+            prefConfig.bitrate = StreamBitratePolicy.clamp(requestedRuntimeBitrate);
         }
         runtimeBitrateKbps = prefConfig.bitrate;
         tombstonePrefs = Game.this.getSharedPreferences("DecoderTombstone", 0);
@@ -3794,7 +3795,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
 
-        int targetBitrate = Math.max(1000, Math.min(150000, bitrateKbps));
+        int targetBitrate = StreamBitratePolicy.clamp(bitrateKbps);
         if (targetBitrate == runtimeBitrateKbps) return;
 
         runtimeBitrateKbps = targetBitrate;
