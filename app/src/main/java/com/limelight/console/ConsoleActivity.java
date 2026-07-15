@@ -82,7 +82,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         hostGatewayStore = new HostGatewayStore(this);
         selectionStore = new ConsoleSelectionStore(this);
         launchHistoryStore = new ConsoleLaunchHistoryStore(this);
-        hostSelectionController = new ConsoleHostSelectionController(repository, selectionStore);
+        hostSelectionController = new ConsoleHostSelectionController(
+                repository, selectionStore, launchHistoryStore);
         consoleTheme = new ConsoleTheme(this);
         setContentView(buildRoot());
         artworkController = new ConsoleArtworkController(this, artworkBackdrop, artworkHero);
@@ -341,7 +342,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private void renderSnapshot() {
         renderControllers();
         ConsoleHomeSnapshot snapshot = ConsoleHomeSnapshot.load(
-                repository, hostGatewayStore, selectionStore);
+                repository, hostGatewayStore, selectionStore, launchHistoryStore);
         renderSession(snapshot.session);
         hostRow.removeAllViews();
         if (snapshot.hosts.isEmpty()) {

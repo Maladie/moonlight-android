@@ -32,7 +32,8 @@ final class ConsoleHomeSnapshot {
 
     static ConsoleHomeSnapshot load(ConsoleDataRepository repository,
                                     HostGatewayStore gatewayStore,
-                                    ConsoleSelectionStore selectionStore) {
+                                    ConsoleSelectionStore selectionStore,
+                                    ConsoleLaunchHistoryStore historyStore) {
         ConsoleDataRepository.Session session = repository.session();
         List<ConsoleDataRepository.Host> hosts = repository.hosts();
         int hostIndex = hostIndex(hosts, selectionStore.selectedHostUuid());
@@ -41,8 +42,10 @@ final class ConsoleHomeSnapshot {
         }
 
         ConsoleDataRepository.Host host = hosts.get(hostIndex);
-        return create(session, hosts, selectionStore.selectedHostUuid(),
-                repository.apps(host), selectionStore.selectedAppId(host.uuid),
+        List<ConsoleDataRepository.App> apps = ConsoleAppOrdering.order(
+                host, repository.apps(host), historyStore::playedAt);
+        return create(session, hosts, selectionStore.selectedHostUuid(), apps,
+                selectionStore.selectedAppId(host.uuid),
                 gatewayStore.load(host.uuid));
     }
 

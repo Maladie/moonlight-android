@@ -33,16 +33,21 @@ final class ConsoleHostSelectionController {
 
     private final ConsoleDataRepository repository;
     private final ConsoleSelectionStore store;
+    private final ConsoleLaunchHistoryStore history;
 
     ConsoleHostSelectionController(ConsoleDataRepository repository,
-                                   ConsoleSelectionStore store) {
+                                   ConsoleSelectionStore store,
+                                   ConsoleLaunchHistoryStore history) {
         this.repository = repository;
         this.store = store;
+        this.history = history;
     }
 
     Selection select(ConsoleDataRepository.Host host) {
         store.rememberHost(host.uuid);
-        return Selection.create(host, repository.apps(host), store.selectedAppId(host.uuid));
+        return Selection.create(host, ConsoleAppOrdering.order(
+                host, repository.apps(host), history::playedAt),
+                store.selectedAppId(host.uuid));
     }
 
     void rememberApp(ConsoleDataRepository.Host host, ConsoleDataRepository.App app) {
