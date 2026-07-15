@@ -110,10 +110,10 @@ final class ConsoleModalController {
         });
         TextView integrations = wakeAction("HOST INTEGRATIONS  \u203A");
         integrations.setOnClickListener(view -> hostIntegrations.run());
-        TextView moonlight = wakeAction("MOONLIGHT SETTINGS  \u203A");
+        TextView moonlight = wakeAction("MOONWAKER STREAM SETTINGS  \u203A");
         moonlight.setOnClickListener(view -> moonlightSettings.run());
         showWakePanel("MOONWAKER", "Options",
-                "Tune the console interface or open Moonlight's streaming preferences.",
+                "Tune the console interface or open MoonWaker's streaming preferences.",
                 null, sounds, motion, integrations, moonlight);
     }
 

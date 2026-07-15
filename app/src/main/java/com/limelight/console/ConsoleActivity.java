@@ -1077,7 +1077,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         appsLabel.setText(host == null ? "APPS" :
                 "APPS · " + host.name.toUpperCase(Locale.ROOT));
         if (apps.isEmpty()) {
-            appRow.addView(label("No cached applications. Refresh this host in Moonlight.",
+            appRow.addView(label("No cached applications. Refresh this host in MoonWaker.",
                     16, 0xFFFFB74D, false), cardParams());
             artworkController.clear();
             return;
@@ -1319,7 +1319,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         ConsoleSessionSummary summary = ConsoleSessionSummary.from(session);
         String state = session != null && session.state != null ?
                 session.state.toUpperCase(Locale.ROOT) : "IDLE";
-        sessionStatus.setText("MOONLIGHT · " + state);
+        sessionStatus.setText("MOONWAKER · " + state);
         sessionStatus.setTextColor(summary.alive ? 0xFF69F0AE : 0xFF9CA6C5);
         if (summary.alive) {
             String app = session != null && session.app != null ? session.app : "ACTIVE SESSION";
@@ -1490,7 +1490,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 loadingController.updateStatus("Resolving streaming host…");
                 break;
             case PREPARING_SESSION:
-                loadingController.updateStatus("Preparing Moonlight session…");
+                loadingController.updateStatus("Preparing MoonWaker session…");
                 break;
             case CONNECTED:
                 unifiedTransportConnected = true;
