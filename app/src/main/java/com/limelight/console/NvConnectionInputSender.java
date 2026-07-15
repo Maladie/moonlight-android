@@ -1,5 +1,6 @@
 package com.limelight.console;
 
+import com.limelight.LimeLog;
 import com.limelight.nvstream.NvConnection;
 
 import java.util.Objects;
@@ -7,6 +8,8 @@ import java.util.Objects;
 /** Adapts the controller-owned NvConnection to the input-only session boundary. */
 final class NvConnectionInputSender implements StreamInputSender {
     private final NvConnection connection;
+    private long controllerPacketCount;
+    private long lastControllerPacketLogNanos;
 
     NvConnectionInputSender(NvConnection connection) {
         this.connection = Objects.requireNonNull(connection, "connection");
@@ -37,6 +40,15 @@ final class NvConnectionInputSender implements StreamInputSender {
                                               short rightStickX, short rightStickY) {
         connection.sendControllerInput(controllerNumber, activeGamepadMask, buttonFlags,
                 leftTrigger, rightTrigger, leftStickX, leftStickY, rightStickX, rightStickY);
+        controllerPacketCount++;
+        long now = System.nanoTime();
+        if (lastControllerPacketLogNanos == 0 ||
+                now - lastControllerPacketLogNanos >= 10_000_000_000L) {
+            LimeLog.info("Unified controller packets=" + controllerPacketCount +
+                    " controller=" + controllerNumber +
+                    " activeMask=" + activeGamepadMask);
+            lastControllerPacketLogNanos = now;
+        }
     }
 
     @Override public void sendKeyboardInput(short keyMap, byte keyDirection, byte modifier, byte flags) {
@@ -75,8 +87,14 @@ final class NvConnectionInputSender implements StreamInputSender {
 
     @Override public int sendControllerArrivalEvent(byte controllerNumber, short activeGamepadMask,
                                                      byte type, int supportedButtonFlags, short capabilities) {
-        return connection.sendControllerArrivalEvent(controllerNumber, activeGamepadMask, type,
+        int result = connection.sendControllerArrivalEvent(controllerNumber, activeGamepadMask, type,
                 supportedButtonFlags, capabilities);
+        LimeLog.info("Unified controller arrival result=" + result +
+                " controller=" + controllerNumber +
+                " activeMask=" + activeGamepadMask +
+                " type=" + type +
+                " capabilities=" + capabilities);
+        return result;
     }
 
     @Override public int sendControllerTouchEvent(byte controllerNumber, byte eventType, int pointerId,
