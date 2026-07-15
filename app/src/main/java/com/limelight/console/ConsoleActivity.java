@@ -2519,12 +2519,18 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         view.setText(value);
         view.setTextSize(sp);
         view.setTextColor(color);
+        view.setGravity(Gravity.CENTER_VERTICAL);
+        view.setIncludeFontPadding(false);
         view.setTypeface(android.graphics.Typeface.DEFAULT, bold ? 1 : 0);
         return view;
     }
     private HorizontalScrollView horizontalScroll() {
         HorizontalScrollView view = new HorizontalScrollView(this);
         view.setHorizontalScrollBarEnabled(false);
+        view.setClipToPadding(false);
+        view.setClipChildren(false);
+        view.setPadding(0, 0, dp(12), 0);
+        view.setFocusable(false);
         return view;
     }
     private LinearLayout horizontalRow() {

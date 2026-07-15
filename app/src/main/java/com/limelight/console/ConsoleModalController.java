@@ -656,6 +656,8 @@ final class ConsoleModalController {
         view.setText(value);
         view.setTextSize(sp);
         view.setTextColor(color);
+        view.setGravity(Gravity.CENTER_VERTICAL);
+        view.setIncludeFontPadding(false);
         view.setTypeface(android.graphics.Typeface.DEFAULT, bold ? 1 : 0);
         return view;
     }
