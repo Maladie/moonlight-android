@@ -14,6 +14,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.IBinder;
+import android.os.SystemClock;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -61,6 +62,8 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
     private static final long SESSION_REFRESH_MS = 1500L;
     private static final long HOME_STATUS_REFRESH_MS = 5000L;
+    private static final long STREAM_CONNECT_GRACE_MS = 30_000L;
+    private static final long STREAM_CONNECT_RETRY_MS = 2_500L;
     private static final int REQUEST_BLUETOOTH_CONNECT = 7001;
     private static final int CONTROLLER_ACTION_NONE = 0;
     private static final int CONTROLLER_ACTION_DISCONNECT = 1;
@@ -93,6 +96,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final Runnable discordOverlayRefresh = () -> refreshDiscordStreamOverlay(false);
     private final Runnable sessionRefresh = this::refreshVisibleSession;
     private final Runnable homeStatusRefresh = this::refreshHomeStatus;
+    private final Runnable unifiedConnectRetry = this::retryUnifiedConnection;
     private final ServiceConnection computerManagerConnection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder service) {
             ComputerManagerService.ComputerManagerBinder binder =
@@ -172,6 +176,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleDataRepository.App resumeApp;
     private ConsoleLaunchContract.Request activeLaunchRequest;
     private int runtimeBitrateKbps;
+    private long unifiedConnectDeadlineMs;
     private ConsoleControllerRepository.Controller pendingController;
     private int pendingControllerAction = CONTROLLER_ACTION_NONE;
 
@@ -280,6 +285,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         unifiedSessionInput = null;
         mainHandler.removeCallbacks(sessionRefresh);
         mainHandler.removeCallbacks(homeStatusRefresh);
+        mainHandler.removeCallbacks(unifiedConnectRetry);
         super.onDestroy();
     }
 
@@ -1191,6 +1197,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         unifiedTransportConnected = false;
         unifiedFirstFrameRendered = false;
         unifiedSessionInput = null;
+        clearUnifiedConnectRetry();
         LimeLog.info("Unified Console runtime launch: " +
                 streamRuntime.getClass().getSimpleName());
         streamRuntime.launch(request);
@@ -1215,6 +1222,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         unifiedTransportConnected = false;
         unifiedFirstFrameRendered = false;
         unifiedSessionInput = null;
+        clearUnifiedConnectRetry();
         if (resumeHost != null && resumeApp != null) {
             unifiedHomeSession.begin(resumeHost, resumeApp);
             loadingController.show(resumeApp.name);
@@ -1528,9 +1536,14 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 loadingController.updateStatus("Resolving streaming host…");
                 break;
             case PREPARING_SESSION:
+                if (unifiedConnectDeadlineMs == 0L) {
+                    unifiedConnectDeadlineMs = SystemClock.elapsedRealtime() +
+                            STREAM_CONNECT_GRACE_MS;
+                }
                 loadingController.updateStatus("Preparing MoonWaker session…");
                 break;
             case CONNECTED:
+                clearUnifiedConnectRetry();
                 unifiedTransportConnected = true;
                 unifiedHomeSession.connected();
                 renderSession(visibleSession());
@@ -1541,10 +1554,6 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 unifiedTransportConnected = false;
                 unifiedFirstFrameRendered = false;
                 unifiedSessionInput = null;
-                unifiedHomeSession.clear();
-                renderSession(visibleSession());
-                stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTION_FAILED);
-                applyState(stateMachine.getState());
                 break;
         }
     }
@@ -1560,6 +1569,19 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             reason = "unknown connection error";
         }
         LimeLog.warning("Unified Console failure: " + reason);
+        if (unifiedConnectDeadlineMs > SystemClock.elapsedRealtime() &&
+                activeLaunchRequest != null &&
+                stateMachine.getState() == ConsoleStateMachine.State.CONNECTING) {
+            loadingController.updateStatus("Host is starting streaming services… Retrying");
+            mainHandler.removeCallbacks(unifiedConnectRetry);
+            mainHandler.postDelayed(unifiedConnectRetry, STREAM_CONNECT_RETRY_MS);
+            return;
+        }
+        clearUnifiedConnectRetry();
+        unifiedHomeSession.clear();
+        renderSession(visibleSession());
+        stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTION_FAILED);
+        applyState(stateMachine.getState());
         loadingController.updateStatus("Connection failed: " + reason);
         modalController.showConnectionRecovery(getCurrentFocus(), reason,
                 () -> {
@@ -1592,9 +1614,31 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void cancelUnifiedPendingLaunch() {
+        clearUnifiedConnectRetry();
         if (streamRuntime instanceof UnifiedConsoleRuntimeBootstrap) {
             ((UnifiedConsoleRuntimeBootstrap) streamRuntime).cancelPendingLaunch();
         }
+    }
+
+    private void retryUnifiedConnection() {
+        if (activeLaunchRequest == null ||
+                stateMachine.getState() != ConsoleStateMachine.State.CONNECTING) {
+            clearUnifiedConnectRetry();
+            return;
+        }
+        if (SystemClock.elapsedRealtime() >= unifiedConnectDeadlineMs) {
+            clearUnifiedConnectRetry();
+            handleUnifiedFailure(UnifiedConsoleLaunchPipeline.Failure.runtime(
+                    "Streaming services did not become ready"));
+            return;
+        }
+        LimeLog.info("Retrying unified stream connection during startup grace period");
+        streamRuntime.launch(activeLaunchRequest);
+    }
+
+    private void clearUnifiedConnectRetry() {
+        mainHandler.removeCallbacks(unifiedConnectRetry);
+        unifiedConnectDeadlineMs = 0L;
     }
 
     private void showUnifiedConfigurationWarning(
@@ -1660,6 +1704,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void endActiveSession(boolean quitHostApplication) {
         modalController.hide();
+        clearUnifiedConnectRetry();
         stateMachine.dispatch(ConsoleStateMachine.Event.DISCONNECT);
         applyState(stateMachine.getState());
         if (quitHostApplication) {
