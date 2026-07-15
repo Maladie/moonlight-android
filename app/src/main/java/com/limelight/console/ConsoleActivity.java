@@ -97,6 +97,13 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final Runnable sessionRefresh = this::refreshVisibleSession;
     private final Runnable homeStatusRefresh = this::refreshHomeStatus;
     private final Runnable unifiedConnectRetry = this::retryUnifiedConnection;
+    private final ComputerManagerListener computerManagerListener =
+            new ComputerManagerListener() {
+                @Override public void notifyComputerUpdated(
+                        ComputerDetails details, boolean isFreshPoll) {
+                    runOnUiThread(() -> refreshForDiscoveredHost(details));
+                }
+            };
     private final ServiceConnection computerManagerConnection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder service) {
             ComputerManagerService.ComputerManagerBinder binder =
@@ -104,16 +111,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             new Thread(() -> {
                 binder.waitForReady();
                 computerManagerBinder = binder;
-                binder.startPolling(new ComputerManagerListener() {
-                    @Override public void notifyComputerUpdated(
-                            ComputerDetails details, boolean isFreshPoll) {
-                        runOnUiThread(() -> refreshForDiscoveredHost(details));
-                    }
-                });
+                runOnUiThread(ConsoleActivity.this::resumeHostPolling);
             }, "MoonWaker host discovery").start();
         }
 
         @Override public void onServiceDisconnected(ComponentName name) {
+            hostPollingActive = false;
             computerManagerBinder = null;
         }
     };
@@ -148,6 +151,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private boolean refreshHostsOnResume;
     private ComputerManagerService.ComputerManagerBinder computerManagerBinder;
     private boolean computerManagerBound;
+    private boolean hostPollingActive;
     private final Map<String, TextView> hostStatusViews = new HashMap<>();
     private List<ConsoleDataRepository.Host> visibleHosts = Collections.emptyList();
     private FrameLayout root;
@@ -302,6 +306,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             showExitConfirmation();
         } else {
             applyState(transition.current);
+            resumeHostPolling();
         }
     }
 
@@ -1156,6 +1161,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void launchLegacy(ConsoleDataRepository.Host host, ConsoleDataRepository.App app) {
         LimeLog.info("Unified Console launch requested");
+        pauseHostPolling();
         launchHistoryStore.record(host, app, System.currentTimeMillis());
         resumeHost = host;
         resumeApp = app;
@@ -1182,6 +1188,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                         unifiedHomeSession.clear();
                         stateMachine.dispatch(ConsoleStateMachine.Event.BACK);
                         applyState(stateMachine.getState());
+                        resumeHostPolling();
                         modalController.showHostWakeTimeout(getCurrentFocus(), host.name,
                                 () -> launchLegacy(host, app));
                     }
@@ -1578,10 +1585,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             return;
         }
         clearUnifiedConnectRetry();
+        activeLaunchRequest = null;
         unifiedHomeSession.clear();
         renderSession(visibleSession());
         stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTION_FAILED);
         applyState(stateMachine.getState());
+        resumeHostPolling();
         loadingController.updateStatus("Connection failed: " + reason);
         modalController.showConnectionRecovery(getCurrentFocus(), reason,
                 () -> {
@@ -1618,6 +1627,25 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         if (streamRuntime instanceof UnifiedConsoleRuntimeBootstrap) {
             ((UnifiedConsoleRuntimeBootstrap) streamRuntime).cancelPendingLaunch();
         }
+        resumeHostPolling();
+    }
+
+    private void pauseHostPolling() {
+        if (!hostPollingActive || computerManagerBinder == null) return;
+        computerManagerBinder.stopPolling();
+        hostPollingActive = false;
+        LimeLog.info("Paused host discovery polling for streaming");
+    }
+
+    private void resumeHostPolling() {
+        if (hostPollingActive || computerManagerBinder == null || isFinishing() ||
+                stateMachine.getState() == ConsoleStateMachine.State.CONNECTING ||
+                activeLaunchRequest != null) {
+            return;
+        }
+        computerManagerBinder.startPolling(computerManagerListener);
+        hostPollingActive = true;
+        LimeLog.info("Resumed host discovery polling on Home");
     }
 
     private void retryUnifiedConnection() {
@@ -1720,6 +1748,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         stateMachine.dispatch(ConsoleStateMachine.Event.DISCONNECTED);
         renderSession(visibleSession());
         applyState(stateMachine.getState());
+        resumeHostPolling();
     }
 
     private void showHostIntegrations() {

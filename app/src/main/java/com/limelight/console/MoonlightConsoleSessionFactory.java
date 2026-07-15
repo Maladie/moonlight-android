@@ -32,6 +32,9 @@ final class MoonlightConsoleSessionFactory implements
         void onInputReady(ConsoleSessionInput input);
         void onConfigurationPlanned(StreamSessionConfigurationPlanner.Plan plan);
         Runnable quitHostApplication(StreamLaunchParameters parameters);
+        default MoonlightConsoleSession.Resources acquireSessionResources() {
+            return () -> { };
+        }
     }
 
     private final Activity activity;
@@ -67,6 +70,8 @@ final class MoonlightConsoleSessionFactory implements
                                 "quitHostApplication"));
         boolean rendererPrepared = false;
         DeferredConsoleSessionInput input = null;
+        MoonlightConsoleSession.Resources sessionResources =
+                environment.acquireSessionResources();
         try {
             MediaCodecDecoderRenderer renderer = controller.prepareRenderer(
                     activity,
@@ -137,7 +142,15 @@ final class MoonlightConsoleSessionFactory implements
                     "sessionInput");
             input.bind(boundInput);
             environment.onInputReady(input);
-            return MoonlightConsoleSession.create(controller, input::close);
+            DeferredConsoleSessionInput finalInput = input;
+            return MoonlightConsoleSession.create(controller, () -> {
+                try {
+                    finalInput.close();
+                }
+                finally {
+                    sessionResources.close();
+                }
+            });
         } catch (RuntimeException error) {
             if (input != null) {
                 input.close();
@@ -146,6 +159,7 @@ final class MoonlightConsoleSessionFactory implements
                 controller.prepareRendererForStop();
                 controller.disconnectTransport();
             }
+            sessionResources.close();
             throw error;
         }
     }

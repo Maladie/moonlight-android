@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Context;
 import android.content.SharedPreferences;
 import android.net.ConnectivityManager;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.view.Display;
 
@@ -145,5 +146,39 @@ final class AndroidConsoleSessionEnvironment implements
                 parameters.appName,
                 parameters.uniqueId,
                 null);
+    }
+
+    @Override public MoonlightConsoleSession.Resources acquireSessionResources() {
+        WifiManager wifiManager = (WifiManager) activity.getApplicationContext()
+                .getSystemService(Context.WIFI_SERVICE);
+        if (wifiManager == null) return () -> { };
+        WifiManager.WifiLock highPerformance = null;
+        WifiManager.WifiLock lowLatency = null;
+        try {
+            highPerformance = wifiManager.createWifiLock(
+                    WifiManager.WIFI_MODE_FULL_HIGH_PERF, "MoonWaker High Perf Lock");
+            highPerformance.setReferenceCounted(false);
+            highPerformance.acquire();
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                lowLatency = wifiManager.createWifiLock(
+                        WifiManager.WIFI_MODE_FULL_LOW_LATENCY,
+                        "MoonWaker Low Latency Lock");
+                lowLatency.setReferenceCounted(false);
+                lowLatency.acquire();
+            }
+        }
+        catch (SecurityException unavailable) {
+            if (lowLatency != null && lowLatency.isHeld()) lowLatency.release();
+            if (highPerformance != null && highPerformance.isHeld()) highPerformance.release();
+            return () -> { };
+        }
+        WifiManager.WifiLock finalHighPerformance = highPerformance;
+        WifiManager.WifiLock finalLowLatency = lowLatency;
+        return () -> {
+            if (finalLowLatency != null && finalLowLatency.isHeld()) finalLowLatency.release();
+            if (finalHighPerformance != null && finalHighPerformance.isHeld()) {
+                finalHighPerformance.release();
+            }
+        };
     }
 }
