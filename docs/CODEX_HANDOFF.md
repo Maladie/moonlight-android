@@ -95,20 +95,32 @@ Implemented on this branch:
   The same-package return uses `REORDER_TO_FRONT` in the existing task and never
   adds `NEW_TASK`; a pure lifecycle policy also treats Console's bound renderer
   target as a valid alternate surface during the handoff.
+- The inactive one-Activity replacement path now has validated
+  `StreamLaunchParameters`, saved-host resolution through
+  `ComputerManagerService`, stale-result cancellation, a staged unified launch
+  pipeline, a single-session runtime core, transport callback routing, and a
+  `ConsoleStreamRuntime` adapter. Decoder/HDR/codec selection, display pacing,
+  controller masks, client refresh rate, bitrate bounds, preference precedence,
+  and final `StreamConfiguration` assembly are shared with `Game`. Cached app
+  HDR capability is preserved through both launch paths. These components are
+  intentionally not selected by `ConsoleActivity` yet.
 
-Important: the last bullet is the safe one-APK adapter path, not the final
-one-Activity stream. Do not describe the Activity consolidation as complete.
+Important: the transitional `ShortcutTrampoline`/`Game` bullet is the selected
+safe one-APK adapter path, not the final one-Activity stream. Do not describe
+the Activity consolidation as complete.
 The controller-owned renderer is now bound to `ConsoleActivity`'s persistent
-surface through `StreamSurfaceHost`, while `Game` remains the listener/view
-compatibility adapter. The next gate is two live P0 Stream -> Home -> Stream
-cycles proving changing video, input recovery, one connection, and no surface
-destruction. Only after that evidence may the `Game` Activity launch be bypassed.
+surface through `StreamSurfaceHost`, while `Game` remains the selected
+listener/view compatibility adapter. Complete the Android renderer/input
+environment for `MoonlightConsoleResolvedStreamRuntime`, then perform two live
+P0 Stream -> Home -> Stream cycles proving changing video, input recovery, one
+connection, audio, and no surface destruction. Only after that evidence may the
+runtime selector bypass the `Game` Activity launch.
 
 ### Verification
 
 - JDK: `C:\Users\Basia\.jdks\openjdk-17.0.2` (the system Java 24 is not
   compatible with Gradle 8.7/AGP 8.5.1).
-- `:app:testNonRootDebugUnitTest`: 107/107 passed; state, privacy readiness, surface
+- `:app:testNonRootDebugUnitTest`: 160/160 passed; state, privacy readiness, surface
   lifetime, legacy ownership, disconnect/quit separation, input routing, and
   input-boundary initialization plus cross-Activity render-target handoff are
   covered, including diagnostic generation, failed-switch visibility, Gateway
@@ -117,9 +129,11 @@ destruction. Only after that evidence may the `Game` Activity launch be bypassed
   resume/layer policies, the isolated legacy launch contract, pinned profile
   conversion, latest-only Gateway refresh cancellation, controller/history
   presentation, host availability, WOL packet construction, bounded wake timing,
-  and cancellable host preparation.
-- `:app:compileNonRootDebugJavaWithJavac` and the unit-test task passed at
-  `c50aab6f`. The most recent full `:app:assembleNonRootDebug` passed earlier in
+  cancellable host preparation, launch resolution, unified pipeline/runtime
+  cancellation, configuration planning, codec/HDR negotiation, frame pacing,
+  gamepad masks, refresh parsing, bitrate bounds, and transport event routing.
+- `:app:compileNonRootDebugJavaWithJavac` and the unit-test task passed after
+  `3339ca61`. The most recent full `:app:assembleNonRootDebug` passed earlier in
   the same series at `7a0d4706`; full builds are intentionally grouped rather
   than run after every local refactor.
 - `:app:assembleNonRootRelease`: passed.
