@@ -880,6 +880,16 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         LimeLog.warning("Unified Console failure: " + reason);
         loadingController.updateStatus("Connection failed: " + reason);
+        modalController.showConnectionRecovery(getCurrentFocus(), reason,
+                () -> {
+                    if (resumeHost != null && resumeApp != null) {
+                        launchLegacy(resumeHost, resumeApp);
+                    }
+                }, () -> {
+                    cancelUnifiedPendingLaunch();
+                    unifiedHomeSession.clear();
+                    renderSession(visibleSession());
+                });
     }
 
     private void maybeRevealUnifiedStream() {
