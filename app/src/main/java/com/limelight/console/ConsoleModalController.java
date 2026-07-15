@@ -144,14 +144,14 @@ final class ConsoleModalController {
                      Runnable hostIntegrations, Runnable moonlightSettings) {
         begin(focusToRestore);
         integrationHostUuid = null;
-        TextView sounds = wakeAction("UI SOUNDS  Â·  " + (uiSounds ? "ON" : "OFF"));
+        TextView sounds = wakeAction("UI SOUNDS  \u00B7  " + (uiSounds ? "ON" : "OFF"));
         sounds.setOnClickListener(view -> toggleSounds.run());
-        TextView motion = wakeAction("REDUCED MOTION  Â·  " +
+        TextView motion = wakeAction("REDUCED MOTION  \u00B7  " +
                 (reducedMotion ? "ON" : "OFF"));
         motion.setOnClickListener(view -> toggleMotion.run());
-        TextView integrations = wakeAction("HOST INTEGRATIONS  â€ş");
+        TextView integrations = wakeAction("HOST INTEGRATIONS  \u203A");
         integrations.setOnClickListener(view -> hostIntegrations.run());
-        TextView moonlight = wakeAction("MOONLIGHT SETTINGS  â€ş");
+        TextView moonlight = wakeAction("MOONLIGHT SETTINGS  \u203A");
         moonlight.setOnClickListener(view -> moonlightSettings.run());
         showWakePanel("MOONWAKER", "Options",
                 "Tune the console interface or open Moonlight's streaming preferences.",
@@ -203,12 +203,12 @@ final class ConsoleModalController {
         boolean canIdentify = ControllerActions.canIdentify(controller.deviceId);
         boolean canDisconnect = ControllerActions.canDisconnect();
         String[] actions = {
-                canIdentify ? "Identify controller" : "Identify controller Â· unavailable",
-                canDisconnect ? "Power off controller" : "Power off controller Â· unavailable",
+                canIdentify ? "Identify controller" : "Identify controller \u00B7 unavailable",
+                canDisconnect ? "Power off controller" : "Power off controller \u00B7 unavailable",
                 "Unpair controller"
         };
         new AlertDialog.Builder(context)
-                .setTitle("P" + player + " Â· " + controller.name)
+                .setTitle("P" + player + " \u00B7 " + controller.name)
                 .setItems(actions, (dialog, which) -> {
                     if (which == 0 && canIdentify) identify.run();
                     else if (which == 1 && canDisconnect) disconnect.run();
@@ -571,7 +571,7 @@ final class ConsoleModalController {
             panel.addView(action, params);
             if (initial == null) initial = firstFocusable(action);
         }
-        panel.addView(label(backAction != null ? "BACK  Â·  PREVIOUS" : "BACK  Â·  CLOSE",
+        panel.addView(label(backAction != null ? "BACK  \u00B7  PREVIOUS" : "BACK  \u00B7  CLOSE",
                 11, 0x8FFFFFFF, true), top(dp(12)));
         rebuildWakeFocusNavigation();
         layer.addView(scroll, new FrameLayout.LayoutParams(

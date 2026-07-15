@@ -525,7 +525,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         discordDockView.setVisibility(View.VISIBLE);
         boolean connected = discordOverlayVoice != null && discordOverlayVoice.connected;
         discordDockView.addView(discordDockLine(connected ?
-                "DISCORD  Â·  " + discordOverlayVoice.channelName : "DISCORD",
+                "DISCORD  \u00B7  " + discordOverlayVoice.channelName : "DISCORD",
                 14, 0xFFB69CFF, true));
         if (!connected) {
             discordDockView.addView(discordDockLine("Not connected to a voice channel",
@@ -535,7 +535,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         for (DiscordGatewayClient.Participant participant : discordOverlayVoice.participants) {
             discordDockView.addView(discordDockLine(
                     (participant.speaking ? "\u25CF  " : "   ") + participant.name +
-                            (participant.self ? "  Â·  YOU" : ""), 13,
+                            (participant.self ? "  \u00B7  YOU" : ""), 13,
                     participant.speaking ? 0xFF69F0AE : 0xFFE6E1E9, false));
         }
     }
@@ -1375,14 +1375,14 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         HostGatewayClient.Connection connection =
                 hostGatewayStore.loadClientConnection(host.uuid);
         int request = integrationPanelRequest.incrementAndGet();
-        TextView status = modalController.wakeStatus("Gateway: checkingâ€¦");
-        TextView profile = modalController.wakeAction("INTEGRATION PROFILE  Â·  " +
-                connection.profileId.toUpperCase(Locale.ROOT) + "  â€ş");
+        TextView status = modalController.wakeStatus("Gateway: checking\u2026");
+        TextView profile = modalController.wakeAction("INTEGRATION PROFILE  \u00B7  " +
+                connection.profileId.toUpperCase(Locale.ROOT) + "  \u203A");
         TextView vibepolloStatus = modalController.wakeStatus(
-                "Vibepollo Bridge: checkingâ€¦");
-        TextView discordStatus = modalController.wakeStatus("Discord Bridge: checkingâ€¦");
-        TextView vibepollo = modalController.wakeAction("VIBEPOLLO FIX  â€ş");
-        TextView discord = modalController.wakeAction("OPEN DISCORD  â€ş");
+                "Vibepollo Bridge: checking\u2026");
+        TextView discordStatus = modalController.wakeStatus("Discord Bridge: checking\u2026");
+        TextView vibepollo = modalController.wakeAction("VIBEPOLLO FIX  \u203A");
+        TextView discord = modalController.wakeAction("OPEN DISCORD  \u203A");
         TextView refresh = modalController.wakeAction("REFRESH STATUS");
         TextView forget = modalController.wakeAction("FORGET THIS GATEWAY");
         vibepollo.setVisibility(View.GONE);
@@ -1412,11 +1412,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                             "Gateway: online");
                     if (selected != null) {
                         boolean active = profiles.suggestedProfileId.equals(selected.id);
-                        profile.setText("INTEGRATION PROFILE  Â·  " +
+                        profile.setText("INTEGRATION PROFILE  \u00B7  " +
                                 selected.name.toUpperCase(Locale.ROOT) +
-                                (active ? "  Â·  ACTIVE" : "") + "  â€ş");
+                                (active ? "  \u00B7  ACTIVE" : "") + "  \u203A");
                     } else {
-                        profile.setText("SELECT INTEGRATION PROFILE  â€ş");
+                        profile.setText("SELECT INTEGRATION PROFILE  \u203A");
                     }
                     vibepolloStatus.setText("Vibepollo Bridge: " +
                             (capabilities.vibepolloFix ? "online" : "offline"));
@@ -1604,9 +1604,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                          HostGatewayClient.Connection connection,
                                          boolean force) {
         int request = integrationPanelRequest.incrementAndGet();
-        TextView loading = modalController.wakeStatus("Loading your Discord serversâ€¦");
+        TextView loading = modalController.wakeStatus("Loading your Discord servers\u2026");
         modalController.showWakePanel(getCurrentFocus(), "DISCORD", "Servers",
-                host.name + "  Â·  Profile " + connection.profileId,
+                host.name + "  \u00B7  Profile " + connection.profileId,
                 this::showHostIntegrations, loading);
         integrationExecutor.execute(() -> {
             try {
@@ -1623,27 +1623,27 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     if (currentVoice != null && currentVoice.connected) {
                         actions.add(modalController.wakeSection("CURRENT VOICE"));
                         actions.add(modalController.wakeStatus("\u25CF  " +
-                                currentVoice.channelName + "  Â·  " +
+                                currentVoice.channelName + "  \u00B7  " +
                                 currentVoice.participants + " participant" +
                                 (currentVoice.participants == 1 ? "" : "s")));
                         TextView mute = modalController.discordAction(
-                                currentVoice.muted ? "MIC MUTED  Â·  UNMUTE" :
-                                        "MIC ON  Â·  MUTE",
+                                currentVoice.muted ? "MIC MUTED  \u00B7  UNMUTE" :
+                                        "MIC ON  \u00B7  MUTE",
                                 currentVoice.muted ? DISCORD_RED : DISCORD_GREEN);
                         TextView leave = modalController.discordAction("LEAVE", DISCORD_RED);
                         mute.setOnClickListener(view -> runGatewayOperation(
-                                "Toggling microphoneâ€¦",
+                                "Toggling microphone\u2026",
                                 () -> hostGatewayClient.setDiscordVoiceFlag(
                                         connection, "mute", "toggle"),
                                 () -> showDiscordServersPanel(host, connection, true)));
                         leave.setOnClickListener(view -> runGatewayOperation(
-                                "Leaving voiceâ€¦",
+                                "Leaving voice\u2026",
                                 () -> hostGatewayClient.leaveDiscordChannel(connection),
                                 () -> showDiscordServersPanel(host, connection, true)));
                         actions.add(modalController.wakeActionRow(mute, leave));
                     } else {
                         actions.add(modalController.wakeStatus(
-                                "Voice disconnected  Â·  Select a server and channel to join."));
+                                "Voice disconnected  \u00B7  Select a server and channel to join."));
                     }
                     actions.add(modalController.wakeSection("TOOLS"));
                     TextView settings = modalController.discordAction("SETTINGS", DISCORD_TOOL);
@@ -1662,14 +1662,14 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     } else {
                         for (HostGatewayClient.DiscordGuild guild : home.guilds) {
                             TextView action = modalController.discordAction(
-                                    guild.name + "  â€ş", DISCORD_BLURPLE);
+                                    guild.name + "  \u203A", DISCORD_BLURPLE);
                             action.setOnClickListener(view ->
                                     showDiscordChannelsPanel(host, connection, guild, false));
                             actions.add(action);
                         }
                     }
                     modalController.showWakePanel(getCurrentFocus(), "DISCORD", "Servers",
-                            host.name + "  Â·  Profile " + connection.profileId,
+                            host.name + "  \u00B7  Profile " + connection.profileId,
                             this::showHostIntegrations, actions.toArray(new View[0]));
                 });
             } catch (Exception error) {
@@ -1686,7 +1686,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                           HostGatewayClient.DiscordGuild guild,
                                           boolean force) {
         int request = integrationPanelRequest.incrementAndGet();
-        TextView loading = modalController.wakeStatus("Loading voice channelsâ€¦");
+        TextView loading = modalController.wakeStatus("Loading voice channels\u2026");
         modalController.showWakePanel(getCurrentFocus(), "DISCORD", guild.name, null,
                 () -> showDiscordServersPanel(host, connection, false), loading);
         integrationExecutor.execute(() -> {
@@ -1703,15 +1703,15 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     if (currentVoice != null && currentVoice.connected) {
                         actions.add(modalController.wakeSection("CURRENT VOICE"));
                         actions.add(modalController.wakeStatus("\u25CF  " +
-                                currentVoice.channelName + "  Â·  " +
+                                currentVoice.channelName + "  \u00B7  " +
                                 currentVoice.participants + " participants"));
                         TextView people = modalController.discordAction(
-                                "PEOPLE  Â·  " + currentVoice.participants, DISCORD_BLURPLE);
+                                "PEOPLE  \u00B7  " + currentVoice.participants, DISCORD_BLURPLE);
                         TextView leave = modalController.discordAction("LEAVE", DISCORD_RED);
                         people.setOnClickListener(view ->
                                 showDiscordParticipantsPanel(host, connection, true));
                         leave.setOnClickListener(view -> runGatewayOperation(
-                                "Leaving voiceâ€¦",
+                                "Leaving voice\u2026",
                                 () -> hostGatewayClient.leaveDiscordChannel(connection),
                                 () -> showDiscordChannelsPanel(host, connection, guild, true)));
                         actions.add(modalController.wakeActionRow(people, leave));
@@ -1735,7 +1735,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                         boolean active = currentVoice != null && currentVoice.connected &&
                                 channel.id.equals(currentVoice.channelId);
                         String count = channel.people >= 0 ?
-                                "  Â·  " + channel.people + " people" : "";
+                                "  \u00B7  " + channel.people + " people" : "";
                         String prefix = active ? "\u25CF  " : channel.favorite ? "\u2605  " : "#  ";
                         TextView action = modalController.discordAction(
                                 prefix + channel.name + count,
@@ -1775,7 +1775,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                          HostGatewayClient.DiscordChannel channel,
                                          boolean force) {
         int request = integrationPanelRequest.incrementAndGet();
-        TextView loading = modalController.wakeStatus("Loading channelâ€¦");
+        TextView loading = modalController.wakeStatus("Loading channel\u2026");
         Runnable back = () -> showDiscordChannelsPanel(host, connection, guild, false);
         modalController.showWakePanel(getCurrentFocus(), "DISCORD", "# " + channel.name,
                 guild.name, back, loading);
@@ -1789,27 +1789,27 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     List<View> actions = new ArrayList<>();
                     actions.add(modalController.wakeSection("VOICE CHANNEL"));
                     if (active) {
-                        actions.add(modalController.wakeStatus("\u25CF  Connected  Â·  " +
+                        actions.add(modalController.wakeStatus("\u25CF  Connected  \u00B7  " +
                                 voice.participants + " participant" +
                                 (voice.participants == 1 ? "" : "s")));
                         TextView mute = modalController.discordAction(
-                                voice.muted ? "MIC MUTED  Â·  UNMUTE" : "MIC ON  Â·  MUTE",
+                                voice.muted ? "MIC MUTED  \u00B7  UNMUTE" : "MIC ON  \u00B7  MUTE",
                                 voice.muted ? DISCORD_RED : DISCORD_GREEN);
                         TextView leave = modalController.discordAction("LEAVE", DISCORD_RED);
                         mute.setOnClickListener(view -> runGatewayOperation(
-                                "Toggling microphoneâ€¦",
+                                "Toggling microphone\u2026",
                                 () -> hostGatewayClient.setDiscordVoiceFlag(
                                         connection, "mute", "toggle"),
                                 () -> showDiscordChannelPanel(
                                         host, connection, guild, channel, true)));
                         leave.setOnClickListener(view -> runGatewayOperation(
-                                "Leaving #" + channel.name + "â€¦",
+                                "Leaving #" + channel.name + "\u2026",
                                 () -> hostGatewayClient.leaveDiscordChannel(connection),
                                 () -> showDiscordChannelPanel(
                                         host, connection, guild, channel, true)));
                         actions.add(modalController.wakeActionRow(mute, leave));
                         TextView people = modalController.discordAction(
-                                "PEOPLE  Â·  " + voice.participants, DISCORD_BLURPLE);
+                                "PEOPLE  \u00B7  " + voice.participants, DISCORD_BLURPLE);
                         people.setOnClickListener(view ->
                                 showDiscordParticipantsPanel(host, connection, true));
                         actions.add(people);
@@ -1822,13 +1822,13 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                         } else {
                             actions.add(modalController.wakeStatus(
                                     (channel.people >= 0 ? channel.people +
-                                            " people visible  Â·  " : "") +
+                                            " people visible  \u00B7  " : "") +
                                             "Join to see and control participants."));
                         }
                         TextView join = modalController.discordAction(
                                 "JOIN #" + channel.name, DISCORD_GREEN);
                         join.setOnClickListener(view -> runGatewayOperation(
-                                "Joining #" + channel.name + "â€¦",
+                                "Joining #" + channel.name + "\u2026",
                                 () -> hostGatewayClient.joinDiscordChannel(connection, channel),
                                 () -> {
                                     hostGatewayStore.saveLastDiscordChannel(
@@ -1862,7 +1862,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                               boolean force) {
         int request = integrationPanelRequest.incrementAndGet();
         TextView loading = modalController.wakeStatus(
-                "Loading people in the voice channelâ€¦");
+                "Loading people in the voice channel\u2026");
         Runnable back = () -> showDiscordServersPanel(host, connection, false);
         modalController.showWakePanel(getCurrentFocus(), "DISCORD", "People", null,
                 back, loading);
@@ -1878,15 +1878,15 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                 "Discord is not connected to a voice channel."));
                     } else {
                         actions.add(modalController.wakeStatus("\u25CF  " + voice.channelName +
-                                "  Â·  " + voice.participants + " participants"));
+                                "  \u00B7  " + voice.participants + " participants"));
                         for (HostGatewayClient.DiscordParticipant participant :
                                 voice.participantList) {
                             actions.add(modalController.wakeStatus(
                                     (participant.speaking ? "\u25CF  " : "") +
                                             participant.name +
-                                            (participant.self ? "  Â·  YOU" : "") +
+                                            (participant.self ? "  \u00B7  YOU" : "") +
                                             "\nVolume " + participant.volume + "%" +
-                                            (participant.muted ? "  Â·  MUTED" : "")));
+                                            (participant.muted ? "  \u00B7  MUTED" : "")));
                             if (!participant.self) {
                                 SeekBar volume = modalController.wakeVolumeSlider(
                                         participant.volume);
@@ -1926,7 +1926,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                     return false;
                                 });
                                 mute.setOnClickListener(view -> runGatewayOperation(
-                                        "Updating participant muteâ€¦",
+                                        "Updating participant mute\u2026",
                                         () -> hostGatewayClient.toggleDiscordParticipantMute(
                                                 connection, participant.id),
                                         () -> showDiscordParticipantsPanel(host, connection, true)));
@@ -1956,7 +1956,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             HostGatewayClient.DiscordParticipant participant,
             int volume, ConsoleDataRepository.Host host) {
         int snapped = Math.max(0, Math.min(200, Math.round(volume / 10f) * 10));
-        runGatewayOperation("Updating participant volumeâ€¦",
+        runGatewayOperation("Updating participant volume\u2026",
                 () -> hostGatewayClient.setDiscordParticipantVolume(
                         connection, participant.id, snapped),
                 () -> showDiscordParticipantsPanel(host, connection, true));
@@ -1970,11 +1970,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         boolean autoJoin = hostGatewayStore.isDiscordAutoJoinLastEnabled(
                 host.uuid, connection.profileId);
         TextView status = modalController.wakeStatus(
-                "Discord profile " + connection.profileId + ": checkingâ€¦");
+                "Discord profile " + connection.profileId + ": checking\u2026");
         TextView autoConnectAction = modalController.wakeAction(
-                "START DISCORD WITH STREAM  Â·  " + (autoConnect ? "ON" : "OFF"));
+                "START DISCORD WITH STREAM  \u00B7  " + (autoConnect ? "ON" : "OFF"));
         TextView autoJoinAction = modalController.wakeAction(
-                "AUTO-JOIN LAST CHANNEL  Â·  " + (autoJoin ? "ON" : "OFF"));
+                "AUTO-JOIN LAST CHANNEL  \u00B7  " + (autoJoin ? "ON" : "OFF"));
         TextView start = modalController.wakeAction("START DISCORD ON HOST");
         TextView connect = modalController.wakeAction("CONNECT / AUTHORIZE RPC");
         TextView audio = modalController.wakeAction("AUDIO DEVICES");
@@ -1990,10 +1990,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     host.uuid, connection.profileId, !autoJoin);
             showDiscordSettingsPanel(host, connection);
         });
-        start.setOnClickListener(view -> runGatewayOperation("Starting Discordâ€¦",
+        start.setOnClickListener(view -> runGatewayOperation("Starting Discord\u2026",
                 () -> hostGatewayClient.startDiscord(connection),
                 () -> showDiscordSettingsPanel(host, connection)));
-        connect.setOnClickListener(view -> runGatewayOperation("Connecting Discord RPCâ€¦",
+        connect.setOnClickListener(view -> runGatewayOperation("Connecting Discord RPC\u2026",
                 () -> hostGatewayClient.connectDiscord(connection, false),
                 () -> showDiscordSettingsPanel(host, connection)));
         audio.setOnClickListener(view -> showDiscordAudio(connection));
@@ -2037,7 +2037,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                           HostGatewayClient.Connection connection,
                                           boolean force) {
         int request = integrationPanelRequest.incrementAndGet();
-        TextView loading = modalController.wakeStatus("Loading USB devicesâ€¦");
+        TextView loading = modalController.wakeStatus("Loading USB devices\u2026");
         Runnable back = () -> showDiscordServersPanel(host, connection, false);
         modalController.showWakePanel(getCurrentFocus(), "VIRTUALHERE", "USB devices",
                 "Integration profile: " + connection.profileId +
@@ -2058,7 +2058,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     actions.add(modalController.wakeStatus(summary));
                     int devices = 0;
                     for (HostGatewayClient.VirtualHereServer server : state.servers) {
-                        actions.add(modalController.wakeStatus("SERVER  Â·  " +
+                        actions.add(modalController.wakeStatus("SERVER  \u00B7  " +
                                 (!server.name.isEmpty() ? server.name : server.hostname)));
                         for (HostGatewayClient.VirtualHereDevice device : server.devices) {
                             devices++;
@@ -2067,17 +2067,17 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                             device.inUse ? "IN USE" : "OFFLINE";
                             TextView use = modalController.wakeAction(
                                     (device.inUseByMe ? "\u25A0  " : "USB  ") +
-                                            device.name + "  Â·  " + stateLabel);
+                                            device.name + "  \u00B7  " + stateLabel);
                             TextView auto = modalController.wakeAction(
-                                    device.autoUse ? "AUTO  Â·  ON" : "AUTO USE");
+                                    device.autoUse ? "AUTO  \u00B7  ON" : "AUTO USE");
                             if (device.inUseByMe) {
                                 use.setOnClickListener(view -> runVirtualHereOperation(
                                         host, connection, "stop", device.address,
-                                        "Disconnecting " + device.name + "â€¦"));
+                                        "Disconnecting " + device.name + "\u2026"));
                             } else if (device.available) {
                                 use.setOnClickListener(view -> runVirtualHereOperation(
                                         host, connection, "use", device.address,
-                                        "Connecting " + device.name + "â€¦"));
+                                        "Connecting " + device.name + "\u2026"));
                             } else {
                                 use.setOnClickListener(view -> Toast.makeText(this,
                                         device.boundHostname.isEmpty() ?
@@ -2092,7 +2092,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                 } else {
                                     runVirtualHereOperation(host, connection, "auto",
                                             device.address,
-                                            "Enabling auto use for " + device.name + "â€¦");
+                                            "Enabling auto use for " + device.name + "\u2026");
                                 }
                             });
                             actions.add(modalController.wakeActionRow(use, auto));
@@ -2104,7 +2104,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     TextView refresh = modalController.wakeAction("REFRESH");
                     TextView done = modalController.wakeAction("BACK");
                     restart.setOnClickListener(view -> runVirtualHereOperation(
-                            host, connection, "restart", null, "Restarting VirtualHereâ€¦"));
+                            host, connection, "restart", null, "Restarting VirtualHere\u2026"));
                     refresh.setOnClickListener(view ->
                             showVirtualHereWakePanel(host, connection, true));
                     done.setOnClickListener(view -> back.run());
@@ -2281,7 +2281,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         if (host == null) { showDiscordPanel(); return; }
         int request = integrationPanelRequest.incrementAndGet();
         TextView loading = modalController.wakeStatus(
-                "Loading Discord and Windows audio devicesâ€¦");
+                "Loading Discord and Windows audio devices\u2026");
         Runnable back = () -> showDiscordSettingsPanel(host, connection);
         modalController.showWakePanel(getCurrentFocus(), "DISCORD", "Audio devices",
                 null, back, loading);
@@ -2296,21 +2296,21 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                         actions.add(modalController.wakeSection("WINDOWS AUDIO"));
                         actions.add(modalController.wakeStatus("System volume: " +
                                 audio.systemVolume + "%" +
-                                (audio.systemMuted ? "  Â·  MUTED" : "")));
-                        TextView down = modalController.wakeAction("âˆ’5");
+                                (audio.systemMuted ? "  \u00B7  MUTED" : "")));
+                        TextView down = modalController.wakeAction("\u22125");
                         TextView up = modalController.wakeAction("+5");
                         TextView mute = modalController.wakeAction(
                                 audio.systemMuted ? "UNMUTE" : "MUTE");
                         down.setOnClickListener(view -> runGatewayOperation(
-                                "Lowering volumeâ€¦",
+                                "Lowering volume\u2026",
                                 () -> hostGatewayClient.changeSystemVolume(connection, -5),
                                 () -> showDiscordAudio(connection)));
                         up.setOnClickListener(view -> runGatewayOperation(
-                                "Raising volumeâ€¦",
+                                "Raising volume\u2026",
                                 () -> hostGatewayClient.changeSystemVolume(connection, 5),
                                 () -> showDiscordAudio(connection)));
                         mute.setOnClickListener(view -> runGatewayOperation(
-                                "Updating system muteâ€¦",
+                                "Updating system mute\u2026",
                                 () -> hostGatewayClient.toggleSystemMute(connection),
                                 () -> showDiscordAudio(connection)));
                         actions.add(modalController.wakeActionRow(down, up, mute));
@@ -2350,7 +2350,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             TextView action = modalController.wakeAction(
                     (device.current ? "\u2713  " : "") + device.name);
             action.setOnClickListener(view -> runGatewayOperation(
-                    "Selecting " + device.name + "â€¦",
+                    "Selecting " + device.name + "\u2026",
                     () -> hostGatewayClient.selectAudioDevice(connection, device),
                     () -> showDiscordAudio(connection)));
             actions.add(action);
@@ -2419,7 +2419,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         HostGatewayClient.Connection connection = selectedGatewayConnection();
         if (host == null || connection == null) { showHostIntegrations(); return; }
         int request = integrationPanelRequest.incrementAndGet();
-        TextView status = modalController.wakeStatus("Loading Vibepollo statusâ€¦");
+        TextView status = modalController.wakeStatus("Loading Vibepollo status\u2026");
         TextView restart = modalController.wakeAction("RESTART VIBEPOLLO");
         TextView resetDisplay = modalController.wakeAction("RESET REMEMBERED DISPLAY");
         TextView exportLogs = modalController.wakeAction("EXPORT VIBEPOLLO LOGS");
@@ -2432,7 +2432,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 "Vibepollo will forget its persisted display choice and select it again " +
                         "on the next session."));
         exportLogs.setOnClickListener(view -> runVibepolloAction(connection,
-                "export-logs", "Exporting Vibepollo logsâ€¦"));
+                "export-logs", "Exporting Vibepollo logs\u2026"));
         refresh.setOnClickListener(view -> showVibepolloPanel());
         modalController.showWakePanel(getCurrentFocus(), "VIBEPOLLO FIX", host.name,
                 "Integration profile: " + connection.profileId +
@@ -2468,7 +2468,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         TextView confirm = modalController.wakeAction("CONFIRM");
         cancel.setOnClickListener(view -> showVibepolloPanel());
         confirm.setOnClickListener(view -> runVibepolloAction(
-                connection, action, title + "â€¦"));
+                connection, action, title + "\u2026"));
         modalController.showWakePanel(getCurrentFocus(), "VIBEPOLLO FIX", title, warning,
                 this::showVibepolloPanel, cancel, confirm);
     }
