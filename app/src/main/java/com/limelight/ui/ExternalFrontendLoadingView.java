@@ -25,6 +25,12 @@ import java.util.Random;
  * streaming pipeline.
  */
 public final class ExternalFrontendLoadingView extends FrameLayout {
+    public enum RecoveryAction { RETRY, HOME, REVEAL_DESKTOP, DISCONNECT }
+
+    public interface RecoveryListener {
+        void onRecoveryAction(RecoveryAction action);
+    }
+
     private static final long MESSAGE_INTERVAL_MS = 3400;
 
     private final Handler handler = new Handler(Looper.getMainLooper());
@@ -32,6 +38,10 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
     private final TextView titleView;
     private final TextView messageView;
     private final TextView statusView;
+    private final LinearLayout recoveryActions;
+    private final TextView homeRecoveryAction;
+    private final TextView revealRecoveryAction;
+    private RecoveryListener recoveryListener;
     private int lastMessageIndex = -1;
     private boolean stopped;
     private boolean revealRequested;
@@ -117,6 +127,30 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
         hintParams.topMargin = dp(34);
         copy.addView(cancelHint, hintParams);
 
+        recoveryActions = new LinearLayout(context);
+        recoveryActions.setOrientation(LinearLayout.VERTICAL);
+        recoveryActions.setGravity(Gravity.CENTER_HORIZONTAL);
+        recoveryActions.setVisibility(GONE);
+        LinearLayout.LayoutParams recoveryParams = row();
+        recoveryParams.topMargin = dp(24);
+        copy.addView(recoveryActions, recoveryParams);
+
+        LinearLayout firstRow = recoveryRow();
+        TextView retryAction = recoveryButton("RETRY", RecoveryAction.RETRY);
+        homeRecoveryAction = recoveryButton("HOME", RecoveryAction.HOME);
+        firstRow.addView(retryAction, recoveryButtonParams());
+        firstRow.addView(homeRecoveryAction, recoveryButtonParams());
+        recoveryActions.addView(firstRow, row());
+
+        LinearLayout secondRow = recoveryRow();
+        revealRecoveryAction = recoveryButton("REVEAL STREAM", RecoveryAction.REVEAL_DESKTOP);
+        TextView disconnectAction = recoveryButton("DISCONNECT", RecoveryAction.DISCONNECT);
+        secondRow.addView(revealRecoveryAction, recoveryButtonParams());
+        secondRow.addView(disconnectAction, recoveryButtonParams());
+        LinearLayout.LayoutParams secondRowParams = row();
+        secondRowParams.topMargin = dp(10);
+        recoveryActions.addView(secondRow, secondRowParams);
+
         messageView.setText("Preparing your game...");
         if (!reducedMotion) handler.postDelayed(rotateMessage, MESSAGE_INTERVAL_MS);
     }
@@ -153,9 +187,25 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
         if (stopped) return;
         handler.removeCallbacks(rotateMessage);
         messageView.setText("The game window could not be confirmed safely.");
-        statusView.setText(firstFrameReady ?
-                "Press OK to reveal the stream, or BACK to return Home" :
-                "Still waiting for the first video frame • Press BACK to return Home");
+        statusView.setText(firstFrameReady ? "Choose a safe recovery action" :
+                "Still waiting for the first video frame");
+        revealRecoveryAction.setEnabled(firstFrameReady);
+        revealRecoveryAction.setFocusable(firstFrameReady);
+        revealRecoveryAction.setAlpha(firstFrameReady ? 1f : 0.42f);
+        recoveryActions.setVisibility(VISIBLE);
+        homeRecoveryAction.requestFocus();
+    }
+
+    public void hidePrivacyRecovery() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(this::hidePrivacyRecovery);
+            return;
+        }
+        recoveryActions.setVisibility(GONE);
+    }
+
+    public void setRecoveryListener(RecoveryListener listener) {
+        recoveryListener = listener;
     }
 
     public void revealStream() {
@@ -213,6 +263,35 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
 
     private LinearLayout.LayoutParams row() {
         return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private LinearLayout recoveryRow() {
+        LinearLayout row = new LinearLayout(getContext());
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER);
+        return row;
+    }
+
+    private TextView recoveryButton(String label, RecoveryAction action) {
+        TextView button = text(label, 15, Color.WHITE, true);
+        button.setGravity(Gravity.CENTER);
+        button.setFocusable(true);
+        button.setClickable(true);
+        button.setPadding(dp(12), 0, dp(12), 0);
+        button.setBackgroundColor(0xFF28233D);
+        button.setOnFocusChangeListener((view, focused) ->
+                view.setBackgroundColor(focused ? 0xFF6C4DFF : 0xFF28233D));
+        button.setOnClickListener(view -> {
+            if (recoveryListener != null) recoveryListener.onRecoveryAction(action);
+        });
+        return button;
+    }
+
+    private LinearLayout.LayoutParams recoveryButtonParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(260), dp(58));
+        params.leftMargin = dp(6);
+        params.rightMargin = dp(6);
+        return params;
     }
 
     private int dp(float value) {

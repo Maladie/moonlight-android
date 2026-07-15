@@ -140,7 +140,9 @@ public final class ActiveStreamSurfaceBridge {
         }
 
         synchronized void setConsoleForeground(boolean foreground) {
+            if (consoleForeground == foreground) return;
             consoleForeground = foreground;
+            log(foreground ? "console_foreground" : "console_background");
             if (foreground) bindConsoleIfReady(false);
         }
 

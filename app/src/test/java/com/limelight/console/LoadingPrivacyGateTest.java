@@ -36,4 +36,15 @@ public class LoadingPrivacyGateTest {
         gate.onFirstDecodedFrame();
         assertTrue(gate.mayReveal());
     }
+
+    @Test public void retryResetClearsExplicitRevealApproval() {
+        LoadingPrivacyGate gate = new LoadingPrivacyGate(3);
+        gate.reset(true);
+        gate.onFirstDecodedFrame();
+        gate.approveDesktopReveal();
+        assertTrue(gate.mayReveal());
+        gate.reset(true);
+        gate.onFirstDecodedFrame();
+        assertFalse(gate.mayReveal());
+    }
 }

@@ -98,6 +98,13 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         super.onPause();
     }
 
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        // Some Android TV dream overlays do not deliver a matching onResume()
+        // when the existing Activity window becomes interactive again.
+        ActiveStreamSurfaceBridge.setConsoleForeground(hasFocus && !isFinishing());
+    }
+
     @Override protected void onDestroy() {
         ActiveStreamSurfaceBridge.setConsoleForeground(false);
         if (streamSurface != null) {

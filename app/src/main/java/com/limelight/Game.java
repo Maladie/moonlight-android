@@ -355,6 +355,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     getIntent().getStringExtra(EXTRA_APP_NAME),
                     getIntent().getLongExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_ANIMATION_EPOCH, 0L),
                     getIntent().getBooleanExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION, false));
+            externalLoadingView.setRecoveryListener(this::handlePrivacyRecoveryAction);
             externalLoadingView.setMessage(
                     getIntent().getStringExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_MESSAGE));
             ((FrameLayout)findViewById(android.R.id.content)).addView(externalLoadingView,
@@ -1384,23 +1385,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // onBackPressed(). Handle the Android BACK key at the Activity boundary
         // for external-frontend sessions and consume its matching key-up event.
         int keyCode = event.getKeyCode();
-        boolean privacyRevealKey = keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
-                keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
-                keyCode == KeyEvent.KEYCODE_BUTTON_A;
-        if (externalFrontend && privacyRecoveryReady && externalLoadingView != null &&
-                externalLoadingView.getVisibility() == View.VISIBLE && privacyRevealKey) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
-                loadingPrivacyGate.approveDesktopReveal();
-                if (loadingPrivacyGate.mayReveal()) {
-                    LimeLog.info("MoonWakerPrivacy event=explicit_desktop_reveal firstFrame=true");
-                    revealExternalStream();
-                }
-                else {
-                    externalLoadingView.showPrivacyRecovery(false);
-                }
-            }
-            return true;
-        }
         InputDevice inputDevice = event.getDevice();
         boolean nonGamepadB = keyCode == KeyEvent.KEYCODE_BUTTON_B &&
                 (inputDevice == null || !ControllerHandler.isGameControllerDevice(inputDevice));
@@ -3188,6 +3172,46 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (externalLoadingView != null) {
             externalLoadingView.setStatus("Stream ready");
             externalLoadingView.revealStream();
+        }
+    }
+
+    private void handlePrivacyRecoveryAction(ExternalFrontendLoadingView.RecoveryAction action) {
+        if (action == null || externalLoadingView == null) return;
+        switch (action) {
+            case RETRY:
+                privacyRecoveryReady = false;
+                loadingPrivacyGate.reset(privacyReadinessRequired);
+                if (firstDecodedFrame) loadingPrivacyGate.onFirstDecodedFrame();
+                externalLoadingView.hidePrivacyRecovery();
+                externalLoadingView.setMessage("Waiting for the game window…");
+                externalLoadingView.setStatus("Checking launch readiness…");
+                privacyHandler.removeCallbacks(privacyReadinessTimeout);
+                privacyHandler.postDelayed(privacyReadinessTimeout, PRIVACY_READINESS_TIMEOUT_MS);
+                LimeLog.info("MoonWakerPrivacy event=recovery_retry firstFrame=" + firstDecodedFrame);
+                break;
+            case HOME:
+                LimeLog.info("MoonWakerPrivacy event=recovery_home");
+                if (!returnToExternalFrontend()) {
+                    Toast.makeText(this, "MoonWaker Home is temporarily unavailable",
+                            Toast.LENGTH_SHORT).show();
+                }
+                break;
+            case REVEAL_DESKTOP:
+                loadingPrivacyGate.approveDesktopReveal();
+                if (loadingPrivacyGate.mayReveal()) {
+                    LimeLog.info("MoonWakerPrivacy event=explicit_desktop_reveal firstFrame=true");
+                    revealExternalStream();
+                }
+                else {
+                    externalLoadingView.showPrivacyRecovery(false);
+                }
+                break;
+            case DISCONNECT:
+                LimeLog.info("MoonWakerPrivacy event=recovery_disconnect");
+                userInitiatedDisconnect = true;
+                stopConnection();
+                finish();
+                break;
         }
     }
 

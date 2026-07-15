@@ -39,6 +39,16 @@ public class ActiveStreamSurfaceBridgeTest {
         assertTrue(coordinator.isConsoleRenderTargetBound(session));
     }
 
+    @Test public void foregroundStateTracksFocusLossAndRecovery() {
+        ActiveStreamSurfaceBridge.Coordinator coordinator = new ActiveStreamSurfaceBridge.Coordinator();
+        coordinator.setConsoleForeground(true);
+        assertTrue(coordinator.snapshot().consoleForeground);
+        coordinator.setConsoleForeground(false);
+        assertFalse(coordinator.snapshot().consoleForeground);
+        coordinator.setConsoleForeground(true);
+        assertTrue(coordinator.snapshot().consoleForeground);
+    }
+
     @Test public void destroyingBoundConsoleSurfaceMovesDecoderToBackground() {
         ActiveStreamSurfaceBridge.Coordinator coordinator = new ActiveStreamSurfaceBridge.Coordinator();
         FakeSession session = new FakeSession();
