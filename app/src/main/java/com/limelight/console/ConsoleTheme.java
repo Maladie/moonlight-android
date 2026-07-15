@@ -25,6 +25,10 @@ final class ConsoleTheme {
         view.setSoundEffectsEnabled(uiSounds);
     }
 
+    boolean isReducedMotion() {
+        return reducedMotion;
+    }
+
     void applyInterfacePreferences(View root) {
         if (root == null) return;
         if (root.isClickable() || root.isFocusable()) prepareInteractiveView(root);
@@ -58,7 +62,7 @@ final class ConsoleTheme {
         card.animate().cancel();
         card.setElevation(dp(focused ? 9 : 3));
         card.setTranslationZ(dp(focused ? 2 : 0));
-        float scale = focused ? 1.018f : 1f;
+        float scale = focused ? 1.022f : 1f;
         if (!reducedMotion && card.isLaidOut()) {
             card.animate().scaleX(scale).scaleY(scale).setDuration(120).start();
         }

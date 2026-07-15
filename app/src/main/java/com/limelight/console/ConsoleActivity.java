@@ -1130,7 +1130,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         card.setOnFocusChangeListener((view, focused) -> {
             consoleTheme.onCardFocus(view, focused);
             action.animate().cancel();
-            action.animate().alpha(focused ? 1f : 0f).setDuration(120).start();
+            if (consoleTheme.isReducedMotion()) {
+                action.setAlpha(focused ? 1f : 0f);
+            } else {
+                action.animate().alpha(focused ? 1f : 0f).setDuration(120).start();
+            }
             if (focused) {
                 hostSelectionController.rememberApp(host, app);
                 artworkController.show(app.posterUri, poster.getDrawable());
