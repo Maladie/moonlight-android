@@ -40,7 +40,9 @@ input capture.
 `ConsoleActivity` owns one persistent root `FrameLayout`, ordered bottom to top:
 
 1. `StreamSurfaceHost` layer. It owns the stable decoder surface. While a
-   session is active it remains attached and is never set to `GONE`.
+   session is active it remains attached and is never set to `GONE`. During the
+   compatibility phase, `ActiveStreamSurfaceBridge` binds the controller-owned
+   renderer to it whenever Console Home is foreground.
 2. `LoadingPrivacyGate`. It is fully opaque while connection/readiness is
    unresolved and during recovery transitions.
 3. Console Home. It is opaque in `HOME` and `CONSOLE_OVER_STREAM`.
@@ -63,8 +65,14 @@ listener and decoder view adapter; it cannot start a second connection and no
 input component can access the raw connection. Keyboard, mouse, touch, pen, and
 controller events cross the session-scoped `StreamInputSender` boundary, whose
 `NvConnection` adapter is owned by `MoonlightStreamSessionController`. The
-existing background-surface fallback is retained until the unified path passes
-the P0 A-F regression suite on TV.
+controller also owns all renderer target operations. `ActiveStreamSurfaceBridge`
+performs a process-local handoff between the compatibility `Game` surface and
+the persistent `ConsoleActivity` surface without owning session lifetime. While
+console Home covers a live stream, decoded output is bound underneath it; when
+the gameplay Activity returns, it reclaims the same renderer. The existing
+background-surface fallback remains the final safe target if neither window
+surface is ready, until the unified path passes the P0 A-F regression suite on
+TV.
 
 ## Input and focus routing
 

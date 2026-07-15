@@ -40,8 +40,10 @@ Implemented on this branch:
   without changing capability negotiation. `Game` remains its listener/view
   adapter. Keyboard, mouse, touch, pen, and controller paths now depend on the
   session-scoped `StreamInputSender`; only the controller's package-private
-  adapter sees its owned `NvConnection`. The background-surface fallback is
-  unchanged.
+  adapter sees its owned `NvConnection`. Renderer target changes likewise pass
+  through `StreamRenderTargetController`. `ActiveStreamSurfaceBridge` moves the
+  same decoder between `Game`, ConsoleActivity's persistent Surface, and the
+  existing background fallback without taking session ownership.
 - Home launches cached apps through the existing `ShortcutTrampoline` with the
   same-package external-frontend contract. The current transitional route is
   ConsoleActivity -> ShortcutTrampoline -> Game -> ConsoleActivity. Back covers
@@ -50,32 +52,33 @@ Implemented on this branch:
 
 Important: the last bullet is the safe one-APK adapter path, not the final
 one-Activity stream. Do not describe the Activity consolidation as complete.
-The next exact implementation step is to bind the controller-owned renderer to
-`ConsoleActivity`'s persistent surface through `StreamSurfaceHost`, while
-retaining `Game` as the listener/view compatibility adapter. Only after two live
-P0 Stream -> Home -> Stream cycles may the `Game` Activity launch be bypassed.
+The controller-owned renderer is now bound to `ConsoleActivity`'s persistent
+surface through `StreamSurfaceHost`, while `Game` remains the listener/view
+compatibility adapter. The next gate is two live P0 Stream -> Home -> Stream
+cycles proving changing video, input recovery, one connection, and no surface
+destruction. Only after that evidence may the `Game` Activity launch be bypassed.
 
 ### Verification
 
 - JDK: `C:\Users\Basia\.jdks\openjdk-17.0.2` (the system Java 24 is not
   compatible with Gradle 8.7/AGP 8.5.1).
-- `:app:testNonRootDebugUnitTest`: 23/23 passed; state, privacy readiness, surface
+- `:app:testNonRootDebugUnitTest`: 28/28 passed; state, privacy readiness, surface
   lifetime, legacy ownership, disconnect/quit separation, input routing, and
-  input-boundary initialization are covered.
+  input-boundary initialization plus cross-Activity render-target handoff are
+  covered.
 - `:app:assembleNonRootDebug`: passed.
 - `:app:assembleNonRootRelease`: passed.
-- Latest signed input-boundary release identity: `com.limelight.unofficial`, certificate SHA-256
+- Latest signed persistent-surface release identity: `com.limelight.unofficial`, certificate SHA-256
   `745d86be25583505b45da74343bd9f868e8f77884fa6e0aaf49fba330b277740`,
   APK SHA-256
-  `214a12376ace3883b31c4d805816cd79a96b323b3bcdf8597b500879848eedc3`.
-  Deliverable: `moonwaker-game-app-input-boundary-release.apk`.
-  This increment was not installed because TV testing is paused. The preceding
-  renderer-owner APK hash was
-  `471bb4f3a1f8bb79bf7a8ffd940ebf84b6896422506b980bc96181a085958bae`.
-- The TV was reported powered off. Earlier ADB install succeeded because its ADB
-  endpoint was reachable, but black captures are invalid evidence and no UI,
-  focus, video, input, or stream regression is claimed. Do not run further TV
-  tests until the user reports it available.
+  `e831230f4c3d20d5df025fff0eb466d8db89f51268a0a8ed08b24b29a7c4aa02`.
+  Deliverable: `moonwaker-game-app-persistent-surface-release.apk`.
+  This increment has not been installed yet. The preceding input-boundary APK
+  hash was `214a12376ace3883b31c4d805816cd79a96b323b3bcdf8597b500879848eedc3`.
+- The preceding input-boundary release was installed successfully on the BRAVIA
+  TV. The user confirmed that the current milestone UI is visible and differs
+  from Wake & Play, as expected for the vertical slice. No live stream/surface
+  regression evidence has been collected for the new persistent-surface build.
 - GitHub CLI account `Maladie` currently reports an invalid keyring token. Do
   not expose a token; refresh authentication before push if ordinary Git
   credentials do not work.

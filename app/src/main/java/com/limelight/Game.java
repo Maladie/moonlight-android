@@ -18,6 +18,7 @@ import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
+import com.limelight.console.ActiveStreamSurfaceBridge;
 import com.limelight.console.InputRouter;
 import com.limelight.console.MoonlightStreamSessionController;
 import com.limelight.console.StreamInputSender;
@@ -562,6 +563,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 glPrefs.glRenderer,
                 this,
                 this::onFirstVideoFrameRendered);
+        ActiveStreamSurfaceBridge.attachSession(sessionController);
         decoderRenderer.setSeamlessFrameRateOnly(externalFrontend);
 
         // Don't stream HDR if the decoder can't support it
@@ -1397,11 +1399,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         handingOffToExternalFrontend = true;
-        // Move decoder output before launching Wake & Play. Waiting for
+        // Move decoder output before launching the console. Waiting for
         // surfaceDestroyed() leaves a vendor-dependent race where the Surface
         // can disappear first and the connection is torn down as a fallback.
         if (decoderRenderer != null && (connecting || connected)) {
-            decoderRenderer.switchToBackgroundSurface();
+            if (!ActiveStreamSurfaceBridge.prepareConsoleHandoff(sessionController)) {
+                sessionController.switchToBackgroundSurface();
+            }
         }
         frontendIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
                 Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP |
@@ -2816,7 +2820,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // thread to keep things smooth for the UI. Inside moonlight-common,
             // we prevent another thread from starting a connection before and
             // during the process of stopping this one.
-            sessionController.disconnectTransport(afterStopped);
+            sessionController.disconnectTransport(() -> {
+                ActiveStreamSurfaceBridge.detachSession(sessionController);
+                if (afterStopped != null) afterStopped.run();
+            });
 
             // Quit the running app if requested
             if (controllerHandler.pendingApplicationQuit) {
@@ -2824,8 +2831,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 sessionController.quitHostApplication();
             }
         }
-        else if (afterStopped != null) {
-            runOnUiThread(afterStopped);
+        else {
+            if (sessionController != null) {
+                ActiveStreamSurfaceBridge.detachSession(sessionController);
+            }
+            if (afterStopped != null) runOnUiThread(afterStopped);
         }
     }
 
@@ -3089,6 +3099,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void onFirstVideoFrameRendered() {
         runOnUiThread(() -> {
+            if (sessionController != null) {
+                ActiveStreamSurfaceBridge.bindConsoleIfForeground(sessionController);
+            }
             if (externalLoadingView != null) {
                 externalLoadingView.setStatus("Stream ready");
                 externalLoadingView.revealStream();
@@ -3179,7 +3192,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 prefConfig.enableHdr ? ", HDR" : "");
             Toast.makeText(Game.this, configMessage, Toast.LENGTH_LONG).show();
 
-            decoderRenderer.setRenderTarget(holder);
+            sessionController.setInitialRenderTarget(holder);
+            ActiveStreamSurfaceBridge.onGameRenderTargetBound(sessionController);
             sessionController.connect();
         }
     }
@@ -3191,8 +3205,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         streamSurfaceHost.onWindowSurfaceCreated();
 
         if (externalFrontend && attemptedConnection && connected) {
-            if (!decoderRenderer.switchToRenderTarget(holder)) {
+            if (!sessionController.switchToRenderTarget(holder)) {
                 LimeLog.warning("Unable to restore stream Surface after frontend handoff");
+            }
+            else {
+                ActiveStreamSurfaceBridge.onGameRenderTargetBound(sessionController);
             }
         }
 
@@ -3231,7 +3248,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void surfaceDestroyed(SurfaceHolder holder) {
         boolean backgroundSurfaceBound = attemptedConnection && externalFrontend && !isFinishing() &&
                 (handingOffToExternalFrontend || connecting || connected) &&
-                decoderRenderer.switchToBackgroundSurface();
+                (ActiveStreamSurfaceBridge.isConsoleRenderTargetBound(sessionController) ||
+                        sessionController.switchToBackgroundSurface());
         StreamSurfaceHost.LossAction lossAction = streamSurfaceHost.onWindowSurfaceDestroyed(
                 attemptedConnection, backgroundSurfaceBound);
 
@@ -3242,7 +3260,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         if (lossAction == StreamSurfaceHost.LossAction.STOP_SESSION) {
             // Let the decoder know immediately that the surface is gone
-            decoderRenderer.prepareForStop();
+            sessionController.prepareRendererForStop();
 
             if (connected) {
                 stopConnection();

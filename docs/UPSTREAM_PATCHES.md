@@ -71,6 +71,18 @@ access before initialization and verify that the controller exposes the supplied
 input boundary independently of its transport. The full 23-test JVM suite and
 the non-root debug build pass.
 
+The sixth extraction moves all decoder target operations behind
+`StreamRenderTargetController`, implemented by the session owner. A process-local
+`ActiveStreamSurfaceBridge` weakly coordinates the compatibility `Game` Activity
+and `ConsoleActivity` without owning either one. Before Game reveals Console,
+the renderer moves directly to Console's registered persistent `SurfaceHolder`;
+if that holder is unavailable, the existing background `ImageReader` remains the
+fallback. Returning to Game rebinds the same renderer and clears Console target
+ownership. Console surface loss also moves output to the background before the
+window surface disappears. Five coordinator tests cover explicit and foreground
+handoff, loss fallback, return ownership, and rejection of a second session.
+The full JVM suite now contains 28 passing tests.
+
 ### P003 - User-visible product label and JVM test dependency
 
 - Surface: `app/build.gradle`.

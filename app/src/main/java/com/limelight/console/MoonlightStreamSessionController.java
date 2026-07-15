@@ -2,6 +2,7 @@ package com.limelight.console;
 
 import android.app.Activity;
 import android.content.Context;
+import android.view.SurfaceHolder;
 
 import com.limelight.binding.audio.AndroidAudioRenderer;
 import com.limelight.binding.video.CrashListener;
@@ -24,7 +25,8 @@ import java.util.concurrent.Executor;
  * Owns creation, start, and stop of the single NvConnection used by a session.
  * Game remains a listener/view adapter during migration.
  */
-public final class MoonlightStreamSessionController implements StreamSessionController {
+public final class MoonlightStreamSessionController implements StreamSessionController,
+        StreamRenderTargetController {
     interface Transport {
         void start();
         void stop();
@@ -203,6 +205,34 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
             throw new IllegalStateException("Session input sender is not initialized");
         }
         return inputSender;
+    }
+
+    @Override
+    public synchronized void setInitialRenderTarget(SurfaceHolder renderTarget) {
+        requireVideoRenderer().setRenderTarget(Objects.requireNonNull(renderTarget, "renderTarget"));
+    }
+
+    @Override
+    public synchronized boolean switchToRenderTarget(SurfaceHolder renderTarget) {
+        return requireVideoRenderer().switchToRenderTarget(
+                Objects.requireNonNull(renderTarget, "renderTarget"));
+    }
+
+    @Override
+    public synchronized boolean switchToBackgroundSurface() {
+        return requireVideoRenderer().switchToBackgroundSurface();
+    }
+
+    @Override
+    public synchronized void prepareRendererForStop() {
+        requireVideoRenderer().prepareForStop();
+    }
+
+    private MediaCodecDecoderRenderer requireVideoRenderer() {
+        if (videoRenderer == null) {
+            throw new IllegalStateException("Session renderer is not prepared");
+        }
+        return videoRenderer;
     }
 
     private List<Runnable> drainStopCallbacks() {

@@ -13,6 +13,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.SurfaceHolder;
 import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
@@ -27,6 +28,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.limelight.Game;
+import com.limelight.LimeLog;
 import com.limelight.PublicStreamIntent;
 import com.limelight.PublicReturnStreamTrampoline;
 import com.limelight.ShortcutTrampoline;
@@ -39,12 +41,13 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** Milestone-1 Android TV console shell with a persistent stream surface layer. */
-public final class ConsoleActivity extends Activity {
+public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
     private final ConsoleStateMachine stateMachine = new ConsoleStateMachine();
     private final InputRouter inputRouter = new InputRouter(InputRouter.Region.HOME);
     private final ExecutorService artworkExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicInteger artworkRequest = new AtomicInteger();
+    private final StreamSurfaceHost streamSurfaceHost = new StreamSurfaceHost();
 
     private ConsoleDataRepository repository;
     private FrameLayout root;
@@ -71,6 +74,7 @@ public final class ConsoleActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
+        ActiveStreamSurfaceBridge.setConsoleForeground(true);
         if (repository != null && sessionStatus != null) {
             ConsoleDataRepository.Session session = repository.session();
             renderSession(session);
@@ -89,7 +93,17 @@ public final class ConsoleActivity extends Activity {
         }
     }
 
+    @Override protected void onPause() {
+        ActiveStreamSurfaceBridge.setConsoleForeground(false);
+        super.onPause();
+    }
+
     @Override protected void onDestroy() {
+        ActiveStreamSurfaceBridge.setConsoleForeground(false);
+        if (streamSurface != null) {
+            ActiveStreamSurfaceBridge.releaseConsoleSurface(streamSurface.getHolder());
+            streamSurface.getHolder().removeCallback(this);
+        }
         artworkRequest.incrementAndGet();
         artworkExecutor.shutdownNow();
         mainHandler.removeCallbacksAndMessages(null);
@@ -121,6 +135,7 @@ public final class ConsoleActivity extends Activity {
         // This surface stays attached and VISIBLE. Console/privacy layers cover it.
         streamSurface = new SurfaceView(this);
         streamSurface.setBackgroundColor(Color.BLACK);
+        streamSurface.getHolder().addCallback(this);
         root.addView(streamSurface, match());
 
         privacyLayer = new View(this);
@@ -144,6 +159,26 @@ public final class ConsoleActivity extends Activity {
         modalLayer.setVisibility(View.GONE);
         root.addView(modalLayer, match());
         return root;
+    }
+
+    @Override public void surfaceCreated(SurfaceHolder holder) {
+        streamSurfaceHost.onWindowSurfaceCreated();
+        ActiveStreamSurfaceBridge.registerConsoleSurface(holder);
+    }
+
+    @Override public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
+        streamSurfaceHost.requireWindowSurfaceForChange();
+        ActiveStreamSurfaceBridge.registerConsoleSurface(holder);
+    }
+
+    @Override public void surfaceDestroyed(SurfaceHolder holder) {
+        boolean sessionAttached = ActiveStreamSurfaceBridge.hasSession();
+        boolean safeAlternateSurface = ActiveStreamSurfaceBridge.releaseConsoleSurface(holder);
+        StreamSurfaceHost.LossAction action = streamSurfaceHost.onWindowSurfaceDestroyed(
+                sessionAttached, safeAlternateSurface);
+        if (action == StreamSurfaceHost.LossAction.STOP_SESSION) {
+            LimeLog.severe("Console stream Surface was lost without a safe decoder target");
+        }
     }
 
     private FrameLayout buildHome() {
