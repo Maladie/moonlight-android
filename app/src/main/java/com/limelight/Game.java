@@ -1404,7 +1404,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // can disappear first and the connection is torn down as a fallback.
         if (decoderRenderer != null && (connecting || connected)) {
             if (!ActiveStreamSurfaceBridge.prepareConsoleHandoff(sessionController)) {
-                sessionController.switchToBackgroundSurface();
+                ActiveStreamSurfaceBridge.switchToBackgroundSurface(sessionController);
             }
         }
         frontendIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
@@ -3249,7 +3249,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         boolean backgroundSurfaceBound = attemptedConnection && externalFrontend && !isFinishing() &&
                 (handingOffToExternalFrontend || connecting || connected) &&
                 (ActiveStreamSurfaceBridge.isConsoleRenderTargetBound(sessionController) ||
-                        sessionController.switchToBackgroundSurface());
+                        ActiveStreamSurfaceBridge.switchToBackgroundSurface(sessionController));
         StreamSurfaceHost.LossAction lossAction = streamSurfaceHost.onWindowSurfaceDestroyed(
                 attemptedConnection, backgroundSurfaceBound);
 

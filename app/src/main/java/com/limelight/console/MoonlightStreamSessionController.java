@@ -5,6 +5,7 @@ import android.content.Context;
 import android.view.SurfaceHolder;
 
 import com.limelight.binding.audio.AndroidAudioRenderer;
+import com.limelight.LimeLog;
 import com.limelight.binding.video.CrashListener;
 import com.limelight.binding.video.MediaCodecDecoderRenderer;
 import com.limelight.binding.video.PerfOverlayListener;
@@ -20,6 +21,7 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.concurrent.Executor;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Owns creation, start, and stop of the single NvConnection used by a session.
@@ -27,6 +29,8 @@ import java.util.concurrent.Executor;
  */
 public final class MoonlightStreamSessionController implements StreamSessionController,
         StreamRenderTargetController {
+    private static final AtomicLong NEXT_DIAGNOSTIC_SESSION_ID = new AtomicLong();
+
     interface Transport {
         void start();
         void stop();
@@ -39,6 +43,7 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
     private final Executor stopExecutor;
     private final Executor callbackExecutor;
     private final Runnable quitHostApplication;
+    private final long diagnosticSessionId = NEXT_DIAGNOSTIC_SESSION_ID.incrementAndGet();
 
     private SessionState state = SessionState.IDLE;
     private boolean startRequested;
@@ -70,6 +75,7 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
         videoRenderer = new MediaCodecDecoderRenderer(activity, preferences, crashListener,
                 consecutiveCrashCount, meteredData, requestedHdr, glRenderer,
                 performanceListener, firstFrameRenderedCallback);
+        log("renderer_prepared");
         return videoRenderer;
     }
 
@@ -103,6 +109,7 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
                 connection.stop();
             }
         };
+        log("transport_initialized");
     }
 
     MoonlightStreamSessionController(
@@ -140,23 +147,29 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
             }
             startRequested = true;
             state = SessionState.CONNECTING;
+            log("connect_requested");
         }
         transport.start();
     }
 
     public synchronized void onConnectionStarted() {
-        if (state == SessionState.CONNECTING) state = SessionState.CONNECTED;
+        if (state == SessionState.CONNECTING) {
+            state = SessionState.CONNECTED;
+            log("connected");
+        }
     }
 
     public synchronized void onConnectionFailed() {
         if (state != SessionState.DISCONNECTING && state != SessionState.IDLE) {
             state = SessionState.RECOVERING;
+            log("connection_failed");
         }
     }
 
     public synchronized void onConnectionTerminated() {
         if (state == SessionState.CONNECTING || state == SessionState.CONNECTED) {
             state = SessionState.RECOVERING;
+            log("connection_terminated");
         }
     }
 
@@ -178,6 +191,7 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
             }
             stopRequested = true;
             state = SessionState.DISCONNECTING;
+            log("disconnect_requested");
         }
         stopExecutor.execute(() -> {
             try {
@@ -185,6 +199,7 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
             } finally {
                 synchronized (MoonlightStreamSessionController.this) {
                     state = SessionState.IDLE;
+                    log("transport_stopped");
                 }
                 List<Runnable> callbacks;
                 synchronized (MoonlightStreamSessionController.this) {
@@ -205,6 +220,10 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
             throw new IllegalStateException("Session input sender is not initialized");
         }
         return inputSender;
+    }
+
+    public long diagnosticSessionId() {
+        return diagnosticSessionId;
     }
 
     @Override
@@ -233,6 +252,11 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
             throw new IllegalStateException("Session renderer is not prepared");
         }
         return videoRenderer;
+    }
+
+    private void log(String event) {
+        LimeLog.info("MoonWakerSession event=" + event +
+                " sessionId=" + diagnosticSessionId + " state=" + state);
     }
 
     private List<Runnable> drainStopCallbacks() {

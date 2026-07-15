@@ -120,6 +120,13 @@ For every TV milestone retain:
 4. filtered lifecycle/decoder/Gateway logcat;
 5. result for each P0 scenario below.
 
+For one-session surface evidence, retain the structured `MoonWakerSession` and
+`MoonWakerSurface` lines. A successful two-cycle trace has one attached session
+generation, no `target_*_failed` event, and target transitions that include
+`GAME -> CONSOLE -> GAME -> CONSOLE -> GAME` (a temporary `BACKGROUND` target is
+allowed only while neither window surface is ready). These lines contain no host
+or credential data.
+
 Do not treat a successful UI transition as proof that the stream transport is
 still alive. Verify real changing video after every return.
 

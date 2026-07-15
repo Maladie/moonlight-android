@@ -11,6 +11,16 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.Assert.*;
 
 public class MoonlightStreamSessionControllerTest {
+    @Test public void diagnosticSessionIdsAreUniqueWithoutContainingHostData() {
+        MoonlightStreamSessionController first = new MoonlightStreamSessionController(
+                Runnable::run, Runnable::run, () -> { });
+        MoonlightStreamSessionController second = new MoonlightStreamSessionController(
+                Runnable::run, Runnable::run, () -> { });
+
+        assertTrue(first.diagnosticSessionId() > 0);
+        assertTrue(second.diagnosticSessionId() > first.diagnosticSessionId());
+    }
+
     @Test public void connectionCannotStartBeforeTransportInitialization() {
         MoonlightStreamSessionController controller = new MoonlightStreamSessionController(
                 Runnable::run, Runnable::run, () -> { });

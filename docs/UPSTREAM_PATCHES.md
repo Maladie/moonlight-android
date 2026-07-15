@@ -83,6 +83,17 @@ window surface disappears. Five coordinator tests cover explicit and foreground
 handoff, loss fallback, return ownership, and rejection of a second session.
 The full JVM suite now contains 28 passing tests.
 
+The seventh extraction adds deterministic, non-sensitive lifecycle evidence.
+`MoonlightStreamSessionController` assigns a process-local monotonic diagnostic
+ID and logs renderer preparation, transport initialization, connect, recovery,
+disconnect, and stop transitions. `ActiveStreamSurfaceBridge.Snapshot` records
+only the session generation, active render target, Console surface/foreground
+flags, successful target changes, and failed target changes. The same values are
+emitted under the `MoonWakerSurface` prefix for filtered logcat capture. No host,
+app, certificate, profile, or credential data is included. Three additional
+tests cover failed target visibility, idempotent ownership/generation changes,
+and unique controller diagnostic IDs; 31 JVM tests pass.
+
 ### P003 - User-visible product label and JVM test dependency
 
 - Surface: `app/build.gradle`.

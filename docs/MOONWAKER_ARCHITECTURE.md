@@ -74,6 +74,13 @@ background-surface fallback remains the final safe target if neither window
 surface is ready, until the unified path passes the P0 A-F regression suite on
 TV.
 
+The handoff publishes a host-data-free diagnostic snapshot containing only a
+process-local session generation, attachment state, active target (`GAME`,
+`CONSOLE`, `BACKGROUND`, or `NONE`), target-change counts, and failure counts.
+Structured `MoonWakerSession` and `MoonWakerSurface` log lines are evidence for
+the one-session regression gate; they never include host addresses, application
+names, certificates, profile identifiers, or tokens.
+
 ## Input and focus routing
 
 `ConsoleStateMachine` produces an explicit `InputTarget` for each state:

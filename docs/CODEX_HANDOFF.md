@@ -43,7 +43,10 @@ Implemented on this branch:
   adapter sees its owned `NvConnection`. Renderer target changes likewise pass
   through `StreamRenderTargetController`. `ActiveStreamSurfaceBridge` moves the
   same decoder between `Game`, ConsoleActivity's persistent Surface, and the
-  existing background fallback without taking session ownership.
+  existing background fallback without taking session ownership. Structured,
+  host-data-free `MoonWakerSession` and `MoonWakerSurface` diagnostics expose a
+  process-local session ID/generation, current target, switch counts, and failures
+  for the P0 evidence capture.
 - Home launches cached apps through the existing `ShortcutTrampoline` with the
   same-package external-frontend contract. The current transitional route is
   ConsoleActivity -> ShortcutTrampoline -> Game -> ConsoleActivity. Back covers
@@ -62,19 +65,19 @@ destruction. Only after that evidence may the `Game` Activity launch be bypassed
 
 - JDK: `C:\Users\Basia\.jdks\openjdk-17.0.2` (the system Java 24 is not
   compatible with Gradle 8.7/AGP 8.5.1).
-- `:app:testNonRootDebugUnitTest`: 28/28 passed; state, privacy readiness, surface
+- `:app:testNonRootDebugUnitTest`: 31/31 passed; state, privacy readiness, surface
   lifetime, legacy ownership, disconnect/quit separation, input routing, and
   input-boundary initialization plus cross-Activity render-target handoff are
-  covered.
+  covered, including diagnostic generation and failed-switch visibility.
 - `:app:assembleNonRootDebug`: passed.
 - `:app:assembleNonRootRelease`: passed.
-- Latest signed persistent-surface release identity: `com.limelight.unofficial`, certificate SHA-256
+- Latest signed surface-telemetry release identity: `com.limelight.unofficial`, certificate SHA-256
   `745d86be25583505b45da74343bd9f868e8f77884fa6e0aaf49fba330b277740`,
   APK SHA-256
-  `e831230f4c3d20d5df025fff0eb466d8db89f51268a0a8ed08b24b29a7c4aa02`.
-  Deliverable: `moonwaker-game-app-persistent-surface-release.apk`.
-  This increment has not been installed yet. The preceding input-boundary APK
-  hash was `214a12376ace3883b31c4d805816cd79a96b323b3bcdf8597b500879848eedc3`.
+  `093c37b50ea5c562551950415a8e6dfb2f71186944e798628220aade51a2dd24`.
+  Deliverable: `moonwaker-game-app-surface-telemetry-release.apk`.
+  This increment has not been installed yet. The preceding persistent-surface
+  APK hash was `e831230f4c3d20d5df025fff0eb466d8db89f51268a0a8ed08b24b29a7c4aa02`.
 - The preceding input-boundary release was installed successfully on the BRAVIA
   TV. The user confirmed that the current milestone UI is visible and differs
   from Wake & Play, as expected for the vertical slice. No live stream/surface
