@@ -441,8 +441,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         selectedHost = snapshot.selectedHost;
         renderApps(selectedHost, snapshot.apps);
         renderGatewayProfile(selectedHost, snapshot.integrations);
-        // One deterministic initial focus; subsequent refreshes never request focus.
-        hostRow.getChildAt(snapshot.selectedHostIndex).requestFocus();
+        // One deterministic initial focus matching Wake: prefer Resume/Return
+        // when it exists. Subsequent refreshes never request focus.
+        View initialFocus = returnToGame.getVisibility() == View.VISIBLE ?
+                returnToGame : hostRow.getChildAt(snapshot.selectedHostIndex);
+        initialFocus.requestFocus();
     }
 
     private void resolveResumeTarget(ConsoleHomeSnapshot snapshot) {
