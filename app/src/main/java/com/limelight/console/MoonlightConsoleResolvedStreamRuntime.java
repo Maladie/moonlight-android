@@ -92,6 +92,12 @@ final class MoonlightConsoleResolvedStreamRuntime implements ConsoleResolvedStre
             int sessionGeneration,
             ConsoleResolvedStreamRuntime.Listener listener) {
         if (!closed && session != null && sessionGeneration == generation) {
+            // The first bind attempt happens while the decoder is still being
+            // prepared and cannot switch its output surface yet. Retry after
+            // Moonlight reports the transport connected, when MediaCodec is
+            // available, so Console's persistent SurfaceView becomes the
+            // explicit active target before we reveal gameplay.
+            session.showStream();
             listener.onConnected();
         }
     }

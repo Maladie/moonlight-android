@@ -18,6 +18,9 @@ public class MoonlightConsoleResolvedStreamRuntimeTest {
 
         runtime.connect(parameters(), listener);
         factory.listener.onConnected();
+
+        assertTrue(factory.session.streamShown);
+        factory.session.streamShown = false;
         runtime.showHome();
         runtime.showStream();
 
