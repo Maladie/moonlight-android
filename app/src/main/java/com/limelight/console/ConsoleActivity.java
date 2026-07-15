@@ -31,7 +31,10 @@ import com.limelight.PublicReturnStreamTrampoline;
 import com.limelight.preferences.StreamSettings;
 
 import java.util.List;
+import java.util.Collections;
+import java.util.HashMap;
 import java.util.Locale;
+import java.util.Map;
 
 /** Milestone-1 Android TV console shell with a persistent stream surface layer. */
 public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
@@ -50,6 +53,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private ConsoleDataRepository repository;
     private HostGatewayStore hostGatewayStore;
+    private HostAvailabilityProbeController hostAvailabilityProbeController;
     private ConsoleSelectionStore selectionStore;
     private ConsoleLaunchHistoryStore launchHistoryStore;
     private ConsoleHostSelectionController hostSelectionController;
@@ -61,6 +65,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleControllerRepository controllerRepository;
     private InputManager inputManager;
     private boolean controllerListenerRegistered;
+    private final Map<String, TextView> hostStatusViews = new HashMap<>();
+    private List<ConsoleDataRepository.Host> visibleHosts = Collections.emptyList();
     private FrameLayout root;
     private SurfaceView streamSurface;
     private View privacyLayer;
@@ -85,6 +91,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         applyTvWindow();
         repository = new ConsoleDataRepository(this);
         hostGatewayStore = new HostGatewayStore(this);
+        hostAvailabilityProbeController = new HostAvailabilityProbeController();
         selectionStore = new ConsoleSelectionStore(this);
         launchHistoryStore = new ConsoleLaunchHistoryStore(this);
         hostSelectionController = new ConsoleHostSelectionController(
@@ -107,6 +114,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             controllerListenerRegistered = true;
         }
         renderControllers();
+        refreshHostAvailability();
         ActiveStreamSurfaceBridge.setConsoleForeground(true);
         if (repository != null && sessionStatus != null) {
             ConsoleDataRepository.Session session = repository.session();
@@ -130,6 +138,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             controllerListenerRegistered = false;
         }
         mainHandler.removeCallbacks(sessionRefresh);
+        if (hostAvailabilityProbeController != null) hostAvailabilityProbeController.cancel();
         super.onPause();
     }
 
@@ -148,6 +157,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         if (artworkController != null) artworkController.destroy();
         if (gatewayProfileRefreshController != null) gatewayProfileRefreshController.destroy();
+        if (hostAvailabilityProbeController != null) hostAvailabilityProbeController.destroy();
         mainHandler.removeCallbacks(sessionRefresh);
         super.onDestroy();
     }
@@ -354,6 +364,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 repository, hostGatewayStore, selectionStore, launchHistoryStore);
         renderSession(snapshot.session);
         hostRow.removeAllViews();
+        hostStatusViews.clear();
+        visibleHosts = snapshot.hosts;
         if (snapshot.hosts.isEmpty()) {
             selectedHost = null;
             hostRow.addView(label("No saved Moonlight hosts", 16, 0xFFFFB74D, false), cardParams());
@@ -362,18 +374,67 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             return;
         }
         for (ConsoleDataRepository.Host host : snapshot.hosts) {
-            TextView card = card(host.name + "\n" + safe(host.address), dp(250), dp(78));
-            card.setTag(host.uuid);
-            card.setSelected(host.uuid.equals(snapshot.selectedHost.uuid));
-            card.setBackground(consoleTheme.hostCardBackground());
-            card.setOnClickListener(view -> selectHost(host, view.hasFocus()));
-            hostRow.addView(card, cardParams());
+            hostRow.addView(hostCard(host,
+                    host.uuid.equals(snapshot.selectedHost.uuid)), cardParams());
         }
         selectedHost = snapshot.selectedHost;
         renderApps(selectedHost, snapshot.apps);
         renderGatewayProfile(selectedHost, snapshot.integrations);
         // One deterministic initial focus; subsequent refreshes never request focus.
         hostRow.getChildAt(snapshot.selectedHostIndex).requestFocus();
+    }
+
+    private View hostCard(ConsoleDataRepository.Host host, boolean selected) {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(16), dp(7), dp(16), dp(7));
+        card.setMinimumWidth(dp(250));
+        card.setMinimumHeight(dp(82));
+        card.setFocusable(true);
+        card.setClickable(true);
+        card.setTag(host.uuid);
+        card.setSelected(selected);
+        card.setBackground(consoleTheme.hostCardBackground());
+        TextView icon = label("▣", 16, 0xFF9E8ACB, true);
+        card.addView(icon, wrap());
+        TextView name = label(host.name, 16, Color.WHITE, true);
+        name.setSingleLine(true);
+        card.addView(name, top(dp(1)));
+        HostAvailability checking = new HostAvailability(
+                HostAvailability.State.CHECKING, host.address);
+        TextView status = label(checking.label(), 10, checking.color(), false);
+        status.setSingleLine(true);
+        card.addView(status, top(dp(1)));
+        hostStatusViews.put(host.uuid, status);
+        card.setOnClickListener(view -> selectHost(host, view.hasFocus()));
+        card.setOnFocusChangeListener(consoleTheme::onCardFocus);
+        return card;
+    }
+
+    private void refreshHostAvailability() {
+        if (hostAvailabilityProbeController == null || visibleHosts.isEmpty()) return;
+        List<ConsoleDataRepository.Host> hosts = visibleHosts;
+        hostAvailabilityProbeController.refresh(hosts, result -> {
+            if (hosts != visibleHosts) return;
+            for (ConsoleDataRepository.Host host : hosts) {
+                HostAvailability availability = isActiveForHost(currentSession, host) ?
+                        new HostAvailability(HostAvailability.State.ACTIVE, host.address) :
+                        result.get(host.uuid);
+                TextView status = hostStatusViews.get(host.uuid);
+                if (availability != null && status != null) {
+                    status.setText(availability.label());
+                    status.setTextColor(availability.color());
+                }
+            }
+        });
+    }
+
+    private static boolean isActiveForHost(ConsoleDataRepository.Session session,
+                                           ConsoleDataRepository.Host host) {
+        if (session == null || !session.alive || host == null) return false;
+        return session.host != null && (session.host.equalsIgnoreCase(host.address) ||
+                session.host.equalsIgnoreCase(host.name));
     }
 
     private void selectHost(ConsoleDataRepository.Host host, boolean userFocusedHost) {
@@ -697,5 +758,4 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private static int matchHeight() { return ViewGroup.LayoutParams.MATCH_PARENT; }
     private static int wrapSize() { return ViewGroup.LayoutParams.WRAP_CONTENT; }
     private int dp(int value) { return Math.round(value * getResources().getDisplayMetrics().density); }
-    private static String safe(String value) { return value == null || value.isEmpty() ? "Address unavailable" : value; }
 }
