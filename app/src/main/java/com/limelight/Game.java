@@ -19,6 +19,7 @@ import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.NvConnectionListener;
+import com.limelight.console.StreamSurfaceHost;
 import com.limelight.nvstream.StreamConfiguration;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
@@ -155,7 +156,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean connected = false;
     private boolean userInitiatedDisconnect = false;
     private boolean autoEnterPip = false;
-    private boolean surfaceCreated = false;
+    private final StreamSurfaceHost streamSurfaceHost = new StreamSurfaceHost();
     private boolean attemptedConnection = false;
     private boolean bitrateReconnectPending = false;
     private int runtimeBitrateKbps;
@@ -3149,9 +3150,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void surfaceChanged(SurfaceHolder holder, int format, int width, int height) {
-        if (!surfaceCreated) {
-            throw new IllegalStateException("Surface changed before creation!");
-        }
+        streamSurfaceHost.requireWindowSurfaceForChange();
 
         if (!attemptedConnection) {
             attemptedConnection = true;
@@ -3179,7 +3178,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void surfaceCreated(SurfaceHolder holder) {
         float desiredFrameRate;
 
-        surfaceCreated = true;
+        streamSurfaceHost.onWindowSurfaceCreated();
 
         if (externalFrontend && attemptedConnection && connected) {
             if (!decoderRenderer.switchToRenderTarget(holder)) {
@@ -3220,19 +3219,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
-        if (!surfaceCreated) {
-            throw new IllegalStateException("Surface destroyed before creation!");
+        boolean backgroundSurfaceBound = attemptedConnection && externalFrontend && !isFinishing() &&
+                (handingOffToExternalFrontend || connecting || connected) &&
+                decoderRenderer.switchToBackgroundSurface();
+        StreamSurfaceHost.LossAction lossAction = streamSurfaceHost.onWindowSurfaceDestroyed(
+                attemptedConnection, backgroundSurfaceBound);
+
+        if (lossAction == StreamSurfaceHost.LossAction.KEEP_SESSION_ON_BACKGROUND_SURFACE) {
+            LimeLog.info("Keeping external-frontend stream alive without a window Surface");
+            return;
         }
 
-        if (attemptedConnection) {
-            if (externalFrontend && !isFinishing() &&
-                    (handingOffToExternalFrontend || connecting || connected) &&
-                    decoderRenderer.switchToBackgroundSurface()) {
-                surfaceCreated = false;
-                LimeLog.info("Keeping external-frontend stream alive without a window Surface");
-                return;
-            }
-
+        if (lossAction == StreamSurfaceHost.LossAction.STOP_SESSION) {
             // Let the decoder know immediately that the surface is gone
             decoderRenderer.prepareForStop();
 
@@ -3240,8 +3238,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 stopConnection();
             }
         }
-
-        surfaceCreated = false;
     }
 
     @Override
