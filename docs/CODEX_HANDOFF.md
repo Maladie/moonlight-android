@@ -83,6 +83,10 @@ destruction. Only after that evidence may the `Game` Activity launch be bypassed
   TV. The user confirmed that the current milestone UI is visible and differs
   from Wake & Play, as expected for the vertical slice. No live stream/surface
   regression evidence has been collected for the new persistent-surface build.
+- The installed surface-telemetry release passed a Home-only cold-start smoke
+  test (`ConsoleActivity`, 978 ms, process remained alive). Its scoped log
+  reported `console_surface_registered generation=0 attached=false target=NONE`
+  with zero target failures. No host application or stream was launched.
 - GitHub CLI account `Maladie` currently reports an invalid keyring token. Do
   not expose a token; refresh authentication before push if ordinary Git
   credentials do not work.
