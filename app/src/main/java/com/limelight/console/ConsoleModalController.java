@@ -18,21 +18,6 @@ import java.util.List;
 
 /** Owns modal composition, focus entry/restore, dim dismissal, and input routing. */
 final class ConsoleModalController {
-    static final class PanelAction {
-        final String label;
-        final boolean enabled;
-        final Runnable action;
-
-        PanelAction(String label, Runnable action) {
-            this(label, true, action);
-        }
-
-        PanelAction(String label, boolean enabled, Runnable action) {
-            this.label = label;
-            this.enabled = enabled;
-            this.action = action;
-        }
-    }
     private final Context context;
     private final FrameLayout layer;
     private final InputRouter inputRouter;
@@ -98,47 +83,6 @@ final class ConsoleModalController {
                 null, resume, disconnect, quit);
     }
 
-    private void showSessionDetailsLegacy(View focusToRestore, ConsoleSessionSummary summary,
-                            Runnable returnToGame, Runnable disconnectTransport,
-                            Runnable quitHostApplication) {
-        begin(focusToRestore);
-        integrationHostUuid = null;
-        LinearLayout panel = panel();
-        panel.setPadding(dp(42), dp(44), dp(42), dp(38));
-        panel.setBackgroundColor(0xFF111522);
-        panel.addView(label("ACTIVE SESSION", 26, Color.WHITE, true), wrap());
-        panel.addView(label(summary.label, 16, 0xFF69F0AE, true), top(dp(18)));
-        panel.addView(label("The stream transport remains connected while Console Home is open.",
-                14, 0xFF9CA6C5, false), top(dp(14)));
-        TextView resume = card("▶  RETURN TO GAME", dp(360), dp(58));
-        resume.setOnClickListener(view -> {
-            hide();
-            returnToGame.run();
-        });
-        panel.addView(resume, top(dp(28)));
-        TextView close = card("CLOSE", dp(360), dp(58));
-        close.setOnClickListener(view -> hide());
-        panel.addView(close, top(dp(10)));
-        TextView disconnect = card("DISCONNECT STREAM", dp(360), dp(58));
-        disconnect.setOnClickListener(view -> showSessionCommandConfirmation(
-                view,
-                "DISCONNECT STREAM?",
-                "Streaming will stop. The host application will keep running.",
-                "DISCONNECT",
-                disconnectTransport));
-        panel.addView(disconnect, top(dp(10)));
-        TextView quit = card("QUIT HOST APPLICATION", dp(360), dp(58));
-        quit.setOnClickListener(view -> showSessionCommandConfirmation(
-                view,
-                "QUIT HOST APPLICATION?",
-                "The host application will be closed and streaming will disconnect.",
-                "QUIT APPLICATION",
-                quitHostApplication));
-        panel.addView(quit, top(dp(10)));
-        layer.addView(panel, new FrameLayout.LayoutParams(dp(720), matchHeight(), Gravity.RIGHT));
-        showAndFocus(resume);
-    }
-
     void showOptions(View focusToRestore, boolean uiSounds, boolean reducedMotion,
                      Runnable toggleSounds, Runnable toggleMotion,
                      Runnable hostIntegrations, Runnable moonlightSettings) {
@@ -156,45 +100,6 @@ final class ConsoleModalController {
         showWakePanel("MOONWAKER", "Options",
                 "Tune the console interface or open Moonlight's streaming preferences.",
                 null, sounds, motion, integrations, moonlight);
-    }
-
-    private void showOptionsLegacy(View focusToRestore, boolean uiSounds, boolean reducedMotion,
-                     Runnable toggleSounds, Runnable toggleMotion,
-                     Runnable hostIntegrations, Runnable moonlightSettings) {
-        begin(focusToRestore);
-        integrationHostUuid = null;
-        LinearLayout panel = panel();
-        panel.setPadding(dp(42), dp(48), dp(42), dp(38));
-        panel.setBackgroundColor(0xFF111522);
-        panel.addView(label("MOONWAKER GAME APP", 14, 0xFF9CA6C5, true), wrap());
-        panel.addView(label("Options", 28, Color.WHITE, true), top(dp(8)));
-        panel.addView(label(
-                "Tune the console interface or open Moonlight's streaming preferences.",
-                14, 0xFFBDC4D8, false), top(dp(14)));
-
-        TextView sounds = card("UI SOUNDS  ·  " + (uiSounds ? "ON" : "OFF"),
-                dp(420), dp(58));
-        sounds.setOnClickListener(view -> toggleSounds.run());
-        panel.addView(sounds, top(dp(28)));
-
-        TextView motion = card("REDUCED MOTION  ·  " + (reducedMotion ? "ON" : "OFF"),
-                dp(420), dp(58));
-        motion.setOnClickListener(view -> toggleMotion.run());
-        panel.addView(motion, top(dp(10)));
-
-        TextView integrations = card("HOST INTEGRATIONS  ›", dp(420), dp(58));
-        integrations.setOnClickListener(view -> hostIntegrations.run());
-        panel.addView(integrations, top(dp(10)));
-
-        TextView moonlight = card("MOONLIGHT SETTINGS  ›", dp(420), dp(58));
-        moonlight.setOnClickListener(view -> moonlightSettings.run());
-        panel.addView(moonlight, top(dp(10)));
-
-        TextView close = card("CLOSE", dp(420), dp(58));
-        close.setOnClickListener(view -> hide());
-        panel.addView(close, top(dp(10)));
-        layer.addView(panel, new FrameLayout.LayoutParams(dp(720), matchHeight(), Gravity.RIGHT));
-        showAndFocus(sounds);
     }
 
     void showControllerActions(View focusToRestore, int player,
@@ -267,27 +172,6 @@ final class ConsoleModalController {
                 .setPositiveButton(actionLabel, (dialog, which) -> action.run())
                 .setNegativeButton("Cancel", null)
                 .show();
-    }
-
-    private void showSessionCommandConfirmationLegacy(View focusToRestore, String title,
-                                                String message, String actionLabel,
-                                                Runnable action) {
-        begin(focusToRestore);
-        integrationHostUuid = null;
-        LinearLayout panel = panel();
-        panel.addView(label(title, 24, Color.WHITE, true), wrap());
-        panel.addView(label(message, 14, 0xFFBDC4D8, false), top(dp(14)));
-        TextView cancel = card("CANCEL", dp(340), dp(58));
-        cancel.setOnClickListener(view -> hide());
-        panel.addView(cancel, top(dp(24)));
-        TextView confirm = card(actionLabel, dp(340), dp(58));
-        confirm.setOnClickListener(view -> {
-            hide();
-            action.run();
-        });
-        panel.addView(confirm, top(dp(10)));
-        layer.addView(panel, new FrameLayout.LayoutParams(dp(660), dp(420), Gravity.CENTER));
-        showAndFocus(cancel);
     }
 
     void showHostWakeTimeout(View focusToRestore, String hostName, Runnable retryAction) {
@@ -423,53 +307,6 @@ final class ConsoleModalController {
         virtualHereIntegration.setVisibility(capabilities.virtualHere ?
                 View.VISIBLE : View.GONE);
         return true;
-    }
-
-    void showActionPanel(View focusToRestore, String eyebrow, String title,
-                         String description, List<PanelAction> actions,
-                         Runnable backAction, Runnable dismissAction) {
-        begin(focusToRestore);
-        integrationHostUuid = null;
-        onDismiss = dismissAction;
-        LinearLayout panel = panel();
-        panel.setPadding(dp(42), dp(38), dp(42), dp(34));
-        panel.setBackgroundColor(0xFF111522);
-        panel.addView(label(eyebrow, 14, 0xFF9CA6C5, true), wrap());
-        panel.addView(label(title, 27, Color.WHITE, true), top(dp(8)));
-        panel.addView(label(description, 14, 0xFFBDC4D8, false), top(dp(14)));
-
-        ScrollView scroll = new ScrollView(context);
-        scroll.setVerticalScrollBarEnabled(false);
-        LinearLayout list = new LinearLayout(context);
-        list.setOrientation(LinearLayout.VERTICAL);
-        scroll.addView(list, new ScrollView.LayoutParams(matchWidth(), wrapSize()));
-        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
-                matchWidth(), 0, 1f);
-        scrollParams.topMargin = dp(20);
-        panel.addView(scroll, scrollParams);
-
-        View initial = null;
-        for (PanelAction item : actions) {
-            TextView action = card(item.label, dp(470), dp(56));
-            action.setEnabled(item.enabled);
-            action.setFocusable(item.enabled);
-            action.setAlpha(item.enabled ? 1f : 0.42f);
-            action.setOnClickListener(item.enabled && item.action != null ?
-                    view -> item.action.run() : null);
-            list.addView(action, top(list.getChildCount() == 0 ? 0 : dp(9)));
-            if (initial == null && item.enabled) initial = action;
-        }
-        if (backAction != null) {
-            TextView back = card("BACK", dp(470), dp(56));
-            back.setOnClickListener(view -> backAction.run());
-            panel.addView(back, top(dp(14)));
-            if (initial == null) initial = back;
-        }
-        TextView close = card("CLOSE", dp(470), dp(56));
-        close.setOnClickListener(view -> hide());
-        panel.addView(close, top(dp(8)));
-        layer.addView(panel, new FrameLayout.LayoutParams(dp(760), matchHeight(), Gravity.RIGHT));
-        showAndFocus(initial != null ? initial : close);
     }
 
     void showProfileChooser(View focusToRestore, String hostUuid, String hostName,
