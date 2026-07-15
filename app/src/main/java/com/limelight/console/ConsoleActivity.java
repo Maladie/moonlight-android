@@ -284,6 +284,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         for (ConsoleDataRepository.Host host : snapshot.hosts) {
             TextView card = card(host.name + "\n" + safe(host.address), dp(250), dp(78));
+            card.setTag(host.uuid);
+            card.setSelected(host.uuid.equals(snapshot.selectedHost.uuid));
+            card.setBackground(consoleTheme.hostCardBackground());
             card.setOnClickListener(view -> selectHost(host, view.hasFocus()));
             hostRow.addView(card, cardParams());
         }
@@ -298,6 +301,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         ConsoleHostSelectionController.Selection selection =
                 hostSelectionController.select(host);
         selectedHost = selection.host;
+        for (int index = 0; index < hostRow.getChildCount(); index++) {
+            View hostCard = hostRow.getChildAt(index);
+            hostCard.setSelected(host.uuid.equals(hostCard.getTag()));
+        }
         renderApps(host, selection.apps);
         renderGatewayProfile(host);
         if (userFocusedHost && selection.focusAppIndex >= 0 &&

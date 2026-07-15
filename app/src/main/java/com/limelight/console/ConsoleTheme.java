@@ -21,6 +21,15 @@ final class ConsoleTheme {
         return states;
     }
 
+    StateListDrawable hostCardBackground() {
+        StateListDrawable states = new StateListDrawable();
+        states.addState(new int[]{android.R.attr.state_pressed}, hostShape(true, true));
+        states.addState(new int[]{android.R.attr.state_focused}, hostShape(true, false));
+        states.addState(new int[]{android.R.attr.state_selected}, hostShape(false, true));
+        states.addState(new int[0], hostShape(false, false));
+        return states;
+    }
+
     void onCardFocus(View card, boolean focused) {
         card.animate().cancel();
         card.setElevation(dp(focused ? 9 : 3));
@@ -51,6 +60,22 @@ final class ConsoleTheme {
         background.setCornerRadius(dp(14));
         background.setStroke(dp(focused ? 2 : 1),
                 focused ? ConsolePalette.FOCUS_STROKE : ConsolePalette.REST_STROKE);
+        return background;
+    }
+
+    private GradientDrawable hostShape(boolean focused, boolean selected) {
+        int focusedTop = ConsolePalette.withAlpha(
+                ConsolePalette.blend(0xFF62577F, ConsolePalette.ACCENT, 0.36f), 0xAF);
+        int focusedBottom = ConsolePalette.withAlpha(
+                ConsolePalette.blend(0xFF353047, ConsolePalette.ACCENT, 0.24f), 0x9A);
+        int[] colors = focused ? new int[]{focusedTop, focusedBottom} :
+                selected ? new int[]{0x18FFFFFF, 0x38212838, 0x58161B28} :
+                        new int[]{0x10FFFFFF, 0x301C2333, 0x50131825};
+        GradientDrawable background = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM, colors);
+        background.setCornerRadius(dp(12));
+        background.setStroke(dp(focused ? 2 : 1), focused ? 0xFFDCD5F2 :
+                selected ? 0x4C8B94AD : 0x407C89B2);
         return background;
     }
 
