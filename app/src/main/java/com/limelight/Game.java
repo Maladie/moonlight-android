@@ -18,9 +18,9 @@ import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
+import com.limelight.console.StreamConfigurationFactory;
 import com.limelight.console.StreamFrameRatePolicy;
 import com.limelight.console.StreamGamepadMaskPolicy;
-import com.limelight.console.StreamRefreshRateOverridePolicy;
 import com.limelight.console.StreamVideoFormatPolicy;
 import com.limelight.console.ActiveStreamSurfaceBridge;
 import com.limelight.console.InputRouter;
@@ -639,32 +639,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             LimeLog.info("Adjusting FPS target for screen to " + frameRate.frameRate);
         }
 
-        int refreshRateX100 = StreamRefreshRateOverridePolicy.parseX100(
-                prefConfig.actualDisplayRefreshRate);
-
-        var configBuilder = new StreamConfiguration.Builder()
-                .setResolution(prefConfig.width, prefConfig.height)
-                .setLaunchRefreshRate(prefConfig.fps)
-                .setRefreshRate(frameRate.frameRate)
-                .setApp(app)
-                .setEnableUltraLowLatency(prefConfig.enableUltraLowLatency)
-                .setBitrate(prefConfig.bitrate)
-                .setEnableSops(prefConfig.enableSops)
-                .enableLocalAudioPlayback(prefConfig.playHostAudio)
-                .setMaxPacketSize(1392)
-                .setRemoteConfiguration(StreamConfiguration.STREAM_CFG_AUTO) // NvConnection will perform LAN and VPN detection
-                .setSupportedVideoFormats(supportedVideoFormats)
-                .setAttachedGamepadMask(gamepadMask)
-                .setAudioConfiguration(prefConfig.audioConfiguration)
-                .setColorSpace(decoderRenderer.getPreferredColorSpace())
-                .setColorRange(decoderRenderer.getPreferredColorRange())
-                .setPersistGamepadsAfterDisconnect(!prefConfig.multiController);
-
-        if (refreshRateX100 > 0) {
-            configBuilder.setClientRefreshRateX100(refreshRateX100);
-        }
-
-        StreamConfiguration config = configBuilder.build();
+        StreamConfiguration config = StreamConfigurationFactory.build(
+                prefConfig,
+                app,
+                frameRate.frameRate,
+                supportedVideoFormats,
+                gamepadMask,
+                decoderRenderer.getPreferredColorSpace(),
+                decoderRenderer.getPreferredColorRange());
 
         // Complete phase two only after decoder capabilities have shaped the stream config.
         // Game remains the listener and Android input adapter until the next migration slice.

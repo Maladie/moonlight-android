@@ -194,6 +194,20 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
   compilation.
 - Removal: none; this validated configuration boundary remains shared.
 
+### P010 - Shared transport configuration factory
+
+- Surface: `Game.java`.
+- Reason: assemble preferences plus negotiated display, decoder, and controller
+  results in `StreamConfigurationFactory`. The compatibility adapter and future
+  in-Activity runtime now share one mapping into the transport contract.
+- Risk: an omitted or swapped field could change stream quality, input, audio,
+  or network behavior.
+- Regression: focused mapping tests cover resolution, FPS, bitrate, packet size,
+  routing, codecs, controllers, audio, color, refresh override, and persistence,
+  followed by Java compilation.
+- Removal: none; this factory becomes the unified runtime's configuration entry
+  point after the Game Activity adapter is removed.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.
