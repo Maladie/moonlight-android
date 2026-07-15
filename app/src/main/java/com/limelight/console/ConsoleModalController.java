@@ -59,8 +59,8 @@ final class ConsoleModalController {
         TextView exit = discordAction("EXIT MOONWAKER", 0xFFDA373C);
         exit.setOnClickListener(view -> { hide(); exitAction.run(); });
         showWakePanel("MOONWAKER", "Close MoonWaker?",
-                streamActive ? "The active stream will be disconnected." :
-                        "Return to Android TV?",
+                streamActive ? "The active host session will be stopped." :
+                        "The active host session will not be stopped.",
                 () -> { }, wakeActionRow(cancel, exit));
     }
 
