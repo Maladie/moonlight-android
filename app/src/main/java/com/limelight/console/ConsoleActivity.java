@@ -383,17 +383,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void applyState(ConsoleStateMachine.State state) {
-        boolean home = state == ConsoleStateMachine.State.HOME ||
-                state == ConsoleStateMachine.State.CONSOLE_OVER_STREAM;
-        homeLayer.setVisibility(home ? View.VISIBLE : View.GONE);
-        privacyLayer.setVisibility(state == ConsoleStateMachine.State.CONNECTING ||
-                state == ConsoleStateMachine.State.DISCONNECTING ? View.VISIBLE : View.GONE);
-        overlayLayer.setVisibility(state == ConsoleStateMachine.State.OVERLAY ? View.VISIBLE : View.GONE);
-        if (state == ConsoleStateMachine.State.STREAM) inputRouter.routeTo(InputRouter.Region.GAMEPLAY);
-        else if (state == ConsoleStateMachine.State.OVERLAY) inputRouter.routeTo(InputRouter.Region.OVERLAY);
-        else if (state == ConsoleStateMachine.State.RECOVERY ||
-                state == ConsoleStateMachine.State.DISCONNECTING) inputRouter.routeTo(InputRouter.Region.MODAL);
-        else inputRouter.routeTo(InputRouter.Region.HOME);
+        ConsoleLayerState layers = ConsoleLayerState.from(state);
+        homeLayer.setVisibility(layers.homeVisible ? View.VISIBLE : View.GONE);
+        privacyLayer.setVisibility(layers.privacyVisible ? View.VISIBLE : View.GONE);
+        overlayLayer.setVisibility(layers.overlayVisible ? View.VISIBLE : View.GONE);
+        inputRouter.routeTo(layers.inputRegion);
         // streamSurface intentionally remains VISIBLE and attached.
     }
 
