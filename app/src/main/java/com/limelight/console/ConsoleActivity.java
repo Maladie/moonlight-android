@@ -35,6 +35,7 @@ import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.preferences.StreamSettings;
 import com.limelight.ui.StreamView;
 import com.limelight.ui.overlay.CustomCommand;
+import com.limelight.ui.overlay.DiscordGatewayClient;
 import com.limelight.ui.overlay.OverlayMenuView;
 
 import java.util.List;
@@ -47,6 +48,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /** Milestone-1 Android TV console shell with a persistent stream surface layer. */
 public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
@@ -57,6 +59,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private static final int DISCORD_RED = 0xFFDA373C;
     private static final int DISCORD_SURFACE = 0xFF313338;
     private static final int DISCORD_TOOL = 0xFF404249;
+    private static final String DISCORD_OVERLAY_PREFS = "discord_overlay_state";
+    private static final String DISCORD_DOCK_ENABLED_KEY = "dock_enabled";
     private final ConsoleStateMachine stateMachine = new ConsoleStateMachine();
     private final InputRouter inputRouter = new InputRouter(InputRouter.Region.HOME);
     private final StreamSurfaceHost streamSurfaceHost = new StreamSurfaceHost();
@@ -72,6 +76,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final ExecutorService integrationExecutor = Executors.newSingleThreadExecutor();
     private final HostGatewayClient hostGatewayClient = new HostGatewayClient();
     private final AtomicInteger integrationPanelRequest = new AtomicInteger();
+    private final DiscordGatewayClient discordOverlayClient = new DiscordGatewayClient();
+    private final AtomicBoolean discordOverlayRefreshInFlight = new AtomicBoolean();
+    private final AtomicBoolean discordOverlayActionInFlight = new AtomicBoolean();
+    private final Runnable discordOverlayRefresh = () -> refreshDiscordStreamOverlay(false);
     private final Runnable sessionRefresh = this::refreshVisibleSession;
 
     private ConsoleDataRepository repository;
@@ -90,6 +98,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleModalController modalController;
     private OverlayMenuView overlayMenuView;
     private PreferenceConfiguration overlayPreferences;
+    private LinearLayout discordDockView;
+    private DiscordGatewayClient.Connection discordOverlayConnection;
+    private DiscordGatewayClient.VoiceState discordOverlayVoice;
+    private DiscordGatewayClient.ChannelTarget lastDiscordOverlayChannel;
+    private boolean discordDockEnabled;
     private ConsoleLoadingController loadingController;
     private GatewayProfileRefreshController gatewayProfileRefreshController;
     private ConsoleControllerRepository controllerRepository;
@@ -163,6 +176,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             }
         }
         mainHandler.removeCallbacks(sessionRefresh);
+        mainHandler.removeCallbacks(discordOverlayRefresh);
         mainHandler.postDelayed(sessionRefresh, SESSION_REFRESH_MS);
         updateUnifiedInputSensors();
     }
@@ -294,6 +308,19 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         overlayLayer.setElevation(dp(40));
         root.addView(overlayLayer, match());
 
+        discordDockView = new LinearLayout(this);
+        discordDockView.setOrientation(LinearLayout.VERTICAL);
+        discordDockView.setPadding(dp(14), dp(14), dp(14), dp(14));
+        discordDockView.setBackgroundColor(0xE6101118);
+        discordDockView.setElevation(dp(39));
+        discordDockView.setVisibility(View.GONE);
+        FrameLayout.LayoutParams dock = new FrameLayout.LayoutParams(
+                dp(290), ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.RIGHT | Gravity.TOP);
+        dock.topMargin = dp(18);
+        dock.rightMargin = dp(18);
+        root.addView(discordDockView, dock);
+
         modalLayer = new FrameLayout(this);
         modalLayer.setElevation(dp(48));
         modalLayer.setBackgroundColor(0xD9000000);
@@ -311,6 +338,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         overlayMenuView.setExternalFrontend(true);
         overlayMenuView.setDiscordShortcuts(overlayPreferences.discordMuteShortcut,
                 overlayPreferences.discordLeaveShortcut);
+        discordDockEnabled = getSharedPreferences(DISCORD_OVERLAY_PREFS, MODE_PRIVATE)
+                .getBoolean(DISCORD_DOCK_ENABLED_KEY, false);
+        overlayMenuView.setDiscordDocked(discordDockEnabled);
         overlayMenuView.setDiscordConfigured(false);
         overlayMenuView.setMenuActionListener(new OverlayMenuView.MenuActionListener() {
             @Override public void onDisconnect() { endActiveSession(false); }
@@ -346,13 +376,15 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
             @Override public void onReturnToFrontend() { openConsoleHome(); }
 
-            @Override public void onDiscordMute() { showDiscordPanel(); }
+            @Override public void onDiscordMute() { runDiscordStreamOverlayAction(true); }
 
-            @Override public void onDiscordLeave() { showDiscordPanel(); }
+            @Override public void onDiscordLeave() { runDiscordStreamOverlayAction(false); }
 
-            @Override public void onDiscordRejoin() { showDiscordPanel(); }
+            @Override public void onDiscordRejoin() { rejoinDiscordStreamOverlay(); }
 
-            @Override public void onDiscordDockToggle() { showDiscordPanel(); }
+            @Override public void onDiscordDockToggle() {
+                setDiscordDockEnabled(!discordDockEnabled);
+            }
 
             @Override public void onMenuClosed() { closeMoonlightOverlayState(); }
         });
@@ -360,6 +392,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void showMoonlightOverlay() {
         if (overlayMenuView == null) return;
+        configureDiscordStreamOverlay();
         if (unifiedSessionInput != null) {
             overlayMenuView.setControllerBatteryInfo(
                     unifiedSessionInput.controllerBatteryInfo());
@@ -372,6 +405,148 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             }));
         }
         overlayMenuView.show();
+        refreshDiscordStreamOverlay(true);
+    }
+
+    private void configureDiscordStreamOverlay() {
+        GatewayConnection stored = selectedHost == null ? null :
+                hostGatewayStore.load(selectedHost.uuid);
+        try {
+            discordOverlayConnection = stored == null ? null :
+                    new DiscordGatewayClient.Connection(stored.endpoint, stored.token,
+                            stored.certificateSha256, stored.profileId);
+        } catch (IllegalArgumentException error) {
+            discordOverlayConnection = null;
+        }
+        overlayMenuView.setDiscordConfigured(discordOverlayConnection != null);
+    }
+
+    private void refreshDiscordStreamOverlay(boolean force) {
+        if (discordOverlayConnection == null ||
+                !discordOverlayRefreshInFlight.compareAndSet(false, true)) return;
+        DiscordGatewayClient.Connection connection = discordOverlayConnection;
+        overlayMenuView.setDiscordState(discordOverlayVoice, null, true);
+        integrationExecutor.execute(() -> {
+            DiscordGatewayClient.VoiceState voice = null;
+            DiscordGatewayClient.ChannelTarget recent = lastDiscordOverlayChannel;
+            String error = null;
+            try {
+                voice = discordOverlayClient.getVoice(connection, force);
+                if (voice.connected && !voice.channelId.isEmpty() && !voice.guildId.isEmpty()) {
+                    recent = new DiscordGatewayClient.ChannelTarget(voice.channelId,
+                            voice.channelName, voice.guildId, "Discord");
+                } else if (recent == null) {
+                    recent = discordOverlayClient.getRecentChannel(connection);
+                }
+            } catch (Exception failure) {
+                error = friendlyGatewayError(failure);
+            }
+            DiscordGatewayClient.VoiceState result = voice;
+            DiscordGatewayClient.ChannelTarget resultRecent = recent;
+            String resultError = error;
+            mainHandler.post(() -> {
+                discordOverlayRefreshInFlight.set(false);
+                if (connection != discordOverlayConnection) return;
+                if (result != null) discordOverlayVoice = result;
+                if (resultRecent != null) lastDiscordOverlayChannel = resultRecent;
+                boolean connected = discordOverlayVoice != null && discordOverlayVoice.connected;
+                overlayMenuView.setDiscordRejoinTarget(!connected &&
+                                lastDiscordOverlayChannel != null,
+                        lastDiscordOverlayChannel == null ? "" :
+                                lastDiscordOverlayChannel.channelName);
+                if (overlayMenuView.getVisibility() == View.VISIBLE) {
+                    overlayMenuView.setDiscordState(discordOverlayVoice, resultError, false);
+                }
+                renderDiscordStreamDock();
+            });
+        });
+    }
+
+    private void runDiscordStreamOverlayAction(boolean mute) {
+        if (discordOverlayConnection == null || discordOverlayVoice == null ||
+                !discordOverlayVoice.connected ||
+                !discordOverlayActionInFlight.compareAndSet(false, true)) return;
+        if (!mute) lastDiscordOverlayChannel = new DiscordGatewayClient.ChannelTarget(
+                discordOverlayVoice.channelId, discordOverlayVoice.channelName,
+                discordOverlayVoice.guildId, "Discord");
+        DiscordGatewayClient.Connection connection = discordOverlayConnection;
+        integrationExecutor.execute(() -> {
+            try {
+                if (mute) discordOverlayClient.toggleMute(connection);
+                else discordOverlayClient.leaveVoice(connection);
+            } catch (Exception error) {
+                mainHandler.post(() -> Toast.makeText(this,
+                        friendlyGatewayError(error), Toast.LENGTH_LONG).show());
+            }
+            mainHandler.post(() -> {
+                discordOverlayActionInFlight.set(false);
+                refreshDiscordStreamOverlay(true);
+            });
+        });
+    }
+
+    private void rejoinDiscordStreamOverlay() {
+        if (discordOverlayConnection == null || lastDiscordOverlayChannel == null ||
+                !discordOverlayActionInFlight.compareAndSet(false, true)) return;
+        DiscordGatewayClient.Connection connection = discordOverlayConnection;
+        DiscordGatewayClient.ChannelTarget target = lastDiscordOverlayChannel;
+        integrationExecutor.execute(() -> {
+            try {
+                discordOverlayClient.joinChannel(connection, target);
+            } catch (Exception error) {
+                mainHandler.post(() -> Toast.makeText(this,
+                        friendlyGatewayError(error), Toast.LENGTH_LONG).show());
+            }
+            mainHandler.post(() -> {
+                discordOverlayActionInFlight.set(false);
+                refreshDiscordStreamOverlay(true);
+            });
+        });
+    }
+
+    private void setDiscordDockEnabled(boolean enabled) {
+        discordDockEnabled = enabled;
+        getSharedPreferences(DISCORD_OVERLAY_PREFS, MODE_PRIVATE).edit()
+                .putBoolean(DISCORD_DOCK_ENABLED_KEY, enabled).apply();
+        overlayMenuView.setDiscordDocked(enabled);
+        renderDiscordStreamDock();
+        if (enabled) refreshDiscordStreamOverlay(true);
+    }
+
+    private void renderDiscordStreamDock() {
+        if (discordDockView == null) return;
+        discordDockView.removeAllViews();
+        if (!discordDockEnabled || discordOverlayConnection == null ||
+                stateMachine.getState() != ConsoleStateMachine.State.STREAM ||
+                overlayMenuView.getVisibility() == View.VISIBLE) {
+            discordDockView.setVisibility(View.GONE);
+            return;
+        }
+        discordDockView.setVisibility(View.VISIBLE);
+        boolean connected = discordOverlayVoice != null && discordOverlayVoice.connected;
+        discordDockView.addView(discordDockLine(connected ?
+                "DISCORD  Â·  " + discordOverlayVoice.channelName : "DISCORD",
+                14, 0xFFB69CFF, true));
+        if (!connected) {
+            discordDockView.addView(discordDockLine("Not connected to a voice channel",
+                    13, 0xFFC5C8D3, false));
+            return;
+        }
+        for (DiscordGatewayClient.Participant participant : discordOverlayVoice.participants) {
+            discordDockView.addView(discordDockLine(
+                    (participant.speaking ? "\u25CF  " : "   ") + participant.name +
+                            (participant.self ? "  Â·  YOU" : ""), 13,
+                    participant.speaking ? 0xFF69F0AE : 0xFFE6E1E9, false));
+        }
+    }
+
+    private TextView discordDockLine(String value, float size, int color, boolean bold) {
+        TextView view = new TextView(this);
+        view.setText(value);
+        view.setTextSize(size);
+        view.setTextColor(color);
+        if (bold) view.setTypeface(view.getTypeface(), android.graphics.Typeface.BOLD);
+        return view;
     }
 
     private void closeMoonlightOverlayState() {
@@ -949,6 +1124,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         } else if (overlayMenuView != null) {
             overlayMenuView.hide(null);
         }
+        renderDiscordStreamDock();
         inputRouter.routeTo(layers.inputRegion);
         updateUnifiedInputSensors();
         if ((state == ConsoleStateMachine.State.HOME ||
