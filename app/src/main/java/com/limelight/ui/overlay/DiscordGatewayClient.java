@@ -119,6 +119,40 @@ public final class DiscordGatewayClient {
         }
     }
 
+    public static final class IntegrationProfile {
+        public final String id;
+        public final String name;
+        public final boolean discordBridgeOnline;
+        public final boolean discordRpcConnected;
+        public final boolean discordAuthenticated;
+        public final boolean vibepolloBridgeOnline;
+        public final boolean virtualHereAvailable;
+
+        public IntegrationProfile(String id, String name, boolean discordBridgeOnline,
+                                  boolean discordRpcConnected, boolean discordAuthenticated,
+                                  boolean vibepolloBridgeOnline,
+                                  boolean virtualHereAvailable) {
+            this.id = id;
+            this.name = name;
+            this.discordBridgeOnline = discordBridgeOnline;
+            this.discordRpcConnected = discordRpcConnected;
+            this.discordAuthenticated = discordAuthenticated;
+            this.vibepolloBridgeOnline = vibepolloBridgeOnline;
+            this.virtualHereAvailable = virtualHereAvailable;
+        }
+    }
+
+    public static final class IntegrationProfiles {
+        public final List<IntegrationProfile> profiles;
+        public final String suggestedProfileId;
+
+        public IntegrationProfiles(List<IntegrationProfile> profiles,
+                                   String suggestedProfileId) {
+            this.profiles = Collections.unmodifiableList(new ArrayList<>(profiles));
+            this.suggestedProfileId = suggestedProfileId;
+        }
+    }
+
     private static final HostnameVerifier PINNED_HOSTNAME_VERIFIER =
             new HostnameVerifier() {
                 @Override
@@ -179,6 +213,29 @@ public final class DiscordGatewayClient {
                     value.optString("guild_name", "Discord"));
         }
         return null;
+    }
+
+    public IntegrationProfiles getIntegrationProfiles(Connection connection) throws IOException {
+        JSONObject response = request(connection, "/api/v1/profiles", "GET", null);
+        JSONArray values = response.optJSONArray("profiles");
+        List<IntegrationProfile> profiles = new ArrayList<>();
+        if (values != null) {
+            for (int index = 0; index < values.length(); index++) {
+                JSONObject value = values.optJSONObject(index);
+                if (value == null) continue;
+                String id = value.optString("id", "").trim();
+                if (!id.matches("[A-Za-z0-9._-]{1,64}")) continue;
+                String name = value.optString("name", id).trim();
+                profiles.add(new IntegrationProfile(id, name.isEmpty() ? id : name,
+                        value.optBoolean("discord_bridge_online", false),
+                        value.optBoolean("discord_rpc_connected", false),
+                        value.optBoolean("discord_authenticated", false),
+                        value.optBoolean("vibepollo_bridge_online", false),
+                        value.optBoolean("virtualhere_available", false)));
+            }
+        }
+        return new IntegrationProfiles(profiles,
+                response.optString("suggested_profile_id", ""));
     }
 
     public void joinChannel(Connection connection, ChannelTarget target) throws IOException {

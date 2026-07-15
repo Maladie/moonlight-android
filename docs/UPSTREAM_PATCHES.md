@@ -128,6 +128,21 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
   consecutive readiness samples. Remove the lifecycle adapter only when `Game`
   is no longer a separate Activity and P0 section D passes.
 
+### P005 - Read-only profile catalog over the pinned Gateway client
+
+- Surface: `ui/overlay/DiscordGatewayClient.java`.
+- Reason: reuse the existing certificate pin, bearer authentication, profile
+  header, response-size bound, and timeouts for Wake's read-only
+  `/api/v1/profiles` contract. `GatewayProfileAdapter` converts the response into
+  console-owned, secret-free service status models.
+- Risk: malformed or unexpected profile metadata could otherwise prevent the
+  integrations panel from rendering. Invalid profile IDs and suggestions are
+  ignored independently; credentials never enter the catalog model.
+- Regression: adapter conversion tests and non-root Java compilation. No host
+  request is made automatically in this increment.
+- Removal: move the shared pinned request transport out of the Discord UI package
+  when the final Gateway controller replaces both legacy clients.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.
