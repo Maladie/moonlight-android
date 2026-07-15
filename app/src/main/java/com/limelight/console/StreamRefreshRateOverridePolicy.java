@@ -14,7 +14,7 @@ public final class StreamRefreshRateOverridePolicy {
             if (!Float.isFinite(refreshRate) || refreshRate <= 0) {
                 return 0;
             }
-            double refreshRateX100 = refreshRate * 100d;
+            float refreshRateX100 = refreshRate * 100f;
             if (refreshRateX100 > Integer.MAX_VALUE) {
                 return 0;
             }

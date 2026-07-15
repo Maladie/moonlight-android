@@ -151,7 +151,9 @@ public class StreamConfiguration {
         this.remote = STREAM_CFG_AUTO;
         this.sops = true;
         this.enableAdaptiveResolution = false;
-        this.audioConfiguration = MoonBridge.AUDIO_CONFIGURATION_STEREO;
+        // Keep the default value independent of MoonBridge's JNI class initializer so pure
+        // configuration planning remains testable before the native runtime is loaded.
+        this.audioConfiguration = new MoonBridge.AudioConfiguration(2, 0x3);
         this.supportedVideoFormats = MoonBridge.VIDEO_FORMAT_H264;
         this.attachedGamepadMask = 0;
         this.enableUltraLowLatency = false;

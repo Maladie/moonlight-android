@@ -30,8 +30,8 @@ public class StreamConfigurationFactoryTest {
         assertEquals(StreamConfiguration.STREAM_CFG_AUTO, config.getRemote());
         assertEquals(0x35, config.getSupportedVideoFormats());
         assertEquals(0x0b, config.getAttachedGamepadMask());
-        assertEquals(MoonBridge.AUDIO_CONFIGURATION_STEREO,
-                config.getAudioConfiguration());
+        assertEquals(2, config.getAudioConfiguration().channelCount);
+        assertEquals(0x3, config.getAudioConfiguration().channelMask);
         assertEquals(2, config.getColorSpace());
         assertEquals(1, config.getColorRange());
         assertEquals(5994, config.getClientRefreshRateX100());
@@ -63,7 +63,7 @@ public class StreamConfigurationFactoryTest {
         preferences.enableSops = true;
         preferences.playHostAudio = true;
         preferences.multiController = true;
-        preferences.audioConfiguration = MoonBridge.AUDIO_CONFIGURATION_STEREO;
+        preferences.audioConfiguration = new MoonBridge.AudioConfiguration(2, 0x3);
         preferences.actualDisplayRefreshRate = "59.94";
         return preferences;
     }

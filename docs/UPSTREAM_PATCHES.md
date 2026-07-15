@@ -257,6 +257,19 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
 - Regression: focused lower/upper boundary tests and Java compilation.
 - Removal: none; bitrate safety bounds remain shared.
 
+### P015 - JNI-independent default audio configuration
+
+- Surface: `nvstream/StreamConfiguration.java`.
+- Reason: construct the existing stereo default value directly instead of
+  reading a static field whose class initializer loads `moonlight-core`. Pure
+  session configuration and planner tests can now run on the JVM before JNI is
+  available; runtime channel count and mask remain unchanged.
+- Risk: code must treat audio configurations by value rather than relying on
+  object identity with the static stereo constant.
+- Regression: full non-root JVM suite plus device audio startup when TV testing
+  resumes.
+- Removal: none; avoiding an unrelated JNI side effect is neutral upstream.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.

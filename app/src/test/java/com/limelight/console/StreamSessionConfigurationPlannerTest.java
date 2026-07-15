@@ -62,7 +62,7 @@ public class StreamSessionConfigurationPlannerTest {
         preferences.multiController = true;
         preferences.onscreenController = true;
         preferences.videoFormat = PreferenceConfiguration.FormatOption.AUTO;
-        preferences.audioConfiguration = MoonBridge.AUDIO_CONFIGURATION_STEREO;
+        preferences.audioConfiguration = new MoonBridge.AudioConfiguration(2, 0x3);
         return preferences;
     }
 }
