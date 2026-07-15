@@ -87,7 +87,7 @@ final class HostAvailabilityProbeController {
         }
     }
 
-    private static boolean probeHost(ConsoleDataRepository.Host host) {
+    static boolean probeHost(ConsoleDataRepository.Host host) {
         if (host == null || host.address == null || host.address.isEmpty()) return false;
         int[] ports = {host.port > 0 ? host.port : 47989, 47984, 47989};
         for (int port : ports) {
