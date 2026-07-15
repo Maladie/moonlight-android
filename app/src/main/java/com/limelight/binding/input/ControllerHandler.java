@@ -416,6 +416,23 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
     }
 
+    /** Reports already attached physical controllers after the input channel is ready. */
+    public void ensureAttachedControllersReported() {
+        if (stopped) return;
+        for (int deviceId : inputManager.getInputDeviceIds()) {
+            trackInputDeviceIfGamepad(inputManager.getInputDevice(deviceId));
+        }
+        for (int index = 0; index < inputDeviceContexts.size(); index++) {
+            InputDeviceContext context = inputDeviceContexts.valueAt(index);
+            if (!context.hasJoystickAxes) continue;
+            if (context.assignedControllerNumber) {
+                context.sendControllerArrival();
+            } else {
+                assignControllerNumberIfNeeded(context);
+            }
+        }
+    }
+
     public void refreshControllerBatteryInfo(Runnable completion) {
         List<InputDeviceContext> contexts = new ArrayList<>();
         for (int i = 0; i < inputDeviceContexts.size(); i++) {

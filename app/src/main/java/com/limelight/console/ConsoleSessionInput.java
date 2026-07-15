@@ -17,6 +17,7 @@ interface ConsoleSessionInput extends ConsoleSessionEventCoordinator.Feedback {
         return Collections.emptyList();
     }
     default void refreshControllerBatteryInfo(Runnable completion) { }
+    default void ensureControllersReported() { }
     default void toggleMouseEmulation() { }
     default void sendGuideButton() { }
     default void sendCustomCommand(CustomCommand command, Runnable completion) { }

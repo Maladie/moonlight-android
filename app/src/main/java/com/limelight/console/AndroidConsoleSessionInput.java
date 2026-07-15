@@ -41,6 +41,7 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final MediaCodecDecoderRenderer renderer;
     private final Presentation presentation;
+    private final Runnable reportAttachedControllers;
     private boolean closed;
     private boolean usbDriverBinding;
     private ServiceConnection usbDriverConnection;
@@ -58,6 +59,11 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
                 this.inputSender,
                 Objects.requireNonNull(gestures, "gestures"),
                 Objects.requireNonNull(preferences, "preferences"));
+        reportAttachedControllers = () -> {
+            synchronized (AndroidConsoleSessionInput.this) {
+                if (!closed) controllers.ensureAttachedControllersReported();
+            }
+        };
         this.renderer = Objects.requireNonNull(renderer, "renderer");
         this.presentation = Objects.requireNonNull(presentation, "presentation");
         controllers.setOverlayMenuListener(new ControllerHandler.OverlayMenuListener() {
@@ -131,6 +137,12 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
 
     @Override public synchronized void refreshControllerBatteryInfo(Runnable completion) {
         if (!closed) controllers.refreshControllerBatteryInfo(completion);
+    }
+
+    @Override public synchronized void ensureControllersReported() {
+        if (closed) return;
+        mainHandler.removeCallbacks(reportAttachedControllers);
+        mainHandler.postDelayed(reportAttachedControllers, 250L);
     }
 
     @Override public synchronized void toggleMouseEmulation() {
@@ -209,6 +221,7 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
     @Override public synchronized void close() {
         if (closed) return;
         closed = true;
+        mainHandler.removeCallbacks(reportAttachedControllers);
         if (usbDriverBinding) {
             activity.unbindService(usbDriverConnection);
             usbDriverBinding = false;

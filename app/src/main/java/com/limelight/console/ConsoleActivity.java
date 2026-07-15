@@ -1556,6 +1556,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             case CONNECTED:
                 clearUnifiedConnectRetry();
                 unifiedTransportConnected = true;
+                if (unifiedSessionInput != null) {
+                    unifiedSessionInput.ensureControllersReported();
+                }
                 unifiedHomeSession.connected();
                 renderSession(visibleSession());
                 loadingController.updateStatus("Waiting for the first video frame…");
