@@ -307,6 +307,19 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
   suite, and Java compilation.
 - Removal: none; this is the shared transport creation contract.
 
+### P019 - Shared display mode selection
+
+- Surface: `Game.java`.
+- Reason: move resolution/refresh candidate selection into pure
+  `StreamDisplayModePolicy`, preserving native-resolution, high-FPS,
+  frame-pacing, 4K safety, and seamless frontend constraints. Console can apply
+  the same selected Android display mode before renderer negotiation.
+- Risk: a selection regression could cause judder, an unnecessary HDMI mode
+  switch, or insufficient resolution for the stream.
+- Regression: focused 60/120 FPS, reducible refresh, and seamless-resolution
+  tests plus Java compilation.
+- Removal: none; display mode selection remains shared.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.
