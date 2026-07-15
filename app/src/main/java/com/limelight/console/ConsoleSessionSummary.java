@@ -35,9 +35,15 @@ final class ConsoleSessionSummary {
         }
         String title = session.app != null && !session.app.isEmpty() ?
                 session.app : "Active stream";
-        String details = session.width > 0 ? session.width + "\u00D7" + session.height +
-                (session.fps > 0 ? " @ " + session.fps + " FPS" : "") :
-                "Moonlight is streaming to this TV.";
-        return new ConsoleSessionSummary(text.toString(), title, details, session.alive);
+        StringBuilder details = new StringBuilder();
+        if (session.host != null && !session.host.isEmpty()) details.append(session.host);
+        if (session.width > 0) {
+            if (details.length() > 0) details.append(" \u00B7 ");
+            details.append(session.width).append('\u00D7').append(session.height);
+            if (session.fps > 0) details.append(" @ ").append(session.fps).append(" FPS");
+        }
+        return new ConsoleSessionSummary(text.toString(), title,
+                details.length() > 0 ? details.toString() :
+                        "Moonlight is streaming to this TV.", session.alive);
     }
 }

@@ -70,7 +70,7 @@ final class ConsoleModalController {
         integrationHostUuid = null;
         TextView cancel = wakeAction("CANCEL");
         cancel.setOnClickListener(view -> hide());
-        TextView exit = wakeDangerAction("EXIT MOONWAKER");
+        TextView exit = discordAction("EXIT MOONWAKER", 0xFFDA373C);
         exit.setOnClickListener(view -> { hide(); exitAction.run(); });
         showWakePanel("MOONWAKER", "Close MoonWaker?",
                 "The active host session will not be stopped.",
@@ -208,13 +208,53 @@ final class ConsoleModalController {
                 "Unpair controller"
         };
         new AlertDialog.Builder(context)
-                .setTitle("P" + player + " \u00B7 " + controller.name)
+                .setTitle("P" + player + " \u00B7 " + compactControllerName(controller.name))
                 .setItems(actions, (dialog, which) -> {
-                    if (which == 0 && canIdentify) identify.run();
-                    else if (which == 1 && canDisconnect) disconnect.run();
-                    else if (which == 2) unpair.run();
+                    if (which == 0) {
+                        if (canIdentify) identify.run();
+                        else showUnavailableControllerFeature(
+                                "Sony does not expose LED or vibration controls for this controller to apps.");
+                    } else if (which == 1) {
+                        if (canDisconnect) confirmPowerOff(disconnect);
+                        else showUnavailableControllerFeature(
+                                "This Android TV version does not let apps power off Bluetooth controllers.");
+                    } else {
+                        confirmUnpair(unpair);
+                    }
                 })
                 .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private static String compactControllerName(String name) {
+        if (name == null) return "Controller";
+        return name.toLowerCase(java.util.Locale.ROOT).contains("dualsense") ?
+                "DualSense" : name;
+    }
+
+    private void showUnavailableControllerFeature(String message) {
+        new AlertDialog.Builder(context)
+                .setTitle("Feature unavailable")
+                .setMessage(message)
+                .setPositiveButton("OK", null)
+                .show();
+    }
+
+    private void confirmPowerOff(Runnable action) {
+        new AlertDialog.Builder(context)
+                .setTitle("Power off controller?")
+                .setMessage("The controller will disconnect from the TV. Press the PS button to connect it again.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Power off", (dialog, which) -> action.run())
+                .show();
+    }
+
+    private void confirmUnpair(Runnable action) {
+        new AlertDialog.Builder(context)
+                .setTitle("Unpair controller?")
+                .setMessage("The Bluetooth pairing will be removed. To use this controller again, pair it with the TV once more.")
+                .setNegativeButton("Cancel", null)
+                .setPositiveButton("Unpair", (dialog, which) -> action.run())
                 .show();
     }
 
@@ -632,13 +672,6 @@ final class ConsoleModalController {
         return action;
     }
 
-    private TextView wakeDangerAction(String value) {
-        TextView action = wakeAction(value);
-        action.setOnFocusChangeListener((view, focused) -> styleWakeDanger(action, focused));
-        styleWakeDanger(action, false);
-        return action;
-    }
-
     LinearLayout wakeActionRow(View... actions) {
         LinearLayout row = new LinearLayout(context);
         row.setOrientation(LinearLayout.HORIZONTAL);
@@ -727,17 +760,6 @@ final class ConsoleModalController {
         background.setCornerRadius(dp(10));
         background.setStroke(dp(focused ? 2 : 1),
                 focused ? 0xFFE9E3FF : 0x387C89B2);
-        action.setBackground(background);
-    }
-
-    private void styleWakeDanger(View action, boolean focused) {
-        GradientDrawable background = new GradientDrawable(
-                GradientDrawable.Orientation.TOP_BOTTOM,
-                new int[]{focused ? 0xFFF04C51 : 0xD49E2C31,
-                        focused ? 0xFFB9252A : 0xD46E2024});
-        background.setCornerRadius(dp(9));
-        background.setStroke(dp(focused ? 2 : 1),
-                focused ? Color.WHITE : 0x664F545C);
         action.setBackground(background);
     }
 

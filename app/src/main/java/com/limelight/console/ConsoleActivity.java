@@ -972,9 +972,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         for (ConsoleControllerRepository.Controller controller : controllers) {
             final int playerNumber = player++;
             LinearLayout chip = new LinearLayout(this);
-            chip.setOrientation(LinearLayout.VERTICAL);
+            chip.setOrientation(LinearLayout.HORIZONTAL);
             chip.setGravity(Gravity.CENTER_VERTICAL);
-            chip.setPadding(dp(16), dp(5), dp(16), dp(5));
+            chip.setPadding(dp(12), dp(5), dp(16), dp(5));
             chip.setMinimumWidth(dp(220));
             chip.setMinimumHeight(dp(50));
             chip.setBackground(consoleTheme.cardBackground());
@@ -982,15 +982,33 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             chip.setClickable(true);
             chip.setOnFocusChangeListener(consoleTheme::onCardFocus);
             chip.setOnClickListener(view -> openControllerActions(playerNumber, controller));
-            chip.addView(label("P" + playerNumber + "  " + controller.name,
-                    14, Color.WHITE, true), wrap());
+            TextView icon = label("\uD83C\uDFAE", 23, Color.WHITE, false);
+            chip.addView(icon, new LinearLayout.LayoutParams(dp(36), matchHeight()));
+            LinearLayout copy = new LinearLayout(this);
+            copy.setOrientation(LinearLayout.VERTICAL);
+            copy.setGravity(Gravity.CENTER_VERTICAL);
+            TextView controllerLabel = label("P" + playerNumber + "  " +
+                    compactControllerName(controller.name), 14, Color.WHITE, true);
+            controllerLabel.setSingleLine(true);
+            copy.addView(controllerLabel, wrap());
             int batteryColor = controller.batteryPercentage < 0 ? 0xFFB3B8C8 :
                     controller.charging ? 0xFF64B5F6 :
                             controller.batteryPercentage <= 10 ? 0xFFFF5252 :
                                     controller.batteryPercentage <= 30 ? 0xFFFFB74D : 0xFF69F0AE;
-            chip.addView(label(controller.batteryLabel(), 12, batteryColor, false), wrap());
+            String battery = controller.charging ? "\u26A1 " : "\u25B0 ";
+            TextView level = label(battery + (controller.batteryPercentage < 0 ?
+                    "Battery unavailable" : controller.batteryPercentage + "%"),
+                    14, batteryColor, false);
+            level.setSingleLine(true);
+            copy.addView(level, wrap());
+            chip.addView(copy, new LinearLayout.LayoutParams(0, wrapSize(), 1f));
             controllerRow.addView(chip, cardParams());
         }
+    }
+
+    private static String compactControllerName(String name) {
+        if (name == null) return "Controller";
+        return name.toLowerCase(Locale.ROOT).contains("dualsense") ? "DualSense" : name;
     }
 
     private void openControllerActions(int player,
@@ -1307,7 +1325,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void showExitConfirmation() {
-        modalController.showExitConfirmation(getCurrentFocus(), this::finish);
+        modalController.showExitConfirmation(getCurrentFocus(), this::finishAndRemoveTask);
     }
 
     private void showSessionDetails() {
