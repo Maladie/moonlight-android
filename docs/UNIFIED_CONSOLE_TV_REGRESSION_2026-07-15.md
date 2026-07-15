@@ -170,6 +170,6 @@ to MoonWaker and was compile-verified, not reinstalled during this run.
 | NOT RUN | Physical overlay hold | The existing Moonlight X `OverlayMenuView` and hold listener are wired. ADB's synthetic long-press is shorter/different from the configured 1500 ms controller hold, so the open overlay was not visually certified. |
 
 Focused unit tests for session presentation, key routing and console state all
-pass. The complete 196-test run has one expected configuration-gate failure:
-`UnifiedConsoleRuntimeGateTest` asserts the unified runtime is disabled, while
-this candidate is intentionally built with `unifiedConsoleRuntime=true`.
+pass. After making `UnifiedConsoleRuntimeGateTest` validate the selected build
+variant instead of hard-coding the old disabled state, the complete 196-test run
+also passes with `unifiedConsoleRuntime=true`.
