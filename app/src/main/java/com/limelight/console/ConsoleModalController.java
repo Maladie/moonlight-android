@@ -10,6 +10,7 @@ import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.ScrollView;
+import android.widget.SeekBar;
 import android.widget.TextView;
 
 import java.util.function.Consumer;
@@ -610,6 +611,27 @@ final class ConsoleModalController {
         return status;
     }
 
+    TextView wakeSection(String value) {
+        TextView section = label(value, 11, 0xFFB5BAC1, true);
+        section.setLetterSpacing(0.08f);
+        section.setPadding(dp(4), dp(13), dp(4), dp(5));
+        section.setFocusable(false);
+        return section;
+    }
+
+    TextView discordAction(String value, int color) {
+        TextView action = label(value, 14, Color.WHITE, true);
+        action.setFocusable(true);
+        action.setClickable(true);
+        action.setMinHeight(dp(48));
+        action.setGravity(Gravity.CENTER_VERTICAL);
+        action.setPadding(dp(16), dp(8), dp(16), dp(8));
+        action.setOnFocusChangeListener((view, focused) ->
+                styleDiscordAction(action, color, focused));
+        styleDiscordAction(action, color, false);
+        return action;
+    }
+
     private TextView wakeDangerAction(String value) {
         TextView action = wakeAction(value);
         action.setOnFocusChangeListener((view, focused) -> styleWakeDanger(action, focused));
@@ -628,6 +650,31 @@ final class ConsoleModalController {
             row.addView(actions[index], params);
         }
         return row;
+    }
+
+    LinearLayout wakeWeightedActionRow(View main, View secondary) {
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.addView(main, new LinearLayout.LayoutParams(0, dp(44), 2f));
+        LinearLayout.LayoutParams secondaryParams = new LinearLayout.LayoutParams(
+                0, wrapSize(), 1f);
+        secondaryParams.leftMargin = dp(8);
+        row.addView(secondary, secondaryParams);
+        return row;
+    }
+
+    SeekBar wakeVolumeSlider(int progress) {
+        SeekBar slider = new SeekBar(context);
+        slider.setFocusable(true);
+        slider.setMax(200);
+        slider.setKeyProgressIncrement(10);
+        slider.setProgress(Math.max(0, Math.min(200,
+                Math.round(progress / 10f) * 10)));
+        slider.setPadding(dp(14), dp(8), dp(14), dp(8));
+        slider.setProgressTintList(android.content.res.ColorStateList.valueOf(0xFF8D7AD1));
+        slider.setThumbTintList(android.content.res.ColorStateList.valueOf(0xFFE9E3FF));
+        return slider;
     }
 
     void rebuildWakeFocusNavigation() {
@@ -692,6 +739,33 @@ final class ConsoleModalController {
         background.setStroke(dp(focused ? 2 : 1),
                 focused ? Color.WHITE : 0x664F545C);
         action.setBackground(background);
+    }
+
+    private void styleDiscordAction(TextView action, int color, boolean focused) {
+        int resting = blend(color, 0xFF111214, 0.30f);
+        int top = focused ? color : resting;
+        int bottom = blend(top, 0xFF111214, 0.20f);
+        GradientDrawable background = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{withAlpha(top, 0xF2), withAlpha(bottom, 0xF2)});
+        background.setCornerRadius(dp(9));
+        background.setStroke(dp(focused ? 2 : 1),
+                focused ? Color.WHITE : 0x384F545C);
+        action.setBackground(background);
+        action.setTextColor(focused ? Color.WHITE : 0xFFE3E5E8);
+        action.setElevation(dp(focused ? 8 : 2));
+    }
+
+    private static int blend(int from, int to, float amount) {
+        float value = Math.max(0f, Math.min(1f, amount));
+        return Color.rgb(
+                Math.round(Color.red(from) + (Color.red(to) - Color.red(from)) * value),
+                Math.round(Color.green(from) + (Color.green(to) - Color.green(from)) * value),
+                Math.round(Color.blue(from) + (Color.blue(to) - Color.blue(from)) * value));
+    }
+
+    private static int withAlpha(int color, int alpha) {
+        return Color.argb(alpha, Color.red(color), Color.green(color), Color.blue(color));
     }
 
     private LinearLayout panel() {

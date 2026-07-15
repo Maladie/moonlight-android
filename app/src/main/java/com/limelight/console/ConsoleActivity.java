@@ -25,6 +25,7 @@ import android.widget.EditText;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.SeekBar;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -51,6 +52,11 @@ import java.util.concurrent.atomic.AtomicInteger;
 public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
     private static final long SESSION_REFRESH_MS = 1500L;
     private static final int REQUEST_BLUETOOTH_CONNECT = 7001;
+    private static final int DISCORD_BLURPLE = 0xFF5865F2;
+    private static final int DISCORD_GREEN = 0xFF23A559;
+    private static final int DISCORD_RED = 0xFFDA373C;
+    private static final int DISCORD_SURFACE = 0xFF313338;
+    private static final int DISCORD_TOOL = 0xFF404249;
     private final ConsoleStateMachine stateMachine = new ConsoleStateMachine();
     private final InputRouter inputRouter = new InputRouter(InputRouter.Region.HOME);
     private final StreamSurfaceHost streamSurfaceHost = new StreamSurfaceHost();
@@ -1412,6 +1418,556 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void showDiscordPanel() {
+        ConsoleDataRepository.Host host = selectedHost;
+        HostGatewayClient.Connection connection = selectedGatewayConnection();
+        if (host == null || connection == null) { showHostIntegrations(); return; }
+        showDiscordServersPanel(host, connection, false);
+    }
+
+    private void showDiscordServersPanel(ConsoleDataRepository.Host host,
+                                         HostGatewayClient.Connection connection,
+                                         boolean force) {
+        int request = integrationPanelRequest.incrementAndGet();
+        TextView loading = modalController.wakeStatus("Loading your Discord serversâ€¦");
+        modalController.showWakePanel(getCurrentFocus(), "DISCORD", "Servers",
+                host.name + "  Â·  Profile " + connection.profileId,
+                this::showHostIntegrations, loading);
+        integrationExecutor.execute(() -> {
+            try {
+                HostGatewayClient.DiscordHome home =
+                        hostGatewayClient.getDiscordHome(connection, force);
+                HostGatewayClient.DiscordVoice voice = null;
+                try {
+                    voice = hostGatewayClient.getDiscordVoice(connection, force);
+                } catch (Exception ignored) { }
+                HostGatewayClient.DiscordVoice currentVoice = voice;
+                mainHandler.post(() -> {
+                    if (request != integrationPanelRequest.get()) return;
+                    List<View> actions = new ArrayList<>();
+                    if (currentVoice != null && currentVoice.connected) {
+                        actions.add(modalController.wakeSection("CURRENT VOICE"));
+                        actions.add(modalController.wakeStatus("\u25CF  " +
+                                currentVoice.channelName + "  Â·  " +
+                                currentVoice.participants + " participant" +
+                                (currentVoice.participants == 1 ? "" : "s")));
+                        TextView mute = modalController.discordAction(
+                                currentVoice.muted ? "MIC MUTED  Â·  UNMUTE" :
+                                        "MIC ON  Â·  MUTE",
+                                currentVoice.muted ? DISCORD_RED : DISCORD_GREEN);
+                        TextView leave = modalController.discordAction("LEAVE", DISCORD_RED);
+                        mute.setOnClickListener(view -> runGatewayOperation(
+                                "Toggling microphoneâ€¦",
+                                () -> hostGatewayClient.setDiscordVoiceFlag(
+                                        connection, "mute", "toggle"),
+                                () -> showDiscordServersPanel(host, connection, true)));
+                        leave.setOnClickListener(view -> runGatewayOperation(
+                                "Leaving voiceâ€¦",
+                                () -> hostGatewayClient.leaveDiscordChannel(connection),
+                                () -> showDiscordServersPanel(host, connection, true)));
+                        actions.add(modalController.wakeActionRow(mute, leave));
+                    } else {
+                        actions.add(modalController.wakeStatus(
+                                "Voice disconnected  Â·  Select a server and channel to join."));
+                    }
+                    actions.add(modalController.wakeSection("TOOLS"));
+                    TextView settings = modalController.discordAction("SETTINGS", DISCORD_TOOL);
+                    TextView usb = modalController.discordAction("USB", DISCORD_TOOL);
+                    TextView refresh = modalController.discordAction("REFRESH", DISCORD_SURFACE);
+                    settings.setOnClickListener(view -> showDiscordSettingsPanel(host, connection));
+                    usb.setOnClickListener(view -> showVirtualHerePanel(host, connection, false));
+                    refresh.setOnClickListener(view ->
+                            showDiscordServersPanel(host, connection, true));
+                    actions.add(modalController.wakeActionRow(settings, usb));
+                    actions.add(refresh);
+                    actions.add(modalController.wakeSection("YOUR SERVERS"));
+                    if (home.guilds.isEmpty()) {
+                        actions.add(modalController.wakeStatus(
+                                "No Discord servers are available for this account."));
+                    } else {
+                        for (HostGatewayClient.DiscordGuild guild : home.guilds) {
+                            TextView action = modalController.discordAction(
+                                    guild.name + "  â€ş", DISCORD_BLURPLE);
+                            action.setOnClickListener(view ->
+                                    showDiscordChannelsPanel(host, connection, guild, false));
+                            actions.add(action);
+                        }
+                    }
+                    modalController.showWakePanel(getCurrentFocus(), "DISCORD", "Servers",
+                            host.name + "  Â·  Profile " + connection.profileId,
+                            this::showHostIntegrations, actions.toArray(new View[0]));
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> showDiscordLoadError(
+                        "Servers", error,
+                        () -> showDiscordServersPanel(host, connection, true),
+                        this::showHostIntegrations));
+            }
+        });
+    }
+
+    private void showDiscordChannelsPanel(ConsoleDataRepository.Host host,
+                                          HostGatewayClient.Connection connection,
+                                          HostGatewayClient.DiscordGuild guild,
+                                          boolean force) {
+        int request = integrationPanelRequest.incrementAndGet();
+        TextView loading = modalController.wakeStatus("Loading voice channelsâ€¦");
+        modalController.showWakePanel(getCurrentFocus(), "DISCORD", guild.name, null,
+                () -> showDiscordServersPanel(host, connection, false), loading);
+        integrationExecutor.execute(() -> {
+            try {
+                List<HostGatewayClient.DiscordChannel> channels =
+                        hostGatewayClient.getDiscordChannels(connection, guild, force);
+                HostGatewayClient.DiscordVoice voice = null;
+                try { voice = hostGatewayClient.getDiscordVoice(connection, force); }
+                catch (Exception ignored) { }
+                HostGatewayClient.DiscordVoice currentVoice = voice;
+                mainHandler.post(() -> {
+                    if (request != integrationPanelRequest.get()) return;
+                    List<View> actions = new ArrayList<>();
+                    if (currentVoice != null && currentVoice.connected) {
+                        actions.add(modalController.wakeSection("CURRENT VOICE"));
+                        actions.add(modalController.wakeStatus("\u25CF  " +
+                                currentVoice.channelName + "  Â·  " +
+                                currentVoice.participants + " participants"));
+                        TextView people = modalController.discordAction(
+                                "PEOPLE  Â·  " + currentVoice.participants, DISCORD_BLURPLE);
+                        TextView leave = modalController.discordAction("LEAVE", DISCORD_RED);
+                        people.setOnClickListener(view ->
+                                showDiscordParticipantsPanel(host, connection, true));
+                        leave.setOnClickListener(view -> runGatewayOperation(
+                                "Leaving voiceâ€¦",
+                                () -> hostGatewayClient.leaveDiscordChannel(connection),
+                                () -> showDiscordChannelsPanel(host, connection, guild, true)));
+                        actions.add(modalController.wakeActionRow(people, leave));
+                    }
+                    actions.add(modalController.wakeSection("TOOLS"));
+                    TextView settings = modalController.discordAction("SETTINGS", DISCORD_TOOL);
+                    TextView usb = modalController.discordAction("USB", DISCORD_TOOL);
+                    TextView refresh = modalController.discordAction("REFRESH", DISCORD_SURFACE);
+                    settings.setOnClickListener(view -> showDiscordSettingsPanel(host, connection));
+                    usb.setOnClickListener(view -> showVirtualHerePanel(host, connection, false));
+                    refresh.setOnClickListener(view ->
+                            showDiscordChannelsPanel(host, connection, guild, true));
+                    actions.add(modalController.wakeActionRow(settings, usb));
+                    actions.add(refresh);
+                    actions.add(modalController.wakeSection("VOICE CHANNELS"));
+                    if (channels.isEmpty()) {
+                        actions.add(modalController.wakeStatus(
+                                "No voice channels are available."));
+                    }
+                    for (HostGatewayClient.DiscordChannel channel : channels) {
+                        boolean active = currentVoice != null && currentVoice.connected &&
+                                channel.id.equals(currentVoice.channelId);
+                        String count = channel.people >= 0 ?
+                                "  Â·  " + channel.people + " people" : "";
+                        String prefix = active ? "\u25CF  " : channel.favorite ? "\u2605  " : "#  ";
+                        TextView action = modalController.discordAction(
+                                prefix + channel.name + count,
+                                active ? DISCORD_GREEN : DISCORD_SURFACE);
+                        action.setOnClickListener(view -> showDiscordChannelPanel(
+                                host, connection, guild, channel, false));
+                        actions.add(action);
+                    }
+                    modalController.showWakePanel(getCurrentFocus(), "DISCORD", guild.name,
+                            "Select a channel to see its people.",
+                            () -> showDiscordServersPanel(host, connection, false),
+                            actions.toArray(new View[0]));
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> showDiscordLoadError(guild.name, error,
+                        () -> showDiscordChannelsPanel(host, connection, guild, true),
+                        () -> showDiscordServersPanel(host, connection, false)));
+            }
+        });
+    }
+
+    private void showDiscordLoadError(String title, Throwable error,
+                                      Runnable retry, Runnable back) {
+        TextView status = modalController.wakeStatus(
+                "Unable to load Discord\n" + friendlyGatewayError(error));
+        TextView retryAction = modalController.wakeAction("RETRY");
+        TextView backAction = modalController.wakeAction("BACK");
+        retryAction.setOnClickListener(view -> retry.run());
+        backAction.setOnClickListener(view -> back.run());
+        modalController.showWakePanel(getCurrentFocus(), "DISCORD", title, null, back,
+                status, retryAction, backAction);
+    }
+
+    private void showDiscordChannelPanel(ConsoleDataRepository.Host host,
+                                         HostGatewayClient.Connection connection,
+                                         HostGatewayClient.DiscordGuild guild,
+                                         HostGatewayClient.DiscordChannel channel,
+                                         boolean force) {
+        int request = integrationPanelRequest.incrementAndGet();
+        TextView loading = modalController.wakeStatus("Loading channelâ€¦");
+        Runnable back = () -> showDiscordChannelsPanel(host, connection, guild, false);
+        modalController.showWakePanel(getCurrentFocus(), "DISCORD", "# " + channel.name,
+                guild.name, back, loading);
+        integrationExecutor.execute(() -> {
+            try {
+                HostGatewayClient.DiscordVoice voice =
+                        hostGatewayClient.getDiscordVoice(connection, force);
+                mainHandler.post(() -> {
+                    if (request != integrationPanelRequest.get()) return;
+                    boolean active = voice.connected && channel.id.equals(voice.channelId);
+                    List<View> actions = new ArrayList<>();
+                    actions.add(modalController.wakeSection("VOICE CHANNEL"));
+                    if (active) {
+                        actions.add(modalController.wakeStatus("\u25CF  Connected  Â·  " +
+                                voice.participants + " participant" +
+                                (voice.participants == 1 ? "" : "s")));
+                        TextView mute = modalController.discordAction(
+                                voice.muted ? "MIC MUTED  Â·  UNMUTE" : "MIC ON  Â·  MUTE",
+                                voice.muted ? DISCORD_RED : DISCORD_GREEN);
+                        TextView leave = modalController.discordAction("LEAVE", DISCORD_RED);
+                        mute.setOnClickListener(view -> runGatewayOperation(
+                                "Toggling microphoneâ€¦",
+                                () -> hostGatewayClient.setDiscordVoiceFlag(
+                                        connection, "mute", "toggle"),
+                                () -> showDiscordChannelPanel(
+                                        host, connection, guild, channel, true)));
+                        leave.setOnClickListener(view -> runGatewayOperation(
+                                "Leaving #" + channel.name + "â€¦",
+                                () -> hostGatewayClient.leaveDiscordChannel(connection),
+                                () -> showDiscordChannelPanel(
+                                        host, connection, guild, channel, true)));
+                        actions.add(modalController.wakeActionRow(mute, leave));
+                        TextView people = modalController.discordAction(
+                                "PEOPLE  Â·  " + voice.participants, DISCORD_BLURPLE);
+                        people.setOnClickListener(view ->
+                                showDiscordParticipantsPanel(host, connection, true));
+                        actions.add(people);
+                    } else {
+                        if (voice.connected) {
+                            actions.add(modalController.wakeStatus(
+                                    "You are currently connected to \u25CF " +
+                                            voice.channelName +
+                                            ". Joining here will switch channels."));
+                        } else {
+                            actions.add(modalController.wakeStatus(
+                                    (channel.people >= 0 ? channel.people +
+                                            " people visible  Â·  " : "") +
+                                            "Join to see and control participants."));
+                        }
+                        TextView join = modalController.discordAction(
+                                "JOIN #" + channel.name, DISCORD_GREEN);
+                        join.setOnClickListener(view -> runGatewayOperation(
+                                "Joining #" + channel.name + "â€¦",
+                                () -> hostGatewayClient.joinDiscordChannel(connection, channel),
+                                () -> {
+                                    hostGatewayStore.saveLastDiscordChannel(
+                                            host.uuid, connection.profileId, channel.id,
+                                            channel.guildId, channel.guildName, channel.name);
+                                    showDiscordChannelPanel(
+                                            host, connection, guild, channel, true);
+                                }));
+                        actions.add(join);
+                    }
+                    actions.add(modalController.wakeSection("TOOLS"));
+                    TextView settings = modalController.discordAction("SETTINGS", DISCORD_TOOL);
+                    TextView usb = modalController.discordAction("USB", DISCORD_TOOL);
+                    settings.setOnClickListener(view -> showDiscordSettingsPanel(host, connection));
+                    usb.setOnClickListener(view -> showVirtualHerePanel(host, connection, false));
+                    actions.add(modalController.wakeActionRow(settings, usb));
+                    modalController.showWakePanel(getCurrentFocus(), "DISCORD",
+                            "# " + channel.name, guild.name, back,
+                            actions.toArray(new View[0]));
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> showDiscordLoadError("# " + channel.name, error,
+                        () -> showDiscordChannelPanel(
+                                host, connection, guild, channel, true), back));
+            }
+        });
+    }
+
+    private void showDiscordParticipantsPanel(ConsoleDataRepository.Host host,
+                                              HostGatewayClient.Connection connection,
+                                              boolean force) {
+        int request = integrationPanelRequest.incrementAndGet();
+        TextView loading = modalController.wakeStatus(
+                "Loading people in the voice channelâ€¦");
+        Runnable back = () -> showDiscordServersPanel(host, connection, false);
+        modalController.showWakePanel(getCurrentFocus(), "DISCORD", "People", null,
+                back, loading);
+        integrationExecutor.execute(() -> {
+            try {
+                HostGatewayClient.DiscordVoice voice =
+                        hostGatewayClient.getDiscordVoice(connection, force);
+                mainHandler.post(() -> {
+                    if (request != integrationPanelRequest.get()) return;
+                    List<View> actions = new ArrayList<>();
+                    if (!voice.connected) {
+                        actions.add(modalController.wakeStatus(
+                                "Discord is not connected to a voice channel."));
+                    } else {
+                        actions.add(modalController.wakeStatus("\u25CF  " + voice.channelName +
+                                "  Â·  " + voice.participants + " participants"));
+                        for (HostGatewayClient.DiscordParticipant participant :
+                                voice.participantList) {
+                            actions.add(modalController.wakeStatus(
+                                    (participant.speaking ? "\u25CF  " : "") +
+                                            participant.name +
+                                            (participant.self ? "  Â·  YOU" : "") +
+                                            "\nVolume " + participant.volume + "%" +
+                                            (participant.muted ? "  Â·  MUTED" : "")));
+                            if (!participant.self) {
+                                SeekBar volume = modalController.wakeVolumeSlider(
+                                        participant.volume);
+                                TextView mute = modalController.discordAction(
+                                        participant.muted ? "UNMUTE" : "MUTE",
+                                        participant.muted ? DISCORD_GREEN : DISCORD_RED);
+                                volume.setOnSeekBarChangeListener(
+                                        new SeekBar.OnSeekBarChangeListener() {
+                                            @Override public void onProgressChanged(
+                                                    SeekBar seekBar, int progress,
+                                                    boolean fromUser) {
+                                                if (!fromUser) return;
+                                                int snapped = Math.max(0, Math.min(200,
+                                                        Math.round(progress / 10f) * 10));
+                                                if (snapped != progress) {
+                                                    seekBar.setProgress(snapped);
+                                                }
+                                            }
+
+                                            @Override public void onStartTrackingTouch(
+                                                    SeekBar seekBar) { }
+
+                                            @Override public void onStopTrackingTouch(
+                                                    SeekBar seekBar) {
+                                                setDiscordParticipantVolume(connection,
+                                                        participant, seekBar.getProgress(),
+                                                        host);
+                                            }
+                                        });
+                                volume.setOnKeyListener((view, keyCode, event) -> {
+                                    if (event.getAction() == KeyEvent.ACTION_UP &&
+                                            (keyCode == KeyEvent.KEYCODE_DPAD_LEFT ||
+                                                    keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)) {
+                                        setDiscordParticipantVolume(connection, participant,
+                                                volume.getProgress(), host);
+                                    }
+                                    return false;
+                                });
+                                mute.setOnClickListener(view -> runGatewayOperation(
+                                        "Updating participant muteâ€¦",
+                                        () -> hostGatewayClient.toggleDiscordParticipantMute(
+                                                connection, participant.id),
+                                        () -> showDiscordParticipantsPanel(host, connection, true)));
+                                actions.add(modalController.wakeWeightedActionRow(volume, mute));
+                            }
+                        }
+                    }
+                    TextView refresh = modalController.discordAction("REFRESH", DISCORD_SURFACE);
+                    TextView done = modalController.discordAction("BACK", DISCORD_TOOL);
+                    refresh.setOnClickListener(view ->
+                            showDiscordParticipantsPanel(host, connection, true));
+                    done.setOnClickListener(view -> back.run());
+                    actions.add(modalController.wakeActionRow(refresh, done));
+                    modalController.showWakePanel(getCurrentFocus(), "DISCORD", "People",
+                            voice.connected ? voice.channelName : null, back,
+                            actions.toArray(new View[0]));
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> showDiscordLoadError("People", error,
+                        () -> showDiscordParticipantsPanel(host, connection, true), back));
+            }
+        });
+    }
+
+    private void setDiscordParticipantVolume(
+            HostGatewayClient.Connection connection,
+            HostGatewayClient.DiscordParticipant participant,
+            int volume, ConsoleDataRepository.Host host) {
+        int snapped = Math.max(0, Math.min(200, Math.round(volume / 10f) * 10));
+        runGatewayOperation("Updating participant volumeâ€¦",
+                () -> hostGatewayClient.setDiscordParticipantVolume(
+                        connection, participant.id, snapped),
+                () -> showDiscordParticipantsPanel(host, connection, true));
+    }
+
+    private void showDiscordSettingsPanel(ConsoleDataRepository.Host host,
+                                          HostGatewayClient.Connection connection) {
+        int request = integrationPanelRequest.incrementAndGet();
+        boolean autoConnect = hostGatewayStore.isDiscordAutoConnectEnabled(
+                host.uuid, connection.profileId);
+        boolean autoJoin = hostGatewayStore.isDiscordAutoJoinLastEnabled(
+                host.uuid, connection.profileId);
+        TextView status = modalController.wakeStatus(
+                "Discord profile " + connection.profileId + ": checkingâ€¦");
+        TextView autoConnectAction = modalController.wakeAction(
+                "START DISCORD WITH STREAM  Â·  " + (autoConnect ? "ON" : "OFF"));
+        TextView autoJoinAction = modalController.wakeAction(
+                "AUTO-JOIN LAST CHANNEL  Â·  " + (autoJoin ? "ON" : "OFF"));
+        TextView start = modalController.wakeAction("START DISCORD ON HOST");
+        TextView connect = modalController.wakeAction("CONNECT / AUTHORIZE RPC");
+        TextView audio = modalController.wakeAction("AUDIO DEVICES");
+        TextView refresh = modalController.wakeAction("REFRESH PROFILE STATUS");
+        TextView back = modalController.wakeAction("BACK TO DISCORD");
+        autoConnectAction.setOnClickListener(view -> {
+            hostGatewayStore.setDiscordAutoConnectEnabled(
+                    host.uuid, connection.profileId, !autoConnect);
+            showDiscordSettingsPanel(host, connection);
+        });
+        autoJoinAction.setOnClickListener(view -> {
+            hostGatewayStore.setDiscordAutoJoinLastEnabled(
+                    host.uuid, connection.profileId, !autoJoin);
+            showDiscordSettingsPanel(host, connection);
+        });
+        start.setOnClickListener(view -> runGatewayOperation("Starting Discordâ€¦",
+                () -> hostGatewayClient.startDiscord(connection),
+                () -> showDiscordSettingsPanel(host, connection)));
+        connect.setOnClickListener(view -> runGatewayOperation("Connecting Discord RPCâ€¦",
+                () -> hostGatewayClient.connectDiscord(connection, false),
+                () -> showDiscordSettingsPanel(host, connection)));
+        audio.setOnClickListener(view -> showDiscordAudio(connection));
+        refresh.setOnClickListener(view -> showDiscordSettingsPanel(host, connection));
+        back.setOnClickListener(view -> showDiscordServersPanel(host, connection, false));
+        modalController.showWakePanel(getCurrentFocus(), "DISCORD", "Settings",
+                "Integration profile: " + connection.profileId,
+                () -> showDiscordServersPanel(host, connection, false),
+                status, autoConnectAction, autoJoinAction, start, connect,
+                audio, refresh, back);
+        integrationExecutor.execute(() -> {
+            try {
+                HostGatewayClient.DiscordStatus discord =
+                        hostGatewayClient.getDiscordStatus(connection);
+                mainHandler.post(() -> {
+                    if (request != integrationPanelRequest.get()) return;
+                    status.setText(!discord.bridgeOnline ? "Discord Bridge: offline" :
+                            !discord.rpcConnected ? "Discord Bridge: online\nRPC disconnected" :
+                                    !discord.authenticated ?
+                                            "Discord RPC: authorization required" :
+                                            "Discord connected and authorized");
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> {
+                    if (request == integrationPanelRequest.get()) {
+                        status.setText("Discord status unavailable\n" +
+                                friendlyGatewayError(error));
+                    }
+                });
+            }
+        });
+    }
+
+    private void showVirtualHerePanel(ConsoleDataRepository.Host host,
+                                      HostGatewayClient.Connection connection,
+                                      boolean force) {
+        showVirtualHereWakePanel(host, connection, force);
+    }
+
+    private void showVirtualHereWakePanel(ConsoleDataRepository.Host host,
+                                          HostGatewayClient.Connection connection,
+                                          boolean force) {
+        int request = integrationPanelRequest.incrementAndGet();
+        TextView loading = modalController.wakeStatus("Loading USB devicesâ€¦");
+        Runnable back = () -> showDiscordServersPanel(host, connection, false);
+        modalController.showWakePanel(getCurrentFocus(), "VIRTUALHERE", "USB devices",
+                "Integration profile: " + connection.profileId +
+                        "\nConnect host USB devices without leaving MoonWaker.",
+                back, loading);
+        integrationExecutor.execute(() -> {
+            try {
+                HostGatewayClient.VirtualHereState state =
+                        hostGatewayClient.getVirtualHereState(connection, force);
+                mainHandler.post(() -> {
+                    if (request != integrationPanelRequest.get()) return;
+                    List<View> actions = new ArrayList<>();
+                    String summary = state.installed ?
+                            state.running ? "VirtualHere client: online" :
+                                    "VirtualHere client: not running" :
+                            "VirtualHere client: not installed";
+                    if (!state.error.isEmpty()) summary += "\n" + state.error;
+                    actions.add(modalController.wakeStatus(summary));
+                    int devices = 0;
+                    for (HostGatewayClient.VirtualHereServer server : state.servers) {
+                        actions.add(modalController.wakeStatus("SERVER  Â·  " +
+                                (!server.name.isEmpty() ? server.name : server.hostname)));
+                        for (HostGatewayClient.VirtualHereDevice device : server.devices) {
+                            devices++;
+                            String stateLabel = device.inUseByMe ? "CONNECTED" :
+                                    device.available ? "AVAILABLE" :
+                                            device.inUse ? "IN USE" : "OFFLINE";
+                            TextView use = modalController.wakeAction(
+                                    (device.inUseByMe ? "\u25A0  " : "USB  ") +
+                                            device.name + "  Â·  " + stateLabel);
+                            TextView auto = modalController.wakeAction(
+                                    device.autoUse ? "AUTO  Â·  ON" : "AUTO USE");
+                            if (device.inUseByMe) {
+                                use.setOnClickListener(view -> runVirtualHereOperation(
+                                        host, connection, "stop", device.address,
+                                        "Disconnecting " + device.name + "â€¦"));
+                            } else if (device.available) {
+                                use.setOnClickListener(view -> runVirtualHereOperation(
+                                        host, connection, "use", device.address,
+                                        "Connecting " + device.name + "â€¦"));
+                            } else {
+                                use.setOnClickListener(view -> Toast.makeText(this,
+                                        device.boundHostname.isEmpty() ?
+                                                "This USB device is unavailable." :
+                                                "In use by " + device.boundHostname + ".",
+                                        Toast.LENGTH_LONG).show());
+                            }
+                            auto.setOnClickListener(view -> {
+                                if (device.autoUse) {
+                                    Toast.makeText(this, "Auto use is already enabled.",
+                                            Toast.LENGTH_SHORT).show();
+                                } else {
+                                    runVirtualHereOperation(host, connection, "auto",
+                                            device.address,
+                                            "Enabling auto use for " + device.name + "â€¦");
+                                }
+                            });
+                            actions.add(modalController.wakeActionRow(use, auto));
+                        }
+                    }
+                    if (devices == 0) actions.add(modalController.wakeStatus(
+                            "No USB devices are currently advertised by a VirtualHere server."));
+                    TextView restart = modalController.wakeAction("RESTART VIRTUALHERE");
+                    TextView refresh = modalController.wakeAction("REFRESH");
+                    TextView done = modalController.wakeAction("BACK");
+                    restart.setOnClickListener(view -> runVirtualHereOperation(
+                            host, connection, "restart", null, "Restarting VirtualHereâ€¦"));
+                    refresh.setOnClickListener(view ->
+                            showVirtualHereWakePanel(host, connection, true));
+                    done.setOnClickListener(view -> back.run());
+                    actions.add(modalController.wakeActionRow(restart, refresh));
+                    actions.add(done);
+                    modalController.showWakePanel(getCurrentFocus(), "VIRTUALHERE",
+                            "USB devices", null, back, actions.toArray(new View[0]));
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> showDiscordLoadError("USB devices", error,
+                        () -> showVirtualHereWakePanel(host, connection, true), back));
+            }
+        });
+    }
+
+    private void runVirtualHereOperation(ConsoleDataRepository.Host host,
+                                         HostGatewayClient.Connection connection,
+                                         String action, String address, String progress) {
+        int request = integrationPanelRequest.incrementAndGet();
+        TextView status = modalController.wakeStatus(progress);
+        modalController.showWakePanel(getCurrentFocus(), "VIRTUALHERE", "USB devices",
+                null, () -> showVirtualHereWakePanel(host, connection, true), status);
+        integrationExecutor.execute(() -> {
+            try {
+                hostGatewayClient.runVirtualHereAction(connection, action, address);
+            } catch (Exception error) {
+                mainHandler.post(() -> Toast.makeText(this,
+                        "VirtualHere: " + friendlyGatewayError(error),
+                        Toast.LENGTH_LONG).show());
+            }
+            mainHandler.post(() -> {
+                if (request == integrationPanelRequest.get()) {
+                    showVirtualHereWakePanel(host, connection, true);
+                }
+            });
+        });
+    }
+
+    private void showDiscordPanelLegacy() {
         HostGatewayClient.Connection connection = selectedGatewayConnection();
         if (connection == null) {
             showHostIntegrations();
@@ -1545,6 +2101,87 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void showDiscordAudio(HostGatewayClient.Connection connection) {
+        ConsoleDataRepository.Host host = selectedHost;
+        if (host == null) { showDiscordPanel(); return; }
+        int request = integrationPanelRequest.incrementAndGet();
+        TextView loading = modalController.wakeStatus(
+                "Loading Discord and Windows audio devicesâ€¦");
+        Runnable back = () -> showDiscordSettingsPanel(host, connection);
+        modalController.showWakePanel(getCurrentFocus(), "DISCORD", "Audio devices",
+                null, back, loading);
+        integrationExecutor.execute(() -> {
+            try {
+                HostGatewayClient.DiscordAudioState audio =
+                        hostGatewayClient.getDiscordAudioState(connection);
+                mainHandler.post(() -> {
+                    if (request != integrationPanelRequest.get()) return;
+                    List<View> actions = new ArrayList<>();
+                    if (audio.systemAvailable) {
+                        actions.add(modalController.wakeSection("WINDOWS AUDIO"));
+                        actions.add(modalController.wakeStatus("System volume: " +
+                                audio.systemVolume + "%" +
+                                (audio.systemMuted ? "  Â·  MUTED" : "")));
+                        TextView down = modalController.wakeAction("âˆ’5");
+                        TextView up = modalController.wakeAction("+5");
+                        TextView mute = modalController.wakeAction(
+                                audio.systemMuted ? "UNMUTE" : "MUTE");
+                        down.setOnClickListener(view -> runGatewayOperation(
+                                "Lowering volumeâ€¦",
+                                () -> hostGatewayClient.changeSystemVolume(connection, -5),
+                                () -> showDiscordAudio(connection)));
+                        up.setOnClickListener(view -> runGatewayOperation(
+                                "Raising volumeâ€¦",
+                                () -> hostGatewayClient.changeSystemVolume(connection, 5),
+                                () -> showDiscordAudio(connection)));
+                        mute.setOnClickListener(view -> runGatewayOperation(
+                                "Updating system muteâ€¦",
+                                () -> hostGatewayClient.toggleSystemMute(connection),
+                                () -> showDiscordAudio(connection)));
+                        actions.add(modalController.wakeActionRow(down, up, mute));
+                    }
+                    addAudioDeviceActions(actions, connection, "WINDOWS DEVICES",
+                            audio.systemDevices);
+                    addAudioDeviceActions(actions, connection, "DISCORD DEVICES",
+                            audio.discordDevices);
+                    if (!audio.error.isEmpty()) {
+                        actions.add(modalController.wakeStatus(audio.error));
+                    }
+                    TextView refresh = modalController.wakeAction("REFRESH");
+                    TextView done = modalController.wakeAction("BACK");
+                    refresh.setOnClickListener(view -> showDiscordAudio(connection));
+                    done.setOnClickListener(view -> back.run());
+                    actions.add(modalController.wakeActionRow(refresh, done));
+                    modalController.showWakePanel(getCurrentFocus(), "DISCORD",
+                            "Audio devices", null, back, actions.toArray(new View[0]));
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> showDiscordLoadError("Audio devices", error,
+                        () -> showDiscordAudio(connection), back));
+            }
+        });
+    }
+
+    private void addAudioDeviceActions(List<View> actions,
+                                       HostGatewayClient.Connection connection,
+                                       String title,
+                                       List<HostGatewayClient.AudioDevice> devices) {
+        actions.add(modalController.wakeSection(title));
+        if (devices.isEmpty()) {
+            actions.add(modalController.wakeStatus("No devices reported."));
+            return;
+        }
+        for (HostGatewayClient.AudioDevice device : devices) {
+            TextView action = modalController.wakeAction(
+                    (device.current ? "\u2713  " : "") + device.name);
+            action.setOnClickListener(view -> runGatewayOperation(
+                    "Selecting " + device.name + "â€¦",
+                    () -> hostGatewayClient.selectAudioDevice(connection, device),
+                    () -> showDiscordAudio(connection)));
+            actions.add(action);
+        }
+    }
+
+    private void showDiscordAudioLegacy(HostGatewayClient.Connection connection) {
         modalController.showActionPanel(getCurrentFocus(), "DISCORD", "Audio Devices",
                 "Loading Windows and Discord audio devices...", Collections.emptyList(),
                 this::showDiscordPanel, null);
