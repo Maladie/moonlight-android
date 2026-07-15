@@ -41,6 +41,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final ConsoleStateMachine stateMachine = new ConsoleStateMachine();
     private final InputRouter inputRouter = new InputRouter(InputRouter.Region.HOME);
     private final StreamSurfaceHost streamSurfaceHost = new StreamSurfaceHost();
+    private final UnifiedConsoleHomeSession unifiedHomeSession =
+            new UnifiedConsoleHomeSession();
     private final InputManager.InputDeviceListener controllerDeviceListener =
             new InputManager.InputDeviceListener() {
                 @Override public void onInputDeviceAdded(int deviceId) { renderControllers(); }
@@ -124,7 +126,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         refreshHostAvailability();
         ActiveStreamSurfaceBridge.setConsoleForeground(true);
         if (repository != null && sessionStatus != null) {
-            ConsoleDataRepository.Session session = repository.session();
+            ConsoleDataRepository.Session session = visibleSession();
             renderSession(session);
             if (session != null && session.alive) {
                 for (ConsoleStateMachine.Event event : ConsoleResumePolicy.eventsFor(
@@ -188,6 +190,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 launchPreparationController != null) {
             launchPreparationController.cancel();
             cancelUnifiedPendingLaunch();
+            unifiedHomeSession.clear();
         }
         ConsoleStateMachine.Transition transition = stateMachine.dispatch(ConsoleStateMachine.Event.BACK);
         if (transition.effect == ConsoleStateMachine.Effect.SHOW_EXIT_CONFIRMATION) {
@@ -572,6 +575,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private void launchLegacy(ConsoleDataRepository.Host host, ConsoleDataRepository.App app) {
         LimeLog.info("Unified Console launch requested");
         launchHistoryStore.record(host, app, System.currentTimeMillis());
+        if (streamRuntime instanceof UnifiedConsoleRuntimeBootstrap) {
+            unifiedHomeSession.begin(host, app);
+        }
         stateMachine.dispatch(ConsoleStateMachine.Event.LAUNCH);
         applyState(ConsoleStateMachine.State.CONNECTING);
         loadingController.show(app.name);
@@ -589,6 +595,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
                     @Override public void onTimeout() {
                         LimeLog.warning("Unified Console host preparation timed out");
+                        unifiedHomeSession.clear();
                         stateMachine.dispatch(ConsoleStateMachine.Event.BACK);
                         applyState(stateMachine.getState());
                         modalController.showHostWakeTimeout(getCurrentFocus(), host.name,
@@ -670,8 +677,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private void refreshVisibleSession() {
         if (repository == null || homeLayer == null ||
                 homeLayer.getVisibility() != View.VISIBLE || isFinishing()) return;
-        renderSession(repository.session());
+        renderSession(visibleSession());
         mainHandler.postDelayed(sessionRefresh, SESSION_REFRESH_MS);
+    }
+
+    private ConsoleDataRepository.Session visibleSession() {
+        return unifiedHomeSession.visibleOr(repository.session());
     }
 
     private void returnToActiveStream() {
@@ -754,6 +765,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
                             @Override public void onConfigurationPlanned(
                                     StreamSessionConfigurationPlanner.Plan plan) {
+                                unifiedHomeSession.planned(
+                                        plan.configuration.getWidth(),
+                                        plan.configuration.getHeight(),
+                                        plan.configuration.getRefreshRate());
                                 showUnifiedConfigurationWarning(plan);
                             }
 
@@ -792,6 +807,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 break;
             case CONNECTED:
                 unifiedTransportConnected = true;
+                unifiedHomeSession.connected();
+                renderSession(visibleSession());
                 loadingController.updateStatus("Waiting for the first video frame…");
                 maybeRevealUnifiedStream();
                 break;
@@ -799,6 +816,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 unifiedTransportConnected = false;
                 unifiedFirstFrameRendered = false;
                 unifiedSessionInput = null;
+                unifiedHomeSession.clear();
                 stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTION_FAILED);
                 applyState(stateMachine.getState());
                 break;
