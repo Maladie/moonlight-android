@@ -4,13 +4,9 @@ import android.app.Activity;
 import android.app.ActivityOptions;
 import android.content.Intent;
 import android.graphics.Bitmap;
-import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
-import android.net.Uri;
 import android.os.Bundle;
-import android.os.Handler;
-import android.os.Looper;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.SurfaceHolder;
@@ -33,25 +29,19 @@ import com.limelight.PublicStreamIntent;
 import com.limelight.PublicReturnStreamTrampoline;
 import com.limelight.ShortcutTrampoline;
 
-import java.io.InputStream;
 import java.util.List;
 import java.util.Locale;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.atomic.AtomicInteger;
 
 /** Milestone-1 Android TV console shell with a persistent stream surface layer. */
 public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
     private final ConsoleStateMachine stateMachine = new ConsoleStateMachine();
     private final InputRouter inputRouter = new InputRouter(InputRouter.Region.HOME);
-    private final ExecutorService artworkExecutor = Executors.newSingleThreadExecutor();
-    private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final AtomicInteger artworkRequest = new AtomicInteger();
     private final StreamSurfaceHost streamSurfaceHost = new StreamSurfaceHost();
 
     private ConsoleDataRepository repository;
     private HostGatewayStore hostGatewayStore;
     private ConsoleSelectionStore selectionStore;
+    private ConsoleArtworkController artworkController;
     private FrameLayout root;
     private SurfaceView streamSurface;
     private View privacyLayer;
@@ -75,6 +65,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         hostGatewayStore = new HostGatewayStore(this);
         selectionStore = new ConsoleSelectionStore(this);
         setContentView(buildRoot());
+        artworkController = new ConsoleArtworkController(this, artworkBackdrop, artworkHero);
         renderSnapshot();
     }
 
@@ -117,9 +108,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             ActiveStreamSurfaceBridge.releaseConsoleSurface(streamSurface.getHolder());
             streamSurface.getHolder().removeCallback(this);
         }
-        artworkRequest.incrementAndGet();
-        artworkExecutor.shutdownNow();
-        mainHandler.removeCallbacksAndMessages(null);
+        if (artworkController != null) artworkController.destroy();
         super.onDestroy();
     }
 
@@ -315,7 +304,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         if (apps.isEmpty()) {
             appRow.addView(label("No cached applications. Refresh this host in Moonlight.",
                     16, 0xFFFFB74D, false), cardParams());
-            clearArtwork();
+            artworkController.clear();
             return;
         }
         for (ConsoleDataRepository.App app : apps) {
@@ -338,7 +327,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         ImageView poster = new ImageView(this);
         poster.setScaleType(ImageView.ScaleType.FIT_CENTER);
         poster.setBackgroundColor(0xFF251C3F);
-        Bitmap cached = decode(app.posterUri, 320);
+        Bitmap cached = artworkController.decodePoster(app.posterUri, 320);
         if (cached != null) poster.setImageBitmap(cached);
         card.addView(poster, new LinearLayout.LayoutParams(dp(92), dp(138)));
 
@@ -350,7 +339,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             view.setBackground(cardBackground(focused));
             if (focused) {
                 selectionStore.rememberApp(host.uuid, app.id);
-                showArtwork(app.posterUri, poster.getDrawable());
+                artworkController.show(app.posterUri, poster.getDrawable());
             }
         });
         card.setOnClickListener(view -> launchLegacy(host, app));
@@ -420,53 +409,6 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         startActivity(intent, ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle());
         overridePendingTransition(0, 0);
-    }
-
-    private void showArtwork(Uri uri, android.graphics.drawable.Drawable immediate) {
-        int token = artworkRequest.incrementAndGet();
-        if (immediate != null) {
-            artworkHero.setImageDrawable(immediate);
-            artworkHero.setAlpha(0.58f);
-        }
-        artworkExecutor.execute(() -> {
-            Bitmap source = decode(uri, 900);
-            if (source == null) return;
-            Bitmap small = Bitmap.createScaledBitmap(source, 48, 72, true);
-            Bitmap blurred = Bitmap.createScaledBitmap(small, 960, 1080, true);
-            mainHandler.post(() -> {
-                if (token != artworkRequest.get() || isFinishing() || isDestroyed()) return;
-                artworkBackdrop.setImageBitmap(blurred);
-                artworkBackdrop.animate().alpha(0.46f).setDuration(220).start();
-            });
-        });
-    }
-
-    private Bitmap decode(Uri uri, int maxDimension) {
-        if (uri == null) return null;
-        try {
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            try (InputStream input = getContentResolver().openInputStream(uri)) {
-                BitmapFactory.decodeStream(input, null, bounds);
-            }
-            int sample = 1;
-            while (bounds.outWidth / sample > maxDimension || bounds.outHeight / sample > maxDimension) sample *= 2;
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = Math.max(1, sample);
-            try (InputStream input = getContentResolver().openInputStream(uri)) {
-                return BitmapFactory.decodeStream(input, null, options);
-            }
-        } catch (Exception ignored) {
-            return null;
-        }
-    }
-
-    private void clearArtwork() {
-        artworkRequest.incrementAndGet();
-        artworkHero.setImageDrawable(null);
-        artworkHero.setAlpha(0f);
-        artworkBackdrop.setImageDrawable(null);
-        artworkBackdrop.setAlpha(0f);
     }
 
     private void applyState(ConsoleStateMachine.State state) {
