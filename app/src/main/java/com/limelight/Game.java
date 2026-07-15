@@ -20,6 +20,7 @@ import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
 import com.limelight.console.StreamFrameRatePolicy;
 import com.limelight.console.StreamGamepadMaskPolicy;
+import com.limelight.console.StreamRefreshRateOverridePolicy;
 import com.limelight.console.StreamVideoFormatPolicy;
 import com.limelight.console.ActiveStreamSurfaceBridge;
 import com.limelight.console.InputRouter;
@@ -638,15 +639,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             LimeLog.info("Adjusting FPS target for screen to " + frameRate.frameRate);
         }
 
-        // Use the "actual display refresh rate" preference for the X100 refresh rate
-        //int refreshRateX100 = (int)(displayRefreshRate * 100);
-        int refreshRateX100 = 0;
-        if (prefConfig.actualDisplayRefreshRate != null && !prefConfig.actualDisplayRefreshRate.isBlank()) {
-            float actualDisplayRefreshRateFloat = Float.parseFloat(prefConfig.actualDisplayRefreshRate);
-            if (actualDisplayRefreshRateFloat > 0) {
-                refreshRateX100 = (int)(actualDisplayRefreshRateFloat * 100);
-            }
-        }
+        int refreshRateX100 = StreamRefreshRateOverridePolicy.parseX100(
+                prefConfig.actualDisplayRefreshRate);
 
         var configBuilder = new StreamConfiguration.Builder()
                 .setResolution(prefConfig.width, prefConfig.height)

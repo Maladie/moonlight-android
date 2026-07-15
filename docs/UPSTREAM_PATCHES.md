@@ -181,6 +181,19 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
   on-screen controller, and empty-mask cases, followed by Java compilation.
 - Removal: none; this is transport configuration shared by both runtimes.
 
+### P009 - Shared client refresh-rate override policy
+
+- Surface: `Game.java`.
+- Reason: parse the optional actual-display refresh value in one pure policy for
+  both runtimes. Invalid, non-positive, non-finite, and overflowing values now
+  fail closed instead of aborting stream setup.
+- Risk: incorrect unit conversion could report the wrong client refresh rate to
+  the host and affect pacing decisions.
+- Regression: focused tests for decimal conversion, whitespace, absent values,
+  malformed values, non-finite values, and overflow, followed by Java
+  compilation.
+- Removal: none; this validated configuration boundary remains shared.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.
