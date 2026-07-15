@@ -1,7 +1,9 @@
 package com.limelight.console;
 
+import android.app.AlertDialog;
 import android.content.Context;
 import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -64,21 +66,37 @@ final class ConsoleModalController {
     void showExitConfirmation(View focusToRestore, Runnable exitAction) {
         begin(focusToRestore);
         integrationHostUuid = null;
-        LinearLayout panel = panel();
-        panel.addView(label("EXIT MOONWAKER?", 24, Color.WHITE, true), wrap());
-        panel.addView(label("An active host application will not be stopped.",
-                15, 0xFFBDC4D8, false), top(dp(12)));
-        TextView cancel = card("CANCEL", dp(260), dp(58));
+        TextView cancel = wakeAction("CANCEL");
         cancel.setOnClickListener(view -> hide());
-        TextView exit = card("EXIT APP", dp(260), dp(58));
-        exit.setOnClickListener(view -> exitAction.run());
-        panel.addView(cancel, top(dp(22)));
-        panel.addView(exit, top(dp(10)));
-        layer.addView(panel, new FrameLayout.LayoutParams(dp(560), dp(360), Gravity.CENTER));
-        showAndFocus(cancel);
+        TextView exit = wakeDangerAction("EXIT MOONWAKER");
+        exit.setOnClickListener(view -> { hide(); exitAction.run(); });
+        showWakePanel("MOONWAKER", "Close MoonWaker?",
+                "The active host session will not be stopped.",
+                null, wakeActionRow(cancel, exit));
     }
 
     void showSessionDetails(View focusToRestore, ConsoleSessionSummary summary,
+                            Runnable returnToGame, Runnable disconnectTransport,
+                            Runnable quitHostApplication) {
+        begin(focusToRestore);
+        integrationHostUuid = null;
+        TextView resume = wakeAction("\u25B6  RETURN TO GAME");
+        resume.setOnClickListener(view -> { hide(); returnToGame.run(); });
+        TextView disconnect = wakeAction("DISCONNECT THIS TV");
+        disconnect.setOnClickListener(view -> showSessionCommandConfirmation(
+                view, "Disconnect this TV?",
+                "The stream will end, but the application will remain running on the host.",
+                "DISCONNECT", disconnectTransport));
+        TextView quit = wakeAction("END APP ON HOST");
+        quit.setOnClickListener(view -> showSessionCommandConfirmation(
+                view, "End app on host?",
+                "The running application will be closed on the host and this stream will end.",
+                "END APP", quitHostApplication));
+        showWakePanel("ACTIVE SESSION", "Current stream", summary.label,
+                null, resume, disconnect, quit);
+    }
+
+    private void showSessionDetailsLegacy(View focusToRestore, ConsoleSessionSummary summary,
                             Runnable returnToGame, Runnable disconnectTransport,
                             Runnable quitHostApplication) {
         begin(focusToRestore);
@@ -124,6 +142,25 @@ final class ConsoleModalController {
                      Runnable hostIntegrations, Runnable moonlightSettings) {
         begin(focusToRestore);
         integrationHostUuid = null;
+        TextView sounds = wakeAction("UI SOUNDS  Â·  " + (uiSounds ? "ON" : "OFF"));
+        sounds.setOnClickListener(view -> toggleSounds.run());
+        TextView motion = wakeAction("REDUCED MOTION  Â·  " +
+                (reducedMotion ? "ON" : "OFF"));
+        motion.setOnClickListener(view -> toggleMotion.run());
+        TextView integrations = wakeAction("HOST INTEGRATIONS  â€ş");
+        integrations.setOnClickListener(view -> hostIntegrations.run());
+        TextView moonlight = wakeAction("MOONLIGHT SETTINGS  â€ş");
+        moonlight.setOnClickListener(view -> moonlightSettings.run());
+        showWakePanel("MOONWAKER", "Options",
+                "Tune the console interface or open Moonlight's streaming preferences.",
+                null, sounds, motion, integrations, moonlight);
+    }
+
+    private void showOptionsLegacy(View focusToRestore, boolean uiSounds, boolean reducedMotion,
+                     Runnable toggleSounds, Runnable toggleMotion,
+                     Runnable hostIntegrations, Runnable moonlightSettings) {
+        begin(focusToRestore);
+        integrationHostUuid = null;
         LinearLayout panel = panel();
         panel.setPadding(dp(42), dp(48), dp(42), dp(38));
         panel.setBackgroundColor(0xFF111522);
@@ -158,35 +195,39 @@ final class ConsoleModalController {
         showAndFocus(sounds);
     }
 
-    void showControllerActions(View focusToRestore,
+    void showControllerActions(View focusToRestore, int player,
                                ConsoleControllerRepository.Controller controller,
                                Runnable identify, Runnable disconnect, Runnable unpair) {
-        begin(focusToRestore);
-        integrationHostUuid = null;
-        LinearLayout panel = panel();
-        panel.setPadding(dp(42), dp(48), dp(42), dp(38));
-        panel.setBackgroundColor(0xFF111522);
-        panel.addView(label("CONTROLLER", 14, 0xFF9CA6C5, true), wrap());
-        panel.addView(label(controller.name, 28, Color.WHITE, true), top(dp(8)));
-        panel.addView(label(controller.batteryLabel(), 14, 0xFFBDC4D8, false), top(dp(12)));
-
-        TextView identifyAction = card("IDENTIFY", dp(420), dp(58));
-        identifyAction.setOnClickListener(view -> identify.run());
-        panel.addView(identifyAction, top(dp(28)));
-        TextView disconnectAction = card("POWER OFF / DISCONNECT", dp(420), dp(58));
-        disconnectAction.setOnClickListener(view -> disconnect.run());
-        panel.addView(disconnectAction, top(dp(10)));
-        TextView unpairAction = card("UNPAIR CONTROLLER", dp(420), dp(58));
-        unpairAction.setOnClickListener(view -> unpair.run());
-        panel.addView(unpairAction, top(dp(10)));
-        TextView close = card("CLOSE", dp(420), dp(58));
-        close.setOnClickListener(view -> hide());
-        panel.addView(close, top(dp(10)));
-        layer.addView(panel, new FrameLayout.LayoutParams(dp(720), matchHeight(), Gravity.RIGHT));
-        showAndFocus(identifyAction);
+        boolean canIdentify = ControllerActions.canIdentify(controller.deviceId);
+        boolean canDisconnect = ControllerActions.canDisconnect();
+        String[] actions = {
+                canIdentify ? "Identify controller" : "Identify controller Â· unavailable",
+                canDisconnect ? "Power off controller" : "Power off controller Â· unavailable",
+                "Unpair controller"
+        };
+        new AlertDialog.Builder(context)
+                .setTitle("P" + player + " Â· " + controller.name)
+                .setItems(actions, (dialog, which) -> {
+                    if (which == 0 && canIdentify) identify.run();
+                    else if (which == 1 && canDisconnect) disconnect.run();
+                    else if (which == 2) unpair.run();
+                })
+                .setNegativeButton("Cancel", null)
+                .show();
     }
 
     private void showSessionCommandConfirmation(View focusToRestore, String title,
+                                                String message, String actionLabel,
+                                                Runnable action) {
+        new AlertDialog.Builder(context)
+                .setTitle(title)
+                .setMessage(message)
+                .setPositiveButton(actionLabel, (dialog, which) -> action.run())
+                .setNegativeButton("Cancel", null)
+                .show();
+    }
+
+    private void showSessionCommandConfirmationLegacy(View focusToRestore, String title,
                                                 String message, String actionLabel,
                                                 Runnable action) {
         begin(focusToRestore);
@@ -477,6 +518,118 @@ final class ConsoleModalController {
         layer.setVisibility(View.VISIBLE);
         inputRouter.routeTo(InputRouter.Region.MODAL);
         initialFocus.requestFocus();
+    }
+
+    private void showWakePanel(String eyebrow, String title, String details,
+                               Runnable backAction, View... actions) {
+        onDismiss = backAction;
+        ScrollView scroll = new ScrollView(context);
+        scroll.setFillViewport(true);
+        scroll.setVerticalScrollBarEnabled(false);
+        LinearLayout panel = new LinearLayout(context);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(34), dp(26), dp(34), dp(20));
+        GradientDrawable background = new GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                new int[]{0xF51A1D2A, 0xF0221B38, 0xFA090B12});
+        background.setCornerRadii(new float[]{dp(24), dp(24), 0, 0, 0, 0,
+                dp(24), dp(24)});
+        background.setStroke(dp(1), 0x707B6AA9);
+        scroll.setBackground(background);
+        scroll.setElevation(dp(18));
+        scroll.addView(panel, new ScrollView.LayoutParams(matchWidth(), wrapSize()));
+
+        panel.addView(label(eyebrow, 12, 0xFFAFA4C9, true), wrap());
+        TextView titleView = label(title, 29, Color.WHITE, true);
+        panel.addView(titleView, top(dp(10)));
+        if (details != null && !details.isEmpty()) {
+            TextView detailView = label(details, 14, 0xFFC1C5D6, false);
+            detailView.setLineSpacing(dp(3), 1f);
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    matchWidth(), wrapSize());
+            params.topMargin = dp(10);
+            params.bottomMargin = dp(16);
+            panel.addView(detailView, params);
+        }
+        View initial = null;
+        for (View action : actions) {
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    matchWidth(), wrapSize());
+            params.bottomMargin = dp(6);
+            panel.addView(action, params);
+            if (initial == null) initial = firstFocusable(action);
+        }
+        panel.addView(label(backAction != null ? "BACK  Â·  PREVIOUS" : "BACK  Â·  CLOSE",
+                11, 0x8FFFFFFF, true), top(dp(12)));
+        layer.addView(scroll, new FrameLayout.LayoutParams(
+                dp(510), matchHeight(), Gravity.END));
+        showAndFocus(initial != null ? initial : titleView);
+    }
+
+    private View firstFocusable(View view) {
+        if (view.isFocusable() && view.getVisibility() == View.VISIBLE) return view;
+        if (view instanceof ViewGroup) {
+            ViewGroup group = (ViewGroup) view;
+            for (int index = 0; index < group.getChildCount(); index++) {
+                View candidate = firstFocusable(group.getChildAt(index));
+                if (candidate != null) return candidate;
+            }
+        }
+        return null;
+    }
+
+    private TextView wakeAction(String value) {
+        TextView action = label(value, 14, 0xFFF0E9FF, true);
+        action.setFocusable(true);
+        action.setClickable(true);
+        action.setSoundEffectsEnabled(false);
+        action.setMinHeight(dp(44));
+        action.setPadding(dp(16), dp(7), dp(16), dp(7));
+        action.setOnFocusChangeListener((view, focused) -> styleWakeAction(action, focused));
+        styleWakeAction(action, false);
+        return action;
+    }
+
+    private TextView wakeDangerAction(String value) {
+        TextView action = wakeAction(value);
+        action.setOnFocusChangeListener((view, focused) -> styleWakeDanger(action, focused));
+        styleWakeDanger(action, false);
+        return action;
+    }
+
+    private LinearLayout wakeActionRow(View... actions) {
+        LinearLayout row = new LinearLayout(context);
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        for (int index = 0; index < actions.length; index++) {
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    0, wrapSize(), 1f);
+            if (index > 0) params.leftMargin = dp(8);
+            row.addView(actions[index], params);
+        }
+        return row;
+    }
+
+    private void styleWakeAction(View action, boolean focused) {
+        GradientDrawable background = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{focused ? 0xC76C59A9 : 0x32584A76,
+                        focused ? 0xB04C3C79 : 0x65372E5D});
+        background.setCornerRadius(dp(10));
+        background.setStroke(dp(focused ? 2 : 1),
+                focused ? 0xFFE9E3FF : 0x387C89B2);
+        action.setBackground(background);
+    }
+
+    private void styleWakeDanger(View action, boolean focused) {
+        GradientDrawable background = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{focused ? 0xFFF04C51 : 0xD49E2C31,
+                        focused ? 0xFFB9252A : 0xD46E2024});
+        background.setCornerRadius(dp(9));
+        background.setStroke(dp(focused ? 2 : 1),
+                focused ? Color.WHITE : 0x664F545C);
+        action.setBackground(background);
     }
 
     private LinearLayout panel() {

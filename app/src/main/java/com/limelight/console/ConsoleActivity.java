@@ -787,6 +787,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         controllersLabel.setText(controllers.isEmpty() ? "CONTROLLERS · NONE" : "CONTROLLERS");
         int player = 1;
         for (ConsoleControllerRepository.Controller controller : controllers) {
+            final int playerNumber = player++;
             LinearLayout chip = new LinearLayout(this);
             chip.setOrientation(LinearLayout.VERTICAL);
             chip.setGravity(Gravity.CENTER_VERTICAL);
@@ -797,8 +798,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             chip.setFocusable(true);
             chip.setClickable(true);
             chip.setOnFocusChangeListener(consoleTheme::onCardFocus);
-            chip.setOnClickListener(view -> openControllerActions(controller));
-            chip.addView(label("P" + player++ + "  " + controller.name,
+            chip.setOnClickListener(view -> openControllerActions(playerNumber, controller));
+            chip.addView(label("P" + playerNumber + "  " + controller.name,
                     14, Color.WHITE, true), wrap());
             int batteryColor = controller.batteryPercentage < 0 ? 0xFFB3B8C8 :
                     controller.charging ? 0xFF64B5F6 :
@@ -809,7 +810,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
     }
 
-    private void openControllerActions(ConsoleControllerRepository.Controller controller) {
+    private void openControllerActions(int player,
+                                       ConsoleControllerRepository.Controller controller) {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
                 checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) !=
                         android.content.pm.PackageManager.PERMISSION_GRANTED) {
@@ -818,7 +820,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     REQUEST_BLUETOOTH_CONNECT);
             return;
         }
-        modalController.showControllerActions(getCurrentFocus(), controller,
+        modalController.showControllerActions(getCurrentFocus(), player, controller,
                 () -> ControllerActions.identify(controller.deviceId, mainHandler,
                         this::showControllerActionResult),
                 () -> ControllerActions.disconnect(this, controller.deviceId,
@@ -835,7 +837,15 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         pendingController = null;
         if (controller != null && grantResults.length > 0 &&
                 grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            openControllerActions(controller);
+            int player = 1;
+            List<ConsoleControllerRepository.Controller> controllers = controllerRepository.load();
+            for (int index = 0; index < controllers.size(); index++) {
+                if (controllers.get(index).deviceId == controller.deviceId) {
+                    player = index + 1;
+                    break;
+                }
+            }
+            openControllerActions(player, controller);
         } else {
             Toast.makeText(this, "Bluetooth permission is required to disconnect a controller.",
                     Toast.LENGTH_LONG).show();
