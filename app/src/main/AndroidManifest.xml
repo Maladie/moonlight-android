@@ -133,6 +133,7 @@
         </activity>
         <activity
             android:name=".console.ConsoleActivity"
+            android:label="@string/app_label"
             android:exported="true"
             android:screenOrientation="landscape"
             android:resizeableActivity="true"
