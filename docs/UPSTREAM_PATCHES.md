@@ -37,6 +37,12 @@ pure `StreamSurfaceHost` policy. Android renderer calls stay in `Game`; the
 existing background-surface predicate and fallback are unchanged. Unit tests
 characterize create/change/destroy ordering and the keep-session loss action.
 
+The second extraction replaces `Game`'s private gameplay-grab boolean with the
+shared `InputRouter`. Renderer/input-provider calls remain in `Game`, while the
+decision about which region owns input is now explicit and unit tested. The
+same router is used by `ConsoleActivity` for Home, overlay, modal, and gameplay
+states.
+
 ### P003 - User-visible product label and JVM test dependency
 
 - Surface: `app/build.gradle`.

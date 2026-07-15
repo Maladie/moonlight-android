@@ -20,6 +20,7 @@ import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
+import com.limelight.console.InputRouter;
 import com.limelight.nvstream.StreamConfiguration;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
@@ -168,7 +169,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private InputCaptureProvider inputCaptureProvider;
     private int modifierFlags = 0;
-    private boolean grabbedInput = true;
+    private final InputRouter inputRouter = new InputRouter(InputRouter.Region.GAMEPLAY);
     private boolean cursorVisible = false;
     private boolean waitingForAllModifiersUp = false;
     private int specialKeyCode = KeyEvent.KEYCODE_UNKNOWN;
@@ -1318,7 +1319,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     protected void onResume() {
         super.onResume();
         handingOffToExternalFrontend = false;
-        if (externalFrontend && connected && !grabbedInput) {
+        if (externalFrontend && connected && !inputRouter.isGameplayCaptured()) {
             setInputGrabState(true);
         }
     }
@@ -1427,7 +1428,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // Ungrab input to prevent further input device notifications
             setInputGrabState(false);
         }
-        else if (externalFrontend && connected && grabbedInput) {
+        else if (externalFrontend && connected && inputRouter.isGameplayCaptured()) {
             // A TV frontend may temporarily cover the stream to present session controls.
             // Release local input capture while its UI is in the foreground, but keep the
             // transport alive so RETURN_STREAM can reveal this Activity again.
@@ -1535,13 +1536,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Grab/ungrab system keyboard shortcuts
         setMetaKeyCaptureState(grab);
 
-        grabbedInput = grab;
+        inputRouter.routeTo(grab ? InputRouter.Region.GAMEPLAY : InputRouter.Region.NONE);
     }
 
     private final Runnable toggleGrab = new Runnable() {
         @Override
         public void run() {
-            setInputGrabState(!grabbedInput);
+            setInputGrabState(!inputRouter.isGameplayCaptured());
         }
     };
 
@@ -1605,9 +1606,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                     // Toggle cursor visibility
                     case KeyEvent.KEYCODE_C:
-                        if (!grabbedInput) {
+                        if (!inputRouter.isGameplayCaptured()) {
                             inputCaptureProvider.enableCapture();
-                            grabbedInput = true;
+                            inputRouter.routeTo(InputRouter.Region.GAMEPLAY);
                         }
                         cursorVisible = !cursorVisible;
                         if (cursorVisible) {
@@ -1745,7 +1746,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             // Pass through keyboard input if we're not grabbing
-            if (!grabbedInput) {
+            if (!inputRouter.isGameplayCaptured()) {
                 return false;
             }
 
@@ -1844,7 +1845,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             // Pass through keyboard input if we're not grabbing
-            if (!grabbedInput) {
+            if (!inputRouter.isGameplayCaptured()) {
                 return false;
             }
 
@@ -2211,7 +2212,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     // NB: View is only present if called from a view callback
     private boolean handleMotionEvent(View view, MotionEvent event) {
         // Pass through mouse/touch/joystick input if we're not grabbing
-        if (!grabbedInput) {
+        if (!inputRouter.isGameplayCaptured()) {
             return false;
         }
 
