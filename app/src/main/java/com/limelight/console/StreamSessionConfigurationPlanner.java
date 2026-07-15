@@ -63,6 +63,17 @@ public final class StreamSessionConfigurationPlanner {
                             float displayRefreshRate,
                             int attachedGamepadMask,
                             DecoderCapabilities decoder) {
+        return plan(preferences, app, requestedHdr, displayRefreshRate,
+                attachedGamepadMask, decoder, !preferences.multiController);
+    }
+
+    public static Plan plan(PreferenceConfiguration preferences,
+                            NvApp app,
+                            boolean requestedHdr,
+                            float displayRefreshRate,
+                            int attachedGamepadMask,
+                            DecoderCapabilities decoder,
+                            boolean persistGamepadsAfterDisconnect) {
         StreamVideoFormatPolicy.Result videoFormats = StreamVideoFormatPolicy.evaluate(
                 requestedHdr, decoder.hevc, decoder.hevcMain10Hdr10,
                 decoder.av1, decoder.av1Main10);
@@ -73,7 +84,8 @@ public final class StreamSessionConfigurationPlanner {
                 preferences.onscreenController);
         StreamConfiguration configuration = StreamConfigurationFactory.build(
                 preferences, app, frameRate.frameRate, videoFormats.supportedFormats,
-                gamepadMask, decoder.colorSpace, decoder.colorRange);
+                gamepadMask, decoder.colorSpace, decoder.colorRange,
+                persistGamepadsAfterDisconnect);
 
         return new Plan(
                 configuration,

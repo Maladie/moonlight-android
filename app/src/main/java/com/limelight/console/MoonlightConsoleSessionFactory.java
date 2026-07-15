@@ -2,6 +2,7 @@ package com.limelight.console;
 
 import android.app.Activity;
 
+import com.limelight.LimeLog;
 import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.input.ControllerHandler;
 import com.limelight.binding.video.CrashListener;
@@ -100,7 +101,12 @@ final class MoonlightConsoleSessionFactory implements
                             rendererConfiguration.requestedHdr,
                             displayRefreshRate,
                             ControllerHandler.getAttachedControllerMask(activity),
-                            decoder);
+                            decoder,
+                            true);
+            LimeLog.info("Unified gamepad launch mask=" +
+                    plan.configuration.getAttachedGamepadMask() +
+                    " persistAfterDisconnect=" +
+                    plan.configuration.getPersistGamepadsAfterDisconnect());
             preferences.framePacing = plan.effectiveFramePacing;
             environment.onConfigurationPlanned(plan);
 

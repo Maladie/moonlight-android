@@ -17,6 +17,18 @@ public final class StreamConfigurationFactory {
                                             int gamepadMask,
                                             int colorSpace,
                                             int colorRange) {
+        return build(preferences, app, effectiveFrameRate, supportedVideoFormats,
+                gamepadMask, colorSpace, colorRange, !preferences.multiController);
+    }
+
+    public static StreamConfiguration build(PreferenceConfiguration preferences,
+                                            NvApp app,
+                                            int effectiveFrameRate,
+                                            int supportedVideoFormats,
+                                            int gamepadMask,
+                                            int colorSpace,
+                                            int colorRange,
+                                            boolean persistGamepadsAfterDisconnect) {
         StreamConfiguration.Builder builder = new StreamConfiguration.Builder()
                 .setResolution(preferences.width, preferences.height)
                 .setLaunchRefreshRate(preferences.fps)
@@ -33,7 +45,7 @@ public final class StreamConfigurationFactory {
                 .setAudioConfiguration(preferences.audioConfiguration)
                 .setColorSpace(colorSpace)
                 .setColorRange(colorRange)
-                .setPersistGamepadsAfterDisconnect(!preferences.multiController);
+                .setPersistGamepadsAfterDisconnect(persistGamepadsAfterDisconnect);
 
         int refreshRateX100 = StreamRefreshRateOverridePolicy.parseX100(
                 preferences.actualDisplayRefreshRate);
