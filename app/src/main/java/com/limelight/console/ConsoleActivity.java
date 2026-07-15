@@ -11,6 +11,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.SurfaceHolder;
 import android.view.View;
 import android.view.ViewGroup;
@@ -54,6 +55,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private HostAvailabilityProbeController hostAvailabilityProbeController;
     private ConsoleHostLaunchPreparationController launchPreparationController;
     private ConsoleStreamRuntime streamRuntime;
+    private ConsoleSessionInput unifiedSessionInput;
+    private boolean unifiedTransportConnected;
+    private boolean unifiedFirstFrameRendered;
     private ConsoleSelectionStore selectionStore;
     private ConsoleLaunchHistoryStore launchHistoryStore;
     private ConsoleHostSelectionController hostSelectionController;
@@ -92,7 +96,6 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         applyTvWindow();
         repository = new ConsoleDataRepository(this);
         hostGatewayStore = new HostGatewayStore(this);
-        streamRuntime = new LegacyConsoleStreamRuntime(this, hostGatewayStore);
         hostAvailabilityProbeController = new HostAvailabilityProbeController();
         launchPreparationController = new ConsoleHostLaunchPreparationController();
         selectionStore = new ConsoleSelectionStore(this);
@@ -101,6 +104,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 repository, selectionStore, launchHistoryStore);
         consoleTheme = new ConsoleTheme(this);
         setContentView(buildRoot());
+        streamRuntime = createStreamRuntime();
         artworkController = new ConsoleArtworkController(this, artworkBackdrop, artworkHero);
         modalController = new ConsoleModalController(
                 this, (FrameLayout) modalLayer, inputRouter, consoleTheme);
@@ -132,9 +136,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         mainHandler.removeCallbacks(sessionRefresh);
         mainHandler.postDelayed(sessionRefresh, SESSION_REFRESH_MS);
+        updateUnifiedInputSensors();
     }
 
     @Override protected void onPause() {
+        if (unifiedSessionInput != null) unifiedSessionInput.disableSensors();
         ActiveStreamSurfaceBridge.setConsoleForeground(false);
         if (inputManager != null && controllerListenerRegistered) {
             inputManager.unregisterInputDeviceListener(controllerDeviceListener);
@@ -151,6 +157,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         // Some Android TV dream overlays do not deliver a matching onResume()
         // when the existing Activity window becomes interactive again.
         ActiveStreamSurfaceBridge.setConsoleForeground(hasFocus && !isFinishing());
+        updateUnifiedInputSensors();
     }
 
     @Override protected void onDestroy() {
@@ -163,6 +170,14 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         if (gatewayProfileRefreshController != null) gatewayProfileRefreshController.destroy();
         if (hostAvailabilityProbeController != null) hostAvailabilityProbeController.destroy();
         if (launchPreparationController != null) launchPreparationController.destroy();
+        if (streamRuntime instanceof AutoCloseable) {
+            try {
+                ((AutoCloseable) streamRuntime).close();
+            } catch (Exception error) {
+                LimeLog.warning("Unable to close unified Console runtime: " + error);
+            }
+        }
+        unifiedSessionInput = null;
         mainHandler.removeCallbacks(sessionRefresh);
         super.onDestroy();
     }
@@ -172,6 +187,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         if (stateMachine.getState() == ConsoleStateMachine.State.CONNECTING &&
                 launchPreparationController != null) {
             launchPreparationController.cancel();
+            cancelUnifiedPendingLaunch();
         }
         ConsoleStateMachine.Transition transition = stateMachine.dispatch(ConsoleStateMachine.Event.BACK);
         if (transition.effect == ConsoleStateMachine.Effect.SHOW_EXIT_CONFIRMATION) {
@@ -183,11 +199,24 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     @Override public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0 &&
-                event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B) {
+                (event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B ||
+                        event.getKeyCode() == KeyEvent.KEYCODE_BACK)) {
             onBackPressed();
             return true;
         }
+        if (inputRouter.isGameplayCaptured() && unifiedSessionInput != null &&
+                unifiedSessionInput.handleKeyEvent(event)) {
+            return true;
+        }
         return super.dispatchKeyEvent(event);
+    }
+
+    @Override public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if (inputRouter.isGameplayCaptured() && unifiedSessionInput != null &&
+                unifiedSessionInput.handleMotionEvent(event)) {
+            return true;
+        }
+        return super.dispatchGenericMotionEvent(event);
     }
 
     private View buildRoot() {
@@ -557,6 +586,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                       ConsoleDataRepository.App app) {
         ConsoleLaunchContract.Request request =
                 ConsoleLaunchContract.create(host, app, getPackageName());
+        unifiedTransportConnected = false;
+        unifiedFirstFrameRendered = false;
+        unifiedSessionInput = null;
         streamRuntime.launch(request);
     }
 
@@ -650,10 +682,161 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         privacyLayer.setVisibility(layers.privacyVisible ? View.VISIBLE : View.GONE);
         overlayLayer.setVisibility(layers.overlayVisible ? View.VISIBLE : View.GONE);
         inputRouter.routeTo(layers.inputRegion);
+        updateUnifiedInputSensors();
+        if ((state == ConsoleStateMachine.State.HOME ||
+                state == ConsoleStateMachine.State.CONSOLE_OVER_STREAM) &&
+                streamRuntime instanceof UnifiedConsoleRuntimeBootstrap) {
+            ((UnifiedConsoleRuntimeBootstrap) streamRuntime).showHome();
+        }
         if (openingOverlay && overlayLayer.getTag() instanceof View) {
             ((View) overlayLayer.getTag()).requestFocus();
         }
         // streamSurface intentionally remains VISIBLE and attached.
+    }
+
+    private ConsoleStreamRuntime createStreamRuntime() {
+        if (!UnifiedConsoleRuntimeGate.isEnabled()) {
+            return new LegacyConsoleStreamRuntime(this, hostGatewayStore);
+        }
+
+        AndroidConsoleSessionEnvironment environment =
+                new AndroidConsoleSessionEnvironment(
+                        this,
+                        streamSurface,
+                        new AndroidConsoleSessionEnvironment.Callbacks() {
+                            @Override public void onInputReady(ConsoleSessionInput input) {
+                                unifiedSessionInput = input;
+                                updateUnifiedInputSensors();
+                            }
+
+                            @Override public void onFirstFrameRendered() {
+                                unifiedFirstFrameRendered = true;
+                                maybeRevealUnifiedStream();
+                            }
+
+                            @Override public void onPerformanceUpdate(String text) {
+                                LimeLog.info("Unified stream performance: " + text);
+                            }
+
+                            @Override public void onStatus(String status) {
+                                if (loadingController != null) {
+                                    loadingController.updateStatus(status);
+                                }
+                            }
+
+                            @Override public void onConnectionStatus(int status) {
+                                LimeLog.info("Unified stream connection status: " + status);
+                            }
+
+                            @Override public void onMessage(
+                                    String message, boolean transientMessage) {
+                                Toast.makeText(ConsoleActivity.this, message,
+                                        transientMessage ? Toast.LENGTH_SHORT :
+                                                Toast.LENGTH_LONG).show();
+                            }
+
+                            @Override public void onConfigurationPlanned(
+                                    StreamSessionConfigurationPlanner.Plan plan) {
+                                showUnifiedConfigurationWarning(plan);
+                            }
+
+                            @Override public void toggleKeyboard() {
+                                Toast.makeText(ConsoleActivity.this,
+                                        "Keyboard overlay is not available in Console yet.",
+                                        Toast.LENGTH_SHORT).show();
+                            }
+                        });
+        MoonlightConsoleSessionFactory sessionFactory =
+                new MoonlightConsoleSessionFactory(this, environment);
+        return new UnifiedConsoleRuntimeBootstrap(
+                this,
+                sessionFactory,
+                new UnifiedConsoleStreamRuntimeAdapter.Listener() {
+                    @Override public void onStage(
+                            UnifiedConsoleLaunchPipeline.Stage stage) {
+                        runOnUiThread(() -> handleUnifiedStage(stage));
+                    }
+
+                    @Override public void onFailure(
+                            UnifiedConsoleLaunchPipeline.Failure failure) {
+                        runOnUiThread(() -> handleUnifiedFailure(failure));
+                    }
+                });
+    }
+
+    private void handleUnifiedStage(UnifiedConsoleLaunchPipeline.Stage stage) {
+        switch (stage) {
+            case RESOLVING_HOST:
+                loadingController.updateStatus("Resolving streaming host…");
+                break;
+            case PREPARING_SESSION:
+                loadingController.updateStatus("Preparing Moonlight session…");
+                break;
+            case CONNECTED:
+                unifiedTransportConnected = true;
+                loadingController.updateStatus("Waiting for the first video frame…");
+                maybeRevealUnifiedStream();
+                break;
+            case FAILED:
+                unifiedTransportConnected = false;
+                unifiedFirstFrameRendered = false;
+                unifiedSessionInput = null;
+                stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTION_FAILED);
+                applyState(stateMachine.getState());
+                break;
+        }
+    }
+
+    private void handleUnifiedFailure(UnifiedConsoleLaunchPipeline.Failure failure) {
+        String reason;
+        if (failure.runtimeReason != null && !failure.runtimeReason.isBlank()) {
+            reason = failure.runtimeReason;
+        } else if (failure.resolutionError != null) {
+            reason = failure.resolutionError.name().toLowerCase(Locale.ROOT)
+                    .replace('_', ' ');
+        } else {
+            reason = "unknown connection error";
+        }
+        loadingController.updateStatus("Connection failed: " + reason);
+    }
+
+    private void maybeRevealUnifiedStream() {
+        if (!unifiedTransportConnected || !unifiedFirstFrameRendered ||
+                stateMachine.getState() != ConsoleStateMachine.State.CONNECTING) {
+            return;
+        }
+        stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTED);
+        applyState(stateMachine.getState());
+    }
+
+    private void updateUnifiedInputSensors() {
+        if (unifiedSessionInput == null) return;
+        if (inputRouter.isGameplayCaptured() && hasWindowFocus()) {
+            unifiedSessionInput.enableSensors();
+        } else {
+            unifiedSessionInput.disableSensors();
+        }
+    }
+
+    private void cancelUnifiedPendingLaunch() {
+        if (streamRuntime instanceof UnifiedConsoleRuntimeBootstrap) {
+            ((UnifiedConsoleRuntimeBootstrap) streamRuntime).cancelPendingLaunch();
+        }
+    }
+
+    private void showUnifiedConfigurationWarning(
+            StreamSessionConfigurationPlanner.Plan plan) {
+        String warning = null;
+        if (plan.hdrDecoderUnavailable) {
+            warning = "HDR was disabled because no compatible decoder is available.";
+        } else if (plan.forcedAv1Unavailable) {
+            warning = "AV1 was forced but no AV1 decoder is available.";
+        } else if (plan.forcedHevcUnavailable) {
+            warning = "HEVC was forced but no HEVC decoder is available.";
+        }
+        if (warning != null) {
+            Toast.makeText(this, warning, Toast.LENGTH_LONG).show();
+        }
     }
 
     private void showExitConfirmation() {
