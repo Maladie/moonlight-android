@@ -13,11 +13,13 @@ final class ConsoleLaunchContract {
         final String hostUuid;
         final int appId;
         final String appName;
+        final boolean appSupportsHdr;
         final String frontendPackage;
         final String privacyMessage;
         final boolean readinessRequired;
 
         private Request(String hostUuid, int appId, String appName,
+                        boolean appSupportsHdr,
                         String frontendPackage) {
             if (hostUuid == null || hostUuid.isEmpty() || appId < 0 ||
                     appName == null || appName.isEmpty() ||
@@ -27,6 +29,7 @@ final class ConsoleLaunchContract {
             this.hostUuid = hostUuid;
             this.appId = appId;
             this.appName = appName;
+            this.appSupportsHdr = appSupportsHdr;
             this.frontendPackage = frontendPackage;
             privacyMessage = "Preparing " + appName + "…";
             readinessRequired = true;
@@ -41,7 +44,8 @@ final class ConsoleLaunchContract {
         if (host == null || app == null) {
             throw new IllegalArgumentException("Host and app are required");
         }
-        return new Request(host.uuid, app.id, app.name, frontendPackage);
+        return new Request(host.uuid, app.id, app.name, app.hdrSupported,
+                frontendPackage);
     }
 
     static Intent legacyIntent(Context context, Request request,
@@ -54,6 +58,7 @@ final class ConsoleLaunchContract {
                 .putExtra(PublicStreamIntent.EXTRA_APP_NAME, request.appName)
                 .putExtra(Game.EXTRA_APP_ID, appId)
                 .putExtra(Game.EXTRA_APP_NAME, request.appName)
+                .putExtra(Game.EXTRA_APP_HDR, request.appSupportsHdr)
                 .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND, true)
                 .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_PACKAGE,
                         request.frontendPackage)

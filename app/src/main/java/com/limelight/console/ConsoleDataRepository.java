@@ -34,10 +34,15 @@ final class ConsoleDataRepository {
         final int id;
         final String name;
         final Uri posterUri;
+        final boolean hdrSupported;
         App(int id, String name, Uri posterUri) {
+            this(id, name, posterUri, false);
+        }
+        App(int id, String name, Uri posterUri, boolean hdrSupported) {
             this.id = id;
             this.name = name;
             this.posterUri = posterUri;
+            this.hdrSupported = hdrSupported;
         }
     }
 
@@ -102,7 +107,9 @@ final class ConsoleDataRepository {
                 String name = text(cursor, "name");
                 String poster = text(cursor, "poster_uri");
                 if (id >= 0 && name != null) {
-                    result.add(new App(id, name, poster != null ? Uri.parse(poster) : null));
+                    result.add(new App(id, name,
+                            poster != null ? Uri.parse(poster) : null,
+                            number(cursor, "hdr_supported", 0) != 0));
                 }
             }
         }
