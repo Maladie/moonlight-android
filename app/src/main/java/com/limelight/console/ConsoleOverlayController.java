@@ -14,6 +14,7 @@ final class ConsoleOverlayController {
     private final Context context;
     private final ConsoleTheme theme;
     private final float density;
+    private TextView integrationStatus;
 
     ConsoleOverlayController(Context context, ConsoleTheme theme) {
         this.context = context;
@@ -44,8 +45,9 @@ final class ConsoleOverlayController {
 
         LinearLayout discord = panel();
         discord.addView(label("DISCORD & HOST SERVICES", 18, Color.WHITE, true), wrap());
-        discord.addView(label("Profile-scoped controls stay independent from stream input",
-                13, 0xFF9CA6C5, false), top(dp(8)));
+        integrationStatus = label("Select a host to inspect its integration profile",
+                13, 0xFF9CA6C5, false);
+        discord.addView(integrationStatus, top(dp(8)));
         TextView integrations = action("OPEN HOST INTEGRATIONS  ›");
         integrations.setId(View.generateViewId());
         integrations.setContentDescription("Open Discord and host integrations");
@@ -62,6 +64,17 @@ final class ConsoleOverlayController {
 
         root.setTag(game);
         return root;
+    }
+
+    void render(HostIntegrationSummary summary) {
+        if (integrationStatus == null) return;
+        if (summary == null) {
+            integrationStatus.setText("Select a host to inspect its integration profile");
+            integrationStatus.setTextColor(0xFF9CA6C5);
+            return;
+        }
+        integrationStatus.setText(summary.profileLabel() + "\n" + summary.servicesLabel());
+        integrationStatus.setTextColor(summary.gatewayPaired ? 0xFF69F0AE : 0xFFFFB74D);
     }
 
     private LinearLayout panel() {

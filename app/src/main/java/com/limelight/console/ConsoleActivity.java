@@ -42,6 +42,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleArtworkController artworkController;
     private ConsoleTheme consoleTheme;
     private ConsoleModalController modalController;
+    private ConsoleOverlayController overlayController;
     private FrameLayout root;
     private SurfaceView streamSurface;
     private View privacyLayer;
@@ -147,7 +148,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         homeLayer = buildHome();
         root.addView(homeLayer, match());
 
-        overlayLayer = new ConsoleOverlayController(this, consoleTheme).build(
+        overlayController = new ConsoleOverlayController(this, consoleTheme);
+        overlayLayer = overlayController.build(
                 this::returnToActiveStream,
                 this::openConsoleHome,
                 this::showHostIntegrations);
@@ -348,6 +350,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private void renderGatewayProfile(ConsoleDataRepository.Host host,
                                       HostIntegrationSummary summary) {
         if (integrationStatus == null) return;
+        if (overlayController != null) overlayController.render(host == null ? null : summary);
         if (host == null) {
             integrationStatus.setText("HOST INTEGRATIONS · SELECT A HOST");
             return;
