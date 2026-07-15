@@ -1,6 +1,80 @@
 # Codex handoff
 
-Updated: 2026-07-14
+Updated: 2026-07-15
+
+## MoonWaker unified-console milestone 1
+
+Work continues on `feature/moonwaker-unified-console`, created from the clean
+documentation HEAD `db5d9266`. The immutable baseline tag was not moved. The
+official Moonlight Android repository is configured as `upstream`; `origin`
+remains `Maladie/moonlight-android`.
+
+Implemented on this branch:
+
+- `ConsoleActivity` is the single MAIN/LEANBACK launcher and owns one persistent
+  five-layer root: stream surface, opaque privacy loader, Home, overlay, and
+  modal/recovery. `PcView` remains registered for legacy internal navigation.
+- The user-visible debug/release name is `MoonWaker Game App`; release still
+  resolves to `com.limelight.unofficial`.
+- The first Wake Home vertical slice reads Moonlight's existing saved-host,
+  cached-app, poster, and stream-status stores in place. It includes DPAD cards,
+  one deterministic initial focus, user-triggered host-to-app focus, an immediate
+  FIT_CENTER cached poster preview, an asynchronously prepared backdrop, active
+  host/app/session status, Return to Game, and an exit confirmation that does
+  not stop the host application.
+- `ConsoleStateMachine` covers HOME, CONNECTING, STREAM,
+  CONSOLE_OVER_STREAM, OVERLAY, RECOVERY, and DISCONNECTING. Back, input target,
+  session reattachment after Activity recreation, and disconnect are explicit.
+- Neutral `LaunchOrchestrator` and `LoadingPrivacyGate` boundaries reserve the
+  versioned profile/Playnite readiness contract. A managed launch cannot reveal
+  on process/first-frame state alone.
+- `StreamSessionController` and a non-owning `LegacyGameSessionAdapter` keep
+  Disconnect Transport separate from Quit Host Application and prohibit a
+  second legacy connection owner.
+- `Game` now delegates window-surface lifetime policy to `StreamSurfaceHost` and
+  gameplay-capture state to the shared `InputRouter`. Existing renderer calls,
+  `NvConnection`, decoder ownership, and background-surface fallback are
+  unchanged.
+- Home launches cached apps through the existing `ShortcutTrampoline` with the
+  same-package external-frontend contract. The current transitional route is
+  ConsoleActivity -> ShortcutTrampoline -> Game -> ConsoleActivity. Back covers
+  the live stream with Home, releases Game input capture, and Return to Game
+  reveals the existing Game instance without requesting a second connection.
+
+Important: the last bullet is the safe one-APK adapter path, not the final
+one-Activity stream. Do not describe the Activity consolidation as complete.
+The next exact implementation step is to move creation/lifetime of
+`NvConnection`, decoder renderer, and the Android audio renderer behind the real
+`StreamSessionController`, while keeping `Game` as a delegating adapter. Then
+bind that controller to `ConsoleActivity`'s persistent `StreamSurfaceHost`. Only
+after two live P0 Stream -> Home -> Stream cycles may the `Game` Activity launch
+be bypassed.
+
+### Verification
+
+- JDK: `C:\Users\Basia\.jdks\openjdk-17.0.2` (the system Java 24 is not
+  compatible with Gradle 8.7/AGP 8.5.1).
+- `:app:testNonRootDebugUnitTest`: 16/16 passed; state, privacy readiness, surface
+  lifetime, legacy ownership, disconnect/quit separation, and input routing are
+  covered.
+- `:app:assembleNonRootDebug`: passed.
+- `:app:assembleNonRootRelease`: passed.
+- Final signed release identity: `com.limelight.unofficial`, certificate SHA-256
+  `745d86be25583505b45da74343bd9f868e8f77884fa6e0aaf49fba330b277740`,
+  APK SHA-256
+  `62964e826e187ceea1f0c0a00b074d2b4b3fee6a8824f3ac0324b83ae8f84bd8`.
+  This final increment was not installed because TV testing is paused.
+- The TV was reported powered off. Earlier ADB install succeeded because its ADB
+  endpoint was reachable, but black captures are invalid evidence and no UI,
+  focus, video, input, or stream regression is claimed. Do not run further TV
+  tests until the user reports it available.
+- GitHub CLI account `Maladie` currently reports an invalid keyring token. Do
+  not expose a token; refresh authentication before push if ordinary Git
+  credentials do not work.
+
+Architecture details, rollback gates, and all hooks outside the console package
+are documented in `MOONWAKER_ARCHITECTURE.md`,
+`UNIFIED_CONSOLE_REGRESSION_BASELINE.md`, and `UPSTREAM_PATCHES.md`.
 
 ## Repository
 

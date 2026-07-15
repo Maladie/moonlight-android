@@ -77,6 +77,10 @@ call `requestFocus()`. A user-triggered host-to-app transition may move focus if
 the originating host still owns focus. App lists preserve the focused stable ID
 and scroll position when refreshed.
 
+Milestone 1 uses the shared `InputRouter` in both `ConsoleActivity` and legacy
+`Game`. `Game` still performs the platform capture calls, but the active region
+and the capture/no-capture decision no longer live in an unstructured boolean.
+
 ## Loading and future launch contract
 
 `LaunchOrchestrator` is neutral with respect to Moonlight, Playnite, or Steam.

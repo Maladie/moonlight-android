@@ -29,8 +29,10 @@ the clean documentation HEAD `db5d9266`. `origin` remains the Maladie fork and
 ## Build and environment
 
 The required SDK, shared Gradle cache, signing directory, and historical
-keystore paths exist. Build/test results and signed certificate verification are
-recorded in `CODEX_HANDOFF.md` at the end of the milestone.
+keystore paths exist. Gradle must run on the available JDK 17 rather than the
+system Java 24. Both required APK variants build, 16 JVM tests pass, and the
+release APK verifies with the required historical certificate. Exact results
+and hashes are recorded in `CODEX_HANDOFF.md`.
 
 GitHub CLI authentication for account `Maladie` was found invalid on this
 machine. Public remote reads work; push requires `gh auth refresh -h github.com`
