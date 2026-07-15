@@ -1,0 +1,151 @@
+package com.limelight.console;
+
+import android.content.Context;
+import android.graphics.Color;
+import android.view.Gravity;
+import android.view.View;
+import android.view.ViewGroup;
+import android.widget.FrameLayout;
+import android.widget.LinearLayout;
+import android.widget.TextView;
+
+/** Owns modal composition, focus entry/restore, dim dismissal, and input routing. */
+final class ConsoleModalController {
+    private final Context context;
+    private final FrameLayout layer;
+    private final InputRouter inputRouter;
+    private final ConsoleTheme theme;
+    private final float density;
+    private View returnFocus;
+
+    ConsoleModalController(Context context, FrameLayout layer,
+                           InputRouter inputRouter, ConsoleTheme theme) {
+        this.context = context;
+        this.layer = layer;
+        this.inputRouter = inputRouter;
+        this.theme = theme;
+        density = context.getResources().getDisplayMetrics().density;
+    }
+
+    boolean dismissIfVisible() {
+        if (layer.getVisibility() != View.VISIBLE) return false;
+        hide();
+        return true;
+    }
+
+    void showExitConfirmation(View focusToRestore, Runnable exitAction) {
+        begin(focusToRestore);
+        LinearLayout panel = panel();
+        panel.addView(label("EXIT MOONWAKER?", 24, Color.WHITE, true), wrap());
+        panel.addView(label("An active host application will not be stopped.",
+                15, 0xFFBDC4D8, false), top(dp(12)));
+        TextView cancel = card("CANCEL", dp(260), dp(58));
+        cancel.setOnClickListener(view -> hide());
+        TextView exit = card("EXIT APP", dp(260), dp(58));
+        exit.setOnClickListener(view -> exitAction.run());
+        panel.addView(cancel, top(dp(22)));
+        panel.addView(exit, top(dp(10)));
+        layer.addView(panel, new FrameLayout.LayoutParams(dp(560), dp(360), Gravity.CENTER));
+        showAndFocus(cancel);
+    }
+
+    void showHostIntegrations(View focusToRestore, String hostName,
+                              HostIntegrationSummary summary,
+                              Runnable useDefaultProfile) {
+        begin(focusToRestore);
+        LinearLayout panel = panel();
+        panel.setPadding(dp(42), dp(48), dp(42), dp(38));
+        panel.setBackgroundColor(0xFF111522);
+        panel.addView(label("HOST INTEGRATIONS", 26, Color.WHITE, true), wrap());
+        panel.addView(label(hostName, 16, 0xFFB99CFF, true), top(dp(8)));
+        panel.addView(label(summary.gatewayLabel(), 15,
+                summary.gatewayPaired ? 0xFF69F0AE : 0xFFFFB74D, true), top(dp(28)));
+        panel.addView(label(summary.profileLabel(), 14, 0xFFE1E5F2, true), top(dp(14)));
+        panel.addView(label(summary.servicesLabel(), 14, 0xFF9CA6C5, false), top(dp(20)));
+
+        TextView useDefault = card("USE DEFAULT PROFILE", dp(340), dp(56));
+        boolean canUseDefault = summary.gatewayPaired &&
+                !GatewayConnection.DEFAULT_PROFILE_ID.equals(summary.profileId);
+        useDefault.setVisibility(canUseDefault ? View.VISIBLE : View.GONE);
+        useDefault.setOnClickListener(view -> useDefaultProfile.run());
+        panel.addView(useDefault, top(dp(34)));
+
+        TextView close = card("CLOSE", dp(340), dp(56));
+        close.setOnClickListener(view -> hide());
+        panel.addView(close, top(dp(12)));
+        layer.addView(panel, new FrameLayout.LayoutParams(dp(720), matchHeight(), Gravity.RIGHT));
+        showAndFocus(canUseDefault ? useDefault : close);
+    }
+
+    void hide() {
+        layer.removeAllViews();
+        layer.setVisibility(View.GONE);
+        inputRouter.routeTo(InputRouter.Region.HOME);
+        View restore = returnFocus;
+        returnFocus = null;
+        if (restore != null && restore.isShown()) restore.requestFocus();
+    }
+
+    private void begin(View focusToRestore) {
+        boolean replacingVisiblePanel = layer.getVisibility() == View.VISIBLE;
+        layer.removeAllViews();
+        if (!replacingVisiblePanel || returnFocus == null) returnFocus = focusToRestore;
+        View dim = new View(context);
+        dim.setBackgroundColor(0xA005060A);
+        dim.setClickable(true);
+        dim.setOnClickListener(view -> hide());
+        layer.addView(dim, new FrameLayout.LayoutParams(matchWidth(), matchHeight()));
+    }
+
+    private void showAndFocus(View initialFocus) {
+        layer.setVisibility(View.VISIBLE);
+        inputRouter.routeTo(InputRouter.Region.MODAL);
+        initialFocus.requestFocus();
+    }
+
+    private LinearLayout panel() {
+        LinearLayout panel = new LinearLayout(context);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setGravity(Gravity.CENTER);
+        panel.setPadding(dp(36), dp(30), dp(36), dp(30));
+        panel.setBackground(theme.cardBackground());
+        return panel;
+    }
+
+    private TextView card(String value, int width, int height) {
+        TextView view = label(value, 15, Color.WHITE, true);
+        view.setGravity(Gravity.CENTER_VERTICAL);
+        view.setPadding(dp(16), dp(8), dp(16), dp(8));
+        view.setFocusable(true);
+        view.setClickable(true);
+        view.setMinWidth(width);
+        view.setMinHeight(height);
+        view.setBackground(theme.cardBackground());
+        view.setOnFocusChangeListener(theme::onCardFocus);
+        return view;
+    }
+
+    private TextView label(String value, int sp, int color, boolean bold) {
+        TextView view = new TextView(context);
+        view.setText(value);
+        view.setTextSize(sp);
+        view.setTextColor(color);
+        view.setTypeface(android.graphics.Typeface.DEFAULT, bold ? 1 : 0);
+        return view;
+    }
+
+    private LinearLayout.LayoutParams wrap() {
+        return new LinearLayout.LayoutParams(wrapSize(), wrapSize());
+    }
+
+    private LinearLayout.LayoutParams top(int margin) {
+        LinearLayout.LayoutParams params = wrap();
+        params.topMargin = margin;
+        return params;
+    }
+
+    private int dp(int value) { return Math.round(value * density); }
+    private static int matchWidth() { return ViewGroup.LayoutParams.MATCH_PARENT; }
+    private static int matchHeight() { return ViewGroup.LayoutParams.MATCH_PARENT; }
+    private static int wrapSize() { return ViewGroup.LayoutParams.WRAP_CONTENT; }
+}

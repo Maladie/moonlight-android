@@ -43,6 +43,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleSelectionStore selectionStore;
     private ConsoleArtworkController artworkController;
     private ConsoleTheme consoleTheme;
+    private ConsoleModalController modalController;
     private FrameLayout root;
     private SurfaceView streamSurface;
     private View privacyLayer;
@@ -56,7 +57,6 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private LinearLayout appRow;
     private View overlayLayer;
     private View modalLayer;
-    private View modalReturnFocus;
     private ConsoleDataRepository.Host selectedHost;
 
     @Override protected void onCreate(Bundle state) {
@@ -68,6 +68,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         consoleTheme = new ConsoleTheme(this);
         setContentView(buildRoot());
         artworkController = new ConsoleArtworkController(this, artworkBackdrop, artworkHero);
+        modalController = new ConsoleModalController(
+                this, (FrameLayout) modalLayer, inputRouter, consoleTheme);
         renderSnapshot();
     }
 
@@ -115,10 +117,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     @Override public void onBackPressed() {
-        if (modalLayer != null && modalLayer.getVisibility() == View.VISIBLE) {
-            hideModal();
-            return;
-        }
+        if (modalController != null && modalController.dismissIfVisible()) return;
         ConsoleStateMachine.Transition transition = stateMachine.dispatch(ConsoleStateMachine.Event.BACK);
         if (transition.effect == ConsoleStateMachine.Effect.SHOW_EXIT_CONFIRMATION) {
             showExitConfirmation();
@@ -429,27 +428,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void showExitConfirmation() {
-        modalReturnFocus = getCurrentFocus();
-        FrameLayout modal = (FrameLayout) modalLayer;
-        modal.removeAllViews();
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setGravity(Gravity.CENTER);
-        panel.setPadding(dp(36), dp(30), dp(36), dp(30));
-        panel.setBackground(consoleTheme.cardBackground());
-        panel.addView(label("EXIT MOONWAKER?", 24, Color.WHITE, true), wrap());
-        panel.addView(label("An active host application will not be stopped.", 15, 0xFFBDC4D8, false), top(dp(12)));
-        TextView cancel = card("CANCEL", dp(260), dp(58));
-        cancel.setOnClickListener(view -> hideModal());
-        TextView exit = card("EXIT APP", dp(260), dp(58));
-        exit.setOnClickListener(view -> finish());
-        panel.addView(cancel, top(dp(22)));
-        panel.addView(exit, top(dp(10)));
-        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(560), dp(360), Gravity.CENTER);
-        modal.addView(panel, params);
-        modal.setVisibility(View.VISIBLE);
-        inputRouter.routeTo(InputRouter.Region.MODAL);
-        cancel.requestFocus();
+        modalController.showExitConfirmation(getCurrentFocus(), this::finish);
     }
 
     private void showHostIntegrations() {
@@ -458,55 +437,17 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             return;
         }
 
-        modalReturnFocus = getCurrentFocus();
         GatewayConnection connection = hostGatewayStore.load(selectedHost.uuid);
         HostIntegrationSummary summary = HostIntegrationSummary.from(connection);
-        FrameLayout modal = (FrameLayout) modalLayer;
-        modal.removeAllViews();
-
-        LinearLayout panel = new LinearLayout(this);
-        panel.setOrientation(LinearLayout.VERTICAL);
-        panel.setPadding(dp(42), dp(48), dp(42), dp(38));
-        panel.setBackgroundColor(0xFF111522);
-        panel.addView(label("HOST INTEGRATIONS", 26, Color.WHITE, true), wrap());
-        panel.addView(label(selectedHost.name, 16, 0xFFB99CFF, true), top(dp(8)));
-        panel.addView(label(summary.gatewayLabel(), 15,
-                summary.gatewayPaired ? 0xFF69F0AE : 0xFFFFB74D, true), top(dp(28)));
-        panel.addView(label(summary.profileLabel(), 14, 0xFFE1E5F2, true), top(dp(14)));
-        panel.addView(label(summary.servicesLabel(), 14, 0xFF9CA6C5, false), top(dp(20)));
-
-        TextView useDefault = card("USE DEFAULT PROFILE", dp(340), dp(56));
-        useDefault.setVisibility(summary.gatewayPaired &&
-                !GatewayConnection.DEFAULT_PROFILE_ID.equals(summary.profileId) ?
-                View.VISIBLE : View.GONE);
-        useDefault.setOnClickListener(view -> {
+        String hostUuid = selectedHost.uuid;
+        modalController.showHostIntegrations(getCurrentFocus(), selectedHost.name, summary, () -> {
             hostGatewayStore.setSelectedIntegrationProfileId(
-                    selectedHost.uuid, GatewayConnection.DEFAULT_PROFILE_ID);
-            renderGatewayProfile(selectedHost);
-            showHostIntegrations();
+                    hostUuid, GatewayConnection.DEFAULT_PROFILE_ID);
+            if (selectedHost != null && hostUuid.equals(selectedHost.uuid)) {
+                renderGatewayProfile(selectedHost);
+                showHostIntegrations();
+            }
         });
-        panel.addView(useDefault, top(dp(34)));
-
-        TextView close = card("CLOSE", dp(340), dp(56));
-        close.setOnClickListener(view -> hideModal());
-        panel.addView(close, top(dp(12)));
-
-        FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(
-                dp(720), matchHeight(), Gravity.RIGHT);
-        modal.addView(panel, panelParams);
-        modal.setVisibility(View.VISIBLE);
-        inputRouter.routeTo(InputRouter.Region.MODAL);
-        (useDefault.getVisibility() == View.VISIBLE ? useDefault : close).requestFocus();
-    }
-
-    private void hideModal() {
-        if (modalLayer == null) return;
-        ((FrameLayout) modalLayer).removeAllViews();
-        modalLayer.setVisibility(View.GONE);
-        inputRouter.routeTo(InputRouter.Region.HOME);
-        View restore = modalReturnFocus;
-        modalReturnFocus = null;
-        if (restore != null && restore.isShown()) restore.requestFocus();
     }
 
     private void applyTvWindow() {
