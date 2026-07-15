@@ -263,6 +263,11 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
     }
 
     @Override
+    public synchronized boolean isRenderTargetSwitchReady() {
+        return requireVideoRenderer().isRenderTargetSwitchReady();
+    }
+
+    @Override
     public synchronized void setInitialRenderTarget(SurfaceHolder renderTarget) {
         requireVideoRenderer().setRenderTarget(Objects.requireNonNull(renderTarget, "renderTarget"));
     }

@@ -227,6 +227,10 @@ public final class ActiveStreamSurfaceBridge {
                 return false;
             }
             if (consoleRenderTargetBound) return true;
+            if (!currentSession.isRenderTargetSwitchReady()) {
+                log("target_console_deferred");
+                return false;
+            }
             consoleRenderTargetBound = currentSession.switchToRenderTarget(currentSurface);
             if (consoleRenderTargetBound) {
                 target = Target.CONSOLE;

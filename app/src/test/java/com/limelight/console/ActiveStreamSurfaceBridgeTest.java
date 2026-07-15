@@ -97,6 +97,27 @@ public class ActiveStreamSurfaceBridgeTest {
         assertFalse(snapshot.diagnosticLine().contains("host"));
     }
 
+    @Test public void decoderStartupDefersWithoutRecordingTargetFailure() {
+        ActiveStreamSurfaceBridge.Coordinator coordinator =
+                new ActiveStreamSurfaceBridge.Coordinator();
+        FakeSession session = new FakeSession();
+        session.renderTargetReady = false;
+        coordinator.setConsoleForeground(true);
+        coordinator.registerConsoleSurface(surface());
+        coordinator.attachSession(session);
+
+        assertFalse(coordinator.bindConsoleIfForeground(session));
+        assertEquals(0, session.targetSwitches);
+        assertEquals(0, coordinator.snapshot().failedTargetChanges);
+
+        session.renderTargetReady = true;
+
+        assertTrue(coordinator.bindConsoleIfForeground(session));
+        assertEquals(1, session.targetSwitches);
+        assertEquals(ActiveStreamSurfaceBridge.Target.CONSOLE,
+                coordinator.snapshot().target);
+    }
+
     @Test public void generationAdvancesOnlyForANewSessionOwner() {
         ActiveStreamSurfaceBridge.Coordinator coordinator = new ActiveStreamSurfaceBridge.Coordinator();
         FakeSession first = new FakeSession();
@@ -122,6 +143,11 @@ public class ActiveStreamSurfaceBridgeTest {
         int targetSwitches;
         int backgroundSwitches;
         boolean allowTargetSwitch = true;
+        boolean renderTargetReady = true;
+
+        @Override public boolean isRenderTargetSwitchReady() {
+            return renderTargetReady;
+        }
 
         @Override public void setInitialRenderTarget(SurfaceHolder renderTarget) {
             lastTarget = renderTarget;

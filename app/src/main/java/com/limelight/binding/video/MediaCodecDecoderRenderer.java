@@ -320,6 +320,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         this.seamlessFrameRateOnly = seamlessFrameRateOnly;
     }
 
+    public boolean isRenderTargetSwitchReady() {
+        return videoDecoder != null;
+    }
+
     public boolean switchToBackgroundSurface() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
             return false;
