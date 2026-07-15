@@ -226,15 +226,20 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         // This surface stays attached and VISIBLE. Console/privacy layers cover it.
         streamSurface = new StreamView(this);
         streamSurface.setBackgroundColor(Color.BLACK);
+        streamSurface.setZOrderOnTop(false);
+        streamSurface.setZOrderMediaOverlay(false);
+        streamSurface.setElevation(0f);
         streamSurface.getHolder().addCallback(this);
         root.addView(streamSurface, match());
 
         loadingController = new ConsoleLoadingController(this);
         privacyLayer = loadingController.build();
+        privacyLayer.setElevation(dp(4));
         privacyLayer.setVisibility(View.GONE);
         root.addView(privacyLayer, match());
 
         homeLayer = buildHome();
+        homeLayer.setElevation(dp(8));
         root.addView(homeLayer, match());
 
         overlayController = new ConsoleOverlayController(this, consoleTheme);
@@ -242,9 +247,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 this::returnToActiveStream,
                 this::openConsoleHome,
                 this::showHostIntegrations);
+        overlayLayer.setElevation(dp(12));
         root.addView(overlayLayer, match());
 
         modalLayer = new FrameLayout(this);
+        modalLayer.setElevation(dp(16));
         modalLayer.setBackgroundColor(0xD9000000);
         modalLayer.setVisibility(View.GONE);
         root.addView(modalLayer, match());
