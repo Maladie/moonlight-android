@@ -876,8 +876,15 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         card.setTag(host.uuid);
         card.setSelected(selected);
         card.setBackground(consoleTheme.hostCardBackground());
-        TextView icon = label("▣", 16, 0xFF9E8ACB, true);
-        card.addView(icon, wrap());
+        LinearLayout header = new LinearLayout(this);
+        header.setOrientation(LinearLayout.HORIZONTAL);
+        header.setGravity(Gravity.CENTER_VERTICAL);
+        header.addView(label("▣", 16, 0xFF9E8ACB, true), wrap());
+        TextView sleepHint = label("HOLD OK · SLEEP", 8, 0xFF9E8ACB, true);
+        LinearLayout.LayoutParams sleepHintParams = wrap();
+        sleepHintParams.leftMargin = dp(10);
+        header.addView(sleepHint, sleepHintParams);
+        card.addView(header, wrap());
         TextView name = label(host.name, 16, Color.WHITE, true);
         name.setSingleLine(true);
         card.addView(name, top(dp(1)));
@@ -888,8 +895,34 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         card.addView(status, top(dp(1)));
         hostStatusViews.put(host.uuid, status);
         card.setOnClickListener(view -> selectHost(host, view.hasFocus()));
+        card.setOnLongClickListener(view -> {
+            confirmSleepHost(host);
+            return true;
+        });
         card.setOnFocusChangeListener(consoleTheme::onCardFocus);
         return card;
+    }
+
+    private void confirmSleepHost(ConsoleDataRepository.Host host) {
+        ConsoleDataRepository.App sleepApp = findSleepApp(host);
+        if (sleepApp == null) {
+            Toast.makeText(this, "Sleep PC is not available for " + host.name,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        new AlertDialog.Builder(this)
+                .setTitle("Sleep " + host.name + "?")
+                .setMessage("MoonWaker will run the existing Sleep PC action from Moonlight.")
+                .setNegativeButton("CANCEL", null)
+                .setPositiveButton("SLEEP", (dialog, which) -> launchLegacy(host, sleepApp))
+                .show();
+    }
+
+    private ConsoleDataRepository.App findSleepApp(ConsoleDataRepository.Host host) {
+        for (ConsoleDataRepository.App app : repository.apps(host)) {
+            if ("Sleep PC".equalsIgnoreCase(app.name.trim())) return app;
+        }
+        return null;
     }
 
     private View addHostCard() {
