@@ -44,6 +44,19 @@ Implemented on this branch:
   malformed profile records, and unavailable responses are fail-safe. A
   controller profile chooser persists the selected host-scoped ID without an
   asynchronous focus jump. No background Home polling was added.
+- Wake Home parity now includes the original generative backdrop, artwork/scrim
+  geometry, quick actions, selected-host styling, 300x110 application cards,
+  controller inventory and battery state, active-session panel, streaming
+  options entry, Wake-compatible launch history labels, and recent-first app
+  ordering. Session polling runs only while Home is visible and never rebuilds
+  focusable rows.
+- Saved host reads now retain port and MAC data. Home performs a latest-only,
+  lifecycle-cancelled port probe and renders Wake's CHECKING, ONLINE, SLEEPING,
+  OFFLINE, and THIS TV states. App launch uses the bounded Wake sequence: probe
+  every 1.2 seconds, send a tested magic packet at most every 5 seconds, stop at
+  90 seconds, and enter the existing protected stream contract only after the
+  host answers. Back cancels preparation; timeout offers controller-native Retry
+  or Stay on Home.
 - `ConsoleStateMachine` covers HOME, CONNECTING, STREAM,
   CONSOLE_OVER_STREAM, OVERLAY, RECOVERY, and DISCONNECTING. Back, input target,
   session reattachment after Activity recreation, and disconnect are explicit.
@@ -95,16 +108,18 @@ destruction. Only after that evidence may the `Game` Activity launch be bypassed
 
 - JDK: `C:\Users\Basia\.jdks\openjdk-17.0.2` (the system Java 24 is not
   compatible with Gradle 8.7/AGP 8.5.1).
-- `:app:testNonRootDebugUnitTest`: 87/87 passed; state, privacy readiness, surface
+- `:app:testNonRootDebugUnitTest`: 107/107 passed; state, privacy readiness, surface
   lifetime, legacy ownership, disconnect/quit separation, input routing, and
   input-boundary initialization plus cross-Activity render-target handoff are
   covered, including diagnostic generation, failed-switch visibility, Gateway
   validation/storage, focus memory, artwork request ordering, Wake card design
   tokens, profile-scoped integration health, immutable Home/session models,
   resume/layer policies, the isolated legacy launch contract, pinned profile
-  conversion, and latest-only Gateway refresh cancellation.
+  conversion, latest-only Gateway refresh cancellation, controller/history
+  presentation, host availability, WOL packet construction, bounded wake timing,
+  and cancellable host preparation.
 - `:app:compileNonRootDebugJavaWithJavac` and the unit-test task passed at
-  `071cb96d`. The most recent full `:app:assembleNonRootDebug` passed earlier in
+  `c50aab6f`. The most recent full `:app:assembleNonRootDebug` passed earlier in
   the same series at `7a0d4706`; full builds are intentionally grouped rather
   than run after every local refactor.
 - `:app:assembleNonRootRelease`: passed.
