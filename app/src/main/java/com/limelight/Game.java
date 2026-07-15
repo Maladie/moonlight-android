@@ -21,6 +21,7 @@ import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
 import com.limelight.console.InputRouter;
+import com.limelight.console.MoonlightStreamSessionController;
 import com.limelight.nvstream.StreamConfiguration;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
@@ -146,7 +147,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private PreferenceConfiguration prefConfig;
     private SharedPreferences tombstonePrefs;
 
-    private NvConnection conn;
+    private MoonlightStreamSessionController sessionController;
     private SpinnerDialog spinner;
     private ExternalFrontendLoadingView externalLoadingView;
     private boolean externalFrontend;
@@ -166,6 +167,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private String appName;
     private NvApp app;
     private float desiredRefreshRate;
+
+    /** Temporary compatibility access for input senders still hosted by Game. */
+    private NvConnection connection() {
+        if (sessionController == null) {
+            throw new IllegalStateException("Stream session controller is not initialized");
+        }
+        return sessionController.legacyConnection();
+    }
 
     private InputCaptureProvider inputCaptureProvider;
     private int modifierFlags = 0;
@@ -656,12 +665,19 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         StreamConfiguration config = configBuilder.build();
 
-        // Initialize the connection
-        conn = new NvConnection(getApplicationContext(),
+        // The session controller is now the sole creator/owner of NvConnection.
+        // Game remains the listener and input adapter until the next migration slice.
+        sessionController = new MoonlightStreamSessionController(getApplicationContext(),
                 new ComputerDetails.AddressTuple(host, port),
                 httpsPort, uniqueId, config,
-                PlatformBinding.getCryptoProvider(this), serverCert);
-        controllerHandler = new ControllerHandler(this, conn, this, prefConfig);
+                PlatformBinding.getCryptoProvider(this), serverCert,
+                new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx),
+                decoderRenderer, this,
+                command -> new Thread(command, "MoonWaker transport stop").start(),
+                this::runOnUiThread,
+                this::doQuit);
+        NvConnection legacyConnection = connection();
+        controllerHandler = new ControllerHandler(this, legacyConnection, this, prefConfig);
         keyboardTranslator = new KeyboardTranslator();
 
         // Setup overlay menu now that controllerHandler is initialized
@@ -673,10 +689,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Initialize touch contexts
         for (int i = 0; i < touchContextMap.length; i++) {
             if (!prefConfig.touchscreenTrackpad) {
-                touchContextMap[i] = new AbsoluteTouchContext(conn, i, streamView);
+                touchContextMap[i] = new AbsoluteTouchContext(legacyConnection, i, streamView);
             }
             else {
-                touchContextMap[i] = new RelativeTouchContext(conn, i,
+                touchContextMap[i] = new RelativeTouchContext(legacyConnection, i,
                         REFERENCE_HORIZ_RES, REFERENCE_VERT_RES,
                         streamView, prefConfig);
             }
@@ -1457,7 +1473,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
 
-        if (conn != null) {
+        if (sessionController != null) {
             int videoFormat = decoderRenderer.getActiveVideoFormat();
 
             displayedFailureDialog = true;
@@ -1722,7 +1738,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // are disabled. If they are enabled, handleMotionEvent() will take
             // care of this.
             if (!prefConfig.mouseNavButtons) {
-                conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
+                connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
             }
 
             // Always return true, otherwise the back press will be propagated
@@ -1761,7 +1777,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 // UTF-8 events don't auto-repeat on the host side.
                 int unicodeChar = event.getUnicodeChar();
                 if ((unicodeChar & KeyCharacterMap.COMBINING_ACCENT) == 0 && (unicodeChar & KeyCharacterMap.COMBINING_ACCENT_MASK) != 0) {
-                    conn.sendUtf8Text(""+(char)unicodeChar);
+                    connection().sendUtf8Text(""+(char)unicodeChar);
                     return true;
                 }
 
@@ -1773,7 +1789,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return true;
             }
 
-            conn.sendKeyboardInput(translated, KeyboardPacket.KEY_DOWN, getModifierState(event),
+            connection().sendKeyboardInput(translated, KeyboardPacket.KEY_DOWN, getModifierState(event),
                     keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
         }
 
@@ -1823,7 +1839,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // are disabled. If they are enabled, handleMotionEvent() will take
             // care of this.
             if (!prefConfig.mouseNavButtons) {
-                conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+                connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
             }
 
             // Always return true, otherwise the back press will be propagated
@@ -1857,7 +1873,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return (unicodeChar & KeyCharacterMap.COMBINING_ACCENT) == 0 && (unicodeChar & KeyCharacterMap.COMBINING_ACCENT_MASK) != 0;
             }
 
-            conn.sendKeyboardInput(translated, KeyboardPacket.KEY_UP, getModifierState(event),
+            connection().sendKeyboardInput(translated, KeyboardPacket.KEY_UP, getModifierState(event),
                     keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
         }
 
@@ -1882,7 +1898,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return false;
         }
 
-        conn.sendUtf8Text(event.getCharacters());
+        connection().sendUtf8Text(event.getCharacters());
         return true;
     }
 
@@ -1907,8 +1923,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void onTextCommitted(String text) {
-        if (conn != null && text != null) {
-            conn.sendUtf8Text(text);
+        if (sessionController != null && text != null) {
+            connection().sendUtf8Text(text);
         }
     }
 
@@ -1922,11 +1938,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void onImeKeyReceived(KeyEvent event) {
-        if (conn != null) {
+        if (sessionController != null) {
             short translated = keyboardTranslator.translate(event.getKeyCode(), event.getDeviceId());
             if (translated != 0) {
                 byte action = (event.getAction() == KeyEvent.ACTION_DOWN) ? KeyboardPacket.KEY_DOWN : KeyboardPacket.KEY_UP;
-                conn.sendKeyboardInput(translated, action, getModifierState(event),
+                connection().sendKeyboardInput(translated, action, getModifierState(event),
                         keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
             }
         }
@@ -2109,7 +2125,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         float[] normalizedCoords = getStreamViewRelativeNormalizedXY(view, event, pointerIndex);
         float[] normalizedContactArea = getStreamViewNormalizedContactArea(event, pointerIndex);
-        return conn.sendPenEvent(eventType, toolType, penButtons,
+        return connection().sendPenEvent(eventType, toolType, penButtons,
                 normalizedCoords[0], normalizedCoords[1],
                 getPressureOrDistance(event, pointerIndex),
                 normalizedContactArea[0], normalizedContactArea[1],
@@ -2156,7 +2172,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         else if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
             // Cancel impacts all active pointers
-            return conn.sendPenEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, MoonBridge.LI_TOOL_TYPE_UNKNOWN, (byte)0,
+            return connection().sendPenEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, MoonBridge.LI_TOOL_TYPE_UNKNOWN, (byte)0,
                     0, 0, 0, 0, 0,
                     MoonBridge.LI_ROT_UNKNOWN, MoonBridge.LI_TILT_UNKNOWN) != MoonBridge.LI_ERR_UNSUPPORTED;
         }
@@ -2174,7 +2190,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean sendTouchEventForPointer(View view, MotionEvent event, byte eventType, int pointerIndex) {
         float[] normalizedCoords = getStreamViewRelativeNormalizedXY(view, event, pointerIndex);
         float[] normalizedContactArea = getStreamViewNormalizedContactArea(event, pointerIndex);
-        return conn.sendTouchEvent(eventType, event.getPointerId(pointerIndex),
+        return connection().sendTouchEvent(eventType, event.getPointerId(pointerIndex),
                 normalizedCoords[0], normalizedCoords[1],
                 getPressureOrDistance(event, pointerIndex),
                 normalizedContactArea[0], normalizedContactArea[1],
@@ -2198,7 +2214,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         else if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
             // Cancel impacts all active pointers
-            return conn.sendTouchEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, 0,
+            return connection().sendTouchEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, 0,
                     0, 0, 0, 0, 0,
                     MoonBridge.LI_ROT_UNKNOWN) != MoonBridge.LI_ERR_UNSUPPORTED;
         }
@@ -2281,10 +2297,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         if (prefConfig.absoluteMouseMode) {
                             // NB: view may be null, but we can unconditionally use streamView because we don't need to adjust
                             // relative axis deltas for the position of the streamView within the parent's coordinate system.
-                            conn.sendMouseMoveAsMousePosition(deltaX, deltaY, (short)streamView.getWidth(), (short)streamView.getHeight());
+                            connection().sendMouseMoveAsMousePosition(deltaX, deltaY, (short)streamView.getWidth(), (short)streamView.getHeight());
                         }
                         else {
-                            conn.sendMouseMove(deltaX, deltaY);
+                            connection().sendMouseMove(deltaX, deltaY);
                         }
                     }
                 }
@@ -2308,7 +2324,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                             // Touchpads must be smaller than (65535, 65535)
                             if (xMax <= Short.MAX_VALUE && yMax <= Short.MAX_VALUE) {
-                                conn.sendMousePosition((short)event.getX(), (short)event.getY(),
+                                connection().sendMousePosition((short)event.getX(), (short)event.getY(),
                                                        (short)xMax, (short)yMax);
                             }
                         }
@@ -2325,55 +2341,55 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 if (event.getActionMasked() == MotionEvent.ACTION_SCROLL) {
                     // Send the vertical scroll packet
-                    conn.sendMouseHighResScroll((short)(event.getAxisValue(MotionEvent.AXIS_VSCROLL) * 120));
-                    conn.sendMouseHighResHScroll((short)(event.getAxisValue(MotionEvent.AXIS_HSCROLL) * 120));
+                    connection().sendMouseHighResScroll((short)(event.getAxisValue(MotionEvent.AXIS_VSCROLL) * 120));
+                    connection().sendMouseHighResHScroll((short)(event.getAxisValue(MotionEvent.AXIS_HSCROLL) * 120));
                 }
 
                 if ((changedButtons & MotionEvent.BUTTON_PRIMARY) != 0) {
                     if ((buttonState & MotionEvent.BUTTON_PRIMARY) != 0) {
-                        conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
+                        connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
                     }
                     else {
-                        conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+                        connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
                     }
                 }
 
                 // Mouse secondary or stylus primary is right click (stylus down is left click)
                 if ((changedButtons & (MotionEvent.BUTTON_SECONDARY | MotionEvent.BUTTON_STYLUS_PRIMARY)) != 0) {
                     if ((buttonState & (MotionEvent.BUTTON_SECONDARY | MotionEvent.BUTTON_STYLUS_PRIMARY)) != 0) {
-                        conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
+                        connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
                     }
                     else {
-                        conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+                        connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
                     }
                 }
 
                 // Mouse tertiary or stylus secondary is middle click
                 if ((changedButtons & (MotionEvent.BUTTON_TERTIARY | MotionEvent.BUTTON_STYLUS_SECONDARY)) != 0) {
                     if ((buttonState & (MotionEvent.BUTTON_TERTIARY | MotionEvent.BUTTON_STYLUS_SECONDARY)) != 0) {
-                        conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_MIDDLE);
+                        connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_MIDDLE);
                     }
                     else {
-                        conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_MIDDLE);
+                        connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_MIDDLE);
                     }
                 }
 
                 if (prefConfig.mouseNavButtons) {
                     if ((changedButtons & MotionEvent.BUTTON_BACK) != 0) {
                         if ((buttonState & MotionEvent.BUTTON_BACK) != 0) {
-                            conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_X1);
+                            connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_X1);
                         }
                         else {
-                            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_X1);
+                            connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_X1);
                         }
                     }
 
                     if ((changedButtons & MotionEvent.BUTTON_FORWARD) != 0) {
                         if ((buttonState & MotionEvent.BUTTON_FORWARD) != 0) {
-                            conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_X2);
+                            connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_X2);
                         }
                         else {
-                            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_X2);
+                            connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_X2);
                         }
                     }
                 }
@@ -2387,14 +2403,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             lastAbsTouchDownY = event.getY(0);
 
                             // Stylus is left click
-                            conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
+                            connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
                         } else if (event.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER) {
                             lastAbsTouchDownTime = event.getEventTime();
                             lastAbsTouchDownX = event.getX(0);
                             lastAbsTouchDownY = event.getY(0);
 
                             // Eraser is right click
-                            conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
+                            connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
                         }
                     }
                     else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
@@ -2404,14 +2420,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             lastAbsTouchUpY = event.getY(0);
 
                             // Stylus is left click
-                            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+                            connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
                         } else if (event.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER) {
                             lastAbsTouchUpTime = event.getEventTime();
                             lastAbsTouchUpX = event.getX(0);
                             lastAbsTouchUpY = event.getY(0);
 
                             // Eraser is right click
-                            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+                            connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
                         }
                     }
                 }
@@ -2624,7 +2640,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         eventX = Math.min(Math.max(eventX, 0), streamView.getWidth());
         eventY = Math.min(Math.max(eventY, 0), streamView.getHeight());
 
-        conn.sendMousePosition((short)eventX, (short)eventY, (short)streamView.getWidth(), (short)streamView.getHeight());
+        connection().sendMousePosition((short)eventX, (short)eventY, (short)streamView.getWidth(), (short)streamView.getHeight());
     }
 
     @Override
@@ -2802,19 +2818,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // thread to keep things smooth for the UI. Inside moonlight-common,
             // we prevent another thread from starting a connection before and
             // during the process of stopping this one.
-            new Thread() {
-                public void run() {
-                    conn.stop();
-                    if (afterStopped != null) {
-                        runOnUiThread(afterStopped);
-                    }
-                }
-            }.start();
+            sessionController.disconnectTransport(afterStopped);
 
             // Quit the running app if requested
             if (controllerHandler.pendingApplicationQuit) {
                 controllerHandler.pendingApplicationQuit = false;
-                this.doQuit();
+                sessionController.quitHostApplication();
             }
         }
         else if (afterStopped != null) {
@@ -2844,6 +2853,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void stageFailed(final String stage, final int portFlags, final int errorCode) {
+        if (sessionController != null) sessionController.onConnectionFailed();
         StreamStatusStore.update(this, StreamStatusStore.STATE_ERROR, stage, errorCode);
         // Perform a connection test if the failure could be due to a blocked port
         // This does network I/O, so don't do it on the main thread.
@@ -2889,6 +2899,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void connectionTerminated(final int errorCode) {
+        if (sessionController != null) sessionController.onConnectionTerminated();
         StreamStatusStore.update(this,
                 bitrateReconnectPending ? StreamStatusStore.STATE_RECONNECTING :
                         (errorCode == MoonBridge.ML_ERROR_GRACEFUL_TERMINATION ?
@@ -3017,6 +3028,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void connectionStarted() {
+        if (sessionController != null) sessionController.onConnectionStarted();
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -3170,8 +3182,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             Toast.makeText(Game.this, configMessage, Toast.LENGTH_LONG).show();
 
             decoderRenderer.setRenderTarget(holder);
-            conn.start(new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx),
-                    decoderRenderer, Game.this);
+            sessionController.connect();
         }
     }
 
@@ -3243,7 +3254,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void mouseMove(int deltaX, int deltaY) {
-        conn.sendMouseMove((short) deltaX, (short) deltaY);
+        connection().sendMouseMove((short) deltaX, (short) deltaY);
     }
 
     @Override
@@ -3273,21 +3284,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         if (down) {
-            conn.sendMouseButtonDown(buttonIndex);
+            connection().sendMouseButtonDown(buttonIndex);
         }
         else {
-            conn.sendMouseButtonUp(buttonIndex);
+            connection().sendMouseButtonUp(buttonIndex);
         }
     }
 
     @Override
     public void mouseVScroll(byte amount) {
-        conn.sendMouseScroll(amount);
+        connection().sendMouseScroll(amount);
     }
 
     @Override
     public void mouseHScroll(byte amount) {
-        conn.sendMouseHScroll(amount);
+        connection().sendMouseHScroll(amount);
     }
 
     @Override
@@ -3300,10 +3311,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             if (buttonDown) {
-                conn.sendKeyboardInput(keyMap, KeyboardPacket.KEY_DOWN, getModifierState(), (byte)0);
+                connection().sendKeyboardInput(keyMap, KeyboardPacket.KEY_DOWN, getModifierState(), (byte)0);
             }
             else {
-                conn.sendKeyboardInput(keyMap, KeyboardPacket.KEY_UP, getModifierState(), (byte)0);
+                connection().sendKeyboardInput(keyMap, KeyboardPacket.KEY_UP, getModifierState(), (byte)0);
             }
         }
     }
@@ -3858,39 +3869,39 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Step 1: Send modifier keys DOWN first (to mimic human key press)
         if (keyCombination.isCtrl()) {
-            conn.sendKeyboardInput(controlKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            connection().sendKeyboardInput(controlKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
         if (keyCombination.isAlt()) {
-            conn.sendKeyboardInput(altKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            connection().sendKeyboardInput(altKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
         if (keyCombination.isShift()) {
-            conn.sendKeyboardInput(shiftKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            connection().sendKeyboardInput(shiftKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
         if (keyCombination.isMeta()) {
-            conn.sendKeyboardInput(metaKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            connection().sendKeyboardInput(metaKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
 
         // Step 2: Wait 50ms, then send main key DOWN (with modifier flags set)
         handler.postDelayed(() -> {
-            conn.sendKeyboardInput(translatedKeyCode, KeyboardPacket.KEY_DOWN, finalModifiers, (byte) 0);
+            connection().sendKeyboardInput(translatedKeyCode, KeyboardPacket.KEY_DOWN, finalModifiers, (byte) 0);
 
             // Step 3: Wait 50ms, then send main key UP (with modifier flags set)
             handler.postDelayed(() -> {
-                conn.sendKeyboardInput(translatedKeyCode, KeyboardPacket.KEY_UP, finalModifiers, (byte) 0);
+                connection().sendKeyboardInput(translatedKeyCode, KeyboardPacket.KEY_UP, finalModifiers, (byte) 0);
 
                 // Step 4: Wait 50ms, then send modifier keys UP (in reverse order)
                 handler.postDelayed(() -> {
                     if (keyCombination.isMeta()) {
-                        conn.sendKeyboardInput(metaKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        connection().sendKeyboardInput(metaKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
                     if (keyCombination.isShift()) {
-                        conn.sendKeyboardInput(shiftKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        connection().sendKeyboardInput(shiftKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
                     if (keyCombination.isAlt()) {
-                        conn.sendKeyboardInput(altKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        connection().sendKeyboardInput(altKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
                     if (keyCombination.isCtrl()) {
-                        conn.sendKeyboardInput(controlKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        connection().sendKeyboardInput(controlKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
 
                     if (onComplete != null) {
