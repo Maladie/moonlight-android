@@ -18,6 +18,7 @@ import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
+import com.limelight.console.StreamFrameRatePolicy;
 import com.limelight.console.StreamVideoFormatPolicy;
 import com.limelight.console.ActiveStreamSurfaceBridge;
 import com.limelight.console.InputRouter;
@@ -631,26 +632,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         float displayRefreshRate = prepareDisplayForRendering();
         LimeLog.info("Display refresh rate: "+displayRefreshRate);
 
-        // If the user requested frame pacing using a capped FPS, we will need to change our
-        // desired FPS setting here in accordance with the active display refresh rate.
-        int roundedRefreshRate = Math.round(displayRefreshRate);
-        int chosenFrameRate = prefConfig.fps;
-        if (prefConfig.framePacing == PreferenceConfiguration.FRAME_PACING_CAP_FPS) {
-            if (prefConfig.fps >= roundedRefreshRate) {
-                if (prefConfig.fps > roundedRefreshRate + 3) {
-                    // Use frame drops when rendering above the screen frame rate
-                    prefConfig.framePacing = PreferenceConfiguration.FRAME_PACING_BALANCED;
-                    LimeLog.info("Using drop mode for FPS > Hz");
-                } else if (roundedRefreshRate <= 49) {
-                    // Let's avoid clearly bogus refresh rates and fall back to legacy rendering
-                    prefConfig.framePacing = PreferenceConfiguration.FRAME_PACING_BALANCED;
-                    LimeLog.info("Bogus refresh rate: " + roundedRefreshRate);
-                }
-                else {
-                    chosenFrameRate = roundedRefreshRate - 1;
-                    LimeLog.info("Adjusting FPS target for screen to " + chosenFrameRate);
-                }
-            }
+        StreamFrameRatePolicy.Result frameRate = StreamFrameRatePolicy.evaluate(
+                prefConfig.fps, prefConfig.framePacing, displayRefreshRate);
+        prefConfig.framePacing = frameRate.framePacing;
+        if (frameRate.adjustment == StreamFrameRatePolicy.Adjustment.FALL_BACK_ABOVE_DISPLAY) {
+            LimeLog.info("Using drop mode for FPS > Hz");
+        } else if (frameRate.adjustment ==
+                StreamFrameRatePolicy.Adjustment.FALL_BACK_INVALID_REFRESH_RATE) {
+            LimeLog.info("Bogus refresh rate: " + Math.round(displayRefreshRate));
+        } else if (frameRate.adjustment == StreamFrameRatePolicy.Adjustment.CAP_TO_DISPLAY) {
+            LimeLog.info("Adjusting FPS target for screen to " + frameRate.frameRate);
         }
 
         // Use the "actual display refresh rate" preference for the X100 refresh rate
@@ -666,7 +657,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         var configBuilder = new StreamConfiguration.Builder()
                 .setResolution(prefConfig.width, prefConfig.height)
                 .setLaunchRefreshRate(prefConfig.fps)
-                .setRefreshRate(chosenFrameRate)
+                .setRefreshRate(frameRate.frameRate)
                 .setApp(app)
                 .setEnableUltraLowLatency(prefConfig.enableUltraLowLatency)
                 .setBitrate(prefConfig.bitrate)

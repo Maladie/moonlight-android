@@ -156,6 +156,19 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
 - Removal: none; this is a neutral session policy and should remain shared after
   the Game Activity adapter is removed.
 
+### P007 - Shared display frame-rate policy
+
+- Surface: `Game.java`.
+- Reason: move capped-FPS selection and fallback rules into
+  `StreamFrameRatePolicy`, so both stream runtimes make the same decision from
+  the requested FPS, pacing mode, and active display refresh rate.
+- Risk: a boundary regression could introduce uneven pacing or select a target
+  frame rate that the display cannot present smoothly.
+- Regression: focused boundary tests around 49 Hz, near-refresh capping, and
+  above-refresh fallback, followed by non-root Java compilation.
+- Removal: none; this policy remains shared after the compatibility Game
+  Activity is retired.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.
