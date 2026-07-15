@@ -187,7 +187,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private FrameLayout buildHome() {
         FrameLayout home = new FrameLayout(this);
-        home.setBackgroundColor(0xFF090D18);
+        home.setBackgroundColor(0xFF05060A);
+        home.addView(new ConsoleGenerativeBackdrop(this), match());
 
         artworkBackdrop = new ImageView(this);
         artworkBackdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
@@ -196,24 +197,29 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
         artworkHero = new ImageView(this);
         artworkHero.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        artworkHero.setPadding(dp(34), dp(66), dp(34), dp(66));
         artworkHero.setAlpha(0f);
         FrameLayout.LayoutParams hero = new FrameLayout.LayoutParams(dp(520), matchHeight(), Gravity.RIGHT);
-        hero.rightMargin = dp(40);
+        hero.rightMargin = dp(18);
         home.addView(artworkHero, hero);
 
         View scrim = new View(this);
         scrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{0xFF090D18, 0xF2090D18, 0x55090D18}));
+                new int[]{0xF405060A, 0xC405060A, 0x7005060A}));
         home.addView(scrim, match());
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(54), dp(38), dp(54), dp(30));
+        content.setPadding(dp(64), dp(26), dp(64), dp(8));
+        content.setClipChildren(false);
+        content.setClipToPadding(false);
 
-        TextView title = label("MOONWAKER", 34, Color.WHITE, true);
+        TextView title = label("MOONWAKER GAME APP", 30, Color.WHITE, true);
         content.addView(title, wrap());
-        TextView subtitle = label("GAME APP  ·  ONE CONSOLE", 12, 0xFFB99CFF, true);
-        content.addView(subtitle, wrap());
+        TextView subtitle = label(
+                "Choose a host and application. MoonWaker will prepare and protect the stream.",
+                15, 0xFFBCC3DD, false);
+        content.addView(subtitle, top(dp(5)));
 
         sessionStatus = label("SESSION · LOADING", 13, 0xFF9CA6C5, true);
         LinearLayout.LayoutParams sessionParams = wrap();
