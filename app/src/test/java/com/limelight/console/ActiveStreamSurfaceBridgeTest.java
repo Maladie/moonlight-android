@@ -97,7 +97,7 @@ public class ActiveStreamSurfaceBridgeTest {
         assertFalse(snapshot.diagnosticLine().contains("host"));
     }
 
-    @Test public void decoderStartupDefersWithoutRecordingTargetFailure() {
+    @Test public void decoderStartupStagesInitialTargetBeforeMediaCodecExists() {
         ActiveStreamSurfaceBridge.Coordinator coordinator =
                 new ActiveStreamSurfaceBridge.Coordinator();
         FakeSession session = new FakeSession();
@@ -106,14 +106,10 @@ public class ActiveStreamSurfaceBridgeTest {
         coordinator.registerConsoleSurface(surface());
         coordinator.attachSession(session);
 
-        assertFalse(coordinator.bindConsoleIfForeground(session));
-        assertEquals(0, session.targetSwitches);
-        assertEquals(0, coordinator.snapshot().failedTargetChanges);
-
-        session.renderTargetReady = true;
-
         assertTrue(coordinator.bindConsoleIfForeground(session));
-        assertEquals(1, session.targetSwitches);
+        assertEquals(0, session.targetSwitches);
+        assertNotNull(session.lastTarget);
+        assertEquals(0, coordinator.snapshot().failedTargetChanges);
         assertEquals(ActiveStreamSurfaceBridge.Target.CONSOLE,
                 coordinator.snapshot().target);
     }

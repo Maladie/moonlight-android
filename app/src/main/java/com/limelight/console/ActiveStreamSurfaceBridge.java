@@ -228,8 +228,15 @@ public final class ActiveStreamSurfaceBridge {
             }
             if (consoleRenderTargetBound) return true;
             if (!currentSession.isRenderTargetSwitchReady()) {
-                log("target_console_deferred");
-                return false;
+                // MediaCodec needs its initial Surface before setup() can create
+                // the decoder. This is staging, not a runtime setOutputSurface()
+                // switch, and matches Game.surfaceChanged().
+                currentSession.setInitialRenderTarget(currentSurface);
+                consoleRenderTargetBound = true;
+                target = Target.CONSOLE;
+                successfulTargetChanges++;
+                log("target_console_staged");
+                return true;
             }
             consoleRenderTargetBound = currentSession.switchToRenderTarget(currentSurface);
             if (consoleRenderTargetBound) {
