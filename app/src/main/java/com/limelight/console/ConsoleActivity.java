@@ -26,6 +26,7 @@ import android.widget.Toast;
 
 import com.limelight.LimeLog;
 import com.limelight.PublicReturnStreamTrampoline;
+import com.limelight.preferences.StreamSettings;
 
 import java.util.List;
 import java.util.Locale;
@@ -320,6 +321,18 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 0xFF9CA6C5, false);
         content.addView(hint, top(dp(20)));
         home.addView(content, new FrameLayout.LayoutParams(matchWidth(), matchHeight()));
+
+        TextView options = card("⚙  OPTIONS", dp(150), dp(44));
+        options.setId(View.generateViewId());
+        options.setContentDescription("Open Moonlight streaming options");
+        options.setOnClickListener(view -> startActivity(new Intent(this, StreamSettings.class)));
+        options.setNextFocusDownId(integrations.getId());
+        integrations.setNextFocusUpId(options.getId());
+        FrameLayout.LayoutParams optionsParams = new FrameLayout.LayoutParams(
+                wrapSize(), wrapSize(), Gravity.TOP | Gravity.RIGHT);
+        optionsParams.topMargin = dp(30);
+        optionsParams.rightMargin = dp(64);
+        home.addView(options, optionsParams);
         return home;
     }
 
