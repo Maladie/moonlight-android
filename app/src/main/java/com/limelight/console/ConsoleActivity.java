@@ -41,6 +41,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleDataRepository repository;
     private HostGatewayStore hostGatewayStore;
     private ConsoleSelectionStore selectionStore;
+    private ConsoleHostSelectionController hostSelectionController;
     private ConsoleArtworkController artworkController;
     private ConsoleTheme consoleTheme;
     private ConsoleModalController modalController;
@@ -65,6 +66,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         repository = new ConsoleDataRepository(this);
         hostGatewayStore = new HostGatewayStore(this);
         selectionStore = new ConsoleSelectionStore(this);
+        hostSelectionController = new ConsoleHostSelectionController(repository, selectionStore);
         consoleTheme = new ConsoleTheme(this);
         setContentView(buildRoot());
         artworkController = new ConsoleArtworkController(this, artworkBackdrop, artworkHero);
@@ -279,21 +281,14 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void selectHost(ConsoleDataRepository.Host host, boolean userFocusedHost) {
-        selectedHost = host;
-        selectionStore.rememberHost(host.uuid);
-        renderApps(host, repository.apps(host));
+        ConsoleHostSelectionController.Selection selection =
+                hostSelectionController.select(host);
+        selectedHost = selection.host;
+        renderApps(host, selection.apps);
         renderGatewayProfile(host);
-        if (userFocusedHost && appRow.getChildCount() > 0) {
-            List<Integer> appIds = new java.util.ArrayList<>();
-            for (int index = 0; index < appRow.getChildCount(); index++) {
-                Object tag = appRow.getChildAt(index).getTag();
-                if (tag instanceof Integer) appIds.add((Integer) tag);
-            }
-            int appIndex = ConsoleSelectionPolicy.appIndex(
-                    appIds, selectionStore.selectedAppId(host.uuid));
-            if (appIndex >= 0 && appIndex < appRow.getChildCount()) {
-                appRow.getChildAt(appIndex).requestFocus();
-            }
+        if (userFocusedHost && selection.focusAppIndex >= 0 &&
+                selection.focusAppIndex < appRow.getChildCount()) {
+            appRow.getChildAt(selection.focusAppIndex).requestFocus();
         }
     }
 
@@ -337,7 +332,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         card.setOnFocusChangeListener((view, focused) -> {
             consoleTheme.onCardFocus(view, focused);
             if (focused) {
-                selectionStore.rememberApp(host.uuid, app.id);
+                hostSelectionController.rememberApp(host, app);
                 artworkController.show(app.posterUri, poster.getDrawable());
             }
         });
