@@ -50,7 +50,8 @@ final class ConsoleModalController {
         return true;
     }
 
-    void showExitConfirmation(View focusToRestore, Runnable exitAction) {
+    void showExitConfirmation(View focusToRestore, boolean streamActive,
+                              Runnable exitAction) {
         begin(focusToRestore);
         integrationHostUuid = null;
         TextView cancel = wakeAction("CANCEL");
@@ -58,7 +59,8 @@ final class ConsoleModalController {
         TextView exit = discordAction("EXIT MOONWAKER", 0xFFDA373C);
         exit.setOnClickListener(view -> { hide(); exitAction.run(); });
         showWakePanel("MOONWAKER", "Close MoonWaker?",
-                "The active host session will not be stopped.",
+                streamActive ? "The active stream will be disconnected." :
+                        "Return to Android TV?",
                 null, wakeActionRow(cancel, exit));
     }
 

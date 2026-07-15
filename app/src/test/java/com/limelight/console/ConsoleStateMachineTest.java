@@ -20,6 +20,18 @@ public class ConsoleStateMachineTest {
         assertTrue(returned.capturesGameplayInput());
     }
 
+    @Test public void consoleBackRequestsExitConfirmationInsteadOfReturningToStream() {
+        ConsoleStateMachine machine = connectedMachine();
+        machine.dispatch(ConsoleStateMachine.Event.OPEN_CONSOLE);
+
+        ConsoleStateMachine.Transition result =
+                machine.dispatch(ConsoleStateMachine.Event.BACK);
+
+        assertEquals(ConsoleStateMachine.State.CONSOLE_OVER_STREAM, result.current);
+        assertEquals(ConsoleStateMachine.Effect.SHOW_EXIT_CONFIRMATION, result.effect);
+        assertFalse(result.capturesGameplayInput());
+    }
+
     @Test public void overlayAndHomeReleaseGameplayCapture() {
         ConsoleStateMachine machine = connectedMachine();
         assertFalse(machine.dispatch(ConsoleStateMachine.Event.OPEN_OVERLAY).capturesGameplayInput());

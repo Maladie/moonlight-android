@@ -94,7 +94,7 @@ public final class ConsoleStateMachine {
                 if (event == Event.RETURN_TO_STREAM) state = State.STREAM;
                 else if (event == Event.OPEN_OVERLAY) state = State.OVERLAY;
                 else if (event == Event.DISCONNECT) state = State.DISCONNECTING;
-                else if (event == Event.BACK) state = State.STREAM;
+                else if (event == Event.BACK) effect = Effect.SHOW_EXIT_CONFIRMATION;
                 break;
             case OVERLAY:
                 if (event == Event.CLOSE_OVERLAY || event == Event.BACK) state = State.STREAM;

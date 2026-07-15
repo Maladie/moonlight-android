@@ -253,7 +253,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         int keyCode = event.getKeyCode();
         android.view.InputDevice device = event.getDevice();
-        boolean gamepadB = keyCode == KeyEvent.KEYCODE_BUTTON_B && device != null &&
+        boolean gamepadB = keyCode == KeyEvent.KEYCODE_BUTTON_B &&
                 ControllerHandler.isGameControllerDevice(device);
         boolean navigationBack = ConsoleKeyRouting.isNavigationBack(
                 keyCode, inputRouter.isGameplayCaptured(), gamepadB);
@@ -1370,7 +1370,13 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void showExitConfirmation() {
-        modalController.showExitConfirmation(getCurrentFocus(), this::finishAndRemoveTask);
+        boolean streamActive = unifiedTransportConnected ||
+                ConsoleSessionSummary.from(currentSession).alive;
+        modalController.showExitConfirmation(getCurrentFocus(), streamActive,
+                () -> {
+                    if (streamActive) endActiveSession(false);
+                    finishAndRemoveTask();
+                });
     }
 
     private void showSessionDetails() {
@@ -1401,6 +1407,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void endActiveSession(boolean quitHostApplication) {
+        modalController.hide();
         stateMachine.dispatch(ConsoleStateMachine.Event.DISCONNECT);
         applyState(stateMachine.getState());
         if (quitHostApplication) {
@@ -1431,7 +1438,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     "Start the Wake & Play Host Gateway on this PC, then enter its six-digit " +
                             "pairing code. Discord and repair options remain hidden until the " +
                             "corresponding Bridge is detected.",
-                    this::showOptions, pair);
+                    null, pair);
             return;
         }
 
@@ -1456,7 +1463,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         refresh.setOnClickListener(view -> showHostIntegrations());
         forget.setOnClickListener(view -> confirmForgetGateway(host));
         modalController.showWakePanel(getCurrentFocus(), "HOST INTEGRATIONS", host.name,
-                "Paired gateway: " + connection.endpoint, this::showOptions,
+                "Paired gateway: " + connection.endpoint, null,
                 status, profile, vibepolloStatus, discordStatus,
                 vibepollo, discord, refresh, forget);
 
