@@ -28,6 +28,7 @@ import android.widget.Toast;
 
 import com.limelight.Game;
 import com.limelight.PublicStreamIntent;
+import com.limelight.PublicReturnStreamTrampoline;
 import com.limelight.ShortcutTrampoline;
 
 import java.io.InputStream;
@@ -40,6 +41,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 /** Milestone-1 Android TV console shell with a persistent stream surface layer. */
 public final class ConsoleActivity extends Activity {
     private final ConsoleStateMachine stateMachine = new ConsoleStateMachine();
+    private final InputRouter inputRouter = new InputRouter(InputRouter.Region.HOME);
     private final ExecutorService artworkExecutor = Executors.newSingleThreadExecutor();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final AtomicInteger artworkRequest = new AtomicInteger();
@@ -52,6 +54,7 @@ public final class ConsoleActivity extends Activity {
     private ImageView artworkBackdrop;
     private ImageView artworkHero;
     private TextView sessionStatus;
+    private TextView returnToGame;
     private LinearLayout hostRow;
     private LinearLayout appRow;
     private View overlayLayer;
@@ -68,7 +71,22 @@ public final class ConsoleActivity extends Activity {
 
     @Override protected void onResume() {
         super.onResume();
-        if (repository != null && sessionStatus != null) renderSession(repository.session());
+        if (repository != null && sessionStatus != null) {
+            ConsoleDataRepository.Session session = repository.session();
+            renderSession(session);
+            if (session != null && session.alive) {
+                ConsoleStateMachine.State state = stateMachine.getState();
+                if (state == ConsoleStateMachine.State.CONNECTING) {
+                    stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTED);
+                    stateMachine.dispatch(ConsoleStateMachine.Event.OPEN_CONSOLE);
+                } else if (state == ConsoleStateMachine.State.STREAM) {
+                    stateMachine.dispatch(ConsoleStateMachine.Event.OPEN_CONSOLE);
+                } else if (state == ConsoleStateMachine.State.HOME) {
+                    stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTED);
+                }
+                applyState(stateMachine.getState());
+            }
+        }
     }
 
     @Override protected void onDestroy() {
@@ -162,6 +180,11 @@ public final class ConsoleActivity extends Activity {
         LinearLayout.LayoutParams sessionParams = wrap();
         sessionParams.topMargin = dp(10);
         content.addView(sessionStatus, sessionParams);
+
+        returnToGame = card("▶  RETURN TO GAME", dp(280), dp(54));
+        returnToGame.setVisibility(View.GONE);
+        returnToGame.setOnClickListener(view -> returnToActiveStream());
+        content.addView(returnToGame, top(dp(12)));
 
         content.addView(section("STREAMING HOSTS"), top(dp(22)));
         HorizontalScrollView hostScroll = horizontalScroll();
@@ -262,6 +285,11 @@ public final class ConsoleActivity extends Activity {
                 .putExtra(PublicStreamIntent.EXTRA_APP_NAME, app.name)
                 .putExtra(Game.EXTRA_APP_ID, String.valueOf(app.id))
                 .putExtra(Game.EXTRA_APP_NAME, app.name)
+                .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND, true)
+                .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_PACKAGE, getPackageName())
+                .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_MESSAGE,
+                        "Preparing " + app.name + "…")
+                .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION, false)
                 .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         startActivity(intent, ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle());
         overridePendingTransition(0, 0);
@@ -270,6 +298,7 @@ public final class ConsoleActivity extends Activity {
     private void renderSession(ConsoleDataRepository.Session session) {
         if (session == null || session.state == null) {
             sessionStatus.setText("SESSION · STATUS UNAVAILABLE");
+            returnToGame.setVisibility(View.GONE);
             return;
         }
         StringBuilder text = new StringBuilder("SESSION · ").append(session.state.toUpperCase(Locale.ROOT));
@@ -278,6 +307,17 @@ public final class ConsoleActivity extends Activity {
                 .append(" @ ").append(session.fps);
         sessionStatus.setText(text);
         sessionStatus.setTextColor(session.alive ? 0xFF69F0AE : 0xFF9CA6C5);
+        returnToGame.setVisibility(session.alive ? View.VISIBLE : View.GONE);
+    }
+
+    private void returnToActiveStream() {
+        ConsoleStateMachine.Transition transition =
+                stateMachine.dispatch(ConsoleStateMachine.Event.RETURN_TO_STREAM);
+        applyState(transition.current);
+        Intent intent = new Intent(this, PublicReturnStreamTrampoline.class)
+                .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        startActivity(intent, ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle());
+        overridePendingTransition(0, 0);
     }
 
     private void showArtwork(Uri uri, android.graphics.drawable.Drawable immediate) {
@@ -334,6 +374,11 @@ public final class ConsoleActivity extends Activity {
         privacyLayer.setVisibility(state == ConsoleStateMachine.State.CONNECTING ||
                 state == ConsoleStateMachine.State.DISCONNECTING ? View.VISIBLE : View.GONE);
         overlayLayer.setVisibility(state == ConsoleStateMachine.State.OVERLAY ? View.VISIBLE : View.GONE);
+        if (state == ConsoleStateMachine.State.STREAM) inputRouter.routeTo(InputRouter.Region.GAMEPLAY);
+        else if (state == ConsoleStateMachine.State.OVERLAY) inputRouter.routeTo(InputRouter.Region.OVERLAY);
+        else if (state == ConsoleStateMachine.State.RECOVERY ||
+                state == ConsoleStateMachine.State.DISCONNECTING) inputRouter.routeTo(InputRouter.Region.MODAL);
+        else inputRouter.routeTo(InputRouter.Region.HOME);
         // streamSurface intentionally remains VISIBLE and attached.
     }
 
@@ -356,6 +401,7 @@ public final class ConsoleActivity extends Activity {
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(560), dp(360), Gravity.CENTER);
         modal.addView(panel, params);
         modal.setVisibility(View.VISIBLE);
+        inputRouter.routeTo(InputRouter.Region.MODAL);
         cancel.requestFocus();
     }
 

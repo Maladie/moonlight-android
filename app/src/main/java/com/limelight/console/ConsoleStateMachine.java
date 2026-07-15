@@ -60,6 +60,11 @@ public final class ConsoleStateMachine {
         switch (state) {
             case HOME:
                 if (event == Event.LAUNCH) state = State.CONNECTING;
+                else if (event == Event.CONNECTED) {
+                    // Reattach to a session discovered after Activity recreation.
+                    sessionActive = true;
+                    state = State.CONSOLE_OVER_STREAM;
+                }
                 else if (event == Event.BACK) effect = Effect.SHOW_EXIT_CONFIRMATION;
                 break;
             case CONNECTING:

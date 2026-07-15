@@ -44,6 +44,13 @@ public class ConsoleStateMachineTest {
                 machine.dispatch(ConsoleStateMachine.Event.HOME).current);
     }
 
+    @Test public void recreatedHomeReattachesDiscoveredSessionWithoutConnectingAgain() {
+        ConsoleStateMachine machine = new ConsoleStateMachine();
+        ConsoleStateMachine.Transition result = machine.dispatch(ConsoleStateMachine.Event.CONNECTED);
+        assertEquals(ConsoleStateMachine.State.CONSOLE_OVER_STREAM, result.current);
+        assertEquals(ConsoleStateMachine.InputTarget.HOME, result.inputTarget);
+    }
+
     private static ConsoleStateMachine connectedMachine() {
         ConsoleStateMachine machine = new ConsoleStateMachine();
         machine.dispatch(ConsoleStateMachine.Event.LAUNCH);
