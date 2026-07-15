@@ -147,12 +147,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         homeLayer = buildHome();
         root.addView(homeLayer, match());
 
-        TextView overlay = label("STREAM OVERLAY\nDPAD regions: controls  ↔  Discord", 18, Color.WHITE, true);
-        overlay.setGravity(Gravity.CENTER);
-        overlay.setBackgroundColor(0xE6101118);
-        overlay.setVisibility(View.GONE);
-        overlay.setFocusable(true);
-        overlayLayer = overlay;
+        overlayLayer = new ConsoleOverlayController(this, consoleTheme).build(
+                this::returnToActiveStream,
+                this::openConsoleHome,
+                this::showHostIntegrations);
         root.addView(overlayLayer, match());
 
         modalLayer = new FrameLayout(this);
@@ -373,8 +371,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void returnToActiveStream() {
+        ConsoleStateMachine.Event event = stateMachine.getState() ==
+                ConsoleStateMachine.State.OVERLAY ?
+                ConsoleStateMachine.Event.CLOSE_OVERLAY :
+                ConsoleStateMachine.Event.RETURN_TO_STREAM;
         ConsoleStateMachine.Transition transition =
-                stateMachine.dispatch(ConsoleStateMachine.Event.RETURN_TO_STREAM);
+                stateMachine.dispatch(event);
         applyState(transition.current);
         Intent intent = new Intent(this, PublicReturnStreamTrampoline.class)
                 .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
@@ -382,12 +384,23 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         overridePendingTransition(0, 0);
     }
 
+    private void openConsoleHome() {
+        ConsoleStateMachine.Transition transition =
+                stateMachine.dispatch(ConsoleStateMachine.Event.OPEN_CONSOLE);
+        applyState(transition.current);
+    }
+
     private void applyState(ConsoleStateMachine.State state) {
         ConsoleLayerState layers = ConsoleLayerState.from(state);
+        boolean openingOverlay = layers.overlayVisible &&
+                overlayLayer.getVisibility() != View.VISIBLE;
         homeLayer.setVisibility(layers.homeVisible ? View.VISIBLE : View.GONE);
         privacyLayer.setVisibility(layers.privacyVisible ? View.VISIBLE : View.GONE);
         overlayLayer.setVisibility(layers.overlayVisible ? View.VISIBLE : View.GONE);
         inputRouter.routeTo(layers.inputRegion);
+        if (openingOverlay && overlayLayer.getTag() instanceof View) {
+            ((View) overlayLayer.getTag()).requestFocus();
+        }
         // streamSurface intentionally remains VISIBLE and attached.
     }
 
