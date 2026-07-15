@@ -147,3 +147,29 @@ target until after MediaCodec creation even though MediaCodec requires that targ
 during `setup()`. The unified path now mirrors the proven `Game` ordering: stage
 the initial holder first, then use runtime output-surface switching only after the
 decoder exists.
+
+## Wake panel and Gateway run — 2026-07-15
+
+This run used the in-place installed release through `b0d4fbeb` on the same TV.
+The subsequent `86504f9f` only renames the stream hand-off hint from Wake & Play
+to MoonWaker and was compile-verified, not reinstalled during this run.
+
+| Result | Scenario | Direct evidence / limit |
+| --- | --- | --- |
+| PASS | Real stream image | Steam Big Picture reached a live 1920x1080 image after approximately 16 seconds; the first-frame loading screen was visible before that and no black frame remained. |
+| PASS | Active Session panel | Wake right-panel geometry, app title, host, `1920×1080 @ 60 FPS`, Return, Disconnect and End App were visible; Return held initial focus. No destructive action was selected. |
+| PASS | Exit panel | Wake right-panel geometry, initial Cancel focus, red Exit MoonWaker action and non-destructive session warning were visible. Exit was not selected. |
+| PASS | Controller card/menu | Wake horizontal card with controller icon, compact DualSense name and battery indicator was visible. The original AlertDialog action order and Cancel action matched Wake. |
+| PASS | Unsupported controller action | Selecting Identify displayed Wake's explicit `Feature unavailable` explanation; it no longer fails silently. |
+| NOT RUN | Controller power-off/unpair confirmation | The confirmation code was copied from Wake and compile-tested, but these destructive actions were not selected on the paired DualSense. |
+| PASS | Gateway capability panel | Paired Gateway, Vibepollo Bridge and Discord Bridge reported online and exposed the Wake-style entry actions. |
+| PASS | Discord read-only navigation | Live guilds loaded; the run entered a guild/channel and Back returned Channel → Servers without leaving the application. |
+| PASS | VirtualHere zero-device state | Android Hub/client status loaded and a valid zero-device state was displayed. Restart/connect actions were not selected. |
+| PARTIAL | Vibepollo panel | Wake panel/actions rendered, while the paired endpoint returned `Vibepollo API unavailable`; restart/reset/export actions were not selected. |
+| NOT RUN | Physical DualSense Circle routing | The implementation and `ConsoleKeyRoutingTest` distinguish gamepad `BUTTON_B` from remote/Android Back. Sony denies synthetic access to the physical input event, so actual in-game Circle still requires a person pressing the controller. |
+| NOT RUN | Physical overlay hold | The existing Moonlight X `OverlayMenuView` and hold listener are wired. ADB's synthetic long-press is shorter/different from the configured 1500 ms controller hold, so the open overlay was not visually certified. |
+
+Focused unit tests for session presentation, key routing and console state all
+pass. The complete 196-test run has one expected configuration-gate failure:
+`UnifiedConsoleRuntimeGateTest` asserts the unified runtime is disabled, while
+this candidate is intentionally built with `unifiedConsoleRuntime=true`.
