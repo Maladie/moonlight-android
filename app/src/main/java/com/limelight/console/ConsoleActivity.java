@@ -31,6 +31,7 @@ import android.widget.Toast;
 
 import com.limelight.LimeLog;
 import com.limelight.binding.input.ControllerHandler;
+import com.limelight.preferences.AddComputerManually;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.preferences.StreamSettings;
 import com.limelight.ui.StreamView;
@@ -111,6 +112,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleControllerRepository controllerRepository;
     private InputManager inputManager;
     private boolean controllerListenerRegistered;
+    private boolean refreshHostsOnResume;
     private final Map<String, TextView> hostStatusViews = new HashMap<>();
     private List<ConsoleDataRepository.Host> visibleHosts = Collections.emptyList();
     private FrameLayout root;
@@ -165,6 +167,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     @Override protected void onResume() {
         super.onResume();
+        if (refreshHostsOnResume) {
+            refreshHostsOnResume = false;
+            renderSnapshot();
+        }
         if (inputManager != null && !controllerListenerRegistered) {
             inputManager.registerInputDeviceListener(controllerDeviceListener, null);
             controllerListenerRegistered = true;
@@ -818,15 +824,17 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         visibleHosts = snapshot.hosts;
         if (snapshot.hosts.isEmpty()) {
             selectedHost = null;
-            hostRow.addView(label("No saved Moonlight hosts", 16, 0xFFFFB74D, false), cardParams());
+            hostRow.addView(addHostCard(), cardParams());
             renderApps(null, snapshot.apps);
             renderGatewayProfile(null, snapshot.integrations);
+            hostRow.getChildAt(0).requestFocus();
             return;
         }
         for (ConsoleDataRepository.Host host : snapshot.hosts) {
             hostRow.addView(hostCard(host,
                     host.uuid.equals(snapshot.selectedHost.uuid)), cardParams());
         }
+        hostRow.addView(addHostCard(), cardParams());
         selectedHost = snapshot.selectedHost;
         renderApps(selectedHost, snapshot.apps);
         renderGatewayProfile(selectedHost, snapshot.integrations);
@@ -881,6 +889,38 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         hostStatusViews.put(host.uuid, status);
         card.setOnClickListener(view -> selectHost(host, view.hasFocus()));
         card.setOnFocusChangeListener(consoleTheme::onCardFocus);
+        return card;
+    }
+
+    private View addHostCard() {
+        LinearLayout card = new LinearLayout(this);
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        card.setGravity(Gravity.CENTER_VERTICAL);
+        card.setPadding(dp(18), dp(7), dp(18), dp(7));
+        card.setMinimumWidth(dp(190));
+        card.setMinimumHeight(dp(82));
+        card.setFocusable(true);
+        card.setClickable(true);
+        card.setBackground(consoleTheme.hostCardBackground());
+        TextView plus = label("+", 28, 0xFFC8BCE8, false);
+        card.addView(plus, wrap());
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        TextView title = label("ADD HOST", 15, Color.WHITE, true);
+        title.setSingleLine(true);
+        copy.addView(title, wrap());
+        copy.addView(label("Moonlight setup", 10, 0xFFC8BCE8, false), top(dp(1)));
+        LinearLayout.LayoutParams copyParams = wrap();
+        copyParams.leftMargin = dp(12);
+        card.addView(copy, copyParams);
+        card.setContentDescription("Add a Moonlight host");
+        card.setOnFocusChangeListener(consoleTheme::onCardFocus);
+        card.setOnClickListener(view -> {
+            refreshHostsOnResume = true;
+            Intent intent = new Intent(this, AddComputerManually.class);
+            intent.putExtra(AddComputerManually.EXTRA_CONSOLE_APPEARANCE, true);
+            startActivity(intent);
+        });
         return card;
     }
 

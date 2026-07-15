@@ -39,6 +39,9 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 public class AddComputerManually extends Activity {
+    public static final String EXTRA_CONSOLE_APPEARANCE =
+            "com.limelight.extra.CONSOLE_APPEARANCE";
+
     private TextView hostText;
     private ComputerManagerService.ComputerManagerBinder managerBinder;
     private final LinkedBlockingQueue<String> computersToAdd = new LinkedBlockingQueue<>();
@@ -270,7 +273,10 @@ public class AddComputerManually extends Activity {
 
         UiHelper.setLocale(this);
 
-        setContentView(R.layout.activity_add_computer_manually);
+        boolean consoleAppearance = getIntent().getBooleanExtra(
+                EXTRA_CONSOLE_APPEARANCE, false);
+        setContentView(consoleAppearance ? R.layout.activity_add_computer_console :
+                R.layout.activity_add_computer_manually);
 
         UiHelper.notifyNewRootView(this);
 
@@ -302,6 +308,10 @@ public class AddComputerManually extends Activity {
                 handleDoneEvent();
             }
         });
+        View cancelButton = findViewById(R.id.cancelAddPcButton);
+        if (cancelButton != null) {
+            cancelButton.setOnClickListener(view -> finish());
+        }
 
         // Bind to the ComputerManager service
         bindService(new Intent(AddComputerManually.this,
