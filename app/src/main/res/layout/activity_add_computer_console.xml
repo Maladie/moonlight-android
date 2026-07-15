@@ -43,7 +43,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
-            android:text="Enter the host name or IP address. Moonlight will verify and save it."
+            android:text="Hosts on this network are discovered automatically. Enter a name or IP address only when a host does not appear on Home."
             android:textColor="#C9C2DA"
             android:textSize="16sp" />
 

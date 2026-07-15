@@ -2,7 +2,10 @@ package com.limelight.console;
 
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.app.Service;
+import android.content.ComponentName;
 import android.content.Intent;
+import android.content.ServiceConnection;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
@@ -10,6 +13,7 @@ import android.hardware.input.InputManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.IBinder;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -31,6 +35,9 @@ import android.widget.Toast;
 
 import com.limelight.LimeLog;
 import com.limelight.binding.input.ControllerHandler;
+import com.limelight.computers.ComputerManagerListener;
+import com.limelight.computers.ComputerManagerService;
+import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.preferences.AddComputerManually;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.preferences.StreamSettings;
@@ -84,6 +91,26 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final AtomicBoolean discordOverlayActionInFlight = new AtomicBoolean();
     private final Runnable discordOverlayRefresh = () -> refreshDiscordStreamOverlay(false);
     private final Runnable sessionRefresh = this::refreshVisibleSession;
+    private final ServiceConnection computerManagerConnection = new ServiceConnection() {
+        @Override public void onServiceConnected(ComponentName name, IBinder service) {
+            ComputerManagerService.ComputerManagerBinder binder =
+                    (ComputerManagerService.ComputerManagerBinder) service;
+            new Thread(() -> {
+                binder.waitForReady();
+                computerManagerBinder = binder;
+                binder.startPolling(new ComputerManagerListener() {
+                    @Override public void notifyComputerUpdated(
+                            ComputerDetails details, boolean isFreshPoll) {
+                        runOnUiThread(() -> refreshForDiscoveredHost(details));
+                    }
+                });
+            }, "MoonWaker host discovery").start();
+        }
+
+        @Override public void onServiceDisconnected(ComponentName name) {
+            computerManagerBinder = null;
+        }
+    };
 
     private ConsoleDataRepository repository;
     private HostGatewayStore hostGatewayStore;
@@ -113,6 +140,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private InputManager inputManager;
     private boolean controllerListenerRegistered;
     private boolean refreshHostsOnResume;
+    private ComputerManagerService.ComputerManagerBinder computerManagerBinder;
+    private boolean computerManagerBound;
     private final Map<String, TextView> hostStatusViews = new HashMap<>();
     private List<ConsoleDataRepository.Host> visibleHosts = Collections.emptyList();
     private FrameLayout root;
@@ -163,6 +192,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         controllerRepository = new ConsoleControllerRepository();
         inputManager = (InputManager) getSystemService(INPUT_SERVICE);
         renderSnapshot();
+        computerManagerBound = bindService(
+                new Intent(this, ComputerManagerService.class),
+                computerManagerConnection, Service.BIND_AUTO_CREATE);
     }
 
     @Override protected void onResume() {
@@ -219,6 +251,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     @Override protected void onDestroy() {
         if (loadingController != null) loadingController.stop();
         integrationExecutor.shutdownNow();
+        if (computerManagerBinder != null) computerManagerBinder.stopPolling();
+        if (computerManagerBound) unbindService(computerManagerConnection);
         ActiveStreamSurfaceBridge.setConsoleForeground(false);
         if (streamSurface != null) {
             ActiveStreamSurfaceBridge.releaseConsoleSurface(streamSurface.getHolder());
@@ -814,6 +848,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void renderSnapshot() {
+        renderSnapshot(true);
+    }
+
+    private void renderSnapshot(boolean requestInitialFocus) {
         renderControllers();
         ConsoleHomeSnapshot snapshot = ConsoleHomeSnapshot.load(
                 repository, hostGatewayStore, selectionStore, launchHistoryStore);
@@ -842,7 +880,16 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         // when it exists. Subsequent refreshes never request focus.
         View initialFocus = returnToGame.getVisibility() == View.VISIBLE ?
                 returnToGame : hostRow.getChildAt(snapshot.selectedHostIndex);
-        initialFocus.requestFocus();
+        if (requestInitialFocus) initialFocus.requestFocus();
+    }
+
+    private void refreshForDiscoveredHost(ComputerDetails details) {
+        if (details == null || details.uuid == null || isFinishing()) return;
+        for (ConsoleDataRepository.Host host : visibleHosts) {
+            if (details.uuid.equals(host.uuid)) return;
+        }
+        renderSnapshot(false);
+        refreshHostAvailability();
     }
 
     private void resolveResumeTarget(ConsoleHomeSnapshot snapshot) {
