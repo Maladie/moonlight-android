@@ -443,7 +443,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                         IntegrationProfileStatus profile = catalog.find(connection.profileId);
                         HostIntegrationSummary refreshed =
                                 HostIntegrationSummary.from(connection, profile);
-                        if (modalController.updateHostIntegrations(hostUuid, refreshed)) {
+                        if (modalController.updateHostIntegrations(hostUuid, refreshed, catalog,
+                                () -> showProfileChooser(hostUuid, connection, catalog))) {
                             renderGatewayProfile(selectedHost, refreshed);
                         }
                     }
@@ -452,6 +453,20 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                         // The existing local summary already communicates refresh availability.
                     }
                 });
+    }
+
+    private void showProfileChooser(String hostUuid, GatewayConnection connection,
+                                    IntegrationProfileCatalog catalog) {
+        if (selectedHost == null || !hostUuid.equals(selectedHost.uuid)) return;
+        String hostName = selectedHost.name;
+        modalController.showProfileChooser(getCurrentFocus(), hostUuid, hostName, catalog,
+                connection.profileId, profileId -> {
+                    hostGatewayStore.setSelectedIntegrationProfileId(hostUuid, profileId);
+                    if (selectedHost != null && hostUuid.equals(selectedHost.uuid)) {
+                        renderGatewayProfile(selectedHost);
+                        showHostIntegrations();
+                    }
+                }, this::showHostIntegrations, gatewayProfileRefreshController::cancel);
     }
 
     private void applyTvWindow() {

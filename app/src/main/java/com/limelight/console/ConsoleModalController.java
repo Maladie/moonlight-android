@@ -9,6 +9,8 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.util.function.Consumer;
+
 /** Owns modal composition, focus entry/restore, dim dismissal, and input routing. */
 final class ConsoleModalController {
     private final Context context;
@@ -21,6 +23,7 @@ final class ConsoleModalController {
     private TextView gatewayStatus;
     private TextView profileStatus;
     private TextView servicesStatus;
+    private TextView chooseProfile;
     private Runnable onDismiss;
 
     ConsoleModalController(Context context, FrameLayout layer,
@@ -74,12 +77,16 @@ final class ConsoleModalController {
         panel.addView(profileStatus, top(dp(14)));
         panel.addView(servicesStatus, top(dp(20)));
 
+        chooseProfile = card("CHOOSE PROFILE", dp(340), dp(56));
+        chooseProfile.setVisibility(View.GONE);
+        panel.addView(chooseProfile, top(dp(26)));
+
         TextView useDefault = card("USE DEFAULT PROFILE", dp(340), dp(56));
         boolean canUseDefault = summary.gatewayPaired &&
                 !GatewayConnection.DEFAULT_PROFILE_ID.equals(summary.profileId);
         useDefault.setVisibility(canUseDefault ? View.VISIBLE : View.GONE);
         useDefault.setOnClickListener(view -> useDefaultProfile.run());
-        panel.addView(useDefault, top(dp(34)));
+        panel.addView(useDefault, top(dp(12)));
 
         TextView close = card("CLOSE", dp(340), dp(56));
         close.setOnClickListener(view -> hide());
@@ -88,14 +95,57 @@ final class ConsoleModalController {
         showAndFocus(canUseDefault ? useDefault : close);
     }
 
-    boolean updateHostIntegrations(String hostUuid, HostIntegrationSummary summary) {
+    boolean updateHostIntegrations(String hostUuid, HostIntegrationSummary summary,
+                                   IntegrationProfileCatalog catalog,
+                                   Runnable chooseProfileAction) {
         if (layer.getVisibility() != View.VISIBLE || integrationHostUuid == null ||
                 !integrationHostUuid.equals(hostUuid) || summary == null) return false;
         gatewayStatus.setText(summary.gatewayLabel());
         gatewayStatus.setTextColor(summary.gatewayPaired ? 0xFF69F0AE : 0xFFFFB74D);
         profileStatus.setText(summary.profileLabel());
         servicesStatus.setText(summary.servicesLabel());
+        boolean canChoose = catalog != null && catalog.profiles.size() > 1;
+        chooseProfile.setVisibility(canChoose ? View.VISIBLE : View.GONE);
+        chooseProfile.setOnClickListener(canChoose ? view -> chooseProfileAction.run() : null);
         return true;
+    }
+
+    void showProfileChooser(View focusToRestore, String hostUuid, String hostName,
+                            IntegrationProfileCatalog catalog, String selectedProfileId,
+                            Consumer<String> selectProfile, Runnable backAction,
+                            Runnable dismissAction) {
+        begin(focusToRestore);
+        integrationHostUuid = hostUuid;
+        onDismiss = dismissAction;
+        LinearLayout panel = panel();
+        panel.setPadding(dp(42), dp(38), dp(42), dp(34));
+        panel.setBackgroundColor(0xFF111522);
+        panel.addView(label("CHOOSE INTEGRATION PROFILE", 24, Color.WHITE, true), wrap());
+        panel.addView(label(hostName, 15, 0xFFB99CFF, true), top(dp(8)));
+
+        View initialFocus = null;
+        int visibleProfiles = Math.min(catalog.profiles.size(), 6);
+        for (int index = 0; index < visibleProfiles; index++) {
+            IntegrationProfileStatus profile = catalog.profiles.get(index);
+            boolean active = profile.id.equals(selectedProfileId);
+            TextView profileAction = card(profile.name + (active ? "  ·  ACTIVE" : ""),
+                    dp(420), dp(54));
+            profileAction.setOnClickListener(view -> selectProfile.accept(profile.id));
+            panel.addView(profileAction, top(index == 0 ? dp(24) : dp(8)));
+            if (initialFocus == null || active) initialFocus = profileAction;
+        }
+        if (catalog.profiles.size() > visibleProfiles) {
+            panel.addView(label("Additional profiles are available through Wake settings",
+                    12, 0xFF9CA6C5, false), top(dp(10)));
+        }
+        TextView back = card("BACK", dp(420), dp(54));
+        back.setOnClickListener(view -> backAction.run());
+        panel.addView(back, top(dp(14)));
+        TextView close = card("CLOSE", dp(420), dp(54));
+        close.setOnClickListener(view -> hide());
+        panel.addView(close, top(dp(8)));
+        layer.addView(panel, new FrameLayout.LayoutParams(dp(720), matchHeight(), Gravity.RIGHT));
+        showAndFocus(initialFocus != null ? initialFocus : back);
     }
 
     void hide() {
@@ -108,6 +158,7 @@ final class ConsoleModalController {
         gatewayStatus = null;
         profileStatus = null;
         servicesStatus = null;
+        chooseProfile = null;
         Runnable dismissAction = onDismiss;
         onDismiss = null;
         if (dismissAction != null) dismissAction.run();
@@ -120,6 +171,7 @@ final class ConsoleModalController {
         gatewayStatus = null;
         profileStatus = null;
         servicesStatus = null;
+        chooseProfile = null;
         onDismiss = null;
         if (!replacingVisiblePanel || returnFocus == null) returnFocus = focusToRestore;
         View dim = new View(context);
