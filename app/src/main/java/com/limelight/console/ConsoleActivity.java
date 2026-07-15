@@ -51,6 +51,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private ConsoleDataRepository repository;
     private HostGatewayStore hostGatewayStore;
+    private ConsoleSelectionStore selectionStore;
     private FrameLayout root;
     private SurfaceView streamSurface;
     private View privacyLayer;
@@ -64,6 +65,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private LinearLayout appRow;
     private View overlayLayer;
     private View modalLayer;
+    private View modalReturnFocus;
     private ConsoleDataRepository.Host selectedHost;
 
     @Override protected void onCreate(Bundle state) {
@@ -71,6 +73,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         applyTvWindow();
         repository = new ConsoleDataRepository(this);
         hostGatewayStore = new HostGatewayStore(this);
+        selectionStore = new ConsoleSelectionStore(this);
         setContentView(buildRoot());
         renderSnapshot();
     }
@@ -271,23 +274,39 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             renderGatewayProfile(null);
             return;
         }
+        List<String> hostUuids = new java.util.ArrayList<>();
         for (ConsoleDataRepository.Host host : hosts) {
+            hostUuids.add(host.uuid);
             TextView card = card(host.name + "\n" + safe(host.address), dp(250), dp(78));
             card.setOnClickListener(view -> selectHost(host, view.hasFocus()));
             hostRow.addView(card, cardParams());
         }
-        selectedHost = hosts.get(0);
+        int selectedHostIndex = ConsoleSelectionPolicy.hostIndex(
+                hostUuids, selectionStore.selectedHostUuid());
+        selectedHost = hosts.get(selectedHostIndex);
         renderApps(selectedHost);
         renderGatewayProfile(selectedHost);
         // One deterministic initial focus; subsequent refreshes never request focus.
-        hostRow.getChildAt(0).requestFocus();
+        hostRow.getChildAt(selectedHostIndex).requestFocus();
     }
 
     private void selectHost(ConsoleDataRepository.Host host, boolean userFocusedHost) {
         selectedHost = host;
+        selectionStore.rememberHost(host.uuid);
         renderApps(host);
         renderGatewayProfile(host);
-        if (userFocusedHost && appRow.getChildCount() > 0) appRow.getChildAt(0).requestFocus();
+        if (userFocusedHost && appRow.getChildCount() > 0) {
+            List<Integer> appIds = new java.util.ArrayList<>();
+            for (int index = 0; index < appRow.getChildCount(); index++) {
+                Object tag = appRow.getChildAt(index).getTag();
+                if (tag instanceof Integer) appIds.add((Integer) tag);
+            }
+            int appIndex = ConsoleSelectionPolicy.appIndex(
+                    appIds, selectionStore.selectedAppId(host.uuid));
+            if (appIndex >= 0 && appIndex < appRow.getChildCount()) {
+                appRow.getChildAt(appIndex).requestFocus();
+            }
+        }
     }
 
     private void renderApps(ConsoleDataRepository.Host host) {
@@ -314,6 +333,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         card.setClickable(true);
         card.setBackground(cardBackground(false));
         card.setMinimumWidth(dp(290));
+        card.setTag(app.id);
 
         ImageView poster = new ImageView(this);
         poster.setScaleType(ImageView.ScaleType.FIT_CENTER);
@@ -328,7 +348,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         card.addView(name, copy);
         card.setOnFocusChangeListener((view, focused) -> {
             view.setBackground(cardBackground(focused));
-            if (focused) showArtwork(app.posterUri, poster.getDrawable());
+            if (focused) {
+                selectionStore.rememberApp(host.uuid, app.id);
+                showArtwork(app.posterUri, poster.getDrawable());
+            }
         });
         card.setOnClickListener(view -> launchLegacy(host, app));
         return card;
@@ -462,6 +485,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void showExitConfirmation() {
+        modalReturnFocus = getCurrentFocus();
         FrameLayout modal = (FrameLayout) modalLayer;
         modal.removeAllViews();
         LinearLayout panel = new LinearLayout(this);
@@ -490,6 +514,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             return;
         }
 
+        modalReturnFocus = getCurrentFocus();
         GatewayConnection connection = hostGatewayStore.load(selectedHost.uuid);
         HostIntegrationSummary summary = HostIntegrationSummary.from(connection);
         FrameLayout modal = (FrameLayout) modalLayer;
@@ -535,6 +560,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         ((FrameLayout) modalLayer).removeAllViews();
         modalLayer.setVisibility(View.GONE);
         inputRouter.routeTo(InputRouter.Region.HOME);
+        View restore = modalReturnFocus;
+        modalReturnFocus = null;
+        if (restore != null && restore.isShown()) restore.requestFocus();
     }
 
     private void applyTvWindow() {
