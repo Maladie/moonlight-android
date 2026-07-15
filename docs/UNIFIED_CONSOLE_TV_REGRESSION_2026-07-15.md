@@ -173,3 +173,23 @@ Focused unit tests for session presentation, key routing and console state all
 pass. After making `UnifiedConsoleRuntimeGateTest` validate the selected build
 variant instead of hard-coding the old disabled state, the complete 196-test run
 also passes with `unifiedConsoleRuntime=true`.
+
+## Final Wake-parity and lifecycle run — 2026-07-15
+
+This run used an in-place signed release through `befc2429`. Commit `ed0a4d38`
+only aligns the exit-panel explanatory sentence with Wake and was not reinstalled.
+
+| Result | Scenario | Direct evidence / limit |
+| --- | --- | --- |
+| PASS | Wake-style Home composition | MoonWaker uses the Wake title/subtitle hierarchy, top-right Discord and Options actions, Resume/Return plus Session actions, controller/host sections and horizontal app row. Independent app history still changes tile order and content. |
+| PASS | Wake-style exit panel | The full-height right panel, Cancel-first focus, red Exit action and `BACK · PREVIOUS` hint match Wake geometry. The active-state copy explicitly says that the host session will be stopped. |
+| PASS | Options/integration character rendering | TV screenshots and UI hierarchy show `·`, `›` and multiplication characters correctly; a source scan found no common mojibake sequences in the Console Java package. |
+| PASS | Integrations Back routing | One remote Back from Host Integrations closed the panel directly to Home; Options did not reopen. |
+| PASS | Real stream image | Resume reached a real 1920x1080 Windows frame after approximately 18 seconds; no black frame remained. |
+| PASS | Session disconnect lifecycle | Confirmed Disconnect this TV ended the transport, dismissed both confirmation and Session panels, and returned Home in `ENDED` state. |
+| PASS | Home exit lifecycle | With a stream active, Home Back opened the exit panel. Confirmed Exit MoonWaker left the activity, disconnected the stream and reopened in `ENDED` state. |
+| PASS | Remote Back state routing | Stream Back opened Home and Home Back opened the exit panel instead of returning to the stream. |
+| NOT RUN | Physical DualSense Circle routing | Unit routing distinguishes controller `BUTTON_B` from Android/remote Back, but ADB injection is not evidence for the physical controller source. |
+| NOT RUN | Physical overlay-button hold | The existing Moonlight X overlay remains wired, but the configured physical hold still requires a person using the controller. |
+
+The complete 197-test unit run passed after the routing and lifecycle changes.

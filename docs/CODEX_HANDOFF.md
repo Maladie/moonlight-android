@@ -396,3 +396,23 @@ through `ConsoleStreamRuntime` → bootstrap → resolved runtime → session, w
 unit test proving that the new session is not created until the previous native
 disconnect callback completes. Only then enable Moonlight X's existing bitrate
 control in `ConsoleActivity`.
+
+## Wake parity and exit/session correction — 2026-07-15
+
+Later commits `9b737e47`, `588c60d6`, `befc2429` and `ed0a4d38` supersede the
+older Home/exit limitations above. Home and the exit panel now reuse Wake's
+composition, spacing, focus behavior and text metrics while retaining the
+MoonWaker name. Options and paired Host Integrations rendered punctuation
+correctly on the TV, and Back from the root integrations panel now closes
+directly to Home.
+
+Live verification passed for a real resumed stream frame, Session disconnect
+dismissing the Session panel, and Exit MoonWaker disconnecting an active stream
+before leaving the activity. Reopening MoonWaker after either destructive path
+reported `ENDED`. The physical DualSense Circle and 1500 ms overlay-button hold
+remain NOT RUN; do not infer them from ADB key injection or the routing unit
+tests.
+
+The next device step is a short human-input pass for those two controller cases.
+Runtime bitrate reconnection remains separate work and must keep the asynchronous
+disconnect-completion constraint described above.
