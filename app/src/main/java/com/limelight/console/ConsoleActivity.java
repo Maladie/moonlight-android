@@ -240,10 +240,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
         // This surface stays attached and VISIBLE. Console/privacy layers cover it.
         streamSurface = new StreamView(this);
-        streamSurface.setBackgroundColor(Color.BLACK);
-        streamSurface.setZOrderOnTop(false);
-        streamSurface.setZOrderMediaOverlay(false);
-        streamSurface.setElevation(0f);
+        // Match Game's proven SurfaceView composition exactly. An opaque View
+        // background here prevents SurfaceView from contributing its transparent
+        // region on some Sony/MediaTek compositors, leaving decoded video hidden
+        // behind a black app-window layer. The root remains black between frames.
         streamSurface.getHolder().addCallback(this);
         root.addView(streamSurface, match());
 
