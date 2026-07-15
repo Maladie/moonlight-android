@@ -46,6 +46,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleDataRepository repository;
     private HostGatewayStore hostGatewayStore;
     private ConsoleSelectionStore selectionStore;
+    private ConsoleLaunchHistoryStore launchHistoryStore;
     private ConsoleHostSelectionController hostSelectionController;
     private ConsoleArtworkController artworkController;
     private ConsoleTheme consoleTheme;
@@ -80,6 +81,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         repository = new ConsoleDataRepository(this);
         hostGatewayStore = new HostGatewayStore(this);
         selectionStore = new ConsoleSelectionStore(this);
+        launchHistoryStore = new ConsoleLaunchHistoryStore(this);
         hostSelectionController = new ConsoleHostSelectionController(repository, selectionStore);
         consoleTheme = new ConsoleTheme(this);
         setContentView(buildRoot());
@@ -424,7 +426,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         TextView name = label(app.name, 16, Color.WHITE, true);
         name.setSingleLine(true);
         copy.addView(name, new LinearLayout.LayoutParams(matchWidth(), wrapSize()));
-        TextView metadata = label("READY", 10, 0xFFAAAFC2, true);
+        TextView metadata = label(launchHistoryStore.metadata(
+                host.uuid, app.id, System.currentTimeMillis()), 10, 0xFFAAAFC2, true);
         copy.addView(metadata, top(dp(5)));
         TextView action = label("PLAY  ›", 12, 0xFFB99CFF, true);
         action.setAlpha(0f);
@@ -447,6 +450,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void launchLegacy(ConsoleDataRepository.Host host, ConsoleDataRepository.App app) {
+        launchHistoryStore.record(host, app, System.currentTimeMillis());
         stateMachine.dispatch(ConsoleStateMachine.Event.LAUNCH);
         applyState(ConsoleStateMachine.State.CONNECTING);
         ConsoleLaunchContract.Request request =
