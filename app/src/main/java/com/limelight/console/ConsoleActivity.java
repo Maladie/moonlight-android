@@ -229,16 +229,29 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         integrationStatus = label("HOST INTEGRATIONS · SELECT A HOST", 12, 0xFF9CA6C5, true);
         content.addView(integrationStatus, top(dp(6)));
 
-        TextView integrations = card("HOST INTEGRATIONS  ›", dp(280), dp(48));
-        integrations.setOnClickListener(view -> showHostIntegrations());
-        content.addView(integrations, top(dp(10)));
+        LinearLayout quickActions = new LinearLayout(this);
+        quickActions.setOrientation(LinearLayout.HORIZONTAL);
+        quickActions.setGravity(Gravity.CENTER_VERTICAL);
+        content.addView(quickActions, top(dp(8)));
 
         returnToGame = card("▶  RETURN TO GAME", dp(280), dp(54));
+        returnToGame.setId(View.generateViewId());
+        returnToGame.setContentDescription("Return to active game");
         returnToGame.setVisibility(View.GONE);
         returnToGame.setOnClickListener(view -> returnToActiveStream());
-        content.addView(returnToGame, top(dp(12)));
+        quickActions.addView(returnToGame, wrap());
 
-        content.addView(section("STREAMING HOSTS"), top(dp(22)));
+        TextView integrations = card("HOST INTEGRATIONS  ›", dp(280), dp(54));
+        integrations.setId(View.generateViewId());
+        integrations.setContentDescription("Open host integrations");
+        integrations.setOnClickListener(view -> showHostIntegrations());
+        LinearLayout.LayoutParams integrationActionParams = wrap();
+        integrationActionParams.leftMargin = dp(10);
+        quickActions.addView(integrations, integrationActionParams);
+        returnToGame.setNextFocusRightId(integrations.getId());
+        integrations.setNextFocusLeftId(returnToGame.getId());
+
+        content.addView(section("STREAMING HOSTS"), top(dp(16)));
         HorizontalScrollView hostScroll = horizontalScroll();
         hostRow = horizontalRow();
         hostScroll.addView(hostRow);
