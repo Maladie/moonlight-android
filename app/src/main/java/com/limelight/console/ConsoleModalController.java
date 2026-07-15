@@ -47,6 +47,7 @@ final class ConsoleModalController {
     private TextView vibepolloIntegration;
     private TextView virtualHereIntegration;
     private Runnable onDismiss;
+    private LinearLayout wakePanel;
 
     ConsoleModalController(Context context, FrameLayout layer,
                            InputRouter inputRouter, ConsoleTheme theme) {
@@ -489,6 +490,7 @@ final class ConsoleModalController {
         discordIntegration = null;
         vibepolloIntegration = null;
         virtualHereIntegration = null;
+        wakePanel = null;
         Runnable dismissAction = onDismiss;
         onDismiss = null;
         if (dismissAction != null) dismissAction.run();
@@ -505,6 +507,7 @@ final class ConsoleModalController {
         discordIntegration = null;
         vibepolloIntegration = null;
         virtualHereIntegration = null;
+        wakePanel = null;
         onDismiss = null;
         if (!replacingVisiblePanel || returnFocus == null) returnFocus = focusToRestore;
         View dim = new View(context);
@@ -520,6 +523,13 @@ final class ConsoleModalController {
         initialFocus.requestFocus();
     }
 
+    void showWakePanel(View focusToRestore, String eyebrow, String title, String details,
+                       Runnable backAction, View... actions) {
+        begin(focusToRestore);
+        integrationHostUuid = null;
+        showWakePanel(eyebrow, title, details, backAction, actions);
+    }
+
     private void showWakePanel(String eyebrow, String title, String details,
                                Runnable backAction, View... actions) {
         onDismiss = backAction;
@@ -527,6 +537,7 @@ final class ConsoleModalController {
         scroll.setFillViewport(true);
         scroll.setVerticalScrollBarEnabled(false);
         LinearLayout panel = new LinearLayout(context);
+        wakePanel = panel;
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setPadding(dp(34), dp(26), dp(34), dp(20));
         GradientDrawable background = new GradientDrawable(
@@ -561,6 +572,7 @@ final class ConsoleModalController {
         }
         panel.addView(label(backAction != null ? "BACK  Â·  PREVIOUS" : "BACK  Â·  CLOSE",
                 11, 0x8FFFFFFF, true), top(dp(12)));
+        rebuildWakeFocusNavigation();
         layer.addView(scroll, new FrameLayout.LayoutParams(
                 dp(510), matchHeight(), Gravity.END));
         showAndFocus(initial != null ? initial : titleView);
@@ -578,7 +590,7 @@ final class ConsoleModalController {
         return null;
     }
 
-    private TextView wakeAction(String value) {
+    TextView wakeAction(String value) {
         TextView action = label(value, 14, 0xFFF0E9FF, true);
         action.setFocusable(true);
         action.setClickable(true);
@@ -590,6 +602,14 @@ final class ConsoleModalController {
         return action;
     }
 
+    TextView wakeStatus(String value) {
+        TextView status = label(value, 14, 0xFFC1C5D6, false);
+        status.setLineSpacing(dp(3), 1f);
+        status.setFocusable(false);
+        status.setPadding(dp(4), dp(6), dp(4), dp(14));
+        return status;
+    }
+
     private TextView wakeDangerAction(String value) {
         TextView action = wakeAction(value);
         action.setOnFocusChangeListener((view, focused) -> styleWakeDanger(action, focused));
@@ -597,7 +617,7 @@ final class ConsoleModalController {
         return action;
     }
 
-    private LinearLayout wakeActionRow(View... actions) {
+    LinearLayout wakeActionRow(View... actions) {
         LinearLayout row = new LinearLayout(context);
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
@@ -608,6 +628,48 @@ final class ConsoleModalController {
             row.addView(actions[index], params);
         }
         return row;
+    }
+
+    void rebuildWakeFocusNavigation() {
+        if (wakePanel == null) return;
+        List<List<View>> rows = new java.util.ArrayList<>();
+        for (int index = 0; index < wakePanel.getChildCount(); index++) {
+            View child = wakePanel.getChildAt(index);
+            if (child.getVisibility() != View.VISIBLE) continue;
+            List<View> row = new java.util.ArrayList<>();
+            collectFocusable(child, row);
+            if (!row.isEmpty()) rows.add(row);
+        }
+        for (List<View> row : rows) {
+            for (View action : row) {
+                if (action.getId() == View.NO_ID) action.setId(View.generateViewId());
+            }
+        }
+        for (int rowIndex = 0; rowIndex < rows.size(); rowIndex++) {
+            List<View> row = rows.get(rowIndex);
+            for (int column = 0; column < row.size(); column++) {
+                View action = row.get(column);
+                List<View> previousRow = rows.get(Math.max(0, rowIndex - 1));
+                List<View> nextRow = rows.get(Math.min(rows.size() - 1, rowIndex + 1));
+                action.setNextFocusUpId(previousRow.get(
+                        Math.min(column, previousRow.size() - 1)).getId());
+                action.setNextFocusDownId(nextRow.get(
+                        Math.min(column, nextRow.size() - 1)).getId());
+                action.setNextFocusLeftId(row.get(Math.max(0, column - 1)).getId());
+                action.setNextFocusRightId(row.get(
+                        Math.min(row.size() - 1, column + 1)).getId());
+            }
+        }
+    }
+
+    private static void collectFocusable(View view, List<View> result) {
+        if (view.getVisibility() != View.VISIBLE) return;
+        if (view.isFocusable()) result.add(view);
+        if (!(view instanceof ViewGroup)) return;
+        ViewGroup group = (ViewGroup) view;
+        for (int index = 0; index < group.getChildCount(); index++) {
+            collectFocusable(group.getChildAt(index), result);
+        }
     }
 
     private void styleWakeAction(View action, boolean focused) {

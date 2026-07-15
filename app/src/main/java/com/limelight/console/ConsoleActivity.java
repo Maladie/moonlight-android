@@ -45,6 +45,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.atomic.AtomicInteger;
 
 /** Milestone-1 Android TV console shell with a persistent stream surface layer. */
 public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
@@ -64,6 +65,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService integrationExecutor = Executors.newSingleThreadExecutor();
     private final HostGatewayClient hostGatewayClient = new HostGatewayClient();
+    private final AtomicInteger integrationPanelRequest = new AtomicInteger();
     private final Runnable sessionRefresh = this::refreshVisibleSession;
 
     private ConsoleDataRepository repository;
@@ -1171,6 +1173,124 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void showHostIntegrations() {
+        ConsoleDataRepository.Host host = selectedHost;
+        if (host == null || host.uuid == null || host.address == null || host.address.isEmpty()) {
+            Toast.makeText(this, "Choose a streaming host first.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        GatewayConnection stored = hostGatewayStore.load(host.uuid);
+        if (stored == null) {
+            TextView pair = modalController.wakeAction("PAIR HOST GATEWAY");
+            pair.setOnClickListener(view -> showGatewayPairing());
+            modalController.showWakePanel(getCurrentFocus(), "HOST INTEGRATIONS", host.name,
+                    "Start the Wake & Play Host Gateway on this PC, then enter its six-digit " +
+                            "pairing code. Discord and repair options remain hidden until the " +
+                            "corresponding Bridge is detected.",
+                    this::showOptions, pair);
+            return;
+        }
+
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(host.uuid);
+        int request = integrationPanelRequest.incrementAndGet();
+        TextView status = modalController.wakeStatus("Gateway: checkingâ€¦");
+        TextView profile = modalController.wakeAction("INTEGRATION PROFILE  Â·  " +
+                connection.profileId.toUpperCase(Locale.ROOT) + "  â€ş");
+        TextView vibepolloStatus = modalController.wakeStatus(
+                "Vibepollo Bridge: checkingâ€¦");
+        TextView discordStatus = modalController.wakeStatus("Discord Bridge: checkingâ€¦");
+        TextView vibepollo = modalController.wakeAction("VIBEPOLLO FIX  â€ş");
+        TextView discord = modalController.wakeAction("OPEN DISCORD  â€ş");
+        TextView refresh = modalController.wakeAction("REFRESH STATUS");
+        TextView forget = modalController.wakeAction("FORGET THIS GATEWAY");
+        vibepollo.setVisibility(View.GONE);
+        discord.setVisibility(View.GONE);
+        profile.setOnClickListener(view -> refreshHostIntegrationsForProfile(host, stored));
+        vibepollo.setOnClickListener(view -> showVibepolloPanel());
+        discord.setOnClickListener(view -> showDiscordPanel());
+        refresh.setOnClickListener(view -> showHostIntegrations());
+        forget.setOnClickListener(view -> confirmForgetGateway(host));
+        modalController.showWakePanel(getCurrentFocus(), "HOST INTEGRATIONS", host.name,
+                "Paired gateway: " + connection.endpoint, this::showOptions,
+                status, profile, vibepolloStatus, discordStatus,
+                vibepollo, discord, refresh, forget);
+
+        integrationExecutor.execute(() -> {
+            try {
+                HostGatewayClient.IntegrationProfiles profiles =
+                        hostGatewayClient.getIntegrationProfiles(connection);
+                HostGatewayClient.IntegrationProfile selected = profiles.find(connection.profileId);
+                HostGatewayClient.Capabilities capabilities =
+                        hostGatewayClient.getCapabilities(connection);
+                mainHandler.post(() -> {
+                    if (request != integrationPanelRequest.get() || selectedHost == null ||
+                            !host.uuid.equals(selectedHost.uuid)) return;
+                    status.setText(selected == null ?
+                            "Gateway: online\nSelected profile is no longer registered." :
+                            "Gateway: online");
+                    if (selected != null) {
+                        boolean active = profiles.suggestedProfileId.equals(selected.id);
+                        profile.setText("INTEGRATION PROFILE  Â·  " +
+                                selected.name.toUpperCase(Locale.ROOT) +
+                                (active ? "  Â·  ACTIVE" : "") + "  â€ş");
+                    } else {
+                        profile.setText("SELECT INTEGRATION PROFILE  â€ş");
+                    }
+                    vibepolloStatus.setText("Vibepollo Bridge: " +
+                            (capabilities.vibepolloFix ? "online" : "offline"));
+                    discordStatus.setText("Discord Bridge: " +
+                            (capabilities.discord ? "online" : "offline"));
+                    vibepollo.setVisibility(capabilities.vibepolloFix ?
+                            View.VISIBLE : View.GONE);
+                    discord.setVisibility(capabilities.discord ? View.VISIBLE : View.GONE);
+                    modalController.rebuildWakeFocusNavigation();
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> {
+                    if (request != integrationPanelRequest.get()) return;
+                    status.setText("Gateway: unavailable\n" + friendlyGatewayError(error));
+                    vibepolloStatus.setText("Vibepollo Bridge: status unavailable");
+                    discordStatus.setText("Discord Bridge: status unavailable");
+                });
+            }
+        });
+    }
+
+    private void refreshHostIntegrationsForProfile(
+            ConsoleDataRepository.Host host, GatewayConnection connection) {
+        gatewayProfileRefreshController.refresh(connection,
+                new GatewayProfileRefreshController.Callback() {
+                    @Override public void onLoaded(IntegrationProfileCatalog catalog) {
+                        if (selectedHost != null && host.uuid.equals(selectedHost.uuid)) {
+                            showProfileChooser(host.uuid, connection, catalog);
+                        }
+                    }
+
+                    @Override public void onUnavailable() {
+                        Toast.makeText(ConsoleActivity.this,
+                                "Integration profiles are unavailable.", Toast.LENGTH_LONG).show();
+                    }
+                });
+    }
+
+    private void confirmForgetGateway(ConsoleDataRepository.Host host) {
+        TextView cancel = modalController.wakeAction("CANCEL");
+        TextView forget = modalController.wakeAction("FORGET GATEWAY");
+        cancel.setOnClickListener(view -> showHostIntegrations());
+        forget.setOnClickListener(view -> {
+            integrationPanelRequest.incrementAndGet();
+            hostGatewayStore.remove(host.uuid);
+            renderGatewayProfile(host);
+            showHostIntegrations();
+        });
+        modalController.showWakePanel(getCurrentFocus(), "HOST INTEGRATIONS",
+                "Forget paired gateway?",
+                "MoonWaker will delete the local client token and certificate pin. " +
+                        "The host can be paired again with a new code.",
+                this::showHostIntegrations, cancel, forget);
+    }
+
+    private void showHostIntegrationsLegacy() {
         if (selectedHost == null) {
             Toast.makeText(this, "Choose a streaming host first.", Toast.LENGTH_SHORT).show();
             return;
@@ -1482,6 +1602,94 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void showVibepolloPanel() {
+        ConsoleDataRepository.Host host = selectedHost;
+        HostGatewayClient.Connection connection = selectedGatewayConnection();
+        if (host == null || connection == null) { showHostIntegrations(); return; }
+        int request = integrationPanelRequest.incrementAndGet();
+        TextView status = modalController.wakeStatus("Loading Vibepollo statusâ€¦");
+        TextView restart = modalController.wakeAction("RESTART VIBEPOLLO");
+        TextView resetDisplay = modalController.wakeAction("RESET REMEMBERED DISPLAY");
+        TextView exportLogs = modalController.wakeAction("EXPORT VIBEPOLLO LOGS");
+        TextView refresh = modalController.wakeAction("REFRESH STATUS");
+        restart.setOnClickListener(view -> confirmVibepolloAction(connection, "restart",
+                "Restart Vibepollo?",
+                "The active host service will be restarted. An active stream may be interrupted."));
+        resetDisplay.setOnClickListener(view -> confirmVibepolloAction(connection,
+                "reset-display", "Reset remembered display?",
+                "Vibepollo will forget its persisted display choice and select it again " +
+                        "on the next session."));
+        exportLogs.setOnClickListener(view -> runVibepolloAction(connection,
+                "export-logs", "Exporting Vibepollo logsâ€¦"));
+        refresh.setOnClickListener(view -> showVibepolloPanel());
+        modalController.showWakePanel(getCurrentFocus(), "VIBEPOLLO FIX", host.name,
+                "Integration profile: " + connection.profileId +
+                        "\nRepair actions run on the paired host. Restart and display reset " +
+                        "always require confirmation.",
+                this::showHostIntegrations, status, restart, resetDisplay, exportLogs, refresh);
+        integrationExecutor.execute(() -> {
+            try {
+                HostGatewayClient.RepairStatus repair =
+                        hostGatewayClient.getVibepolloRepairStatus(connection);
+                mainHandler.post(() -> {
+                    if (request != integrationPanelRequest.get()) return;
+                    StringBuilder value = new StringBuilder(repair.online ?
+                            "Vibepollo online" : "Vibepollo API unavailable");
+                    if (!repair.version.isEmpty()) value.append("\nVersion ").append(repair.version);
+                    if (!repair.error.isEmpty()) value.append("\nLast API error: ").append(repair.error);
+                    status.setText(value.toString());
+                });
+            } catch (Exception error) {
+                mainHandler.post(() -> {
+                    if (request == integrationPanelRequest.get()) {
+                        status.setText("Unable to load Vibepollo status\n" +
+                                friendlyGatewayError(error));
+                    }
+                });
+            }
+        });
+    }
+
+    private void confirmVibepolloAction(HostGatewayClient.Connection connection,
+                                        String action, String title, String warning) {
+        TextView cancel = modalController.wakeAction("CANCEL");
+        TextView confirm = modalController.wakeAction("CONFIRM");
+        cancel.setOnClickListener(view -> showVibepolloPanel());
+        confirm.setOnClickListener(view -> runVibepolloAction(
+                connection, action, title + "â€¦"));
+        modalController.showWakePanel(getCurrentFocus(), "VIBEPOLLO FIX", title, warning,
+                this::showVibepolloPanel, cancel, confirm);
+    }
+
+    private void runVibepolloAction(HostGatewayClient.Connection connection,
+                                     String action, String progress) {
+        int request = integrationPanelRequest.incrementAndGet();
+        TextView status = modalController.wakeStatus(progress);
+        TextView back = modalController.wakeAction("BACK TO VIBEPOLLO FIX");
+        TextView close = modalController.wakeAction("CLOSE");
+        back.setVisibility(View.GONE);
+        back.setOnClickListener(view -> showVibepolloPanel());
+        close.setOnClickListener(view -> modalController.hide());
+        modalController.showWakePanel(getCurrentFocus(), "VIBEPOLLO FIX", "Host operation",
+                null, this::showVibepolloPanel, status, back, close);
+        integrationExecutor.execute(() -> {
+            String result;
+            try {
+                hostGatewayClient.runVibepolloRepair(connection, action);
+                result = "Operation completed successfully.";
+            } catch (Exception error) {
+                result = "Operation failed\n" + friendlyGatewayError(error);
+            }
+            String rendered = result;
+            mainHandler.post(() -> {
+                if (request != integrationPanelRequest.get()) return;
+                status.setText(rendered);
+                back.setVisibility(View.VISIBLE);
+                modalController.rebuildWakeFocusNavigation();
+            });
+        });
+    }
+
+    private void showVibepolloPanelLegacy() {
         HostGatewayClient.Connection connection = selectedGatewayConnection();
         if (connection == null) { showHostIntegrations(); return; }
         modalController.showActionPanel(getCurrentFocus(), "HOST INTEGRATIONS",
