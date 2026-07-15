@@ -1,13 +1,20 @@
 package com.limelight.console;
 
 import android.app.Activity;
+import android.app.Service;
+import android.content.ComponentName;
+import android.content.Intent;
+import android.content.ServiceConnection;
 import android.os.Handler;
+import android.os.IBinder;
 import android.os.Looper;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
+import android.view.InputDevice;
 
 import com.limelight.binding.input.ControllerHandler;
 import com.limelight.binding.input.KeyboardTranslator;
+import com.limelight.binding.input.driver.UsbDriverService;
 import com.limelight.binding.video.MediaCodecDecoderRenderer;
 import com.limelight.nvstream.input.ControllerPacket;
 import com.limelight.nvstream.input.KeyboardPacket;
@@ -28,12 +35,15 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
     }
 
     private final ControllerHandler controllers;
+    private final Activity activity;
     private final StreamInputSender inputSender;
     private final KeyboardTranslator keyboardTranslator = new KeyboardTranslator();
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final MediaCodecDecoderRenderer renderer;
     private final Presentation presentation;
     private boolean closed;
+    private boolean usbDriverBinding;
+    private ServiceConnection usbDriverConnection;
 
     AndroidConsoleSessionInput(Activity activity,
                                StreamInputSender inputSender,
@@ -42,8 +52,9 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
                                MediaCodecDecoderRenderer renderer,
                                Presentation presentation) {
         this.inputSender = Objects.requireNonNull(inputSender, "inputSender");
+        this.activity = Objects.requireNonNull(activity, "activity");
         controllers = new ControllerHandler(
-                Objects.requireNonNull(activity, "activity"),
+                this.activity,
                 this.inputSender,
                 Objects.requireNonNull(gestures, "gestures"),
                 Objects.requireNonNull(preferences, "preferences"));
@@ -58,11 +69,31 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
                 // No progress indicator is shown by the unified console.
             }
         });
+        if (preferences.usbDriver) {
+            usbDriverConnection = new ServiceConnection() {
+                @Override public void onServiceConnected(ComponentName name, IBinder service) {
+                    if (closed) return;
+                    UsbDriverService.UsbDriverBinder binder =
+                            (UsbDriverService.UsbDriverBinder) service;
+                    binder.setListener(controllers);
+                    binder.setStateListener(new UsbDriverService.UsbDriverStateListener() {
+                        @Override public void onUsbPermissionPromptStarting() { }
+                        @Override public void onUsbPermissionPromptCompleted() { }
+                    });
+                    binder.start();
+                }
+
+                @Override public void onServiceDisconnected(ComponentName name) { }
+            };
+            usbDriverBinding = this.activity.bindService(
+                    new Intent(this.activity, UsbDriverService.class),
+                    usbDriverConnection, Service.BIND_AUTO_CREATE);
+        }
     }
 
     @Override public synchronized boolean handleKeyEvent(KeyEvent event) {
         if (closed || event == null ||
-                !ControllerHandler.isGameControllerDevice(event.getDevice())) return false;
+                !isPhysicalGamepadEvent(event)) return false;
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
             return controllers.handleButtonDown(event);
         }
@@ -70,6 +101,14 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
             return controllers.handleButtonUp(event);
         }
         return false;
+    }
+
+    private static boolean isPhysicalGamepadEvent(KeyEvent event) {
+        int sources = event.getSource();
+        InputDevice device = event.getDevice();
+        if (device != null) sources |= device.getSources();
+        return (sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD ||
+                (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
     }
 
     @Override public synchronized boolean handleMotionEvent(MotionEvent event) {
@@ -170,6 +209,10 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
     @Override public synchronized void close() {
         if (closed) return;
         closed = true;
+        if (usbDriverBinding) {
+            activity.unbindService(usbDriverConnection);
+            usbDriverBinding = false;
+        }
         controllers.stop();
         controllers.destroy();
     }
