@@ -208,6 +208,20 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
 - Removal: none; this factory becomes the unified runtime's configuration entry
   point after the Game Activity adapter is removed.
 
+### P011 - Validated stream launch parameters
+
+- Surface: `utils/ServerHelper.java`.
+- Reason: convert the resolved host, app, client identity, certificate, and
+  preference context into `StreamLaunchParameters` before constructing the
+  compatibility Intent. The unified Console runtime can consume the same model
+  directly without launching Game.
+- Risk: incomplete or incorrectly mapped identity data could prevent connection
+  or target the wrong saved host application.
+- Regression: focused field-mapping and fail-closed validation tests, existing
+  shortcut launch tests, and Java compilation.
+- Removal: delete only the Intent mapping when the compatibility Game Activity
+  is removed; retain the validated launch model.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.

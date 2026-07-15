@@ -10,6 +10,7 @@ import com.limelight.R;
 import com.limelight.ShortcutTrampoline;
 import com.limelight.binding.PlatformBinding;
 import com.limelight.computers.ComputerManagerService;
+import com.limelight.console.StreamLaunchParameters;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.HostHttpResponseException;
 import com.limelight.nvstream.http.NvApp;
@@ -68,23 +69,28 @@ public class ServerHelper {
     public static Intent createStartIntent(Activity parent, NvApp app, ComputerDetails computer,
                                            ComputerManagerService.ComputerManagerBinder managerBinder,
                                            String quickLaunchAppKey, boolean applyPreferenceOverrides) {
+        StreamLaunchParameters parameters = StreamLaunchParameters.create(
+                computer, app, managerBinder.getUniqueId(), quickLaunchAppKey,
+                applyPreferenceOverrides);
         Intent intent = new Intent(parent, Game.class);
-        intent.putExtra(Game.EXTRA_HOST, computer.activeAddress.address);
-        intent.putExtra(Game.EXTRA_PORT, computer.activeAddress.port);
-        intent.putExtra(Game.EXTRA_HTTPS_PORT, computer.httpsPort);
-        intent.putExtra(Game.EXTRA_APP_NAME, app.getAppName());
-        intent.putExtra(Game.EXTRA_APP_ID, app.getAppId());
-        intent.putExtra(Game.EXTRA_APP_HDR, app.isHdrSupported());
-        intent.putExtra(Game.EXTRA_UNIQUEID, managerBinder.getUniqueId());
-        intent.putExtra(Game.EXTRA_PC_UUID, computer.uuid);
-        intent.putExtra(Game.EXTRA_PC_NAME, computer.name);
-        intent.putExtra(Game.EXTRA_APPLY_PREFERENCE_OVERRIDES, applyPreferenceOverrides);
-        if (quickLaunchAppKey != null) {
-            intent.putExtra(Game.EXTRA_QUICK_LAUNCH_APP_KEY, quickLaunchAppKey);
+        intent.putExtra(Game.EXTRA_HOST, parameters.host);
+        intent.putExtra(Game.EXTRA_PORT, parameters.port);
+        intent.putExtra(Game.EXTRA_HTTPS_PORT, parameters.httpsPort);
+        intent.putExtra(Game.EXTRA_APP_NAME, parameters.appName);
+        intent.putExtra(Game.EXTRA_APP_ID, parameters.appId);
+        intent.putExtra(Game.EXTRA_APP_HDR, parameters.appSupportsHdr);
+        intent.putExtra(Game.EXTRA_UNIQUEID, parameters.uniqueId);
+        intent.putExtra(Game.EXTRA_PC_UUID, parameters.computerUuid);
+        intent.putExtra(Game.EXTRA_PC_NAME, parameters.computerName);
+        intent.putExtra(Game.EXTRA_APPLY_PREFERENCE_OVERRIDES,
+                parameters.applyPreferenceOverrides);
+        if (parameters.quickLaunchAppKey != null) {
+            intent.putExtra(Game.EXTRA_QUICK_LAUNCH_APP_KEY, parameters.quickLaunchAppKey);
         }
         try {
-            if (computer.serverCert != null) {
-                intent.putExtra(Game.EXTRA_SERVER_CERT, computer.serverCert.getEncoded());
+            if (parameters.serverCertificate != null) {
+                intent.putExtra(Game.EXTRA_SERVER_CERT,
+                        parameters.serverCertificate.getEncoded());
             }
         } catch (CertificateEncodingException e) {
             e.printStackTrace();
