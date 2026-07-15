@@ -42,6 +42,7 @@ final class AndroidConsoleSessionEnvironment implements
     private final ConsoleDisplayModeController displayModeController;
     private final Callbacks callbacks;
     private final SharedPreferences tombstonePreferences;
+    private PreferenceConfiguration activePreferences;
 
     AndroidConsoleSessionEnvironment(Activity activity,
                                      StreamView streamView,
@@ -55,6 +56,7 @@ final class AndroidConsoleSessionEnvironment implements
     @Override public StreamRendererConfiguration rendererConfiguration(
             PreferenceConfiguration preferences,
             StreamLaunchParameters parameters) {
+        activePreferences = preferences;
         ConnectivityManager connectivity = (ConnectivityManager)
                 activity.getSystemService(Context.CONNECTIVITY_SERVICE);
         boolean metered = connectivity != null && connectivity.isActiveNetworkMetered();
@@ -180,5 +182,9 @@ final class AndroidConsoleSessionEnvironment implements
                 finalHighPerformance.release();
             }
         };
+    }
+
+    void setPerformanceOverlayEnabled(boolean enabled) {
+        if (activePreferences != null) activePreferences.enablePerfOverlay = enabled;
     }
 }

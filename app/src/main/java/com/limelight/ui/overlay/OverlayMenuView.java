@@ -909,14 +909,23 @@ public class OverlayMenuView extends LinearLayout {
     private void navigateUp() {
         if (activeRegion == Region.VERTICAL) {
             if (!verticalButtons.isEmpty()) {
-                setVerticalIndex((verticalIndex - 1 + verticalButtons.size()) % verticalButtons.size());
+                if (verticalIndex > 0) {
+                    setVerticalIndex(verticalIndex - 1);
+                } else if (!horizontalButtons.isEmpty()) {
+                    clearVerticalSelection();
+                    activeRegion = Region.HORIZONTAL;
+                    setHorizontalIndex(horizontalButtons.size() - 1);
+                }
             }
         } else if (activeRegion == Region.HORIZONTAL) {
             // From horizontal → Up: jump to button above Disconnect (second-to-last in vertical)
-            clearHorizontalSelection();
-            activeRegion = Region.VERTICAL;
-            int target = verticalButtons.size() >= 2 ? verticalButtons.size() - 2 : 0;
-            setVerticalIndex(target);
+            if (horizontalIndex > 0) {
+                setHorizontalIndex(horizontalIndex - 1);
+            } else if (!verticalButtons.isEmpty()) {
+                clearHorizontalSelection();
+                activeRegion = Region.VERTICAL;
+                setVerticalIndex(verticalButtons.size() - 1);
+            }
         } else if (!discordButtons.isEmpty()) {
             setDiscordIndex(discordIndex >= 2 ? discordIndex - 2 :
                     Math.min(discordIndex + 2, discordButtons.size() - 1));
@@ -926,13 +935,23 @@ public class OverlayMenuView extends LinearLayout {
     private void navigateDown() {
         if (activeRegion == Region.VERTICAL) {
             if (!verticalButtons.isEmpty()) {
-                setVerticalIndex((verticalIndex + 1) % verticalButtons.size());
+                if (verticalIndex < verticalButtons.size() - 1) {
+                    setVerticalIndex(verticalIndex + 1);
+                } else if (!horizontalButtons.isEmpty()) {
+                    clearVerticalSelection();
+                    activeRegion = Region.HORIZONTAL;
+                    setHorizontalIndex(0);
+                }
             }
         } else if (activeRegion == Region.HORIZONTAL) {
             // From horizontal → Down: jump to topmost vertical button
-            clearHorizontalSelection();
-            activeRegion = Region.VERTICAL;
-            setVerticalIndex(0);
+            if (horizontalIndex < horizontalButtons.size() - 1) {
+                setHorizontalIndex(horizontalIndex + 1);
+            } else if (!verticalButtons.isEmpty()) {
+                clearHorizontalSelection();
+                activeRegion = Region.VERTICAL;
+                setVerticalIndex(0);
+            }
         } else if (!discordButtons.isEmpty()) {
             setDiscordIndex(discordIndex + 2 < discordButtons.size() ?
                     discordIndex + 2 : discordIndex % 2);

@@ -19,7 +19,7 @@ android {
                 Boolean.toString(unifiedConsoleRuntime.toBoolean())
 
         versionName "12.1"
-        versionCode = 315
+        versionCode = 316
 
         // Generate native debug symbols to allow Google Play to symbolicate our native crashes
         ndk.debugSymbolLevel = 'FULL'

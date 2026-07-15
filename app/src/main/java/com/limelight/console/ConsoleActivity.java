@@ -126,6 +126,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private HostAvailabilityProbeController hostAvailabilityProbeController;
     private ConsoleHostLaunchPreparationController launchPreparationController;
     private ConsoleStreamRuntime streamRuntime;
+    private AndroidConsoleSessionEnvironment sessionEnvironment;
     private ConsoleSessionInput unifiedSessionInput;
     private boolean unifiedTransportConnected;
     private boolean unifiedFirstFrameRendered;
@@ -431,6 +432,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
             @Override public void onToggleStats() {
                 overlayPreferences.enablePerfOverlay = !overlayPreferences.enablePerfOverlay;
+                if (sessionEnvironment != null) {
+                    sessionEnvironment.setPerformanceOverlayEnabled(
+                            overlayPreferences.enablePerfOverlay);
+                }
                 updatePerformanceOverlayVisibility();
             }
 
@@ -1459,8 +1464,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             return new LegacyConsoleStreamRuntime(this, hostGatewayStore);
         }
 
-        AndroidConsoleSessionEnvironment environment =
-                new AndroidConsoleSessionEnvironment(
+        sessionEnvironment = new AndroidConsoleSessionEnvironment(
                         this,
                         streamSurface,
                         new AndroidConsoleSessionEnvironment.Callbacks() {
@@ -1519,7 +1523,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                             }
                         });
         MoonlightConsoleSessionFactory sessionFactory =
-                new MoonlightConsoleSessionFactory(this, environment);
+                new MoonlightConsoleSessionFactory(this, sessionEnvironment);
         return new UnifiedConsoleRuntimeBootstrap(
                 this,
                 sessionFactory,
