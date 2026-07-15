@@ -11,7 +11,7 @@ public final class ConsoleStateMachine {
     public enum Event {
         LAUNCH, CONNECTED, CONNECTION_FAILED, READINESS_TIMEOUT, OPEN_CONSOLE,
         RETURN_TO_STREAM, OPEN_OVERLAY, CLOSE_OVERLAY, RETRY, HOME, REVEAL_STREAM,
-        DISCONNECT, DISCONNECTED, BACK
+        DISCONNECT, DISCONNECTED, RECONNECT, BACK
     }
 
     public enum InputTarget { NONE, HOME, GAMEPLAY, OVERLAY, RECOVERY }
@@ -80,7 +80,8 @@ public final class ConsoleStateMachine {
                 }
                 break;
             case STREAM:
-                if (event == Event.BACK || event == Event.OPEN_CONSOLE || event == Event.HOME) {
+                if (event == Event.RECONNECT) state = State.CONNECTING;
+                else if (event == Event.BACK || event == Event.OPEN_CONSOLE || event == Event.HOME) {
                     state = State.CONSOLE_OVER_STREAM;
                 } else if (event == Event.OPEN_OVERLAY) {
                     state = State.OVERLAY;
@@ -91,13 +92,15 @@ public final class ConsoleStateMachine {
                 }
                 break;
             case CONSOLE_OVER_STREAM:
-                if (event == Event.RETURN_TO_STREAM) state = State.STREAM;
+                if (event == Event.RECONNECT) state = State.CONNECTING;
+                else if (event == Event.RETURN_TO_STREAM) state = State.STREAM;
                 else if (event == Event.OPEN_OVERLAY) state = State.OVERLAY;
                 else if (event == Event.DISCONNECT) state = State.DISCONNECTING;
                 else if (event == Event.BACK) effect = Effect.SHOW_EXIT_CONFIRMATION;
                 break;
             case OVERLAY:
-                if (event == Event.CLOSE_OVERLAY || event == Event.BACK) state = State.STREAM;
+                if (event == Event.RECONNECT) state = State.CONNECTING;
+                else if (event == Event.CLOSE_OVERLAY || event == Event.BACK) state = State.STREAM;
                 else if (event == Event.OPEN_CONSOLE || event == Event.HOME) state = State.CONSOLE_OVER_STREAM;
                 else if (event == Event.DISCONNECT) state = State.DISCONNECTING;
                 break;

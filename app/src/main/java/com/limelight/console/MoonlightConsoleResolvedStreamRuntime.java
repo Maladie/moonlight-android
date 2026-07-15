@@ -7,6 +7,10 @@ final class MoonlightConsoleResolvedStreamRuntime implements ConsoleResolvedStre
     interface Session {
         void connect();
         void disconnect();
+        default void disconnect(Runnable afterStopped) {
+            disconnect();
+            if (afterStopped != null) afterStopped.run();
+        }
         void showStream();
         void showHome();
         void quitHostApplication();
@@ -71,6 +75,10 @@ final class MoonlightConsoleResolvedStreamRuntime implements ConsoleResolvedStre
         disconnectCurrent();
     }
 
+    @Override public synchronized void cancelPendingConnection(Runnable afterStopped) {
+        disconnectCurrent(afterStopped);
+    }
+
     @Override public synchronized void showStream() {
         if (session != null) {
             session.showStream();
@@ -125,11 +133,17 @@ final class MoonlightConsoleResolvedStreamRuntime implements ConsoleResolvedStre
     }
 
     private void disconnectCurrent() {
+        disconnectCurrent(null);
+    }
+
+    private void disconnectCurrent(Runnable afterStopped) {
         generation++;
         Session current = session;
         session = null;
         if (current != null) {
-            current.disconnect();
+            current.disconnect(afterStopped);
+        } else if (afterStopped != null) {
+            afterStopped.run();
         }
     }
 }

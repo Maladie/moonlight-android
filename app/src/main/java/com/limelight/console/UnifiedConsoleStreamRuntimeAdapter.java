@@ -30,6 +30,20 @@ final class UnifiedConsoleStreamRuntimeAdapter implements ConsoleStreamRuntime, 
         });
     }
 
+    @Override public void reconnectAtBitrate(
+            ConsoleLaunchContract.Request request, int bitrateKbps) {
+        pipeline.reconnect(request.withRuntimeBitrate(bitrateKbps),
+                new UnifiedConsoleLaunchPipeline.Listener() {
+                    @Override public void onStage(UnifiedConsoleLaunchPipeline.Stage stage) {
+                        listener.onStage(stage);
+                    }
+
+                    @Override public void onFailed(UnifiedConsoleLaunchPipeline.Failure failure) {
+                        listener.onFailure(failure);
+                    }
+                });
+    }
+
     @Override public void returnToActiveStream() {
         pipeline.showStream();
     }

@@ -9,6 +9,10 @@ interface ConsoleResolvedStreamRuntime extends AutoCloseable {
 
     void connect(StreamLaunchParameters parameters, Listener listener);
     void cancelPendingConnection();
+    default void cancelPendingConnection(Runnable afterStopped) {
+        cancelPendingConnection();
+        if (afterStopped != null) afterStopped.run();
+    }
     void showStream();
     void showHome();
     void quitHostApplication();

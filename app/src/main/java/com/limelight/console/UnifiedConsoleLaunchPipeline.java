@@ -60,6 +60,30 @@ final class UnifiedConsoleLaunchPipeline {
                 });
     }
 
+    synchronized void reconnect(ConsoleLaunchContract.Request request, Listener listener) {
+        Objects.requireNonNull(request, "request");
+        Objects.requireNonNull(listener, "listener");
+        int reconnectGeneration = ++generation;
+        resolutionController.cancel();
+        runtime.cancelPendingConnection(() -> {
+            synchronized (UnifiedConsoleLaunchPipeline.this) {
+                if (reconnectGeneration != generation) return;
+                listener.onStage(Stage.RESOLVING_HOST);
+                resolutionController.resolve(request,
+                        new ConsoleStreamLaunchResolutionController.Listener() {
+                            @Override public void onResolved(StreamLaunchParameters parameters) {
+                                connect(reconnectGeneration, parameters, listener);
+                            }
+
+                            @Override public void onFailed(
+                                    ConsoleStreamLaunchResolutionPolicy.Error error) {
+                                failResolution(reconnectGeneration, error, listener);
+                            }
+                        });
+            }
+        });
+    }
+
     synchronized void cancel() {
         generation++;
         resolutionController.cancel();

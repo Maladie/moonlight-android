@@ -64,6 +64,17 @@ final class UnifiedConsoleRuntimeBootstrap implements ConsoleStreamRuntime, Auto
         }
     }
 
+    @Override public synchronized void reconnectAtBitrate(
+            ConsoleLaunchContract.Request request, int bitrateKbps) {
+        if (closed || unavailable) return;
+        ConsoleLaunchContract.Request adjusted = request.withRuntimeBitrate(bitrateKbps);
+        if (delegate != null) {
+            delegate.reconnectAtBitrate(adjusted, bitrateKbps);
+        } else {
+            pendingRequest = adjusted;
+        }
+    }
+
     @Override public synchronized void returnToActiveStream() {
         if (delegate != null) delegate.returnToActiveStream();
     }

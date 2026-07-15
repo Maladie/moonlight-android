@@ -170,6 +170,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleDataRepository.Host selectedHost;
     private ConsoleDataRepository.Host resumeHost;
     private ConsoleDataRepository.App resumeApp;
+    private ConsoleLaunchContract.Request activeLaunchRequest;
+    private int runtimeBitrateKbps;
     private ConsoleControllerRepository.Controller pendingController;
     private int pendingControllerAction = CONTROLLER_ACTION_NONE;
 
@@ -400,9 +402,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private void configureMoonlightOverlay() {
         overlayPreferences = PreferenceConfiguration.readPreferences(this);
         overlayMenuView.setFlipFaceButtons(overlayPreferences.flipFaceButtons);
-        // Runtime bitrate changes require reconnecting the in-Activity pipeline. Keep the
-        // existing Moonlight X control hidden until that reconnect path is connected.
-        overlayMenuView.setBitrateControlEnabled(false);
+        runtimeBitrateKbps = overlayPreferences.bitrate;
+        overlayMenuView.setBitrateKbps(runtimeBitrateKbps);
+        overlayMenuView.setBitrateControlEnabled(
+                overlayPreferences.runtimeBitrateControl);
         overlayMenuView.setExternalFrontend(true);
         overlayMenuView.setDiscordShortcuts(overlayPreferences.discordMuteShortcut,
                 overlayPreferences.discordLeaveShortcut);
@@ -431,7 +434,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             }
 
             @Override public void onApplyBitrate(int bitrateKbps) {
-                // Hidden until the unified reconnect path supports runtime bitrate changes.
+                applyRuntimeBitrate(bitrateKbps);
             }
 
             @Override public void onCustomCommand(CustomCommand command) {
@@ -456,6 +459,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void showMoonlightOverlay() {
         if (overlayMenuView == null) return;
+        overlayMenuView.setBitrateKbps(runtimeBitrateKbps);
         configureDiscordStreamOverlay();
         if (unifiedSessionInput != null) {
             overlayMenuView.setControllerBatteryInfo(
@@ -1182,12 +1186,42 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                       ConsoleDataRepository.App app) {
         ConsoleLaunchContract.Request request =
                 ConsoleLaunchContract.create(host, app, getPackageName());
+        activeLaunchRequest = request;
+        runtimeBitrateKbps = PreferenceConfiguration.readPreferences(this).bitrate;
         unifiedTransportConnected = false;
         unifiedFirstFrameRendered = false;
         unifiedSessionInput = null;
         LimeLog.info("Unified Console runtime launch: " +
                 streamRuntime.getClass().getSimpleName());
         streamRuntime.launch(request);
+    }
+
+    private void applyRuntimeBitrate(int bitrateKbps) {
+        if (activeLaunchRequest == null || !unifiedTransportConnected ||
+                !(streamRuntime instanceof UnifiedConsoleRuntimeBootstrap)) {
+            Toast.makeText(this, "No active unified stream to reconnect.",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        int target = StreamBitratePolicy.clamp(bitrateKbps);
+        if (target == runtimeBitrateKbps) return;
+
+        runtimeBitrateKbps = target;
+        activeLaunchRequest = activeLaunchRequest.withRuntimeBitrate(target);
+        overlayMenuView.setBitrateKbps(target);
+        overlayMenuView.closeMenu();
+        stateMachine.dispatch(ConsoleStateMachine.Event.RECONNECT);
+        applyState(stateMachine.getState());
+        unifiedTransportConnected = false;
+        unifiedFirstFrameRendered = false;
+        unifiedSessionInput = null;
+        if (resumeHost != null && resumeApp != null) {
+            unifiedHomeSession.begin(resumeHost, resumeApp);
+            loadingController.show(resumeApp.name);
+        }
+        loadingController.updateStatus("Reconnecting at " +
+                Math.round(target / 1000f) + " Mbps…");
+        streamRuntime.reconnectAtBitrate(activeLaunchRequest, target);
     }
 
     private void renderControllers() {
@@ -1636,6 +1670,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         unifiedTransportConnected = false;
         unifiedFirstFrameRendered = false;
         unifiedSessionInput = null;
+        activeLaunchRequest = null;
         unifiedHomeSession.clear();
         stateMachine.dispatch(ConsoleStateMachine.Event.DISCONNECTED);
         renderSession(visibleSession());

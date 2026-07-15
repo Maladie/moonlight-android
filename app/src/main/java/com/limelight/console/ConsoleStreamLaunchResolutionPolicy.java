@@ -61,6 +61,7 @@ final class ConsoleStreamLaunchResolutionPolicy {
 
         NvApp app = new NvApp(request.appName, request.appId, request.appSupportsHdr);
         return Result.resolved(StreamLaunchParameters.create(
-                computer, app, clientUniqueId, null, true));
+                computer, app, clientUniqueId, null, true,
+                request.runtimeBitrateKbps));
     }
 }

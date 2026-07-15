@@ -20,12 +20,14 @@ public final class StreamLaunchParameters {
     public final X509Certificate serverCertificate;
     public final String quickLaunchAppKey;
     public final boolean applyPreferenceOverrides;
+    public final int runtimeBitrateKbps;
 
     private StreamLaunchParameters(ComputerDetails computer,
                                    NvApp app,
                                    String uniqueId,
                                    String quickLaunchAppKey,
-                                   boolean applyPreferenceOverrides) {
+                                   boolean applyPreferenceOverrides,
+                                   int runtimeBitrateKbps) {
         if (computer == null || computer.activeAddress == null) {
             throw new IllegalArgumentException("Active host address is required");
         }
@@ -48,6 +50,8 @@ public final class StreamLaunchParameters {
         serverCertificate = computer.serverCert;
         this.quickLaunchAppKey = quickLaunchAppKey;
         this.applyPreferenceOverrides = applyPreferenceOverrides;
+        this.runtimeBitrateKbps = runtimeBitrateKbps > 0 ?
+                StreamBitratePolicy.clamp(runtimeBitrateKbps) : 0;
     }
 
     public static StreamLaunchParameters create(ComputerDetails computer,
@@ -56,6 +60,16 @@ public final class StreamLaunchParameters {
                                                 String quickLaunchAppKey,
                                                 boolean applyPreferenceOverrides) {
         return new StreamLaunchParameters(computer, app, uniqueId, quickLaunchAppKey,
-                applyPreferenceOverrides);
+                applyPreferenceOverrides, 0);
+    }
+
+    static StreamLaunchParameters create(ComputerDetails computer,
+                                         NvApp app,
+                                         String uniqueId,
+                                         String quickLaunchAppKey,
+                                         boolean applyPreferenceOverrides,
+                                         int runtimeBitrateKbps) {
+        return new StreamLaunchParameters(computer, app, uniqueId, quickLaunchAppKey,
+                applyPreferenceOverrides, runtimeBitrateKbps);
     }
 }

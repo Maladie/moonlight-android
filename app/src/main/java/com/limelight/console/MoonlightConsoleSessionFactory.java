@@ -50,6 +50,9 @@ final class MoonlightConsoleSessionFactory implements
 
         PreferenceConfiguration preferences = StreamPreferenceContext.load(
                 activity, parameters);
+        if (parameters.runtimeBitrateKbps > 0) {
+            preferences.bitrate = parameters.runtimeBitrateKbps;
+        }
         StreamRendererConfiguration rendererConfiguration =
                 Objects.requireNonNull(environment.rendererConfiguration(
                         preferences, parameters), "rendererConfiguration");

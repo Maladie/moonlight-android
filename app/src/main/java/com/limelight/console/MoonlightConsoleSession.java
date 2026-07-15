@@ -80,11 +80,21 @@ final class MoonlightConsoleSession implements MoonlightConsoleResolvedStreamRun
     }
 
     @Override public synchronized void disconnect() {
-        if (disconnected) return;
+        disconnect(null);
+    }
+
+    @Override public synchronized void disconnect(Runnable afterStopped) {
+        if (disconnected) {
+            if (afterStopped != null) afterStopped.run();
+            return;
+        }
         disconnected = true;
         resources.close();
         connection.prepareRendererForStop();
-        connection.disconnect(surfaces::detach);
+        connection.disconnect(() -> {
+            surfaces.detach();
+            if (afterStopped != null) afterStopped.run();
+        });
     }
 
     @Override public synchronized void showStream() {

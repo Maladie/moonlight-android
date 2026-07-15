@@ -17,10 +17,17 @@ final class ConsoleLaunchContract {
         final String frontendPackage;
         final String privacyMessage;
         final boolean readinessRequired;
+        final int runtimeBitrateKbps;
 
         private Request(String hostUuid, int appId, String appName,
                         boolean appSupportsHdr,
                         String frontendPackage) {
+            this(hostUuid, appId, appName, appSupportsHdr, frontendPackage, 0);
+        }
+
+        private Request(String hostUuid, int appId, String appName,
+                        boolean appSupportsHdr, String frontendPackage,
+                        int runtimeBitrateKbps) {
             if (hostUuid == null || hostUuid.isEmpty() || appId < 0 ||
                     appName == null || appName.isEmpty() ||
                     frontendPackage == null || frontendPackage.isEmpty()) {
@@ -33,6 +40,13 @@ final class ConsoleLaunchContract {
             this.frontendPackage = frontendPackage;
             privacyMessage = "Preparing " + appName + "…";
             readinessRequired = true;
+            this.runtimeBitrateKbps = runtimeBitrateKbps > 0 ?
+                    StreamBitratePolicy.clamp(runtimeBitrateKbps) : 0;
+        }
+
+        Request withRuntimeBitrate(int bitrateKbps) {
+            return new Request(hostUuid, appId, appName, appSupportsHdr,
+                    frontendPackage, bitrateKbps);
         }
     }
 
