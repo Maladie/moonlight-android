@@ -3,8 +3,22 @@ package com.limelight.console;
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class ConsoleLaunchHistoryStoreTest {
+    @Test public void lastLaunchRequiresCompleteStoredIdentity() {
+        assertTrue(new ConsoleLaunchHistoryStore.LastLaunch(
+                "host-a", 7, "Game", 10).isValid());
+        assertFalse(new ConsoleLaunchHistoryStore.LastLaunch(
+                null, 7, "Game", 10).isValid());
+        assertFalse(new ConsoleLaunchHistoryStore.LastLaunch(
+                "host-a", -1, "Game", 10).isValid());
+        assertFalse(new ConsoleLaunchHistoryStore.LastLaunch(
+                "host-a", 7, "", 10).isValid());
+        assertFalse(new ConsoleLaunchHistoryStore.LastLaunch(
+                "host-a", 7, "Game", 0).isValid());
+    }
     @Test public void historyKeysRemainWakeCompatibleAndHostScoped() {
         assertEquals("played_at.app.host-a.17",
                 ConsoleLaunchHistoryStore.appKey("host-a", 17));

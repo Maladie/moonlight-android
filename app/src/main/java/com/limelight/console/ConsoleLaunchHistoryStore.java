@@ -7,6 +7,24 @@ import java.util.Locale;
 
 /** Wake-compatible, host-scoped launch history used only for Home presentation. */
 final class ConsoleLaunchHistoryStore {
+    static final class LastLaunch {
+        final String hostUuid;
+        final int appId;
+        final String appName;
+        final long launchedAt;
+
+        LastLaunch(String hostUuid, int appId, String appName, long launchedAt) {
+            this.hostUuid = hostUuid;
+            this.appId = appId;
+            this.appName = appName;
+            this.launchedAt = launchedAt;
+        }
+
+        boolean isValid() {
+            return hostUuid != null && !hostUuid.isEmpty() && appId >= 0 &&
+                    appName != null && !appName.isEmpty() && launchedAt > 0;
+        }
+    }
     private static final String PREFS = "launch_history";
     private static final String LAST_HOST_UUID = "last_host_uuid";
     private static final String LAST_APP_ID = "last_app_id";
@@ -38,6 +56,15 @@ final class ConsoleLaunchHistoryStore {
             timestamp = preferences.getLong(LAST_LAUNCH_AT, 0L);
         }
         return timestamp;
+    }
+
+    LastLaunch lastLaunch() {
+        LastLaunch result = new LastLaunch(
+                preferences.getString(LAST_HOST_UUID, null),
+                preferences.getInt(LAST_APP_ID, -1),
+                preferences.getString(LAST_APP_NAME, null),
+                preferences.getLong(LAST_LAUNCH_AT, 0L));
+        return result.isValid() ? result : null;
     }
 
     String metadata(String hostUuid, int appId, long now) {

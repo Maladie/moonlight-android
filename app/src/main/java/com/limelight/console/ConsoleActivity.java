@@ -92,6 +92,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private View overlayLayer;
     private View modalLayer;
     private ConsoleDataRepository.Host selectedHost;
+    private ConsoleDataRepository.Host resumeHost;
+    private ConsoleDataRepository.App resumeApp;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -327,7 +329,6 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         content.addView(sessionStatus, sessionParams);
 
         integrationStatus = label("HOST INTEGRATIONS · SELECT A HOST", 12, 0xFF9CA6C5, true);
-        content.addView(integrationStatus, top(dp(6)));
 
         LinearLayout quickActions = new LinearLayout(this);
         quickActions.setOrientation(LinearLayout.HORIZONTAL);
@@ -338,7 +339,13 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         returnToGame.setId(View.generateViewId());
         returnToGame.setContentDescription("Return to active game");
         returnToGame.setVisibility(View.GONE);
-        returnToGame.setOnClickListener(view -> returnToActiveStream());
+        returnToGame.setOnClickListener(view -> {
+            if (currentSession != null && currentSession.alive) {
+                returnToActiveStream();
+            } else if (resumeHost != null && resumeApp != null) {
+                launchLegacy(resumeHost, resumeApp);
+            }
+        });
         quickActions.addView(returnToGame, wrap());
 
         sessionButton = card("SESSION", dp(190), dp(54));
@@ -350,17 +357,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         sessionButtonParams.leftMargin = dp(10);
         quickActions.addView(sessionButton, sessionButtonParams);
 
-        TextView integrations = card("HOST INTEGRATIONS  ›", dp(280), dp(54));
+        TextView integrations = card("INTEGRATIONS", dp(170), dp(44));
         integrations.setId(View.generateViewId());
         integrations.setContentDescription("Open host integrations");
         integrations.setOnClickListener(view -> showHostIntegrations());
-        LinearLayout.LayoutParams integrationActionParams = wrap();
-        integrationActionParams.leftMargin = dp(10);
-        quickActions.addView(integrations, integrationActionParams);
         returnToGame.setNextFocusRightId(sessionButton.getId());
         sessionButton.setNextFocusLeftId(returnToGame.getId());
-        sessionButton.setNextFocusRightId(integrations.getId());
-        integrations.setNextFocusLeftId(sessionButton.getId());
 
         controllersLabel = section("CONTROLLERS · NONE");
         content.addView(controllersLabel, top(dp(11)));
@@ -391,22 +393,28 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         appScrollParams.topMargin = dp(5);
         content.addView(appScroll, appScrollParams);
 
-        TextView hint = label("DPAD to browse  ·  A to launch via the protected legacy stream path  ·  Back to exit", 12,
-                0xFF9CA6C5, false);
-        content.addView(hint, top(dp(20)));
         home.addView(content, new FrameLayout.LayoutParams(matchWidth(), matchHeight()));
 
         TextView options = card("⚙  OPTIONS", dp(150), dp(44));
         options.setId(View.generateViewId());
         options.setContentDescription("Open Moonlight streaming options");
         options.setOnClickListener(view -> startActivity(new Intent(this, StreamSettings.class)));
-        options.setNextFocusDownId(integrations.getId());
-        integrations.setNextFocusUpId(options.getId());
+        LinearLayout topActions = new LinearLayout(this);
+        topActions.setOrientation(LinearLayout.HORIZONTAL);
+        topActions.setGravity(Gravity.CENTER_VERTICAL);
+        LinearLayout.LayoutParams integrationsParams = wrap();
+        integrationsParams.rightMargin = dp(10);
+        topActions.addView(integrations, integrationsParams);
+        topActions.addView(options, wrap());
+        integrations.setNextFocusRightId(options.getId());
+        options.setNextFocusLeftId(integrations.getId());
+        integrations.setNextFocusDownId(returnToGame.getId());
+        options.setNextFocusDownId(returnToGame.getId());
         FrameLayout.LayoutParams optionsParams = new FrameLayout.LayoutParams(
                 wrapSize(), wrapSize(), Gravity.TOP | Gravity.RIGHT);
         optionsParams.topMargin = dp(30);
         optionsParams.rightMargin = dp(64);
-        home.addView(options, optionsParams);
+        home.addView(topActions, optionsParams);
         return home;
     }
 
@@ -414,7 +422,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         renderControllers();
         ConsoleHomeSnapshot snapshot = ConsoleHomeSnapshot.load(
                 repository, hostGatewayStore, selectionStore, launchHistoryStore);
-        renderSession(snapshot.session);
+        resolveResumeTarget(snapshot);
+        renderSession(unifiedHomeSession.visibleOr(snapshot.session));
         hostRow.removeAllViews();
         hostStatusViews.clear();
         visibleHosts = snapshot.hosts;
@@ -434,6 +443,25 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         renderGatewayProfile(selectedHost, snapshot.integrations);
         // One deterministic initial focus; subsequent refreshes never request focus.
         hostRow.getChildAt(snapshot.selectedHostIndex).requestFocus();
+    }
+
+    private void resolveResumeTarget(ConsoleHomeSnapshot snapshot) {
+        resumeHost = null;
+        resumeApp = null;
+        ConsoleLaunchHistoryStore.LastLaunch last = launchHistoryStore.lastLaunch();
+        if (last == null) return;
+        for (ConsoleDataRepository.Host host : snapshot.hosts) {
+            if (!last.hostUuid.equals(host.uuid)) continue;
+            List<ConsoleDataRepository.App> apps = host == snapshot.selectedHost ?
+                    snapshot.apps : repository.apps(host);
+            for (ConsoleDataRepository.App app : apps) {
+                if (app.id == last.appId) {
+                    resumeHost = host;
+                    resumeApp = app;
+                    return;
+                }
+            }
+        }
     }
 
     private View hostCard(ConsoleDataRepository.Host host, boolean selected) {
@@ -575,6 +603,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private void launchLegacy(ConsoleDataRepository.Host host, ConsoleDataRepository.App app) {
         LimeLog.info("Unified Console launch requested");
         launchHistoryStore.record(host, app, System.currentTimeMillis());
+        resumeHost = host;
+        resumeApp = app;
         if (streamRuntime instanceof UnifiedConsoleRuntimeBootstrap) {
             unifiedHomeSession.begin(host, app);
         }
@@ -670,7 +700,18 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         ConsoleSessionSummary summary = ConsoleSessionSummary.from(session);
         sessionStatus.setText(summary.label);
         sessionStatus.setTextColor(summary.alive ? 0xFF69F0AE : 0xFF9CA6C5);
-        returnToGame.setVisibility(summary.alive ? View.VISIBLE : View.GONE);
+        if (summary.alive) {
+            String app = session != null && session.app != null ? session.app : "ACTIVE SESSION";
+            returnToGame.setText("▶  RETURN TO GAME\n" + app);
+            returnToGame.setContentDescription("Return to active game, " + app);
+            returnToGame.setVisibility(View.VISIBLE);
+        } else if (resumeHost != null && resumeApp != null) {
+            returnToGame.setText("▶  RESUME LAST\n" + resumeApp.name);
+            returnToGame.setContentDescription("Resume last game, " + resumeApp.name);
+            returnToGame.setVisibility(View.VISIBLE);
+        } else {
+            returnToGame.setVisibility(View.GONE);
+        }
         sessionButton.setVisibility(summary.alive ? View.VISIBLE : View.GONE);
     }
 
@@ -817,6 +858,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 unifiedFirstFrameRendered = false;
                 unifiedSessionInput = null;
                 unifiedHomeSession.clear();
+                renderSession(visibleSession());
                 stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTION_FAILED);
                 applyState(stateMachine.getState());
                 break;
