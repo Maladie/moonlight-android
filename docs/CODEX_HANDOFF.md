@@ -27,7 +27,12 @@ Implemented on this branch:
   session reattachment after Activity recreation, and disconnect are explicit.
 - Neutral `LaunchOrchestrator` and `LoadingPrivacyGate` boundaries reserve the
   versioned profile/Playnite readiness contract. A managed launch cannot reveal
-  on process/first-frame state alone.
+  on process/first-frame state alone. Console launches now arm this gate in
+  production. Until the profile Bridge supplies window-readiness samples, the
+  opaque loader times out after 12 seconds to a controller-operable recovery
+  with Retry, Home, Reveal Stream, and Disconnect. Home receives initial focus,
+  Reveal remains disabled before the first decoded frame, and Disconnect never
+  quits the host application.
 - `StreamSessionController` and a non-owning `LegacyGameSessionAdapter` keep
   Disconnect Transport separate from Quit Host Application and prohibit a
   second legacy connection owner.
@@ -52,6 +57,9 @@ Implemented on this branch:
   ConsoleActivity -> ShortcutTrampoline -> Game -> ConsoleActivity. Back covers
   the live stream with Home, releases Game input capture, and Return to Game
   reveals the existing Game instance without requesting a second connection.
+  The same-package return uses `REORDER_TO_FRONT` in the existing task and never
+  adds `NEW_TASK`; a pure lifecycle policy also treats Console's bound renderer
+  target as a valid alternate surface during the handoff.
 
 Important: the last bullet is the safe one-APK adapter path, not the final
 one-Activity stream. Do not describe the Activity consolidation as complete.
@@ -65,20 +73,20 @@ destruction. Only after that evidence may the `Game` Activity launch be bypassed
 
 - JDK: `C:\Users\Basia\.jdks\openjdk-17.0.2` (the system Java 24 is not
   compatible with Gradle 8.7/AGP 8.5.1).
-- `:app:testNonRootDebugUnitTest`: 31/31 passed; state, privacy readiness, surface
+- `:app:testNonRootDebugUnitTest`: 39/39 passed; state, privacy readiness, surface
   lifetime, legacy ownership, disconnect/quit separation, input routing, and
   input-boundary initialization plus cross-Activity render-target handoff are
   covered, including diagnostic generation and failed-switch visibility.
 - `:app:assembleNonRootDebug`: passed.
 - `:app:assembleNonRootRelease`: passed.
-- Latest signed surface-telemetry release identity: `com.limelight.unofficial`, certificate SHA-256
+- Latest signed privacy-recovery release identity: `com.limelight.unofficial`, certificate SHA-256
   `745d86be25583505b45da74343bd9f868e8f77884fa6e0aaf49fba330b277740`,
   APK SHA-256
-  `093c37b50ea5c562551950415a8e6dfb2f71186944e798628220aade51a2dd24`.
-  Deliverable: `moonwaker-game-app-surface-telemetry-release.apk`.
+  `2b7e62127645d6a671dfa5d3eef1e2e5c14fc818afd4a7775cf25f582e3bb829`.
+  Deliverable: `moonwaker-game-app-privacy-recovery-release.apk`.
   This increment was installed successfully on the BRAVIA TV without launching
-  a host application. The preceding persistent-surface APK hash was
-  `e831230f4c3d20d5df025fff0eb466d8db89f51268a0a8ed08b24b29a7c4aa02`.
+  a host application. The preceding surface-telemetry APK hash was
+  `093c37b50ea5c562551950415a8e6dfb2f71186944e798628220aade51a2dd24`.
 - The preceding input-boundary release was installed successfully on the BRAVIA
   TV. The user confirmed that the current milestone UI is visible and differs
   from Wake & Play, as expected for the vertical slice. No live stream/surface
@@ -87,6 +95,26 @@ destruction. Only after that evidence may the `Game` Activity launch be bypassed
   test (`ConsoleActivity`, 978 ms, process remained alive). Its scoped log
   reported `console_surface_registered generation=0 attached=false target=NONE`
   with zero target failures. No host application or stream was launched.
+- The first live persistent-surface P0 attempt on 2026-07-15 was deliberately
+  aborted after the first decoded frame exposed an existing desktop instead of
+  the requested application. The temporary evidence image was deleted. Scoped
+  diagnostics then proved `GAME -> CONSOLE` target handoff with zero target
+  failures, but the legacy Activity lifecycle immediately disconnected the
+  transport. Commit `42c854ef` fixes both defects: managed Console launches now
+  remain opaque until Bridge readiness or explicit recovery approval, and the
+  same-package return no longer creates/relaunches an Android task. A fresh
+  signed install and two live P0 cycles are still required; do not mark section D
+  complete from unit tests alone.
+- Home-only verification also covered the Sony/Google TV dream overlay. Console's
+  inactive surface is safely released while the dream owns the display and is
+  registered again on wake. `ConsoleActivity` now mirrors actual window focus
+  into `ActiveStreamSurfaceBridge`, covering TV firmware that restores the window
+  without a matching `onResume()` callback.
+- The final privacy-recovery release passed a fresh Home-only cold start
+  (`ConsoleActivity`, 1703 ms). Scoped logs reported `console_foreground` followed
+  by `console_surface_registered`, with no attached session and zero target
+  failures. At the user's request no tile was opened and no stream test was run;
+  the two-cycle P0 remains deliberately pending.
 - GitHub CLI account `Maladie` currently reports an invalid keyring token. Do
   not expose a token; refresh authentication before push if ordinary Git
   credentials do not work.
@@ -98,9 +126,9 @@ are documented in `MOONWAKER_ARCHITECTURE.md`,
 ## Repository
 
 - Project: Moonlight Android
-- Branch: `feature/android-tv-session-controls`
+- Branch: `feature/moonwaker-unified-console`
 - Push remote: `origin` (`Maladie/moonlight-android`)
-- No separate upstream remote is currently configured in this checkout.
+- Official Moonlight is configured as the separate `upstream` remote.
 - Companion project: Wake & Play for Android TV, branch `main`
 
 ## Implemented behavior
@@ -176,11 +204,12 @@ change launch animation without rechecking this lifecycle.
 
 Do not use the `Sleep PC` entry for automated or manual stream testing. Use `Baba Is You` or `Steam Big Picture` only.
 
-## Approved next task: Playnite readiness gate
+## Remaining Playnite readiness work
 
-No Playnite-specific Moonlight code has been implemented yet. The approved next
-stage keeps the existing opaque `ExternalFrontendLoadingView` visible after the
-first decoded frame until a profile-scoped host Console Bridge also reports that
+No Playnite-specific host Bridge has been implemented yet. Android now keeps the
+existing opaque `ExternalFrontendLoadingView` visible after the first decoded
+frame for managed Console launches. The next stage connects a profile-scoped
+host Console Bridge so it can also report that
 the requested Playnite game window is foreground, correctly sized on the
 streamed display and stable. The first frame remains a required signal, but is
 no longer sufficient by itself for Playnite-managed launches.

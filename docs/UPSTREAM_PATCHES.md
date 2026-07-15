@@ -105,6 +105,29 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
 - Removal: label may be renamed before release; the application ID and signing
   identity must not change with it.
 
+### P004 - Fail-closed external loader and same-task Console return
+
+- Surface: `Game.java`, `PublicStreamIntent.java`,
+  `ExternalFrontendLoadingView.java`, plus the Console focus hook in
+  `ConsoleActivity.java`/`ActiveStreamSurfaceBridge.java`.
+- Reason: a live unified-console launch showed that first decoded frame is not a
+  safe application-readiness signal. Carry an explicit readiness requirement,
+  keep the loader opaque through a bounded timeout, and expose controller-native
+  Retry, Home, Reveal Stream, and Disconnect recovery actions. Return to the same-package
+  Console instance without `NEW_TASK`, and retain a session whose renderer is
+  already bound to Console's surface.
+- Risk: without a profile Bridge, every Console launch pauses at recovery instead
+  of revealing automatically. An incorrect task or surface predicate could
+  orphan or disconnect the compatibility `Game` session.
+- Regression: 39-test JVM suite, debug/release builds, Home/dream/wake surface
+  registration, filtered
+  `MoonWakerPrivacy`, `MoonWakerGameLifecycle`, `MoonWakerSession`, and
+  `MoonWakerSurface` device logs, then two live Stream -> Home -> Stream cycles.
+- Removal: replace the explicit-reveal fallback only after the versioned Bridge
+  proves visible foreground-window, streamed-display, final-geometry, and stable
+  consecutive readiness samples. Remove the lifecycle adapter only when `Game`
+  is no longer a separate Activity and P0 section D passes.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.
