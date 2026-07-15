@@ -1,14 +1,18 @@
 package com.limelight.console;
 
+import android.app.Activity;
 import android.content.Context;
 
+import com.limelight.binding.audio.AndroidAudioRenderer;
+import com.limelight.binding.video.CrashListener;
+import com.limelight.binding.video.MediaCodecDecoderRenderer;
+import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.nvstream.StreamConfiguration;
-import com.limelight.nvstream.av.audio.AudioRenderer;
-import com.limelight.nvstream.av.video.VideoDecoderRenderer;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.LimelightCryptoProvider;
+import com.limelight.preferences.PreferenceConfiguration;
 
 import java.security.cert.X509Certificate;
 import java.util.ArrayList;
@@ -26,8 +30,9 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
         void stop();
     }
 
-    private final NvConnection connection;
-    private final Transport transport;
+    private NvConnection connection;
+    private Transport transport;
+    private MediaCodecDecoderRenderer videoRenderer;
     private final Executor stopExecutor;
     private final Executor callbackExecutor;
     private final Runnable quitHostApplication;
@@ -38,35 +43,54 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
     private final List<Runnable> stopCallbacks = new ArrayList<>();
 
     public MoonlightStreamSessionController(
+            Executor stopExecutor,
+            Executor callbackExecutor,
+            Runnable quitHostApplication) {
+        this.stopExecutor = Objects.requireNonNull(stopExecutor, "stopExecutor");
+        this.callbackExecutor = Objects.requireNonNull(callbackExecutor, "callbackExecutor");
+        this.quitHostApplication = Objects.requireNonNull(quitHostApplication, "quitHostApplication");
+    }
+
+    public synchronized MediaCodecDecoderRenderer prepareRenderer(
+            Activity activity,
+            PreferenceConfiguration preferences,
+            CrashListener crashListener,
+            int consecutiveCrashCount,
+            boolean meteredData,
+            boolean requestedHdr,
+            String glRenderer,
+            PerfOverlayListener performanceListener,
+            Runnable firstFrameRenderedCallback) {
+        if (videoRenderer != null || transport != null || startRequested) {
+            throw new IllegalStateException("Session renderer already prepared");
+        }
+        videoRenderer = new MediaCodecDecoderRenderer(activity, preferences, crashListener,
+                consecutiveCrashCount, meteredData, requestedHdr, glRenderer,
+                performanceListener, firstFrameRenderedCallback);
+        return videoRenderer;
+    }
+
+    public synchronized void initializeTransport(
             Context appContext,
+            Context audioContext,
             ComputerDetails.AddressTuple host,
             int httpsPort,
             String uniqueId,
             StreamConfiguration configuration,
             LimelightCryptoProvider cryptoProvider,
             X509Certificate serverCertificate,
-            AudioRenderer audioRenderer,
-            VideoDecoderRenderer videoRenderer,
-            NvConnectionListener listener,
-            Executor stopExecutor,
-            Executor callbackExecutor,
-            Runnable quitHostApplication) {
-        this(new NvConnection(appContext, host, httpsPort, uniqueId, configuration,
-                        cryptoProvider, serverCertificate),
-                audioRenderer, videoRenderer, listener, stopExecutor, callbackExecutor,
-                quitHostApplication);
-    }
-
-    private MoonlightStreamSessionController(
-            NvConnection connection,
-            AudioRenderer audioRenderer,
-            VideoDecoderRenderer videoRenderer,
-            NvConnectionListener listener,
-            Executor stopExecutor,
-            Executor callbackExecutor,
-            Runnable quitHostApplication) {
-        this.connection = Objects.requireNonNull(connection, "connection");
-        this.transport = new Transport() {
+            boolean enableAudioFx,
+            NvConnectionListener listener) {
+        if (videoRenderer == null) {
+            throw new IllegalStateException("Renderer must be prepared before transport");
+        }
+        if (transport != null || connection != null || startRequested) {
+            throw new IllegalStateException("Session transport already initialized");
+        }
+        connection = new NvConnection(appContext, host, httpsPort, uniqueId, configuration,
+                cryptoProvider, serverCertificate);
+        AndroidAudioRenderer audioRenderer = new AndroidAudioRenderer(audioContext, enableAudioFx);
+        transport = new Transport() {
             @Override public void start() {
                 connection.start(audioRenderer, videoRenderer, listener);
             }
@@ -75,9 +99,6 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
                 connection.stop();
             }
         };
-        this.stopExecutor = Objects.requireNonNull(stopExecutor, "stopExecutor");
-        this.callbackExecutor = Objects.requireNonNull(callbackExecutor, "callbackExecutor");
-        this.quitHostApplication = Objects.requireNonNull(quitHostApplication, "quitHostApplication");
     }
 
     MoonlightStreamSessionController(
@@ -85,11 +106,8 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
             Executor stopExecutor,
             Executor callbackExecutor,
             Runnable quitHostApplication) {
-        this.connection = null;
+        this(stopExecutor, callbackExecutor, quitHostApplication);
         this.transport = Objects.requireNonNull(transport, "transport");
-        this.stopExecutor = Objects.requireNonNull(stopExecutor, "stopExecutor");
-        this.callbackExecutor = Objects.requireNonNull(callbackExecutor, "callbackExecutor");
-        this.quitHostApplication = Objects.requireNonNull(quitHostApplication, "quitHostApplication");
     }
 
     @Override
@@ -100,6 +118,9 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
     @Override
     public void connect() {
         synchronized (this) {
+            if (transport == null) {
+                throw new IllegalStateException("Session transport is not initialized");
+            }
             if (startRequested) {
                 throw new IllegalStateException("Session transport already started");
             }

@@ -10,6 +10,17 @@ import java.util.concurrent.atomic.AtomicInteger;
 import static org.junit.Assert.*;
 
 public class MoonlightStreamSessionControllerTest {
+    @Test public void connectionCannotStartBeforeTransportInitialization() {
+        MoonlightStreamSessionController controller = new MoonlightStreamSessionController(
+                Runnable::run, Runnable::run, () -> { });
+        try {
+            controller.connect();
+            fail("uninitialized transport must not start");
+        } catch (IllegalStateException expected) {
+            assertEquals(StreamSessionController.SessionState.IDLE, controller.state());
+        }
+    }
+
     @Test public void connectionCanStartExactlyOnce() {
         FakeTransport transport = new FakeTransport();
         MoonlightStreamSessionController controller = controller(transport, Runnable::run);

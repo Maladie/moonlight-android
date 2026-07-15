@@ -2,7 +2,6 @@ package com.limelight;
 
 
 import com.limelight.binding.PlatformBinding;
-import com.limelight.binding.audio.AndroidAudioRenderer;
 import com.limelight.binding.input.ControllerHandler;
 import com.limelight.binding.input.KeyboardTranslator;
 import com.limelight.binding.input.capture.InputCaptureManager;
@@ -540,7 +539,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             performanceOverlayView.setVisibility(View.VISIBLE);
         }
 
-        decoderRenderer = new MediaCodecDecoderRenderer(
+        sessionController = new MoonlightStreamSessionController(
+                command -> new Thread(command, "MoonWaker transport stop").start(),
+                this::runOnUiThread,
+                this::doQuit);
+        decoderRenderer = sessionController.prepareRenderer(
                 this,
                 prefConfig,
                 new CrashListener() {
@@ -665,17 +668,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         StreamConfiguration config = configBuilder.build();
 
-        // The session controller is now the sole creator/owner of NvConnection.
+        // Complete phase two only after decoder capabilities have shaped the stream config.
         // Game remains the listener and input adapter until the next migration slice.
-        sessionController = new MoonlightStreamSessionController(getApplicationContext(),
+        sessionController.initializeTransport(getApplicationContext(), this,
                 new ComputerDetails.AddressTuple(host, port),
                 httpsPort, uniqueId, config,
                 PlatformBinding.getCryptoProvider(this), serverCert,
-                new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx),
-                decoderRenderer, this,
-                command -> new Thread(command, "MoonWaker transport stop").start(),
-                this::runOnUiThread,
-                this::doQuit);
+                prefConfig.enableAudioFx, this);
         NvConnection legacyConnection = connection();
         controllerHandler = new ControllerHandler(this, legacyConnection, this, prefConfig);
         keyboardTranslator = new KeyboardTranslator();
