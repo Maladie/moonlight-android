@@ -24,6 +24,7 @@ import com.limelight.console.StreamHdrDisplayPolicy;
 import com.limelight.console.StreamPreferenceContext;
 import com.limelight.console.StreamRendererConfiguration;
 import com.limelight.console.StreamSessionConfigurationPlanner;
+import com.limelight.console.StreamTransportConfiguration;
 import com.limelight.console.ActiveStreamSurfaceBridge;
 import com.limelight.console.InputRouter;
 import com.limelight.console.LegacyGameLifecyclePolicy;
@@ -633,11 +634,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Complete phase two only after decoder capabilities have shaped the stream config.
         // Game remains the listener and Android input adapter until the next migration slice.
-        sessionController.initializeTransport(getApplicationContext(), this,
-                new ComputerDetails.AddressTuple(host, port),
-                httpsPort, uniqueId, config,
-                PlatformBinding.getCryptoProvider(this), serverCert,
-                prefConfig.enableAudioFx, this);
+        StreamTransportConfiguration transportConfiguration =
+                new StreamTransportConfiguration(
+                        new ComputerDetails.AddressTuple(host, port),
+                        httpsPort,
+                        uniqueId,
+                        config,
+                        PlatformBinding.getCryptoProvider(this),
+                        serverCert,
+                        prefConfig.enableAudioFx);
+        sessionController.initializeTransport(
+                getApplicationContext(), this, transportConfiguration, this);
         StreamInputSender inputSender = inputSender();
         controllerHandler = new ControllerHandler(this, inputSender, this, prefConfig);
         keyboardTranslator = new KeyboardTranslator();

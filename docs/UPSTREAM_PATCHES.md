@@ -294,6 +294,19 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
   compilation.
 - Removal: none; this is the shared renderer creation contract.
 
+### P018 - Shared transport initialization boundary
+
+- Surface: `Game.java`.
+- Reason: group the resolved host, HTTPS port, client identity, stream config,
+  crypto provider, pinned server certificate, and audio-FX choice in immutable
+  `StreamTransportConfiguration`. The Console session factory can initialize
+  the controller directly from `StreamLaunchParameters`.
+- Risk: incorrect host identity or certificate mapping could prevent a secure
+  connection; lost audio-FX state could alter playback.
+- Regression: focused resolved-launch mapping and validation tests, full JVM
+  suite, and Java compilation.
+- Removal: none; this is the shared transport creation contract.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.

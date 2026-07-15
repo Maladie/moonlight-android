@@ -130,6 +130,24 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
         log("transport_initialized");
     }
 
+    public synchronized void initializeTransport(
+            Context appContext,
+            Context audioContext,
+            StreamTransportConfiguration configuration,
+            NvConnectionListener listener) {
+        Objects.requireNonNull(configuration, "configuration");
+        initializeTransport(appContext,
+                audioContext,
+                configuration.host,
+                configuration.httpsPort,
+                configuration.uniqueId,
+                configuration.streamConfiguration,
+                configuration.cryptoProvider,
+                configuration.serverCertificate,
+                configuration.enableAudioFx,
+                listener);
+    }
+
     MoonlightStreamSessionController(
             Transport transport,
             Executor stopExecutor,
