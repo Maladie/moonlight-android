@@ -547,9 +547,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     @Override public void onTimeout() {
                         stateMachine.dispatch(ConsoleStateMachine.Event.BACK);
                         applyState(stateMachine.getState());
-                        Toast.makeText(ConsoleActivity.this,
-                                "The host did not become ready within 90 seconds.",
-                                Toast.LENGTH_LONG).show();
+                        modalController.showHostWakeTimeout(getCurrentFocus(), host.name,
+                                () -> launchLegacy(host, app));
                     }
                 });
     }

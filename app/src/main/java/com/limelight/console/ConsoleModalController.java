@@ -83,6 +83,27 @@ final class ConsoleModalController {
         showAndFocus(resume);
     }
 
+    void showHostWakeTimeout(View focusToRestore, String hostName, Runnable retryAction) {
+        begin(focusToRestore);
+        integrationHostUuid = null;
+        LinearLayout panel = panel();
+        panel.addView(label("HOST DID NOT BECOME READY", 24, Color.WHITE, true), wrap());
+        panel.addView(label(hostName, 16, 0xFFFFB74D, true), top(dp(10)));
+        panel.addView(label("No compatible streaming service answered within 90 seconds.",
+                14, 0xFFBDC4D8, false), top(dp(16)));
+        TextView retry = card("RETRY", dp(320), dp(58));
+        retry.setOnClickListener(view -> {
+            hide();
+            retryAction.run();
+        });
+        panel.addView(retry, top(dp(24)));
+        TextView home = card("STAY ON HOME", dp(320), dp(58));
+        home.setOnClickListener(view -> hide());
+        panel.addView(home, top(dp(10)));
+        layer.addView(panel, new FrameLayout.LayoutParams(dp(620), dp(420), Gravity.CENTER));
+        showAndFocus(retry);
+    }
+
     void showHostIntegrations(View focusToRestore, String hostUuid, String hostName,
                               HostIntegrationSummary summary,
                               Runnable useDefaultProfile, Runnable dismissAction) {
