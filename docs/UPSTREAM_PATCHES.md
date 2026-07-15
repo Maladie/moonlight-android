@@ -51,11 +51,6 @@ the `NvConnectionListener`, but no longer calls `new NvConnection`,
 cover single-owner start, off-caller stop, repeated disconnect, and the strict
 separation of Quit Host Application from transport stop.
 
-Existing keyboard, mouse, touch, pen, and controller senders temporarily obtain
-the controller-owned connection through the named `legacyConnection()` escape
-hatch. This does not transfer lifetime ownership. Replace that escape hatch with
-an `InputSender` boundary before moving the controller into `ConsoleActivity`.
-
 The fourth extraction adds explicit two-phase initialization. The controller
 creates `MediaCodecDecoderRenderer` in `prepareRenderer()` so `Game` can query
 unchanged codec capabilities/color preferences while building
@@ -65,6 +60,16 @@ that phase completes. `Game` contains none of those three constructors. The
 renderer callback/listener objects, metered-network value, HDR decision, crash
 count, GL renderer, audio-FX flag, and Activity/application Context choices are
 passed unchanged.
+
+The fifth extraction removes the temporary `legacyConnection()` escape hatch.
+The session controller now exposes only the input-scoped `StreamInputSender`,
+implemented by a package-private adapter around its owned `NvConnection`.
+`Game`, `ControllerHandler`, `AbsoluteTouchContext`, and `RelativeTouchContext`
+retain their existing Android event translation and packet ordering, but none
+receives or stores a raw connection. Two characteristic tests reject input
+access before initialization and verify that the controller exposes the supplied
+input boundary independently of its transport. The full 23-test JVM suite and
+the non-root debug build pass.
 
 ### P003 - User-visible product label and JVM test dependency
 

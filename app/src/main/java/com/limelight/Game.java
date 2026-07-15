@@ -16,11 +16,11 @@ import com.limelight.binding.video.CrashListener;
 import com.limelight.binding.video.MediaCodecDecoderRenderer;
 import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
-import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
 import com.limelight.console.InputRouter;
 import com.limelight.console.MoonlightStreamSessionController;
+import com.limelight.console.StreamInputSender;
 import com.limelight.nvstream.StreamConfiguration;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
@@ -167,12 +167,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private NvApp app;
     private float desiredRefreshRate;
 
-    /** Temporary compatibility access for input senders still hosted by Game. */
-    private NvConnection connection() {
+    private StreamInputSender inputSender() {
         if (sessionController == null) {
             throw new IllegalStateException("Stream session controller is not initialized");
         }
-        return sessionController.legacyConnection();
+        return sessionController.inputSender();
     }
 
     private InputCaptureProvider inputCaptureProvider;
@@ -669,14 +668,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         StreamConfiguration config = configBuilder.build();
 
         // Complete phase two only after decoder capabilities have shaped the stream config.
-        // Game remains the listener and input adapter until the next migration slice.
+        // Game remains the listener and Android input adapter until the next migration slice.
         sessionController.initializeTransport(getApplicationContext(), this,
                 new ComputerDetails.AddressTuple(host, port),
                 httpsPort, uniqueId, config,
                 PlatformBinding.getCryptoProvider(this), serverCert,
                 prefConfig.enableAudioFx, this);
-        NvConnection legacyConnection = connection();
-        controllerHandler = new ControllerHandler(this, legacyConnection, this, prefConfig);
+        StreamInputSender inputSender = inputSender();
+        controllerHandler = new ControllerHandler(this, inputSender, this, prefConfig);
         keyboardTranslator = new KeyboardTranslator();
 
         // Setup overlay menu now that controllerHandler is initialized
@@ -688,10 +687,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Initialize touch contexts
         for (int i = 0; i < touchContextMap.length; i++) {
             if (!prefConfig.touchscreenTrackpad) {
-                touchContextMap[i] = new AbsoluteTouchContext(legacyConnection, i, streamView);
+                touchContextMap[i] = new AbsoluteTouchContext(inputSender, i, streamView);
             }
             else {
-                touchContextMap[i] = new RelativeTouchContext(legacyConnection, i,
+                touchContextMap[i] = new RelativeTouchContext(inputSender, i,
                         REFERENCE_HORIZ_RES, REFERENCE_VERT_RES,
                         streamView, prefConfig);
             }
@@ -1737,7 +1736,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // are disabled. If they are enabled, handleMotionEvent() will take
             // care of this.
             if (!prefConfig.mouseNavButtons) {
-                connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
+                inputSender().sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
             }
 
             // Always return true, otherwise the back press will be propagated
@@ -1776,7 +1775,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 // UTF-8 events don't auto-repeat on the host side.
                 int unicodeChar = event.getUnicodeChar();
                 if ((unicodeChar & KeyCharacterMap.COMBINING_ACCENT) == 0 && (unicodeChar & KeyCharacterMap.COMBINING_ACCENT_MASK) != 0) {
-                    connection().sendUtf8Text(""+(char)unicodeChar);
+                    inputSender().sendUtf8Text(""+(char)unicodeChar);
                     return true;
                 }
 
@@ -1788,7 +1787,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return true;
             }
 
-            connection().sendKeyboardInput(translated, KeyboardPacket.KEY_DOWN, getModifierState(event),
+            inputSender().sendKeyboardInput(translated, KeyboardPacket.KEY_DOWN, getModifierState(event),
                     keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
         }
 
@@ -1838,7 +1837,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // are disabled. If they are enabled, handleMotionEvent() will take
             // care of this.
             if (!prefConfig.mouseNavButtons) {
-                connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+                inputSender().sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
             }
 
             // Always return true, otherwise the back press will be propagated
@@ -1872,7 +1871,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return (unicodeChar & KeyCharacterMap.COMBINING_ACCENT) == 0 && (unicodeChar & KeyCharacterMap.COMBINING_ACCENT_MASK) != 0;
             }
 
-            connection().sendKeyboardInput(translated, KeyboardPacket.KEY_UP, getModifierState(event),
+            inputSender().sendKeyboardInput(translated, KeyboardPacket.KEY_UP, getModifierState(event),
                     keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
         }
 
@@ -1897,7 +1896,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return false;
         }
 
-        connection().sendUtf8Text(event.getCharacters());
+        inputSender().sendUtf8Text(event.getCharacters());
         return true;
     }
 
@@ -1923,7 +1922,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void onTextCommitted(String text) {
         if (sessionController != null && text != null) {
-            connection().sendUtf8Text(text);
+            inputSender().sendUtf8Text(text);
         }
     }
 
@@ -1941,7 +1940,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             short translated = keyboardTranslator.translate(event.getKeyCode(), event.getDeviceId());
             if (translated != 0) {
                 byte action = (event.getAction() == KeyEvent.ACTION_DOWN) ? KeyboardPacket.KEY_DOWN : KeyboardPacket.KEY_UP;
-                connection().sendKeyboardInput(translated, action, getModifierState(event),
+                inputSender().sendKeyboardInput(translated, action, getModifierState(event),
                         keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
             }
         }
@@ -2124,7 +2123,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         float[] normalizedCoords = getStreamViewRelativeNormalizedXY(view, event, pointerIndex);
         float[] normalizedContactArea = getStreamViewNormalizedContactArea(event, pointerIndex);
-        return connection().sendPenEvent(eventType, toolType, penButtons,
+        return inputSender().sendPenEvent(eventType, toolType, penButtons,
                 normalizedCoords[0], normalizedCoords[1],
                 getPressureOrDistance(event, pointerIndex),
                 normalizedContactArea[0], normalizedContactArea[1],
@@ -2171,7 +2170,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         else if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
             // Cancel impacts all active pointers
-            return connection().sendPenEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, MoonBridge.LI_TOOL_TYPE_UNKNOWN, (byte)0,
+            return inputSender().sendPenEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, MoonBridge.LI_TOOL_TYPE_UNKNOWN, (byte)0,
                     0, 0, 0, 0, 0,
                     MoonBridge.LI_ROT_UNKNOWN, MoonBridge.LI_TILT_UNKNOWN) != MoonBridge.LI_ERR_UNSUPPORTED;
         }
@@ -2189,7 +2188,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean sendTouchEventForPointer(View view, MotionEvent event, byte eventType, int pointerIndex) {
         float[] normalizedCoords = getStreamViewRelativeNormalizedXY(view, event, pointerIndex);
         float[] normalizedContactArea = getStreamViewNormalizedContactArea(event, pointerIndex);
-        return connection().sendTouchEvent(eventType, event.getPointerId(pointerIndex),
+        return inputSender().sendTouchEvent(eventType, event.getPointerId(pointerIndex),
                 normalizedCoords[0], normalizedCoords[1],
                 getPressureOrDistance(event, pointerIndex),
                 normalizedContactArea[0], normalizedContactArea[1],
@@ -2213,7 +2212,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         else if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
             // Cancel impacts all active pointers
-            return connection().sendTouchEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, 0,
+            return inputSender().sendTouchEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, 0,
                     0, 0, 0, 0, 0,
                     MoonBridge.LI_ROT_UNKNOWN) != MoonBridge.LI_ERR_UNSUPPORTED;
         }
@@ -2296,10 +2295,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         if (prefConfig.absoluteMouseMode) {
                             // NB: view may be null, but we can unconditionally use streamView because we don't need to adjust
                             // relative axis deltas for the position of the streamView within the parent's coordinate system.
-                            connection().sendMouseMoveAsMousePosition(deltaX, deltaY, (short)streamView.getWidth(), (short)streamView.getHeight());
+                            inputSender().sendMouseMoveAsMousePosition(deltaX, deltaY, (short)streamView.getWidth(), (short)streamView.getHeight());
                         }
                         else {
-                            connection().sendMouseMove(deltaX, deltaY);
+                            inputSender().sendMouseMove(deltaX, deltaY);
                         }
                     }
                 }
@@ -2323,7 +2322,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                             // Touchpads must be smaller than (65535, 65535)
                             if (xMax <= Short.MAX_VALUE && yMax <= Short.MAX_VALUE) {
-                                connection().sendMousePosition((short)event.getX(), (short)event.getY(),
+                                inputSender().sendMousePosition((short)event.getX(), (short)event.getY(),
                                                        (short)xMax, (short)yMax);
                             }
                         }
@@ -2340,55 +2339,55 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 if (event.getActionMasked() == MotionEvent.ACTION_SCROLL) {
                     // Send the vertical scroll packet
-                    connection().sendMouseHighResScroll((short)(event.getAxisValue(MotionEvent.AXIS_VSCROLL) * 120));
-                    connection().sendMouseHighResHScroll((short)(event.getAxisValue(MotionEvent.AXIS_HSCROLL) * 120));
+                    inputSender().sendMouseHighResScroll((short)(event.getAxisValue(MotionEvent.AXIS_VSCROLL) * 120));
+                    inputSender().sendMouseHighResHScroll((short)(event.getAxisValue(MotionEvent.AXIS_HSCROLL) * 120));
                 }
 
                 if ((changedButtons & MotionEvent.BUTTON_PRIMARY) != 0) {
                     if ((buttonState & MotionEvent.BUTTON_PRIMARY) != 0) {
-                        connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
+                        inputSender().sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
                     }
                     else {
-                        connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+                        inputSender().sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
                     }
                 }
 
                 // Mouse secondary or stylus primary is right click (stylus down is left click)
                 if ((changedButtons & (MotionEvent.BUTTON_SECONDARY | MotionEvent.BUTTON_STYLUS_PRIMARY)) != 0) {
                     if ((buttonState & (MotionEvent.BUTTON_SECONDARY | MotionEvent.BUTTON_STYLUS_PRIMARY)) != 0) {
-                        connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
+                        inputSender().sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
                     }
                     else {
-                        connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+                        inputSender().sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
                     }
                 }
 
                 // Mouse tertiary or stylus secondary is middle click
                 if ((changedButtons & (MotionEvent.BUTTON_TERTIARY | MotionEvent.BUTTON_STYLUS_SECONDARY)) != 0) {
                     if ((buttonState & (MotionEvent.BUTTON_TERTIARY | MotionEvent.BUTTON_STYLUS_SECONDARY)) != 0) {
-                        connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_MIDDLE);
+                        inputSender().sendMouseButtonDown(MouseButtonPacket.BUTTON_MIDDLE);
                     }
                     else {
-                        connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_MIDDLE);
+                        inputSender().sendMouseButtonUp(MouseButtonPacket.BUTTON_MIDDLE);
                     }
                 }
 
                 if (prefConfig.mouseNavButtons) {
                     if ((changedButtons & MotionEvent.BUTTON_BACK) != 0) {
                         if ((buttonState & MotionEvent.BUTTON_BACK) != 0) {
-                            connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_X1);
+                            inputSender().sendMouseButtonDown(MouseButtonPacket.BUTTON_X1);
                         }
                         else {
-                            connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_X1);
+                            inputSender().sendMouseButtonUp(MouseButtonPacket.BUTTON_X1);
                         }
                     }
 
                     if ((changedButtons & MotionEvent.BUTTON_FORWARD) != 0) {
                         if ((buttonState & MotionEvent.BUTTON_FORWARD) != 0) {
-                            connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_X2);
+                            inputSender().sendMouseButtonDown(MouseButtonPacket.BUTTON_X2);
                         }
                         else {
-                            connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_X2);
+                            inputSender().sendMouseButtonUp(MouseButtonPacket.BUTTON_X2);
                         }
                     }
                 }
@@ -2402,14 +2401,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             lastAbsTouchDownY = event.getY(0);
 
                             // Stylus is left click
-                            connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
+                            inputSender().sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
                         } else if (event.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER) {
                             lastAbsTouchDownTime = event.getEventTime();
                             lastAbsTouchDownX = event.getX(0);
                             lastAbsTouchDownY = event.getY(0);
 
                             // Eraser is right click
-                            connection().sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
+                            inputSender().sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
                         }
                     }
                     else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
@@ -2419,14 +2418,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             lastAbsTouchUpY = event.getY(0);
 
                             // Stylus is left click
-                            connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+                            inputSender().sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
                         } else if (event.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER) {
                             lastAbsTouchUpTime = event.getEventTime();
                             lastAbsTouchUpX = event.getX(0);
                             lastAbsTouchUpY = event.getY(0);
 
                             // Eraser is right click
-                            connection().sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+                            inputSender().sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
                         }
                     }
                 }
@@ -2639,7 +2638,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         eventX = Math.min(Math.max(eventX, 0), streamView.getWidth());
         eventY = Math.min(Math.max(eventY, 0), streamView.getHeight());
 
-        connection().sendMousePosition((short)eventX, (short)eventY, (short)streamView.getWidth(), (short)streamView.getHeight());
+        inputSender().sendMousePosition((short)eventX, (short)eventY, (short)streamView.getWidth(), (short)streamView.getHeight());
     }
 
     @Override
@@ -3253,7 +3252,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void mouseMove(int deltaX, int deltaY) {
-        connection().sendMouseMove((short) deltaX, (short) deltaY);
+        inputSender().sendMouseMove((short) deltaX, (short) deltaY);
     }
 
     @Override
@@ -3283,21 +3282,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         if (down) {
-            connection().sendMouseButtonDown(buttonIndex);
+            inputSender().sendMouseButtonDown(buttonIndex);
         }
         else {
-            connection().sendMouseButtonUp(buttonIndex);
+            inputSender().sendMouseButtonUp(buttonIndex);
         }
     }
 
     @Override
     public void mouseVScroll(byte amount) {
-        connection().sendMouseScroll(amount);
+        inputSender().sendMouseScroll(amount);
     }
 
     @Override
     public void mouseHScroll(byte amount) {
-        connection().sendMouseHScroll(amount);
+        inputSender().sendMouseHScroll(amount);
     }
 
     @Override
@@ -3310,10 +3309,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             if (buttonDown) {
-                connection().sendKeyboardInput(keyMap, KeyboardPacket.KEY_DOWN, getModifierState(), (byte)0);
+                inputSender().sendKeyboardInput(keyMap, KeyboardPacket.KEY_DOWN, getModifierState(), (byte)0);
             }
             else {
-                connection().sendKeyboardInput(keyMap, KeyboardPacket.KEY_UP, getModifierState(), (byte)0);
+                inputSender().sendKeyboardInput(keyMap, KeyboardPacket.KEY_UP, getModifierState(), (byte)0);
             }
         }
     }
@@ -3868,39 +3867,39 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Step 1: Send modifier keys DOWN first (to mimic human key press)
         if (keyCombination.isCtrl()) {
-            connection().sendKeyboardInput(controlKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            inputSender().sendKeyboardInput(controlKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
         if (keyCombination.isAlt()) {
-            connection().sendKeyboardInput(altKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            inputSender().sendKeyboardInput(altKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
         if (keyCombination.isShift()) {
-            connection().sendKeyboardInput(shiftKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            inputSender().sendKeyboardInput(shiftKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
         if (keyCombination.isMeta()) {
-            connection().sendKeyboardInput(metaKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            inputSender().sendKeyboardInput(metaKeyCode, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
 
         // Step 2: Wait 50ms, then send main key DOWN (with modifier flags set)
         handler.postDelayed(() -> {
-            connection().sendKeyboardInput(translatedKeyCode, KeyboardPacket.KEY_DOWN, finalModifiers, (byte) 0);
+            inputSender().sendKeyboardInput(translatedKeyCode, KeyboardPacket.KEY_DOWN, finalModifiers, (byte) 0);
 
             // Step 3: Wait 50ms, then send main key UP (with modifier flags set)
             handler.postDelayed(() -> {
-                connection().sendKeyboardInput(translatedKeyCode, KeyboardPacket.KEY_UP, finalModifiers, (byte) 0);
+                inputSender().sendKeyboardInput(translatedKeyCode, KeyboardPacket.KEY_UP, finalModifiers, (byte) 0);
 
                 // Step 4: Wait 50ms, then send modifier keys UP (in reverse order)
                 handler.postDelayed(() -> {
                     if (keyCombination.isMeta()) {
-                        connection().sendKeyboardInput(metaKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        inputSender().sendKeyboardInput(metaKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
                     if (keyCombination.isShift()) {
-                        connection().sendKeyboardInput(shiftKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        inputSender().sendKeyboardInput(shiftKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
                     if (keyCombination.isAlt()) {
-                        connection().sendKeyboardInput(altKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        inputSender().sendKeyboardInput(altKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
                     if (keyCombination.isCtrl()) {
-                        connection().sendKeyboardInput(controlKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        inputSender().sendKeyboardInput(controlKeyCode, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
 
                     if (onComplete != null) {

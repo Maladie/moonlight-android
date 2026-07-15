@@ -2,7 +2,7 @@ package com.limelight.console;
 
 import java.util.Objects;
 
-/** Non-owning bridge used while Game still owns NvConnection and decoder lifetime. */
+/** Non-owning bridge used while ConsoleActivity still delegates visible stream lifecycle to Game. */
 public final class LegacyGameSessionAdapter implements StreamSessionController {
     public interface Delegate {
         SessionState state();
@@ -19,7 +19,7 @@ public final class LegacyGameSessionAdapter implements StreamSessionController {
     @Override public SessionState state() { return delegate.state(); }
 
     @Override public void connect() {
-        throw new IllegalStateException("Legacy Game owns connection creation");
+        throw new IllegalStateException("Legacy adapter cannot create a second connection");
     }
 
     @Override public void disconnectTransport() { delegate.requestDisconnectTransport(); }

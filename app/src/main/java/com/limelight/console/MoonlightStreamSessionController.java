@@ -31,6 +31,7 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
     }
 
     private NvConnection connection;
+    private StreamInputSender inputSender;
     private Transport transport;
     private MediaCodecDecoderRenderer videoRenderer;
     private final Executor stopExecutor;
@@ -89,6 +90,7 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
         }
         connection = new NvConnection(appContext, host, httpsPort, uniqueId, configuration,
                 cryptoProvider, serverCertificate);
+        inputSender = new NvConnectionInputSender(connection);
         AndroidAudioRenderer audioRenderer = new AndroidAudioRenderer(audioContext, enableAudioFx);
         transport = new Transport() {
             @Override public void start() {
@@ -106,8 +108,18 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
             Executor stopExecutor,
             Executor callbackExecutor,
             Runnable quitHostApplication) {
+        this(transport, null, stopExecutor, callbackExecutor, quitHostApplication);
+    }
+
+    MoonlightStreamSessionController(
+            Transport transport,
+            StreamInputSender inputSender,
+            Executor stopExecutor,
+            Executor callbackExecutor,
+            Runnable quitHostApplication) {
         this(stopExecutor, callbackExecutor, quitHostApplication);
         this.transport = Objects.requireNonNull(transport, "transport");
+        this.inputSender = inputSender;
     }
 
     @Override
@@ -186,10 +198,11 @@ public final class MoonlightStreamSessionController implements StreamSessionCont
         quitHostApplication.run();
     }
 
-    /** Temporary input-adapter escape hatch; it does not transfer ownership. */
-    public NvConnection legacyConnection() {
-        if (connection == null) throw new IllegalStateException("No Android connection in test controller");
-        return connection;
+    public synchronized StreamInputSender inputSender() {
+        if (inputSender == null) {
+            throw new IllegalStateException("Session input sender is not initialized");
+        }
+        return inputSender;
     }
 
     private List<Runnable> drainStopCallbacks() {

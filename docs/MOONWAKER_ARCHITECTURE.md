@@ -59,9 +59,12 @@ During milestone 1, `LegacyGameSessionAdapter` characterized the existing
 construction, start, stop, and transport state. It also owns creation of the
 MediaCodec video renderer and Android audio renderer through ordered
 `prepareRenderer()` and `initializeTransport()` phases. `Game` remains the
-listener, decoder view adapter, and temporary input sender; it cannot start a
-second connection. The existing background-surface fallback is retained until
-the unified path passes the P0 A-F regression suite on TV.
+listener and decoder view adapter; it cannot start a second connection and no
+input component can access the raw connection. Keyboard, mouse, touch, pen, and
+controller events cross the session-scoped `StreamInputSender` boundary, whose
+`NvConnection` adapter is owned by `MoonlightStreamSessionController`. The
+existing background-surface fallback is retained until the unified path passes
+the P0 A-F regression suite on TV.
 
 ## Input and focus routing
 
@@ -82,8 +85,9 @@ the originating host still owns focus. App lists preserve the focused stable ID
 and scroll position when refreshed.
 
 Milestone 1 uses the shared `InputRouter` in both `ConsoleActivity` and legacy
-`Game`. `Game` still performs the platform capture calls, but the active region
-and the capture/no-capture decision no longer live in an unstructured boolean.
+`Game`. `Game` still performs the platform capture calls and translates Android
+input events, but sends them through `StreamInputSender`; the active region and
+the capture/no-capture decision no longer live in an unstructured boolean.
 
 ## Loading and future launch contract
 

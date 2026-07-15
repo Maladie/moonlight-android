@@ -2,6 +2,7 @@ package com.limelight.console;
 
 import org.junit.Test;
 
+import java.lang.reflect.Proxy;
 import java.util.ArrayDeque;
 import java.util.Queue;
 import java.util.concurrent.Executor;
@@ -19,6 +20,28 @@ public class MoonlightStreamSessionControllerTest {
         } catch (IllegalStateException expected) {
             assertEquals(StreamSessionController.SessionState.IDLE, controller.state());
         }
+    }
+
+    @Test public void inputSenderCannotEscapeBeforeInitialization() {
+        MoonlightStreamSessionController controller = new MoonlightStreamSessionController(
+                Runnable::run, Runnable::run, () -> { });
+        try {
+            controller.inputSender();
+            fail("uninitialized input sender must not escape");
+        } catch (IllegalStateException expected) {
+            assertEquals(StreamSessionController.SessionState.IDLE, controller.state());
+        }
+    }
+
+    @Test public void inputBoundaryDoesNotExposeTheTransportConnection() {
+        StreamInputSender sender = (StreamInputSender) Proxy.newProxyInstance(
+                StreamInputSender.class.getClassLoader(),
+                new Class<?>[] { StreamInputSender.class },
+                (proxy, method, args) -> null);
+        MoonlightStreamSessionController controller = new MoonlightStreamSessionController(
+                new FakeTransport(), sender, Runnable::run, Runnable::run, () -> { });
+
+        assertSame(sender, controller.inputSender());
     }
 
     @Test public void connectionCanStartExactlyOnce() {

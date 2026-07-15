@@ -4,7 +4,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 
-import com.limelight.nvstream.NvConnection;
+import com.limelight.console.StreamInputSender;
 import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.preferences.PreferenceConfiguration;
 
@@ -23,7 +23,7 @@ public class RelativeTouchContext implements TouchContext {
     private int pointerCount;
     private int maxPointerCountInGesture;
 
-    private final NvConnection conn;
+    private final StreamInputSender inputSender;
     private final int actionIndex;
     private final int referenceWidth;
     private final int referenceHeight;
@@ -46,7 +46,7 @@ public class RelativeTouchContext implements TouchContext {
 
             // We haven't been cancelled before the timer expired so begin dragging
             confirmedDrag = true;
-            conn.sendMouseButtonDown(getMouseButtonIndex());
+            inputSender.sendMouseButtonDown(getMouseButtonIndex());
         }
     };
 
@@ -55,31 +55,31 @@ public class RelativeTouchContext implements TouchContext {
             new Runnable() {
                 @Override
                 public void run() {
-                    conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+                    inputSender.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
                 }
             },
             new Runnable() {
                 @Override
                 public void run() {
-                    conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_MIDDLE);
+                    inputSender.sendMouseButtonUp(MouseButtonPacket.BUTTON_MIDDLE);
                 }
             },
             new Runnable() {
                 @Override
                 public void run() {
-                    conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+                    inputSender.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
                 }
             },
             new Runnable() {
                 @Override
                 public void run() {
-                    conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_X1);
+                    inputSender.sendMouseButtonUp(MouseButtonPacket.BUTTON_X1);
                 }
             },
             new Runnable() {
                 @Override
                 public void run() {
-                    conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_X2);
+                    inputSender.sendMouseButtonUp(MouseButtonPacket.BUTTON_X2);
                 }
             }
     };
@@ -91,11 +91,11 @@ public class RelativeTouchContext implements TouchContext {
 
     private static final int SCROLL_SPEED_FACTOR = 5;
 
-    public RelativeTouchContext(NvConnection conn, int actionIndex,
+    public RelativeTouchContext(StreamInputSender inputSender, int actionIndex,
                                 int referenceWidth, int referenceHeight,
                                 View view, PreferenceConfiguration prefConfig)
     {
-        this.conn = conn;
+        this.inputSender = inputSender;
         this.actionIndex = actionIndex;
         this.referenceWidth = referenceWidth;
         this.referenceHeight = referenceHeight;
@@ -184,12 +184,12 @@ public class RelativeTouchContext implements TouchContext {
 
         if (confirmedDrag) {
             // Raise the button after a drag
-            conn.sendMouseButtonUp(buttonIndex);
+            inputSender.sendMouseButtonUp(buttonIndex);
         }
         else if (isTap(eventTime))
         {
             // Lower the mouse button
-            conn.sendMouseButtonDown(buttonIndex);
+            inputSender.sendMouseButtonDown(buttonIndex);
 
             // Release the mouse button in 100ms to allow for apps that use polling
             // to detect mouse button presses.
@@ -268,18 +268,18 @@ public class RelativeTouchContext implements TouchContext {
 
                 if (pointerCount == 2) {
                     if (confirmedScroll) {
-                        conn.sendMouseHighResScroll((short)(deltaY * SCROLL_SPEED_FACTOR));
+                        inputSender.sendMouseHighResScroll((short)(deltaY * SCROLL_SPEED_FACTOR));
                     }
                 } else {
                     if (prefConfig.absoluteMouseMode) {
-                        conn.sendMouseMoveAsMousePosition(
+                        inputSender.sendMouseMoveAsMousePosition(
                                 (short) deltaX,
                                 (short) deltaY,
                                 (short) targetView.getWidth(),
                                 (short) targetView.getHeight());
                     }
                     else {
-                        conn.sendMouseMove((short) deltaX, (short) deltaY);
+                        inputSender.sendMouseMove((short) deltaX, (short) deltaY);
                     }
                 }
 
@@ -311,7 +311,7 @@ public class RelativeTouchContext implements TouchContext {
 
         // If it was a confirmed drag, we'll need to raise the button now
         if (confirmedDrag) {
-            conn.sendMouseButtonUp(getMouseButtonIndex());
+            inputSender.sendMouseButtonUp(getMouseButtonIndex());
         }
     }
 

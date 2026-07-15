@@ -4,7 +4,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 
-import com.limelight.nvstream.NvConnection;
+import com.limelight.console.StreamInputSender;
 import com.limelight.nvstream.input.MouseButtonPacket;
 
 public class AbsoluteTouchContext implements TouchContext {
@@ -29,9 +29,9 @@ public class AbsoluteTouchContext implements TouchContext {
             // Switch from a left click to a right click after a long press
             confirmedLongPress = true;
             if (confirmedTap) {
-                conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+                inputSender.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
             }
-            conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
+            inputSender.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
         }
     };
 
@@ -43,7 +43,7 @@ public class AbsoluteTouchContext implements TouchContext {
         }
     };
 
-    private final NvConnection conn;
+    private final StreamInputSender inputSender;
     private final int actionIndex;
     private final View targetView;
     private final Handler handler;
@@ -51,7 +51,7 @@ public class AbsoluteTouchContext implements TouchContext {
     private final Runnable leftButtonUpRunnable = new Runnable() {
         @Override
         public void run() {
-            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+            inputSender.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
         }
     };
 
@@ -66,9 +66,9 @@ public class AbsoluteTouchContext implements TouchContext {
     private static final int TOUCH_DOWN_DEAD_ZONE_TIME_THRESHOLD = 100;
     private static final int TOUCH_DOWN_DEAD_ZONE_DISTANCE_THRESHOLD = 20;
 
-    public AbsoluteTouchContext(NvConnection conn, int actionIndex, View view)
+    public AbsoluteTouchContext(StreamInputSender inputSender, int actionIndex, View view)
     {
-        this.conn = conn;
+        this.inputSender = inputSender;
         this.actionIndex = actionIndex;
         this.targetView = view;
         this.handler = new Handler(Looper.getMainLooper());
@@ -114,7 +114,7 @@ public class AbsoluteTouchContext implements TouchContext {
         eventX = Math.min(Math.max(eventX, 0), targetView.getWidth());
         eventY = Math.min(Math.max(eventY, 0), targetView.getHeight());
 
-        conn.sendMousePosition((short)eventX, (short)eventY, (short)targetView.getWidth(), (short)targetView.getHeight());
+        inputSender.sendMousePosition((short)eventX, (short)eventY, (short)targetView.getWidth(), (short)targetView.getHeight());
     }
 
     @Override
@@ -131,10 +131,10 @@ public class AbsoluteTouchContext implements TouchContext {
 
             // Raise the mouse buttons that we currently have down
             if (confirmedLongPress) {
-                conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+                inputSender.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
             }
             else if (confirmedTap) {
-                conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+                inputSender.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
             }
             else {
                 // If we get here, this means that the tap completed within the touch down
@@ -186,7 +186,7 @@ public class AbsoluteTouchContext implements TouchContext {
             // Don't reposition for finger down events within the deadzone. This makes double-clicking easier.
             updatePosition(lastTouchDownX, lastTouchDownY);
         }
-        conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
+        inputSender.sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
     }
 
     @Override
@@ -209,7 +209,7 @@ public class AbsoluteTouchContext implements TouchContext {
             }
         }
         else if (actionIndex == 1) {
-            conn.sendMouseHighResScroll((short)((eventY - lastTouchLocationY) * SCROLL_SPEED_FACTOR));
+            inputSender.sendMouseHighResScroll((short)((eventY - lastTouchLocationY) * SCROLL_SPEED_FACTOR));
         }
 
         lastTouchLocationX = eventX;
@@ -228,10 +228,10 @@ public class AbsoluteTouchContext implements TouchContext {
 
         // Raise the mouse buttons
         if (confirmedLongPress) {
-            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+            inputSender.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
         }
         else if (confirmedTap) {
-            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+            inputSender.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
         }
     }
 
