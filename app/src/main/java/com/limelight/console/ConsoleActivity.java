@@ -255,13 +255,20 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         HorizontalScrollView hostScroll = horizontalScroll();
         hostRow = horizontalRow();
         hostScroll.addView(hostRow);
-        content.addView(hostScroll, new LinearLayout.LayoutParams(matchWidth(), dp(92)));
+        LinearLayout.LayoutParams hostScrollParams =
+                new LinearLayout.LayoutParams(matchWidth(), dp(96));
+        hostScrollParams.topMargin = dp(6);
+        content.addView(hostScroll, hostScrollParams);
 
-        content.addView(section("CACHED APPLICATIONS"), top(dp(18)));
+        content.addView(section("APPS"), top(dp(10)));
         HorizontalScrollView appScroll = horizontalScroll();
+        appScroll.setPadding(0, 0, dp(12), dp(10));
         appRow = horizontalRow();
         appScroll.addView(appRow);
-        content.addView(appScroll, new LinearLayout.LayoutParams(matchWidth(), dp(180)));
+        LinearLayout.LayoutParams appScrollParams =
+                new LinearLayout.LayoutParams(matchWidth(), dp(120));
+        appScrollParams.topMargin = dp(5);
+        content.addView(appScroll, appScrollParams);
 
         TextView hint = label("DPAD to browse  ·  A to launch via the protected legacy stream path  ·  Back to exit", 12,
                 0xFF9CA6C5, false);
@@ -336,22 +343,40 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         card.setFocusable(true);
         card.setClickable(true);
         card.setBackground(consoleTheme.cardBackground());
-        card.setMinimumWidth(dp(290));
+        card.setMinimumWidth(dp(300));
+        card.setMinimumHeight(dp(110));
         card.setTag(app.id);
 
         ImageView poster = new ImageView(this);
         poster.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        poster.setBackgroundColor(0xFF251C3F);
+        GradientDrawable placeholder = new GradientDrawable(
+                GradientDrawable.Orientation.TL_BR,
+                new int[]{0xFF302255, 0xFF142A46});
+        placeholder.setCornerRadius(dp(9));
+        poster.setBackground(placeholder);
         Bitmap cached = artworkController.decodePoster(app.posterUri, 320);
         if (cached != null) poster.setImageBitmap(cached);
-        card.addView(poster, new LinearLayout.LayoutParams(dp(92), dp(138)));
+        card.addView(poster, new LinearLayout.LayoutParams(dp(56), dp(84)));
 
-        TextView name = label(app.name + "\n\nPLAY  ›", 16, Color.WHITE, true);
-        LinearLayout.LayoutParams copy = new LinearLayout.LayoutParams(dp(180), matchHeight());
-        copy.leftMargin = dp(14);
-        card.addView(name, copy);
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setGravity(Gravity.CENTER_VERTICAL);
+        TextView name = label(app.name, 16, Color.WHITE, true);
+        name.setSingleLine(true);
+        copy.addView(name, new LinearLayout.LayoutParams(matchWidth(), wrapSize()));
+        TextView metadata = label("READY", 10, 0xFFAAAFC2, true);
+        copy.addView(metadata, top(dp(5)));
+        TextView action = label("PLAY  ›", 12, 0xFFB99CFF, true);
+        action.setAlpha(0f);
+        copy.addView(action, top(dp(5)));
+        LinearLayout.LayoutParams copyParams =
+                new LinearLayout.LayoutParams(0, matchHeight(), 1f);
+        copyParams.leftMargin = dp(14);
+        card.addView(copy, copyParams);
         card.setOnFocusChangeListener((view, focused) -> {
             consoleTheme.onCardFocus(view, focused);
+            action.animate().cancel();
+            action.animate().alpha(focused ? 1f : 0f).setDuration(120).start();
             if (focused) {
                 hostSelectionController.rememberApp(host, app);
                 artworkController.show(app.posterUri, poster.getDrawable());
