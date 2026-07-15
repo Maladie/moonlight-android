@@ -16,11 +16,17 @@ final class MoonlightConsoleSession implements MoonlightConsoleResolvedStreamRun
         void detach();
     }
 
+    interface Resources {
+        void close();
+    }
+
     private final Connection connection;
     private final SurfaceOwnership surfaces;
+    private final Resources resources;
     private boolean disconnected;
 
-    static MoonlightConsoleSession create(MoonlightStreamSessionController controller) {
+    static MoonlightConsoleSession create(MoonlightStreamSessionController controller,
+                                          Resources resources) {
         Objects.requireNonNull(controller, "controller");
         return new MoonlightConsoleSession(new Connection() {
             @Override public void connect() {
@@ -46,12 +52,18 @@ final class MoonlightConsoleSession implements MoonlightConsoleResolvedStreamRun
             @Override public void detach() {
                 ActiveStreamSurfaceBridge.detachSession(controller);
             }
-        });
+        }, resources);
     }
 
     MoonlightConsoleSession(Connection connection, SurfaceOwnership surfaces) {
+        this(connection, surfaces, () -> { });
+    }
+
+    MoonlightConsoleSession(Connection connection, SurfaceOwnership surfaces,
+                            Resources resources) {
         this.connection = Objects.requireNonNull(connection, "connection");
         this.surfaces = Objects.requireNonNull(surfaces, "surfaces");
+        this.resources = Objects.requireNonNull(resources, "resources");
         surfaces.attach();
     }
 
@@ -65,6 +77,7 @@ final class MoonlightConsoleSession implements MoonlightConsoleResolvedStreamRun
     @Override public synchronized void disconnect() {
         if (disconnected) return;
         disconnected = true;
+        resources.close();
         connection.prepareRendererForStop();
         connection.disconnect(surfaces::detach);
     }

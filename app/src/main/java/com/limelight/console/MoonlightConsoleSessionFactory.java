@@ -25,9 +25,11 @@ final class MoonlightConsoleSessionFactory implements
         CrashListener crashListener();
         PerfOverlayListener performanceListener();
         Runnable firstFrameRenderedCallback();
-        ConsoleSessionEventCoordinator.Feedback feedback(
+        ConsoleSessionInput createInput(
+                StreamInputSender inputSender,
                 MediaCodecDecoderRenderer renderer,
                 PreferenceConfiguration preferences);
+        void onInputReady(ConsoleSessionInput input);
         void onConfigurationPlanned(StreamSessionConfigurationPlanner.Plan plan);
         Runnable quitHostApplication();
     }
@@ -61,6 +63,7 @@ final class MoonlightConsoleSessionFactory implements
                         Objects.requireNonNull(environment.quitHostApplication(),
                                 "quitHostApplication"));
         boolean rendererPrepared = false;
+        DeferredConsoleSessionInput input = null;
         try {
             MediaCodecDecoderRenderer renderer = controller.prepareRenderer(
                     activity,
@@ -93,6 +96,7 @@ final class MoonlightConsoleSessionFactory implements
             preferences.framePacing = plan.effectiveFramePacing;
             environment.onConfigurationPlanned(plan);
 
+            input = new DeferredConsoleSessionInput();
             ConsoleSessionEventCoordinator coordinator =
                     new ConsoleSessionEventCoordinator(
                             new ConsoleSessionEventCoordinator.Lifecycle() {
@@ -109,7 +113,7 @@ final class MoonlightConsoleSessionFactory implements
                                 }
                             },
                             listener,
-                            environment.feedback(renderer, preferences));
+                            input);
             ConsoleNvConnectionListener connectionListener =
                     new ConsoleNvConnectionListener(coordinator);
             StreamConfiguration streamConfiguration = plan.configuration;
@@ -124,8 +128,17 @@ final class MoonlightConsoleSessionFactory implements
                     activity,
                     transportConfiguration,
                     connectionListener);
-            return MoonlightConsoleSession.create(controller);
+            ConsoleSessionInput boundInput = Objects.requireNonNull(
+                    environment.createInput(
+                            controller.inputSender(), renderer, preferences),
+                    "sessionInput");
+            input.bind(boundInput);
+            environment.onInputReady(input);
+            return MoonlightConsoleSession.create(controller, input::close);
         } catch (RuntimeException error) {
+            if (input != null) {
+                input.close();
+            }
             if (rendererPrepared) {
                 controller.prepareRendererForStop();
                 controller.disconnectTransport();

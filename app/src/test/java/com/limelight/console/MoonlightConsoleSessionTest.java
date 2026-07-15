@@ -25,13 +25,16 @@ public class MoonlightConsoleSessionTest {
     @Test public void disconnectPreparesRendererAndDetachesAfterTransportStops() {
         RecordingConnection connection = new RecordingConnection();
         RecordingSurfaces surfaces = new RecordingSurfaces();
-        MoonlightConsoleSession session = new MoonlightConsoleSession(connection, surfaces);
+        RecordingResources resources = new RecordingResources();
+        MoonlightConsoleSession session =
+                new MoonlightConsoleSession(connection, surfaces, resources);
 
         session.connect();
         session.disconnect();
         session.disconnect();
 
         assertTrue(connection.preparedForStop);
+        assertTrue(resources.closed);
         assertEquals(1, connection.disconnectCount);
         assertEquals(0, surfaces.detachCount);
         connection.afterStopped.run();
@@ -84,5 +87,11 @@ public class MoonlightConsoleSessionTest {
             return true;
         }
         @Override public void detach() { detachCount++; }
+    }
+
+    private static final class RecordingResources implements
+            MoonlightConsoleSession.Resources {
+        boolean closed;
+        @Override public void close() { closed = true; }
     }
 }
