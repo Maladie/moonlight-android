@@ -234,12 +234,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
         loadingController = new ConsoleLoadingController(this);
         privacyLayer = loadingController.build();
-        privacyLayer.setElevation(dp(4));
+        privacyLayer.setElevation(dp(24));
         privacyLayer.setVisibility(View.GONE);
         root.addView(privacyLayer, match());
 
         homeLayer = buildHome();
-        homeLayer.setElevation(dp(8));
+        homeLayer.setElevation(dp(32));
         root.addView(homeLayer, match());
 
         overlayController = new ConsoleOverlayController(this, consoleTheme);
@@ -247,11 +247,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 this::returnToActiveStream,
                 this::openConsoleHome,
                 this::showHostIntegrations);
-        overlayLayer.setElevation(dp(12));
+        overlayLayer.setElevation(dp(40));
         root.addView(overlayLayer, match());
 
         modalLayer = new FrameLayout(this);
-        modalLayer.setElevation(dp(16));
+        modalLayer.setElevation(dp(48));
         modalLayer.setBackgroundColor(0xD9000000);
         modalLayer.setVisibility(View.GONE);
         root.addView(modalLayer, match());
@@ -566,6 +566,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void launchLegacy(ConsoleDataRepository.Host host, ConsoleDataRepository.App app) {
+        LimeLog.info("Unified Console launch requested");
         launchHistoryStore.record(host, app, System.currentTimeMillis());
         stateMachine.dispatch(ConsoleStateMachine.Event.LAUNCH);
         applyState(ConsoleStateMachine.State.CONNECTING);
@@ -573,14 +574,17 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         launchPreparationController.prepare(host,
                 new ConsoleHostLaunchPreparationController.Callback() {
                     @Override public void onStatus(String status) {
+                        LimeLog.info("Unified Console host preparation: " + status);
                         loadingController.updateStatus(status);
                     }
 
                     @Override public void onReady() {
+                        LimeLog.info("Unified Console host preparation complete");
                         launchPreparedLegacy(host, app);
                     }
 
                     @Override public void onTimeout() {
+                        LimeLog.warning("Unified Console host preparation timed out");
                         stateMachine.dispatch(ConsoleStateMachine.Event.BACK);
                         applyState(stateMachine.getState());
                         modalController.showHostWakeTimeout(getCurrentFocus(), host.name,
@@ -596,6 +600,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         unifiedTransportConnected = false;
         unifiedFirstFrameRendered = false;
         unifiedSessionInput = null;
+        LimeLog.info("Unified Console runtime launch: " +
+                streamRuntime.getClass().getSimpleName());
         streamRuntime.launch(request);
     }
 
@@ -772,6 +778,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void handleUnifiedStage(UnifiedConsoleLaunchPipeline.Stage stage) {
+        LimeLog.info("Unified Console stage: " + stage.name());
         switch (stage) {
             case RESOLVING_HOST:
                 loadingController.updateStatus("Resolving streaming host…");
@@ -804,6 +811,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         } else {
             reason = "unknown connection error";
         }
+        LimeLog.warning("Unified Console failure: " + reason);
         loadingController.updateStatus("Connection failed: " + reason);
     }
 

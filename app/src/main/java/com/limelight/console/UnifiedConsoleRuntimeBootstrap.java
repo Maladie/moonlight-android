@@ -2,6 +2,8 @@ package com.limelight.console;
 
 import android.app.Activity;
 
+import com.limelight.LimeLog;
+
 import java.util.Objects;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -30,10 +32,12 @@ final class UnifiedConsoleRuntimeBootstrap implements ConsoleStreamRuntime, Auto
         computerManagerConnection = new ConsoleComputerManagerConnection(activity);
         computerManagerConnection.connect(new ConsoleComputerManagerConnection.Listener() {
             @Override public void onReady(ComputerManagerStreamLaunchLoader loader) {
+                LimeLog.info("Unified Console computer service ready");
                 assemble(loader);
             }
 
             @Override public void onUnavailable() {
+                LimeLog.warning("Unified Console computer service unavailable");
                 failUnavailable();
             }
         });
@@ -52,8 +56,10 @@ final class UnifiedConsoleRuntimeBootstrap implements ConsoleStreamRuntime, Auto
             return;
         }
         if (delegate != null) {
+            LimeLog.info("Unified Console launch delegated immediately");
             delegate.launch(request);
         } else {
+            LimeLog.info("Unified Console launch queued for computer service");
             pendingRequest = Objects.requireNonNull(request, "request");
         }
     }
@@ -95,6 +101,7 @@ final class UnifiedConsoleRuntimeBootstrap implements ConsoleStreamRuntime, Auto
         delegate = new UnifiedConsoleStreamRuntimeAdapter(
                 new UnifiedConsoleLaunchPipeline(resolution, resolvedRuntime),
                 listener);
+        LimeLog.info("Unified Console runtime assembled");
         ConsoleLaunchContract.Request request = pendingRequest;
         pendingRequest = null;
         if (request != null) {
