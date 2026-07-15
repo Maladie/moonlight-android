@@ -263,7 +263,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             selectedHost = null;
             hostRow.addView(label("No saved Moonlight hosts", 16, 0xFFFFB74D, false), cardParams());
             renderApps(null, snapshot.apps);
-            renderGatewayProfile(null);
+            renderGatewayProfile(null, snapshot.integrations);
             return;
         }
         for (ConsoleDataRepository.Host host : snapshot.hosts) {
@@ -273,7 +273,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         selectedHost = snapshot.selectedHost;
         renderApps(selectedHost, snapshot.apps);
-        renderGatewayProfile(selectedHost);
+        renderGatewayProfile(selectedHost, snapshot.integrations);
         // One deterministic initial focus; subsequent refreshes never request focus.
         hostRow.getChildAt(snapshot.selectedHostIndex).requestFocus();
     }
@@ -368,19 +368,24 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void renderGatewayProfile(ConsoleDataRepository.Host host) {
+        GatewayConnection connection = host == null ? null : hostGatewayStore.load(host.uuid);
+        renderGatewayProfile(host, HostIntegrationSummary.from(connection));
+    }
+
+    private void renderGatewayProfile(ConsoleDataRepository.Host host,
+                                      HostIntegrationSummary summary) {
         if (integrationStatus == null) return;
         if (host == null) {
             integrationStatus.setText("HOST INTEGRATIONS · SELECT A HOST");
             return;
         }
-        GatewayConnection connection = hostGatewayStore.load(host.uuid);
-        if (connection == null) {
+        if (!summary.gatewayPaired) {
             integrationStatus.setText("HOST INTEGRATIONS · GATEWAY NOT PAIRED");
             integrationStatus.setTextColor(0xFF9CA6C5);
         }
         else {
             integrationStatus.setText("HOST INTEGRATIONS · PROFILE " +
-                    connection.profileId.toUpperCase(Locale.ROOT) + " · GATEWAY PAIRED");
+                    summary.profileId.toUpperCase(Locale.ROOT) + " · GATEWAY PAIRED");
             integrationStatus.setTextColor(0xFF69F0AE);
         }
     }
