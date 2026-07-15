@@ -27,6 +27,7 @@ public final class PublicStreamIntent {
     public static final String EXTRA_EXTERNAL_FRONTEND_MESSAGE = "com.limelight.extra.EXTERNAL_FRONTEND_MESSAGE";
     public static final String EXTRA_EXTERNAL_FRONTEND_ANIMATION_EPOCH = "com.limelight.extra.EXTERNAL_FRONTEND_ANIMATION_EPOCH";
     public static final String EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION = "com.limelight.extra.EXTERNAL_FRONTEND_REDUCED_MOTION";
+    public static final String EXTRA_EXTERNAL_FRONTEND_READINESS_REQUIRED = "com.limelight.extra.EXTERNAL_FRONTEND_READINESS_REQUIRED";
     public static final String EXTRA_HOST_GATEWAY_ENDPOINT = "com.limelight.extra.HOST_GATEWAY_ENDPOINT";
     public static final String EXTRA_HOST_GATEWAY_TOKEN = "com.limelight.extra.HOST_GATEWAY_TOKEN";
     public static final String EXTRA_HOST_GATEWAY_CERTIFICATE = "com.limelight.extra.HOST_GATEWAY_CERTIFICATE";
@@ -83,6 +84,8 @@ public final class PublicStreamIntent {
             }
             target.putExtra(EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION,
                     source.getBooleanExtra(EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION, false));
+            target.putExtra(EXTRA_EXTERNAL_FRONTEND_READINESS_REQUIRED,
+                    source.getBooleanExtra(EXTRA_EXTERNAL_FRONTEND_READINESS_REQUIRED, false));
         }
         copyStringExtra(source, target, EXTRA_HOST_GATEWAY_ENDPOINT);
         copyStringExtra(source, target, EXTRA_HOST_GATEWAY_TOKEN);

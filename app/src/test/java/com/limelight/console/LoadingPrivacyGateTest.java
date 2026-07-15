@@ -27,4 +27,13 @@ public class LoadingPrivacyGateTest {
         gate.onReadiness(new LaunchOrchestrator.ReadinessSample(true, false, false, 1));
         assertFalse(gate.mayReveal());
     }
+
+    @Test public void explicitDesktopRevealStillRequiresDecodedFrame() {
+        LoadingPrivacyGate gate = new LoadingPrivacyGate(3);
+        gate.reset(true);
+        gate.approveDesktopReveal();
+        assertFalse(gate.mayReveal());
+        gate.onFirstDecodedFrame();
+        assertTrue(gate.mayReveal());
+    }
 }

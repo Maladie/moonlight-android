@@ -20,8 +20,11 @@ import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
 import com.limelight.console.ActiveStreamSurfaceBridge;
 import com.limelight.console.InputRouter;
+import com.limelight.console.LegacyGameLifecyclePolicy;
+import com.limelight.console.LoadingPrivacyGate;
 import com.limelight.console.MoonlightStreamSessionController;
 import com.limelight.console.StreamInputSender;
+import com.limelight.console.ConsoleActivity;
 import com.limelight.nvstream.StreamConfiguration;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
@@ -124,6 +127,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private static final String EXTERNAL_FRONTEND_PACKAGE_KEY = "package";
     private static final String DISCORD_OVERLAY_PREFS = "discord_overlay_state";
     private static final String DISCORD_DOCK_ENABLED_KEY = "dock_enabled";
+    private static final long PRIVACY_READINESS_TIMEOUT_MS = 12000L;
 
     // Only 2 touches are supported
     private final TouchContext[] touchContextMap = new TouchContext[2];
@@ -150,6 +154,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private MoonlightStreamSessionController sessionController;
     private SpinnerDialog spinner;
     private ExternalFrontendLoadingView externalLoadingView;
+    private final LoadingPrivacyGate loadingPrivacyGate = new LoadingPrivacyGate(3);
+    private final Handler privacyHandler = new Handler(Looper.getMainLooper());
+    private boolean privacyReadinessRequired;
+    private boolean privacyRecoveryReady;
+    private boolean firstDecodedFrame;
+    private final Runnable privacyReadinessTimeout = () -> {
+        if (!privacyReadinessRequired || externalLoadingView == null ||
+                externalLoadingView.getVisibility() != View.VISIBLE) return;
+        privacyRecoveryReady = true;
+        externalLoadingView.showPrivacyRecovery(firstDecodedFrame);
+        LimeLog.info("MoonWakerPrivacy event=readiness_timeout firstFrame=" + firstDecodedFrame);
+    };
     private boolean externalFrontend;
     private String externalFrontendPackage;
     private boolean handingOffToExternalFrontend;
@@ -324,6 +340,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         externalFrontend = PublicStreamIntent.isExternalFrontend(getIntent());
         externalFrontendPackage = PublicStreamIntent.getExternalFrontendPackage(getIntent());
+        privacyReadinessRequired = externalFrontend && getIntent().getBooleanExtra(
+                PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_READINESS_REQUIRED, false);
+        loadingPrivacyGate.reset(privacyReadinessRequired);
         if (externalFrontend && externalFrontendPackage != null &&
                 !externalFrontendPackage.isEmpty()) {
             rememberExternalFrontendPackage(externalFrontendPackage);
@@ -343,6 +362,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             ViewGroup.LayoutParams.MATCH_PARENT));
             externalLoadingView.bringToFront();
             externalLoadingView.setStatus("Initializing Moonlight streaming pipeline…");
+            if (privacyReadinessRequired) {
+                privacyHandler.postDelayed(privacyReadinessTimeout, PRIVACY_READINESS_TIMEOUT_MS);
+                LimeLog.info("MoonWakerPrivacy event=gate_armed readinessRequired=true");
+            }
         }
         else {
             // Preserve the stock Moonlight connection dialog for normal launches.
@@ -1282,6 +1305,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        privacyHandler.removeCallbacks(privacyReadinessTimeout);
         discordOverlayHandler.removeCallbacks(discordRefreshRunnable);
         discordOverlayExecutor.shutdownNow();
         if (externalLoadingView != null) {
@@ -1360,6 +1384,23 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // onBackPressed(). Handle the Android BACK key at the Activity boundary
         // for external-frontend sessions and consume its matching key-up event.
         int keyCode = event.getKeyCode();
+        boolean privacyRevealKey = keyCode == KeyEvent.KEYCODE_DPAD_CENTER ||
+                keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER ||
+                keyCode == KeyEvent.KEYCODE_BUTTON_A;
+        if (externalFrontend && privacyRecoveryReady && externalLoadingView != null &&
+                externalLoadingView.getVisibility() == View.VISIBLE && privacyRevealKey) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+                loadingPrivacyGate.approveDesktopReveal();
+                if (loadingPrivacyGate.mayReveal()) {
+                    LimeLog.info("MoonWakerPrivacy event=explicit_desktop_reveal firstFrame=true");
+                    revealExternalStream();
+                }
+                else {
+                    externalLoadingView.showPrivacyRecovery(false);
+                }
+            }
+            return true;
+        }
         InputDevice inputDevice = event.getDevice();
         boolean nonGamepadB = keyCode == KeyEvent.KEYCODE_BUTTON_B &&
                 (inputDevice == null || !ControllerHandler.isGameControllerDevice(inputDevice));
@@ -1389,8 +1430,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return false;
         }
 
-        Intent frontendIntent = getPackageManager().getLeanbackLaunchIntentForPackage(externalFrontendPackage);
-        if (frontendIntent == null) {
+        boolean samePackageConsole = getPackageName().equals(externalFrontendPackage);
+        Intent frontendIntent = samePackageConsole ? new Intent(this, ConsoleActivity.class) :
+                getPackageManager().getLeanbackLaunchIntentForPackage(externalFrontendPackage);
+        if (frontendIntent == null && !samePackageConsole) {
             frontendIntent = getPackageManager().getLaunchIntentForPackage(externalFrontendPackage);
         }
         if (frontendIntent == null) {
@@ -1407,9 +1450,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 ActiveStreamSurfaceBridge.switchToBackgroundSurface(sessionController);
             }
         }
-        frontendIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK |
-                Intent.FLAG_ACTIVITY_REORDER_TO_FRONT | Intent.FLAG_ACTIVITY_SINGLE_TOP |
-                Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        frontendIntent.addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT |
+                Intent.FLAG_ACTIVITY_SINGLE_TOP | Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        if (!samePackageConsole) {
+            frontendIntent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        }
         try {
             startActivity(frontendIntent,
                     ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle());
@@ -1468,8 +1513,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         PowerManager powerManager = (PowerManager) getSystemService(Context.POWER_SERVICE);
-        boolean frontendTemporarilyCoveringStream = externalFrontend && !isFinishing()
-                && powerManager.isInteractive() && (connecting || connected);
+        boolean sessionActive = connecting || connected;
+        boolean consoleRenderTargetBound = sessionController != null &&
+                ActiveStreamSurfaceBridge.isConsoleRenderTargetBound(sessionController);
+        boolean frontendTemporarilyCoveringStream =
+                LegacyGameLifecyclePolicy.shouldKeepSessionOnStop(externalFrontend,
+                        isFinishing(), powerManager.isInteractive(), sessionActive,
+                        consoleRenderTargetBound);
+        LimeLog.info("MoonWakerGameLifecycle event=on_stop external=" + externalFrontend +
+                " finishing=" + isFinishing() + " interactive=" + powerManager.isInteractive() +
+                " sessionActive=" + sessionActive + " consoleTarget=" +
+                consoleRenderTargetBound + " keep=" + frontendTemporarilyCoveringStream);
         if (frontendTemporarilyCoveringStream) {
             LimeLog.info("Keeping external-frontend stream alive while Game is backgrounded");
             return;
@@ -2871,8 +2925,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             @Override
             public void run() {
                 if (externalLoadingView != null) {
-                    externalLoadingView.stop();
-                    externalLoadingView.setVisibility(View.GONE);
+                    if (externalFrontend) {
+                        privacyHandler.removeCallbacks(privacyReadinessTimeout);
+                        externalLoadingView.setMessage("The stream could not be started.");
+                        externalLoadingView.setStatus("Press BACK to return Home");
+                        LimeLog.info("MoonWakerPrivacy event=connection_failure_held_opaque");
+                    }
+                    else {
+                        externalLoadingView.stop();
+                        externalLoadingView.setVisibility(View.GONE);
+                    }
                 }
                 if (spinner != null) {
                     spinner.dismiss();
@@ -3099,14 +3161,34 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void onFirstVideoFrameRendered() {
         runOnUiThread(() -> {
+            firstDecodedFrame = true;
+            loadingPrivacyGate.onFirstDecodedFrame();
             if (sessionController != null) {
                 ActiveStreamSurfaceBridge.bindConsoleIfForeground(sessionController);
             }
             if (externalLoadingView != null) {
-                externalLoadingView.setStatus("Stream ready");
-                externalLoadingView.revealStream();
+                if (loadingPrivacyGate.mayReveal()) {
+                    revealExternalStream();
+                }
+                else if (privacyRecoveryReady) {
+                    externalLoadingView.showPrivacyRecovery(true);
+                }
+                else {
+                    externalLoadingView.setStatus("Waiting for the game window to be ready…");
+                    LimeLog.info("MoonWakerPrivacy event=first_frame_held readinessRequired=" +
+                            privacyReadinessRequired);
+                }
             }
         });
+    }
+
+    private void revealExternalStream() {
+        privacyHandler.removeCallbacks(privacyReadinessTimeout);
+        privacyRecoveryReady = false;
+        if (externalLoadingView != null) {
+            externalLoadingView.setStatus("Stream ready");
+            externalLoadingView.revealStream();
+        }
     }
 
     private String friendlyLoadingStage(String stage) {
@@ -3246,12 +3328,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void surfaceDestroyed(SurfaceHolder holder) {
+        boolean consoleSurfaceBound = attemptedConnection &&
+                ActiveStreamSurfaceBridge.isConsoleRenderTargetBound(sessionController);
         boolean backgroundSurfaceBound = attemptedConnection && externalFrontend && !isFinishing() &&
                 (handingOffToExternalFrontend || connecting || connected) &&
-                (ActiveStreamSurfaceBridge.isConsoleRenderTargetBound(sessionController) ||
-                        ActiveStreamSurfaceBridge.switchToBackgroundSurface(sessionController));
+                !consoleSurfaceBound &&
+                ActiveStreamSurfaceBridge.switchToBackgroundSurface(sessionController);
+        boolean alternateRenderTarget = LegacyGameLifecyclePolicy.hasAlternateRenderTarget(
+                attemptedConnection, consoleSurfaceBound, backgroundSurfaceBound);
         StreamSurfaceHost.LossAction lossAction = streamSurfaceHost.onWindowSurfaceDestroyed(
-                attemptedConnection, backgroundSurfaceBound);
+                attemptedConnection, alternateRenderTarget);
 
         if (lossAction == StreamSurfaceHost.LossAction.KEEP_SESSION_ON_BACKGROUND_SURFACE) {
             LimeLog.info("Keeping external-frontend stream alive without a window Surface");

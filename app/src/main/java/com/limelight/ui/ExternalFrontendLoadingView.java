@@ -145,6 +145,19 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
         if (!stopped && message != null && !message.isEmpty()) messageView.setText(message);
     }
 
+    public void showPrivacyRecovery(boolean firstFrameReady) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(() -> showPrivacyRecovery(firstFrameReady));
+            return;
+        }
+        if (stopped) return;
+        handler.removeCallbacks(rotateMessage);
+        messageView.setText("The game window could not be confirmed safely.");
+        statusView.setText(firstFrameReady ?
+                "Press OK to reveal the stream, or BACK to return Home" :
+                "Still waiting for the first video frame • Press BACK to return Home");
+    }
+
     public void revealStream() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             handler.post(this::revealStream);

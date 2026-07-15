@@ -325,6 +325,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_MESSAGE,
                         "Preparing " + app.name + "…")
                 .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION, false)
+                .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_READINESS_REQUIRED, true)
                 .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
         startActivity(intent, ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle());
         overridePendingTransition(0, 0);

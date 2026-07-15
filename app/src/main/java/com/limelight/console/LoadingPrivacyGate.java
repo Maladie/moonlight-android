@@ -5,6 +5,7 @@ public final class LoadingPrivacyGate {
     private final int stableSamplesRequired;
     private boolean firstFrame;
     private boolean bridgeRequired;
+    private boolean desktopRevealApproved;
     private LaunchOrchestrator.ReadinessSample readiness;
 
     public LoadingPrivacyGate(int stableSamplesRequired) {
@@ -14,15 +15,18 @@ public final class LoadingPrivacyGate {
 
     public void reset(boolean bridgeRequired) {
         firstFrame = false;
+        desktopRevealApproved = false;
         readiness = null;
         this.bridgeRequired = bridgeRequired;
     }
 
     public void onFirstDecodedFrame() { firstFrame = true; }
     public void onReadiness(LaunchOrchestrator.ReadinessSample sample) { readiness = sample; }
+    public void approveDesktopReveal() { desktopRevealApproved = true; }
 
     public boolean mayReveal() {
         if (!firstFrame) return false;
+        if (desktopRevealApproved) return true;
         if (!bridgeRequired) return true;
         return readiness != null && readiness.visibleForegroundWindow &&
                 readiness.onStreamedDisplay && readiness.finalGeometry &&
