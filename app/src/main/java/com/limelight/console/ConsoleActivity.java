@@ -151,6 +151,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private boolean controllerListenerRegistered;
     private boolean refreshHostsOnResume;
     private ComputerManagerService.ComputerManagerBinder computerManagerBinder;
+    private ComputerManagerService.ApplistPoller appListPoller;
+    private String appListPollerHostUuid;
+    private String renderedRawAppList;
     private boolean computerManagerBound;
     private boolean hostPollingActive;
     private final Map<String, TextView> hostStatusViews = new HashMap<>();
@@ -224,6 +227,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         renderControllers();
         refreshHostAvailability();
+        startSelectedAppListPolling();
         ActiveStreamSurfaceBridge.setConsoleForeground(true);
         if (repository != null && sessionStatus != null) {
             ConsoleDataRepository.Session session = visibleSession();
@@ -255,6 +259,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         mainHandler.removeCallbacks(homeStatusRefresh);
         if (hostAvailabilityProbeController != null) hostAvailabilityProbeController.cancel();
         if (launchPreparationController != null) launchPreparationController.cancel();
+        stopSelectedAppListPolling();
         super.onPause();
     }
 
@@ -269,6 +274,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     @Override protected void onDestroy() {
         if (loadingController != null) loadingController.stop();
         integrationExecutor.shutdownNow();
+        stopSelectedAppListPolling();
         if (computerManagerBinder != null) computerManagerBinder.stopPolling();
         if (computerManagerBound) unbindService(computerManagerConnection);
         ActiveStreamSurfaceBridge.setConsoleForeground(false);
@@ -889,6 +895,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         visibleHosts = snapshot.hosts;
         if (snapshot.hosts.isEmpty()) {
             selectedHost = null;
+            stopSelectedAppListPolling();
             hostRow.addView(addHostCard(), cardParams());
             renderApps(null, snapshot.apps);
             renderGatewayProfile(null, snapshot.integrations);
@@ -901,6 +908,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         hostRow.addView(addHostCard(), cardParams());
         selectedHost = snapshot.selectedHost;
+        startSelectedAppListPolling();
         renderApps(selectedHost, snapshot.apps);
         renderGatewayProfile(selectedHost, snapshot.integrations);
         // One deterministic initial focus matching Wake: prefer Resume/Return
@@ -913,7 +921,14 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private void refreshForDiscoveredHost(ComputerDetails details) {
         if (details == null || details.uuid == null || isFinishing()) return;
         for (ConsoleDataRepository.Host host : visibleHosts) {
-            if (details.uuid.equals(host.uuid)) return;
+            if (!details.uuid.equals(host.uuid)) continue;
+            if (selectedHost != null && details.uuid.equals(selectedHost.uuid) &&
+                    details.rawAppList != null &&
+                    !details.rawAppList.equals(renderedRawAppList)) {
+                renderedRawAppList = details.rawAppList;
+                renderSnapshot(false);
+            }
+            return;
         }
         renderSnapshot(false);
         refreshHostAvailability();
@@ -1079,6 +1094,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         ConsoleHostSelectionController.Selection selection =
                 hostSelectionController.select(host);
         selectedHost = selection.host;
+        renderedRawAppList = null;
+        startSelectedAppListPolling();
         for (int index = 0; index < hostRow.getChildCount(); index++) {
             View hostCard = hostRow.getChildAt(index);
             hostCard.setSelected(host.uuid.equals(hostCard.getTag()));
@@ -1641,6 +1658,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void pauseHostPolling() {
+        stopSelectedAppListPolling();
         if (!hostPollingActive || computerManagerBinder == null) return;
         computerManagerBinder.stopPolling();
         hostPollingActive = false;
@@ -1648,14 +1666,42 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void resumeHostPolling() {
-        if (hostPollingActive || computerManagerBinder == null || isFinishing() ||
+        if (computerManagerBinder == null || isFinishing() ||
                 stateMachine.getState() == ConsoleStateMachine.State.CONNECTING ||
                 activeLaunchRequest != null) {
             return;
         }
-        computerManagerBinder.startPolling(computerManagerListener);
-        hostPollingActive = true;
-        LimeLog.info("Resumed host discovery polling on Home");
+        if (!hostPollingActive) {
+            computerManagerBinder.startPolling(computerManagerListener);
+            hostPollingActive = true;
+            LimeLog.info("Resumed host discovery polling on Home");
+        }
+        startSelectedAppListPolling();
+    }
+
+    private void startSelectedAppListPolling() {
+        if (computerManagerBinder == null || selectedHost == null ||
+                stateMachine.getState() == ConsoleStateMachine.State.CONNECTING ||
+                activeLaunchRequest != null || isFinishing()) return;
+        if (appListPoller != null && selectedHost.uuid.equals(appListPollerHostUuid)) {
+            appListPoller.pollNow();
+            return;
+        }
+        stopSelectedAppListPolling();
+        ComputerDetails details = computerManagerBinder.getComputer(selectedHost.uuid);
+        if (details == null) return;
+        appListPoller = computerManagerBinder.createAppListPoller(details);
+        appListPollerHostUuid = selectedHost.uuid;
+        appListPoller.start();
+        LimeLog.info("Started Moonlight app list polling for " + selectedHost.name);
+    }
+
+    private void stopSelectedAppListPolling() {
+        if (appListPoller != null) {
+            appListPoller.stop();
+            appListPoller = null;
+        }
+        appListPollerHostUuid = null;
     }
 
     private void retryUnifiedConnection() {
