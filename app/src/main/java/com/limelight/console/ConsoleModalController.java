@@ -94,7 +94,7 @@ final class ConsoleModalController {
                 view, "End app on host?",
                 "The running application will be closed on the host and this stream will end.",
                 "END APP", quitHostApplication));
-        showWakePanel("ACTIVE SESSION", "Current stream", summary.label,
+        showWakePanel("ACTIVE SESSION", summary.title, summary.details,
                 null, resume, disconnect, quit);
     }
 

@@ -5,10 +5,18 @@ import java.util.Locale;
 /** Pure Home presentation model for the current streaming session. */
 final class ConsoleSessionSummary {
     final String label;
+    final String title;
+    final String details;
     final boolean alive;
 
     private ConsoleSessionSummary(String label, boolean alive) {
+        this(label, "Active stream", "Moonlight is streaming to this TV.", alive);
+    }
+
+    private ConsoleSessionSummary(String label, String title, String details, boolean alive) {
         this.label = label;
+        this.title = title;
+        this.details = details;
         this.alive = alive;
     }
 
@@ -25,6 +33,11 @@ final class ConsoleSessionSummary {
             text.append(" · ").append(session.width).append('×').append(session.height)
                     .append(" @ ").append(session.fps);
         }
-        return new ConsoleSessionSummary(text.toString(), session.alive);
+        String title = session.app != null && !session.app.isEmpty() ?
+                session.app : "Active stream";
+        String details = session.width > 0 ? session.width + "\u00D7" + session.height +
+                (session.fps > 0 ? " @ " + session.fps + " FPS" : "") :
+                "Moonlight is streaming to this TV.";
+        return new ConsoleSessionSummary(text.toString(), title, details, session.alive);
     }
 }
