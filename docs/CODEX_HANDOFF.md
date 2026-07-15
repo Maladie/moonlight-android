@@ -34,6 +34,16 @@ Implemented on this branch:
   contract. Home exposes an offline Host Integrations panel with independent
   Discord, Vibepollo, and VirtualHere status per profile. No token or certificate
   value is rendered, logged, or included in diagnostic summaries.
+- The placeholder stream-overlay label has been replaced by a Wake-style,
+  controller-only layout with explicit DPAD routes between stream controls and
+  the Discord/host-services region. Its status is profile scoped and uses the
+  same secret-free presentation model as Home.
+- Opening Host Integrations is the only action that starts a read-only profile
+  refresh. It reuses the existing certificate-pinned Gateway transport for
+  `/api/v1/profiles`; latest-only delivery, panel dismissal, Activity teardown,
+  malformed profile records, and unavailable responses are fail-safe. A
+  controller profile chooser persists the selected host-scoped ID without an
+  asynchronous focus jump. No background Home polling was added.
 - `ConsoleStateMachine` covers HOME, CONNECTING, STREAM,
   CONSOLE_OVER_STREAM, OVERLAY, RECOVERY, and DISCONNECTING. Back, input target,
   session reattachment after Activity recreation, and disconnect are explicit.
@@ -85,14 +95,16 @@ destruction. Only after that evidence may the `Game` Activity launch be bypassed
 
 - JDK: `C:\Users\Basia\.jdks\openjdk-17.0.2` (the system Java 24 is not
   compatible with Gradle 8.7/AGP 8.5.1).
-- `:app:testNonRootDebugUnitTest`: 62/62 passed; state, privacy readiness, surface
+- `:app:testNonRootDebugUnitTest`: 87/87 passed; state, privacy readiness, surface
   lifetime, legacy ownership, disconnect/quit separation, input routing, and
   input-boundary initialization plus cross-Activity render-target handoff are
   covered, including diagnostic generation, failed-switch visibility, Gateway
   validation/storage, focus memory, artwork request ordering, Wake card design
-  tokens, and profile-scoped integration health.
+  tokens, profile-scoped integration health, immutable Home/session models,
+  resume/layer policies, the isolated legacy launch contract, pinned profile
+  conversion, and latest-only Gateway refresh cancellation.
 - `:app:compileNonRootDebugJavaWithJavac` and the unit-test task passed at
-  `a9666b10`. The most recent full `:app:assembleNonRootDebug` passed earlier in
+  `071cb96d`. The most recent full `:app:assembleNonRootDebug` passed earlier in
   the same series at `7a0d4706`; full builds are intentionally grouped rather
   than run after every local refactor.
 - `:app:assembleNonRootRelease`: passed.
