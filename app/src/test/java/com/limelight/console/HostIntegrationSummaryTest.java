@@ -26,4 +26,15 @@ public class HostIntegrationSummaryTest {
         assertTrue(summary.gatewayLabel().contains("NOT PAIRED"));
         assertTrue(summary.servicesLabel().contains("required"));
     }
+
+    @Test public void matchingProfileAddsIndependentServiceStates() {
+        GatewayConnection connection = new GatewayConnection(
+                "https://private-host:8785", "private-token", FINGERPRINT, "living-room");
+        IntegrationProfileStatus status = new IntegrationProfileStatus(
+                "living-room", "Living room", true, true, true, false, true);
+        String rendered = HostIntegrationSummary.from(connection, status).servicesLabel();
+        assertTrue(rendered.contains("DISCORD ONLINE"));
+        assertTrue(rendered.contains("VIBEPOLLO OFFLINE"));
+        assertTrue(rendered.contains("USB READY"));
+    }
 }
