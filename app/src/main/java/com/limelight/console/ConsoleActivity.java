@@ -50,6 +50,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final StreamSurfaceHost streamSurfaceHost = new StreamSurfaceHost();
 
     private ConsoleDataRepository repository;
+    private HostGatewayStore hostGatewayStore;
     private FrameLayout root;
     private SurfaceView streamSurface;
     private View privacyLayer;
@@ -57,6 +58,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ImageView artworkBackdrop;
     private ImageView artworkHero;
     private TextView sessionStatus;
+    private TextView integrationStatus;
     private TextView returnToGame;
     private LinearLayout hostRow;
     private LinearLayout appRow;
@@ -68,6 +70,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         super.onCreate(state);
         applyTvWindow();
         repository = new ConsoleDataRepository(this);
+        hostGatewayStore = new HostGatewayStore(this);
         setContentView(buildRoot());
         renderSnapshot();
     }
@@ -223,6 +226,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         sessionParams.topMargin = dp(10);
         content.addView(sessionStatus, sessionParams);
 
+        integrationStatus = label("HOST INTEGRATIONS · SELECT A HOST", 12, 0xFF9CA6C5, true);
+        content.addView(integrationStatus, top(dp(6)));
+
         returnToGame = card("▶  RETURN TO GAME", dp(280), dp(54));
         returnToGame.setVisibility(View.GONE);
         returnToGame.setOnClickListener(view -> returnToActiveStream());
@@ -254,6 +260,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         if (hosts.isEmpty()) {
             hostRow.addView(label("No saved Moonlight hosts", 16, 0xFFFFB74D, false), cardParams());
             renderApps(null);
+            renderGatewayProfile(null);
             return;
         }
         for (ConsoleDataRepository.Host host : hosts) {
@@ -263,6 +270,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         selectedHost = hosts.get(0);
         renderApps(selectedHost);
+        renderGatewayProfile(selectedHost);
         // One deterministic initial focus; subsequent refreshes never request focus.
         hostRow.getChildAt(0).requestFocus();
     }
@@ -270,6 +278,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private void selectHost(ConsoleDataRepository.Host host, boolean userFocusedHost) {
         selectedHost = host;
         renderApps(host);
+        renderGatewayProfile(host);
         if (userFocusedHost && appRow.getChildCount() > 0) appRow.getChildAt(0).requestFocus();
     }
 
@@ -334,8 +343,27 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION, false)
                 .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_READINESS_REQUIRED, true)
                 .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+        hostGatewayStore.putLaunchExtras(intent, host.uuid);
         startActivity(intent, ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle());
         overridePendingTransition(0, 0);
+    }
+
+    private void renderGatewayProfile(ConsoleDataRepository.Host host) {
+        if (integrationStatus == null) return;
+        if (host == null) {
+            integrationStatus.setText("HOST INTEGRATIONS · SELECT A HOST");
+            return;
+        }
+        GatewayConnection connection = hostGatewayStore.load(host.uuid);
+        if (connection == null) {
+            integrationStatus.setText("HOST INTEGRATIONS · GATEWAY NOT PAIRED");
+            integrationStatus.setTextColor(0xFF9CA6C5);
+        }
+        else {
+            integrationStatus.setText("HOST INTEGRATIONS · PROFILE " +
+                    connection.profileId.toUpperCase(Locale.ROOT) + " · GATEWAY PAIRED");
+            integrationStatus.setTextColor(0xFF69F0AE);
+        }
     }
 
     private void renderSession(ConsoleDataRepository.Session session) {
