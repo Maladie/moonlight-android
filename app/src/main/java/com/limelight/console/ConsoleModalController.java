@@ -326,12 +326,18 @@ final class ConsoleModalController {
         boolean canChoose = catalog != null && catalog.profiles.size() > 1;
         chooseProfile.setVisibility(canChoose ? View.VISIBLE : View.GONE);
         chooseProfile.setOnClickListener(canChoose ? view -> chooseProfileAction.run() : null);
-        IntegrationProfileStatus profile = summary.profileStatus;
-        discordIntegration.setVisibility(profile != null && profile.discordBridgeOnline ?
+        return true;
+    }
+
+    boolean updateHostIntegrationCapabilities(
+            String hostUuid, HostGatewayClient.Capabilities capabilities) {
+        if (layer.getVisibility() != View.VISIBLE || integrationHostUuid == null ||
+                !integrationHostUuid.equals(hostUuid) || capabilities == null ||
+                discordIntegration == null) return false;
+        discordIntegration.setVisibility(capabilities.discord ? View.VISIBLE : View.GONE);
+        vibepolloIntegration.setVisibility(capabilities.vibepolloFix ?
                 View.VISIBLE : View.GONE);
-        vibepolloIntegration.setVisibility(profile != null && profile.vibepolloBridgeOnline ?
-                View.VISIBLE : View.GONE);
-        virtualHereIntegration.setVisibility(profile != null && profile.virtualHereAvailable ?
+        virtualHereIntegration.setVisibility(capabilities.virtualHere ?
                 View.VISIBLE : View.GONE);
         return true;
     }

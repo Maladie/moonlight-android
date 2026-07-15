@@ -1063,7 +1063,29 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             }
         }, this::showDiscordPanel, this::showVibepolloPanel,
                 this::showVirtualHerePanel, gatewayProfileRefreshController::cancel);
-        if (connection != null) refreshHostIntegrations(hostUuid, connection);
+        if (connection != null) {
+            refreshHostIntegrations(hostUuid, connection);
+            HostGatewayClient.Connection clientConnection =
+                    hostGatewayStore.loadClientConnection(hostUuid);
+            if (clientConnection != null) {
+                refreshIntegrationCapabilities(hostUuid, clientConnection);
+            }
+        }
+    }
+
+    private void refreshIntegrationCapabilities(
+            String hostUuid, HostGatewayClient.Connection connection) {
+        integrationExecutor.execute(() -> {
+            try {
+                HostGatewayClient.Capabilities capabilities =
+                        hostGatewayClient.getCapabilities(connection);
+                mainHandler.post(() -> modalController.updateHostIntegrationCapabilities(
+                        hostUuid, capabilities));
+            } catch (Exception error) {
+                LimeLog.warning("Unable to refresh Gateway capabilities: " +
+                        friendlyGatewayError(error));
+            }
+        });
     }
 
     private void showGatewayPairing() {
