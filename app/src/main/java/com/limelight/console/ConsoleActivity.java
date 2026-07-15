@@ -60,6 +60,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 /** Milestone-1 Android TV console shell with a persistent stream surface layer. */
 public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
     private static final long SESSION_REFRESH_MS = 1500L;
+    private static final long HOME_STATUS_REFRESH_MS = 5000L;
     private static final int REQUEST_BLUETOOTH_CONNECT = 7001;
     private static final int CONTROLLER_ACTION_NONE = 0;
     private static final int CONTROLLER_ACTION_DISCONNECT = 1;
@@ -91,6 +92,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final AtomicBoolean discordOverlayActionInFlight = new AtomicBoolean();
     private final Runnable discordOverlayRefresh = () -> refreshDiscordStreamOverlay(false);
     private final Runnable sessionRefresh = this::refreshVisibleSession;
+    private final Runnable homeStatusRefresh = this::refreshHomeStatus;
     private final ServiceConnection computerManagerConnection = new ServiceConnection() {
         @Override public void onServiceConnected(ComponentName name, IBinder service) {
             ComputerManagerService.ComputerManagerBinder binder =
@@ -222,8 +224,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             }
         }
         mainHandler.removeCallbacks(sessionRefresh);
+        mainHandler.removeCallbacks(homeStatusRefresh);
         mainHandler.removeCallbacks(discordOverlayRefresh);
         mainHandler.postDelayed(sessionRefresh, SESSION_REFRESH_MS);
+        mainHandler.post(homeStatusRefresh);
         updateUnifiedInputSensors();
     }
 
@@ -235,6 +239,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             controllerListenerRegistered = false;
         }
         mainHandler.removeCallbacks(sessionRefresh);
+        mainHandler.removeCallbacks(homeStatusRefresh);
         if (hostAvailabilityProbeController != null) hostAvailabilityProbeController.cancel();
         if (launchPreparationController != null) launchPreparationController.cancel();
         super.onPause();
@@ -271,6 +276,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         unifiedSessionInput = null;
         mainHandler.removeCallbacks(sessionRefresh);
+        mainHandler.removeCallbacks(homeStatusRefresh);
         super.onDestroy();
     }
 
@@ -1004,7 +1010,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         TextView title = label("ADD HOST", 15, Color.WHITE, true);
         title.setSingleLine(true);
         copy.addView(title, wrap());
-        copy.addView(label("Moonlight setup", 10, 0xFFC8BCE8, false), top(dp(1)));
+        copy.addView(label("SEARCHING LOCAL NETWORK  ·  ADD MANUALLY",
+                10, 0xFFC8BCE8, false), top(dp(1)));
         LinearLayout.LayoutParams copyParams = wrap();
         copyParams.leftMargin = dp(12);
         card.addView(copy, copyParams);
@@ -1335,6 +1342,17 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 homeLayer.getVisibility() != View.VISIBLE || isFinishing()) return;
         renderSession(visibleSession());
         mainHandler.postDelayed(sessionRefresh, SESSION_REFRESH_MS);
+    }
+
+    private void refreshHomeStatus() {
+        if (repository != null && homeLayer != null &&
+                homeLayer.getVisibility() == View.VISIBLE && !isFinishing()) {
+            renderControllers();
+            refreshHostAvailability();
+        }
+        if (!isFinishing()) {
+            mainHandler.postDelayed(homeStatusRefresh, HOME_STATUS_REFRESH_MS);
+        }
     }
 
     private ConsoleDataRepository.Session visibleSession() {
