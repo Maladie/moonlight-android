@@ -76,8 +76,9 @@ destruction. Only after that evidence may the `Game` Activity launch be bypassed
   APK SHA-256
   `093c37b50ea5c562551950415a8e6dfb2f71186944e798628220aade51a2dd24`.
   Deliverable: `moonwaker-game-app-surface-telemetry-release.apk`.
-  This increment has not been installed yet. The preceding persistent-surface
-  APK hash was `e831230f4c3d20d5df025fff0eb466d8db89f51268a0a8ed08b24b29a7c4aa02`.
+  This increment was installed successfully on the BRAVIA TV without launching
+  a host application. The preceding persistent-surface APK hash was
+  `e831230f4c3d20d5df025fff0eb466d8db89f51268a0a8ed08b24b29a7c4aa02`.
 - The preceding input-boundary release was installed successfully on the BRAVIA
   TV. The user confirmed that the current milestone UI is visible and differs
   from Wake & Play, as expected for the vertical slice. No live stream/surface
