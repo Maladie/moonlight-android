@@ -11,6 +11,13 @@ android {
         minSdk 21
         targetSdk 34
 
+        // The one-Activity runtime stays off in ordinary builds until TV P0 passes.
+        // Use -PunifiedConsoleRuntime=true only for the explicit P0 candidate APK.
+        def unifiedConsoleRuntime =
+                providers.gradleProperty("unifiedConsoleRuntime").orElse("false").get()
+        buildConfigField "boolean", "UNIFIED_CONSOLE_RUNTIME",
+                Boolean.toString(unifiedConsoleRuntime.toBoolean())
+
         versionName "12.1"
         versionCode = 314
 

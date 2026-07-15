@@ -1,12 +1,12 @@
 package com.limelight.console;
 
+import com.limelight.BuildConfig;
+
 /** Must remain false until the unified renderer/input path passes the TV P0 suite. */
 final class UnifiedConsoleRuntimeGate {
-    private static final boolean ENABLED = false;
-
     private UnifiedConsoleRuntimeGate() { }
 
     static boolean isEnabled() {
-        return ENABLED;
+        return BuildConfig.UNIFIED_CONSOLE_RUNTIME;
     }
 }
