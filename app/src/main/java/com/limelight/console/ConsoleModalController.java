@@ -139,6 +139,34 @@ final class ConsoleModalController {
         showAndFocus(sounds);
     }
 
+    void showControllerActions(View focusToRestore,
+                               ConsoleControllerRepository.Controller controller,
+                               Runnable identify, Runnable disconnect, Runnable unpair) {
+        begin(focusToRestore);
+        integrationHostUuid = null;
+        LinearLayout panel = panel();
+        panel.setPadding(dp(42), dp(48), dp(42), dp(38));
+        panel.setBackgroundColor(0xFF111522);
+        panel.addView(label("CONTROLLER", 14, 0xFF9CA6C5, true), wrap());
+        panel.addView(label(controller.name, 28, Color.WHITE, true), top(dp(8)));
+        panel.addView(label(controller.batteryLabel(), 14, 0xFFBDC4D8, false), top(dp(12)));
+
+        TextView identifyAction = card("IDENTIFY", dp(420), dp(58));
+        identifyAction.setOnClickListener(view -> identify.run());
+        panel.addView(identifyAction, top(dp(28)));
+        TextView disconnectAction = card("POWER OFF / DISCONNECT", dp(420), dp(58));
+        disconnectAction.setOnClickListener(view -> disconnect.run());
+        panel.addView(disconnectAction, top(dp(10)));
+        TextView unpairAction = card("UNPAIR CONTROLLER", dp(420), dp(58));
+        unpairAction.setOnClickListener(view -> unpair.run());
+        panel.addView(unpairAction, top(dp(10)));
+        TextView close = card("CLOSE", dp(420), dp(58));
+        close.setOnClickListener(view -> hide());
+        panel.addView(close, top(dp(10)));
+        layer.addView(panel, new FrameLayout.LayoutParams(dp(720), matchHeight(), Gravity.RIGHT));
+        showAndFocus(identifyAction);
+    }
+
     private void showSessionCommandConfirmation(View focusToRestore, String title,
                                                 String message, String actionLabel,
                                                 Runnable action) {

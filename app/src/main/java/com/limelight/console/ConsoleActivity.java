@@ -42,6 +42,7 @@ import java.util.concurrent.Executors;
 /** Milestone-1 Android TV console shell with a persistent stream surface layer. */
 public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
     private static final long SESSION_REFRESH_MS = 1500L;
+    private static final int REQUEST_BLUETOOTH_CONNECT = 7001;
     private final ConsoleStateMachine stateMachine = new ConsoleStateMachine();
     private final InputRouter inputRouter = new InputRouter(InputRouter.Region.HOME);
     private final StreamSurfaceHost streamSurfaceHost = new StreamSurfaceHost();
@@ -100,6 +101,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleDataRepository.Host selectedHost;
     private ConsoleDataRepository.Host resumeHost;
     private ConsoleDataRepository.App resumeApp;
+    private ConsoleControllerRepository.Controller pendingController;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -671,6 +673,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             chip.setMinimumWidth(dp(220));
             chip.setMinimumHeight(dp(50));
             chip.setBackground(consoleTheme.cardBackground());
+            chip.setFocusable(true);
+            chip.setClickable(true);
+            chip.setOnFocusChangeListener(consoleTheme::onCardFocus);
+            chip.setOnClickListener(view -> openControllerActions(controller));
             chip.addView(label("P" + player++ + "  " + controller.name,
                     14, Color.WHITE, true), wrap());
             int batteryColor = controller.batteryPercentage < 0 ? 0xFFB3B8C8 :
@@ -680,6 +686,46 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             chip.addView(label(controller.batteryLabel(), 12, batteryColor, false), wrap());
             controllerRow.addView(chip, cardParams());
         }
+    }
+
+    private void openControllerActions(ConsoleControllerRepository.Controller controller) {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
+                checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) !=
+                        android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            pendingController = controller;
+            requestPermissions(new String[]{android.Manifest.permission.BLUETOOTH_CONNECT},
+                    REQUEST_BLUETOOTH_CONNECT);
+            return;
+        }
+        modalController.showControllerActions(getCurrentFocus(), controller,
+                () -> ControllerActions.identify(controller.deviceId, mainHandler,
+                        this::showControllerActionResult),
+                () -> ControllerActions.disconnect(this, controller.deviceId,
+                        this::showControllerActionResult),
+                () -> ControllerActions.unpair(controller.deviceId,
+                        this::showControllerActionResult));
+    }
+
+    @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
+                                                     int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        if (requestCode != REQUEST_BLUETOOTH_CONNECT) return;
+        ConsoleControllerRepository.Controller controller = pendingController;
+        pendingController = null;
+        if (controller != null && grantResults.length > 0 &&
+                grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            openControllerActions(controller);
+        } else {
+            Toast.makeText(this, "Bluetooth permission is required to disconnect a controller.",
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void showControllerActionResult(boolean success, String message) {
+        mainHandler.post(() -> {
+            Toast.makeText(this, message, Toast.LENGTH_LONG).show();
+            if (success) mainHandler.postDelayed(this::renderControllers, 800L);
+        });
     }
 
     private void renderGatewayProfile(ConsoleDataRepository.Host host) {

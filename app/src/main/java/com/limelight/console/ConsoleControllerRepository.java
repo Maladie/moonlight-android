@@ -14,14 +14,20 @@ import java.util.Set;
 /** Read-only controller inventory matching Wake Home without taking input ownership. */
 final class ConsoleControllerRepository {
     static final class Controller {
+        final int deviceId;
         final String name;
         final int batteryPercentage;
         final boolean charging;
 
-        Controller(String name, int batteryPercentage, boolean charging) {
+        Controller(int deviceId, String name, int batteryPercentage, boolean charging) {
+            this.deviceId = deviceId;
             this.name = compactName(name);
             this.batteryPercentage = batteryPercentage;
             this.charging = charging;
+        }
+
+        Controller(String name, int batteryPercentage, boolean charging) {
+            this(-1, name, batteryPercentage, charging);
         }
 
         String batteryLabel() {
@@ -55,7 +61,7 @@ final class ConsoleControllerRepository {
                     charging = battery.getStatus() == BatteryState.STATUS_CHARGING;
                 }
             }
-            controllers.add(new Controller(device.getName(), percentage, charging));
+            controllers.add(new Controller(device.getId(), device.getName(), percentage, charging));
         }
         return controllers;
     }
