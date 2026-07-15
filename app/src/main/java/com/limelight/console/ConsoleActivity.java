@@ -8,6 +8,8 @@ import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.input.InputManager;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.SurfaceHolder;
@@ -33,6 +35,7 @@ import java.util.Locale;
 
 /** Milestone-1 Android TV console shell with a persistent stream surface layer. */
 public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
+    private static final long SESSION_REFRESH_MS = 1500L;
     private final ConsoleStateMachine stateMachine = new ConsoleStateMachine();
     private final InputRouter inputRouter = new InputRouter(InputRouter.Region.HOME);
     private final StreamSurfaceHost streamSurfaceHost = new StreamSurfaceHost();
@@ -42,6 +45,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 @Override public void onInputDeviceRemoved(int deviceId) { renderControllers(); }
                 @Override public void onInputDeviceChanged(int deviceId) { renderControllers(); }
             };
+    private final Handler mainHandler = new Handler(Looper.getMainLooper());
+    private final Runnable sessionRefresh = this::refreshVisibleSession;
 
     private ConsoleDataRepository repository;
     private HostGatewayStore hostGatewayStore;
@@ -114,6 +119,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 applyState(stateMachine.getState());
             }
         }
+        mainHandler.removeCallbacks(sessionRefresh);
+        mainHandler.postDelayed(sessionRefresh, SESSION_REFRESH_MS);
     }
 
     @Override protected void onPause() {
@@ -122,6 +129,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             inputManager.unregisterInputDeviceListener(controllerDeviceListener);
             controllerListenerRegistered = false;
         }
+        mainHandler.removeCallbacks(sessionRefresh);
         super.onPause();
     }
 
@@ -140,6 +148,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         if (artworkController != null) artworkController.destroy();
         if (gatewayProfileRefreshController != null) gatewayProfileRefreshController.destroy();
+        mainHandler.removeCallbacks(sessionRefresh);
         super.onDestroy();
     }
 
@@ -517,6 +526,13 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         sessionStatus.setTextColor(summary.alive ? 0xFF69F0AE : 0xFF9CA6C5);
         returnToGame.setVisibility(summary.alive ? View.VISIBLE : View.GONE);
         sessionButton.setVisibility(summary.alive ? View.VISIBLE : View.GONE);
+    }
+
+    private void refreshVisibleSession() {
+        if (repository == null || homeLayer == null ||
+                homeLayer.getVisibility() != View.VISIBLE || isFinishing()) return;
+        renderSession(repository.session());
+        mainHandler.postDelayed(sessionRefresh, SESSION_REFRESH_MS);
     }
 
     private void returnToActiveStream() {
