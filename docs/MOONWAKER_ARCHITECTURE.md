@@ -56,10 +56,12 @@ visibility or surface callbacks.
 During milestone 1, `LegacyGameSessionAdapter` characterized the existing
 `Game` lifecycle. The next extraction introduced
 `MoonlightStreamSessionController` as the real owner of `NvConnection`
-construction, start, stop, and transport state. `Game` remains the listener,
-decoder view adapter, and temporary input sender; it cannot start a second
-connection. The existing background-surface fallback is retained until the
-unified path passes the P0 A-F regression suite on TV.
+construction, start, stop, and transport state. It also owns creation of the
+MediaCodec video renderer and Android audio renderer through ordered
+`prepareRenderer()` and `initializeTransport()` phases. `Game` remains the
+listener, decoder view adapter, and temporary input sender; it cannot start a
+second connection. The existing background-surface fallback is retained until
+the unified path passes the P0 A-F regression suite on TV.
 
 ## Input and focus routing
 

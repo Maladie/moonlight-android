@@ -56,6 +56,16 @@ the controller-owned connection through the named `legacyConnection()` escape
 hatch. This does not transfer lifetime ownership. Replace that escape hatch with
 an `InputSender` boundary before moving the controller into `ConsoleActivity`.
 
+The fourth extraction adds explicit two-phase initialization. The controller
+creates `MediaCodecDecoderRenderer` in `prepareRenderer()` so `Game` can query
+unchanged codec capabilities/color preferences while building
+`StreamConfiguration`. `initializeTransport()` then creates both
+`AndroidAudioRenderer` and `NvConnection`, and `connect()` is rejected until
+that phase completes. `Game` contains none of those three constructors. The
+renderer callback/listener objects, metered-network value, HDR decision, crash
+count, GL renderer, audio-FX flag, and Activity/application Context choices are
+passed unchanged.
+
 ### P003 - User-visible product label and JVM test dependency
 
 - Surface: `app/build.gradle`.

@@ -34,9 +34,12 @@ Implemented on this branch:
 - `Game` delegates window-surface lifetime policy to `StreamSurfaceHost` and
   gameplay-capture state to the shared `InputRouter`. The real
   `MoonlightStreamSessionController` now constructs, starts, and asynchronously
-  stops the sole `NvConnection`; `Game` remains its listener and obtains the
-  connection only through a named temporary input escape hatch. Decoder
-  creation and the background-surface fallback are unchanged.
+  stops the sole `NvConnection`. Ordered `prepareRenderer()` and
+  `initializeTransport()` phases also move construction of
+  `MediaCodecDecoderRenderer` and `AndroidAudioRenderer` behind the controller
+  without changing capability negotiation. `Game` remains its listener/view
+  adapter and obtains the connection only through a named temporary input
+  escape hatch. The background-surface fallback is unchanged.
 - Home launches cached apps through the existing `ShortcutTrampoline` with the
   same-package external-frontend contract. The current transitional route is
   ConsoleActivity -> ShortcutTrampoline -> Game -> ConsoleActivity. Back covers
@@ -45,30 +48,29 @@ Implemented on this branch:
 
 Important: the last bullet is the safe one-APK adapter path, not the final
 one-Activity stream. Do not describe the Activity consolidation as complete.
-The next exact implementation step is two-phase session initialization: move
-creation/lifetime of `MediaCodecDecoderRenderer` and `AndroidAudioRenderer`
-behind `MoonlightStreamSessionController`, while exposing only decoder
-capabilities needed to build `StreamConfiguration`. Then replace
-`legacyConnection()` with an `InputSender` boundary and bind the controller to
-`ConsoleActivity`'s persistent surface. Only after two live P0 Stream -> Home ->
-Stream cycles may the `Game` Activity launch be bypassed.
+The next exact implementation step is to replace `legacyConnection()` with an
+`InputSender` boundary shared by `ControllerHandler`, touch contexts, keyboard,
+mouse, pen, and controller callbacks. After no input component receives raw
+`NvConnection`, bind the controller-owned renderer to `ConsoleActivity`'s
+persistent surface through `StreamSurfaceHost`. Only after two live P0 Stream ->
+Home -> Stream cycles may the `Game` Activity launch be bypassed.
 
 ### Verification
 
 - JDK: `C:\Users\Basia\.jdks\openjdk-17.0.2` (the system Java 24 is not
   compatible with Gradle 8.7/AGP 8.5.1).
-- `:app:testNonRootDebugUnitTest`: 20/20 passed; state, privacy readiness, surface
+- `:app:testNonRootDebugUnitTest`: 21/21 passed; state, privacy readiness, surface
   lifetime, legacy ownership, disconnect/quit separation, and input routing are
   covered.
 - `:app:assembleNonRootDebug`: passed.
 - `:app:assembleNonRootRelease`: passed.
-- Latest signed session-controller release identity: `com.limelight.unofficial`, certificate SHA-256
+- Latest signed renderer-owner release identity: `com.limelight.unofficial`, certificate SHA-256
   `745d86be25583505b45da74343bd9f868e8f77884fa6e0aaf49fba330b277740`,
   APK SHA-256
-  `d4d1845cdcacbda503b3b256010c282b818083a637489f2e90c63d58b673b693`.
+  `471bb4f3a1f8bb79bf7a8ffd940ebf84b6896422506b980bc96181a085958bae`.
   This increment was not installed because TV testing is paused. The preceding
-  milestone APK hash was
-  `62964e826e187ceea1f0c0a00b074d2b4b3fee6a8824f3ac0324b83ae8f84bd8`.
+  session-controller APK hash was
+  `d4d1845cdcacbda503b3b256010c282b818083a637489f2e90c63d58b673b693`.
 - The TV was reported powered off. Earlier ADB install succeeded because its ADB
   endpoint was reachable, but black captures are invalid evidence and no UI,
   focus, video, input, or stream regression is claimed. Do not run further TV
