@@ -42,6 +42,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private HostGatewayStore hostGatewayStore;
     private ConsoleSelectionStore selectionStore;
     private ConsoleArtworkController artworkController;
+    private ConsoleTheme consoleTheme;
     private FrameLayout root;
     private SurfaceView streamSurface;
     private View privacyLayer;
@@ -64,6 +65,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         repository = new ConsoleDataRepository(this);
         hostGatewayStore = new HostGatewayStore(this);
         selectionStore = new ConsoleSelectionStore(this);
+        consoleTheme = new ConsoleTheme(this);
         setContentView(buildRoot());
         artworkController = new ConsoleArtworkController(this, artworkBackdrop, artworkHero);
         renderSnapshot();
@@ -320,7 +322,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         card.setPadding(dp(12), dp(10), dp(16), dp(10));
         card.setFocusable(true);
         card.setClickable(true);
-        card.setBackground(cardBackground(false));
+        card.setBackground(consoleTheme.cardBackground());
         card.setMinimumWidth(dp(290));
         card.setTag(app.id);
 
@@ -336,7 +338,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         copy.leftMargin = dp(14);
         card.addView(name, copy);
         card.setOnFocusChangeListener((view, focused) -> {
-            view.setBackground(cardBackground(focused));
+            consoleTheme.onCardFocus(view, focused);
             if (focused) {
                 selectionStore.rememberApp(host.uuid, app.id);
                 artworkController.show(app.posterUri, poster.getDrawable());
@@ -434,7 +436,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         panel.setOrientation(LinearLayout.VERTICAL);
         panel.setGravity(Gravity.CENTER);
         panel.setPadding(dp(36), dp(30), dp(36), dp(30));
-        panel.setBackground(cardBackground(false));
+        panel.setBackground(consoleTheme.cardBackground());
         panel.addView(label("EXIT MOONWAKER?", 24, Color.WHITE, true), wrap());
         panel.addView(label("An active host application will not be stopped.", 15, 0xFFBDC4D8, false), top(dp(12)));
         TextView cancel = card("CANCEL", dp(260), dp(58));
@@ -529,17 +531,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         view.setClickable(true);
         view.setMinWidth(width);
         view.setMinHeight(height);
-        view.setBackground(cardBackground(false));
-        view.setOnFocusChangeListener((target, focused) -> target.setBackground(cardBackground(focused)));
+        view.setBackground(consoleTheme.cardBackground());
+        view.setOnFocusChangeListener(consoleTheme::onCardFocus);
         return view;
-    }
-
-    private GradientDrawable cardBackground(boolean focused) {
-        GradientDrawable drawable = new GradientDrawable();
-        drawable.setColor(focused ? 0xFF5D3F92 : 0xE6212638);
-        drawable.setCornerRadius(dp(12));
-        drawable.setStroke(dp(focused ? 3 : 1), focused ? 0xFFE1D4FF : 0xFF48506A);
-        return drawable;
     }
 
     private TextView section(String value) { return label(value, 12, 0xFFB99CFF, true); }
