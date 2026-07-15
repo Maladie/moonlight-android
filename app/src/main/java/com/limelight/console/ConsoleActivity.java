@@ -53,6 +53,9 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
     private static final long SESSION_REFRESH_MS = 1500L;
     private static final int REQUEST_BLUETOOTH_CONNECT = 7001;
+    private static final int CONTROLLER_ACTION_NONE = 0;
+    private static final int CONTROLLER_ACTION_DISCONNECT = 1;
+    private static final int CONTROLLER_ACTION_UNPAIR = 2;
     private static final int DISCORD_BLURPLE = 0xFF5865F2;
     private static final int DISCORD_GREEN = 0xFF23A559;
     private static final int DISCORD_RED = 0xFFDA373C;
@@ -131,6 +134,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleDataRepository.Host resumeHost;
     private ConsoleDataRepository.App resumeApp;
     private ConsoleControllerRepository.Controller pendingController;
+    private int pendingControllerAction = CONTROLLER_ACTION_NONE;
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
@@ -1045,21 +1049,32 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void openControllerActions(int player,
                                        ConsoleControllerRepository.Controller controller) {
+        modalController.showControllerActions(getCurrentFocus(), player, controller,
+                () -> ControllerActions.identify(controller.deviceId, mainHandler,
+                        this::showControllerActionResult),
+                () -> runControllerBluetoothAction(controller,
+                        CONTROLLER_ACTION_DISCONNECT),
+                () -> runControllerBluetoothAction(controller,
+                        CONTROLLER_ACTION_UNPAIR));
+    }
+
+    private void runControllerBluetoothAction(
+            ConsoleControllerRepository.Controller controller, int action) {
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S &&
                 checkSelfPermission(android.Manifest.permission.BLUETOOTH_CONNECT) !=
                         android.content.pm.PackageManager.PERMISSION_GRANTED) {
             pendingController = controller;
+            pendingControllerAction = action;
             requestPermissions(new String[]{android.Manifest.permission.BLUETOOTH_CONNECT},
                     REQUEST_BLUETOOTH_CONNECT);
             return;
         }
-        modalController.showControllerActions(getCurrentFocus(), player, controller,
-                () -> ControllerActions.identify(controller.deviceId, mainHandler,
-                        this::showControllerActionResult),
-                () -> ControllerActions.disconnect(this, controller.deviceId,
-                        this::showControllerActionResult),
-                () -> ControllerActions.unpair(controller.deviceId,
-                        this::showControllerActionResult));
+        if (action == CONTROLLER_ACTION_DISCONNECT) {
+            ControllerActions.disconnect(this, controller.deviceId,
+                    this::showControllerActionResult);
+        } else if (action == CONTROLLER_ACTION_UNPAIR) {
+            ControllerActions.unpair(controller.deviceId, this::showControllerActionResult);
+        }
     }
 
     @Override public void onRequestPermissionsResult(int requestCode, String[] permissions,
@@ -1067,20 +1082,14 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
         if (requestCode != REQUEST_BLUETOOTH_CONNECT) return;
         ConsoleControllerRepository.Controller controller = pendingController;
+        int action = pendingControllerAction;
         pendingController = null;
+        pendingControllerAction = CONTROLLER_ACTION_NONE;
         if (controller != null && grantResults.length > 0 &&
                 grantResults[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) {
-            int player = 1;
-            List<ConsoleControllerRepository.Controller> controllers = controllerRepository.load();
-            for (int index = 0; index < controllers.size(); index++) {
-                if (controllers.get(index).deviceId == controller.deviceId) {
-                    player = index + 1;
-                    break;
-                }
-            }
-            openControllerActions(player, controller);
+            runControllerBluetoothAction(controller, action);
         } else {
-            Toast.makeText(this, "Bluetooth permission is required to disconnect a controller.",
+            Toast.makeText(this, "Bluetooth permission is required for this controller action.",
                     Toast.LENGTH_LONG).show();
         }
     }
