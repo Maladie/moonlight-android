@@ -54,6 +54,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleDataRepository repository;
     private HostGatewayStore hostGatewayStore;
     private HostAvailabilityProbeController hostAvailabilityProbeController;
+    private ConsoleHostLaunchPreparationController launchPreparationController;
     private ConsoleSelectionStore selectionStore;
     private ConsoleLaunchHistoryStore launchHistoryStore;
     private ConsoleHostSelectionController hostSelectionController;
@@ -61,6 +62,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleTheme consoleTheme;
     private ConsoleModalController modalController;
     private ConsoleOverlayController overlayController;
+    private ConsoleLoadingController loadingController;
     private GatewayProfileRefreshController gatewayProfileRefreshController;
     private ConsoleControllerRepository controllerRepository;
     private InputManager inputManager;
@@ -92,6 +94,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         repository = new ConsoleDataRepository(this);
         hostGatewayStore = new HostGatewayStore(this);
         hostAvailabilityProbeController = new HostAvailabilityProbeController();
+        launchPreparationController = new ConsoleHostLaunchPreparationController();
         selectionStore = new ConsoleSelectionStore(this);
         launchHistoryStore = new ConsoleLaunchHistoryStore(this);
         hostSelectionController = new ConsoleHostSelectionController(
@@ -139,6 +142,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         mainHandler.removeCallbacks(sessionRefresh);
         if (hostAvailabilityProbeController != null) hostAvailabilityProbeController.cancel();
+        if (launchPreparationController != null) launchPreparationController.cancel();
         super.onPause();
     }
 
@@ -158,12 +162,17 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         if (artworkController != null) artworkController.destroy();
         if (gatewayProfileRefreshController != null) gatewayProfileRefreshController.destroy();
         if (hostAvailabilityProbeController != null) hostAvailabilityProbeController.destroy();
+        if (launchPreparationController != null) launchPreparationController.destroy();
         mainHandler.removeCallbacks(sessionRefresh);
         super.onDestroy();
     }
 
     @Override public void onBackPressed() {
         if (modalController != null && modalController.dismissIfVisible()) return;
+        if (stateMachine.getState() == ConsoleStateMachine.State.CONNECTING &&
+                launchPreparationController != null) {
+            launchPreparationController.cancel();
+        }
         ConsoleStateMachine.Transition transition = stateMachine.dispatch(ConsoleStateMachine.Event.BACK);
         if (transition.effect == ConsoleStateMachine.Effect.SHOW_EXIT_CONFIRMATION) {
             showExitConfirmation();
@@ -191,8 +200,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         streamSurface.getHolder().addCallback(this);
         root.addView(streamSurface, match());
 
-        privacyLayer = new View(this);
-        privacyLayer.setBackgroundColor(Color.BLACK);
+        loadingController = new ConsoleLoadingController(this);
+        privacyLayer = loadingController.build();
         privacyLayer.setVisibility(View.GONE);
         root.addView(privacyLayer, match());
 
@@ -524,6 +533,29 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         launchHistoryStore.record(host, app, System.currentTimeMillis());
         stateMachine.dispatch(ConsoleStateMachine.Event.LAUNCH);
         applyState(ConsoleStateMachine.State.CONNECTING);
+        loadingController.show(app.name);
+        launchPreparationController.prepare(host,
+                new ConsoleHostLaunchPreparationController.Callback() {
+                    @Override public void onStatus(String status) {
+                        loadingController.updateStatus(status);
+                    }
+
+                    @Override public void onReady() {
+                        launchPreparedLegacy(host, app);
+                    }
+
+                    @Override public void onTimeout() {
+                        stateMachine.dispatch(ConsoleStateMachine.Event.BACK);
+                        applyState(stateMachine.getState());
+                        Toast.makeText(ConsoleActivity.this,
+                                "The host did not become ready within 90 seconds.",
+                                Toast.LENGTH_LONG).show();
+                    }
+                });
+    }
+
+    private void launchPreparedLegacy(ConsoleDataRepository.Host host,
+                                      ConsoleDataRepository.App app) {
         ConsoleLaunchContract.Request request =
                 ConsoleLaunchContract.create(host, app, getPackageName());
         Intent intent = ConsoleLaunchContract.legacyIntent(this, request, hostGatewayStore);
