@@ -179,6 +179,23 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
         if (!stopped && message != null && !message.isEmpty()) messageView.setText(message);
     }
 
+    /** Restarts the Wake loading sequence for another launch in the persistent Activity. */
+    public void restartLoading(String title, String status) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(() -> restartLoading(title, status));
+            return;
+        }
+        handler.removeCallbacksAndMessages(null);
+        stopped = false;
+        revealRequested = false;
+        lastMessageIndex = -1;
+        recoveryActions.setVisibility(GONE);
+        setLoadingTitle(title);
+        setStatus(status);
+        messageView.setText("Preparing your game...");
+        if (!reducedMotion) handler.postDelayed(rotateMessage, MESSAGE_INTERVAL_MS);
+    }
+
     public void showPrivacyRecovery(boolean firstFrameReady) {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             handler.post(() -> showPrivacyRecovery(firstFrameReady));

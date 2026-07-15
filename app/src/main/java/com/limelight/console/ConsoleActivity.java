@@ -165,6 +165,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     @Override protected void onDestroy() {
+        if (loadingController != null) loadingController.stop();
         ActiveStreamSurfaceBridge.setConsoleForeground(false);
         if (streamSurface != null) {
             ActiveStreamSurfaceBridge.releaseConsoleSurface(streamSurface.getHolder());
