@@ -11,9 +11,25 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.function.Consumer;
+import java.util.List;
 
 /** Owns modal composition, focus entry/restore, dim dismissal, and input routing. */
 final class ConsoleModalController {
+    static final class PanelAction {
+        final String label;
+        final boolean enabled;
+        final Runnable action;
+
+        PanelAction(String label, Runnable action) {
+            this(label, true, action);
+        }
+
+        PanelAction(String label, boolean enabled, Runnable action) {
+            this.label = label;
+            this.enabled = enabled;
+            this.action = action;
+        }
+    }
     private final Context context;
     private final FrameLayout layer;
     private final InputRouter inputRouter;
@@ -25,6 +41,9 @@ final class ConsoleModalController {
     private TextView profileStatus;
     private TextView servicesStatus;
     private TextView chooseProfile;
+    private TextView discordIntegration;
+    private TextView vibepolloIntegration;
+    private TextView virtualHereIntegration;
     private Runnable onDismiss;
 
     ConsoleModalController(Context context, FrameLayout layer,
@@ -238,6 +257,8 @@ final class ConsoleModalController {
     void showHostIntegrations(View focusToRestore, String hostUuid, String hostName,
                               HostIntegrationSummary summary,
                               Runnable pairGateway, Runnable useDefaultProfile,
+                              Runnable openDiscord, Runnable openVibepollo,
+                              Runnable openVirtualHere,
                               Runnable dismissAction) {
         begin(focusToRestore);
         integrationHostUuid = hostUuid;
@@ -271,6 +292,21 @@ final class ConsoleModalController {
         useDefault.setOnClickListener(view -> useDefaultProfile.run());
         panel.addView(useDefault, top(dp(12)));
 
+        discordIntegration = card("OPEN DISCORD  ›", dp(340), dp(56));
+        discordIntegration.setVisibility(View.GONE);
+        discordIntegration.setOnClickListener(view -> openDiscord.run());
+        panel.addView(discordIntegration, top(dp(12)));
+
+        vibepolloIntegration = card("VIBEPOLLO FIX  ›", dp(340), dp(56));
+        vibepolloIntegration.setVisibility(View.GONE);
+        vibepolloIntegration.setOnClickListener(view -> openVibepollo.run());
+        panel.addView(vibepolloIntegration, top(dp(12)));
+
+        virtualHereIntegration = card("VIRTUALHERE USB  ›", dp(340), dp(56));
+        virtualHereIntegration.setVisibility(View.GONE);
+        virtualHereIntegration.setOnClickListener(view -> openVirtualHere.run());
+        panel.addView(virtualHereIntegration, top(dp(12)));
+
         TextView close = card("CLOSE", dp(340), dp(56));
         close.setOnClickListener(view -> hide());
         panel.addView(close, top(dp(12)));
@@ -290,7 +326,61 @@ final class ConsoleModalController {
         boolean canChoose = catalog != null && catalog.profiles.size() > 1;
         chooseProfile.setVisibility(canChoose ? View.VISIBLE : View.GONE);
         chooseProfile.setOnClickListener(canChoose ? view -> chooseProfileAction.run() : null);
+        IntegrationProfileStatus profile = summary.profileStatus;
+        discordIntegration.setVisibility(profile != null && profile.discordBridgeOnline ?
+                View.VISIBLE : View.GONE);
+        vibepolloIntegration.setVisibility(profile != null && profile.vibepolloBridgeOnline ?
+                View.VISIBLE : View.GONE);
+        virtualHereIntegration.setVisibility(profile != null && profile.virtualHereAvailable ?
+                View.VISIBLE : View.GONE);
         return true;
+    }
+
+    void showActionPanel(View focusToRestore, String eyebrow, String title,
+                         String description, List<PanelAction> actions,
+                         Runnable backAction, Runnable dismissAction) {
+        begin(focusToRestore);
+        integrationHostUuid = null;
+        onDismiss = dismissAction;
+        LinearLayout panel = panel();
+        panel.setPadding(dp(42), dp(38), dp(42), dp(34));
+        panel.setBackgroundColor(0xFF111522);
+        panel.addView(label(eyebrow, 14, 0xFF9CA6C5, true), wrap());
+        panel.addView(label(title, 27, Color.WHITE, true), top(dp(8)));
+        panel.addView(label(description, 14, 0xFFBDC4D8, false), top(dp(14)));
+
+        ScrollView scroll = new ScrollView(context);
+        scroll.setVerticalScrollBarEnabled(false);
+        LinearLayout list = new LinearLayout(context);
+        list.setOrientation(LinearLayout.VERTICAL);
+        scroll.addView(list, new ScrollView.LayoutParams(matchWidth(), wrapSize()));
+        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
+                matchWidth(), 0, 1f);
+        scrollParams.topMargin = dp(20);
+        panel.addView(scroll, scrollParams);
+
+        View initial = null;
+        for (PanelAction item : actions) {
+            TextView action = card(item.label, dp(470), dp(56));
+            action.setEnabled(item.enabled);
+            action.setFocusable(item.enabled);
+            action.setAlpha(item.enabled ? 1f : 0.42f);
+            action.setOnClickListener(item.enabled && item.action != null ?
+                    view -> item.action.run() : null);
+            list.addView(action, top(list.getChildCount() == 0 ? 0 : dp(9)));
+            if (initial == null && item.enabled) initial = action;
+        }
+        if (backAction != null) {
+            TextView back = card("BACK", dp(470), dp(56));
+            back.setOnClickListener(view -> backAction.run());
+            panel.addView(back, top(dp(14)));
+            if (initial == null) initial = back;
+        }
+        TextView close = card("CLOSE", dp(470), dp(56));
+        close.setOnClickListener(view -> hide());
+        panel.addView(close, top(dp(8)));
+        layer.addView(panel, new FrameLayout.LayoutParams(dp(760), matchHeight(), Gravity.RIGHT));
+        showAndFocus(initial != null ? initial : close);
     }
 
     void showProfileChooser(View focusToRestore, String hostUuid, String hostName,
@@ -349,6 +439,9 @@ final class ConsoleModalController {
         profileStatus = null;
         servicesStatus = null;
         chooseProfile = null;
+        discordIntegration = null;
+        vibepolloIntegration = null;
+        virtualHereIntegration = null;
         Runnable dismissAction = onDismiss;
         onDismiss = null;
         if (dismissAction != null) dismissAction.run();
@@ -362,6 +455,9 @@ final class ConsoleModalController {
         profileStatus = null;
         servicesStatus = null;
         chooseProfile = null;
+        discordIntegration = null;
+        vibepolloIntegration = null;
+        virtualHereIntegration = null;
         onDismiss = null;
         if (!replacingVisiblePanel || returnFocus == null) returnFocus = focusToRestore;
         View dim = new View(context);
