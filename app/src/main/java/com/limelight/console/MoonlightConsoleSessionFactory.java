@@ -31,7 +31,7 @@ final class MoonlightConsoleSessionFactory implements
                 PreferenceConfiguration preferences);
         void onInputReady(ConsoleSessionInput input);
         void onConfigurationPlanned(StreamSessionConfigurationPlanner.Plan plan);
-        Runnable quitHostApplication();
+        Runnable quitHostApplication(StreamLaunchParameters parameters);
     }
 
     private final Activity activity;
@@ -60,7 +60,7 @@ final class MoonlightConsoleSessionFactory implements
                         command -> new Thread(command,
                                 "MoonWaker unified transport stop").start(),
                         activity::runOnUiThread,
-                        Objects.requireNonNull(environment.quitHostApplication(),
+                        Objects.requireNonNull(environment.quitHostApplication(parameters),
                                 "quitHostApplication"));
         boolean rendererPrepared = false;
         DeferredConsoleSessionInput input = null;

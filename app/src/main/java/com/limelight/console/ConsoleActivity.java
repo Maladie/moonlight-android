@@ -12,7 +12,6 @@ import android.os.Looper;
 import android.view.Gravity;
 import android.view.KeyEvent;
 import android.view.SurfaceHolder;
-import android.view.SurfaceView;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
@@ -27,6 +26,7 @@ import android.widget.Toast;
 
 import com.limelight.LimeLog;
 import com.limelight.preferences.StreamSettings;
+import com.limelight.ui.StreamView;
 
 import java.util.List;
 import java.util.Collections;
@@ -69,7 +69,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final Map<String, TextView> hostStatusViews = new HashMap<>();
     private List<ConsoleDataRepository.Host> visibleHosts = Collections.emptyList();
     private FrameLayout root;
-    private SurfaceView streamSurface;
+    private StreamView streamSurface;
     private View privacyLayer;
     private FrameLayout homeLayer;
     private ImageView artworkBackdrop;
@@ -195,7 +195,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         root.setBackgroundColor(Color.BLACK);
 
         // This surface stays attached and VISIBLE. Console/privacy layers cover it.
-        streamSurface = new SurfaceView(this);
+        streamSurface = new StreamView(this);
         streamSurface.setBackgroundColor(Color.BLACK);
         streamSurface.getHolder().addCallback(this);
         root.addView(streamSurface, match());
