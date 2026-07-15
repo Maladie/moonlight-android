@@ -270,6 +270,18 @@ and unique controller diagnostic IDs; 31 JVM tests pass.
   resumes.
 - Removal: none; avoiding an unrelated JNI side effect is neutral upstream.
 
+### P016 - Shared display HDR eligibility
+
+- Surface: `Game.java`.
+- Reason: express the user/platform/display HDR10 checklist in
+  `StreamHdrDisplayPolicy`, including the existing user-visible failure reason.
+  The Console runtime can perform the same check before renderer creation.
+- Risk: an incorrect platform or display decision could enable HDR on an
+  unsupported panel or silently fall back to SDR.
+- Regression: focused preference, API availability, null capability, and HDR10
+  type tests plus Java compilation.
+- Removal: none; display HDR eligibility remains shared.
+
 ## Upstream synchronization policy
 
 - Keep `origin` pointed at `Maladie/moonlight-android`.

@@ -20,6 +20,7 @@ import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.console.StreamSurfaceHost;
 import com.limelight.console.StreamBitratePolicy;
 import com.limelight.console.StreamFrameRatePolicy;
+import com.limelight.console.StreamHdrDisplayPolicy;
 import com.limelight.console.StreamPreferenceContext;
 import com.limelight.console.StreamSessionConfigurationPlanner;
 import com.limelight.console.ActiveStreamSurfaceBridge;
@@ -532,33 +533,24 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         GlPreferences glPrefs = GlPreferences.readPreferences(this);
         MediaCodecHelper.initialize(this, glPrefs.glRenderer);
 
-        // Check if the user has enabled HDR
-        boolean willStreamHdr = false;
-        if (prefConfig.enableHdr) {
-            // Start our HDR checklist
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
-                Display display = getWindowManager().getDefaultDisplay();
-                Display.HdrCapabilities hdrCaps = display.getHdrCapabilities();
-
-                // We must now ensure our display is compatible with HDR10
-                if (hdrCaps != null) {
-                    // getHdrCapabilities() returns null on Lenovo Lenovo Mirage Solo (vega), Android 8.0
-                    for (int hdrType : hdrCaps.getSupportedHdrTypes()) {
-                        if (hdrType == Display.HdrCapabilities.HDR_TYPE_HDR10) {
-                            willStreamHdr = true;
-                            break;
-                        }
-                    }
-                }
-
-                if (!willStreamHdr) {
-                    // Nope, no HDR for us :(
-                    Toast.makeText(this, "Display does not support HDR10", Toast.LENGTH_LONG).show();
-                }
+        int[] supportedHdrTypes = null;
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.N) {
+            Display.HdrCapabilities hdrCapabilities =
+                    getWindowManager().getDefaultDisplay().getHdrCapabilities();
+            if (hdrCapabilities != null) {
+                supportedHdrTypes = hdrCapabilities.getSupportedHdrTypes();
             }
-            else {
-                Toast.makeText(this, "HDR requires Android 7.0 or later", Toast.LENGTH_LONG).show();
-            }
+        }
+        StreamHdrDisplayPolicy.Result hdrDisplay = StreamHdrDisplayPolicy.evaluate(
+                prefConfig.enableHdr,
+                Build.VERSION.SDK_INT >= Build.VERSION_CODES.N,
+                supportedHdrTypes,
+                Display.HdrCapabilities.HDR_TYPE_HDR10);
+        boolean willStreamHdr = hdrDisplay.enabled;
+        if (hdrDisplay.reason == StreamHdrDisplayPolicy.Reason.ANDROID_VERSION) {
+            Toast.makeText(this, "HDR requires Android 7.0 or later", Toast.LENGTH_LONG).show();
+        } else if (hdrDisplay.reason == StreamHdrDisplayPolicy.Reason.DISPLAY_UNSUPPORTED) {
+            Toast.makeText(this, "Display does not support HDR10", Toast.LENGTH_LONG).show();
         }
 
         // Check if the user has enabled performance stats overlay
