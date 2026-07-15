@@ -121,6 +121,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     @Override public void onBackPressed() {
+        if (modalLayer != null && modalLayer.getVisibility() == View.VISIBLE) {
+            hideModal();
+            return;
+        }
         ConsoleStateMachine.Transition transition = stateMachine.dispatch(ConsoleStateMachine.Event.BACK);
         if (transition.effect == ConsoleStateMachine.Effect.SHOW_EXIT_CONFIRMATION) {
             showExitConfirmation();
@@ -228,6 +232,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
         integrationStatus = label("HOST INTEGRATIONS · SELECT A HOST", 12, 0xFF9CA6C5, true);
         content.addView(integrationStatus, top(dp(6)));
+
+        TextView integrations = card("HOST INTEGRATIONS  ›", dp(280), dp(48));
+        integrations.setOnClickListener(view -> showHostIntegrations());
+        content.addView(integrations, top(dp(10)));
 
         returnToGame = card("▶  RETURN TO GAME", dp(280), dp(54));
         returnToGame.setVisibility(View.GONE);
@@ -464,7 +472,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         panel.addView(label("EXIT MOONWAKER?", 24, Color.WHITE, true), wrap());
         panel.addView(label("An active host application will not be stopped.", 15, 0xFFBDC4D8, false), top(dp(12)));
         TextView cancel = card("CANCEL", dp(260), dp(58));
-        cancel.setOnClickListener(view -> modal.setVisibility(View.GONE));
+        cancel.setOnClickListener(view -> hideModal());
         TextView exit = card("EXIT APP", dp(260), dp(58));
         exit.setOnClickListener(view -> finish());
         panel.addView(cancel, top(dp(22)));
@@ -474,6 +482,59 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         modal.setVisibility(View.VISIBLE);
         inputRouter.routeTo(InputRouter.Region.MODAL);
         cancel.requestFocus();
+    }
+
+    private void showHostIntegrations() {
+        if (selectedHost == null) {
+            Toast.makeText(this, "Choose a streaming host first.", Toast.LENGTH_SHORT).show();
+            return;
+        }
+
+        GatewayConnection connection = hostGatewayStore.load(selectedHost.uuid);
+        HostIntegrationSummary summary = HostIntegrationSummary.from(connection);
+        FrameLayout modal = (FrameLayout) modalLayer;
+        modal.removeAllViews();
+
+        LinearLayout panel = new LinearLayout(this);
+        panel.setOrientation(LinearLayout.VERTICAL);
+        panel.setPadding(dp(42), dp(48), dp(42), dp(38));
+        panel.setBackgroundColor(0xFF111522);
+        panel.addView(label("HOST INTEGRATIONS", 26, Color.WHITE, true), wrap());
+        panel.addView(label(selectedHost.name, 16, 0xFFB99CFF, true), top(dp(8)));
+        panel.addView(label(summary.gatewayLabel(), 15,
+                summary.gatewayPaired ? 0xFF69F0AE : 0xFFFFB74D, true), top(dp(28)));
+        panel.addView(label(summary.profileLabel(), 14, 0xFFE1E5F2, true), top(dp(14)));
+        panel.addView(label(summary.servicesLabel(), 14, 0xFF9CA6C5, false), top(dp(20)));
+
+        TextView useDefault = card("USE DEFAULT PROFILE", dp(340), dp(56));
+        useDefault.setVisibility(summary.gatewayPaired &&
+                !GatewayConnection.DEFAULT_PROFILE_ID.equals(summary.profileId) ?
+                View.VISIBLE : View.GONE);
+        useDefault.setOnClickListener(view -> {
+            hostGatewayStore.setSelectedIntegrationProfileId(
+                    selectedHost.uuid, GatewayConnection.DEFAULT_PROFILE_ID);
+            renderGatewayProfile(selectedHost);
+            showHostIntegrations();
+        });
+        panel.addView(useDefault, top(dp(34)));
+
+        TextView close = card("CLOSE", dp(340), dp(56));
+        close.setOnClickListener(view -> hideModal());
+        panel.addView(close, top(dp(12)));
+
+        FrameLayout.LayoutParams panelParams = new FrameLayout.LayoutParams(
+                dp(720), matchHeight(), Gravity.RIGHT);
+        modal.addView(panel, panelParams);
+        modal.setVisibility(View.VISIBLE);
+        inputRouter.routeTo(InputRouter.Region.MODAL);
+        (useDefault.getVisibility() == View.VISIBLE ? useDefault : close).requestFocus();
+    }
+
+    private void hideModal() {
+        if (modalLayer == null) return;
+        ((FrameLayout) modalLayer).removeAllViews();
+        modalLayer.setVisibility(View.GONE);
+        inputRouter.routeTo(InputRouter.Region.HOME);
     }
 
     private void applyTvWindow() {
