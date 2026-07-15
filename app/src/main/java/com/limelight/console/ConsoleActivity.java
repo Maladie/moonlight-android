@@ -79,14 +79,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             ConsoleDataRepository.Session session = repository.session();
             renderSession(session);
             if (session != null && session.alive) {
-                ConsoleStateMachine.State state = stateMachine.getState();
-                if (state == ConsoleStateMachine.State.CONNECTING) {
-                    stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTED);
-                    stateMachine.dispatch(ConsoleStateMachine.Event.OPEN_CONSOLE);
-                } else if (state == ConsoleStateMachine.State.STREAM) {
-                    stateMachine.dispatch(ConsoleStateMachine.Event.OPEN_CONSOLE);
-                } else if (state == ConsoleStateMachine.State.HOME) {
-                    stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTED);
+                for (ConsoleStateMachine.Event event : ConsoleResumePolicy.eventsFor(
+                        stateMachine.getState(), true)) {
+                    stateMachine.dispatch(event);
                 }
                 applyState(stateMachine.getState());
             }
