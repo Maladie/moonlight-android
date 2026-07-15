@@ -38,13 +38,14 @@ final class ConsoleStreamLaunchResolutionController {
         Objects.requireNonNull(listener, "listener");
         int requestGeneration = ++generation;
         worker.execute(() -> {
-            ConsoleStreamLaunchResolutionPolicy.Result result;
+            ConsoleStreamLaunchResolutionPolicy.Result loadedResult;
             try {
-                result = loader.load(request);
+                loadedResult = loader.load(request);
             } catch (RuntimeException ignored) {
-                result = ConsoleStreamLaunchResolutionPolicy.Result.failed(
+                loadedResult = ConsoleStreamLaunchResolutionPolicy.Result.failed(
                         ConsoleStreamLaunchResolutionPolicy.Error.RESOLUTION_FAILED);
             }
+            final ConsoleStreamLaunchResolutionPolicy.Result result = loadedResult;
             dispatcher.dispatch(() -> deliver(requestGeneration, result, listener));
         });
     }
