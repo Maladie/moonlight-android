@@ -7,6 +7,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.FrameLayout;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import java.util.function.Consumer;
@@ -123,20 +124,27 @@ final class ConsoleModalController {
         panel.addView(label("CHOOSE INTEGRATION PROFILE", 24, Color.WHITE, true), wrap());
         panel.addView(label(hostName, 15, 0xFFB99CFF, true), top(dp(8)));
 
+        ScrollView profileScroll = new ScrollView(context);
+        profileScroll.setVerticalScrollBarEnabled(false);
+        LinearLayout profileList = new LinearLayout(context);
+        profileList.setOrientation(LinearLayout.VERTICAL);
+        profileList.setClipChildren(false);
+        profileScroll.addView(profileList, new ScrollView.LayoutParams(
+                matchWidth(), wrapSize()));
+        LinearLayout.LayoutParams scrollParams = new LinearLayout.LayoutParams(
+                matchWidth(), 0, 1f);
+        scrollParams.topMargin = dp(18);
+        panel.addView(profileScroll, scrollParams);
+
         View initialFocus = null;
-        int visibleProfiles = Math.min(catalog.profiles.size(), 6);
-        for (int index = 0; index < visibleProfiles; index++) {
+        for (int index = 0; index < catalog.profiles.size(); index++) {
             IntegrationProfileStatus profile = catalog.profiles.get(index);
             boolean active = profile.id.equals(selectedProfileId);
             TextView profileAction = card(profile.name + (active ? "  ·  ACTIVE" : ""),
                     dp(420), dp(54));
             profileAction.setOnClickListener(view -> selectProfile.accept(profile.id));
-            panel.addView(profileAction, top(index == 0 ? dp(24) : dp(8)));
+            profileList.addView(profileAction, top(index == 0 ? 0 : dp(8)));
             if (initialFocus == null || active) initialFocus = profileAction;
-        }
-        if (catalog.profiles.size() > visibleProfiles) {
-            panel.addView(label("Additional profiles are available through Wake settings",
-                    12, 0xFF9CA6C5, false), top(dp(10)));
         }
         TextView back = card("BACK", dp(420), dp(54));
         back.setOnClickListener(view -> backAction.run());
