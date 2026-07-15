@@ -249,13 +249,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
         loadingController = new ConsoleLoadingController(this);
         privacyLayer = loadingController.build();
-        privacyLayer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         privacyLayer.setElevation(dp(24));
         privacyLayer.setVisibility(View.GONE);
         root.addView(privacyLayer, match());
 
         homeLayer = buildHome();
-        homeLayer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         homeLayer.setElevation(dp(32));
         root.addView(homeLayer, match());
 
@@ -264,12 +262,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 this::returnToActiveStream,
                 this::openConsoleHome,
                 this::showHostIntegrations);
-        overlayLayer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         overlayLayer.setElevation(dp(40));
         root.addView(overlayLayer, match());
 
         modalLayer = new FrameLayout(this);
-        modalLayer.setLayerType(View.LAYER_TYPE_HARDWARE, null);
         modalLayer.setElevation(dp(48));
         modalLayer.setBackgroundColor(0xD9000000);
         modalLayer.setVisibility(View.GONE);
