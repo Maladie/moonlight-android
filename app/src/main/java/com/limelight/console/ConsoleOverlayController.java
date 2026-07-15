@@ -31,9 +31,13 @@ final class ConsoleOverlayController {
         controls.addView(label("MoonWaker keeps the current transport connected",
                 13, 0xFF9CA6C5, false), top(dp(8)));
         TextView game = action("▶  RETURN TO GAME");
+        game.setId(View.generateViewId());
+        game.setContentDescription("Return to game");
         game.setOnClickListener(view -> returnToGame.run());
         controls.addView(game, top(dp(22)));
         TextView home = action("⌂  CONSOLE HOME");
+        home.setId(View.generateViewId());
+        home.setContentDescription("Open console Home");
         home.setOnClickListener(view -> openHome.run());
         controls.addView(home, top(dp(10)));
         root.addView(controls, anchored(dp(480), dp(330), Gravity.LEFT | Gravity.BOTTOM));
@@ -43,9 +47,18 @@ final class ConsoleOverlayController {
         discord.addView(label("Profile-scoped controls stay independent from stream input",
                 13, 0xFF9CA6C5, false), top(dp(8)));
         TextView integrations = action("OPEN HOST INTEGRATIONS  ›");
+        integrations.setId(View.generateViewId());
+        integrations.setContentDescription("Open Discord and host integrations");
         integrations.setOnClickListener(view -> openIntegrations.run());
         discord.addView(integrations, top(dp(22)));
         root.addView(discord, anchored(dp(480), dp(250), Gravity.RIGHT | Gravity.TOP));
+
+        game.setNextFocusDownId(home.getId());
+        game.setNextFocusRightId(integrations.getId());
+        home.setNextFocusUpId(game.getId());
+        home.setNextFocusRightId(integrations.getId());
+        integrations.setNextFocusLeftId(game.getId());
+        integrations.setNextFocusDownId(home.getId());
 
         root.setTag(game);
         return root;
