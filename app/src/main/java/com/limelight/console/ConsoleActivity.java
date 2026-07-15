@@ -23,11 +23,8 @@ import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.limelight.Game;
 import com.limelight.LimeLog;
-import com.limelight.PublicStreamIntent;
 import com.limelight.PublicReturnStreamTrampoline;
-import com.limelight.ShortcutTrampoline;
 
 import java.util.List;
 import java.util.Locale;
@@ -343,21 +340,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private void launchLegacy(ConsoleDataRepository.Host host, ConsoleDataRepository.App app) {
         stateMachine.dispatch(ConsoleStateMachine.Event.LAUNCH);
         applyState(ConsoleStateMachine.State.CONNECTING);
-        Intent intent = new Intent(this, ShortcutTrampoline.class)
-                .setAction(PublicStreamIntent.ACTION_STREAM)
-                .putExtra(PublicStreamIntent.EXTRA_HOST_UUID, host.uuid)
-                .putExtra(PublicStreamIntent.EXTRA_APP_ID, String.valueOf(app.id))
-                .putExtra(PublicStreamIntent.EXTRA_APP_NAME, app.name)
-                .putExtra(Game.EXTRA_APP_ID, String.valueOf(app.id))
-                .putExtra(Game.EXTRA_APP_NAME, app.name)
-                .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND, true)
-                .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_PACKAGE, getPackageName())
-                .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_MESSAGE,
-                        "Preparing " + app.name + "…")
-                .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_REDUCED_MOTION, false)
-                .putExtra(PublicStreamIntent.EXTRA_EXTERNAL_FRONTEND_READINESS_REQUIRED, true)
-                .addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
-        hostGatewayStore.putLaunchExtras(intent, host.uuid);
+        ConsoleLaunchContract.Request request =
+                ConsoleLaunchContract.create(host, app, getPackageName());
+        Intent intent = ConsoleLaunchContract.legacyIntent(this, request, hostGatewayStore);
         startActivity(intent, ActivityOptions.makeCustomAnimation(this, 0, 0).toBundle());
         overridePendingTransition(0, 0);
     }
