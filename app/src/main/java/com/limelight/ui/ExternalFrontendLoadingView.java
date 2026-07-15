@@ -121,7 +121,7 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
         statusParams.topMargin = dp(14);
         copy.addView(statusView, statusParams);
 
-        TextView cancelHint = text("Press BACK to return to Wake & Play", 14, 0xBFFFFFFF, false);
+        TextView cancelHint = text("Press BACK to return to MoonWaker", 14, 0xBFFFFFFF, false);
         cancelHint.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams hintParams = row();
         hintParams.topMargin = dp(34);

@@ -1239,7 +1239,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void onBackPressed() {
         if (externalFrontend && (connecting || connected)) {
             if (!returnToExternalFrontend()) {
-                Toast.makeText(this, "Wake & Play is temporarily unavailable",
+                Toast.makeText(this, "MoonWaker is temporarily unavailable",
                         Toast.LENGTH_SHORT).show();
             }
             return;
@@ -3451,7 +3451,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             @Override
             public void onReturnToFrontend() {
                 if (!returnToExternalFrontend()) {
-                    Toast.makeText(Game.this, "Wake & Play is unavailable",
+                    Toast.makeText(Game.this, "MoonWaker is unavailable",
                             Toast.LENGTH_LONG).show();
                 }
             }
