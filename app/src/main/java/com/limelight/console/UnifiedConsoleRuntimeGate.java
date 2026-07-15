@@ -2,7 +2,7 @@ package com.limelight.console;
 
 import com.limelight.BuildConfig;
 
-/** Must remain false until the unified renderer/input path passes the TV P0 suite. */
+/** Selects the unified renderer/input path for the configured build variant. */
 final class UnifiedConsoleRuntimeGate {
     private UnifiedConsoleRuntimeGate() { }
 

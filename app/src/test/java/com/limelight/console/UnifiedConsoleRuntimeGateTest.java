@@ -2,10 +2,13 @@ package com.limelight.console;
 
 import org.junit.Test;
 
-import static org.junit.Assert.assertFalse;
+import com.limelight.BuildConfig;
+
+import static org.junit.Assert.assertEquals;
 
 public class UnifiedConsoleRuntimeGateTest {
-    @Test public void unifiedRuntimeRemainsDisabledBeforeTvP0Evidence() {
-        assertFalse(UnifiedConsoleRuntimeGate.isEnabled());
+    @Test public void unifiedRuntimeMatchesTheSelectedBuildVariant() {
+        assertEquals(BuildConfig.UNIFIED_CONSOLE_RUNTIME,
+                UnifiedConsoleRuntimeGate.isEnabled());
     }
 }
