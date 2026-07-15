@@ -255,35 +255,33 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void renderSnapshot() {
-        renderSession(repository.session());
-        List<ConsoleDataRepository.Host> hosts = repository.hosts();
+        ConsoleHomeSnapshot snapshot = ConsoleHomeSnapshot.load(
+                repository, hostGatewayStore, selectionStore);
+        renderSession(snapshot.session);
         hostRow.removeAllViews();
-        if (hosts.isEmpty()) {
+        if (snapshot.hosts.isEmpty()) {
+            selectedHost = null;
             hostRow.addView(label("No saved Moonlight hosts", 16, 0xFFFFB74D, false), cardParams());
-            renderApps(null);
+            renderApps(null, snapshot.apps);
             renderGatewayProfile(null);
             return;
         }
-        List<String> hostUuids = new java.util.ArrayList<>();
-        for (ConsoleDataRepository.Host host : hosts) {
-            hostUuids.add(host.uuid);
+        for (ConsoleDataRepository.Host host : snapshot.hosts) {
             TextView card = card(host.name + "\n" + safe(host.address), dp(250), dp(78));
             card.setOnClickListener(view -> selectHost(host, view.hasFocus()));
             hostRow.addView(card, cardParams());
         }
-        int selectedHostIndex = ConsoleSelectionPolicy.hostIndex(
-                hostUuids, selectionStore.selectedHostUuid());
-        selectedHost = hosts.get(selectedHostIndex);
-        renderApps(selectedHost);
+        selectedHost = snapshot.selectedHost;
+        renderApps(selectedHost, snapshot.apps);
         renderGatewayProfile(selectedHost);
         // One deterministic initial focus; subsequent refreshes never request focus.
-        hostRow.getChildAt(selectedHostIndex).requestFocus();
+        hostRow.getChildAt(snapshot.selectedHostIndex).requestFocus();
     }
 
     private void selectHost(ConsoleDataRepository.Host host, boolean userFocusedHost) {
         selectedHost = host;
         selectionStore.rememberHost(host.uuid);
-        renderApps(host);
+        renderApps(host, repository.apps(host));
         renderGatewayProfile(host);
         if (userFocusedHost && appRow.getChildCount() > 0) {
             List<Integer> appIds = new java.util.ArrayList<>();
@@ -299,9 +297,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
     }
 
-    private void renderApps(ConsoleDataRepository.Host host) {
+    private void renderApps(ConsoleDataRepository.Host host,
+                            List<ConsoleDataRepository.App> apps) {
         appRow.removeAllViews();
-        List<ConsoleDataRepository.App> apps = repository.apps(host);
         if (apps.isEmpty()) {
             appRow.addView(label("No cached applications. Refresh this host in Moonlight.",
                     16, 0xFFFFB74D, false), cardParams());
