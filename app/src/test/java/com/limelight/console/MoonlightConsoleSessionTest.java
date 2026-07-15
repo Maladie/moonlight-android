@@ -53,6 +53,17 @@ public class MoonlightConsoleSessionTest {
         assertEquals(0, surfaces.bindCount);
     }
 
+    @Test public void quitHostCommandIsDistinctFromTransportDisconnect() {
+        RecordingConnection connection = new RecordingConnection();
+        MoonlightConsoleSession session = new MoonlightConsoleSession(
+                connection, new RecordingSurfaces());
+
+        session.quitHostApplication();
+
+        assertTrue(connection.hostQuit);
+        assertEquals(0, connection.disconnectCount);
+    }
+
     @Test(expected = IllegalStateException.class)
     public void cannotReconnectDisconnectedSession() {
         MoonlightConsoleSession session = new MoonlightConsoleSession(
@@ -67,6 +78,7 @@ public class MoonlightConsoleSessionTest {
         boolean preparedForStop;
         int disconnectCount;
         Runnable afterStopped;
+        boolean hostQuit;
 
         @Override public void connect() { connected = true; }
         @Override public void prepareRendererForStop() { preparedForStop = true; }
@@ -74,6 +86,7 @@ public class MoonlightConsoleSessionTest {
             disconnectCount++;
             afterStopped = callback;
         }
+        @Override public void quitHostApplication() { hostQuit = true; }
     }
 
     private static final class RecordingSurfaces implements

@@ -60,6 +60,17 @@ public class UnifiedConsoleLaunchPipelineTest {
         assertEquals(2, listener.stages.size());
     }
 
+    @Test public void quitHostCommandRemainsDistinctFromDisconnect() {
+        RecordingRuntime runtime = new RecordingRuntime();
+        UnifiedConsoleLaunchPipeline pipeline = pipeline(runtime,
+                ConsoleStreamLaunchResolutionPolicy.Result.resolved(parameters()));
+
+        pipeline.quitHostApplication();
+
+        assertTrue(runtime.hostQuit);
+        assertTrue(!runtime.cancelled);
+    }
+
     private static UnifiedConsoleLaunchPipeline pipeline(
             RecordingRuntime runtime,
             ConsoleStreamLaunchResolutionPolicy.Result result) {
@@ -88,6 +99,7 @@ public class UnifiedConsoleLaunchPipelineTest {
         StreamLaunchParameters parameters;
         Listener listener;
         boolean cancelled;
+        boolean hostQuit;
 
         @Override public void connect(StreamLaunchParameters parameters, Listener listener) {
             this.parameters = parameters;
@@ -97,6 +109,7 @@ public class UnifiedConsoleLaunchPipelineTest {
         @Override public void cancelPendingConnection() { cancelled = true; }
         @Override public void showStream() { }
         @Override public void showHome() { }
+        @Override public void quitHostApplication() { hostQuit = true; }
         @Override public void close() { }
     }
 

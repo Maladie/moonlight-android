@@ -4,4 +4,6 @@ package com.limelight.console;
 interface ConsoleStreamRuntime {
     void launch(ConsoleLaunchContract.Request request);
     void returnToActiveStream();
+    void disconnectTransport();
+    void quitHostApplication();
 }

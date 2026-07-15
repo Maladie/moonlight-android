@@ -89,6 +89,18 @@ public class MoonlightConsoleResolvedStreamRuntimeTest {
         assertEquals("Runtime is closed", afterClose.failure);
     }
 
+    @Test public void quitCommandsHostThenDisconnectsSession() {
+        RecordingFactory factory = new RecordingFactory();
+        MoonlightConsoleResolvedStreamRuntime runtime =
+                new MoonlightConsoleResolvedStreamRuntime(factory);
+        runtime.connect(parameters(), new RecordingListener());
+
+        runtime.quitHostApplication();
+
+        assertTrue(factory.session.hostQuit);
+        assertTrue(factory.session.disconnected);
+    }
+
     private static StreamLaunchParameters parameters() {
         ComputerDetails computer = new ComputerDetails();
         computer.uuid = "host-a";
@@ -124,10 +136,12 @@ public class MoonlightConsoleResolvedStreamRuntimeTest {
         boolean disconnected;
         boolean streamShown;
         boolean homeShown;
+        boolean hostQuit;
         @Override public void connect() { connectCalled = true; }
         @Override public void disconnect() { disconnected = true; }
         @Override public void showStream() { streamShown = true; }
         @Override public void showHome() { homeShown = true; }
+        @Override public void quitHostApplication() { hostQuit = true; }
     }
 
     private static final class RecordingListener implements

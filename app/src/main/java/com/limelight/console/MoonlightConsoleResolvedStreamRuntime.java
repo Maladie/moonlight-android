@@ -9,6 +9,7 @@ final class MoonlightConsoleResolvedStreamRuntime implements ConsoleResolvedStre
         void disconnect();
         void showStream();
         void showHome();
+        void quitHostApplication();
     }
 
     interface SessionFactory {
@@ -80,6 +81,13 @@ final class MoonlightConsoleResolvedStreamRuntime implements ConsoleResolvedStre
         if (session != null) {
             session.showHome();
         }
+    }
+
+    @Override public synchronized void quitHostApplication() {
+        Session current = session;
+        if (current == null) return;
+        current.quitHostApplication();
+        disconnectCurrent();
     }
 
     @Override public synchronized void close() {

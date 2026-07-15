@@ -43,6 +43,23 @@ public class UnifiedConsoleStreamRuntimeAdapterTest {
         assertTrue(runtime.closed);
     }
 
+    @Test public void sessionCommandsRemainSeparate() {
+        RecordingRuntime disconnectRuntime = new RecordingRuntime();
+        UnifiedConsoleStreamRuntimeAdapter disconnect =
+                adapter(disconnectRuntime, new RecordingListener());
+        disconnect.disconnectTransport();
+
+        RecordingRuntime quitRuntime = new RecordingRuntime();
+        UnifiedConsoleStreamRuntimeAdapter quit =
+                adapter(quitRuntime, new RecordingListener());
+        quit.quitHostApplication();
+
+        assertTrue(disconnectRuntime.cancelled);
+        assertTrue(!disconnectRuntime.hostQuit);
+        assertTrue(quitRuntime.hostQuit);
+        assertTrue(!quitRuntime.cancelled);
+    }
+
     private static UnifiedConsoleStreamRuntimeAdapter adapter(
             RecordingRuntime runtime,
             RecordingListener listener) {
@@ -75,6 +92,7 @@ public class UnifiedConsoleStreamRuntimeAdapterTest {
         boolean homeShown;
         boolean cancelled;
         boolean closed;
+        boolean hostQuit;
 
         @Override public void connect(StreamLaunchParameters parameters, Listener listener) {
             this.listener = listener;
@@ -83,6 +101,7 @@ public class UnifiedConsoleStreamRuntimeAdapterTest {
         @Override public void cancelPendingConnection() { cancelled = true; }
         @Override public void showStream() { streamShown = true; }
         @Override public void showHome() { homeShown = true; }
+        @Override public void quitHostApplication() { hostQuit = true; }
         @Override public void close() { closed = true; }
     }
 

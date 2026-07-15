@@ -68,6 +68,16 @@ final class UnifiedConsoleRuntimeBootstrap implements ConsoleStreamRuntime, Auto
         if (delegate != null) delegate.returnToActiveStream();
     }
 
+    @Override public synchronized void disconnectTransport() {
+        pendingRequest = null;
+        if (delegate != null) delegate.disconnectTransport();
+    }
+
+    @Override public synchronized void quitHostApplication() {
+        pendingRequest = null;
+        if (delegate != null) delegate.quitHostApplication();
+    }
+
     synchronized void showHome() {
         if (delegate != null) delegate.showHome();
     }

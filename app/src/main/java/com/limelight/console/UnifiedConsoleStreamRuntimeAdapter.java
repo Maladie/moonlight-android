@@ -34,6 +34,14 @@ final class UnifiedConsoleStreamRuntimeAdapter implements ConsoleStreamRuntime, 
         pipeline.showStream();
     }
 
+    @Override public void disconnectTransport() {
+        pipeline.disconnectTransport();
+    }
+
+    @Override public void quitHostApplication() {
+        pipeline.quitHostApplication();
+    }
+
     void showHome() {
         pipeline.showHome();
     }

@@ -8,6 +8,7 @@ final class MoonlightConsoleSession implements MoonlightConsoleResolvedStreamRun
         void connect();
         void prepareRendererForStop();
         void disconnect(Runnable afterStopped);
+        void quitHostApplication();
     }
 
     interface SurfaceOwnership {
@@ -39,6 +40,10 @@ final class MoonlightConsoleSession implements MoonlightConsoleResolvedStreamRun
 
             @Override public void disconnect(Runnable afterStopped) {
                 controller.disconnectTransport(afterStopped);
+            }
+
+            @Override public void quitHostApplication() {
+                controller.quitHostApplication();
             }
         }, new SurfaceOwnership() {
             @Override public void attach() {
@@ -90,6 +95,10 @@ final class MoonlightConsoleSession implements MoonlightConsoleResolvedStreamRun
         // Home is an opaque layer above the persistent stream surface. Keep the
         // renderer bound so returning to gameplay never recreates the decoder.
         bindIfActive();
+    }
+
+    @Override public synchronized void quitHostApplication() {
+        if (!disconnected) connection.quitHostApplication();
     }
 
     private void bindIfActive() {

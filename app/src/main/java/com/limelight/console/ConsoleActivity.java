@@ -939,7 +939,26 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         ConsoleSessionSummary summary = ConsoleSessionSummary.from(currentSession);
         if (!summary.alive) return;
         modalController.showSessionDetails(getCurrentFocus(), summary,
-                this::returnToActiveStream);
+                this::returnToActiveStream,
+                () -> endActiveSession(false),
+                () -> endActiveSession(true));
+    }
+
+    private void endActiveSession(boolean quitHostApplication) {
+        stateMachine.dispatch(ConsoleStateMachine.Event.DISCONNECT);
+        applyState(stateMachine.getState());
+        if (quitHostApplication) {
+            streamRuntime.quitHostApplication();
+        } else {
+            streamRuntime.disconnectTransport();
+        }
+        unifiedTransportConnected = false;
+        unifiedFirstFrameRendered = false;
+        unifiedSessionInput = null;
+        unifiedHomeSession.clear();
+        stateMachine.dispatch(ConsoleStateMachine.Event.DISCONNECTED);
+        renderSession(visibleSession());
+        applyState(stateMachine.getState());
     }
 
     private void showHostIntegrations() {

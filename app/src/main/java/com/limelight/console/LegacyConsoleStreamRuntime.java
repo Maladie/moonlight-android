@@ -5,6 +5,8 @@ import android.app.ActivityOptions;
 import android.content.Intent;
 
 import com.limelight.PublicReturnStreamTrampoline;
+import com.limelight.Game;
+import com.limelight.PublicStreamIntent;
 
 /** Milestone-1 adapter retained until the in-Activity runtime passes the TV P0 gate. */
 final class LegacyConsoleStreamRuntime implements ConsoleStreamRuntime {
@@ -29,5 +31,13 @@ final class LegacyConsoleStreamRuntime implements ConsoleStreamRuntime {
         activity.startActivity(intent,
                 ActivityOptions.makeCustomAnimation(activity, 0, 0).toBundle());
         activity.overridePendingTransition(0, 0);
+    }
+
+    @Override public void disconnectTransport() {
+        Game.controlActiveStream(PublicStreamIntent.ACTION_DISCONNECT_STREAM);
+    }
+
+    @Override public void quitHostApplication() {
+        Game.controlActiveStream(PublicStreamIntent.ACTION_QUIT_STREAM_APP);
     }
 }

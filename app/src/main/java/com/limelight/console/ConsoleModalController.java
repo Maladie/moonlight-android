@@ -60,7 +60,8 @@ final class ConsoleModalController {
     }
 
     void showSessionDetails(View focusToRestore, ConsoleSessionSummary summary,
-                            Runnable returnToGame) {
+                            Runnable returnToGame, Runnable disconnectTransport,
+                            Runnable quitHostApplication) {
         begin(focusToRestore);
         integrationHostUuid = null;
         LinearLayout panel = panel();
@@ -79,8 +80,45 @@ final class ConsoleModalController {
         TextView close = card("CLOSE", dp(360), dp(58));
         close.setOnClickListener(view -> hide());
         panel.addView(close, top(dp(10)));
+        TextView disconnect = card("DISCONNECT STREAM", dp(360), dp(58));
+        disconnect.setOnClickListener(view -> showSessionCommandConfirmation(
+                view,
+                "DISCONNECT STREAM?",
+                "Streaming will stop. The host application will keep running.",
+                "DISCONNECT",
+                disconnectTransport));
+        panel.addView(disconnect, top(dp(10)));
+        TextView quit = card("QUIT HOST APPLICATION", dp(360), dp(58));
+        quit.setOnClickListener(view -> showSessionCommandConfirmation(
+                view,
+                "QUIT HOST APPLICATION?",
+                "The host application will be closed and streaming will disconnect.",
+                "QUIT APPLICATION",
+                quitHostApplication));
+        panel.addView(quit, top(dp(10)));
         layer.addView(panel, new FrameLayout.LayoutParams(dp(720), matchHeight(), Gravity.RIGHT));
         showAndFocus(resume);
+    }
+
+    private void showSessionCommandConfirmation(View focusToRestore, String title,
+                                                String message, String actionLabel,
+                                                Runnable action) {
+        begin(focusToRestore);
+        integrationHostUuid = null;
+        LinearLayout panel = panel();
+        panel.addView(label(title, 24, Color.WHITE, true), wrap());
+        panel.addView(label(message, 14, 0xFFBDC4D8, false), top(dp(14)));
+        TextView cancel = card("CANCEL", dp(340), dp(58));
+        cancel.setOnClickListener(view -> hide());
+        panel.addView(cancel, top(dp(24)));
+        TextView confirm = card(actionLabel, dp(340), dp(58));
+        confirm.setOnClickListener(view -> {
+            hide();
+            action.run();
+        });
+        panel.addView(confirm, top(dp(10)));
+        layer.addView(panel, new FrameLayout.LayoutParams(dp(660), dp(420), Gravity.CENTER));
+        showAndFocus(cancel);
     }
 
     void showHostWakeTimeout(View focusToRestore, String hostName, Runnable retryAction) {

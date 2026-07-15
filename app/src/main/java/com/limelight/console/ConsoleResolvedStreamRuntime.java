@@ -11,5 +11,6 @@ interface ConsoleResolvedStreamRuntime extends AutoCloseable {
     void cancelPendingConnection();
     void showStream();
     void showHome();
+    void quitHostApplication();
     @Override void close();
 }

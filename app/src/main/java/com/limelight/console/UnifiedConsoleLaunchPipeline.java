@@ -74,6 +74,18 @@ final class UnifiedConsoleLaunchPipeline {
         runtime.showHome();
     }
 
+    synchronized void disconnectTransport() {
+        generation++;
+        resolutionController.cancel();
+        runtime.cancelPendingConnection();
+    }
+
+    synchronized void quitHostApplication() {
+        generation++;
+        resolutionController.cancel();
+        runtime.quitHostApplication();
+    }
+
     synchronized void close() {
         cancel();
         runtime.close();
