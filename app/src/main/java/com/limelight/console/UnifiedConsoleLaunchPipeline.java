@@ -63,13 +63,15 @@ final class UnifiedConsoleLaunchPipeline {
     synchronized void reconnect(ConsoleLaunchContract.Request request, Listener listener) {
         Objects.requireNonNull(request, "request");
         Objects.requireNonNull(listener, "listener");
+        request = request.asReconnect();
+        ConsoleLaunchContract.Request reconnectRequest = request;
         int reconnectGeneration = ++generation;
         resolutionController.cancel();
         runtime.cancelPendingConnection(() -> {
             synchronized (UnifiedConsoleLaunchPipeline.this) {
                 if (reconnectGeneration != generation) return;
                 listener.onStage(Stage.RESOLVING_HOST);
-                resolutionController.resolve(request,
+                resolutionController.resolve(reconnectRequest,
                         new ConsoleStreamLaunchResolutionController.Listener() {
                             @Override public void onResolved(StreamLaunchParameters parameters) {
                                 connect(reconnectGeneration, parameters, listener);

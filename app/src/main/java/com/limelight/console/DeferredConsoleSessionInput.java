@@ -44,8 +44,8 @@ final class DeferredConsoleSessionInput implements ConsoleSessionInput {
         if (delegate != null) delegate.refreshControllerBatteryInfo(completion);
     }
 
-    @Override public synchronized void ensureControllersReported() {
-        if (delegate != null) delegate.ensureControllersReported();
+    @Override public synchronized void ensureControllersReported(boolean announceArrival) {
+        if (delegate != null) delegate.ensureControllersReported(announceArrival);
     }
 
     @Override public synchronized void toggleMouseEmulation() {

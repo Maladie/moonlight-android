@@ -418,6 +418,16 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     /** Reports already attached physical controllers after the input channel is ready. */
     public void ensureAttachedControllersReported() {
+        ensureAttachedControllersReported(true);
+    }
+
+    /**
+     * Synchronizes attached controllers with a newly connected input transport.
+     * A resumed Sunshine session may already own the virtual controllers because
+     * gcpersist kept them alive. Re-announcing arrival in that case can hot-plug
+     * the device underneath games which don't reacquire controllers dynamically.
+     */
+    public void ensureAttachedControllersReported(boolean announceArrival) {
         if (stopped) return;
         for (int deviceId : inputManager.getInputDeviceIds()) {
             trackInputDeviceIfGamepad(inputManager.getInputDevice(deviceId));
@@ -426,9 +436,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             InputDeviceContext context = inputDeviceContexts.valueAt(index);
             if (!context.hasJoystickAxes) continue;
             if (context.assignedControllerNumber) {
-                context.sendControllerArrival();
+                if (announceArrival) context.sendControllerArrival();
             } else {
-                assignControllerNumberIfNeeded(context);
+                assignControllerNumberIfNeeded(context, announceArrival);
             }
             inputSender.sendControllerInput(context.controllerNumber, getActiveControllerMask(),
                     (short) 0, (byte) 0, (byte) 0,
@@ -665,6 +675,11 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     // Called before sending input but after we've determined that this
     // is definitely a controller (not a keyboard, mouse, or something else)
     private void assignControllerNumberIfNeeded(GenericControllerContext context) {
+        assignControllerNumberIfNeeded(context, true);
+    }
+
+    private void assignControllerNumberIfNeeded(GenericControllerContext context,
+                                                boolean announceArrival) {
         if (context.assignedControllerNumber) {
             return;
         }
@@ -724,7 +739,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
                     // Assign a controller number for the associated device if one isn't assigned
                     if (!associatedDeviceContext.assignedControllerNumber) {
-                        assignControllerNumberIfNeeded(associatedDeviceContext);
+                        assignControllerNumberIfNeeded(associatedDeviceContext, announceArrival);
                     }
 
                     // Propagate the associated controller number
@@ -772,7 +787,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         context.assignedControllerNumber = true;
 
         // Report attributes of this new controller to the host
-        context.sendControllerArrival();
+        if (announceArrival) context.sendControllerArrival();
     }
 
     private UsbDeviceContext createUsbDeviceContextForDevice(AbstractController device) {

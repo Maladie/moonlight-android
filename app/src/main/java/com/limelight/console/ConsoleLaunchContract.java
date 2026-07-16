@@ -18,16 +18,17 @@ final class ConsoleLaunchContract {
         final String privacyMessage;
         final boolean readinessRequired;
         final int runtimeBitrateKbps;
+        final boolean resumePersistedGamepads;
 
         private Request(String hostUuid, int appId, String appName,
                         boolean appSupportsHdr,
                         String frontendPackage) {
-            this(hostUuid, appId, appName, appSupportsHdr, frontendPackage, 0);
+            this(hostUuid, appId, appName, appSupportsHdr, frontendPackage, 0, false);
         }
 
         private Request(String hostUuid, int appId, String appName,
                         boolean appSupportsHdr, String frontendPackage,
-                        int runtimeBitrateKbps) {
+                        int runtimeBitrateKbps, boolean resumePersistedGamepads) {
             if (hostUuid == null || hostUuid.isEmpty() || appId < 0 ||
                     appName == null || appName.isEmpty() ||
                     frontendPackage == null || frontendPackage.isEmpty()) {
@@ -42,11 +43,21 @@ final class ConsoleLaunchContract {
             readinessRequired = true;
             this.runtimeBitrateKbps = runtimeBitrateKbps > 0 ?
                     StreamBitratePolicy.clamp(runtimeBitrateKbps) : 0;
+            this.resumePersistedGamepads = resumePersistedGamepads;
         }
 
         Request withRuntimeBitrate(int bitrateKbps) {
             return new Request(hostUuid, appId, appName, appSupportsHdr,
-                    frontendPackage, bitrateKbps);
+                    frontendPackage, bitrateKbps, resumePersistedGamepads);
+        }
+
+        Request asReconnect() {
+            return new Request(hostUuid, appId, appName, appSupportsHdr,
+                    frontendPackage, runtimeBitrateKbps, true);
+        }
+
+        boolean matches(Request other) {
+            return other != null && hostUuid.equals(other.hostUuid) && appId == other.appId;
         }
     }
 

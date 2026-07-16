@@ -33,6 +33,7 @@ public class DeferredConsoleSessionInputTest {
         input.onHdrMode(true, new byte[] { 1 });
         input.onMotionState((short) 2, (byte) 6, (short) 120);
         input.onControllerLed((short) 3, (byte) 7, (byte) 8, (byte) 9);
+        input.ensureControllersReported(false);
         input.close();
 
         assertTrue(delegate.sensorsEnabled);
@@ -45,6 +46,8 @@ public class DeferredConsoleSessionInputTest {
         assertTrue(delegate.hdrEnabled);
         assertEquals(120, delegate.motionRate);
         assertEquals(9, delegate.blue);
+        assertFalse(delegate.announcedControllerArrival);
+        assertTrue(delegate.controllersSynchronized);
         assertTrue(delegate.closed);
     }
 
@@ -70,9 +73,15 @@ public class DeferredConsoleSessionInputTest {
         boolean hdrEnabled;
         short motionRate;
         byte blue;
+        boolean controllersSynchronized;
+        boolean announcedControllerArrival = true;
 
         @Override public boolean handleKeyEvent(KeyEvent event) { return true; }
         @Override public boolean handleMotionEvent(MotionEvent event) { return true; }
+        @Override public void ensureControllersReported(boolean announceArrival) {
+            controllersSynchronized = true;
+            announcedControllerArrival = announceArrival;
+        }
         @Override public void enableSensors() { sensorsEnabled = true; }
         @Override public void disableSensors() { sensorsDisabled = true; }
         @Override public void close() { closed = true; }

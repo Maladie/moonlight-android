@@ -139,14 +139,14 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
         if (!closed) controllers.refreshControllerBatteryInfo(completion);
     }
 
-    @Override public synchronized void ensureControllersReported() {
+    @Override public synchronized void ensureControllersReported(boolean announceArrival) {
         if (closed) return;
         // Playnite may start the target process as soon as the first video frame arrives.
         // Advertise controllers synchronously so controller discovery cannot lose that race,
         // then repeat once after the input channel has settled.
-        controllers.ensureAttachedControllersReported();
+        controllers.ensureAttachedControllersReported(announceArrival);
         mainHandler.removeCallbacks(reportAttachedControllers);
-        mainHandler.postDelayed(reportAttachedControllers, 250L);
+        if (announceArrival) mainHandler.postDelayed(reportAttachedControllers, 250L);
     }
 
     @Override public synchronized void toggleMouseEmulation() {

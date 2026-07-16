@@ -197,6 +197,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private boolean returnHomeAfterPlayniteRestore;
     private final LoadingPrivacyGate playnitePrivacyGate = new LoadingPrivacyGate(3);
     private ConsoleLaunchContract.Request activeLaunchRequest;
+    private ConsoleLaunchContract.Request detachedLaunchRequest;
     private int runtimeBitrateKbps;
     private long unifiedConnectDeadlineMs;
     private ConsoleControllerRepository.Controller pendingController;
@@ -1610,6 +1611,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                                       ConsoleDataRepository.App app) {
         ConsoleLaunchContract.Request request =
                 ConsoleLaunchContract.create(host, app, getPackageName());
+        if (request.matches(detachedLaunchRequest)) {
+            request = request.asReconnect();
+        } else {
+            detachedLaunchRequest = null;
+        }
         activeLaunchRequest = request;
         runtimeBitrateKbps = PreferenceConfiguration.readPreferences(this).bitrate;
         unifiedTransportConnected = false;
@@ -1632,7 +1638,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         if (target == runtimeBitrateKbps) return;
 
         runtimeBitrateKbps = target;
-        activeLaunchRequest = activeLaunchRequest.withRuntimeBitrate(target);
+        activeLaunchRequest = activeLaunchRequest.withRuntimeBitrate(target).asReconnect();
         overlayMenuView.setBitrateKbps(target);
         overlayMenuView.closeMenu();
         stateMachine.dispatch(ConsoleStateMachine.Event.RECONNECT);
@@ -1974,8 +1980,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 clearUnifiedConnectRetry();
                 unifiedTransportConnected = true;
                 if (unifiedSessionInput != null) {
-                    unifiedSessionInput.ensureControllersReported();
+                    boolean announceArrival = activeLaunchRequest == null ||
+                            !activeLaunchRequest.resumePersistedGamepads;
+                    unifiedSessionInput.ensureControllersReported(announceArrival);
                 }
+                detachedLaunchRequest = null;
                 unifiedHomeSession.connected();
                 renderSession(visibleSession());
                 loadingController.updateStatus("Waiting for the first video frame…");
@@ -2218,8 +2227,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         stateMachine.dispatch(ConsoleStateMachine.Event.DISCONNECT);
         applyState(stateMachine.getState());
         if (quitHostApplication) {
+            detachedLaunchRequest = null;
             streamRuntime.quitHostApplication();
         } else {
+            detachedLaunchRequest = activeLaunchRequest == null ? null :
+                    activeLaunchRequest.asReconnect();
             streamRuntime.disconnectTransport();
         }
         unifiedTransportConnected = false;
