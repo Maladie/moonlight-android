@@ -354,6 +354,7 @@ final class ConsoleModalController {
         profileScroll.setVerticalScrollBarEnabled(false);
         LinearLayout profileList = new LinearLayout(context);
         profileList.setOrientation(LinearLayout.VERTICAL);
+        profileList.setGravity(Gravity.CENTER_HORIZONTAL);
         profileList.setClipChildren(false);
         profileScroll.addView(profileList, new ScrollView.LayoutParams(
                 matchWidth(), wrapSize()));
@@ -369,15 +370,25 @@ final class ConsoleModalController {
             TextView profileAction = card(profile.name + (active ? "  ·  ACTIVE" : ""),
                     dp(420), dp(54));
             profileAction.setOnClickListener(view -> selectProfile.accept(profile.id));
+            profileAction.setMinWidth(dp(560));
+            profileAction.setMinHeight(dp(60));
             profileList.addView(profileAction, top(index == 0 ? 0 : dp(8)));
+            profileList.addView(label("DISCORD " + profile.discordState() +
+                    "  \u00B7  VIBEPOLLO " + profile.vibepolloState() +
+                    "  \u00B7  PLAYNITE " + profile.playniteState(),
+                    11, 0xFF9CA6C5, true), top(dp(4)));
             if (initialFocus == null || active) initialFocus = profileAction;
         }
         TextView back = card("BACK", dp(420), dp(54));
         back.setOnClickListener(view -> backAction.run());
-        panel.addView(back, top(dp(14)));
+        back.setMinWidth(dp(560));
+        profileList.addView(back, top(dp(14)));
         TextView close = card("CLOSE", dp(420), dp(54));
         close.setOnClickListener(view -> hide());
-        panel.addView(close, top(dp(8)));
+        close.setMinWidth(dp(560));
+        profileList.addView(close, top(dp(8)));
+        wakePanel = profileList;
+        rebuildWakeFocusNavigation();
         layer.addView(panel, new FrameLayout.LayoutParams(dp(720), matchHeight(), Gravity.RIGHT));
         showAndFocus(initialFocus != null ? initialFocus : back);
     }

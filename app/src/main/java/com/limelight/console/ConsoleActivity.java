@@ -175,6 +175,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private LinearLayout sessionButton;
     private TextView communityButton;
     private TextView appsLabel;
+    private TextView appsFilter;
     private ConsoleDataRepository.Session currentSession;
     private LinearLayout hostRow;
     private LinearLayout appRow;
@@ -855,8 +856,16 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         hostScrollParams.topMargin = dp(6);
         content.addView(hostScroll, hostScrollParams);
 
+        LinearLayout appsHeader = new LinearLayout(this);
+        appsHeader.setOrientation(LinearLayout.HORIZONTAL);
+        appsHeader.setGravity(Gravity.CENTER_VERTICAL);
         appsLabel = section("APPS");
-        content.addView(appsLabel, top(dp(10)));
+        appsHeader.addView(appsLabel, new LinearLayout.LayoutParams(0, wrapSize(), 1f));
+        appsFilter = compactHomeAction("INSTALLED ONLY");
+        appsFilter.setVisibility(View.GONE);
+        appsFilter.setOnClickListener(view -> togglePlayniteInstalledFilter());
+        appsHeader.addView(appsFilter, wrap());
+        content.addView(appsHeader, top(dp(10)));
         HorizontalScrollView appScroll = horizontalScroll();
         appScroll.setPadding(0, 0, dp(12), dp(10));
         appRow = horizontalRow();
@@ -1131,6 +1140,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         appRow.removeAllViews();
         appsLabel.setText(host == null ? "APPS" :
                 "APPS · " + host.name.toUpperCase(Locale.ROOT));
+        boolean playnite = !apps.isEmpty() && apps.get(0).isPlayniteGame();
+        appsFilter.setVisibility(playnite ? View.VISIBLE : View.GONE);
+        if (playnite) {
+            appsFilter.setText(hostGatewayStore.isPlayniteInstalledOnly(host.uuid) ?
+                    "INSTALLED ONLY" : "ALL GAMES");
+        }
         if (apps.isEmpty()) {
             appRow.addView(label("No cached applications. Refresh this host in MoonWaker.",
                     16, 0xFFFFB74D, false), cardParams());
@@ -1141,6 +1156,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             LinearLayout card = appCard(host, app);
             appRow.addView(card, cardParams());
         }
+        if (playnite && appRow.getChildCount() > 0) {
+            appsFilter.setNextFocusDownId(appRow.getChildAt(0).getId());
+        }
     }
 
     private LinearLayout appCard(ConsoleDataRepository.Host host, ConsoleDataRepository.App app) {
@@ -1150,6 +1168,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         card.setPadding(dp(12), dp(10), dp(16), dp(10));
         card.setFocusable(true);
         card.setClickable(true);
+        card.setId(View.generateViewId());
         card.setBackground(consoleTheme.cardBackground());
         card.setMinimumWidth(dp(300));
         card.setMinimumHeight(dp(110));
@@ -1164,6 +1183,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         poster.setBackground(placeholder);
         Bitmap cached = artworkController.decodePoster(app.posterUri, 320);
         if (cached != null) poster.setImageBitmap(cached);
+        HostGatewayClient.Connection artworkConnection = app.isPlayniteGame() && host != null ?
+                hostGatewayStore.loadClientConnection(host.uuid, host.address) : null;
+        if (app.playniteArtworkAvailable && artworkConnection != null) {
+            artworkController.loadPlaynitePoster(
+                    artworkConnection, app.playniteGameGuid, poster);
+        }
         card.addView(poster, new LinearLayout.LayoutParams(dp(56), dp(84)));
 
         LinearLayout copy = new LinearLayout(this);
@@ -1173,7 +1198,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         name.setSingleLine(true);
         copy.addView(name, new LinearLayout.LayoutParams(matchWidth(), wrapSize()));
         String metadataValue = app.isPlayniteGame() ?
-                "PLAYNITE · " + (app.installed ? "INSTALLED" : "NOT INSTALLED") :
+                "PLAYNITE · " + (!app.lastPlayed.isEmpty() ? "RECENT · " : "") +
+                        (app.installed ? "INSTALLED" : "NOT INSTALLED") :
                 launchHistoryStore.metadata(host.uuid, app.id, System.currentTimeMillis());
         TextView metadata = label(metadataValue, 10, 0xFFAAAFC2, true);
         copy.addView(metadata, top(dp(5)));
@@ -1194,7 +1220,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             }
             if (focused) {
                 hostSelectionController.rememberApp(host, app);
-                artworkController.show(app.posterUri, poster.getDrawable());
+                if (app.isPlayniteGame() && artworkConnection != null) {
+                    artworkController.showPlaynite(
+                            artworkConnection, app.playniteGameGuid, poster.getDrawable());
+                } else {
+                    artworkController.show(app.posterUri, poster.getDrawable());
+                }
             }
         });
         card.setOnClickListener(view -> {
@@ -1208,7 +1239,17 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             ConsoleDataRepository.Host host, List<ConsoleDataRepository.App> fallback) {
         List<ConsoleDataRepository.App> games = host == null ? null :
                 playniteLibraries.get(host.uuid);
-        return games == null || games.isEmpty() ? fallback : games;
+        return games == null || games.isEmpty() ? fallback :
+                ConsolePlayniteLibraryPresenter.prepare(games,
+                        hostGatewayStore.isPlayniteInstalledOnly(host.uuid));
+    }
+
+    private void togglePlayniteInstalledFilter() {
+        if (selectedHost == null || !playniteLibraries.containsKey(selectedHost.uuid)) return;
+        boolean current = hostGatewayStore.isPlayniteInstalledOnly(selectedHost.uuid);
+        hostGatewayStore.setPlayniteInstalledOnly(selectedHost.uuid, !current);
+        renderApps(selectedHost, visibleApps(selectedHost, repository.apps(selectedHost)));
+        appsFilter.requestFocus();
     }
 
     private void refreshPlayniteLibrary(ConsoleDataRepository.Host host) {
@@ -1228,7 +1269,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                         int id = game.id.hashCode() & 0x7fffffff;
                         if (id == 0) id = 1;
                         result.add(new ConsoleDataRepository.App(id, game.name, null,
-                                false, game.id, game.installed));
+                                false, game.id, game.installed, game.favorite,
+                                game.lastPlayed, !game.cover.isEmpty()));
                     }
                     if (library.nextCursor.isEmpty() ||
                             library.nextCursor.equals(cursor)) break;
@@ -2177,6 +2219,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 connection.profileId.toUpperCase(Locale.ROOT) + "  \u203A");
         TextView vibepolloStatus = modalController.wakeStatus(
                 "Vibepollo Bridge: checking\u2026");
+        TextView playniteStatus = modalController.wakeStatus(
+                "Playnite Bridge: checking\u2026");
         TextView discordStatus = modalController.wakeStatus("Discord Bridge: checking\u2026");
         TextView vibepollo = modalController.wakeAction("VIBEPOLLO FIX  \u203A");
         TextView discord = modalController.wakeAction("OPEN DISCORD  \u203A");
@@ -2191,7 +2235,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         forget.setOnClickListener(view -> confirmForgetGateway(host));
         modalController.showWakePanel(getCurrentFocus(), "HOST INTEGRATIONS", host.name,
                 "Paired gateway: " + connection.endpoint, null,
-                status, profile, vibepolloStatus, discordStatus,
+                status, profile, vibepolloStatus, playniteStatus, discordStatus,
                 vibepollo, discord, refresh, forget);
 
         integrationExecutor.execute(() -> {
@@ -2217,6 +2261,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     }
                     vibepolloStatus.setText("Vibepollo Bridge: " +
                             (capabilities.vibepolloFix ? "online" : "offline"));
+                    playniteStatus.setText("Playnite Bridge: " +
+                            (capabilities.playnite ? "online" : "offline"));
                     discordStatus.setText("Discord Bridge: " +
                             (capabilities.discord ? "online" : "offline"));
                     vibepollo.setVisibility(capabilities.vibepolloFix ?
@@ -2229,6 +2275,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     if (request != integrationPanelRequest.get()) return;
                     status.setText("Gateway: unavailable\n" + friendlyGatewayError(error));
                     vibepolloStatus.setText("Vibepollo Bridge: status unavailable");
+                    playniteStatus.setText("Playnite Bridge: status unavailable");
                     discordStatus.setText("Discord Bridge: status unavailable");
                 });
             }
@@ -3122,6 +3169,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 connection.profileId, profileId -> {
                     hostGatewayStore.setSelectedIntegrationProfileId(hostUuid, profileId);
                     if (selectedHost != null && hostUuid.equals(selectedHost.uuid)) {
+                        playniteLibraries.remove(hostUuid);
+                        renderApps(selectedHost, repository.apps(selectedHost));
+                        refreshPlayniteLibrary(selectedHost);
                         renderGatewayProfile(selectedHost);
                         showHostIntegrations();
                     }

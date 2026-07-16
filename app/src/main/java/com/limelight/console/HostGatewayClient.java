@@ -131,15 +131,17 @@ final class HostGatewayClient {
         final boolean favorite;
         final String cover;
         final String background;
+        final String lastPlayed;
 
         PlayniteGame(String id, String name, boolean installed, boolean favorite,
-                     String cover, String background) {
+                     String cover, String background, String lastPlayed) {
             this.id = id;
             this.name = name;
             this.installed = installed;
             this.favorite = favorite;
             this.cover = cover;
             this.background = background;
+            this.lastPlayed = lastPlayed;
         }
     }
 
@@ -558,6 +560,17 @@ final class HostGatewayClient {
         return parsePlayniteLibrary(response.optJSONObject("library"));
     }
 
+    byte[] getPlayniteArtwork(Connection connection, String gameId, String kind)
+            throws IOException {
+        if (!isPlayniteId(gameId)) throw new IllegalArgumentException("Invalid Playnite game ID");
+        if (!"cover".equals(kind) && !"background".equals(kind) && !"icon".equals(kind)) {
+            throw new IllegalArgumentException("Invalid Playnite artwork kind");
+        }
+        return requestBytes(connection.endpoint,
+                "/api/v1/playnite/artwork?game_id=" + gameId + "&kind=" + kind,
+                connection, pinnedTrust(connection), 12_000);
+    }
+
     PlayniteCurrentGame getPlayniteCurrentGame(Connection connection) throws IOException {
         JSONObject response = request(connection.endpoint, "/api/v1/playnite/game/current",
                 "GET", null, connection, pinnedTrust(connection), READ_TIMEOUT_MS);
@@ -642,8 +655,10 @@ final class HostGatewayClient {
                 games.add(new PlayniteGame(id.toLowerCase(Locale.ROOT), name,
                         value.optBoolean("installed", value.optBoolean("isInstalled", false)),
                         value.optBoolean("favorite", value.optBoolean("isFavorite", false)),
-                        firstText(value, "cover", "coverImage", "cover_image"),
-                        firstText(value, "background", "backgroundImage", "background_image")));
+                        firstText(value, "cover", "coverImage", "cover_image", "boxArtPath"),
+                        firstText(value, "background", "backgroundImage", "background_image",
+                                "backgroundImagePath"),
+                        firstText(value, "lastPlayed", "last_played")));
             }
         }
         return new PlayniteLibrary(games, safe.optString("next_cursor", ""),
@@ -1068,6 +1083,48 @@ final class HostGatewayClient {
                 throw new GatewayException(response.optString("error", "Host gateway request failed."), status);
             }
             return response;
+        } catch (GeneralSecurityException error) {
+            throw new IOException("Unable to initialize gateway TLS.", error);
+        } finally {
+            if (http != null) http.disconnect();
+        }
+    }
+
+    private static byte[] requestBytes(String endpoint, String path, Connection connection,
+                                       PairingTrustManager trustManager, int readTimeoutMs)
+            throws IOException {
+        HttpsURLConnection http = null;
+        try {
+            SSLContext context = SSLContext.getInstance("TLS");
+            context.init(null, new TrustManager[]{trustManager}, null);
+            http = (HttpsURLConnection) new URL(trimSlash(endpoint) + path).openConnection();
+            http.setSSLSocketFactory(context.getSocketFactory());
+            http.setHostnameVerifier(PINNED_HOSTNAME_VERIFIER);
+            http.setConnectTimeout(CONNECT_TIMEOUT_MS);
+            http.setReadTimeout(readTimeoutMs);
+            http.setRequestMethod("GET");
+            http.setRequestProperty("Accept", "image/*");
+            http.setRequestProperty("Connection", "close");
+            http.setRequestProperty("Authorization", "Bearer " + connection.token);
+            http.setRequestProperty("X-WakePlay-Profile", connection.profileId);
+            int status = http.getResponseCode();
+            if (status < HttpURLConnection.HTTP_OK || status >= 300) {
+                throw new GatewayException("Playnite artwork is unavailable.", status);
+            }
+            try (InputStream input = http.getInputStream();
+                 ByteArrayOutputStream output = new ByteArrayOutputStream()) {
+                byte[] buffer = new byte[8192];
+                int read;
+                int total = 0;
+                while ((read = input.read(buffer)) >= 0) {
+                    total += read;
+                    if (total > 8 * 1024 * 1024) {
+                        throw new IOException("Playnite artwork is too large.");
+                    }
+                    output.write(buffer, 0, read);
+                }
+                return output.toByteArray();
+            }
         } catch (GeneralSecurityException error) {
             throw new IOException("Unable to initialize gateway TLS.", error);
         } finally {

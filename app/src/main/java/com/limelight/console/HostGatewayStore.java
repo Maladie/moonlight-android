@@ -137,6 +137,17 @@ final class HostGatewayStore {
         preferences.edit().putString(key(hostUuid, "integration_profile"), normalized).apply();
     }
 
+    boolean isPlayniteInstalledOnly(String hostUuid) {
+        return hostUuid != null && preferences.getBoolean(
+                key(hostUuid, "playnite_installed_only"), true);
+    }
+
+    void setPlayniteInstalledOnly(String hostUuid, boolean installedOnly) {
+        if (hostUuid == null || hostUuid.isEmpty()) return;
+        preferences.edit().putBoolean(
+                key(hostUuid, "playnite_installed_only"), installedOnly).apply();
+    }
+
     boolean isDiscordAutoConnectEnabled(String hostUuid, String profileId) {
         if (hostUuid == null || profileId == null) return false;
         String profileKey = discordKey(hostUuid, profileId, "auto_connect");
