@@ -21,6 +21,7 @@ final class PlayniteLaunchOrchestrator implements LaunchOrchestrator, AutoClosea
     private static final long POLL_MS = 250L;
     private static final long UNCHANGED_CONNECTOR_SETTLE_MS = 5_000L;
     private static final long RECONNECTED_SETTLE_MS = 500L;
+    private static final long TRANSPORT_GAME_DEDUP_MS = 1_000L;
     private final Backend backend;
     private final ExecutorService executor;
     private final long timeoutMs;
@@ -102,7 +103,8 @@ final class PlayniteLaunchOrchestrator implements LaunchOrchestrator, AutoClosea
             if (waitForTransportConnector) {
                 waitForConnectorSettle(operation, listener);
             }
-            HostGatewayClient.PlayniteCurrentGame current = backend.current();
+            HostGatewayClient.PlayniteCurrentGame current = waitForTransportConnector ?
+                    currentAfterTransportGrace(operation, gameId) : backend.current();
             boolean alreadyRunning = "running".equals(current.state) &&
                     gameId.equalsIgnoreCase(current.id);
             if (alreadyRunning) {
@@ -120,6 +122,18 @@ final class PlayniteLaunchOrchestrator implements LaunchOrchestrator, AutoClosea
                 listener.onFailure("Playnite could not prepare the game. The desktop remains hidden.");
             }
         }
+    }
+
+    private HostGatewayClient.PlayniteCurrentGame currentAfterTransportGrace(
+            int operation, String gameId) throws Exception {
+        long deadline = System.currentTimeMillis() + TRANSPORT_GAME_DEDUP_MS;
+        HostGatewayClient.PlayniteCurrentGame current = backend.current();
+        while (operation == generation.get() && System.currentTimeMillis() < deadline &&
+                !("running".equals(current.state) && gameId.equalsIgnoreCase(current.id))) {
+            Thread.sleep(POLL_MS);
+            current = backend.current();
+        }
+        return current;
     }
 
     private void waitForConnectorSettle(int operation, Listener listener) throws Exception {
@@ -190,7 +204,14 @@ final class PlayniteLaunchOrchestrator implements LaunchOrchestrator, AutoClosea
             Thread.sleep(POLL_MS);
         }
         if (operation == generation.get()) {
-            listener.onFailure("The target is still starting. The desktop remains hidden.");
+            boolean windowFailure = "stream_display_not_configured".equals(lastReason) ||
+                    "target_on_wrong_display".equals(lastReason) ||
+                    "target_not_foreground".equals(lastReason) ||
+                    "waiting_for_game_window".equals(lastReason) ||
+                    "stabilizing_target_window".equals(lastReason);
+            listener.onFailure(windowFailure ?
+                    "The game started, but its window could not be prepared. The desktop remains hidden." :
+                    "The target is still starting. The desktop remains hidden.");
         }
     }
 

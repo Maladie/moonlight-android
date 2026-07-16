@@ -72,6 +72,30 @@ public class PlayniteLaunchOrchestratorTest {
         orchestrator.close();
     }
 
+    @Test public void transportDoesNotDuplicateGameStartedByTransportApp() throws Exception {
+        FakeBackend backend = new FakeBackend();
+        backend.currentSamples = new HostGatewayClient.PlayniteCurrentGame[] {
+                new HostGatewayClient.PlayniteCurrentGame("idle", "", "", 0),
+                new HostGatewayClient.PlayniteCurrentGame("running", GAME, "Baba", 42),
+        };
+        backend.readiness = new HostGatewayClient.PlayniteReadiness(
+                true, "target_window_ready", "game", 3, 42, "DISPLAY15");
+        backend.healthSamples = new HostGatewayClient.PlayniteHealth[] {
+                new HostGatewayClient.PlayniteHealth(true, 1),
+                new HostGatewayClient.PlayniteHealth(false, 1),
+                new HostGatewayClient.PlayniteHealth(true, 2),
+                new HostGatewayClient.PlayniteHealth(true, 2),
+                new HostGatewayClient.PlayniteHealth(true, 2),
+        };
+        CountDownLatch done = new CountDownLatch(1);
+        PlayniteLaunchOrchestrator orchestrator =
+                new PlayniteLaunchOrchestrator(backend, 3_000, true);
+        orchestrator.launch(request(), listener(done));
+        assertTrue(done.await(4, TimeUnit.SECONDS));
+        assertEquals(0, backend.starts);
+        orchestrator.close();
+    }
+
     private static LaunchOrchestrator.Request request() {
         return new LaunchOrchestrator.Request("host", "default", "playnite", GAME);
     }
@@ -93,8 +117,14 @@ public class PlayniteLaunchOrchestratorTest {
         int readinessFailures;
         int starts;
         int healthReads;
+        int currentReads;
+        HostGatewayClient.PlayniteCurrentGame[] currentSamples;
         HostGatewayClient.PlayniteHealth[] healthSamples;
-        @Override public HostGatewayClient.PlayniteCurrentGame current() { return current; }
+        @Override public HostGatewayClient.PlayniteCurrentGame current() {
+            if (currentSamples == null || currentSamples.length == 0) return current;
+            int index = Math.min(currentReads++, currentSamples.length - 1);
+            return currentSamples[index];
+        }
         @Override public HostGatewayClient.PlayniteHealth health() {
             if (healthSamples == null || healthSamples.length == 0) {
                 return new HostGatewayClient.PlayniteHealth(true, 1);
