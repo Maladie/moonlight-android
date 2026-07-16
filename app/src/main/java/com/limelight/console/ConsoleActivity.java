@@ -1012,7 +1012,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         status.setSingleLine(true);
         card.addView(status, top(dp(1)));
         hostStatusViews.put(host.uuid, status);
-        card.setOnClickListener(view -> selectHost(host, view.hasFocus()));
+        card.setOnClickListener(view -> selectHost(host, true));
         card.setOnLongClickListener(view -> {
             confirmSleepHost(host);
             return true;
