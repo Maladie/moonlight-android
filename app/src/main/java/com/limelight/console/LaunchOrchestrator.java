@@ -21,6 +21,7 @@ public interface LaunchOrchestrator {
 
     interface Listener {
         void onStarting();
+        default void onProgress(String safeStatus) { }
         void onRunning(ReadinessSample sample);
         void onStopped();
         void onFailure(String safeMessage);
