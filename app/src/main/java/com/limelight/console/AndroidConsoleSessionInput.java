@@ -141,6 +141,10 @@ final class AndroidConsoleSessionInput implements ConsoleSessionInput {
 
     @Override public synchronized void ensureControllersReported() {
         if (closed) return;
+        // Playnite may start the target process as soon as the first video frame arrives.
+        // Advertise controllers synchronously so controller discovery cannot lose that race,
+        // then repeat once after the input channel has settled.
+        controllers.ensureAttachedControllersReported();
         mainHandler.removeCallbacks(reportAttachedControllers);
         mainHandler.postDelayed(reportAttachedControllers, 250L);
     }

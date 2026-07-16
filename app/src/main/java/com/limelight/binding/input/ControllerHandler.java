@@ -430,6 +430,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             } else {
                 assignControllerNumberIfNeeded(context);
             }
+            inputSender.sendControllerInput(context.controllerNumber, getActiveControllerMask(),
+                    (short) 0, (byte) 0, (byte) 0,
+                    (short) 0, (short) 0, (short) 0, (short) 0);
         }
     }
 
