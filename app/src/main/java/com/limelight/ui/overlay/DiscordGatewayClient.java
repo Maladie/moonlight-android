@@ -126,11 +126,22 @@ public final class DiscordGatewayClient {
         public final boolean discordRpcConnected;
         public final boolean discordAuthenticated;
         public final boolean vibepolloBridgeOnline;
+        public final boolean playniteBridgeOnline;
         public final boolean virtualHereAvailable;
 
         public IntegrationProfile(String id, String name, boolean discordBridgeOnline,
                                   boolean discordRpcConnected, boolean discordAuthenticated,
                                   boolean vibepolloBridgeOnline,
+                                  boolean virtualHereAvailable) {
+            this(id, name, discordBridgeOnline, discordRpcConnected,
+                    discordAuthenticated, vibepolloBridgeOnline, false,
+                    virtualHereAvailable);
+        }
+
+        public IntegrationProfile(String id, String name, boolean discordBridgeOnline,
+                                  boolean discordRpcConnected, boolean discordAuthenticated,
+                                  boolean vibepolloBridgeOnline,
+                                  boolean playniteBridgeOnline,
                                   boolean virtualHereAvailable) {
             this.id = id;
             this.name = name;
@@ -138,6 +149,7 @@ public final class DiscordGatewayClient {
             this.discordRpcConnected = discordRpcConnected;
             this.discordAuthenticated = discordAuthenticated;
             this.vibepolloBridgeOnline = vibepolloBridgeOnline;
+            this.playniteBridgeOnline = playniteBridgeOnline;
             this.virtualHereAvailable = virtualHereAvailable;
         }
     }
@@ -231,6 +243,7 @@ public final class DiscordGatewayClient {
                         value.optBoolean("discord_rpc_connected", false),
                         value.optBoolean("discord_authenticated", false),
                         value.optBoolean("vibepollo_bridge_online", false),
+                        value.optBoolean("playnite_bridge_online", false),
                         value.optBoolean("virtualhere_available", false)));
             }
         }

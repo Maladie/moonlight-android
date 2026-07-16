@@ -35,6 +35,7 @@ final class GatewayProfileAdapter {
                 profiles.add(new IntegrationProfileStatus(profile.id, profile.name,
                         profile.discordBridgeOnline, profile.discordRpcConnected,
                         profile.discordAuthenticated, profile.vibepolloBridgeOnline,
+                        profile.playniteBridgeOnline,
                         profile.virtualHereAvailable));
             }
             catch (IllegalArgumentException invalidProfile) {

@@ -265,7 +265,8 @@ final class ConsoleModalController {
         gatewayStatus = label(summary.gatewayLabel(), 15,
                 summary.gatewayPaired ? 0xFF69F0AE : 0xFFFFB74D, true);
         profileStatus = label(summary.profileLabel(), 14, 0xFFE1E5F2, true);
-        servicesStatus = label(summary.servicesLabel(), 14, 0xFF9CA6C5, false);
+        servicesStatus = label(summary.servicesLabel() + "\n" + summary.playniteLabel(),
+                14, 0xFF9CA6C5, false);
         panel.addView(gatewayStatus, top(dp(28)));
         panel.addView(profileStatus, top(dp(14)));
         panel.addView(servicesStatus, top(dp(20)));
@@ -316,7 +317,7 @@ final class ConsoleModalController {
         gatewayStatus.setText(summary.gatewayLabel());
         gatewayStatus.setTextColor(summary.gatewayPaired ? 0xFF69F0AE : 0xFFFFB74D);
         profileStatus.setText(summary.profileLabel());
-        servicesStatus.setText(summary.servicesLabel());
+        servicesStatus.setText(summary.servicesLabel() + "\n" + summary.playniteLabel());
         boolean canChoose = catalog != null && catalog.profiles.size() > 1;
         chooseProfile.setVisibility(canChoose ? View.VISIBLE : View.GONE);
         chooseProfile.setOnClickListener(canChoose ? view -> chooseProfileAction.run() : null);

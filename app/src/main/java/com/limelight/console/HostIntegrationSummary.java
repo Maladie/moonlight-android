@@ -47,4 +47,10 @@ final class HostIntegrationSummary {
                 " · VIBEPOLLO " + profileStatus.vibepolloState() +
                 " · USB " + profileStatus.virtualHereState();
     }
+
+    String playniteLabel() {
+        return "PLAYNITE " + (profileStatus == null ?
+                IntegrationProfileStatus.ServiceState.OFFLINE :
+                profileStatus.playniteState());
+    }
 }

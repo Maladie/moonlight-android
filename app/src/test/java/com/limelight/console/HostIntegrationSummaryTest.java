@@ -31,10 +31,12 @@ public class HostIntegrationSummaryTest {
         GatewayConnection connection = new GatewayConnection(
                 "https://private-host:8785", "private-token", FINGERPRINT, "living-room");
         IntegrationProfileStatus status = new IntegrationProfileStatus(
-                "living-room", "Living room", true, true, true, false, true);
-        String rendered = HostIntegrationSummary.from(connection, status).servicesLabel();
+                "living-room", "Living room", true, true, true, false, true, true);
+        HostIntegrationSummary summary = HostIntegrationSummary.from(connection, status);
+        String rendered = summary.servicesLabel() + summary.playniteLabel();
         assertTrue(rendered.contains("DISCORD ONLINE"));
         assertTrue(rendered.contains("VIBEPOLLO OFFLINE"));
+        assertTrue(rendered.contains("PLAYNITE ONLINE"));
         assertTrue(rendered.contains("USB READY"));
     }
 }
