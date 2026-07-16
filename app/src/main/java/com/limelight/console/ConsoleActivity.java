@@ -63,6 +63,7 @@ import java.util.concurrent.atomic.AtomicBoolean;
 public final class ConsoleActivity extends Activity implements SurfaceHolder.Callback {
     private static final long SESSION_REFRESH_MS = 1500L;
     private static final long HOME_STATUS_REFRESH_MS = 5000L;
+    private static final long PLAYNITE_LIBRARY_REFRESH_MS = 15_000L;
     private static final long STREAM_CONNECT_GRACE_MS = 30_000L;
     private static final long STREAM_CONNECT_RETRY_MS = 2_500L;
     private static final int REQUEST_BLUETOOTH_CONNECT = 7001;
@@ -92,6 +93,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final HostGatewayClient hostGatewayClient = new HostGatewayClient();
     private final AtomicInteger integrationPanelRequest = new AtomicInteger();
     private final AtomicInteger playniteLibraryRequest = new AtomicInteger();
+    private final AtomicBoolean playniteLibraryRefreshInFlight = new AtomicBoolean();
     private final DiscordGatewayClient discordOverlayClient = new DiscordGatewayClient();
     private final AtomicBoolean discordOverlayRefreshInFlight = new AtomicBoolean();
     private final AtomicBoolean discordOverlayActionInFlight = new AtomicBoolean();
@@ -161,6 +163,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final Map<String, TextView> hostStatusViews = new HashMap<>();
     private final Map<String, List<ConsoleDataRepository.App>> playniteLibraries =
             new HashMap<>();
+    private final Map<String, Long> playniteLibraryRefreshTimes = new HashMap<>();
     private List<ConsoleDataRepository.Host> visibleHosts = Collections.emptyList();
     private FrameLayout root;
     private StreamView streamSurface;
@@ -1283,10 +1286,19 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void refreshPlayniteLibrary(ConsoleDataRepository.Host host) {
+        refreshPlayniteLibrary(host, true);
+    }
+
+    private void refreshPlayniteLibrary(ConsoleDataRepository.Host host, boolean force) {
         if (host == null) return;
+        long now = SystemClock.elapsedRealtime();
+        long lastRefresh = playniteLibraryRefreshTimes.getOrDefault(host.uuid, 0L);
+        if (!force && now - lastRefresh < PLAYNITE_LIBRARY_REFRESH_MS) return;
         HostGatewayClient.Connection connection =
                 hostGatewayStore.loadClientConnection(host.uuid);
         if (connection == null) return;
+        if (!playniteLibraryRefreshInFlight.compareAndSet(false, true)) return;
+        playniteLibraryRefreshTimes.put(host.uuid, now);
         int request = playniteLibraryRequest.incrementAndGet();
         integrationExecutor.execute(() -> {
             try {
@@ -1317,6 +1329,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             } catch (Exception error) {
                 LimeLog.info("Playnite library unavailable; keeping Apollo fallback: " +
                         error.getMessage());
+            } finally {
+                playniteLibraryRefreshInFlight.set(false);
             }
         });
     }
@@ -1820,6 +1834,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 homeLayer.getVisibility() == View.VISIBLE && !isFinishing()) {
             renderControllers();
             refreshHostAvailability();
+            refreshPlayniteLibrary(selectedHost, false);
         }
         if (!isFinishing()) {
             mainHandler.postDelayed(homeStatusRefresh, HOME_STATUS_REFRESH_MS);
