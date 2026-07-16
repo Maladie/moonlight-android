@@ -1764,7 +1764,14 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         boolean openingOverlay = layers.overlayVisible &&
                 overlayLayer.getVisibility() != View.VISIBLE;
         homeLayer.setVisibility(layers.homeVisible ? View.VISIBLE : View.GONE);
-        privacyLayer.setVisibility(layers.privacyVisible ? View.VISIBLE : View.GONE);
+        if (layers.privacyVisible) {
+            privacyLayer.setVisibility(View.VISIBLE);
+        } else if (state == ConsoleStateMachine.State.STREAM &&
+                privacyLayer.getVisibility() == View.VISIBLE) {
+            loadingController.revealStream();
+        } else {
+            privacyLayer.setVisibility(View.GONE);
+        }
         if (layers.homeVisible && repository != null && returnToGame != null) {
             renderSession(visibleSession());
         }

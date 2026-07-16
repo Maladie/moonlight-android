@@ -32,6 +32,10 @@ final class ConsoleLoadingController {
         if (loadingView != null) loadingView.setStatus(value);
     }
 
+    void revealStream() {
+        if (loadingView != null) loadingView.revealStream();
+    }
+
     void stop() {
         if (loadingView != null) loadingView.stop();
     }
