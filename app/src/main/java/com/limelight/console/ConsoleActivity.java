@@ -192,6 +192,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private PlayniteLaunchOrchestrator playniteLaunchOrchestrator;
     private PlayniteSessionMonitor playniteSessionMonitor;
     private boolean returningToPlaynite;
+    private boolean returnHomeAfterPlayniteRestore;
     private final LoadingPrivacyGate playnitePrivacyGate = new LoadingPrivacyGate(3);
     private ConsoleLaunchContract.Request activeLaunchRequest;
     private int runtimeBitrateKbps;
@@ -1386,13 +1387,17 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         if (isFinishing() || resumeApp != app || returningToPlaynite) return;
         stopPlayniteSessionMonitor();
         returningToPlaynite = true;
+        returnHomeAfterPlayniteRestore = getSharedPreferences(
+                "launch_history", MODE_PRIVATE).getBoolean(
+                "playnite_after_game_home", false);
         playnitePrivacyGate.reset(true);
         if (unifiedFirstFrameRendered) playnitePrivacyGate.onFirstDecodedFrame();
-        ConsoleStateMachine.Event event = stateMachine.getState() ==
+        ConsoleStateMachine.Event event = returnHomeAfterPlayniteRestore ?
+                ConsoleStateMachine.Event.HOME : stateMachine.getState() ==
                 ConsoleStateMachine.State.HOME ? ConsoleStateMachine.Event.LAUNCH :
                 ConsoleStateMachine.Event.RECONNECT;
         stateMachine.dispatch(event);
-        applyState(ConsoleStateMachine.State.CONNECTING);
+        applyState(stateMachine.getState());
         loadingController.show(app.name);
         loadingController.updateStatus("Game closed. Restoring Playnite…");
         playniteLaunchOrchestrator = new PlayniteLaunchOrchestrator(
@@ -1429,7 +1434,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 Integer.MAX_VALUE, "Playnite", null);
         unifiedHomeSession.begin(host, playnite);
         unifiedHomeSession.connected();
-        stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTED);
+        if (!returnHomeAfterPlayniteRestore) {
+            stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTED);
+        }
+        returnHomeAfterPlayniteRestore = false;
         applyState(stateMachine.getState());
         renderSession(visibleSession());
     }
@@ -1441,6 +1449,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         if (playniteLaunchOrchestrator != null) playniteLaunchOrchestrator.close();
         playniteLaunchOrchestrator = null;
         returningToPlaynite = false;
+        returnHomeAfterPlayniteRestore = false;
         stateMachine.dispatch(ConsoleStateMachine.Event.HOME);
         applyState(stateMachine.getState());
         modalController.showConnectionRecovery(getCurrentFocus(), reason,
@@ -1471,6 +1480,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         playnitePreviousResumeHost = null;
         playnitePreviousResumeApp = null;
         returningToPlaynite = false;
+        returnHomeAfterPlayniteRestore = false;
     }
 
     private void launchLegacy(ConsoleDataRepository.Host host, ConsoleDataRepository.App app) {
@@ -2084,7 +2094,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 getSharedPreferences("launch_history", MODE_PRIVATE);
         boolean uiSounds = preferences.getBoolean("ui_sounds", true);
         boolean reducedMotion = preferences.getBoolean("reduced_motion", false);
+        boolean returnHomeAfterGame = preferences.getBoolean(
+                "playnite_after_game_home", false);
         modalController.showOptions(getCurrentFocus(), uiSounds, reducedMotion,
+                returnHomeAfterGame,
                 enabled -> {
                     preferences.edit().putBoolean("ui_sounds", enabled).apply();
                     applyInterfacePreferences();
@@ -2093,6 +2106,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                     preferences.edit().putBoolean("reduced_motion", enabled).apply();
                     applyInterfacePreferences();
                 },
+                enabled -> preferences.edit().putBoolean(
+                        "playnite_after_game_home", enabled).apply(),
                 this::showHostIntegrations,
                 () -> startActivity(new Intent(this, StreamSettings.class)));
     }

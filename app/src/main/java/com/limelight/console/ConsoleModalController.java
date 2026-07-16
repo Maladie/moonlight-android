@@ -86,7 +86,9 @@ final class ConsoleModalController {
     }
 
     void showOptions(View focusToRestore, boolean uiSounds, boolean reducedMotion,
+                     boolean returnHomeAfterGame,
                      Consumer<Boolean> setSounds, Consumer<Boolean> setMotion,
+                     Consumer<Boolean> setReturnHomeAfterGame,
                      Runnable hostIntegrations, Runnable moonlightSettings) {
         begin(focusToRestore);
         integrationHostUuid = null;
@@ -108,13 +110,23 @@ final class ConsoleModalController {
             motion.setText("REDUCED MOTION  \u00B7  " + (motionReduced[0] ? "ON" : "OFF"));
             motion.requestFocus();
         });
+        TextView afterGame = wakeAction("AFTER GAME  \u00B7  " +
+                (returnHomeAfterGame ? "MOONWAKER HOME" : "PLAYNITE"));
+        boolean[] homeAfterGame = {returnHomeAfterGame};
+        afterGame.setOnClickListener(view -> {
+            homeAfterGame[0] = !homeAfterGame[0];
+            setReturnHomeAfterGame.accept(homeAfterGame[0]);
+            afterGame.setText("AFTER GAME  \u00B7  " +
+                    (homeAfterGame[0] ? "MOONWAKER HOME" : "PLAYNITE"));
+            afterGame.requestFocus();
+        });
         TextView integrations = wakeAction("HOST INTEGRATIONS  \u203A");
         integrations.setOnClickListener(view -> hostIntegrations.run());
         TextView moonlight = wakeAction("MOONWAKER STREAM SETTINGS  \u203A");
         moonlight.setOnClickListener(view -> moonlightSettings.run());
         showWakePanel("MOONWAKER", "Options",
                 "Tune the console interface or open MoonWaker's streaming preferences.",
-                null, sounds, motion, integrations, moonlight);
+                null, sounds, motion, afterGame, integrations, moonlight);
     }
 
     void showControllerActions(View focusToRestore, int player,
