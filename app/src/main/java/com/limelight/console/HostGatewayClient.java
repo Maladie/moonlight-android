@@ -9,6 +9,7 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.URLEncoder;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
@@ -75,11 +76,18 @@ final class HostGatewayClient {
         final boolean vibepolloFix;
         final boolean discord;
         final boolean virtualHere;
+        final boolean playnite;
 
         Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere) {
+            this(vibepolloFix, discord, virtualHere, false);
+        }
+
+        Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere,
+                     boolean playnite) {
             this.vibepolloFix = vibepolloFix;
             this.discord = discord;
             this.virtualHere = virtualHere;
+            this.playnite = playnite;
         }
     }
 
@@ -90,18 +98,93 @@ final class HostGatewayClient {
         final boolean discordRpcConnected;
         final boolean discordAuthenticated;
         final boolean vibepolloBridgeOnline;
+        final boolean playniteBridgeOnline;
         final boolean virtualHereAvailable;
 
         IntegrationProfile(String id, String name, boolean discordBridgeOnline,
                            boolean discordRpcConnected, boolean discordAuthenticated,
                            boolean vibepolloBridgeOnline, boolean virtualHereAvailable) {
+            this(id, name, discordBridgeOnline, discordRpcConnected,
+                    discordAuthenticated, vibepolloBridgeOnline, false,
+                    virtualHereAvailable);
+        }
+
+        IntegrationProfile(String id, String name, boolean discordBridgeOnline,
+                           boolean discordRpcConnected, boolean discordAuthenticated,
+                           boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
+                           boolean virtualHereAvailable) {
             this.id = id;
             this.name = name;
             this.discordBridgeOnline = discordBridgeOnline;
             this.discordRpcConnected = discordRpcConnected;
             this.discordAuthenticated = discordAuthenticated;
             this.vibepolloBridgeOnline = vibepolloBridgeOnline;
+            this.playniteBridgeOnline = playniteBridgeOnline;
             this.virtualHereAvailable = virtualHereAvailable;
+        }
+    }
+
+    static final class PlayniteGame {
+        final String id;
+        final String name;
+        final boolean installed;
+        final boolean favorite;
+        final String cover;
+        final String background;
+
+        PlayniteGame(String id, String name, boolean installed, boolean favorite,
+                     String cover, String background) {
+            this.id = id;
+            this.name = name;
+            this.installed = installed;
+            this.favorite = favorite;
+            this.cover = cover;
+            this.background = background;
+        }
+    }
+
+    static final class PlayniteLibrary {
+        final List<PlayniteGame> games;
+        final String nextCursor;
+        final int total;
+
+        PlayniteLibrary(List<PlayniteGame> games, String nextCursor, int total) {
+            this.games = Collections.unmodifiableList(games);
+            this.nextCursor = nextCursor;
+            this.total = total;
+        }
+    }
+
+    static final class PlayniteReadiness {
+        final boolean ready;
+        final String reason;
+        final String targetKind;
+        final int stableSamples;
+        final int processId;
+        final String display;
+
+        PlayniteReadiness(boolean ready, String reason, String targetKind,
+                          int stableSamples, int processId, String display) {
+            this.ready = ready;
+            this.reason = reason;
+            this.targetKind = targetKind;
+            this.stableSamples = stableSamples;
+            this.processId = processId;
+            this.display = display;
+        }
+    }
+
+    static final class PlayniteCurrentGame {
+        final String state;
+        final String id;
+        final String title;
+        final int processId;
+
+        PlayniteCurrentGame(String state, String id, String title, int processId) {
+            this.state = state;
+            this.id = id;
+            this.title = title;
+            this.processId = processId;
         }
     }
 
@@ -386,7 +469,8 @@ final class HostGatewayClient {
         JSONObject capabilities = response.optJSONObject("capabilities");
         return new Capabilities(available(capabilities, "vibepollo_fix"),
                 available(capabilities, "discord"),
-                available(capabilities, "virtualhere"));
+                available(capabilities, "virtualhere"),
+                available(capabilities, "playnite"));
     }
 
     IntegrationProfiles getIntegrationProfiles(Connection connection) throws IOException {
@@ -407,6 +491,7 @@ final class HostGatewayClient {
                         value.optBoolean("discord_rpc_connected", false),
                         value.optBoolean("discord_authenticated", false),
                         value.optBoolean("vibepollo_bridge_online", false),
+                        value.optBoolean("playnite_bridge_online", false),
                         value.optBoolean("virtualhere_available", false)));
             }
         }
@@ -438,6 +523,107 @@ final class HostGatewayClient {
     JSONObject sleepHost(Connection connection) throws IOException {
         return request(connection.endpoint, "/api/v1/system/sleep", "POST",
                 new JSONObject(), connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+    }
+
+    PlayniteLibrary getPlayniteLibrary(Connection connection, String cursor, int limit)
+            throws IOException {
+        if (limit < 1 || limit > 100) throw new IllegalArgumentException("Invalid page size");
+        String safeCursor = cursor == null ? "" : cursor;
+        String encoded = URLEncoder.encode(safeCursor, StandardCharsets.UTF_8.name());
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/playnite/library/list?cursor=" + encoded + "&limit=" + limit,
+                "GET", null, connection, pinnedTrust(connection), 12_000);
+        return parsePlayniteLibrary(response.optJSONObject("library"));
+    }
+
+    PlayniteCurrentGame getPlayniteCurrentGame(Connection connection) throws IOException {
+        JSONObject response = request(connection.endpoint, "/api/v1/playnite/game/current",
+                "GET", null, connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+        JSONObject current = response.optJSONObject("current");
+        if (current == null) current = new JSONObject();
+        return new PlayniteCurrentGame(current.optString("state", "idle"),
+                current.optString("id", ""), current.optString("title", ""),
+                current.optInt("processId", current.optInt("process_id", 0)));
+    }
+
+    PlayniteReadiness getPlayniteReadiness(Connection connection) throws IOException {
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/playnite/window/readiness", "GET", null, connection,
+                pinnedTrust(connection), READ_TIMEOUT_MS);
+        return parsePlayniteReadiness(response.optJSONObject("readiness"));
+    }
+
+    JSONObject startPlayniteGame(Connection connection, String gameId) throws IOException {
+        if (!isPlayniteId(gameId)) throw new IllegalArgumentException("Invalid Playnite game ID");
+        JSONObject body = new JSONObject();
+        try { body.put("game_id", gameId.toLowerCase(Locale.ROOT)); }
+        catch (JSONException impossible) { throw new IOException(impossible); }
+        return request(connection.endpoint, "/api/v1/playnite/game/start", "POST",
+                body, connection, pinnedTrust(connection), 18_000);
+    }
+
+    JSONObject stopPlayniteGame(Connection connection, String gameId) throws IOException {
+        if (gameId != null && !gameId.isEmpty() && !isPlayniteId(gameId)) {
+            throw new IllegalArgumentException("Invalid Playnite game ID");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("force", false);
+            if (gameId != null && !gameId.isEmpty()) body.put("game_id", gameId);
+        } catch (JSONException impossible) { throw new IOException(impossible); }
+        return request(connection.endpoint, "/api/v1/playnite/game/stop", "POST",
+                body, connection, pinnedTrust(connection), 18_000);
+    }
+
+    JSONObject showPlayniteFullscreen(Connection connection) throws IOException {
+        return request(connection.endpoint, "/api/v1/playnite/show-fullscreen", "POST",
+                new JSONObject(), connection, pinnedTrust(connection), 12_000);
+    }
+
+    static PlayniteLibrary parsePlayniteLibrary(JSONObject library) {
+        JSONObject safe = library == null ? new JSONObject() : library;
+        JSONArray values = safe.optJSONArray("games");
+        List<PlayniteGame> games = new ArrayList<>();
+        if (values != null) {
+            for (int index = 0; index < values.length(); index++) {
+                JSONObject value = values.optJSONObject(index);
+                if (value == null) continue;
+                String id = value.optString("id", "");
+                if (!isPlayniteId(id)) continue;
+                String name = value.optString("name", "").trim();
+                if (name.isEmpty()) continue;
+                games.add(new PlayniteGame(id.toLowerCase(Locale.ROOT), name,
+                        value.optBoolean("installed", value.optBoolean("isInstalled", false)),
+                        value.optBoolean("favorite", value.optBoolean("isFavorite", false)),
+                        firstText(value, "cover", "coverImage", "cover_image"),
+                        firstText(value, "background", "backgroundImage", "background_image")));
+            }
+        }
+        return new PlayniteLibrary(games, safe.optString("next_cursor", ""),
+                safe.optInt("total", games.size()));
+    }
+
+    static PlayniteReadiness parsePlayniteReadiness(JSONObject value) {
+        JSONObject safe = value == null ? new JSONObject() : value;
+        return new PlayniteReadiness(safe.optBoolean("ready", false),
+                safe.optString("reason", "window_probe_pending"),
+                safe.optString("target_kind", "playnite"),
+                safe.optInt("stable_samples", 0),
+                safe.optInt("process_id", safe.optInt("processId", 0)),
+                safe.optString("display", ""));
+    }
+
+    private static String firstText(JSONObject value, String... keys) {
+        for (String key : keys) {
+            String result = value.optString(key, "").trim();
+            if (!result.isEmpty()) return result;
+        }
+        return "";
+    }
+
+    static boolean isPlayniteId(String value) {
+        return value != null && value.matches(
+                "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
     }
 
     DiscordStatus getDiscordStatus(Connection connection) throws IOException {
