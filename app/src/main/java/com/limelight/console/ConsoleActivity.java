@@ -1552,7 +1552,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void launchLegacy(ConsoleDataRepository.Host host, ConsoleDataRepository.App app,
                               boolean recordHistory) {
-        if (app != null && !app.isPlayniteGame() &&
+        if (recordHistory && app != null && !app.isPlayniteGame() &&
                 app.name.toLowerCase(Locale.ROOT).contains("playnite")) {
             Toast.makeText(this,
                     "Select a game from the Playnite library. The launcher desktop stays hidden.",
