@@ -997,7 +997,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         header.setOrientation(LinearLayout.HORIZONTAL);
         header.setGravity(Gravity.CENTER_VERTICAL);
         header.addView(label("▣", 16, 0xFF9E8ACB, true), wrap());
-        TextView sleepHint = label("HOLD OK · SLEEP", 8, 0xFF9E8ACB, true);
+        TextView sleepHint = label("OK · PROFILES    HOLD · SLEEP", 8,
+                0xFF9E8ACB, true);
         LinearLayout.LayoutParams sleepHintParams = wrap();
         sleepHintParams.leftMargin = dp(10);
         header.addView(sleepHint, sleepHintParams);
@@ -1122,9 +1123,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         boolean alreadySelected = selectedHost != null &&
                 selectedHost.uuid.equals(host.uuid);
         if (alreadySelected && userFocusedHost) {
-            GatewayConnection connection = hostGatewayStore.load(host.uuid);
-            if (connection != null) refreshHostIntegrationsForProfile(host, connection);
-            else showHostIntegrations();
+            openHostProfileMenu(host);
             return;
         }
         ConsoleHostSelectionController.Selection selection =
@@ -1139,10 +1138,15 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         renderApps(host, visibleApps(host, selection.apps));
         refreshPlayniteLibrary(host);
         renderGatewayProfile(host);
-        if (userFocusedHost && selection.focusAppIndex >= 0 &&
-                selection.focusAppIndex < appRow.getChildCount()) {
-            appRow.getChildAt(selection.focusAppIndex).requestFocus();
+        if (userFocusedHost) {
+            openHostProfileMenu(host);
         }
+    }
+
+    private void openHostProfileMenu(ConsoleDataRepository.Host host) {
+        GatewayConnection connection = hostGatewayStore.load(host.uuid);
+        if (connection != null) refreshHostIntegrationsForProfile(host, connection);
+        else showHostIntegrations();
     }
 
     private void renderApps(ConsoleDataRepository.Host host,
@@ -1548,6 +1552,14 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void launchLegacy(ConsoleDataRepository.Host host, ConsoleDataRepository.App app,
                               boolean recordHistory) {
+        if (app != null && !app.isPlayniteGame() &&
+                app.name.toLowerCase(Locale.ROOT).contains("playnite")) {
+            Toast.makeText(this,
+                    "Select a game from the Playnite library. The launcher desktop stays hidden.",
+                    Toast.LENGTH_LONG).show();
+            refreshPlayniteLibrary(host);
+            return;
+        }
         LimeLog.info("Unified Console launch requested");
         pauseHostPolling();
         if (recordHistory) launchHistoryStore.record(host, app, System.currentTimeMillis());
