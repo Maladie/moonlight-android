@@ -10,6 +10,7 @@ import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.hardware.input.InputManager;
+import android.media.AudioManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
@@ -203,6 +204,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     @Override protected void onCreate(Bundle state) {
         super.onCreate(state);
+        setVolumeControlStream(AudioManager.STREAM_MUSIC);
         applyTvWindow();
         repository = new ConsoleDataRepository(this);
         hostGatewayStore = new HostGatewayStore(this);
