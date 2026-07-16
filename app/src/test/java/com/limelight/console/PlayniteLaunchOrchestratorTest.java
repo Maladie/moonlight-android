@@ -57,6 +57,7 @@ public class PlayniteLaunchOrchestratorTest {
         int starts;
         @Override public HostGatewayClient.PlayniteCurrentGame current() { return current; }
         @Override public void start(String gameId) { starts++; }
+        @Override public void showFullscreen() { }
         @Override public HostGatewayClient.PlayniteReadiness readiness() { return readiness; }
     }
 }

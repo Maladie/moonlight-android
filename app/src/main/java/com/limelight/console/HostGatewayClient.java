@@ -188,6 +188,28 @@ final class HostGatewayClient {
         }
     }
 
+    static final class PlayniteEvent {
+        final long sequence;
+        final String name;
+        final String gameId;
+
+        PlayniteEvent(long sequence, String name, String gameId) {
+            this.sequence = sequence;
+            this.name = name;
+            this.gameId = gameId;
+        }
+    }
+
+    static final class PlayniteEvents {
+        final List<PlayniteEvent> events;
+        final long latestSequence;
+
+        PlayniteEvents(List<PlayniteEvent> events, long latestSequence) {
+            this.events = Collections.unmodifiableList(events);
+            this.latestSequence = latestSequence;
+        }
+    }
+
     static final class IntegrationProfiles {
         final List<IntegrationProfile> profiles;
         final String suggestedProfileId;
@@ -551,6 +573,31 @@ final class HostGatewayClient {
                 "/api/v1/playnite/window/readiness", "GET", null, connection,
                 pinnedTrust(connection), READ_TIMEOUT_MS);
         return parsePlayniteReadiness(response.optJSONObject("readiness"));
+    }
+
+    PlayniteEvents getPlayniteEvents(Connection connection, long after) throws IOException {
+        if (after < 0) throw new IllegalArgumentException("Invalid Playnite event sequence");
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/playnite/events?after=" + after, "GET", null, connection,
+                pinnedTrust(connection), 25_000);
+        JSONObject envelope = response.optJSONObject("events");
+        JSONArray values = envelope != null ? envelope.optJSONArray("events") : null;
+        List<PlayniteEvent> result = new ArrayList<>();
+        long latest = after;
+        if (values != null) {
+            for (int index = 0; index < values.length(); index++) {
+                JSONObject value = values.optJSONObject(index);
+                if (value == null) continue;
+                long sequence = value.optLong("sequence", -1);
+                if (sequence <= after) continue;
+                JSONObject payload = value.optJSONObject("payload");
+                String gameId = payload != null ? payload.optString("id", "") : "";
+                result.add(new PlayniteEvent(sequence,
+                        value.optString("event", ""), gameId));
+                latest = Math.max(latest, sequence);
+            }
+        }
+        return new PlayniteEvents(result, latest);
     }
 
     JSONObject startPlayniteGame(Connection connection, String gameId) throws IOException {
