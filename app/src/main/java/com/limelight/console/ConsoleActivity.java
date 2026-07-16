@@ -90,6 +90,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private final ExecutorService integrationExecutor = Executors.newSingleThreadExecutor();
     private final HostGatewayClient hostGatewayClient = new HostGatewayClient();
     private final AtomicInteger integrationPanelRequest = new AtomicInteger();
+    private final AtomicInteger playniteLibraryRequest = new AtomicInteger();
     private final DiscordGatewayClient discordOverlayClient = new DiscordGatewayClient();
     private final AtomicBoolean discordOverlayRefreshInFlight = new AtomicBoolean();
     private final AtomicBoolean discordOverlayActionInFlight = new AtomicBoolean();
@@ -157,6 +158,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private boolean computerManagerBound;
     private boolean hostPollingActive;
     private final Map<String, TextView> hostStatusViews = new HashMap<>();
+    private final Map<String, List<ConsoleDataRepository.App>> playniteLibraries =
+            new HashMap<>();
     private List<ConsoleDataRepository.Host> visibleHosts = Collections.emptyList();
     private FrameLayout root;
     private StreamView streamSurface;
@@ -182,6 +185,12 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleDataRepository.Host selectedHost;
     private ConsoleDataRepository.Host resumeHost;
     private ConsoleDataRepository.App resumeApp;
+    private ConsoleDataRepository.Host pendingPlayniteHost;
+    private ConsoleDataRepository.App pendingPlayniteApp;
+    private ConsoleDataRepository.Host playnitePreviousResumeHost;
+    private ConsoleDataRepository.App playnitePreviousResumeApp;
+    private PlayniteLaunchOrchestrator playniteLaunchOrchestrator;
+    private final LoadingPrivacyGate playnitePrivacyGate = new LoadingPrivacyGate(3);
     private ConsoleLaunchContract.Request activeLaunchRequest;
     private int runtimeBitrateKbps;
     private long unifiedConnectDeadlineMs;
@@ -273,6 +282,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     @Override protected void onDestroy() {
         if (loadingController != null) loadingController.stop();
+        cancelPlayniteLaunch();
         integrationExecutor.shutdownNow();
         stopSelectedAppListPolling();
         if (computerManagerBinder != null) computerManagerBinder.stopPolling();
@@ -306,6 +316,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 launchPreparationController != null) {
             launchPreparationController.cancel();
             cancelUnifiedPendingLaunch();
+            cancelPlayniteLaunch();
             unifiedHomeSession.clear();
         }
         ConsoleStateMachine.Transition transition = stateMachine.dispatch(ConsoleStateMachine.Event.BACK);
@@ -785,7 +796,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             if (currentSession != null && currentSession.alive) {
                 returnToActiveStream();
             } else if (resumeHost != null && resumeApp != null) {
-                launchLegacy(resumeHost, resumeApp);
+                if (resumeApp.isPlayniteGame()) launchPlayniteGame(resumeHost, resumeApp);
+                else launchLegacy(resumeHost, resumeApp);
             }
         });
         quickActions.addView(returnToGame, wrap());
@@ -909,7 +921,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         hostRow.addView(addHostCard(), cardParams());
         selectedHost = snapshot.selectedHost;
         startSelectedAppListPolling();
-        renderApps(selectedHost, snapshot.apps);
+        renderApps(selectedHost, visibleApps(selectedHost, snapshot.apps));
+        refreshPlayniteLibrary(selectedHost);
         renderGatewayProfile(selectedHost, snapshot.integrations);
         // One deterministic initial focus matching Wake: prefer Resume/Return
         // when it exists. Subsequent refreshes never request focus.
@@ -1100,7 +1113,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             View hostCard = hostRow.getChildAt(index);
             hostCard.setSelected(host.uuid.equals(hostCard.getTag()));
         }
-        renderApps(host, selection.apps);
+        renderApps(host, visibleApps(host, selection.apps));
+        refreshPlayniteLibrary(host);
         renderGatewayProfile(host);
         if (userFocusedHost && selection.focusAppIndex >= 0 &&
                 selection.focusAppIndex < appRow.getChildCount()) {
@@ -1154,8 +1168,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         TextView name = label(app.name, 16, Color.WHITE, true);
         name.setSingleLine(true);
         copy.addView(name, new LinearLayout.LayoutParams(matchWidth(), wrapSize()));
-        TextView metadata = label(launchHistoryStore.metadata(
-                host.uuid, app.id, System.currentTimeMillis()), 10, 0xFFAAAFC2, true);
+        String metadataValue = app.isPlayniteGame() ?
+                "PLAYNITE · " + (app.installed ? "INSTALLED" : "NOT INSTALLED") :
+                launchHistoryStore.metadata(host.uuid, app.id, System.currentTimeMillis());
+        TextView metadata = label(metadataValue, 10, 0xFFAAAFC2, true);
         copy.addView(metadata, top(dp(5)));
         TextView action = label("PLAY  ›", 12, 0xFFB99CFF, true);
         action.setAlpha(0f);
@@ -1177,14 +1193,204 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                 artworkController.show(app.posterUri, poster.getDrawable());
             }
         });
-        card.setOnClickListener(view -> launchLegacy(host, app));
+        card.setOnClickListener(view -> {
+            if (app.isPlayniteGame()) launchPlayniteGame(host, app);
+            else launchLegacy(host, app);
+        });
         return card;
     }
 
+    private List<ConsoleDataRepository.App> visibleApps(
+            ConsoleDataRepository.Host host, List<ConsoleDataRepository.App> fallback) {
+        List<ConsoleDataRepository.App> games = host == null ? null :
+                playniteLibraries.get(host.uuid);
+        return games == null || games.isEmpty() ? fallback : games;
+    }
+
+    private void refreshPlayniteLibrary(ConsoleDataRepository.Host host) {
+        if (host == null) return;
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(host.uuid);
+        if (connection == null) return;
+        int request = playniteLibraryRequest.incrementAndGet();
+        integrationExecutor.execute(() -> {
+            try {
+                List<ConsoleDataRepository.App> result = new ArrayList<>();
+                String cursor = "";
+                for (int page = 0; page < 20; page++) {
+                    HostGatewayClient.PlayniteLibrary library =
+                            hostGatewayClient.getPlayniteLibrary(connection, cursor, 100);
+                    for (HostGatewayClient.PlayniteGame game : library.games) {
+                        int id = game.id.hashCode() & 0x7fffffff;
+                        if (id == 0) id = 1;
+                        result.add(new ConsoleDataRepository.App(id, game.name, null,
+                                false, game.id, game.installed));
+                    }
+                    if (library.nextCursor.isEmpty() ||
+                            library.nextCursor.equals(cursor)) break;
+                    cursor = library.nextCursor;
+                }
+                runOnUiThread(() -> {
+                    if (request != playniteLibraryRequest.get() || isFinishing()) return;
+                    playniteLibraries.put(host.uuid, result);
+                    if (selectedHost != null && selectedHost.uuid.equals(host.uuid)) {
+                        renderApps(host, visibleApps(host, repository.apps(host)));
+                    }
+                });
+            } catch (Exception error) {
+                LimeLog.info("Playnite library unavailable; keeping Apollo fallback: " +
+                        error.getMessage());
+            }
+        });
+    }
+
+    private void launchPlayniteGame(ConsoleDataRepository.Host host,
+                                    ConsoleDataRepository.App app) {
+        if (!app.installed) {
+            Toast.makeText(this, "This Playnite game is not installed.",
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(host.uuid);
+        if (connection == null) {
+            Toast.makeText(this, "Pair this host Gateway to use Playnite.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        boolean active = unifiedTransportConnected && activeLaunchRequest != null;
+        if (active && (resumeHost == null || !resumeHost.uuid.equals(host.uuid))) {
+            Toast.makeText(this, "Disconnect the current host before switching PCs.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        cancelPlayniteLaunch();
+        playnitePreviousResumeHost = resumeHost;
+        playnitePreviousResumeApp = resumeApp;
+        pendingPlayniteHost = host;
+        pendingPlayniteApp = app;
+        playnitePrivacyGate.reset(true);
+        if (unifiedFirstFrameRendered) playnitePrivacyGate.onFirstDecodedFrame();
+        pauseHostPolling();
+        stateMachine.dispatch(ConsoleStateMachine.Event.LAUNCH);
+        applyState(ConsoleStateMachine.State.CONNECTING);
+        loadingController.show(app.name);
+        loadingController.updateStatus(active ? "Switching game in Playnite…" :
+                "Connecting the console session…");
+        if (active) {
+            beginPlayniteLaunch(connection);
+            return;
+        }
+        ConsoleDataRepository.App transport = playniteTransportApp(host);
+        if (transport == null) {
+            handlePlayniteFailure("No Apollo transport app is available for this host.");
+            return;
+        }
+        launchLegacy(host, transport, false);
+        loadingController.show(app.name);
+        loadingController.updateStatus("Connecting stream before starting the game…");
+    }
+
+    private ConsoleDataRepository.App playniteTransportApp(ConsoleDataRepository.Host host) {
+        ConsoleDataRepository.App best = null;
+        int bestScore = Integer.MAX_VALUE;
+        for (ConsoleDataRepository.App candidate : repository.apps(host)) {
+            String name = candidate.name.toLowerCase(Locale.ROOT);
+            int score = name.contains("playnite") ? 0 : name.contains("desktop") ? 1 :
+                    name.contains("steam big picture") ? 2 : name.equals("steam") ? 3 : 10;
+            if (score <= 3 && score < bestScore) { best = candidate; bestScore = score; }
+        }
+        return best;
+    }
+
+    private void beginPlayniteLaunch(HostGatewayClient.Connection connection) {
+        if (pendingPlayniteHost == null || pendingPlayniteApp == null ||
+                playniteLaunchOrchestrator != null) return;
+        ConsoleDataRepository.Host host = pendingPlayniteHost;
+        ConsoleDataRepository.App app = pendingPlayniteApp;
+        playniteLaunchOrchestrator = new PlayniteLaunchOrchestrator(
+                hostGatewayClient, connection);
+        playniteLaunchOrchestrator.launch(new LaunchOrchestrator.Request(
+                host.uuid, connection.profileId, Integer.toString(app.id),
+                app.playniteGameGuid), new LaunchOrchestrator.Listener() {
+            @Override public void onStarting() {
+                runOnUiThread(() -> loadingController.updateStatus("Preparing Playnite…"));
+            }
+
+            @Override public void onProgress(String status) {
+                runOnUiThread(() -> loadingController.updateStatus(status));
+            }
+
+            @Override public void onRunning(LaunchOrchestrator.ReadinessSample sample) {
+                runOnUiThread(() -> {
+                    playnitePrivacyGate.onReadiness(sample);
+                    if (playnitePrivacyGate.mayReveal()) completePlayniteLaunch(host, app);
+                });
+            }
+
+            @Override public void onStopped() {
+                runOnUiThread(() -> loadingController.updateStatus(
+                        "Returning to Playnite…"));
+            }
+
+            @Override public void onFailure(String safeMessage) {
+                runOnUiThread(() -> handlePlayniteFailure(safeMessage));
+            }
+        });
+    }
+
+    private void completePlayniteLaunch(ConsoleDataRepository.Host host,
+                                        ConsoleDataRepository.App app) {
+        if (pendingPlayniteApp != app) return;
+        if (playniteLaunchOrchestrator != null) playniteLaunchOrchestrator.close();
+        playniteLaunchOrchestrator = null;
+        pendingPlayniteHost = null;
+        pendingPlayniteApp = null;
+        playnitePreviousResumeHost = null;
+        playnitePreviousResumeApp = null;
+        resumeHost = host;
+        resumeApp = app;
+        launchHistoryStore.record(host, app, System.currentTimeMillis());
+        unifiedHomeSession.begin(host, app);
+        unifiedHomeSession.connected();
+        stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTED);
+        applyState(stateMachine.getState());
+        renderSession(visibleSession());
+    }
+
+    private void handlePlayniteFailure(String reason) {
+        ConsoleDataRepository.Host host = pendingPlayniteHost;
+        ConsoleDataRepository.App app = pendingPlayniteApp;
+        cancelPlayniteLaunch();
+        stateMachine.dispatch(ConsoleStateMachine.Event.HOME);
+        applyState(stateMachine.getState());
+        modalController.showConnectionRecovery(getCurrentFocus(), reason,
+                () -> { if (host != null && app != null) launchPlayniteGame(host, app); },
+                () -> endActiveSession(false));
+    }
+
+    private void cancelPlayniteLaunch() {
+        if (playniteLaunchOrchestrator != null) playniteLaunchOrchestrator.close();
+        playniteLaunchOrchestrator = null;
+        if (pendingPlayniteApp != null) {
+            resumeHost = playnitePreviousResumeHost;
+            resumeApp = playnitePreviousResumeApp;
+        }
+        pendingPlayniteHost = null;
+        pendingPlayniteApp = null;
+        playnitePreviousResumeHost = null;
+        playnitePreviousResumeApp = null;
+    }
+
     private void launchLegacy(ConsoleDataRepository.Host host, ConsoleDataRepository.App app) {
+        launchLegacy(host, app, true);
+    }
+
+    private void launchLegacy(ConsoleDataRepository.Host host, ConsoleDataRepository.App app,
+                              boolean recordHistory) {
         LimeLog.info("Unified Console launch requested");
         pauseHostPolling();
-        launchHistoryStore.record(host, app, System.currentTimeMillis());
+        if (recordHistory) launchHistoryStore.record(host, app, System.currentTimeMillis());
         resumeHost = host;
         resumeApp = app;
         if (streamRuntime instanceof UnifiedConsoleRuntimeBootstrap) {
@@ -1495,6 +1701,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
                             @Override public void onFirstFrameRendered() {
                                 unifiedFirstFrameRendered = true;
+                                playnitePrivacyGate.onFirstDecodedFrame();
                                 maybeRevealUnifiedStream();
                             }
 
@@ -1622,7 +1829,11 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         modalController.showConnectionRecovery(getCurrentFocus(), reason,
                 () -> {
                     if (resumeHost != null && resumeApp != null) {
-                        launchLegacy(resumeHost, resumeApp);
+                        if (resumeApp.isPlayniteGame()) {
+                            launchPlayniteGame(resumeHost, resumeApp);
+                        } else {
+                            launchLegacy(resumeHost, resumeApp);
+                        }
                     }
                 }, () -> {
                     cancelUnifiedPendingLaunch();
@@ -1634,6 +1845,16 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private void maybeRevealUnifiedStream() {
         if (!unifiedTransportConnected || !unifiedFirstFrameRendered ||
                 stateMachine.getState() != ConsoleStateMachine.State.CONNECTING) {
+            return;
+        }
+        if (pendingPlayniteApp != null) {
+            HostGatewayClient.Connection connection = pendingPlayniteHost == null ? null :
+                    hostGatewayStore.loadClientConnection(pendingPlayniteHost.uuid);
+            if (connection == null) {
+                handlePlayniteFailure("The Playnite profile is no longer available.");
+            } else {
+                beginPlayniteLaunch(connection);
+            }
             return;
         }
         stateMachine.dispatch(ConsoleStateMachine.Event.CONNECTED);

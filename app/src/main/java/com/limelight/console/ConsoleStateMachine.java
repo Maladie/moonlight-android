@@ -92,7 +92,7 @@ public final class ConsoleStateMachine {
                 }
                 break;
             case CONSOLE_OVER_STREAM:
-                if (event == Event.RECONNECT) state = State.CONNECTING;
+                if (event == Event.LAUNCH || event == Event.RECONNECT) state = State.CONNECTING;
                 else if (event == Event.RETURN_TO_STREAM) state = State.STREAM;
                 else if (event == Event.OPEN_OVERLAY) state = State.OVERLAY;
                 else if (event == Event.DISCONNECT) state = State.DISCONNECTING;

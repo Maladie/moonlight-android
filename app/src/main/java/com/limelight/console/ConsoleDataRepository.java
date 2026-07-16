@@ -35,15 +35,25 @@ final class ConsoleDataRepository {
         final String name;
         final Uri posterUri;
         final boolean hdrSupported;
+        final String playniteGameGuid;
+        final boolean installed;
         App(int id, String name, Uri posterUri) {
             this(id, name, posterUri, false);
         }
         App(int id, String name, Uri posterUri, boolean hdrSupported) {
+            this(id, name, posterUri, hdrSupported, null, true);
+        }
+        App(int id, String name, Uri posterUri, boolean hdrSupported,
+            String playniteGameGuid, boolean installed) {
             this.id = id;
             this.name = name;
             this.posterUri = posterUri;
             this.hdrSupported = hdrSupported;
+            this.playniteGameGuid = playniteGameGuid;
+            this.installed = installed;
         }
+
+        boolean isPlayniteGame() { return playniteGameGuid != null; }
     }
 
     static final class Session {

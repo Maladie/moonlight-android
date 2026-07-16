@@ -56,6 +56,15 @@ public class ConsoleStateMachineTest {
                 machine.dispatch(ConsoleStateMachine.Event.HOME).current);
     }
 
+    @Test public void gameSwitchFromConsoleUsesConnectingPrivacyState() {
+        ConsoleStateMachine machine = connectedMachine();
+        machine.dispatch(ConsoleStateMachine.Event.OPEN_CONSOLE);
+        assertEquals(ConsoleStateMachine.State.CONNECTING,
+                machine.dispatch(ConsoleStateMachine.Event.LAUNCH).current);
+        assertEquals(ConsoleStateMachine.State.STREAM,
+                machine.dispatch(ConsoleStateMachine.Event.CONNECTED).current);
+    }
+
     @Test public void recreatedHomeReattachesDiscoveredSessionWithoutConnectingAgain() {
         ConsoleStateMachine machine = new ConsoleStateMachine();
         ConsoleStateMachine.Transition result = machine.dispatch(ConsoleStateMachine.Event.CONNECTED);

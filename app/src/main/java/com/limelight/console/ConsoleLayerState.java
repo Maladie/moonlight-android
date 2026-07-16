@@ -19,7 +19,8 @@ final class ConsoleLayerState {
         boolean home = state == ConsoleStateMachine.State.HOME ||
                 state == ConsoleStateMachine.State.CONSOLE_OVER_STREAM;
         boolean privacy = state == ConsoleStateMachine.State.CONNECTING ||
-                state == ConsoleStateMachine.State.DISCONNECTING;
+                state == ConsoleStateMachine.State.DISCONNECTING ||
+                state == ConsoleStateMachine.State.RECOVERY;
         boolean overlay = state == ConsoleStateMachine.State.OVERLAY;
         return new ConsoleLayerState(home, privacy, overlay,
                 inputRegion(ConsoleStateMachine.inputTarget(state)));

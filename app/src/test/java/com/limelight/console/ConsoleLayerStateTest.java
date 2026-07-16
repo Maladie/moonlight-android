@@ -38,6 +38,7 @@ public class ConsoleLayerStateTest {
         ConsoleLayerState state = ConsoleLayerState.from(ConsoleStateMachine.State.RECOVERY);
 
         assertFalse(state.homeVisible);
+        assertTrue(state.privacyVisible);
         assertEquals(InputRouter.Region.MODAL, state.inputRegion);
     }
 }
