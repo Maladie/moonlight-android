@@ -1147,8 +1147,15 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void openHostProfileMenu(ConsoleDataRepository.Host host) {
         GatewayConnection connection = hostGatewayStore.load(host.uuid);
-        if (connection != null) refreshHostIntegrationsForProfile(host, connection);
-        else showHostIntegrations();
+        if (connection == null) {
+            showHostIntegrations();
+            return;
+        }
+        TextView loading = modalController.wakeStatus("Loading profiles…");
+        modalController.showWakePanel(getCurrentFocus(), "INTEGRATION PROFILE", host.name,
+                "Choose which Windows profile supplies Discord, Vibepollo and Playnite.",
+                null, loading);
+        refreshHostIntegrationsForProfile(host, connection);
     }
 
     private void renderApps(ConsoleDataRepository.Host host,
@@ -1315,6 +1322,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void launchPlayniteGame(ConsoleDataRepository.Host host,
                                     ConsoleDataRepository.App app) {
+        gatewayProfileRefreshController.cancel();
         if (!app.installed) {
             Toast.makeText(this, "This Playnite game is not installed.",
                     Toast.LENGTH_SHORT).show();
@@ -1554,6 +1562,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
 
     private void launchLegacy(ConsoleDataRepository.Host host, ConsoleDataRepository.App app,
                               boolean recordHistory) {
+        gatewayProfileRefreshController.cancel();
         if (recordHistory && app != null && !app.isPlayniteGame() &&
                 app.name.toLowerCase(Locale.ROOT).contains("playnite")) {
             Toast.makeText(this,
@@ -2318,7 +2327,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         gatewayProfileRefreshController.refresh(connection,
                 new GatewayProfileRefreshController.Callback() {
                     @Override public void onLoaded(IntegrationProfileCatalog catalog) {
-                        if (selectedHost != null && host.uuid.equals(selectedHost.uuid)) {
+                        if (stateMachine.getState() == ConsoleStateMachine.State.HOME &&
+                                selectedHost != null && host.uuid.equals(selectedHost.uuid)) {
                             showProfileChooser(host.uuid, connection, catalog);
                         }
                     }
