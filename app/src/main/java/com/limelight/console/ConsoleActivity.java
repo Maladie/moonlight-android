@@ -1910,6 +1910,14 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             return;
         }
         clearUnifiedConnectRetry();
+        if (pendingPlayniteHost != null && pendingPlayniteApp != null) {
+            activeLaunchRequest = null;
+            unifiedHomeSession.clear();
+            renderSession(visibleSession());
+            handlePlayniteFailure("Stream transport failed: " + reason);
+            resumeHostPolling();
+            return;
+        }
         activeLaunchRequest = null;
         unifiedHomeSession.clear();
         renderSession(visibleSession());
