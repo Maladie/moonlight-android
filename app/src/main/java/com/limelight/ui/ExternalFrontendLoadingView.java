@@ -138,6 +138,8 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
         LinearLayout firstRow = recoveryRow();
         TextView retryAction = recoveryButton("RETRY", RecoveryAction.RETRY);
         homeRecoveryAction = recoveryButton("HOME", RecoveryAction.HOME);
+        retryAction.setId(View.generateViewId());
+        homeRecoveryAction.setId(View.generateViewId());
         firstRow.addView(retryAction, recoveryButtonParams());
         firstRow.addView(homeRecoveryAction, recoveryButtonParams());
         recoveryActions.addView(firstRow, row());
@@ -145,11 +147,22 @@ public final class ExternalFrontendLoadingView extends FrameLayout {
         LinearLayout secondRow = recoveryRow();
         revealRecoveryAction = recoveryButton("REVEAL STREAM", RecoveryAction.REVEAL_DESKTOP);
         TextView disconnectAction = recoveryButton("DISCONNECT", RecoveryAction.DISCONNECT);
+        revealRecoveryAction.setId(View.generateViewId());
+        disconnectAction.setId(View.generateViewId());
         secondRow.addView(revealRecoveryAction, recoveryButtonParams());
         secondRow.addView(disconnectAction, recoveryButtonParams());
         LinearLayout.LayoutParams secondRowParams = row();
         secondRowParams.topMargin = dp(10);
         recoveryActions.addView(secondRow, secondRowParams);
+
+        retryAction.setNextFocusRightId(homeRecoveryAction.getId());
+        retryAction.setNextFocusDownId(revealRecoveryAction.getId());
+        homeRecoveryAction.setNextFocusLeftId(retryAction.getId());
+        homeRecoveryAction.setNextFocusDownId(disconnectAction.getId());
+        revealRecoveryAction.setNextFocusUpId(retryAction.getId());
+        revealRecoveryAction.setNextFocusRightId(disconnectAction.getId());
+        disconnectAction.setNextFocusUpId(homeRecoveryAction.getId());
+        disconnectAction.setNextFocusLeftId(revealRecoveryAction.getId());
 
         messageView.setText("Preparing your game...");
         if (!reducedMotion) handler.postDelayed(rotateMessage, MESSAGE_INTERVAL_MS);

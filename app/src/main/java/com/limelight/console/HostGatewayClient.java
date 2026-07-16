@@ -132,9 +132,11 @@ final class HostGatewayClient {
         final String cover;
         final String background;
         final String lastPlayed;
+        final long playtimeMinutes;
 
         PlayniteGame(String id, String name, boolean installed, boolean favorite,
-                     String cover, String background, String lastPlayed) {
+                     String cover, String background, String lastPlayed,
+                     long playtimeMinutes) {
             this.id = id;
             this.name = name;
             this.installed = installed;
@@ -142,6 +144,7 @@ final class HostGatewayClient {
             this.cover = cover;
             this.background = background;
             this.lastPlayed = lastPlayed;
+            this.playtimeMinutes = Math.max(0L, playtimeMinutes);
         }
     }
 
@@ -658,7 +661,10 @@ final class HostGatewayClient {
                         firstText(value, "cover", "coverImage", "cover_image", "boxArtPath"),
                         firstText(value, "background", "backgroundImage", "background_image",
                                 "backgroundImagePath"),
-                        firstText(value, "lastPlayed", "last_played")));
+                        firstText(value, "lastPlayed", "last_played", "lastActivity"),
+                        Math.max(0L, value.optLong("playtimeMinutes",
+                                value.optLong("playtime_minutes",
+                                        value.optLong("playtime", 0L))))));
             }
         }
         return new PlayniteLibrary(games, safe.optString("next_cursor", ""),

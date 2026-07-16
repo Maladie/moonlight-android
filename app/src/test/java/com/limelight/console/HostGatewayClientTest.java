@@ -14,13 +14,17 @@ public class HostGatewayClientTest {
         JSONArray games = new JSONArray()
                 .put(new JSONObject().put("id", "840317c9-b9a4-4f72-be8e-807414e36a9b")
                         .put("name", "Baba Is You").put("installed", true)
-                        .put("coverImage", "cover.jpg"))
+                        .put("coverImage", "cover.jpg")
+                        .put("lastActivity", "2026-07-15T20:10:00Z")
+                        .put("playtimeMinutes", 125))
                 .put(new JSONObject().put("id", "../../desktop").put("name", "Bad"));
         HostGatewayClient.PlayniteLibrary library = HostGatewayClient.parsePlayniteLibrary(
                 new JSONObject().put("games", games).put("next_cursor", "100").put("total", 3));
         assertEquals(1, library.games.size());
         assertEquals("Baba Is You", library.games.get(0).name);
         assertEquals("cover.jpg", library.games.get(0).cover);
+        assertEquals("2026-07-15T20:10:00Z", library.games.get(0).lastPlayed);
+        assertEquals(125L, library.games.get(0).playtimeMinutes);
         assertEquals("100", library.nextCursor);
         assertEquals(3, library.total);
     }

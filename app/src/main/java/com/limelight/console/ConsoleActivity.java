@@ -864,7 +864,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         appsFilter = compactHomeAction("INSTALLED ONLY");
         appsFilter.setVisibility(View.GONE);
         appsFilter.setOnClickListener(view -> togglePlayniteInstalledFilter());
-        appsHeader.addView(appsFilter, wrap());
+        LinearLayout.LayoutParams appsFilterParams = wrap();
+        appsFilterParams.leftMargin = dp(24);
+        appsHeader.addView(appsFilter, appsFilterParams);
         content.addView(appsHeader, top(dp(10)));
         HorizontalScrollView appScroll = horizontalScroll();
         appScroll.setPadding(0, 0, dp(12), dp(10));
@@ -1117,6 +1119,14 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     }
 
     private void selectHost(ConsoleDataRepository.Host host, boolean userFocusedHost) {
+        boolean alreadySelected = selectedHost != null &&
+                selectedHost.uuid.equals(host.uuid);
+        if (alreadySelected && userFocusedHost) {
+            GatewayConnection connection = hostGatewayStore.load(host.uuid);
+            if (connection != null) refreshHostIntegrationsForProfile(host, connection);
+            else showHostIntegrations();
+            return;
+        }
         ConsoleHostSelectionController.Selection selection =
                 hostSelectionController.select(host);
         selectedHost = selection.host;
@@ -1152,8 +1162,9 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             artworkController.clear();
             return;
         }
-        for (ConsoleDataRepository.App app : apps) {
-            LinearLayout card = appCard(host, app);
+        for (int index = 0; index < apps.size(); index++) {
+            ConsoleDataRepository.App app = apps.get(index);
+            LinearLayout card = appCard(host, app, index < 8);
             appRow.addView(card, cardParams());
         }
         if (playnite && appRow.getChildCount() > 0) {
@@ -1161,7 +1172,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
     }
 
-    private LinearLayout appCard(ConsoleDataRepository.Host host, ConsoleDataRepository.App app) {
+    private LinearLayout appCard(ConsoleDataRepository.Host host, ConsoleDataRepository.App app,
+                                 boolean preloadArtwork) {
         LinearLayout card = new LinearLayout(this);
         card.setOrientation(LinearLayout.HORIZONTAL);
         card.setGravity(Gravity.CENTER_VERTICAL);
@@ -1185,7 +1197,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         if (cached != null) poster.setImageBitmap(cached);
         HostGatewayClient.Connection artworkConnection = app.isPlayniteGame() && host != null ?
                 hostGatewayStore.loadClientConnection(host.uuid, host.address) : null;
-        if (app.playniteArtworkAvailable && artworkConnection != null) {
+        if (preloadArtwork && app.playniteArtworkAvailable && artworkConnection != null) {
             artworkController.loadPlaynitePoster(
                     artworkConnection, app.playniteGameGuid, poster);
         }
@@ -1198,8 +1210,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         name.setSingleLine(true);
         copy.addView(name, new LinearLayout.LayoutParams(matchWidth(), wrapSize()));
         String metadataValue = app.isPlayniteGame() ?
-                "PLAYNITE · " + (!app.lastPlayed.isEmpty() ? "RECENT · " : "") +
-                        (app.installed ? "INSTALLED" : "NOT INSTALLED") :
+                ConsolePlayniteMetadata.format(app.playtimeMinutes, app.lastPlayed,
+                        app.installed) :
                 launchHistoryStore.metadata(host.uuid, app.id, System.currentTimeMillis());
         TextView metadata = label(metadataValue, 10, 0xFFAAAFC2, true);
         copy.addView(metadata, top(dp(5)));
@@ -1221,6 +1233,10 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
             if (focused) {
                 hostSelectionController.rememberApp(host, app);
                 if (app.isPlayniteGame() && artworkConnection != null) {
+                    if (app.playniteArtworkAvailable && !preloadArtwork) {
+                        artworkController.loadPlaynitePoster(
+                                artworkConnection, app.playniteGameGuid, poster);
+                    }
                     artworkController.showPlaynite(
                             artworkConnection, app.playniteGameGuid, poster.getDrawable());
                 } else {
@@ -1270,7 +1286,8 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
                         if (id == 0) id = 1;
                         result.add(new ConsoleDataRepository.App(id, game.name, null,
                                 false, game.id, game.installed, game.favorite,
-                                game.lastPlayed, !game.cover.isEmpty()));
+                                game.lastPlayed, game.playtimeMinutes,
+                                !game.cover.isEmpty()));
                     }
                     if (library.nextCursor.isEmpty() ||
                             library.nextCursor.equals(cursor)) break;

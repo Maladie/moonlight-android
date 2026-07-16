@@ -39,6 +39,7 @@ final class ConsoleDataRepository {
         final boolean installed;
         final boolean favorite;
         final String lastPlayed;
+        final long playtimeMinutes;
         final boolean playniteArtworkAvailable;
         App(int id, String name, Uri posterUri) {
             this(id, name, posterUri, false);
@@ -49,11 +50,17 @@ final class ConsoleDataRepository {
         App(int id, String name, Uri posterUri, boolean hdrSupported,
             String playniteGameGuid, boolean installed) {
             this(id, name, posterUri, hdrSupported, playniteGameGuid, installed,
-                    false, "", false);
+                    false, "", 0L, false);
         }
         App(int id, String name, Uri posterUri, boolean hdrSupported,
             String playniteGameGuid, boolean installed, boolean favorite,
             String lastPlayed, boolean playniteArtworkAvailable) {
+            this(id, name, posterUri, hdrSupported, playniteGameGuid, installed, favorite,
+                    lastPlayed, 0L, playniteArtworkAvailable);
+        }
+        App(int id, String name, Uri posterUri, boolean hdrSupported,
+            String playniteGameGuid, boolean installed, boolean favorite,
+            String lastPlayed, long playtimeMinutes, boolean playniteArtworkAvailable) {
             this.id = id;
             this.name = name;
             this.posterUri = posterUri;
@@ -62,6 +69,7 @@ final class ConsoleDataRepository {
             this.installed = installed;
             this.favorite = favorite;
             this.lastPlayed = lastPlayed == null ? "" : lastPlayed;
+            this.playtimeMinutes = Math.max(0L, playtimeMinutes);
             this.playniteArtworkAvailable = playniteArtworkAvailable;
         }
 
