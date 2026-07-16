@@ -195,6 +195,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
     private ConsoleDataRepository.Host playnitePreviousResumeHost;
     private ConsoleDataRepository.App playnitePreviousResumeApp;
     private PlayniteLaunchOrchestrator playniteLaunchOrchestrator;
+    private boolean pendingPlayniteConnectorSettleRequired;
     private PlayniteSessionMonitor playniteSessionMonitor;
     private boolean returningToPlaynite;
     private boolean returnHomeAfterPlayniteRestore;
@@ -1362,6 +1363,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         playnitePreviousResumeApp = resumeApp;
         pendingPlayniteHost = host;
         pendingPlayniteApp = app;
+        pendingPlayniteConnectorSettleRequired = !active;
         playnitePrivacyGate.reset(true);
         if (unifiedFirstFrameRendered) playnitePrivacyGate.onFirstDecodedFrame();
         pauseHostPolling();
@@ -1402,7 +1404,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         ConsoleDataRepository.Host host = pendingPlayniteHost;
         ConsoleDataRepository.App app = pendingPlayniteApp;
         playniteLaunchOrchestrator = new PlayniteLaunchOrchestrator(
-                hostGatewayClient, connection);
+                hostGatewayClient, connection, pendingPlayniteConnectorSettleRequired);
         playniteLaunchOrchestrator.launch(new LaunchOrchestrator.Request(
                 host.uuid, connection.profileId, Integer.toString(app.id),
                 app.playniteGameGuid), new LaunchOrchestrator.Listener() {
@@ -1439,6 +1441,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         playniteLaunchOrchestrator = null;
         pendingPlayniteHost = null;
         pendingPlayniteApp = null;
+        pendingPlayniteConnectorSettleRequired = false;
         playnitePreviousResumeHost = null;
         playnitePreviousResumeApp = null;
         resumeHost = host;
@@ -1489,7 +1492,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         loadingController.show(app.name);
         loadingController.updateStatus("Game closed. Restoring Playnite…");
         playniteLaunchOrchestrator = new PlayniteLaunchOrchestrator(
-                hostGatewayClient, connection);
+                hostGatewayClient, connection, false);
         playniteLaunchOrchestrator.restoreFullscreen(new LaunchOrchestrator.Listener() {
             @Override public void onStarting() { }
 
@@ -1565,6 +1568,7 @@ public final class ConsoleActivity extends Activity implements SurfaceHolder.Cal
         }
         pendingPlayniteHost = null;
         pendingPlayniteApp = null;
+        pendingPlayniteConnectorSettleRequired = false;
         playnitePreviousResumeHost = null;
         playnitePreviousResumeApp = null;
         returningToPlaynite = false;

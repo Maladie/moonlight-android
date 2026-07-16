@@ -11,6 +11,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class PlayniteLaunchOrchestrator implements LaunchOrchestrator, AutoCloseable {
     interface Backend {
         HostGatewayClient.PlayniteCurrentGame current() throws Exception;
+        HostGatewayClient.PlayniteHealth health() throws Exception;
         void start(String gameId) throws Exception;
         void showFullscreen() throws Exception;
         HostGatewayClient.PlayniteReadiness readiness() throws Exception;
@@ -18,16 +19,24 @@ final class PlayniteLaunchOrchestrator implements LaunchOrchestrator, AutoClosea
 
     private static final long DEFAULT_TIMEOUT_MS = 120_000L;
     private static final long POLL_MS = 250L;
+    private static final long UNCHANGED_CONNECTOR_SETTLE_MS = 5_000L;
+    private static final long RECONNECTED_SETTLE_MS = 500L;
     private final Backend backend;
     private final ExecutorService executor;
     private final long timeoutMs;
+    private final boolean waitForTransportConnector;
     private final AtomicInteger generation = new AtomicInteger();
 
     PlayniteLaunchOrchestrator(HostGatewayClient client,
-                               HostGatewayClient.Connection connection) {
+                               HostGatewayClient.Connection connection,
+                               boolean waitForTransportConnector) {
         this(new Backend() {
             @Override public HostGatewayClient.PlayniteCurrentGame current() throws Exception {
                 return client.getPlayniteCurrentGame(connection);
+            }
+
+            @Override public HostGatewayClient.PlayniteHealth health() throws Exception {
+                return client.getPlayniteHealth(connection);
             }
 
             @Override public void start(String gameId) throws Exception {
@@ -41,12 +50,18 @@ final class PlayniteLaunchOrchestrator implements LaunchOrchestrator, AutoClosea
             @Override public HostGatewayClient.PlayniteReadiness readiness() throws Exception {
                 return client.getPlayniteReadiness(connection);
             }
-        }, DEFAULT_TIMEOUT_MS);
+        }, DEFAULT_TIMEOUT_MS, waitForTransportConnector);
     }
 
     PlayniteLaunchOrchestrator(Backend backend, long timeoutMs) {
+        this(backend, timeoutMs, false);
+    }
+
+    PlayniteLaunchOrchestrator(Backend backend, long timeoutMs,
+                               boolean waitForTransportConnector) {
         this.backend = backend;
         this.timeoutMs = timeoutMs;
+        this.waitForTransportConnector = waitForTransportConnector;
         executor = Executors.newSingleThreadExecutor(runnable -> {
             Thread thread = new Thread(runnable, "PlayniteLaunch");
             thread.setDaemon(true);
@@ -84,6 +99,9 @@ final class PlayniteLaunchOrchestrator implements LaunchOrchestrator, AutoClosea
     private void run(int operation, String gameId, Listener listener) {
         try {
             listener.onStarting();
+            if (waitForTransportConnector) {
+                waitForConnectorSettle(operation, listener);
+            }
             HostGatewayClient.PlayniteCurrentGame current = backend.current();
             boolean alreadyRunning = "running".equals(current.state) &&
                     gameId.equalsIgnoreCase(current.id);
@@ -98,9 +116,45 @@ final class PlayniteLaunchOrchestrator implements LaunchOrchestrator, AutoClosea
             Thread.currentThread().interrupt();
         } catch (Exception error) {
             if (operation == generation.get()) {
+                LimeLog.warning("Playnite launch failed: " + error.getMessage());
                 listener.onFailure("Playnite could not prepare the game. The desktop remains hidden.");
             }
         }
+    }
+
+    private void waitForConnectorSettle(int operation, Listener listener) throws Exception {
+        listener.onProgress("Waiting for Playnite after stream startupâ€¦");
+        long deadline = System.currentTimeMillis() + Math.min(timeoutMs, 30_000L);
+        long stableSince = 0L;
+        int firstGeneration = -1;
+        int lastGeneration = -1;
+        while (operation == generation.get() && System.currentTimeMillis() < deadline) {
+            HostGatewayClient.PlayniteHealth health;
+            try {
+                health = backend.health();
+            } catch (Exception transientError) {
+                stableSince = 0L;
+                Thread.sleep(500L);
+                continue;
+            }
+            long now = System.currentTimeMillis();
+            if (!health.connectorConnected) {
+                stableSince = 0L;
+                Thread.sleep(POLL_MS);
+                continue;
+            }
+            if (firstGeneration < 0) firstGeneration = health.connectorGeneration;
+            if (lastGeneration != health.connectorGeneration || stableSince == 0L) {
+                lastGeneration = health.connectorGeneration;
+                stableSince = now;
+            }
+            boolean reconnected = health.connectorGeneration > firstGeneration;
+            long requiredStableMs = reconnected ? RECONNECTED_SETTLE_MS :
+                    UNCHANGED_CONNECTOR_SETTLE_MS;
+            if (now - stableSince >= requiredStableMs) return;
+            Thread.sleep(POLL_MS);
+        }
+        throw new java.io.IOException("Playnite connector did not stabilize after transport startup");
     }
 
     private void pollUntilReady(int operation, Listener listener, String targetKind)

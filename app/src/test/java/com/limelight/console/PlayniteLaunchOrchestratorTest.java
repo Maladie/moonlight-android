@@ -50,6 +50,28 @@ public class PlayniteLaunchOrchestratorTest {
         orchestrator.close();
     }
 
+    @Test public void transportLaunchWaitsForConnectorReconnect() throws Exception {
+        FakeBackend backend = new FakeBackend();
+        backend.current = new HostGatewayClient.PlayniteCurrentGame("idle", "", "", 0);
+        backend.readiness = new HostGatewayClient.PlayniteReadiness(
+                true, "target_window_ready", "game", 3, 42, "DISPLAY15");
+        backend.healthSamples = new HostGatewayClient.PlayniteHealth[] {
+                new HostGatewayClient.PlayniteHealth(true, 1),
+                new HostGatewayClient.PlayniteHealth(false, 1),
+                new HostGatewayClient.PlayniteHealth(true, 2),
+                new HostGatewayClient.PlayniteHealth(true, 2),
+                new HostGatewayClient.PlayniteHealth(true, 2),
+        };
+        CountDownLatch done = new CountDownLatch(1);
+        PlayniteLaunchOrchestrator orchestrator =
+                new PlayniteLaunchOrchestrator(backend, 3_000, true);
+        orchestrator.launch(request(), listener(done));
+        assertTrue(done.await(4, TimeUnit.SECONDS));
+        assertEquals(1, backend.starts);
+        assertTrue(backend.healthReads >= 5);
+        orchestrator.close();
+    }
+
     private static LaunchOrchestrator.Request request() {
         return new LaunchOrchestrator.Request("host", "default", "playnite", GAME);
     }
@@ -70,7 +92,16 @@ public class PlayniteLaunchOrchestratorTest {
         HostGatewayClient.PlayniteReadiness readiness;
         int readinessFailures;
         int starts;
+        int healthReads;
+        HostGatewayClient.PlayniteHealth[] healthSamples;
         @Override public HostGatewayClient.PlayniteCurrentGame current() { return current; }
+        @Override public HostGatewayClient.PlayniteHealth health() {
+            if (healthSamples == null || healthSamples.length == 0) {
+                return new HostGatewayClient.PlayniteHealth(true, 1);
+            }
+            int index = Math.min(healthReads++, healthSamples.length - 1);
+            return healthSamples[index];
+        }
         @Override public void start(String gameId) { starts++; }
         @Override public void showFullscreen() { }
         @Override public HostGatewayClient.PlayniteReadiness readiness() throws Exception {

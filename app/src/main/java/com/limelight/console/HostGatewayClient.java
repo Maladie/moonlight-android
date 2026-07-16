@@ -179,6 +179,16 @@ final class HostGatewayClient {
         }
     }
 
+    static final class PlayniteHealth {
+        final boolean connectorConnected;
+        final int connectorGeneration;
+
+        PlayniteHealth(boolean connectorConnected, int connectorGeneration) {
+            this.connectorConnected = connectorConnected;
+            this.connectorGeneration = Math.max(0, connectorGeneration);
+        }
+    }
+
     static final class PlayniteCurrentGame {
         final String state;
         final String id;
@@ -582,6 +592,15 @@ final class HostGatewayClient {
         return new PlayniteCurrentGame(current.optString("state", "idle"),
                 current.optString("id", ""), current.optString("title", ""),
                 current.optInt("processId", current.optInt("process_id", 0)));
+    }
+
+    PlayniteHealth getPlayniteHealth(Connection connection) throws IOException {
+        JSONObject response = request(connection.endpoint, "/api/v1/playnite/health",
+                "GET", null, connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+        JSONObject bridge = response.optJSONObject("bridge");
+        if (bridge == null) bridge = new JSONObject();
+        return new PlayniteHealth(bridge.optBoolean("connector_connected", false),
+                bridge.optInt("connector_generation", 0));
     }
 
     PlayniteReadiness getPlayniteReadiness(Connection connection) throws IOException {
