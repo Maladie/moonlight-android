@@ -36,6 +36,20 @@ public class PlayniteLaunchOrchestratorTest {
         orchestrator.close();
     }
 
+    @Test public void transientReadinessFailureDoesNotDuplicateAcceptedLaunch() throws Exception {
+        FakeBackend backend = new FakeBackend();
+        backend.current = new HostGatewayClient.PlayniteCurrentGame("idle", "", "", 0);
+        backend.readinessFailures = 1;
+        backend.readiness = new HostGatewayClient.PlayniteReadiness(
+                true, "target_window_ready", "game", 3, 42, "DISPLAY15");
+        CountDownLatch done = new CountDownLatch(1);
+        PlayniteLaunchOrchestrator orchestrator = new PlayniteLaunchOrchestrator(backend, 2_000);
+        orchestrator.launch(request(), listener(done));
+        assertTrue(done.await(3, TimeUnit.SECONDS));
+        assertEquals(1, backend.starts);
+        orchestrator.close();
+    }
+
     private static LaunchOrchestrator.Request request() {
         return new LaunchOrchestrator.Request("host", "default", "playnite", GAME);
     }
@@ -54,10 +68,14 @@ public class PlayniteLaunchOrchestratorTest {
     private static final class FakeBackend implements PlayniteLaunchOrchestrator.Backend {
         HostGatewayClient.PlayniteCurrentGame current;
         HostGatewayClient.PlayniteReadiness readiness;
+        int readinessFailures;
         int starts;
         @Override public HostGatewayClient.PlayniteCurrentGame current() { return current; }
         @Override public void start(String gameId) { starts++; }
         @Override public void showFullscreen() { }
-        @Override public HostGatewayClient.PlayniteReadiness readiness() { return readiness; }
+        @Override public HostGatewayClient.PlayniteReadiness readiness() throws Exception {
+            if (readinessFailures-- > 0) throw new java.io.IOException("bridge restarted");
+            return readiness;
+        }
     }
 }

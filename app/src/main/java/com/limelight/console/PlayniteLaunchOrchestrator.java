@@ -1,5 +1,7 @@
 package com.limelight.console;
 
+import com.limelight.LimeLog;
+
 import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -106,7 +108,21 @@ final class PlayniteLaunchOrchestrator implements LaunchOrchestrator, AutoClosea
         long deadline = System.currentTimeMillis() + timeoutMs;
         String lastReason = "";
         while (operation == generation.get() && System.currentTimeMillis() < deadline) {
-            HostGatewayClient.PlayniteReadiness readiness = backend.readiness();
+            HostGatewayClient.PlayniteReadiness readiness;
+            try {
+                readiness = backend.readiness();
+            } catch (Exception transientError) {
+                // game/start may already be accepted when a profile Bridge briefly restarts.
+                // Never reissue the launch or report failure from a single missed sample.
+                if (!"bridge_reconnecting".equals(lastReason)) {
+                    lastReason = "bridge_reconnecting";
+                    listener.onProgress("Reconnecting to Playnite Bridge…");
+                    LimeLog.warning("Playnite readiness sample failed; retrying: " +
+                            transientError.getMessage());
+                }
+                Thread.sleep(1_000L);
+                continue;
+            }
             if (!readiness.reason.equals(lastReason)) {
                 lastReason = readiness.reason;
                 listener.onProgress(statusFor(readiness.reason));
