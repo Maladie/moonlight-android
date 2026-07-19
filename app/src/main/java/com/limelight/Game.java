@@ -135,6 +135,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean autoEnterPip = false;
     private boolean surfaceCreated = false;
     private boolean attemptedConnection = false;
+    private boolean bitrateReconnectPending = false;
+    private int runtimeBitrateKbps;
     private int suppressPipRefCount = 0;
     private String pcName;
     private String appName;
@@ -215,6 +217,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_SERVER_CERT = "ServerCert";
     public static final String EXTRA_QUICK_LAUNCH_APP_KEY = "QuickLaunchAppKey";
     public static final String EXTRA_APPLY_PREFERENCE_OVERRIDES = "ApplyPreferenceOverrides";
+    public static final String EXTRA_RUNTIME_BITRATE_KBPS = "RuntimeBitrateKbps";
     public static final String ACTION_QUIT_APP = "com.limelight.QUIT_STREAMING_APP";
 
     @Override
@@ -283,6 +286,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         String quickLaunchAppKey = Game.this.getIntent().getStringExtra(EXTRA_QUICK_LAUNCH_APP_KEY);
         boolean applyPreferenceOverrides = Game.this.getIntent().getBooleanExtra(EXTRA_APPLY_PREFERENCE_OVERRIDES, true);
         prefConfig = AppPreferences.getEffectivePreferences(this, appKey, quickLaunchAppKey, applyPreferenceOverrides);
+        int requestedRuntimeBitrate = Game.this.getIntent().getIntExtra(EXTRA_RUNTIME_BITRATE_KBPS, 0);
+        if (requestedRuntimeBitrate > 0) {
+            prefConfig.bitrate = Math.max(1000, Math.min(150000, requestedRuntimeBitrate));
+        }
+        runtimeBitrateKbps = prefConfig.bitrate;
         tombstonePrefs = Game.this.getSharedPreferences("DecoderTombstone", 0);
 
         // Enter landscape unless we're on a square screen
@@ -344,6 +352,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Initialize overlay menu view (setup will be done after controllerHandler is initialized)
         overlayMenuView = findViewById(R.id.overlayMenuView);
         overlayMenuView.setFlipFaceButtons(prefConfig.flipFaceButtons);
+        overlayMenuView.setBitrateControlEnabled(prefConfig.runtimeBitrateControl);
 
         inputCaptureProvider = InputCaptureManager.getInputCaptureProvider(this, this);
 
@@ -2242,7 +2251,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         // All fingers up
                         if (event.getEventTime() - threeFingerDownTime < THREE_FINGER_TAP_THRESHOLD) {
                             // This is a 3 finger tap to bring up the overlay menu
-                            runOnUiThread(() -> overlayMenuView.show());
+                            runOnUiThread(this::showOverlayMenuWithBattery);
                             return true;
                         }
                     }
@@ -2423,6 +2432,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void stopConnection() {
+        stopConnection(null);
+    }
+
+    private void stopConnection(Runnable afterStopped) {
         if (connecting || connected) {
             connecting = connected = false;
             updatePipAutoEnter();
@@ -2440,6 +2453,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             new Thread() {
                 public void run() {
                     conn.stop();
+                    if (afterStopped != null) {
+                        runOnUiThread(afterStopped);
+                    }
                 }
             }.start();
 
@@ -2448,6 +2464,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 controllerHandler.pendingApplicationQuit = false;
                 this.doQuit();
             }
+        }
+        else if (afterStopped != null) {
+            runOnUiThread(afterStopped);
         }
     }
 
@@ -2513,6 +2532,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void connectionTerminated(final int errorCode) {
+        // An intentional bitrate reconnect is completed by the callback passed to
+        // stopConnection(). Do not let the normal termination path finish this Activity
+        // or display a transient connection error while the old transport is stopping.
+        if (bitrateReconnectPending) {
+            return;
+        }
+
         // Perform a connection test if the failure could be due to a blocked port
         // This does network I/O, so don't do it on the main thread.
         final int portFlags = MoonBridge.getPortFlagsFromTerminationErrorCode(errorCode);
@@ -2937,7 +2963,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         controllerHandler.setOverlayMenuListener(new ControllerHandler.OverlayMenuListener() {
             @Override
             public void onOverlayMenuOpen() {
-                runOnUiThread(() -> overlayMenuView.show());
+                runOnUiThread(Game.this::showOverlayMenuWithBattery);
             }
 
             @Override
@@ -2994,6 +3020,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             @Override
+            public void onApplyBitrate(int bitrateKbps) {
+                applyBitrateAndReconnect(bitrateKbps);
+            }
+
+            @Override
             public void onCustomCommand(CustomCommand command) {
                 if (command.getPostAction() == CustomCommand.POST_ACTION_CLOSE_MENU) {
                     overlayMenuView.closeMenu();
@@ -3006,6 +3037,54 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             @Override
             public void onMenuClosed() {
                 // Menu closed, no additional action needed
+            }
+        });
+    }
+
+    private void showOverlayMenuWithBattery() {
+        overlayMenuView.setControllerBatteryInfo(controllerHandler.getControllerBatteryInfo());
+        overlayMenuView.setBitrateKbps(runtimeBitrateKbps);
+        overlayMenuView.show();
+        controllerHandler.refreshControllerBatteryInfo(() -> {
+            if (overlayMenuView.getVisibility() == View.VISIBLE) {
+                overlayMenuView.setControllerBatteryInfo(controllerHandler.getControllerBatteryInfo());
+            }
+        });
+    }
+
+    private void applyBitrateAndReconnect(int bitrateKbps) {
+        if (!prefConfig.runtimeBitrateControl) {
+            return;
+        }
+
+        int targetBitrate = Math.max(1000, Math.min(150000, bitrateKbps));
+        if (targetBitrate == runtimeBitrateKbps) return;
+
+        runtimeBitrateKbps = targetBitrate;
+        getIntent().putExtra(EXTRA_RUNTIME_BITRATE_KBPS, targetBitrate);
+        bitrateReconnectPending = true;
+        Toast.makeText(this,
+                getString(R.string.overlay_bitrate_reconnecting, Math.round(targetBitrate / 1000f)),
+                Toast.LENGTH_LONG).show();
+        overlayMenuView.closeMenu();
+        stopConnection(() -> {
+            if (!isFinishing() && !isDestroyed()) {
+                Intent restartIntent = new Intent(getIntent());
+                restartIntent.setClass(Game.this, Game.class);
+                restartIntent.putExtra(EXTRA_RUNTIME_BITRATE_KBPS, targetBitrate);
+                restartIntent.addFlags(Intent.FLAG_ACTIVITY_NO_ANIMATION);
+
+                // Game is a no-history, singleTask activity. Activity.recreate() can
+                // expose the previous AppView instead of creating a fresh streaming
+                // instance on Android TV. Finish the stopped instance explicitly,
+                // then launch the same session intent so NvConnection resumes the
+                // already-running host application with the new bitrate.
+                LimeLog.info("Restarting stream activity at " + targetBitrate + " Kbps");
+                bitrateReconnectPending = false;
+                userInitiatedDisconnect = true;
+                finish();
+                startActivity(restartIntent);
+                overridePendingTransition(0, 0);
             }
         });
     }

@@ -1,22 +1,32 @@
 package com.limelight.ui.overlay;
 
 import android.content.Context;
+import android.content.res.ColorStateList;
+import android.graphics.Color;
+import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
 import android.util.AttributeSet;
+import android.util.TypedValue;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.widget.HorizontalScrollView;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.TextView;
 
 import com.limelight.R;
+import com.limelight.binding.input.ControllerHandler.ControllerBatteryInfo;
 
 import java.util.ArrayList;
 import java.util.List;
 
 public class OverlayMenuView extends LinearLayout {
     private static final int BUTTON_SPACING_DP = 8;
+    private static final int BUTTON_HEIGHT_DP = 48;
+    private static final int BUTTON_ICON_SIZE_DP = 24;
+    private static final int BUTTON_PADDING_DP = 12;
     private static final float ANALOG_STICK_THRESHOLD = 0.5f;
     private static final long ANALOG_NAV_THROTTLE_MS = 200;
 
@@ -27,11 +37,13 @@ public class OverlayMenuView extends LinearLayout {
         void onToggleMouseEmulation();
         void onShowKeyboard();
         void onSendGuideButton();
+        void onApplyBitrate(int bitrateKbps);
         void onCustomCommand(CustomCommand command);
         void onMenuClosed();
     }
 
     private LinearLayout verticalContainer;
+    private LinearLayout batteryContainer;
     private HorizontalScrollView horizontalScrollView;
     private LinearLayout horizontalContainer;
 
@@ -55,10 +67,21 @@ public class OverlayMenuView extends LinearLayout {
     private static final int ACTION_SHOW_KEYBOARD = 4;
     private static final int ACTION_TOGGLE_MOUSE_EMULATION = 5;
     private static final int ACTION_SEND_GUIDE = 6;
+    private static final int ACTION_BITRATE_DOWN = 7;
+    private static final int ACTION_BITRATE_APPLY = 8;
+    private static final int ACTION_BITRATE_UP = 9;
     private static final int ACTION_CUSTOM_BASE = 100;
+    private static final int BITRATE_STEP_KBPS = 5000;
+    private static final int BITRATE_MIN_KBPS = 1000;
+    private static final int BITRATE_MAX_KBPS = 150000;
 
     private long lastAnalogNavTime = 0;
     private boolean flipFaceButtons = false;
+    private List<ControllerBatteryInfo> controllerBatteryInfo = new ArrayList<>();
+    private int currentBitrateKbps = 10000;
+    private int pendingBitrateKbps = 10000;
+    private OverlayMenuButton bitrateValueButton;
+    private boolean bitrateControlEnabled;
 
     public OverlayMenuView(Context context) {
         super(context);
@@ -93,6 +116,9 @@ public class OverlayMenuView extends LinearLayout {
             LinearLayout.LayoutParams.WRAP_CONTENT,
             LinearLayout.LayoutParams.WRAP_CONTENT
         ));
+
+        batteryContainer = new LinearLayout(context);
+        batteryContainer.setOrientation(LinearLayout.HORIZONTAL);
 
         horizontalScrollView = new HorizontalScrollView(context);
         horizontalScrollView.setHorizontalScrollBarEnabled(false);
@@ -160,6 +186,20 @@ public class OverlayMenuView extends LinearLayout {
         ((LinearLayout.LayoutParams) horizontalScrollView.getLayoutParams()).leftMargin = spacing;
 
         // Horizontal row: custom commands then Close
+        horizontalContainer.addView(batteryContainer, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        renderBatteryInfo(spacing);
+
+        bitrateValueButton = null;
+        if (bitrateControlEnabled) {
+            addHorizontalButton(0, getContext().getString(R.string.overlay_bitrate_decrease),
+                    ACTION_BITRATE_DOWN, spacing);
+            bitrateValueButton = addHorizontalButton(0, bitrateLabel(), ACTION_BITRATE_APPLY, spacing);
+            addHorizontalButton(0, getContext().getString(R.string.overlay_bitrate_increase),
+                    ACTION_BITRATE_UP, spacing);
+        }
+
         List<CustomCommand> customCommands = commandsManager.getCommands();
         for (CustomCommand command : customCommands) {
             addHorizontalButton(command.getIconResId(), command.getName(),
@@ -200,7 +240,7 @@ public class OverlayMenuView extends LinearLayout {
         });
     }
 
-    private void addHorizontalButton(int iconResId, String label, int action, int rightMarginPx) {
+    private OverlayMenuButton addHorizontalButton(int iconResId, String label, int action, int rightMarginPx) {
         OverlayMenuButton button = OverlayMenuButton.create(getContext(), iconResId, label);
 
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
@@ -224,6 +264,7 @@ public class OverlayMenuView extends LinearLayout {
                 button.setSelected(false);
             }
         });
+        return button;
     }
 
     public void setMenuActionListener(MenuActionListener listener) {
@@ -232,6 +273,115 @@ public class OverlayMenuView extends LinearLayout {
 
     public void setFlipFaceButtons(boolean flip) {
         this.flipFaceButtons = flip;
+    }
+
+    public void setControllerBatteryInfo(List<ControllerBatteryInfo> info) {
+        controllerBatteryInfo = info != null ? new ArrayList<>(info) : new ArrayList<>();
+        if (getVisibility() == VISIBLE) {
+            float density = getContext().getResources().getDisplayMetrics().density;
+            renderBatteryInfo((int) (BUTTON_SPACING_DP * density));
+        }
+    }
+
+    public void setBitrateKbps(int bitrateKbps) {
+        currentBitrateKbps = clampBitrate(bitrateKbps);
+        pendingBitrateKbps = currentBitrateKbps;
+        updateBitrateLabel();
+    }
+
+    public void setBitrateControlEnabled(boolean enabled) {
+        bitrateControlEnabled = enabled;
+    }
+
+    private void adjustBitrate(int deltaKbps) {
+        pendingBitrateKbps = clampBitrate(pendingBitrateKbps + deltaKbps);
+        updateBitrateLabel();
+    }
+
+    private int clampBitrate(int bitrateKbps) {
+        return Math.max(BITRATE_MIN_KBPS, Math.min(BITRATE_MAX_KBPS, bitrateKbps));
+    }
+
+    private String bitrateLabel() {
+        int mbps = Math.max(1, Math.round(pendingBitrateKbps / 1000f));
+        return getContext().getString(
+                pendingBitrateKbps == currentBitrateKbps ?
+                        R.string.overlay_bitrate_current : R.string.overlay_bitrate_apply,
+                mbps);
+    }
+
+    private void updateBitrateLabel() {
+        if (bitrateValueButton != null) bitrateValueButton.setLabel(bitrateLabel());
+    }
+
+    private void renderBatteryInfo(int bottomMarginPx) {
+        batteryContainer.removeAllViews();
+        batteryContainer.setVisibility(controllerBatteryInfo.isEmpty() ? GONE : VISIBLE);
+
+        float density = getContext().getResources().getDisplayMetrics().density;
+        int horizontalPadding = (int) (BUTTON_PADDING_DP * density);
+        int verticalPadding = (int) (BUTTON_PADDING_DP * density);
+        int iconSize = (int) (BUTTON_ICON_SIZE_DP * density);
+        int cardHeight = (int) (BUTTON_HEIGHT_DP * density);
+
+        for (ControllerBatteryInfo info : controllerBatteryInfo) {
+            int accentColor = info.percentage < 0 ? Color.LTGRAY :
+                    info.isCharging() ? Color.rgb(100, 181, 246) :
+                    info.percentage <= 10 ? Color.rgb(255, 82, 82) :
+                    info.percentage <= 30 ? Color.rgb(255, 183, 77) :
+                    Color.rgb(105, 240, 174);
+
+            LinearLayout card = new LinearLayout(getContext());
+            card.setOrientation(LinearLayout.HORIZONTAL);
+            card.setGravity(Gravity.CENTER_VERTICAL);
+            card.setPadding(horizontalPadding, verticalPadding, horizontalPadding, verticalPadding);
+            card.setMinimumHeight(cardHeight);
+
+            ImageView gamepadIcon = new ImageView(getContext());
+            gamepadIcon.setImageResource(R.drawable.ic_overlay_gamepad);
+            gamepadIcon.setImageTintList(ColorStateList.valueOf(Color.WHITE));
+            card.addView(gamepadIcon, new LinearLayout.LayoutParams(iconSize, iconSize));
+
+            TextView player = new TextView(getContext());
+            player.setText(getContext().getString(R.string.overlay_controller_player, info.controllerNumber));
+            player.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            player.setTextColor(Color.WHITE);
+            LinearLayout.LayoutParams playerParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            playerParams.leftMargin = (int) (5 * density);
+            card.addView(player, playerParams);
+
+            ImageView batteryIcon = new ImageView(getContext());
+            batteryIcon.setImageDrawable(new BatteryLevelDrawable(
+                    getContext(), info.percentage, info.isCharging(), accentColor));
+            LinearLayout.LayoutParams batteryParams = new LinearLayout.LayoutParams(iconSize, iconSize);
+            batteryParams.leftMargin = (int) (8 * density);
+            card.addView(batteryIcon, batteryParams);
+
+            TextView percentage = new TextView(getContext());
+            percentage.setText(info.percentage < 0 ?
+                    getContext().getString(R.string.overlay_battery_unknown) :
+                    getContext().getString(R.string.overlay_battery_percentage, info.percentage));
+            percentage.setTextSize(TypedValue.COMPLEX_UNIT_SP, 13);
+            percentage.setTextColor(accentColor);
+            percentage.setSingleLine(true);
+            LinearLayout.LayoutParams percentageParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            percentageParams.leftMargin = (int) (3 * density);
+            card.addView(percentage, percentageParams);
+
+            GradientDrawable background = new GradientDrawable();
+            background.setShape(GradientDrawable.RECTANGLE);
+            background.setCornerRadius(8 * density);
+            background.setColor(0xD9000000);
+            card.setBackground(background);
+
+            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT,
+                    cardHeight);
+            params.rightMargin = bottomMarginPx;
+            batteryContainer.addView(card, params);
+        }
     }
 
     @Override
@@ -510,6 +660,19 @@ public class OverlayMenuView extends LinearLayout {
         } else {
             if (horizontalIndex < 0 || horizontalIndex >= horizontalActions.size()) return;
             action = horizontalActions.get(horizontalIndex);
+        }
+
+        if (action == ACTION_BITRATE_DOWN) {
+            adjustBitrate(-BITRATE_STEP_KBPS);
+            return;
+        } else if (action == ACTION_BITRATE_UP) {
+            adjustBitrate(BITRATE_STEP_KBPS);
+            return;
+        } else if (action == ACTION_BITRATE_APPLY) {
+            if (pendingBitrateKbps != currentBitrateKbps && actionListener != null) {
+                actionListener.onApplyBitrate(pendingBitrateKbps);
+            }
+            return;
         }
 
         boolean shouldCloseMenu = false;

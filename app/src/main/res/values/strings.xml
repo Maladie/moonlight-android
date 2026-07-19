@@ -196,12 +196,17 @@
     <string name="summary_checkbox_gamepad_motion_sensors">Enables supported hosts to request motion sensor data when emulating a gamepad with motion sensors. Disabling may slightly reduce power and network usage if motion sensors are not being used in game.</string>
     <string name="title_checkbox_gamepad_motion_fallback">Emulate gamepad motion sensor support</string>
     <string name="summary_checkbox_gamepad_motion_fallback">Uses your device\'s built-in motion sensors if gamepad sensors are not supported by your connected gamepad or your Android version.\nNote: Enabling this option may cause your gamepad to appear as a PlayStation controller on the host.</string>
+    <string name="title_gamepad_battery_warning">Low gamepad battery warning</string>
+    <string name="summary_gamepad_battery_warning">Shows an in-stream warning as the gamepad battery crosses the selected level, then again at 10 percent and 5 percent.</string>
+    <string name="controller_battery_low">Controller %1$d battery low: %2$d%%</string>
 
     <string name="category_overlay_menu">Overlay Menu</string>
     <string name="title_overlay_trigger_button">Menu trigger button</string>
     <string name="summary_overlay_trigger_button">Choose which button opens the overlay menu when held</string>
     <string name="title_overlay_hold_duration">Trigger button hold duration</string>
     <string name="summary_overlay_hold_duration">How long to hold the button before the overlay menu opens</string>
+    <string name="title_runtime_bitrate_control">Runtime bitrate controls</string>
+    <string name="summary_runtime_bitrate_control">Show experimental bitrate controls in the in-game overlay. Applying a change briefly reconnects the stream.</string>
 
     <string name="category_input_settings">Input Settings</string>
     <string name="title_checkbox_touchscreen_trackpad">Use the touchscreen as a trackpad</string>
@@ -356,7 +361,18 @@
     <string name="overlay_menu_keyboard">Keyboard (Y)</string>
     <string name="overlay_menu_guide">Guide (▶)</string>
     <string name="overlay_menu_close">Close (B)</string>
+    <string name="overlay_bitrate_decrease">−5 Mbps</string>
+    <string name="overlay_bitrate_increase">+5 Mbps</string>
+    <string name="overlay_bitrate_current">%1$d Mbps</string>
+    <string name="overlay_bitrate_apply">%1$d Mbps · APPLY</string>
+    <string name="overlay_bitrate_reconnecting">Reconnecting at %1$d Mbps…</string>
     <string name="overlay_menu_hint">Hold &lt;b&gt;%s&lt;/b&gt; to open menu</string>
+    <string name="overlay_controller_battery">P%1$d %2$s · %3$d%%</string>
+    <string name="overlay_controller_player">P%1$d</string>
+    <string name="overlay_battery_percentage">%1$d%%</string>
+    <string name="overlay_battery_unknown">--</string>
+    <string name="overlay_battery_charging">Charging</string>
+    <string name="overlay_battery_full">Full</string>
 
     <!-- Custom Commands Activity -->
     <string name="title_custom_commands">Custom Commands</string>

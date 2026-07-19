@@ -187,4 +187,19 @@
         <item>@string/editor_then_quit</item>
         <item>@string/editor_then_sleep</item>
     </string-array>
+
+    <string-array name="gamepad_battery_warning_names">
+        <item>Off</item>
+        <item>5%</item>
+        <item>10%</item>
+        <item>20%</item>
+        <item>30%</item>
+    </string-array>
+    <string-array name="gamepad_battery_warning_values" translatable="false">
+        <item>0</item>
+        <item>5</item>
+        <item>10</item>
+        <item>20</item>
+        <item>30</item>
+    </string-array>
 </resources>
