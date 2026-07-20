@@ -55,8 +55,10 @@ public final class DiscordOverlayController {
         this.hostUuid = hostUuid == null ? "" : hostUuid;
         store = new HostGatewayStore(activity);
         GatewayConnection stored = store.loadForHost(hostUuid, activeHost);
+        boolean enabled = stored != null
+                && store.isDiscordEnabled(this.hostUuid, stored.profileId);
         try {
-            connection = stored == null ? null : new DiscordGatewayClient.Connection(
+            connection = !enabled ? null : new DiscordGatewayClient.Connection(
                     stored.endpoint, stored.token, stored.certificateSha256, stored.profileId);
         } catch (IllegalArgumentException invalidConnection) {
             connection = null;
@@ -68,7 +70,7 @@ public final class DiscordOverlayController {
         overlay.setDiscordShortcuts(preferences.discordMuteShortcut,
                 preferences.discordLeaveShortcut);
         renderDock();
-        prepareDiscord(stored);
+        if (enabled) prepareDiscord(stored);
     }
 
     public void onOverlayShown() {

@@ -22,7 +22,9 @@ final class HostReadiness {
     static ComputerDetails await(Supplier<ComputerDetails> currentHost,
                                  ComputerDetails wakeTarget,
                                  BooleanSupplier cancelled,
-                                 Consumer<String> status) {
+                                 Consumer<String> status,
+                                 String wakeStatus,
+                                 String waitingStatus) {
         long deadline = System.currentTimeMillis() + TIMEOUT_MS;
         long nextWake = 0L;
         while (!cancelled.getAsBoolean() && System.currentTimeMillis() < deadline) {
@@ -34,13 +36,13 @@ final class HostReadiness {
 
             long now = System.currentTimeMillis();
             if (now >= nextWake) {
-                status.accept("Sending Wake-on-LAN to " + wakeTarget.name + "…");
+                status.accept(wakeStatus);
                 try {
                     WakeOnLanSender.sendWolPacket(wakeTarget);
                 } catch (IOException | RuntimeException ignored) {}
                 nextWake = now + WAKE_INTERVAL_MS;
             } else {
-                status.accept("Waiting for the host streaming ports to become reachable…");
+                status.accept(waitingStatus);
             }
 
             try {
