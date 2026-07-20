@@ -183,7 +183,7 @@ final class DiscordPanelController {
             return;
         }
         showBusy("DISCORD", "Loading servers and recent channels…");
-        load("Unable to load Discord", () -> client.getDiscordHome(connection, force), home -> {
+        load("Unable to load Discord", () -> loadDiscordHome(connection, force), home -> {
             List<View> actions = new ArrayList<>();
             addChannelGroup(actions, "FAVORITES", home.favorites, connection);
             addChannelGroup(actions, "RECENT", home.recent, connection);
@@ -203,6 +203,22 @@ final class DiscordPanelController {
             ui.show("DISCORD", "Servers and voice channels",
                     "Favorites and recent channels are shown first.", actions.toArray(new View[0]));
         }, () -> showDiscordServers(true));
+    }
+
+    private HostGatewayClient.DiscordHome loadDiscordHome(
+            HostGatewayClient.Connection connection, boolean force) throws Exception {
+        try {
+            return client.getDiscordHome(connection, force);
+        } catch (Exception firstFailure) {
+            HostGatewayClient.DiscordStatus status = client.getDiscordStatus(connection);
+            if (!status.bridgeOnline || !status.rpcConnected || !status.authenticated) {
+                throw firstFailure;
+            }
+            // A healthy RPC bridge can briefly return stale home state while its
+            // guild cache refreshes. Confirm health, then make one forced retry.
+            Thread.sleep(350L);
+            return client.getDiscordHome(connection, true);
+        }
     }
 
     private void addChannelGroup(List<View> actions, String title,

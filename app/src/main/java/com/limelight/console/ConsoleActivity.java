@@ -131,6 +131,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private TextView controllersLabel;
     private TextView hostsLabel;
     private TextView appsLabel;
+    private TextView optionsButton;
     private LinearLayout controllerRow;
     private LinearLayout hostRow;
     private LinearLayout appRow;
@@ -346,9 +347,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         titleBlock.addView(subtitle, wrapLinear());
         header.addView(titleBlock, new LinearLayout.LayoutParams(0,
                 ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView options = compactButton("OPTIONS  ›");
-        options.setOnClickListener(v -> showOptionsPanel());
-        header.addView(options, new LinearLayout.LayoutParams(dp(170), dp(44)));
+        optionsButton = compactButton("OPTIONS  ›");
+        optionsButton.setOnClickListener(v -> showOptionsPanel());
+        header.addView(optionsButton, new LinearLayout.LayoutParams(dp(170), dp(44)));
         content.addView(header, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
@@ -382,6 +383,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(126)));
         appRow.addView(text("Choose a host to see its applications.", 15, 0xFFBDC4D8, false),
                 new LinearLayout.LayoutParams(dp(500), ViewGroup.LayoutParams.MATCH_PARENT));
+        wireHomeFocusNavigation();
 
         buildSidePanel();
         container.addView(homeLayer, match());
@@ -458,6 +460,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         hostScroll.post(() -> hostScroll.scrollTo(scroll != 0 ? scroll
                 : preferences.getInt("host_scroll", 0), 0));
         restoreTaggedFocus(hostRow, focusedTag);
+        wireHomeFocusNavigation();
         ComputerDetails selected = hosts.get(selectedHostUuid);
         if (selected != null && appRow.getChildCount() == 0) selectHost(selected, false);
         if (selected != null && appsLabel.getText().toString().equals("APPLICATIONS")) selectHost(selected, false);
@@ -732,6 +735,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
         appScroll.post(() -> appScroll.scrollTo(restored, 0));
         restoreTaggedFocus(appRow, focusedTag);
+        wireHomeFocusNavigation();
     }
 
     private View appCard(ComputerDetails host, NvApp app) {
@@ -1043,6 +1047,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         controllerScroll.post(() -> controllerScroll.scrollTo(scroll != 0 ? scroll
                 : preferences.getInt("controller_scroll", 0), 0));
         restoreTaggedFocus(controllerRow, focusedTag);
+        wireHomeFocusNavigation();
     }
 
     private View controllerCard(int player, ControllerInfo controller) {
@@ -1245,6 +1250,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private TextView panelAction(String label) {
         TextView action = text(label, 14, 0xFFF0E9FF, true);
+        action.setId(View.generateViewId());
         action.setFocusable(true);
         action.setClickable(true);
         action.setMinHeight(dp(46));
@@ -1262,6 +1268,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private LinearLayout cardBase(int width, int height) {
         LinearLayout card = new LinearLayout(this);
+        card.setId(View.generateViewId());
         card.setGravity(Gravity.CENTER_VERTICAL);
         card.setPadding(dp(16), dp(8), dp(16), dp(8));
         card.setFocusable(true);
@@ -1322,6 +1329,53 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             editor.putInt("app_scroll." + selectedHostUuid, appScroll.getScrollX());
         }
         editor.apply();
+    }
+
+    private void wireHomeFocusNavigation() {
+        if (optionsButton == null) return;
+        View controller = firstFocusableChild(controllerRow);
+        View host = selectedHostCard != null ? selectedHostCard : firstFocusableChild(hostRow);
+        View app = firstFocusableChild(appRow);
+
+        View belowOptions = controller != null ? controller : host != null ? host : app;
+        if (belowOptions != null) optionsButton.setNextFocusDownId(belowOptions.getId());
+
+        if (controller != null) {
+            controller.setNextFocusUpId(optionsButton.getId());
+            if (host != null) controller.setNextFocusDownId(host.getId());
+        }
+
+        if (hostRow != null) {
+            int up = controller != null ? controller.getId() : optionsButton.getId();
+            int down = app != null ? app.getId() : View.NO_ID;
+            for (int index = 0; index < hostRow.getChildCount(); index++) {
+                View child = hostRow.getChildAt(index);
+                if (!child.isFocusable()) continue;
+                child.setNextFocusUpId(up);
+                if (down != View.NO_ID) child.setNextFocusDownId(down);
+            }
+            if (hostRow.getChildCount() > 0) {
+                View add = hostRow.getChildAt(hostRow.getChildCount() - 1);
+                if (add.isFocusable()) add.setNextFocusRightId(add.getId());
+            }
+        }
+
+        if (appRow != null) {
+            int up = host != null ? host.getId() : optionsButton.getId();
+            for (int index = 0; index < appRow.getChildCount(); index++) {
+                View child = appRow.getChildAt(index);
+                if (child.isFocusable()) child.setNextFocusUpId(up);
+            }
+        }
+    }
+
+    private View firstFocusableChild(ViewGroup row) {
+        if (row == null) return null;
+        for (int index = 0; index < row.getChildCount(); index++) {
+            View child = row.getChildAt(index);
+            if (child.isFocusable() && child.getVisibility() == View.VISIBLE) return child;
+        }
+        return null;
     }
 
     private void restoreTaggedFocus(ViewGroup row, Object tag) {
