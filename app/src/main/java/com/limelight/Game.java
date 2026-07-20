@@ -17,6 +17,7 @@ import com.limelight.binding.video.CrashListener;
 import com.limelight.binding.video.MediaCodecDecoderRenderer;
 import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
+import com.limelight.console.DiscordOverlayController;
 import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.nvstream.StreamConfiguration;
@@ -31,6 +32,7 @@ import com.limelight.preferences.AppPreferences;
 import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.ui.BrightnessSliderView;
+import com.limelight.ui.ConsoleStreamLoadingView;
 import com.limelight.ui.GameGestures;
 import com.limelight.ui.StreamView;
 import com.limelight.ui.overlay.CustomCommand;
@@ -77,6 +79,7 @@ import android.view.MotionEvent;
 import android.view.Surface;
 import android.view.SurfaceHolder;
 import android.view.View;
+import android.view.ViewGroup;
 import android.view.View.OnGenericMotionListener;
 import android.view.View.OnSystemUiVisibilityChangeListener;
 import android.view.View.OnTouchListener;
@@ -84,6 +87,7 @@ import android.view.Window;
 import android.view.WindowInsets;
 import android.view.WindowManager;
 import android.widget.FrameLayout;
+import android.widget.LinearLayout;
 import android.view.inputmethod.InputMethodManager;
 import android.widget.SeekBar;
 import android.widget.TextView;
@@ -128,6 +132,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private NvConnection conn;
     private SpinnerDialog spinner;
+    private ConsoleStreamLoadingView consoleLoadingView;
     private boolean displayedFailureDialog = false;
     private boolean connecting = false;
     private boolean connected = false;
@@ -161,6 +166,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private TextView performanceOverlayView;
     private BrightnessSliderView brightnessSliderView;
     private OverlayMenuView overlayMenuView;
+    private DiscordOverlayController discordOverlayController;
     private boolean isImeVisible = false;
     private boolean isAndroidTV = false;
 
@@ -218,6 +224,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_QUICK_LAUNCH_APP_KEY = "QuickLaunchAppKey";
     public static final String EXTRA_APPLY_PREFERENCE_OVERRIDES = "ApplyPreferenceOverrides";
     public static final String EXTRA_RUNTIME_BITRATE_KBPS = "RuntimeBitrateKbps";
+    public static final String EXTRA_CONSOLE_LOADING = "ConsoleLoading";
+    public static final String EXTRA_CONSOLE_LOADING_MESSAGE = "ConsoleLoadingMessage";
+    public static final String EXTRA_CONSOLE_LOADING_EPOCH = "ConsoleLoadingEpoch";
+    public static final String EXTRA_CONSOLE_REDUCED_MOTION = "ConsoleReducedMotion";
     public static final String ACTION_QUIT_APP = "com.limelight.QUIT_STREAMING_APP";
 
     @Override
@@ -271,9 +281,23 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Inflate the content
         setContentView(R.layout.activity_game);
 
-        // Start the spinner
-        spinner = SpinnerDialog.displayDialog(this, getResources().getString(R.string.conn_establishing_title),
-                getResources().getString(R.string.conn_establishing_msg), true);
+        if (getIntent().getBooleanExtra(EXTRA_CONSOLE_LOADING, false)) {
+            consoleLoadingView = new ConsoleStreamLoadingView(
+                    this,
+                    getIntent().getStringExtra(EXTRA_APP_NAME),
+                    getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_MESSAGE),
+                    getIntent().getLongExtra(EXTRA_CONSOLE_LOADING_EPOCH, 0L),
+                    getIntent().getBooleanExtra(EXTRA_CONSOLE_REDUCED_MOTION, false));
+            ((FrameLayout) findViewById(android.R.id.content)).addView(consoleLoadingView,
+                    new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.MATCH_PARENT));
+            consoleLoadingView.bringToFront();
+        } else {
+            // Preserve stock Moonlight presentation for classic launches.
+            spinner = SpinnerDialog.displayDialog(this,
+                    getResources().getString(R.string.conn_establishing_title),
+                    getResources().getString(R.string.conn_establishing_msg), true);
+        }
 
         // Get the app ID
         int appId = Game.this.getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
@@ -353,6 +377,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         overlayMenuView = findViewById(R.id.overlayMenuView);
         overlayMenuView.setFlipFaceButtons(prefConfig.flipFaceButtons);
         overlayMenuView.setBitrateControlEnabled(prefConfig.runtimeBitrateControl);
+        discordOverlayController = new DiscordOverlayController(this, overlayMenuView,
+                (LinearLayout) findViewById(R.id.discordDockView), prefConfig,
+                getIntent().getStringExtra(EXTRA_PC_UUID),
+                getIntent().getStringExtra(EXTRA_HOST));
 
         inputCaptureProvider = InputCaptureManager.getInputCaptureProvider(this, this);
 
@@ -472,7 +500,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 connMgr.isActiveNetworkMetered(),
                 willStreamHdr,
                 glPrefs.glRenderer,
-                this);
+                this,
+                this::onFirstVideoFrameRendered);
 
         // Don't stream HDR if the decoder can't support it
         if (willStreamHdr && !decoderRenderer.isHevcMain10Hdr10Supported() && !decoderRenderer.isAv1Main10Supported()) {
@@ -1139,6 +1168,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        if (discordOverlayController != null) {
+            discordOverlayController.destroy();
+            discordOverlayController = null;
+        }
+        if (consoleLoadingView != null) {
+            consoleLoadingView.stop();
+            consoleLoadingView = null;
+        }
         super.onDestroy();
 
         // Unregister broadcast receiver
@@ -2420,6 +2457,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                if (consoleLoadingView != null) {
+                    consoleLoadingView.setStage(stage);
+                }
                 if (spinner != null) {
                     spinner.setMessage(getResources().getString(R.string.conn_starting) + " " + stage);
                 }
@@ -2499,6 +2539,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                if (consoleLoadingView != null) {
+                    consoleLoadingView.stopAndHide();
+                }
                 if (spinner != null) {
                     spinner.dismiss();
                     spinner = null;
@@ -2655,6 +2698,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                if (consoleLoadingView != null) {
+                    consoleLoadingView.waitingForVideo();
+                    // Conservative fallback for vendor decoders that omit frame callbacks.
+                    consoleLoadingView.postDelayed(() -> {
+                        if (consoleLoadingView != null) consoleLoadingView.revealStream();
+                    }, 8000L);
+                }
                 if (spinner != null) {
                     spinner.dismiss();
                     spinner = null;
@@ -2700,6 +2750,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // This may be null if launched from the "Resume Session" PC context menu item
             shortcutHelper.reportGameLaunched(computer, app);
         }
+    }
+
+    private void onFirstVideoFrameRendered() {
+        runOnUiThread(() -> {
+            if (consoleLoadingView != null) consoleLoadingView.revealStream();
+        });
     }
 
     @Override
@@ -3035,8 +3091,28 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             @Override
+            public void onDiscordMute() {
+                discordOverlayController.toggleMute();
+            }
+
+            @Override
+            public void onDiscordLeave() {
+                discordOverlayController.leave();
+            }
+
+            @Override
+            public void onDiscordRejoin() {
+                discordOverlayController.rejoin();
+            }
+
+            @Override
+            public void onDiscordDockToggle() {
+                discordOverlayController.toggleDock();
+            }
+
+            @Override
             public void onMenuClosed() {
-                // Menu closed, no additional action needed
+                discordOverlayController.onOverlayClosed();
             }
         });
     }
@@ -3045,6 +3121,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         overlayMenuView.setControllerBatteryInfo(controllerHandler.getControllerBatteryInfo());
         overlayMenuView.setBitrateKbps(runtimeBitrateKbps);
         overlayMenuView.show();
+        discordOverlayController.onOverlayShown();
         controllerHandler.refreshControllerBatteryInfo(() -> {
             if (overlayMenuView.getVisibility() == View.VISIBLE) {
                 overlayMenuView.setControllerBatteryInfo(controllerHandler.getControllerBatteryInfo());

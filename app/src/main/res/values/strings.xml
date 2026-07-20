@@ -373,6 +373,28 @@
     <string name="overlay_battery_unknown">--</string>
     <string name="overlay_battery_charging">Charging</string>
     <string name="overlay_battery_full">Full</string>
+    <string name="overlay_discord_title">DISCORD</string>
+    <string name="overlay_discord_loading">Checking voice connection…</string>
+    <string name="overlay_discord_disconnected">Not connected to a voice channel</string>
+    <string name="overlay_discord_channel">%1$s · %2$d people</string>
+    <string name="overlay_discord_empty">Nobody else is in this channel</string>
+    <string name="overlay_discord_participant_speaking">● %1$s</string>
+    <string name="overlay_discord_participant">%1$s</string>
+    <string name="overlay_discord_self">%1$s · YOU</string>
+    <string name="overlay_discord_muted">MUTED</string>
+    <string name="overlay_discord_mute">Mute</string>
+    <string name="overlay_discord_unmute">Unmute</string>
+    <string name="overlay_discord_leave">Leave channel</string>
+    <string name="overlay_discord_rejoin">Rejoin last channel</string>
+    <string name="overlay_discord_rejoin_channel">Rejoin %1$s</string>
+    <string name="overlay_discord_dock">Pin people</string>
+    <string name="overlay_discord_undock">Unpin people</string>
+    <string name="overlay_discord_no_recent_channel">No recent Discord channel is available</string>
+    <string name="overlay_discord_unavailable">Discord controls are unavailable</string>
+    <string name="title_discord_mute_shortcut">Discord mute shortcut</string>
+    <string name="title_discord_leave_shortcut">Discord leave shortcut</string>
+    <string name="summary_discord_shortcut">Used while the streaming overlay is open</string>
+    <string name="discord_shortcut_none">None</string>
 
     <!-- Custom Commands Activity -->
     <string name="title_custom_commands">Custom Commands</string>

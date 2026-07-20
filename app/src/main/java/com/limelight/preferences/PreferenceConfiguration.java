@@ -73,6 +73,8 @@ public class PreferenceConfiguration {
     private static final String GAMEPAD_BATTERY_WARNING_PREF_STRING = "list_gamepad_battery_warning";
     private static final String OVERLAY_TRIGGER_BUTTON_PREF_STRING = "overlay_trigger_button";
     private static final String OVERLAY_HOLD_DURATION_PREF_STRING = "overlay_hold_duration";
+    private static final String DISCORD_MUTE_SHORTCUT_PREF_STRING = "discord_mute_shortcut";
+    private static final String DISCORD_LEAVE_SHORTCUT_PREF_STRING = "discord_leave_shortcut";
     private static final String RUNTIME_BITRATE_CONTROL_PREF_STRING = "checkbox_runtime_bitrate_control";
     private static final String AUTO_RESUME_STREAM_PREF_STRING = "checkbox_auto_resume_stream";
 
@@ -120,6 +122,8 @@ public class PreferenceConfiguration {
     private static final String DEFAULT_GAMEPAD_BATTERY_WARNING = "20";
     private static final String DEFAULT_OVERLAY_TRIGGER_BUTTON = "select";
     private static final String DEFAULT_OVERLAY_HOLD_DURATION = "1500";
+    private static final String DEFAULT_DISCORD_MUTE_SHORTCUT = "x";
+    private static final String DEFAULT_DISCORD_LEAVE_SHORTCUT = "y";
     private static final boolean DEFAULT_RUNTIME_BITRATE_CONTROL = false;
     private static final boolean DEFAULT_AUTO_RESUME_STREAM = false;
 
@@ -174,6 +178,8 @@ public class PreferenceConfiguration {
     public int gamepadBatteryWarningThreshold;
     public String overlayTriggerButton;
     public int overlayHoldDurationMs;
+    public String discordMuteShortcut;
+    public String discordLeaveShortcut;
     public boolean runtimeBitrateControl;
     public boolean autoResumeStream;
 
@@ -627,6 +633,10 @@ public class PreferenceConfiguration {
         config.gamepadBatteryWarningThreshold = Integer.parseInt(prefs.getString(GAMEPAD_BATTERY_WARNING_PREF_STRING, DEFAULT_GAMEPAD_BATTERY_WARNING));
         config.overlayTriggerButton = prefs.getString(OVERLAY_TRIGGER_BUTTON_PREF_STRING, DEFAULT_OVERLAY_TRIGGER_BUTTON);
         config.overlayHoldDurationMs = Integer.parseInt(prefs.getString(OVERLAY_HOLD_DURATION_PREF_STRING, DEFAULT_OVERLAY_HOLD_DURATION));
+        config.discordMuteShortcut = prefs.getString(DISCORD_MUTE_SHORTCUT_PREF_STRING,
+                DEFAULT_DISCORD_MUTE_SHORTCUT);
+        config.discordLeaveShortcut = prefs.getString(DISCORD_LEAVE_SHORTCUT_PREF_STRING,
+                DEFAULT_DISCORD_LEAVE_SHORTCUT);
         config.runtimeBitrateControl = prefs.getBoolean(RUNTIME_BITRATE_CONTROL_PREF_STRING, DEFAULT_RUNTIME_BITRATE_CONTROL);
         config.autoResumeStream = prefs.getBoolean(AUTO_RESUME_STREAM_PREF_STRING, DEFAULT_AUTO_RESUME_STREAM);
 

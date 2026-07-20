@@ -162,6 +162,14 @@
         <item>3000</item>
     </string-array>
 
+    <string-array name="discord_shortcut_names">
+        <item>@string/discord_shortcut_none</item>
+        <item>X</item><item>Y</item><item>LB</item><item>RB</item><item>L3</item><item>R3</item>
+    </string-array>
+    <string-array name="discord_shortcut_values" translatable="false">
+        <item>none</item><item>x</item><item>y</item><item>l1</item><item>r1</item><item>l3</item><item>r3</item>
+    </string-array>
+
     <string-array name="hdr_setting_names">
         <item>On</item>
         <item>Off</item>
