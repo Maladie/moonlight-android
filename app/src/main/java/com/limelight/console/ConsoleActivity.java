@@ -41,8 +41,10 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import com.limelight.PcView;
+import com.limelight.AppView;
 import com.limelight.Game;
+import com.limelight.PcView;
+import com.limelight.R;
 import com.limelight.computers.ComputerDatabaseManager;
 import com.limelight.computers.ComputerManagerListener;
 import com.limelight.computers.ComputerManagerService;
@@ -52,9 +54,12 @@ import com.limelight.grid.assets.NetworkAssetLoader;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.NvHTTP;
+import com.limelight.nvstream.wol.WakeOnLanSender;
+import com.limelight.preferences.AddComputerManually;
 import com.limelight.preferences.StreamSettings;
 import com.limelight.utils.CacheHelper;
 import com.limelight.utils.ServerHelper;
+import com.limelight.utils.ShortcutHelper;
 
 import org.xmlpull.v1.XmlPullParserException;
 
@@ -99,6 +104,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private AudioManager audioManager;
     private InputManager inputManager;
     private DiscordPanelController discordPanelController;
+    private HostGatewayClient hostGatewayClient;
+    private HostGatewayStore hostGatewayStore;
     private ComputerManagerService.ComputerManagerBinder managerBinder;
     private ComputerManagerService.ApplistPoller appListPoller;
     private boolean serviceBound;
@@ -107,6 +114,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private boolean inputListenerRegistered;
     private boolean reducedMotion;
     private boolean uiSoundsEnabled;
+    private boolean refreshHostsOnResume;
 
     private FrameLayout root;
     private FrameLayout homeLayer;
@@ -180,6 +188,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         assetLoader = new DiskAssetLoader(this);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         inputManager = (InputManager) getSystemService(INPUT_SERVICE);
+        hostGatewayClient = new HostGatewayClient();
+        hostGatewayStore = new HostGatewayStore(this);
         getWindow().setFormat(PixelFormat.OPAQUE);
         root = buildUi();
         setContentView(root);
@@ -214,6 +224,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     protected void onResume() {
         super.onResume();
         active = true;
+        if (refreshHostsOnResume) {
+            refreshHostsOnResume = false;
+            loadKnownHosts();
+        }
         if (inputManager != null && !inputListenerRegistered) {
             inputManager.registerInputDeviceListener(this, mainHandler);
             inputListenerRegistered = true;
@@ -265,7 +279,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             launchGeneration.incrementAndGet();
             showHome();
         } else {
-            super.onBackPressed();
+            showExitConfirmation();
         }
     }
 
@@ -436,6 +450,11 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             hostRow.addView(card, cardSpacing());
             if (host.uuid.equals(selectedHostUuid)) selectedHostCard = card;
         }
+        View addHost = addHostCard();
+        hostRow.addView(addHost, cardSpacing());
+        if (sorted.isEmpty() && getCurrentFocus() == null) {
+            addHost.post(addHost::requestFocus);
+        }
         hostScroll.post(() -> hostScroll.scrollTo(scroll != 0 ? scroll
                 : preferences.getInt("host_scroll", 0), 0));
         restoreTaggedFocus(hostRow, focusedTag);
@@ -461,12 +480,182 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         LinearLayout.LayoutParams stateParams = wrapLinear();
         stateParams.topMargin = dp(5);
         card.addView(state, stateParams);
+        TextView manageHint = text("HOLD OK · MANAGE", 8, 0xFF9E8ACB, true);
+        LinearLayout.LayoutParams manageHintParams = wrapLinear();
+        manageHintParams.topMargin = dp(2);
+        card.addView(manageHint, manageHintParams);
         boolean selected = host.uuid.equals(selectedHostUuid);
         styleHostCard(card, false, selected);
         card.setOnClickListener(v -> selectHost(host, true));
+        card.setOnLongClickListener(v -> {
+            showHostActions(host);
+            return true;
+        });
         card.setOnFocusChangeListener((v, focused) -> styleHostCard(card, focused,
                 host.uuid.equals(selectedHostUuid)));
         return card;
+    }
+
+    private View addHostCard() {
+        LinearLayout card = cardBase(dp(210), dp(82));
+        card.setTag("host:add");
+        card.setOrientation(LinearLayout.HORIZONTAL);
+        TextView plus = text("+", 28, 0xFFC8BCE8, false);
+        card.addView(plus, wrapLinear());
+
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        TextView title = text("ADD HOST", 15, Color.WHITE, true);
+        title.setSingleLine(true);
+        copy.addView(title, wrapLinear());
+        copy.addView(text("Manual setup", 10, 0xFFC8BCE8, false), sectionWithTop(1));
+        LinearLayout.LayoutParams copyParams = wrapLinear();
+        copyParams.leftMargin = dp(12);
+        card.addView(copy, copyParams);
+        card.setContentDescription("Add a Moonlight host");
+        card.setOnClickListener(view -> {
+            refreshHostsOnResume = true;
+            Intent intent = new Intent(this, AddComputerManually.class);
+            intent.putExtra(AddComputerManually.EXTRA_CONSOLE_APPEARANCE, true);
+            startActivity(intent);
+        });
+        return card;
+    }
+
+    private void showHostActions(ComputerDetails host) {
+        boolean online = host.state == ComputerDetails.State.ONLINE;
+        TextView power = panelAction(online ? "SLEEP HOST" : "WAKE HOST");
+        TextView remove = panelAction("REMOVE HOST");
+        remove.setTextColor(0xFFFF8A80);
+        power.setOnClickListener(view -> {
+            if (online) confirmSleepHost(host);
+            else {
+                hideSidePanel();
+                wakeHost(host);
+            }
+        });
+        remove.setOnClickListener(view -> confirmRemoveHost(host));
+        showSidePanel("HOST", host.name,
+                online ? "The host is online." : "The host is not currently online.",
+                power, remove);
+    }
+
+    private void confirmSleepHost(ComputerDetails host) {
+        String activeAddress = host.activeAddress != null ? host.activeAddress.address : null;
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(host.uuid, activeAddress);
+        if (connection == null) {
+            Toast.makeText(this, "Pair this host's Gateway before using remote sleep.",
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        TextView cancel = panelAction("CANCEL");
+        TextView sleep = panelAction("SLEEP");
+        sleep.setTextColor(0xFFFFB74D);
+        cancel.setOnClickListener(view -> showHostActions(host));
+        sleep.setOnClickListener(view -> {
+            hideSidePanel();
+            requestHostSleep(host, connection);
+        });
+        showSidePanel("HOST POWER", "Sleep " + host.name + "?",
+                "The host will sleep without starting or changing a Moonlight stream.",
+                cancel, sleep);
+    }
+
+    private void requestHostSleep(ComputerDetails host,
+                                  HostGatewayClient.Connection connection) {
+        Toast.makeText(this, "Requesting sleep for " + host.name + "…",
+                Toast.LENGTH_SHORT).show();
+        executor.execute(() -> {
+            try {
+                hostGatewayClient.sleepHost(connection);
+                mainHandler.post(() -> Toast.makeText(this,
+                        "Sleep request accepted by " + host.name,
+                        Toast.LENGTH_LONG).show());
+            } catch (IOException | RuntimeException error) {
+                mainHandler.post(() -> Toast.makeText(this,
+                        "Unable to sleep " + host.name +
+                                ". Check that the paired Gateway is available.",
+                        Toast.LENGTH_LONG).show());
+            }
+        });
+    }
+
+    private void wakeHost(ComputerDetails host) {
+        if (host.state == ComputerDetails.State.ONLINE) {
+            Toast.makeText(this, R.string.wol_pc_online, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (host.macAddress == null) {
+            Toast.makeText(this, R.string.wol_no_mac, Toast.LENGTH_LONG).show();
+            return;
+        }
+        executor.execute(() -> {
+            int message;
+            try {
+                WakeOnLanSender.sendWolPacket(host);
+                message = R.string.wol_waking_msg;
+            } catch (IOException error) {
+                message = R.string.wol_fail;
+            }
+            int toastMessage = message;
+            mainHandler.post(() -> Toast.makeText(this, toastMessage, Toast.LENGTH_LONG).show());
+        });
+    }
+
+    private void confirmRemoveHost(ComputerDetails host) {
+        TextView cancel = panelAction("CANCEL");
+        TextView remove = panelAction("REMOVE");
+        remove.setTextColor(0xFFFF8A80);
+        cancel.setOnClickListener(view -> showHostActions(host));
+        remove.setOnClickListener(view -> {
+            hideSidePanel();
+            removeHost(host);
+        });
+        showSidePanel("HOST", "Remove " + host.name + "?",
+                "This removes the saved host, cached artwork, shortcuts, and paired Gateway data from this device.",
+                cancel, remove);
+    }
+
+    private void removeHost(ComputerDetails host) {
+        if (managerBinder == null) {
+            Toast.makeText(this, R.string.error_manager_not_running, Toast.LENGTH_LONG).show();
+            return;
+        }
+        managerBinder.removeComputer(host);
+        assetLoader.deleteAssetsForComputer(host.uuid);
+        getSharedPreferences(AppView.HIDDEN_APPS_PREF_FILENAME, MODE_PRIVATE)
+                .edit().remove(host.uuid).apply();
+        new ShortcutHelper(this).disableComputerShortcut(
+                host, getString(R.string.scut_deleted_pc));
+        hostGatewayStore.remove(host.uuid);
+        hosts.remove(host.uuid);
+
+        if (host.uuid.equals(selectedHostUuid)) {
+            stopAppListPoller();
+            clearArtwork();
+            selectedHostUuid = hosts.isEmpty() ? null : hosts.keySet().iterator().next();
+            SharedPreferences.Editor editor = preferences.edit();
+            if (selectedHostUuid == null) editor.remove("selected_host");
+            else editor.putString("selected_host", selectedHostUuid);
+            editor.apply();
+            appRow.removeAllViews();
+            if (selectedHostUuid == null) {
+                appsLabel.setText("APPLICATIONS");
+                appRow.addView(text("Choose a host to see its applications.",
+                                15, 0xFFBDC4D8, false),
+                        new LinearLayout.LayoutParams(dp(500),
+                                ViewGroup.LayoutParams.MATCH_PARENT));
+            } else {
+                ComputerDetails selected = hosts.get(selectedHostUuid);
+                appsLabel.setText("APPLICATIONS · " +
+                        selected.name.toUpperCase(Locale.ROOT));
+                startAppListPoller(selected);
+                renderAppsAsync(selected);
+            }
+        }
+        renderHosts();
+        Toast.makeText(this, host.name + " removed.", Toast.LENGTH_LONG).show();
     }
 
     private void selectHost(ComputerDetails host, boolean focusApps) {
@@ -991,6 +1180,19 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         showSidePanel("MOONLIGHT", "Options",
                 "Tune the console interface or open Moonlight's existing streaming preferences.",
                 sounds, motion, integrations, settings, classic);
+    }
+
+    private void showExitConfirmation() {
+        TextView cancel = panelAction("CANCEL");
+        TextView exit = panelAction("EXIT MOONLIGHT");
+        exit.setTextColor(0xFFFF8A80);
+        cancel.setOnClickListener(view -> hideSidePanel());
+        exit.setOnClickListener(view -> {
+            hideSidePanel();
+            finishAndRemoveTask();
+        });
+        showSidePanel("MOONLIGHT", "Close Moonlight?",
+                "The active host session will not be stopped.", cancel, exit);
     }
 
     private void showHostIntegrations() {
