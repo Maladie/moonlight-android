@@ -12,6 +12,8 @@ import android.widget.LinearLayout;
 import android.widget.SeekBar;
 import android.widget.TextView;
 
+import com.limelight.R;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -57,7 +59,8 @@ final class DiscordPanelController {
     void showHostIntegrations(String uuid, String address, String name) {
         hostUuid = uuid;
         hostAddress = address;
-        hostName = name == null || name.isEmpty() ? "Selected host" : name;
+        hostName = name == null || name.isEmpty()
+                ? context.getString(R.string.discord_selected_host) : name;
         HostGatewayClient.Connection connection = connection();
         if (connection == null) {
             TextView pair = ui.action("PAIR HOST GATEWAY");
@@ -67,20 +70,31 @@ final class DiscordPanelController {
             return;
         }
 
+        boolean enabled = store.isDiscordEnabled(hostUuid, connection.profileId);
         TextView discord = ui.action("OPEN DISCORD  ›");
         TextView discordSettings = ui.action("DISCORD SETTINGS  ›");
+        TextView toggle = ui.action(context.getString(enabled
+                ? R.string.discord_disable_integration : R.string.discord_enable_integration));
         TextView profiles = ui.action("INTEGRATION PROFILE  ·  " + connection.profileId);
         TextView refresh = ui.action("REFRESH STATUS");
         TextView forget = ui.action("FORGET GATEWAY");
+        discord.setEnabled(enabled);
+        discord.setAlpha(enabled ? 1f : .5f);
         discord.setOnClickListener(view -> showDiscordServers(false));
         discordSettings.setOnClickListener(view -> showDiscordSettings(connection));
+        toggle.setOnClickListener(view -> {
+            store.setDiscordEnabled(hostUuid, connection.profileId, !enabled);
+            showHostIntegrations(hostUuid, hostAddress, hostName);
+        });
         profiles.setOnClickListener(view -> showProfiles(connection));
         refresh.setOnClickListener(view -> showHostIntegrationStatus(connection));
         forget.setOnClickListener(view -> confirmForget());
         ui.show("HOST INTEGRATIONS", hostName,
-                "Paired Gateway: " + connection.endpoint,
-                discord, discordSettings, profiles, refresh, forget);
-        showHostIntegrationStatus(connection);
+                context.getString(R.string.discord_paired_gateway, connection.endpoint) +
+                        (enabled ? "" : "\n" + context.getString(
+                                R.string.discord_integration_disabled_details)),
+                discord, discordSettings, toggle, profiles, refresh, forget);
+        if (enabled) showHostIntegrationStatus(connection);
     }
 
     private void showHostIntegrationStatus(HostGatewayClient.Connection connection) {
@@ -182,22 +196,45 @@ final class DiscordPanelController {
             showHostIntegrations(hostUuid, hostAddress, hostName);
             return;
         }
+        if (!store.isDiscordEnabled(hostUuid, connection.profileId)) {
+            TextView enable = ui.action(context.getString(R.string.discord_enable_integration));
+            enable.setOnClickListener(view -> {
+                store.setDiscordEnabled(hostUuid, connection.profileId, true);
+                showDiscordServers(true);
+            });
+            TextView back = ui.action(context.getString(R.string.discord_back_to_host_integrations));
+            back.setOnClickListener(view -> showHostIntegrations(hostUuid, hostAddress, hostName));
+            ui.show(context.getString(R.string.overlay_discord_title),
+                    context.getString(R.string.discord_integration_disabled),
+                    context.getString(R.string.discord_enable_gateway_details),
+                    enable, back);
+            return;
+        }
         showBusy("DISCORD", "Loading servers and recent channels…");
         load("Unable to load Discord", () -> loadDiscordHome(connection, force), home -> {
             List<View> actions = new ArrayList<>();
             addChannelGroup(actions, "FAVORITES", home.favorites, connection);
             addChannelGroup(actions, "RECENT", home.recent, connection);
             if (!home.guilds.isEmpty()) actions.add(ui.label("SERVERS"));
+            String selectedGuild = store.loadLastDiscordGuildId(hostUuid, connection.profileId);
+            if (home.guilds.isEmpty()) actions.add(ui.label(
+                    context.getString(R.string.discord_no_servers)));
             for (HostGatewayClient.DiscordGuild guild : home.guilds) {
-                TextView action = ui.action(guild.name + "  ›");
-                action.setOnClickListener(view -> showDiscordChannels(connection, guild, false));
+                String suffix = guild.id.equals(selectedGuild)
+                        ? context.getString(R.string.discord_selected_suffix) : "";
+                TextView action = ui.action(guild.name + suffix + "  ›");
+                action.setOnClickListener(view -> {
+                    store.saveLastDiscordGuild(hostUuid, connection.profileId,
+                            guild.id, guild.name);
+                    showDiscordChannels(connection, guild, false);
+                });
                 actions.add(action);
             }
             TextView settings = ui.action("DISCORD SETTINGS  ›");
             settings.setOnClickListener(view -> showDiscordSettings(connection));
             TextView refresh = ui.action("REFRESH");
             refresh.setOnClickListener(view -> showDiscordServers(true));
-            TextView back = ui.action("BACK TO HOST INTEGRATIONS");
+            TextView back = ui.action(context.getString(R.string.discord_back_to_host_integrations));
             back.setOnClickListener(view -> showHostIntegrations(hostUuid, hostAddress, hostName));
             actions.add(settings); actions.add(refresh); actions.add(back);
             ui.show("DISCORD", "Servers and voice channels",
@@ -238,6 +275,8 @@ final class DiscordPanelController {
         showBusy("DISCORD", "Loading " + guild.name + "…");
         load("Unable to load channels", () -> client.getDiscordChannels(connection, guild, force), channels -> {
             List<View> actions = new ArrayList<>();
+            if (channels.isEmpty()) actions.add(ui.label(
+                    context.getString(R.string.discord_no_channels)));
             for (HostGatewayClient.DiscordChannel channel : channels) {
                 String people = channel.people >= 0 ? "  ·  " + channel.people : "";
                 TextView action = ui.action((channel.favorite ? "★  " : "#  ") + channel.name + people);
@@ -295,12 +334,26 @@ final class DiscordPanelController {
         showBusy("DISCORD", "Loading people…");
         load("Unable to load participants", () -> client.getDiscordVoice(connection, true), voice -> {
             List<View> actions = new ArrayList<>();
+            if (voice.participantList.isEmpty()) {
+                actions.add(ui.label(context.getString(R.string.discord_no_participants)));
+            }
             for (HostGatewayClient.DiscordParticipant participant : voice.participantList) {
-                actions.add(ui.label((participant.speaking ? "●  " : "") + participant.name +
-                        (participant.self ? "  ·  YOU" : "") +
-                        (participant.muted ? "  ·  MUTED" : "") +
-                        "\nVolume " + participant.volume + "%"));
-                if (!participant.self) actions.add(participantControls(connection, channel, participant));
+                String details = (participant.speaking ? "●  " : "") + participant.name +
+                        (participant.username.isEmpty() ? "" : "  ·  @" + participant.username) +
+                        (participant.self ? context.getString(R.string.discord_you_suffix) : "") +
+                        (participant.muted ? context.getString(R.string.discord_muted_suffix) : "") +
+                        (participant.deafened ? context.getString(R.string.discord_deafened_suffix) : "") +
+                        (participant.bot ? context.getString(R.string.discord_bot_suffix) : "") +
+                        "\n" + context.getString(R.string.discord_volume_value,
+                                participant.volume) +
+                        (participant.audioError.isEmpty() ? "" : "\n" + participant.audioError);
+                actions.add(ui.label(details));
+                if (!participant.self && participant.canSetVolume) {
+                    actions.add(participantControls(connection, channel, participant));
+                } else if (!participant.self) {
+                    actions.add(ui.label(context.getString(
+                            R.string.discord_participant_volume_unavailable)));
+                }
             }
             TextView refresh = ui.action("REFRESH");
             refresh.setOnClickListener(view -> showParticipants(connection, channel));
@@ -316,19 +369,30 @@ final class DiscordPanelController {
                                      HostGatewayClient.DiscordChannel channel,
                                      HostGatewayClient.DiscordParticipant participant) {
         SeekBar volume = new SeekBar(context);
-        volume.setMax(200);
-        volume.setProgress(participant.volume);
-        volume.setKeyProgressIncrement(10);
+        volume.setMax(DiscordFeatureContract.MAX_PARTICIPANT_VOLUME);
+        volume.setProgress(DiscordFeatureContract.snapParticipantVolume(participant.volume));
+        volume.setKeyProgressIncrement(DiscordFeatureContract.PARTICIPANT_VOLUME_STEP);
         volume.setFocusable(true);
+        TextView value = ui.label(context.getString(R.string.discord_volume_value,
+                volume.getProgress()));
+        value.setContentDescription(context.getString(
+                R.string.discord_volume_description, volume.getProgress()));
+        Runnable[] pending = new Runnable[1];
         Runnable apply = () -> {
-            int snapped = Math.max(0, Math.min(200, Math.round(volume.getProgress() / 10f) * 10));
+            int snapped = DiscordFeatureContract.snapParticipantVolume(volume.getProgress());
             volume.setProgress(snapped);
-            operation("Updating participant volume…",
-                    () -> client.setDiscordParticipantVolume(connection, participant.id, snapped),
-                    () -> showParticipants(connection, channel));
+            value.setText(context.getString(R.string.discord_volume_value, snapped));
+            value.setContentDescription(context.getString(
+                    R.string.discord_volume_description, snapped));
+            if (pending[0] != null) mainHandler.removeCallbacks(pending[0]);
+            pending[0] = () -> updateParticipantVolume(connection, participant, snapped);
+            mainHandler.postDelayed(pending[0], DiscordFeatureContract.VOLUME_DEBOUNCE_MS);
         };
         volume.setOnSeekBarChangeListener(new SeekBar.OnSeekBarChangeListener() {
-            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) { }
+            @Override public void onProgressChanged(SeekBar seekBar, int progress, boolean fromUser) {
+                if (fromUser) value.setText(context.getString(
+                        R.string.discord_volume_value, progress));
+            }
             @Override public void onStartTrackingTouch(SeekBar seekBar) { }
             @Override public void onStopTrackingTouch(SeekBar seekBar) { apply.run(); }
         });
@@ -339,25 +403,79 @@ final class DiscordPanelController {
             }
             return false;
         });
-        TextView mute = ui.action(participant.muted ? "UNMUTE" : "MUTE");
+        TextView mute = ui.action(context.getString(participant.muted
+                ? R.string.discord_unmute_participant : R.string.discord_mute_participant));
         mute.setOnClickListener(view -> operation("Updating participant mute…",
                 () -> client.toggleDiscordParticipantMute(connection, participant.id),
                 () -> showParticipants(connection, channel)));
-        LinearLayout row = new LinearLayout(context);
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(android.view.Gravity.CENTER_VERTICAL);
-        row.addView(volume, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        LinearLayout.LayoutParams button = new LinearLayout.LayoutParams(
-                Math.round(130 * context.getResources().getDisplayMetrics().density),
-                ViewGroup.LayoutParams.WRAP_CONTENT);
-        button.leftMargin = Math.round(10 * context.getResources().getDisplayMetrics().density);
-        row.addView(mute, button);
-        return row;
+        LinearLayout container = new LinearLayout(context);
+        container.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout sliderRow = new LinearLayout(context);
+        sliderRow.setOrientation(LinearLayout.HORIZONTAL);
+        sliderRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        sliderRow.addView(volume, new LinearLayout.LayoutParams(0,
+                ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        sliderRow.addView(value, new LinearLayout.LayoutParams(
+                Math.round(110 * context.getResources().getDisplayMetrics().density),
+                ViewGroup.LayoutParams.WRAP_CONTENT));
+        container.addView(sliderRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        LinearLayout presets = new LinearLayout(context);
+        presets.setOrientation(LinearLayout.HORIZONTAL);
+        TextView down = ui.action("−10");
+        TextView zero = ui.action("0%");
+        TextView fifty = ui.action("50%");
+        TextView hundred = ui.action("100%");
+        TextView reset = ui.action(context.getString(R.string.discord_volume_default));
+        TextView up = ui.action("+10");
+        down.setOnClickListener(view -> setParticipantVolume(volume,
+                volume.getProgress() - DiscordFeatureContract.PARTICIPANT_VOLUME_STEP, apply));
+        zero.setOnClickListener(view -> setParticipantVolume(volume, 0, apply));
+        fifty.setOnClickListener(view -> setParticipantVolume(volume, 50, apply));
+        hundred.setOnClickListener(view -> setParticipantVolume(volume, 100, apply));
+        reset.setOnClickListener(view -> setParticipantVolume(volume,
+                DiscordFeatureContract.DEFAULT_PARTICIPANT_VOLUME, apply));
+        up.setOnClickListener(view -> setParticipantVolume(volume,
+                volume.getProgress() + DiscordFeatureContract.PARTICIPANT_VOLUME_STEP, apply));
+        TextView[] controls = {down, zero, fifty, hundred, reset, up};
+        for (TextView control : controls) {
+            presets.addView(control, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        }
+        container.addView(presets, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        container.addView(mute, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        return container;
+    }
+
+    private void setParticipantVolume(SeekBar volume, int value, Runnable apply) {
+        volume.setProgress(DiscordFeatureContract.snapParticipantVolume(value));
+        apply.run();
+    }
+
+    private void updateParticipantVolume(HostGatewayClient.Connection connection,
+                                         HostGatewayClient.DiscordParticipant participant,
+                                         int volume) {
+        executor.execute(() -> {
+            try {
+                client.setDiscordParticipantVolume(connection, participant.id, volume);
+            } catch (Exception error) {
+                mainHandler.post(() -> ui.toast(error.getMessage() == null
+                        ? context.getString(R.string.discord_volume_change_failed)
+                        : error.getMessage()));
+            }
+        });
     }
 
     private void showDiscordSettings(HostGatewayClient.Connection connection) {
+        boolean enabled = store.isDiscordEnabled(hostUuid, connection.profileId);
         boolean autoConnect = store.isDiscordAutoConnectEnabled(hostUuid, connection.profileId);
         boolean autoJoin = store.isDiscordAutoJoinLastEnabled(hostUuid, connection.profileId);
+        TextView enabledSetting = ui.action(context.getString(
+                R.string.discord_integration_setting,
+                context.getString(enabled ? R.string.console_on : R.string.console_off)));
         TextView connectSetting = ui.action("AUTO-CONNECT  ·  " + (autoConnect ? "ON" : "OFF"));
         TextView joinSetting = ui.action("AUTO-JOIN LAST CHANNEL  ·  " + (autoJoin ? "ON" : "OFF"));
         TextView start = ui.action("START DISCORD ON HOST");
@@ -365,6 +483,10 @@ final class DiscordPanelController {
         TextView audio = ui.action("AUDIO DEVICES  ›");
         TextView status = ui.action("REFRESH STATUS");
         TextView back = ui.action("BACK");
+        enabledSetting.setOnClickListener(view -> {
+            store.setDiscordEnabled(hostUuid, connection.profileId, !enabled);
+            showDiscordSettings(connection);
+        });
         connectSetting.setOnClickListener(view -> {
             store.setDiscordAutoConnectEnabled(hostUuid, connection.profileId, !autoConnect);
             showDiscordSettings(connection);
@@ -381,7 +503,7 @@ final class DiscordPanelController {
         status.setOnClickListener(view -> showDiscordStatus(connection));
         back.setOnClickListener(view -> showDiscordServers(false));
         ui.show("DISCORD", "Settings", "Integration profile: " + connection.profileId,
-                connectSetting, joinSetting, start, reconnect, audio, status, back);
+                enabledSetting, connectSetting, joinSetting, start, reconnect, audio, status, back);
     }
 
     private void showDiscordStatus(HostGatewayClient.Connection connection) {

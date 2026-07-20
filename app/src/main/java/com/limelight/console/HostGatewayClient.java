@@ -343,19 +343,37 @@ final class HostGatewayClient {
     static final class DiscordParticipant {
         final String id;
         final String name;
+        final String username;
         final int volume;
         final boolean muted;
+        final boolean deafened;
         final boolean speaking;
         final boolean self;
+        final boolean bot;
+        final boolean canSetVolume;
+        final String audioError;
 
         DiscordParticipant(String id, String name, int volume, boolean muted,
                            boolean speaking, boolean self) {
+            this(id, name, "", volume, muted, false, speaking, self,
+                    false, true, "");
+        }
+
+        DiscordParticipant(String id, String name, String username, int volume,
+                           boolean muted, boolean deafened, boolean speaking,
+                           boolean self, boolean bot, boolean canSetVolume,
+                           String audioError) {
             this.id = id;
             this.name = name;
+            this.username = username;
             this.volume = volume;
             this.muted = muted;
+            this.deafened = deafened;
             this.speaking = speaking;
             this.self = self;
+            this.bot = bot;
+            this.canSetVolume = canSetVolume;
+            this.audioError = audioError;
         }
     }
 
@@ -773,10 +791,15 @@ final class HostGatewayClient {
                 if (!isDiscordId(id)) continue;
                 participantList.add(new DiscordParticipant(id,
                         participant.optString("name", "Discord user"),
+                        participant.optString("username", ""),
                         participant.optInt("volume", 100),
                         participant.optBoolean("muted", false),
+                        participant.optBoolean("deafened", false),
                         participant.optBoolean("speaking", false),
-                        participant.optBoolean("is_self", false)));
+                        participant.optBoolean("is_self", false),
+                        participant.optBoolean("bot", false),
+                        participant.optBoolean("can_set_volume", true),
+                        participant.optString("audio_error", "")));
             }
         }
         return new DiscordVoice(
@@ -859,7 +882,10 @@ final class HostGatewayClient {
 
     JSONObject setDiscordParticipantVolume(Connection connection, String userId,
                                             int volume) throws IOException {
-        if (!isDiscordId(userId) || volume < 0 || volume > 200 || volume % 10 != 0) {
+        if (!isDiscordId(userId)
+                || volume < DiscordFeatureContract.MIN_PARTICIPANT_VOLUME
+                || volume > DiscordFeatureContract.MAX_PARTICIPANT_VOLUME
+                || volume % DiscordFeatureContract.PARTICIPANT_VOLUME_STEP != 0) {
             throw new IllegalArgumentException("Invalid Discord participant volume");
         }
         JSONObject body = new JSONObject();

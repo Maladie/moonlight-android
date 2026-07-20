@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Console palette and semantic connection states -->
+    <color name="console_background">#05060A</color>
+    <color name="console_surface">#182130</color>
+    <color name="console_surface_focused">#243C55</color>
+    <color name="console_accent">#73D7FF</color>
+    <color name="console_focus_stroke">#E9F7FF</color>
+    <color name="console_text_primary">#FFFFFF</color>
+    <color name="console_text_secondary">#BDC4D8</color>
+    <color name="console_state_online">#69F0AE</color>
+    <color name="console_state_connecting">#73D7FF</color>
+    <color name="console_state_offline">#8D95AA</color>
+    <color name="console_state_warning">#FFB74D</color>
+    <color name="console_state_error">#FF6B6B</color>
+
+    <!-- Spacing, radii, icon and focus geometry -->
+    <dimen name="console_space_xs">4dp</dimen>
+    <dimen name="console_space_s">8dp</dimen>
+    <dimen name="console_space_m">16dp</dimen>
+    <dimen name="console_space_l">24dp</dimen>
+    <dimen name="console_radius_button">10dp</dimen>
+    <dimen name="console_radius_card">14dp</dimen>
+    <dimen name="console_radius_panel">24dp</dimen>
+    <dimen name="console_icon_size">22dp</dimen>
+    <dimen name="console_action_target">48dp</dimen>
+    <dimen name="console_focus_stroke_width">2dp</dimen>
+
+    <!-- Motion and opacity tokens -->
+    <integer name="console_motion_focus_ms">125</integer>
+    <integer name="console_motion_panel_ms">180</integer>
+    <item name="console_disabled_alpha" type="fraction">50%</item>
+</resources>
