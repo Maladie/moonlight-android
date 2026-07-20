@@ -43,3 +43,7 @@ app/.externalNativeBuild/
 
 # NDK stuff
 .cxx/
+
+# Local TV build/deploy helpers (machine-specific SDK, JDK and ADB setup)
+/build-tv.ps1
+/deploy-tv.ps1

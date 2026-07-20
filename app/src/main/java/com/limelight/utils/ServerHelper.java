@@ -2,6 +2,7 @@ package com.limelight.utils;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.os.Bundle;
 import android.widget.Toast;
 
 import com.limelight.AppView;
@@ -94,18 +95,32 @@ public class ServerHelper {
 
     public static void doStart(Activity parent, NvApp app, ComputerDetails computer,
                                ComputerManagerService.ComputerManagerBinder managerBinder) {
-        doStart(parent, app, computer, managerBinder, null);
+        doStart(parent, app, computer, managerBinder, null, null);
+    }
+
+    public static void doStart(Activity parent, NvApp app, ComputerDetails computer,
+                               ComputerManagerService.ComputerManagerBinder managerBinder,
+                               Bundle presentationExtras) {
+        doStart(parent, app, computer, managerBinder, null, presentationExtras);
     }
     
     public static void doStart(Activity parent, NvApp app, ComputerDetails computer,
                                ComputerManagerService.ComputerManagerBinder managerBinder,
                                String quickLaunchAppKey) {
+        doStart(parent, app, computer, managerBinder, quickLaunchAppKey, null);
+    }
+
+    private static void doStart(Activity parent, NvApp app, ComputerDetails computer,
+                               ComputerManagerService.ComputerManagerBinder managerBinder,
+                               String quickLaunchAppKey, Bundle presentationExtras) {
         if (computer.state == ComputerDetails.State.OFFLINE || computer.activeAddress == null) {
             Toast.makeText(parent, parent.getResources().getString(R.string.pair_pc_offline), Toast.LENGTH_SHORT).show();
             return;
         }
         
-        parent.startActivity(createStartIntent(parent, app, computer, managerBinder, quickLaunchAppKey));
+        Intent intent = createStartIntent(parent, app, computer, managerBinder, quickLaunchAppKey);
+        if (presentationExtras != null) intent.putExtras(presentationExtras);
+        parent.startActivity(intent);
     }
 
     public static void doNetworkTest(final Activity parent) {

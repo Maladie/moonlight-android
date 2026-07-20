@@ -154,6 +154,20 @@
             android:entries="@array/overlay_hold_duration_names"
             android:entryValues="@array/overlay_hold_duration_values"
             android:defaultValue="1500" />
+        <ListPreference
+            android:key="discord_mute_shortcut"
+            android:title="@string/title_discord_mute_shortcut"
+            android:summary="@string/summary_discord_shortcut"
+            android:entries="@array/discord_shortcut_names"
+            android:entryValues="@array/discord_shortcut_values"
+            android:defaultValue="x" />
+        <ListPreference
+            android:key="discord_leave_shortcut"
+            android:title="@string/title_discord_leave_shortcut"
+            android:summary="@string/summary_discord_shortcut"
+            android:entries="@array/discord_shortcut_names"
+            android:entryValues="@array/discord_shortcut_values"
+            android:defaultValue="y" />
         <CheckBoxPreference
             android:key="checkbox_runtime_bitrate_control"
             android:title="@string/title_runtime_bitrate_control"

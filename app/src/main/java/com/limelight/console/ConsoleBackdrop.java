@@ -28,6 +28,10 @@ final class ConsoleBackdrop extends View {
         animated = false;
     }
 
+    long getStartedAt() {
+        return startedAt;
+    }
+
     @Override
     protected void onDraw(Canvas canvas) {
         int width = getWidth();

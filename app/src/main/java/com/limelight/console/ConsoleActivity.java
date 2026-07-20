@@ -14,7 +14,10 @@ import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
+import android.graphics.drawable.BitmapDrawable;
+import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.TransitionDrawable;
 import android.hardware.BatteryState;
 import android.hardware.input.InputManager;
 import android.media.AudioManager;
@@ -39,6 +42,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.limelight.PcView;
+import com.limelight.Game;
 import com.limelight.computers.ComputerDatabaseManager;
 import com.limelight.computers.ComputerManagerListener;
 import com.limelight.computers.ComputerManagerService;
@@ -94,6 +98,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private DiskAssetLoader assetLoader;
     private AudioManager audioManager;
     private InputManager inputManager;
+    private DiscordPanelController discordPanelController;
     private ComputerManagerService.ComputerManagerBinder managerBinder;
     private ComputerManagerService.ApplistPoller appListPoller;
     private boolean serviceBound;
@@ -111,6 +116,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private ScrollView sidePanelScroll;
     private ImageView artworkBackdrop;
     private ImageView artworkHero;
+    private View artworkScrim;
     private ConsoleBackdrop loadingBackdrop;
     private TextView loadingMessage;
     private TextView loadingStatus;
@@ -177,6 +183,27 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         getWindow().setFormat(PixelFormat.OPAQUE);
         root = buildUi();
         setContentView(root);
+        discordPanelController = new DiscordPanelController(this, mainHandler, executor,
+                new DiscordPanelController.Ui() {
+                    @Override public TextView action(String label) {
+                        return panelAction(label);
+                    }
+
+                    @Override public TextView label(String label) {
+                        TextView view = text(label, 13, 0xFFBDC4D8, false);
+                        view.setPadding(dp(8), dp(7), dp(8), dp(7));
+                        return view;
+                    }
+
+                    @Override public void show(String eyebrow, String title, String details,
+                                               View... actions) {
+                        showSidePanel(eyebrow, title, details, actions);
+                    }
+
+                    @Override public void toast(String message) {
+                        Toast.makeText(ConsoleActivity.this, message, Toast.LENGTH_LONG).show();
+                    }
+                });
         hideSystemUi();
         loadKnownHosts();
         serviceBound = bindService(new Intent(this, ComputerManagerService.class),
@@ -224,6 +251,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     @Override
     protected void onDestroy() {
+        if (discordPanelController != null) discordPanelController.destroy();
         if (serviceBound) unbindService(serviceConnection);
         executor.shutdownNow();
         super.onDestroy();
@@ -280,10 +308,11 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         hero.rightMargin = dp(16);
         homeLayer.addView(artworkHero, hero);
 
-        View scrim = new View(this);
-        scrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
+        artworkScrim = new View(this);
+        artworkScrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
                 new int[]{0xF405060A, 0xD405060A, 0x5005060A}));
-        homeLayer.addView(scrim, match());
+        artworkScrim.setAlpha(0f);
+        homeLayer.addView(artworkScrim, match());
 
         LinearLayout content = new LinearLayout(this);
         content.setOrientation(LinearLayout.VERTICAL);
@@ -502,6 +531,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private void renderApps(ComputerDetails host, List<NvApp> apps) {
         int restored = preferences.getInt("app_scroll." + host.uuid, 0);
+        Object focusedTag = getCurrentFocus() != null ? getCurrentFocus().getTag() : null;
         appRow.removeAllViews();
         appsLabel.setText("APPLICATIONS · " + host.name.toUpperCase(Locale.ROOT));
         if (apps.isEmpty()) {
@@ -512,6 +542,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             for (NvApp app : apps) appRow.addView(appCard(host, app), cardSpacing());
         }
         appScroll.post(() -> appScroll.scrollTo(restored, 0));
+        restoreTaggedFocus(appRow, focusedTag);
     }
 
     private View appCard(ComputerDetails host, NvApp app) {
@@ -553,7 +584,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             styleCard(card, focused);
             if (reducedMotion) action.setAlpha(focused ? 1f : 0f);
             else action.animate().alpha(focused ? 1f : 0f).setDuration(120).start();
-            if (focused) showArtwork(artwork);
+            if (focused) {
+                smoothCenterOn(appScroll, card);
+                showArtwork(artwork, poster.getDrawable());
+            }
         });
         return card;
     }
@@ -578,24 +612,54 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         });
     }
 
-    private void showArtwork(File file) {
+    private void showArtwork(File file, Drawable preview) {
         int token = artworkGeneration.incrementAndGet();
+        if (preview != null) {
+            Drawable current = artworkHero.getDrawable();
+            Drawable next = cloneDrawable(preview);
+            artworkHero.animate().cancel();
+            if (current != null && !reducedMotion) {
+                TransitionDrawable transition = new TransitionDrawable(
+                        new Drawable[]{current, next});
+                transition.setCrossFadeEnabled(true);
+                artworkHero.setImageDrawable(transition);
+                transition.startTransition(180);
+            } else {
+                artworkHero.setImageDrawable(next);
+            }
+            artworkHero.animate().alpha(.72f).setDuration(reducedMotion ? 0 : 180).start();
+            artworkScrim.animate().cancel();
+            artworkScrim.animate().alpha(1f).setDuration(reducedMotion ? 0 : 180).start();
+        }
         if (!file.exists()) {
-            clearArtwork();
             return;
         }
         executor.execute(() -> {
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = 2;
-            Bitmap bitmap = BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+            Bitmap bitmap = decodeArtwork(file, 1200);
             int accent = sampleAccent(bitmap);
             mainHandler.post(() -> {
                 if (token != artworkGeneration.get() || bitmap == null) return;
                 glassAccent = accent;
-                artworkBackdrop.setImageBitmap(bitmap);
+                Drawable oldBackdrop = artworkBackdrop.getDrawable();
+                BitmapDrawable nextBackdrop = new BitmapDrawable(getResources(), bitmap);
+                if (oldBackdrop != null && !reducedMotion) {
+                    TransitionDrawable transition = new TransitionDrawable(
+                            new Drawable[]{oldBackdrop, nextBackdrop});
+                    transition.setCrossFadeEnabled(true);
+                    artworkBackdrop.setImageDrawable(transition);
+                    transition.startTransition(380);
+                    mainHandler.postDelayed(() -> {
+                        if (token == artworkGeneration.get()) artworkBackdrop.setImageBitmap(bitmap);
+                    }, 420L);
+                } else {
+                    artworkBackdrop.setImageBitmap(bitmap);
+                }
+                // The preview and final hero have identical geometry. Replacing the
+                // preview avoids a soft double-image while retaining the tile-to-tile crossfade.
                 artworkHero.setImageBitmap(bitmap);
-                artworkBackdrop.animate().alpha(.22f).setDuration(reducedMotion ? 0 : 160).start();
-                artworkHero.animate().alpha(.78f).setDuration(reducedMotion ? 0 : 160).start();
+                artworkBackdrop.animate().alpha(.16f).setDuration(reducedMotion ? 0 : 260).start();
+                artworkHero.animate().alpha(.72f).setDuration(reducedMotion ? 0 : 220).start();
+                artworkScrim.animate().alpha(1f).setDuration(reducedMotion ? 0 : 220).start();
                 View focused = getCurrentFocus();
                 if (focused != null && focused.getTag() instanceof String
                         && ((String) focused.getTag()).startsWith("app:")) {
@@ -606,10 +670,42 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private void clearArtwork() {
-        artworkGeneration.incrementAndGet();
+        int token = artworkGeneration.incrementAndGet();
         glassAccent = 0xFF715BA8;
-        if (artworkBackdrop != null) artworkBackdrop.setAlpha(0f);
-        if (artworkHero != null) artworkHero.setAlpha(0f);
+        if (artworkBackdrop != null) {
+            artworkBackdrop.animate().cancel();
+            artworkBackdrop.animate().alpha(0f).setDuration(reducedMotion ? 0 : 260).start();
+        }
+        if (artworkHero != null) {
+            artworkHero.animate().cancel();
+            artworkHero.animate().alpha(0f).setDuration(reducedMotion ? 0 : 260)
+                    .withEndAction(() -> {
+                        if (token != artworkGeneration.get()) return;
+                        artworkBackdrop.setImageDrawable(null);
+                        artworkHero.setImageDrawable(null);
+                    }).start();
+        }
+        if (artworkScrim != null) {
+            artworkScrim.animate().cancel();
+            artworkScrim.animate().alpha(0f).setDuration(reducedMotion ? 0 : 260).start();
+        }
+    }
+
+    private Bitmap decodeArtwork(File file, int maxDimension) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+        int sample = 1;
+        while (bounds.outWidth / sample > maxDimension
+                || bounds.outHeight / sample > maxDimension) sample *= 2;
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = Math.max(1, sample);
+        return BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+    }
+
+    private Drawable cloneDrawable(Drawable drawable) {
+        Drawable.ConstantState state = drawable != null ? drawable.getConstantState() : null;
+        return state != null ? state.newDrawable(getResources()).mutate() : drawable;
     }
 
     private int sampleAccent(Bitmap bitmap) {
@@ -620,6 +716,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         for (int y = 0; y < bitmap.getHeight(); y += stepY) {
             for (int x = 0; x < bitmap.getWidth(); x += stepX) {
                 int color = bitmap.getPixel(x, y);
+                int brightness = Color.red(color) + Color.green(color) + Color.blue(color);
+                if (brightness < 90 || brightness > 690) continue;
                 red += Color.red(color); green += Color.green(color); blue += Color.blue(color); count++;
             }
         }
@@ -654,7 +752,15 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                         .apply();
                 loadingStatus.setText("Opening Moonlight stream…");
                 // Keep Moonlight's existing launch path and stream lifecycle unchanged.
-                ServerHelper.doStart(ConsoleActivity.this, app, ready, managerBinder);
+                Bundle presentation = new Bundle();
+                presentation.putBoolean(Game.EXTRA_CONSOLE_LOADING, true);
+                presentation.putString(Game.EXTRA_CONSOLE_LOADING_MESSAGE,
+                        loadingMessage.getText().toString());
+                presentation.putLong(Game.EXTRA_CONSOLE_LOADING_EPOCH,
+                        loadingBackdrop.getStartedAt());
+                presentation.putBoolean(Game.EXTRA_CONSOLE_REDUCED_MOTION, reducedMotion);
+                ServerHelper.doStart(ConsoleActivity.this, app, ready, managerBinder, presentation);
+                overridePendingTransition(0, 0);
             });
         });
     }
@@ -866,6 +972,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private void showOptionsPanel() {
         TextView sounds = panelAction("UI SOUNDS · " + (uiSoundsEnabled ? "ON" : "OFF"));
         TextView motion = panelAction("REDUCED MOTION · " + (reducedMotion ? "ON" : "OFF"));
+        TextView integrations = panelAction("HOST INTEGRATIONS  ›");
         TextView settings = panelAction("STREAMING SETTINGS  ›");
         TextView classic = panelAction("CLASSIC MOONLIGHT UI  ›");
         sounds.setOnClickListener(v -> {
@@ -878,15 +985,26 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             preferences.edit().putBoolean("reduced_motion", reducedMotion).apply();
             motion.setText("REDUCED MOTION · " + (reducedMotion ? "ON" : "OFF"));
         });
+        integrations.setOnClickListener(v -> showHostIntegrations());
         settings.setOnClickListener(v -> startActivity(new Intent(this, StreamSettings.class)));
         classic.setOnClickListener(v -> startActivity(new Intent(this, PcView.class)));
         showSidePanel("MOONLIGHT", "Options",
                 "Tune the console interface or open Moonlight's existing streaming preferences.",
-                sounds, motion, settings, classic);
+                sounds, motion, integrations, settings, classic);
+    }
+
+    private void showHostIntegrations() {
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host == null) {
+            Toast.makeText(this, "Select a host first.", Toast.LENGTH_LONG).show();
+            return;
+        }
+        String address = host.activeAddress != null ? host.activeAddress.address : null;
+        discordPanelController.showHostIntegrations(host.uuid, address, host.name);
     }
 
     private void showSidePanel(String eyebrow, String title, String details, View... actions) {
-        lastContentFocus = getCurrentFocus();
+        if (modalLayer.getVisibility() != View.VISIBLE) lastContentFocus = getCurrentFocus();
         sidePanel.removeAllViews();
         sidePanel.addView(text(eyebrow, 12, 0xFFAFA4C9, true), wrapLinear());
         TextView titleView = text(title, 29, Color.WHITE, true);
@@ -1013,6 +1131,15 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 return;
             }
         }
+    }
+
+    private void smoothCenterOn(HorizontalScrollView scroll, View tile) {
+        if (scroll == null || tile == null) return;
+        tile.post(() -> {
+            int target = Math.max(0, tile.getLeft() - (scroll.getWidth() - tile.getWidth()) / 2);
+            if (reducedMotion) scroll.scrollTo(target, 0);
+            else scroll.smoothScrollTo(target, 0);
+        });
     }
 
     private void hideSystemUi() {
