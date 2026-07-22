@@ -110,9 +110,16 @@ public class ServerHelper {
         doStart(parent, app, computer, managerBinder, quickLaunchAppKey, null);
     }
 
-    private static void doStart(Activity parent, NvApp app, ComputerDetails computer,
+    public static void doStart(Activity parent, NvApp app, ComputerDetails computer,
                                ComputerManagerService.ComputerManagerBinder managerBinder,
                                String quickLaunchAppKey, Bundle presentationExtras) {
+        doStartInternal(parent, app, computer, managerBinder,
+                quickLaunchAppKey, presentationExtras);
+    }
+
+    private static void doStartInternal(Activity parent, NvApp app, ComputerDetails computer,
+                                        ComputerManagerService.ComputerManagerBinder managerBinder,
+                                        String quickLaunchAppKey, Bundle presentationExtras) {
         if (computer.state == ComputerDetails.State.OFFLINE || computer.activeAddress == null) {
             Toast.makeText(parent, parent.getResources().getString(R.string.pair_pc_offline), Toast.LENGTH_SHORT).show();
             return;
