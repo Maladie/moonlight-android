@@ -23,8 +23,10 @@ import java.util.concurrent.atomic.AtomicInteger;
 final class DiscordPanelController {
     interface Ui {
         TextView action(String label);
+        TextView back(String label);
         TextView label(String label);
         void show(String eyebrow, String title, String details, View... actions);
+        void busy(String eyebrow, String title, String details);
         void toast(String message);
     }
 
@@ -53,6 +55,10 @@ final class DiscordPanelController {
     }
 
     void destroy() {
+        requestGeneration.incrementAndGet();
+    }
+
+    void closePanel() {
         requestGeneration.incrementAndGet();
     }
 
@@ -94,7 +100,6 @@ final class DiscordPanelController {
                         (enabled ? "" : "\n" + context.getString(
                                 R.string.discord_integration_disabled_details)),
                 discord, discordSettings, toggle, profiles, refresh, forget);
-        if (enabled) showHostIntegrationStatus(connection);
     }
 
     private void showHostIntegrationStatus(HostGatewayClient.Connection connection) {
@@ -181,8 +186,7 @@ final class DiscordPanelController {
                 });
                 actions.add(action);
             }
-            TextView back = ui.action("BACK");
-            back.setOnClickListener(view -> showHostIntegrations(hostUuid, hostAddress, hostName));
+            TextView back = ui.back("BACK");
             actions.add(back);
             ui.show("HOST INTEGRATIONS", "Integration profile",
                     "Choose the Windows and Discord session used for this host.",
@@ -202,8 +206,7 @@ final class DiscordPanelController {
                 store.setDiscordEnabled(hostUuid, connection.profileId, true);
                 showDiscordServers(true);
             });
-            TextView back = ui.action(context.getString(R.string.discord_back_to_host_integrations));
-            back.setOnClickListener(view -> showHostIntegrations(hostUuid, hostAddress, hostName));
+            TextView back = ui.back(context.getString(R.string.discord_back_to_host_integrations));
             ui.show(context.getString(R.string.overlay_discord_title),
                     context.getString(R.string.discord_integration_disabled),
                     context.getString(R.string.discord_enable_gateway_details),
@@ -234,8 +237,7 @@ final class DiscordPanelController {
             settings.setOnClickListener(view -> showDiscordSettings(connection));
             TextView refresh = ui.action("REFRESH");
             refresh.setOnClickListener(view -> showDiscordServers(true));
-            TextView back = ui.action(context.getString(R.string.discord_back_to_host_integrations));
-            back.setOnClickListener(view -> showHostIntegrations(hostUuid, hostAddress, hostName));
+            TextView back = ui.back(context.getString(R.string.discord_back_to_host_integrations));
             actions.add(settings); actions.add(refresh); actions.add(back);
             ui.show("DISCORD", "Servers and voice channels",
                     "Favorites and recent channels are shown first.", actions.toArray(new View[0]));
@@ -285,8 +287,7 @@ final class DiscordPanelController {
             }
             TextView refresh = ui.action("REFRESH");
             refresh.setOnClickListener(view -> showDiscordChannels(connection, guild, true));
-            TextView back = ui.action("BACK");
-            back.setOnClickListener(view -> showDiscordServers(false));
+            TextView back = ui.back("BACK");
             actions.add(refresh); actions.add(back);
             ui.show("DISCORD", guild.name, "Select a voice channel.", actions.toArray(new View[0]));
         }, () -> showDiscordChannels(connection, guild, true));
@@ -303,13 +304,17 @@ final class DiscordPanelController {
                 mute.setOnClickListener(view -> operation("Updating microphone…",
                         () -> client.setDiscordVoiceFlag(connection, "mute", "toggle"),
                         () -> showDiscordChannel(connection, channel, true)));
+                TextView deafen = ui.action(voice.deafened ? "ENABLE AUDIO" : "DISABLE AUDIO");
+                deafen.setOnClickListener(view -> operation("Updating Discord audio…",
+                        () -> client.setDiscordVoiceFlag(connection, "deafen", "toggle"),
+                        () -> showDiscordChannel(connection, channel, true)));
                 TextView leave = ui.action("LEAVE CHANNEL");
                 leave.setOnClickListener(view -> operation("Leaving channel…",
                         () -> client.leaveDiscordChannel(connection),
                         () -> showDiscordChannel(connection, channel, true)));
                 TextView people = ui.action("PEOPLE  ·  " + voice.participants + "  ›");
                 people.setOnClickListener(view -> showParticipants(connection, channel));
-                actions.add(mute); actions.add(leave); actions.add(people);
+                actions.add(mute); actions.add(deafen); actions.add(leave); actions.add(people);
             } else {
                 TextView join = ui.action("JOIN #" + channel.name);
                 join.setOnClickListener(view -> operation("Joining channel…",
@@ -320,8 +325,7 @@ final class DiscordPanelController {
                         }));
                 actions.add(join);
             }
-            TextView back = ui.action("BACK");
-            back.setOnClickListener(view -> showDiscordServers(false));
+            TextView back = ui.back("BACK");
             actions.add(back);
             ui.show("DISCORD", "# " + channel.name,
                     channel.guildName + (active ? "  ·  connected" : ""),
@@ -357,8 +361,7 @@ final class DiscordPanelController {
             }
             TextView refresh = ui.action("REFRESH");
             refresh.setOnClickListener(view -> showParticipants(connection, channel));
-            TextView back = ui.action("BACK");
-            back.setOnClickListener(view -> showDiscordChannel(connection, channel, false));
+            TextView back = ui.back("BACK");
             actions.add(refresh); actions.add(back);
             ui.show("DISCORD", "People", voice.channelName,
                     actions.toArray(new View[0]));
@@ -377,6 +380,7 @@ final class DiscordPanelController {
                 volume.getProgress()));
         value.setContentDescription(context.getString(
                 R.string.discord_volume_description, volume.getProgress()));
+        boolean[] adjustmentMode = new boolean[]{false};
         Runnable[] pending = new Runnable[1];
         Runnable apply = () -> {
             int snapped = DiscordFeatureContract.snapParticipantVolume(volume.getProgress());
@@ -397,12 +401,26 @@ final class DiscordPanelController {
             @Override public void onStopTrackingTouch(SeekBar seekBar) { apply.run(); }
         });
         volume.setOnKeyListener((view, keyCode, event) -> {
-            if (event.getAction() == KeyEvent.ACTION_UP &&
-                    (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT)) {
-                apply.run();
+            if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_BUTTON_A) {
+                if (event.getAction() == KeyEvent.ACTION_UP) {
+                    adjustmentMode[0] = !adjustmentMode[0];
+                    value.setText(context.getString(R.string.discord_volume_value,
+                            volume.getProgress()) + (adjustmentMode[0] ? " · ADJUSTING" : ""));
+                }
+                return true;
+            }
+            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                if (!adjustmentMode[0]) return true;
+                if (event.getAction() == KeyEvent.ACTION_UP) apply.run();
             }
             return false;
         });
+        volume.setOnFocusChangeListener((view, focused) -> {
+            if (!focused) adjustmentMode[0] = false;
+        });
+        volume.setContentDescription(context.getString(
+                R.string.discord_volume_description, volume.getProgress())
+                + ". Press select to adjust.");
         TextView mute = ui.action(context.getString(participant.muted
                 ? R.string.discord_unmute_participant : R.string.discord_mute_participant));
         mute.setOnClickListener(view -> operation("Updating participant mute…",
@@ -450,6 +468,18 @@ final class DiscordPanelController {
         return container;
     }
 
+    void openDiscord(String uuid, String address, String name) {
+        hostUuid = uuid;
+        hostAddress = address;
+        hostName = name == null || name.isEmpty()
+                ? context.getString(R.string.discord_selected_host) : name;
+        if (connection() == null) {
+            showHostIntegrations(uuid, address, name);
+        } else {
+            showDiscordServers(false);
+        }
+    }
+
     private void setParticipantVolume(SeekBar volume, int value, Runnable apply) {
         volume.setProgress(DiscordFeatureContract.snapParticipantVolume(value));
         apply.run();
@@ -482,7 +512,7 @@ final class DiscordPanelController {
         TextView reconnect = ui.action("CONNECT DISCORD RPC");
         TextView audio = ui.action("AUDIO DEVICES  ›");
         TextView status = ui.action("REFRESH STATUS");
-        TextView back = ui.action("BACK");
+        TextView back = ui.back("BACK");
         enabledSetting.setOnClickListener(view -> {
             store.setDiscordEnabled(hostUuid, connection.profileId, !enabled);
             showDiscordSettings(connection);
@@ -501,7 +531,6 @@ final class DiscordPanelController {
                 () -> client.connectDiscord(connection, false), () -> showDiscordSettings(connection)));
         audio.setOnClickListener(view -> showAudio(connection));
         status.setOnClickListener(view -> showDiscordStatus(connection));
-        back.setOnClickListener(view -> showDiscordServers(false));
         ui.show("DISCORD", "Settings", "Integration profile: " + connection.profileId,
                 enabledSetting, connectSetting, joinSetting, start, reconnect, audio, status, back);
     }
@@ -509,8 +538,7 @@ final class DiscordPanelController {
     private void showDiscordStatus(HostGatewayClient.Connection connection) {
         showBusy("DISCORD", "Checking Discord Bridge…");
         load("Unable to read Discord status", () -> client.getDiscordStatus(connection), status -> {
-            TextView back = ui.action("BACK");
-            back.setOnClickListener(view -> showDiscordSettings(connection));
+            TextView back = ui.back("BACK");
             ui.show("DISCORD", "Connection status",
                     "Bridge: " + (status.bridgeOnline ? "online" : "offline") +
                             "\nRPC: " + (status.rpcConnected ? "connected" : "disconnected") +
@@ -542,8 +570,7 @@ final class DiscordPanelController {
             if (!audio.error.isEmpty()) actions.add(ui.label(audio.error));
             TextView refresh = ui.action("REFRESH");
             refresh.setOnClickListener(view -> showAudio(connection));
-            TextView back = ui.action("BACK");
-            back.setOnClickListener(view -> showDiscordSettings(connection));
+            TextView back = ui.back("BACK");
             actions.add(refresh); actions.add(back);
             ui.show("DISCORD", "Audio", "Choose Windows and Discord audio devices.",
                     actions.toArray(new View[0]));
@@ -568,7 +595,7 @@ final class DiscordPanelController {
     }
 
     private void showBusy(String title, String message) {
-        ui.show("HOST INTEGRATIONS", title, message, ui.label("Please wait…"));
+        ui.busy("HOST INTEGRATIONS", title, message);
     }
 
     private void operation(String message, Task<?> task, Runnable success) {
@@ -589,8 +616,7 @@ final class DiscordPanelController {
                     if (request != requestGeneration.get()) return;
                     TextView retryAction = ui.action("RETRY");
                     retryAction.setOnClickListener(view -> retry.run());
-                    TextView back = ui.action("BACK");
-                    back.setOnClickListener(view -> showHostIntegrations(hostUuid, hostAddress, hostName));
+                    TextView back = ui.back("BACK");
                     String message = error.getMessage();
                     ui.show("HOST INTEGRATIONS", errorTitle,
                             message == null || message.isEmpty() ? "The host did not return a usable response." : message,
