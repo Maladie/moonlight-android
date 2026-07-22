@@ -16,6 +16,8 @@ import android.widget.FrameLayout;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import com.limelight.R;
+
 import java.util.Locale;
 import java.util.Random;
 
@@ -32,27 +34,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private boolean stopped;
     private boolean revealRequested;
 
-    private final String[] messages = {
-            "Loading content…",
-            "Combobulating resources…",
-            "Negotiating photons…",
-            "Aligning virtual displays…",
-            "Preparing controller uplink…",
-            "Calibrating couch coordinates…",
-            "Julification in progress…",
-            "Pampering guinea pigs…",
-            "Did you know the scientific name for a guinea pig is Cavia porcellus?",
-            "Polishing pixels…",
-            "Feeding the hamsters in the server room…",
-            "Convincing the GPU to cooperate…",
-            "Rolling for initiative…",
-            "Untangling imaginary network cables…",
-            "Teaching photons to take the shortest route…",
-            "Asking packets to form an orderly queue…",
-            "Warming up tiny digital dragons…",
-            "Applying ceremonial RGB lighting…",
-            "Almost ready…"
-    };
+    private final String[] messages;
 
     private final Runnable rotateMessage = new Runnable() {
         @Override public void run() {
@@ -81,6 +63,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
                                     long animationEpoch, boolean reducedMotion) {
         super(context);
         this.reducedMotion = reducedMotion;
+        messages = getResources().getStringArray(R.array.console_loading_messages);
         setClickable(true);
         setFocusable(false);
         setBackgroundColor(Color.rgb(5, 6, 10));
@@ -103,28 +86,37 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         titleView.setGravity(Gravity.CENTER);
         copy.addView(titleView, row());
 
-        messageView = text(initialMessage == null || initialMessage.isEmpty()
-                ? "Preparing your game…" : initialMessage, 23, 0xFFE5E8F5, false);
+        String firstMessage = initialMessage;
+        if (firstMessage == null || firstMessage.isEmpty()) {
+            lastMessageIndex = messages.length == 0 ? -1 : random.nextInt(messages.length);
+            firstMessage = lastMessageIndex < 0
+                    ? context.getString(R.string.console_stream_preparing)
+                    : messages[lastMessageIndex];
+        }
+        messageView = text(firstMessage, 23, 0xFFE5E8F5, false);
         messageView.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams messageParams = row();
         messageParams.topMargin = dp(18);
         copy.addView(messageView, messageParams);
 
-        statusView = text("Initializing Moonlight streaming pipeline…", 15,
+        statusView = text(context.getString(R.string.console_stream_initializing), 15,
                 0xFFB8C0D9, false);
         statusView.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams statusParams = row();
         statusParams.topMargin = dp(16);
         copy.addView(statusView, statusParams);
 
-        progressView = text("STEP 1 OF 5   ●  —  ○  —  ○  —  ○  —  ○", 13,
+        progressView = text("", 13,
                 0xFFB99CFF, true);
         progressView.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams progressParams = row();
         progressParams.topMargin = dp(14);
         copy.addView(progressView, progressParams);
 
-        TextView hint = text("Press BACK to cancel", 13, 0xBFFFFFFF, false);
+        setProgress(1);
+
+        TextView hint = text(context.getString(R.string.console_stream_back_cancel),
+                13, 0xBFFFFFFF, false);
         hint.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams hintParams = row();
         hintParams.topMargin = dp(30);
@@ -144,13 +136,43 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         setProgress(progressForStage(stage));
     }
 
+    public void setStep(int step, String status) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(() -> setStep(step, status));
+            return;
+        }
+        if (stopped) return;
+        statusView.setTextColor(0xFFB8C0D9);
+        statusView.setText(status == null || status.isEmpty()
+                ? getContext().getString(R.string.console_stream_preparing) : status);
+        setProgress(step);
+    }
+
+    public String getCurrentMessage() {
+        CharSequence value = messageView.getText();
+        return value == null ? "" : value.toString();
+    }
+
+    public void showError(String title, String details) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(() -> showError(title, details));
+            return;
+        }
+        if (stopped) return;
+        messageView.animate().cancel();
+        messageView.setAlpha(1f);
+        messageView.setText(title);
+        statusView.setText(details);
+        statusView.setTextColor(0xFFFF9B92);
+    }
+
     public void waitingForVideo() {
         if (Looper.myLooper() != Looper.getMainLooper()) {
             handler.post(this::waitingForVideo);
             return;
         }
         if (stopped) return;
-        statusView.setText("Waiting for the first video frame…");
+        statusView.setText(getContext().getString(R.string.console_stream_waiting_video));
         setProgress(5);
     }
 
@@ -161,7 +183,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         }
         if (stopped || revealRequested) return;
         revealRequested = true;
-        statusView.setText("Stream ready");
+        statusView.setText(getContext().getString(R.string.console_stream_ready));
         setProgress(5);
         postOnAnimation(() -> postOnAnimation(() -> postDelayed(() -> {
             if (stopped) return;
@@ -190,7 +212,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
     private void setProgress(int completedStep) {
         int step = Math.max(1, Math.min(5, completedStep));
-        StringBuilder value = new StringBuilder("STEP ").append(step).append(" OF 5   ");
+        StringBuilder value = new StringBuilder(getContext().getString(
+                R.string.console_stream_step, step)).append("   ");
         for (int index = 1; index <= 5; index++) {
             if (index > 1) value.append("  —  ");
             value.append(index <= step ? "●" : "○");
@@ -207,15 +230,17 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         return 2;
     }
 
-    private static String friendlyStage(String stage) {
-        if (stage == null || stage.isEmpty()) return "Preparing stream…";
+    private String friendlyStage(String stage) {
+        if (stage == null || stage.isEmpty()) {
+            return getContext().getString(R.string.console_stream_preparing);
+        }
         String lower = stage.toLowerCase(Locale.ROOT);
-        if (lower.contains("rtsp")) return "Starting RTSP handshake…";
-        if (lower.contains("video")) return "Initializing video decoder…";
-        if (lower.contains("audio")) return "Starting audio stream…";
-        if (lower.contains("control")) return "Connecting controller uplink…";
-        if (lower.contains("input")) return "Preparing input channel…";
-        return "Starting " + stage + "…";
+        if (lower.contains("rtsp")) return getContext().getString(R.string.console_stream_rtsp);
+        if (lower.contains("video")) return getContext().getString(R.string.console_stream_video);
+        if (lower.contains("audio")) return getContext().getString(R.string.console_stream_audio);
+        if (lower.contains("control")) return getContext().getString(R.string.console_stream_control);
+        if (lower.contains("input")) return getContext().getString(R.string.console_stream_input);
+        return getContext().getString(R.string.console_stream_starting_stage, stage);
     }
 
     private void stopAnimations() {

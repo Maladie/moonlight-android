@@ -31,6 +31,7 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
+import android.os.SystemClock;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
 import android.view.Gravity;
@@ -81,6 +82,7 @@ import com.limelight.utils.ServerHelper;
 import com.limelight.utils.ShortcutHelper;
 import com.limelight.utils.UiHelper;
 import com.limelight.ui.OverridesView;
+import com.limelight.ui.ConsoleStreamLoadingView;
 
 import org.xmlpull.v1.XmlPullParserException;
 
@@ -112,6 +114,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private static final String PREFS = "console_dashboard";
     private static final int REQUEST_BLUETOOTH_CONNECT = 2201;
     private static final long CONTROLLER_REFRESH_MS = 30_000L;
+    private static final long DISCOVERY_INTERVAL_MS = 60_000L;
+    private static final long DISCOVERY_VISIBLE_MS = 4_000L;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newFixedThreadPool(3);
     private final AtomicInteger launchGeneration = new AtomicInteger();
@@ -140,12 +144,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private boolean refreshHostsOnResume;
     private boolean initialHostsLoaded;
     private boolean showHiddenApps;
-    private String[] loadingMessages;
 
     private FrameLayout root;
     private FrameLayout homeLayer;
     private LinearLayout homeContent;
     private FrameLayout loadingLayer;
+    private ConsoleStreamLoadingView streamLoadingView;
+    private long streamLoadingEpoch;
     private FrameLayout modalLayer;
     private LinearLayout sidePanel;
     private ScrollView sidePanelScroll;
@@ -157,15 +162,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private ImageView artworkBackdrop;
     private ImageView artworkHero;
     private View artworkScrim;
-    private ConsoleBackdrop loadingBackdrop;
-    private TextView loadingMessage;
-    private TextView loadingStatus;
     private TextView controllersLabel;
     private TextView appsLabel;
     private TextView optionsButton;
     private TextView hostSelector;
     private TextView discoveryStatus;
     private ProgressBar discoverySpinner;
+    private TextView quickResumeButton;
     private LinearLayout quickActions;
     private ImageButton discordActionButton;
     private int discordIndicatorColor = 0xFF9FAAB2;
@@ -183,6 +186,23 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private int glassAccent = 0xFF73D7FF;
     private String renderedAppsSignature;
     private String renderedControllersSignature;
+    private boolean discoveryActive;
+
+    private final Runnable endDiscoveryIndicator = () -> {
+        discoveryActive = false;
+        updateHostSelector();
+    };
+
+    private final Runnable discoveryIndicatorCycle = new Runnable() {
+        @Override public void run() {
+            if (!active || !polling) return;
+            discoveryActive = true;
+            updateHostSelector();
+            mainHandler.removeCallbacks(endDiscoveryIndicator);
+            mainHandler.postDelayed(endDiscoveryIndicator, DISCOVERY_VISIBLE_MS);
+            mainHandler.postDelayed(this, DISCOVERY_INTERVAL_MS);
+        }
+    };
 
     private final ComputerManagerListener computerListener = (details, fresh) -> {
         ComputerDetails copy = new ComputerDetails(details);
@@ -190,6 +210,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             ComputerDetails previous = hosts.get(copy.uuid);
             boolean hostChanged = previous == null
                     || previous.state != copy.state
+                    || previous.pairState != copy.pairState
+                    || previous.runningGameId != copy.runningGameId
                     || !Objects.equals(previous.activeAddress, copy.activeAddress);
             boolean hasStableAppList = copy.rawAppList != null && !copy.rawAppList.isEmpty();
             boolean appsChanged = hasStableAppList && (previous == null
@@ -220,6 +242,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         @Override public void onServiceDisconnected(ComponentName name) {
             managerBinder = null;
             polling = false;
+            discoveryActive = false;
+            mainHandler.removeCallbacks(discoveryIndicatorCycle);
+            mainHandler.removeCallbacks(endDiscoveryIndicator);
+            updateHostSelector();
         }
     };
 
@@ -230,7 +256,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         reducedMotion = preferences.getBoolean("reduced_motion", false);
         uiSoundsEnabled = preferences.getBoolean("ui_sounds", true);
         selectedHostUuid = preferences.getString("selected_host", null);
-        loadingMessages = getResources().getStringArray(R.array.console_loading_messages);
         assetLoader = new DiskAssetLoader(this);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         inputManager = (InputManager) getSystemService(INPUT_SERVICE);
@@ -308,8 +333,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         launchGeneration.incrementAndGet();
         artworkGeneration.incrementAndGet();
         mainHandler.removeCallbacks(controllerRefresh);
-        mainHandler.removeCallbacks(rotateLoadingMessage);
-        if (loadingBackdrop != null) loadingBackdrop.stop();
+        mainHandler.removeCallbacks(discoveryIndicatorCycle);
+        mainHandler.removeCallbacks(endDiscoveryIndicator);
+        discoveryActive = false;
+        if (streamLoadingView != null) streamLoadingView.stop();
         saveScrollPositions();
         stopAppListPoller();
         if (polling && managerBinder != null) {
@@ -361,6 +388,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (!active || polling || managerBinder == null) return;
         polling = true;
         managerBinder.startPolling(computerListener);
+        mainHandler.removeCallbacks(discoveryIndicatorCycle);
+        discoveryIndicatorCycle.run();
         ComputerDetails selected = hosts.get(selectedHostUuid);
         if (selected != null) startAppListPoller(selected);
     }
@@ -439,12 +468,36 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         discoverySpinner.setIndeterminateTintList(ColorStateList.valueOf(0xFF8DDCFF));
         discoverySpinner.setContentDescription(getString(R.string.console_discovering));
         discoverySpinner.setFocusable(false);
+        discoverySpinner.setVisibility(View.GONE);
         LinearLayout.LayoutParams spinnerParams = new LinearLayout.LayoutParams(dp(18), dp(18));
         spinnerParams.rightMargin = dp(8);
         discoveryBlock.addView(discoverySpinner, spinnerParams);
         discoveryStatus = text(getString(R.string.console_discovering), 13, 0xFFB8C9DC, false);
         discoveryBlock.addView(discoveryStatus, wrapLinear());
-        quickLine.addView(discoveryBlock, portraitLayout
+
+        LinearLayout discoveryAndSession = new LinearLayout(this);
+        discoveryAndSession.setOrientation(LinearLayout.HORIZONTAL);
+        discoveryAndSession.setGravity(Gravity.CENTER_VERTICAL);
+        discoveryAndSession.addView(discoveryBlock, wrapLinear());
+        quickResumeButton = text(getString(R.string.console_quick_resume),
+                12, 0xFFE8F6FF, true);
+        quickResumeButton.setId(View.generateViewId());
+        quickResumeButton.setTag("session.resume");
+        quickResumeButton.setFocusable(true);
+        quickResumeButton.setClickable(true);
+        quickResumeButton.setGravity(Gravity.CENTER);
+        quickResumeButton.setMinHeight(dp(42));
+        quickResumeButton.setPadding(dp(13), dp(5), dp(13), dp(5));
+        quickResumeButton.setVisibility(View.GONE);
+        quickResumeButton.setOnClickListener(view -> resumeSelectedSession());
+        quickResumeButton.setOnFocusChangeListener((view, focused) ->
+                styleCompactButton(quickResumeButton, focused));
+        styleCompactButton(quickResumeButton, false);
+        LinearLayout.LayoutParams resumeParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
+        resumeParams.leftMargin = dp(14);
+        discoveryAndSession.addView(quickResumeButton, resumeParams);
+        quickLine.addView(discoveryAndSession, portraitLayout
                 ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT)
                 : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -521,19 +574,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private void buildLoadingLayer(FrameLayout container) {
         loadingLayer = new FrameLayout(this);
         loadingLayer.setVisibility(View.GONE);
-        loadingBackdrop = new ConsoleBackdrop(this);
-        loadingLayer.addView(loadingBackdrop, match());
-        LinearLayout copy = new LinearLayout(this);
-        copy.setOrientation(LinearLayout.VERTICAL);
-        copy.setGravity(Gravity.CENTER);
-        loadingMessage = text(loadingMessages[0], 30, Color.WHITE, true);
-        loadingStatus = text("", 15, 0xFFB8C0D9, false);
-        loadingStatus.setGravity(Gravity.CENTER);
-        copy.addView(loadingMessage, wrapLinear());
-        LinearLayout.LayoutParams statusParams = wrapLinear();
-        statusParams.topMargin = dp(12);
-        copy.addView(loadingStatus, statusParams);
-        loadingLayer.addView(copy, match());
         container.addView(loadingLayer, match());
     }
 
@@ -612,21 +652,54 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 discoveryStatus.setBackground(gradient(0x20FFB74D, 0x12FFB74D, 8));
                 discoveryStatus.setPadding(dp(8), dp(3), dp(8), dp(3));
                 if (discoverySpinner != null) discoverySpinner.setVisibility(View.GONE);
-            } else if (polling) {
+            } else if (discoveryActive) {
                 discoveryStatus.setText(getString(R.string.console_discovering));
                 discoveryStatus.setTextColor(0xFFB8C9DC);
                 discoveryStatus.setBackground(null);
                 discoveryStatus.setPadding(0, 0, 0, 0);
                 if (discoverySpinner != null) discoverySpinner.setVisibility(View.VISIBLE);
             } else {
-                discoveryStatus.setText(getString(R.string.console_discovery_idle));
+                discoveryStatus.setText(getString(R.string.console_discovery_next_scan));
                 discoveryStatus.setTextColor(0xFF8790A8);
                 discoveryStatus.setBackground(null);
                 discoveryStatus.setPadding(0, 0, 0, 0);
                 if (discoverySpinner != null) discoverySpinner.setVisibility(View.GONE);
             }
         }
+        updateQuickResumeButton(host);
         refreshDiscordIndicator();
+    }
+
+    private void updateQuickResumeButton(ComputerDetails host) {
+        if (quickResumeButton == null) return;
+        boolean visible = host != null && ConsoleActionCatalog.isOnline(host)
+                && ConsoleActionCatalog.isPaired(host) && host.runningGameId != 0;
+        boolean restoreFocus = quickResumeButton.hasFocus() && !visible;
+        quickResumeButton.setVisibility(visible ? View.VISIBLE : View.GONE);
+        quickResumeButton.setEnabled(visible);
+        if (visible) {
+            String appName = findAppName(host, host.runningGameId);
+            quickResumeButton.setText(appName == null
+                    ? getString(R.string.console_quick_resume)
+                    : getString(R.string.console_quick_resume_app, appName));
+            quickResumeButton.setContentDescription(getString(
+                    R.string.console_quick_resume_description,
+                    appName == null ? getString(R.string.console_status_active_session) : appName));
+        } else if (restoreFocus) {
+            View fallback = firstFocusableChild(quickActions);
+            View target = fallback != null ? fallback : hostSelector;
+            target.post(target::requestFocus);
+        }
+    }
+
+    private void resumeSelectedSession() {
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host == null || !ConsoleActionCatalog.isOnline(host)
+                || !ConsoleActionCatalog.isPaired(host) || host.runningGameId == 0) {
+            updateHostSelector();
+            return;
+        }
+        resumeSession(host);
     }
 
     private String hostStatus(ComputerDetails host) {
@@ -700,7 +773,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         actions.add(add);
         showSidePanel(getString(R.string.console_hosts_eyebrow),
                 getString(R.string.console_hosts_title),
-                polling ? getString(R.string.console_hosts_scanning)
+                discoveryActive ? getString(R.string.console_hosts_scanning)
                         : getString(R.string.console_hosts_ready),
                 actions.toArray(new View[0]));
     }
@@ -727,10 +800,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             managerBinder.invalidateStateForComputer(host.uuid);
         }
         if (appListPoller != null) appListPoller.pollNow();
-        discoveryStatus.setText(R.string.console_discovering);
-        if (newlyDiscoveredHosts.isEmpty() && discoverySpinner != null) {
-            discoverySpinner.setVisibility(View.VISIBLE);
-        }
+        mainHandler.removeCallbacks(discoveryIndicatorCycle);
+        mainHandler.removeCallbacks(endDiscoveryIndicator);
+        discoveryIndicatorCycle.run();
         Toast.makeText(this, R.string.console_refresh_started, Toast.LENGTH_SHORT).show();
     }
 
@@ -1111,8 +1183,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 getString(R.string.applist_menu_resume), online, known, paired, activeSession,
                 host.macAddress != null, gatewayPaired, false, () -> {
                     hideSidePanel();
-                    ServerHelper.doStart(this, new NvApp("app", host.runningGameId, false),
-                            host, managerBinder);
+                    resumeSession(host);
                 });
         addHostAction(resolved, ConsoleActionCatalog.HostCapability.QUIT_SESSION,
                 getString(R.string.applist_menu_quit), online, known, paired, activeSession,
@@ -1171,6 +1242,23 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (!visible) return;
         actions.add(ConsoleAction.enabled("host." + capability.name().toLowerCase(Locale.ROOT),
                 label, 0, ConsoleAction.Context.HOST, destructive, handler));
+    }
+
+    private void resumeSession(ComputerDetails host) {
+        if (host == null || host.runningGameId == 0) return;
+        NvApp running = null;
+        for (NvApp app : loadApps(host, true)) {
+            if (app.getAppId() == host.runningGameId) {
+                running = app;
+                break;
+            }
+        }
+        if (running == null) {
+            String name = findAppName(host, host.runningGameId);
+            running = new NvApp(name == null ? "Moonlight" : name,
+                    host.runningGameId, false);
+        }
+        beginLaunch(host, running);
     }
 
     private void pairHost(ComputerDetails host) {
@@ -1903,7 +1991,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             return;
         }
         int token = launchGeneration.incrementAndGet();
-        showLoading(host.name);
+        showLoading(host.name, app.getAppName());
         executor.execute(() -> {
             ComputerDetails ready = HostReadiness.await(
                     () -> managerBinder != null ? managerBinder.getComputer(host.uuid) : null,
@@ -1915,23 +2003,31 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             mainHandler.post(() -> {
                 if (token != launchGeneration.get() || !active) return;
                 if (ready == null) {
-                    loadingMessage.setText(R.string.console_host_not_ready);
-                    loadingMessage.setTextColor(0xFFFF8A80);
-                    loadingStatus.setText(R.string.console_host_timeout);
+                    if (streamLoadingView != null) {
+                        streamLoadingView.showError(
+                                getString(R.string.console_host_not_ready),
+                                getString(R.string.console_host_timeout));
+                    }
                     return;
                 }
                 preferences.edit()
                         .putLong(appHistoryKey(host.uuid, app.getAppId()), System.currentTimeMillis())
                         .putLong("host_played." + host.uuid, System.currentTimeMillis())
                         .apply();
-                loadingStatus.setText(R.string.console_opening_stream);
+                String openingStatus = getString(R.string.console_opening_stream);
+                if (streamLoadingView != null) {
+                    streamLoadingView.setStep(2, openingStatus);
+                }
                 // Keep Moonlight's existing launch path and stream lifecycle unchanged.
                 Bundle presentation = new Bundle();
                 presentation.putBoolean(Game.EXTRA_CONSOLE_LOADING, true);
                 presentation.putString(Game.EXTRA_CONSOLE_LOADING_MESSAGE,
-                        loadingMessage.getText().toString());
+                        streamLoadingView == null ? null
+                                : streamLoadingView.getCurrentMessage());
                 presentation.putLong(Game.EXTRA_CONSOLE_LOADING_EPOCH,
-                        loadingBackdrop.getStartedAt());
+                        streamLoadingEpoch);
+                presentation.putInt(Game.EXTRA_CONSOLE_LOADING_STEP, 2);
+                presentation.putString(Game.EXTRA_CONSOLE_LOADING_STATUS, openingStatus);
                 presentation.putBoolean(Game.EXTRA_CONSOLE_REDUCED_MOTION, reducedMotion);
                 ServerHelper.doStart(ConsoleActivity.this, app, ready, managerBinder,
                         quickLaunchKey, presentation);
@@ -1940,39 +2036,35 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         });
     }
 
-    private void showLoading(String hostName) {
+    private void showLoading(String hostName, String appName) {
         homeLayer.setVisibility(View.GONE);
         loadingLayer.setVisibility(View.VISIBLE);
-        loadingMessage.setTextColor(Color.WHITE);
-        loadingMessage.setText(loadingMessages[0]);
-        loadingStatus.setText(getString(R.string.console_preparing_host, hostName));
-        loadingBackdrop.start();
-        loadingMessage.setTag(0);
-        mainHandler.postDelayed(rotateLoadingMessage, 2300L);
-    }
-
-    private final Runnable rotateLoadingMessage = new Runnable() {
-        @Override public void run() {
-            if (loadingLayer.getVisibility() != View.VISIBLE) return;
-            int index = loadingMessage.getTag() instanceof Integer ? (Integer) loadingMessage.getTag() : 0;
-            index = (index + 1) % loadingMessages.length;
-            loadingMessage.setTag(index);
-            loadingMessage.setText(loadingMessages[index]);
-            mainHandler.postDelayed(this, 2300L);
+        if (streamLoadingView != null) {
+            streamLoadingView.stop();
+            loadingLayer.removeView(streamLoadingView);
         }
-    };
+        streamLoadingEpoch = SystemClock.uptimeMillis();
+        streamLoadingView = new ConsoleStreamLoadingView(
+                this, appName, null, streamLoadingEpoch, reducedMotion);
+        loadingLayer.addView(streamLoadingView, match());
+        streamLoadingView.setStep(1, getString(R.string.console_preparing_host, hostName));
+        streamLoadingView.bringToFront();
+    }
 
     private void setLoadingStatus(int token, String message) {
         mainHandler.post(() -> {
             if (token == launchGeneration.get() && loadingLayer.getVisibility() == View.VISIBLE) {
-                loadingStatus.setText(message);
+                if (streamLoadingView != null) streamLoadingView.setStep(1, message);
             }
         });
     }
 
     private void showHome() {
-        mainHandler.removeCallbacks(rotateLoadingMessage);
-        loadingBackdrop.stop();
+        if (streamLoadingView != null) {
+            streamLoadingView.stopAndHide();
+            loadingLayer.removeView(streamLoadingView);
+            streamLoadingView = null;
+        }
         loadingLayer.setVisibility(View.GONE);
         homeLayer.setVisibility(View.VISIBLE);
     }
@@ -2564,21 +2656,32 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private void wireHomeFocusNavigation() {
         if (optionsButton == null) return;
+        View resume = quickResumeButton != null
+                && quickResumeButton.getVisibility() == View.VISIBLE
+                && quickResumeButton.isEnabled() ? quickResumeButton : null;
         View quick = firstFocusableChild(quickActions);
         View controller = firstFocusableChild(controllerRow);
         View app = firstFocusableChild(appRow);
 
-        View belowOptions = quick != null ? quick : controller != null ? controller : app;
+        View belowOptions = resume != null ? resume
+                : quick != null ? quick : controller != null ? controller : app;
         if (belowOptions != null) optionsButton.setNextFocusDownId(belowOptions.getId());
 
+        int down = controller != null ? controller.getId()
+                : app != null ? app.getId() : View.NO_ID;
+        if (resume != null) {
+            resume.setNextFocusUpId(optionsButton.getId());
+            if (quick != null) resume.setNextFocusRightId(quick.getId());
+            if (down != View.NO_ID) resume.setNextFocusDownId(down);
+        }
+
         if (quickActions != null) {
-            int down = controller != null ? controller.getId()
-                    : app != null ? app.getId() : View.NO_ID;
             for (int index = 0; index < quickActions.getChildCount(); index++) {
                 View child = quickActions.getChildAt(index);
                 if (!child.isFocusable()) continue;
                 child.setNextFocusUpId(optionsButton.getId());
                 if (down != View.NO_ID) child.setNextFocusDownId(down);
+                if (index == 0 && resume != null) child.setNextFocusLeftId(resume.getId());
             }
         }
 

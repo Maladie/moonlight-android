@@ -460,6 +460,7 @@
     <string name="console_discovering">Discovering hosts…</string>
     <string name="console_loading">Loading…</string>
     <string name="console_discovery_idle">Host discovery is idle</string>
+    <string name="console_discovery_next_scan">Hosts up to date · next scan in a minute</string>
     <plurals name="console_new_hosts">
         <item quantity="one">● New host discovered</item>
         <item quantity="other">● %d new hosts discovered</item>
@@ -517,6 +518,9 @@
     <string name="console_app_quick_suffix"> · Quick Launch</string>
     <string name="console_play">PLAY  ›</string>
     <string name="console_resume">RESUME  ›</string>
+    <string name="console_quick_resume">Resume session</string>
+    <string name="console_quick_resume_app">Resume session (%1$s)</string>
+    <string name="console_quick_resume_description">Resume active session: %1$s</string>
     <string name="console_more">⋯</string>
     <string name="console_app_options">Options for %1$s</string>
     <string name="console_app_description">%1$s. %2$s. %3$s</string>
@@ -638,13 +642,69 @@
     <string name="console_select_host_first">Select a host first.</string>
     <string name="console_back_close">BACK · CLOSE</string>
     <string-array name="console_loading_messages">
-        <item>Loading content…</item>
-        <item>Preparing resources…</item>
-        <item>Waking the gaming host…</item>
-        <item>Negotiating the stream…</item>
-        <item>Aligning the virtual display…</item>
-        <item>Preparing controller input…</item>
+        <item>Rolling for initiative…</item>
+        <item>Consulting the Dungeon Master…</item>
+        <item>Shuffling character sheets…</item>
+        <item>Polishing the d20…</item>
+        <item>Bribing the mimic…</item>
+        <item>Checking saving throws…</item>
+        <item>Compiling the spellbook…</item>
+        <item>Garbage-collecting goblins…</item>
+        <item>Resolving a merge conflict in the astral plane…</item>
+        <item>Warming up JVM familiars…</item>
+        <item>Asking the compiler for a prophecy…</item>
+        <item>Indexing ancient runes…</item>
+        <item>Negotiating a mutex with the lich…</item>
+        <item>Refactoring the dungeon…</item>
+        <item>Allocating mana on the heap…</item>
+        <item>Checking the stack for dragons…</item>
+        <item>Summoning the missing semicolon…</item>
+        <item>Appeasing the null pointer…</item>
+        <item>Aligning the constellations…</item>
+        <item>Calculating orbital insertion…</item>
+        <item>Calibrating the telescope…</item>
+        <item>Waiting for Mercury to release the lock…</item>
+        <item>Pinging Alpha Centauri…</item>
+        <item>Mapping the Local Group…</item>
+        <item>Counting Saturn’s rings…</item>
+        <item>Checking the Moon phase…</item>
+        <item>Synchronizing clocks with a pulsar…</item>
+        <item>Focusing the Webb mirror…</item>
+        <item>Plotting a course around the event horizon…</item>
+        <item>Asking dark matter to cooperate…</item>
+        <item>Reading tea leaves in the logs…</item>
+        <item>Cleansing the cache with sage…</item>
+        <item>Consulting the tarot of network packets…</item>
+        <item>Charging the quartz oscillator…</item>
+        <item>Drawing a protective circle around the router…</item>
+        <item>Interpreting the GPU aura…</item>
+        <item>Retrograding the deployment…</item>
+        <item>Opening the third TCP eye…</item>
+        <item>Balancing the controller chakras…</item>
+        <item>Whispering incantations to the codec…</item>
+        <item>Sorting potions in O(n log n)…</item>
+        <item>Rolling the entropy dice…</item>
+        <item>Feeding the cosmic hamsters…</item>
+        <item>Teaching photons the shortest path…</item>
+        <item>Folding space between the couch and the PC…</item>
+        <item>Booting a tiny universe…</item>
+        <item>Negotiating peace between CPU and GPU…</item>
+        <item>Checking whether reality is deterministic…</item>
+        <item>Compiling the prophecy…</item>
+        <item>Reserving a table at the tavern beyond the Moon…</item>
     </string-array>
+    <string name="console_stream_initializing">Initializing Moonlight streaming pipeline…</string>
+    <string name="console_stream_preparing">Preparing stream…</string>
+    <string name="console_stream_back_cancel">Press BACK to cancel</string>
+    <string name="console_stream_waiting_video">Waiting for the first video frame…</string>
+    <string name="console_stream_ready">Stream ready</string>
+    <string name="console_stream_step">STEP %1$d OF 5</string>
+    <string name="console_stream_rtsp">Starting RTSP handshake…</string>
+    <string name="console_stream_video">Initializing video decoder…</string>
+    <string name="console_stream_audio">Starting audio stream…</string>
+    <string name="console_stream_control">Connecting controller uplink…</string>
+    <string name="console_stream_input">Preparing input channel…</string>
+    <string name="console_stream_starting_stage">Starting %1$s…</string>
     <string name="console_initializing">Moonlight is still initializing.</string>
     <string name="console_wol_status">Sending Wake-on-LAN to %1$s…</string>
     <string name="console_waiting_stream_ports">Waiting for the host streaming ports to become reachable…</string>
