@@ -1,6 +1,10 @@
 [CmdletBinding()]
 param(
-    [string] $Serial
+    [string] $Serial,
+    [ValidateSet('Debug', 'Release')]
+    [string] $Configuration = 'Debug',
+    [switch] $LocalSign,
+    [string] $SigningKeyPath
 )
 
 $ErrorActionPreference = 'Stop'
@@ -27,6 +31,29 @@ $sdkRoot = ($sdkEntry -replace '^sdk\.dir=', '') -replace '\\:', ':' -replace '\
 $adb = Join-Path $sdkRoot 'platform-tools\adb.exe'
 if (-not (Test-Path -LiteralPath $adb)) {
     throw "ADB was not found: $adb"
+}
+
+if ($Configuration -eq 'Release' -and -not $LocalSign) {
+    throw 'Release deployment requires -LocalSign because unsigned APKs cannot be installed.'
+}
+
+if ($LocalSign -and $Configuration -ne 'Release') {
+    throw '-LocalSign is supported only with -Configuration Release.'
+}
+
+if ($LocalSign) {
+    $debugKeystore = if ($SigningKeyPath) {
+        $SigningKeyPath
+    } else {
+        Join-Path $env:USERPROFILE '.android\debug.keystore'
+    }
+    if (-not (Test-Path -LiteralPath $debugKeystore)) {
+        throw "The local Android signing key was not found: $debugKeystore"
+    }
+    if ((Split-Path -Leaf $debugKeystore) -ne 'debug.keystore') {
+        throw 'The local signing key must be named debug.keystore.'
+    }
+    $env:ANDROID_USER_HOME = Split-Path -Parent (Resolve-Path -LiteralPath $debugKeystore)
 }
 
 function Get-ConnectedDevices {
@@ -75,15 +102,22 @@ if ($Serial) {
 }
 
 $env:ANDROID_SERIAL = $Serial
-& (Join-Path $repoRoot 'gradlew.bat') --no-daemon --console=plain installNonRootDebug
+$gradleArguments = @('--no-daemon', '--console=plain')
+if ($LocalSign) {
+    $gradleArguments += '-PlocalReleaseSigning=true'
+}
+$gradleArguments += "installNonRoot$Configuration"
+
+& (Join-Path $repoRoot 'gradlew.bat') @gradleArguments
 if ($LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }
 
-$component = 'com.limelight.debug/com.limelight.console.ConsoleActivity'
+$packageName = if ($Configuration -eq 'Release') { 'com.limelight.unofficial' } else { 'com.limelight.debug' }
+$component = "$packageName/com.limelight.console.ConsoleActivity"
 & $adb -s $Serial shell am start -W -a android.intent.action.MAIN `
     -c android.intent.category.LEANBACK_LAUNCHER -n $component | Out-Null
 if ($LASTEXITCODE -ne 0) {
     throw "Moonlight TV activity could not be launched: $component"
 }
-Write-Host "Moonlight Debug was installed and launched on $Serial."
+Write-Host "Moonlight $Configuration was installed and launched on $Serial."

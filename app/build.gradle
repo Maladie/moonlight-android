@@ -13,7 +13,7 @@ android {
         targetSdk 34
 
         versionName "12.1"
-        versionCode = 314
+        versionCode = 320
 
         // Generate native debug symbols to allow Google Play to symbolicate our native crashes
         ndk.debugSymbolLevel = 'FULL'
@@ -123,6 +123,12 @@ android {
             applicationIdSuffix ".unofficial"
             resValue "string", "app_label", "Moonlight"
             resValue "string", "app_label_root", "Moonlight (Root)"
+
+            // Opt-in local signing for sideloaded release builds. This uses the Android SDK's
+            // per-user debug keystore without storing any signing material in the repository.
+            if (providers.gradleProperty("localReleaseSigning").orElse("false").get().toBoolean()) {
+                signingConfig signingConfigs.debug
+            }
 
             minifyEnabled true
             proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
