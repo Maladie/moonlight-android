@@ -416,6 +416,7 @@
     <string name="console_discovering">Wykrywanie hostów…</string>
     <string name="console_loading">Ładowanie…</string>
     <string name="console_discovery_idle">Wykrywanie hostów jest bezczynne</string>
+    <string name="console_discovery_next_scan">Hosty aktualne · kolejny skan za minutę</string>
     <plurals name="console_new_hosts">
         <item quantity="one">● Wykryto nowy host</item>
         <item quantity="few">● Wykryto %d nowe hosty</item>
@@ -483,6 +484,9 @@
     <string name="console_app_quick_suffix"> · Szybkie uruchamianie</string>
     <string name="console_play">URUCHOM  ›</string>
     <string name="console_resume">WZNÓW  ›</string>
+    <string name="console_quick_resume">Wznów sesję</string>
+    <string name="console_quick_resume_app">Wznów sesję (%1$s)</string>
+    <string name="console_quick_resume_description">Wznów aktywną sesję: %1$s</string>
     <string name="console_more">⋯</string>
     <string name="console_app_options">Opcje aplikacji %1$s</string>
     <string name="console_app_description">%1$s. %2$s. %3$s</string>
@@ -604,13 +608,69 @@
     <string name="console_select_host_first">Najpierw wybierz hosta.</string>
     <string name="console_back_close">WSTECZ · ZAMKNIJ</string>
     <string-array name="console_loading_messages">
-        <item>Wczytywanie zawartości…</item>
-        <item>Przygotowywanie zasobów…</item>
-        <item>Wybudzanie hosta…</item>
-        <item>Negocjowanie strumienia…</item>
-        <item>Dopasowywanie wirtualnego ekranu…</item>
-        <item>Przygotowywanie kontrolera…</item>
+        <item>Rzut na inicjatywę…</item>
+        <item>Konsultowanie planu z Mistrzem Gry…</item>
+        <item>Tasowanie kart postaci…</item>
+        <item>Polerowanie k20…</item>
+        <item>Przekupywanie mimika…</item>
+        <item>Sprawdzanie rzutów obronnych…</item>
+        <item>Kompilowanie księgi zaklęć…</item>
+        <item>Odśmiecanie goblinów…</item>
+        <item>Rozwiązywanie konfliktu merge na planie astralnym…</item>
+        <item>Rozgrzewanie chowańców JVM…</item>
+        <item>Proszenie kompilatora o przepowiednię…</item>
+        <item>Indeksowanie pradawnych run…</item>
+        <item>Negocjowanie mutexa z liczem…</item>
+        <item>Refaktoryzowanie lochu…</item>
+        <item>Alokowanie many na stercie…</item>
+        <item>Sprawdzanie stosu pod kątem smoków…</item>
+        <item>Przywoływanie brakującego średnika…</item>
+        <item>Udobruchanie pustego wskaźnika…</item>
+        <item>Wyrównywanie gwiazdozbiorów…</item>
+        <item>Obliczanie wejścia na orbitę…</item>
+        <item>Kalibrowanie teleskopu…</item>
+        <item>Czekanie, aż Merkury zwolni blokadę…</item>
+        <item>Pingowanie Alfa Centauri…</item>
+        <item>Mapowanie Grupy Lokalnej…</item>
+        <item>Liczenie pierścieni Saturna…</item>
+        <item>Sprawdzanie fazy Księżyca…</item>
+        <item>Synchronizowanie zegarów z pulsarem…</item>
+        <item>Ustawianie ostrości lustra Webba…</item>
+        <item>Wyznaczanie kursu wokół horyzontu zdarzeń…</item>
+        <item>Proszenie ciemnej materii o współpracę…</item>
+        <item>Czytanie fusów z logów…</item>
+        <item>Oczyszczanie cache’u szałwią…</item>
+        <item>Stawianie tarota z pakietów sieciowych…</item>
+        <item>Ładowanie oscylatora kwarcowego…</item>
+        <item>Rysowanie kręgu ochronnego wokół routera…</item>
+        <item>Interpretowanie aury GPU…</item>
+        <item>Wprowadzanie wdrożenia w retrogradację…</item>
+        <item>Otwieranie trzeciego oka TCP…</item>
+        <item>Równoważenie czakr kontrolera…</item>
+        <item>Szeptanie inkantacji do kodeka…</item>
+        <item>Sortowanie mikstur w O(n log n)…</item>
+        <item>Rzucanie kośćmi entropii…</item>
+        <item>Karmienie kosmicznych chomików…</item>
+        <item>Uczenie fotonów najkrótszej drogi…</item>
+        <item>Zaginanie przestrzeni między kanapą a PC…</item>
+        <item>Uruchamianie kieszonkowego wszechświata…</item>
+        <item>Negocjowanie pokoju między CPU i GPU…</item>
+        <item>Sprawdzanie, czy rzeczywistość jest deterministyczna…</item>
+        <item>Kompilowanie przepowiedni…</item>
+        <item>Rezerwowanie stolika w tawernie za Księżycem…</item>
     </string-array>
+    <string name="console_stream_initializing">Inicjalizowanie potoku streamingu Moonlight…</string>
+    <string name="console_stream_preparing">Przygotowywanie strumienia…</string>
+    <string name="console_stream_back_cancel">Naciśnij WSTECZ, aby anulować</string>
+    <string name="console_stream_waiting_video">Oczekiwanie na pierwszą klatkę obrazu…</string>
+    <string name="console_stream_ready">Strumień gotowy</string>
+    <string name="console_stream_step">KROK %1$d Z 5</string>
+    <string name="console_stream_rtsp">Rozpoczynanie negocjacji RTSP…</string>
+    <string name="console_stream_video">Inicjalizowanie dekodera obrazu…</string>
+    <string name="console_stream_audio">Uruchamianie strumienia dźwięku…</string>
+    <string name="console_stream_control">Łączenie kanału kontrolera…</string>
+    <string name="console_stream_input">Przygotowywanie kanału wejścia…</string>
+    <string name="console_stream_starting_stage">Uruchamianie etapu %1$s…</string>
     <string name="console_initializing">Moonlight wciąż się inicjalizuje.</string>
     <string name="console_wol_status">Wysyłanie Wake-on-LAN do %1$s…</string>
     <string name="console_waiting_stream_ports">Oczekiwanie na dostępność portów streamingu hosta…</string>

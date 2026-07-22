@@ -227,6 +227,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_CONSOLE_LOADING = "ConsoleLoading";
     public static final String EXTRA_CONSOLE_LOADING_MESSAGE = "ConsoleLoadingMessage";
     public static final String EXTRA_CONSOLE_LOADING_EPOCH = "ConsoleLoadingEpoch";
+    public static final String EXTRA_CONSOLE_LOADING_STEP = "ConsoleLoadingStep";
+    public static final String EXTRA_CONSOLE_LOADING_STATUS = "ConsoleLoadingStatus";
     public static final String EXTRA_CONSOLE_REDUCED_MOTION = "ConsoleReducedMotion";
     public static final String ACTION_QUIT_APP = "com.limelight.QUIT_STREAMING_APP";
 
@@ -292,6 +294,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT));
             consoleLoadingView.bringToFront();
+            consoleLoadingView.setStep(
+                    getIntent().getIntExtra(EXTRA_CONSOLE_LOADING_STEP, 2),
+                    getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_STATUS));
         } else {
             // Preserve stock Moonlight presentation for classic launches.
             spinner = SpinnerDialog.displayDialog(this,
