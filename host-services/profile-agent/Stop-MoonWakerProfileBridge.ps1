@@ -4,6 +4,7 @@ param([string]$ProfileRoot = $PSScriptRoot)
 $ErrorActionPreference = "SilentlyContinue"
 $statePath = Join-Path $ProfileRoot "profile-bridge-state.json"
 $stopPath = Join-Path $ProfileRoot "profile-bridge-stop"
+New-Item -ItemType File -Path (Join-Path $ProfileRoot "profile-bridge-manually-stopped") -Force | Out-Null
 New-Item -ItemType File -Path $stopPath -Force | Out-Null
 $stopScripts = @(
     (Join-Path $ProfileRoot "discord\Stop-DiscordBridge.ps1"),

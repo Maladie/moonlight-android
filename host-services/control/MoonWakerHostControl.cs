@@ -284,6 +284,7 @@ namespace MoonWaker.HostControl
         private static string StatusLabel(string value)
         {
             if (value == "running" || value == "online") return "ONLINE";
+            if (value == "manually_stopped") return "ZATRZYMANY RĘCZNIE";
             if (value == "disabled") return "WYŁ.";
             if (value == "unavailable") return "INNE KONTO";
             return "OFFLINE";

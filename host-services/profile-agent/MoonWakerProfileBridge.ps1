@@ -10,6 +10,7 @@ $ErrorActionPreference = "Stop"
 $ProfileRoot = [IO.Path]::GetFullPath($ProfileRoot)
 $statePath = Join-Path $ProfileRoot "profile-bridge-state.json"
 $stopPath = Join-Path $ProfileRoot "profile-bridge-stop"
+$manualStopPath = Join-Path $ProfileRoot "profile-bridge-manually-stopped"
 $logPath = Join-Path $ProfileRoot "profile-bridge.log"
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -replace '[^A-Za-z0-9]', '_'
 $mutex = [Threading.Mutex]::new($false, "Local\MoonWakerProfileBridge_${sid}_$ProfileId")
@@ -127,6 +128,11 @@ function Stop-Components {
 try {
     try { $ownsMutex = $mutex.WaitOne(0, $false) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
     if (-not $ownsMutex) { exit 0 }
+    if (Test-Path -LiteralPath $manualStopPath) {
+        Write-AgentLog "Profile Bridge remains stopped because the user stopped it manually."
+        Write-State "manually_stopped"
+        exit 0
+    }
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
     Write-AgentLog "Profile Bridge supervisor started for $ProfileId."
     foreach ($name in @("discord", "vibepollo", "playnite")) {
@@ -162,7 +168,7 @@ try {
     Write-State "stopping"
     Stop-Components
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
-    Write-State "stopped"
+    Write-State $(if (Test-Path -LiteralPath $manualStopPath) { "manually_stopped" } else { "stopped" })
     Write-AgentLog "Profile Bridge supervisor stopped."
     if ($ownsMutex) { try { $mutex.ReleaseMutex() } catch {} }
     $mutex.Dispose()
