@@ -47,3 +47,9 @@ app/.externalNativeBuild/
 # Local TV build/deploy helpers (machine-specific SDK, JDK and ADB setup)
 /build-tv.ps1
 /deploy-tv.ps1
+
+# Host-service build output (produced by Build-HostServices.ps1)
+/host-services/dist/
+/host-services/control/dist/
+__pycache__/
+*.py[cod]

@@ -1,0 +1,18 @@
+{
+  "listen_host": "0.0.0.0",
+  "listen_port": 8785,
+  "certificate": "gateway-cert.pem",
+  "private_key": "gateway-key.pem",
+  "discord_bridge": "http://127.0.0.1:8765",
+  "vibepollo_bridge": "http://127.0.0.1:8775",
+  "playnite_bridge": "http://127.0.0.1:8780",
+  "profiles": {
+    "default": {
+      "name": "Default",
+      "discord_bridge": "http://127.0.0.1:8765",
+      "vibepollo_bridge": "http://127.0.0.1:8775",
+      "playnite_bridge": "http://127.0.0.1:8780"
+    }
+  },
+  "clients": []
+}

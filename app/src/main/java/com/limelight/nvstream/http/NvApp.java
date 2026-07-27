@@ -4,6 +4,8 @@ import com.limelight.LimeLog;
 
 public class NvApp {
     private String appName = "";
+    private String appUuid = "";
+    private String artVersion = "";
     private int appId;
     private boolean initialized;
     private boolean hdrSupported;
@@ -39,6 +41,14 @@ public class NvApp {
         this.initialized = true;
     }
 
+    public void setAppUuid(String appUuid) {
+        this.appUuid = appUuid == null ? "" : appUuid;
+    }
+
+    public void setArtVersion(String artVersion) {
+        this.artVersion = artVersion == null ? "" : artVersion;
+    }
+
     public void setHdrSupported(boolean hdrSupported) {
         this.hdrSupported = hdrSupported;
     }
@@ -49,6 +59,14 @@ public class NvApp {
     
     public int getAppId() {
         return this.appId;
+    }
+
+    public String getAppUuid() {
+        return this.appUuid;
+    }
+
+    public String getArtVersion() {
+        return this.artVersion;
     }
 
     public boolean isHdrSupported() {
