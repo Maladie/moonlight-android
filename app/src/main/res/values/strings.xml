@@ -642,6 +642,27 @@
     <string name="console_select_host_first">Select a host first.</string>
     <string name="console_back_close">BACK · CLOSE</string>
     <string-array name="console_loading_messages">
+        <item>Aurelification in progress…</item>
+        <item>Convincing the router it is a wizard…</item>
+        <item>Polishing the moonbeams…</item>
+        <item>Teaching packets to dance in formation…</item>
+        <item>Asking the dice for better latency…</item>
+        <item>Herding stray electrons…</item>
+        <item>Casting Remove Buffering…</item>
+        <item>Negotiating with the goblin in the cable…</item>
+        <item>Checking whether the couch is still in range…</item>
+        <item>Dusting the astral keyboard…</item>
+        <item>Brewing an espresso for the GPU…</item>
+        <item>Translating the gamepad’s prophecies…</item>
+        <item>Reassuring the tiny cloud…</item>
+        <item>Arranging pixels by zodiac sign…</item>
+        <item>Measuring the dragon’s ping…</item>
+        <item>Feeding snacks to the cache gremlins…</item>
+        <item>Assigning a familiar to each controller…</item>
+        <item>Sending a postcard to the event horizon…</item>
+        <item>Untying quantum shoelaces…</item>
+        <item>Asking the Moon for a spare frame…</item>
+        <item>Recharging the rainbow in RGB…</item>
         <item>Rolling for initiative…</item>
         <item>Consulting the Dungeon Master…</item>
         <item>Shuffling character sheets…</item>

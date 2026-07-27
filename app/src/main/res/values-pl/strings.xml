@@ -608,6 +608,27 @@
     <string name="console_select_host_first">Najpierw wybierz hosta.</string>
     <string name="console_back_close">WSTECZ · ZAMKNIJ</string>
     <string-array name="console_loading_messages">
+        <item>Aurelifikacja w toku…</item>
+        <item>Namawianie routera, by został czarodziejem…</item>
+        <item>Polerowanie promieni księżyca…</item>
+        <item>Uczenie pakietów tańca w szyku…</item>
+        <item>Proszenie kości o lepsze opóźnienie…</item>
+        <item>Zaganianie zabłąkanych elektronów…</item>
+        <item>Rzucanie zaklęcia „Usuń buforowanie”…</item>
+        <item>Negocjowanie z goblinem w kablu…</item>
+        <item>Sprawdzanie, czy kanapa jest nadal w zasięgu…</item>
+        <item>Odkurzanie astralnej klawiatury…</item>
+        <item>Parzenie espresso dla GPU…</item>
+        <item>Tłumaczenie przepowiedni pada…</item>
+        <item>Uspokajanie małej chmurki…</item>
+        <item>Układanie pikseli według znaku zodiaku…</item>
+        <item>Mierzenie pingu smoka…</item>
+        <item>Karmienie cache’owych gremlinów…</item>
+        <item>Przydzielanie chowańca do każdego kontrolera…</item>
+        <item>Wysyłanie pocztówki do horyzontu zdarzeń…</item>
+        <item>Rozplątywanie kwantowych sznurowadeł…</item>
+        <item>Proszenie Księżyca o dodatkową klatkę…</item>
+        <item>Ładowanie tęczy w RGB…</item>
         <item>Rzut na inicjatywę…</item>
         <item>Konsultowanie planu z Mistrzem Gry…</item>
         <item>Tasowanie kart postaci…</item>
