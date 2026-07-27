@@ -9,7 +9,8 @@ from pathlib import Path
 
 
 PATCH_MARKER_V1 = "# WAKEPLAY-CONSOLE-SNAPSHOT-V1"
-PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V2"
+PATCH_MARKER_V2 = "# WAKEPLAY-CONSOLE-BRIDGE-V2"
+PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V3"
 
 READER_ANCHOR = """        if ($obj.type -eq 'command' -and $obj.command -eq 'launch' -and $obj.id) {
           Register-SunshineLaunchedGame -Id $obj.id
@@ -77,17 +78,39 @@ STARTED_REPLACEMENT = """  $processId = 0
 }
 # WAKEPLAY-CONSOLE-BRIDGE-V2"""
 
+ARTWORK_LOOKUP_ANCHOR = """    $boxArt = Get-BoxArtPath -Game $g
+    $icon = Get-IconPath -Game $g"""
+ARTWORK_LOOKUP_REPLACEMENT = """    $boxArt = Get-BoxArtPath -Game $g
+    $backgroundArt = ''
+    try {
+      if ($g.BackgroundImage) {
+        $backgroundArt = $PlayniteApi.Database.GetFullFilePath($g.BackgroundImage)
+      }
+    } catch {}
+    $icon = Get-IconPath -Game $g"""
+ARTWORK_PAYLOAD_ANCHOR = """      boxArtPath      = $boxArt
+      iconPath        = $icon"""
+ARTWORK_PAYLOAD_REPLACEMENT = """      boxArtPath      = $boxArt
+      backgroundImagePath = $backgroundArt
+      iconPath        = $icon
+      # WAKEPLAY-CONSOLE-BRIDGE-V3"""
+
 
 def patch_text(source: str) -> tuple[str, bool]:
     if PATCH_MARKER in source:
         return source, False
     anchors = [
-        ("status parameters", STATUS_PARAM_ANCHOR),
-        ("status object", STATUS_OBJECT_ANCHOR),
-        ("sender parameters", SEND_PARAM_ANCHOR),
-        ("sender payload", SEND_BUILD_ANCHOR),
-        ("game started handler", STARTED_ANCHOR),
+        ("background artwork lookup", ARTWORK_LOOKUP_ANCHOR),
+        ("background artwork payload", ARTWORK_PAYLOAD_ANCHOR),
     ]
+    if PATCH_MARKER_V2 not in source:
+        anchors += [
+            ("status parameters", STATUS_PARAM_ANCHOR),
+            ("status object", STATUS_OBJECT_ANCHOR),
+            ("sender parameters", SEND_PARAM_ANCHOR),
+            ("sender payload", SEND_BUILD_ANCHOR),
+            ("game started handler", STARTED_ANCHOR),
+        ]
     if PATCH_MARKER_V1 not in source:
         anchors += [("launcher reader", READER_ANCHOR), ("connector loop", FUNCTION_ANCHOR)]
     missing = [name for name, anchor in anchors if anchor not in source]
@@ -97,14 +120,17 @@ def patch_text(source: str) -> tuple[str, bool]:
     if PATCH_MARKER_V1 not in patched:
         patched = patched.replace(READER_ANCHOR, READER_REPLACEMENT, 1)
         patched = patched.replace(FUNCTION_ANCHOR, SNAPSHOT_FUNCTION + FUNCTION_ANCHOR, 1)
-    for anchor, replacement in (
-        (STATUS_PARAM_ANCHOR, STATUS_PARAM_REPLACEMENT),
-        (STATUS_OBJECT_ANCHOR, STATUS_OBJECT_REPLACEMENT),
-        (SEND_PARAM_ANCHOR, SEND_PARAM_REPLACEMENT),
-        (SEND_BUILD_ANCHOR, SEND_BUILD_REPLACEMENT),
-        (STARTED_ANCHOR, STARTED_REPLACEMENT),
-    ):
-        patched = patched.replace(anchor, replacement, 1)
+    if PATCH_MARKER_V2 not in patched:
+        for anchor, replacement in (
+            (STATUS_PARAM_ANCHOR, STATUS_PARAM_REPLACEMENT),
+            (STATUS_OBJECT_ANCHOR, STATUS_OBJECT_REPLACEMENT),
+            (SEND_PARAM_ANCHOR, SEND_PARAM_REPLACEMENT),
+            (SEND_BUILD_ANCHOR, SEND_BUILD_REPLACEMENT),
+            (STARTED_ANCHOR, STARTED_REPLACEMENT),
+        ):
+            patched = patched.replace(anchor, replacement, 1)
+    patched = patched.replace(ARTWORK_LOOKUP_ANCHOR, ARTWORK_LOOKUP_REPLACEMENT, 1)
+    patched = patched.replace(ARTWORK_PAYLOAD_ANCHOR, ARTWORK_PAYLOAD_REPLACEMENT, 1)
     return patched, True
 
 

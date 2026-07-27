@@ -9,6 +9,7 @@ import java.util.List;
 import java.util.concurrent.LinkedBlockingQueue;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicReference;
 
 import org.jcodec.codecs.h264.H264Utils;
 import org.jcodec.codecs.h264.io.model.SeqParameterSet;
@@ -84,6 +85,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private PerfOverlayListener perfListener;
     private final Runnable firstFrameRenderedCallback;
     private final AtomicBoolean firstFrameReported = new AtomicBoolean();
+    private final AtomicReference<Runnable> nextFrameRenderedCallback =
+            new AtomicReference<>();
 
     private static final int CR_MAX_TRIES = 10;
     private static final int CR_RECOVERY_TYPE_NONE = 0;
@@ -712,25 +715,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         LimeLog.info(MediaCodecHelper.getMediaFormatLog());
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            videoDecoder.setOnFrameRenderedListener(new MediaCodec.OnFrameRenderedListener() {
-                @Override
-                public void onFrameRendered(MediaCodec mediaCodec, long presentationTimeUs, long renderTimeNanos) {
-                    if (USE_FRAME_RENDER_TIME) {
-                        long delta = (renderTimeNanos / 1000000L) - (presentationTimeUs / 1000);
-                        if (delta >= 0 && delta < 1000) {
-                            activeWindowVideoStats.totalTimeMs += delta;
-                        }
-                    }
-                    reportFirstFrameRendered();
-                    if (!USE_FRAME_RENDER_TIME) {
-                        try {
-                            mediaCodec.setOnFrameRenderedListener(null, null);
-                        } catch (IllegalStateException ignored) {}
-                    }
-                }
-            }, null);
-        }
+        installFrameRenderedListener();
 
         return 0;
     }
@@ -741,6 +726,40 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             LimeLog.info("First video frame rendered");
             firstFrameRenderedCallback.run();
         }
+    }
+
+    @TargetApi(Build.VERSION_CODES.M)
+    private void installFrameRenderedListener() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M || videoDecoder == null) return;
+        try {
+            videoDecoder.setOnFrameRenderedListener((mediaCodec, presentationTimeUs,
+                                                      renderTimeNanos) -> {
+                if (USE_FRAME_RENDER_TIME) {
+                    long delta = (renderTimeNanos / 1000000L) - (presentationTimeUs / 1000);
+                    if (delta >= 0 && delta < 1000) {
+                        activeWindowVideoStats.totalTimeMs += delta;
+                    }
+                }
+                reportFirstFrameRendered();
+                Runnable callback = nextFrameRenderedCallback.getAndSet(null);
+                if (callback != null) callback.run();
+                if (!USE_FRAME_RENDER_TIME && nextFrameRenderedCallback.get() == null) {
+                    try {
+                        mediaCodec.setOnFrameRenderedListener(null, null);
+                    } catch (IllegalStateException ignored) {}
+                }
+            }, null);
+        } catch (IllegalStateException ignored) {}
+    }
+
+    /**
+     * Arms a one-shot callback for the next frame actually rendered by MediaCodec.
+     * It does not keep a permanent per-frame Java listener in the steady state.
+     */
+    public void requestNextFrameRendered(Runnable callback) {
+        if (callback == null) return;
+        nextFrameRenderedCallback.set(callback);
+        installFrameRenderedListener();
     }
 
     @Override

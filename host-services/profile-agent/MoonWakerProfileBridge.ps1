@@ -156,6 +156,12 @@ try {
             $healthTick = 0
             foreach ($name in @("discord", "vibepollo", "playnite")) {
                 $process = $children[$name]
+                # DiscordBridge deliberately handles AUTHORIZE synchronously while
+                # Discord displays its consent modal. It cannot answer /health in
+                # that interval, so restarting it would cancel OAuth. Its bounded
+                # RPC read timeout and the normal exited-process check above still
+                # recover a genuinely failed Bridge.
+                if ($name -eq "discord") { continue }
                 if ($null -ne $process -and -not $process.HasExited -and -not (Test-ComponentHealth $name)) {
                     Restart-Component $name $process
                 }

@@ -175,6 +175,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     private final Handler backgroundThreadHandler;
     private boolean hasGameController;
     private boolean stopped = false;
+    private volatile boolean inputSuppressed;
 
     private final PreferenceConfiguration prefConfig;
     private short currentControllers, initialControllers;
@@ -478,6 +479,18 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
 
         deviceVibrator.cancel();
+    }
+
+    /**
+     * Suppresses packets without stopping device discovery, sensors, or controller
+     * ownership. This lets a privacy overlay gate input without reinitialization.
+     */
+    public void setInputSuppressed(boolean suppressed) {
+        inputSuppressed = suppressed;
+    }
+
+    public boolean isInputSuppressed() {
+        return inputSuppressed;
     }
 
     public void destroy() {
@@ -1443,6 +1456,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     }
 
     private void sendControllerInputPacket(GenericControllerContext originalContext) {
+        if (inputSuppressed) return;
         assignControllerNumberIfNeeded(originalContext);
 
         // Take the context's controller number and fuse all inputs with the same number
@@ -1913,6 +1927,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     }
 
     private boolean sendTouchpadEventForPointer(InputDeviceContext context, MotionEvent event, byte touchType, int pointerIndex) {
+        if (inputSuppressed) return true;
         float normalizedX = normalizeRawValueWithRange(event.getX(pointerIndex), context.touchpadXRange);
         float normalizedY = normalizeRawValueWithRange(event.getY(pointerIndex), context.touchpadYRange);
         float normalizedPressure = context.touchpadPressureRange != null ?
@@ -1925,6 +1940,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     }
 
     public boolean tryHandleTouchpadEvent(MotionEvent event) {
+        if (inputSuppressed) return true;
         // Bail if this is not a touchpad or mouse event
         if (event.getSource() != InputDevice.SOURCE_TOUCHPAD &&
                 event.getSource() != InputDevice.SOURCE_MOUSE) {
@@ -2046,6 +2062,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     }
 
     public boolean handleMotionEvent(MotionEvent event) {
+        if (inputSuppressed) return true;
         InputDeviceContext context = getContextForEvent(event);
         if (context == null) {
             return true;
@@ -2393,6 +2410,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
             @Override
             public void onSensorChanged(SensorEvent sensorEvent) {
+                if (inputSuppressed) return;
                 // Android will invoke our callback any time we get a new reading,
                 // even if the values are the same as last time. Don't report a
                 // duplicate set of values to save bandwidth.

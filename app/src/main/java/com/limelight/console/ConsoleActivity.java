@@ -83,6 +83,8 @@ import com.limelight.utils.ShortcutHelper;
 import com.limelight.utils.UiHelper;
 import com.limelight.ui.OverridesView;
 import com.limelight.ui.ConsoleStreamLoadingView;
+import com.limelight.console.transition.LaunchTransitionSpec;
+import com.limelight.console.transition.LaunchTransitionType;
 
 import org.json.JSONObject;
 import org.xmlpull.v1.XmlPullParserException;
@@ -123,6 +125,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private static final long VIBEPOLLO_ENSURE_RETRY_MS = 3_000L;
     private static final long VIBEPOLLO_APP_STABLE_MS = 30_000L;
     private static final int VIBEPOLLO_APP_STABLE_POLLS = 5;
+    private static final long PREVIOUS_SESSION_CLOSE_TIMEOUT_MS = 20_000L;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newFixedThreadPool(3);
     private final ExecutorService playniteExecutor = Executors.newSingleThreadExecutor();
@@ -2119,7 +2122,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (cached != null) {
             loadPlayniteBitmap(cached.file, poster, expectedTag, cached.kind);
             showArtwork(cached.file, poster.getDrawable());
-            return;
+            if (spec.kind.equals(cached.kind) || !allowNetwork) return;
         }
         if (!allowNetwork) return;
         String address = latestHost.activeAddress != null
@@ -2173,8 +2176,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 if (!spec.available()) continue;
                 try {
                     ArtworkResult result = cachedPlayniteArtwork(latestHost.uuid, item, spec);
-                    if (result == null) {
-                        result = fetchPlayniteArtwork(connection, latestHost.uuid, item, spec);
+                    if (result == null || !spec.kind.equals(result.kind)) {
+                        try {
+                            result = fetchPlayniteArtwork(
+                                    connection, latestHost.uuid, item, spec);
+                        } catch (IOException primaryFailure) {
+                            if (result == null) throw primaryFailure;
+                        }
                     }
                     ArtworkResult ready = result;
                     mainHandler.post(() -> applyPrefetchedPlayniteArtwork(
@@ -2205,6 +2213,19 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 spec.fallbackKind, spec.fallbackVersion);
         return fallback != null && fallback.isFile() && fallback.length() > 0
                 ? new ArtworkResult(fallback, spec.fallbackKind) : null;
+    }
+
+    private String cachedLoadingArtworkPath(String hostUuid, String gameId) {
+        if (hostUuid == null || gameId == null || gameId.isEmpty()) return null;
+        for (PlayniteDashboardItem item : renderedPlayniteItems) {
+            if (!gameId.equalsIgnoreCase(item.stableId())
+                    || item.game.backgroundKey.isEmpty()) continue;
+            File artwork = playniteArtworkCache.get(hostUuid, item.stableId(),
+                    "background", item.game.backgroundKey);
+            return artwork != null && artwork.isFile() && artwork.length() > 0
+                    ? artwork.getAbsolutePath() : null;
+        }
+        return null;
     }
 
     private ArtworkResult fetchPlayniteArtwork(HostGatewayClient.Connection connection,
@@ -2334,14 +2355,16 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
             NvApp target = PlayniteTargetResolver.findById(apps, item.sunshineAppId);
             if (target != null) {
-                launchOrConfirm(host, target);
+                launchOrConfirm(host, target, LaunchTransitionType.GAME,
+                        item.game.playniteGameId);
                 return;
             }
         }
         if (item.mappingState == PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE) {
             NvApp fallback = PlayniteTargetResolver.findById(apps, item.sunshineAppId);
             if (fallback != null) {
-                launchOrConfirm(host, fallback);
+                launchOrConfirm(host, fallback, LaunchTransitionType.GAME,
+                        item.game.playniteGameId);
                 return;
             }
         }
@@ -2424,8 +2447,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             return;
         }
         int token = launchGeneration.incrementAndGet();
-        showLoading(host.name, item.game.name);
-        executor.execute(() -> {
+        showLoading(host.name, item.game.name, LaunchTransitionType.GAME);
+        Runnable prepareAfterOverlayFrame = () -> executor.execute(() -> {
             ComputerDetails ready = HostReadiness.await(
                     () -> managerBinder != null ? managerBinder.getComputer(host.uuid) : null,
                     host,
@@ -2448,6 +2471,11 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 ensureVibepolloAppThenLaunch(ready, item, fallback);
             });
         });
+        if (streamLoadingView != null) {
+            streamLoadingView.doAfterNextFrame(prepareAfterOverlayFrame);
+        } else {
+            prepareAfterOverlayFrame.run();
+        }
     }
 
     private void awaitVibepolloTarget(String hostUuid, PlayniteDashboardItem item,
@@ -2523,7 +2551,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         playniteLaunchTargetStore.setGameTarget(hostUuid, item.stableId(),
                 fallback.getAppId());
         renderPlayniteLibrary(currentHost(hostUuid), currentSunshineApps);
-        launchOrConfirm(currentHost(hostUuid), fallback);
+        launchOrConfirm(currentHost(hostUuid), fallback, LaunchTransitionType.GAME,
+                item.game.playniteGameId);
     }
 
     private void showPlayniteTargetPicker(ComputerDetails host, PlayniteDashboardItem item,
@@ -2585,7 +2614,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 host.uuid, currentSunshineApps, playniteLaunchTargetStore);
         if (target != null) {
             playniteLaunchTargetStore.setPlayniteTarget(host.uuid, target.getAppId());
-            launchOrConfirm(host, target);
+            launchOrConfirm(host, target, LaunchTransitionType.PLAYNITE, "");
         } else {
             showPlayniteFullscreenTargetPicker();
         }
@@ -2778,6 +2807,12 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private void launchOrConfirm(ComputerDetails host, NvApp app) {
+        launchOrConfirm(host, app, LaunchTransitionType.GENERIC, "");
+    }
+
+    private void launchOrConfirm(ComputerDetails host, NvApp app,
+                                 LaunchTransitionType transitionType,
+                                 String playniteGameId) {
         ComputerDetails latestHost = host == null ? null : currentHost(host.uuid);
         if (!ConsoleActionCatalog.isPaired(latestHost)) {
             Toast.makeText(this, R.string.scut_not_paired, Toast.LENGTH_SHORT).show();
@@ -2785,9 +2820,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
         if (latestHost.runningGameId != 0 && latestHost.runningGameId != app.getAppId()) {
             UiHelper.displayQuitConfirmationDialog(this,
-                    () -> beginLaunch(latestHost, app), null);
+                    () -> beginLaunch(latestHost, app, null, transitionType,
+                            playniteGameId), null);
         } else {
-            beginLaunch(latestHost, app);
+            beginLaunch(latestHost, app, null, transitionType, playniteGameId);
         }
     }
 
@@ -3064,13 +3100,23 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private void beginLaunch(ComputerDetails host, NvApp app, String quickLaunchKey) {
+        beginLaunch(host, app, quickLaunchKey, LaunchTransitionType.GENERIC, "");
+    }
+
+    private void beginLaunch(ComputerDetails host, NvApp app, String quickLaunchKey,
+                             LaunchTransitionType transitionType,
+                             String playniteGameId) {
         if (managerBinder == null) {
             Toast.makeText(this, R.string.console_initializing, Toast.LENGTH_SHORT).show();
             return;
         }
         int token = launchGeneration.incrementAndGet();
-        showLoading(host.name, app.getAppName());
-        executor.execute(() -> {
+        LaunchTransitionSpec transition = LaunchTransitionSpec.create(
+                host.uuid, transitionType, app.getAppId(), playniteGameId,
+                System.currentTimeMillis());
+        String loadingArtworkPath = cachedLoadingArtworkPath(host.uuid, playniteGameId);
+        showLoading(host.name, app.getAppName(), transitionType, loadingArtworkPath);
+        Runnable startAfterOverlayFrame = () -> executor.execute(() -> {
             ComputerDetails ready = HostReadiness.await(
                     () -> managerBinder != null ? managerBinder.getComputer(host.uuid) : null,
                     host,
@@ -3078,6 +3124,22 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     message -> setLoadingStatus(token, message),
                     getString(R.string.console_wol_status, host.name),
                     getString(R.string.console_waiting_stream_ports));
+            if (ready != null && ready.runningGameId != 0
+                    && ready.runningGameId != app.getAppId()) {
+                try {
+                    closePreviousSession(token, ready, app.getAppId());
+                } catch (IOException | XmlPullParserException error) {
+                    mainHandler.post(() -> {
+                        if (token != launchGeneration.get() || !active) return;
+                        if (streamLoadingView != null) {
+                            streamLoadingView.showError(
+                                    getString(R.string.applist_quit_fail),
+                                    getString(R.string.console_previous_session_close_failed));
+                        }
+                    });
+                    return;
+                }
+            }
             mainHandler.post(() -> {
                 if (token != launchGeneration.get() || !active) return;
                 if (ready == null) {
@@ -3107,14 +3169,76 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 presentation.putInt(Game.EXTRA_CONSOLE_LOADING_STEP, 2);
                 presentation.putString(Game.EXTRA_CONSOLE_LOADING_STATUS, openingStatus);
                 presentation.putBoolean(Game.EXTRA_CONSOLE_REDUCED_MOTION, reducedMotion);
+                presentation.putString(Game.EXTRA_CONSOLE_LOADING_ARTWORK,
+                        loadingArtworkPath);
+                presentation.putString(Game.EXTRA_TRANSITION_ID, transition.id);
+                presentation.putString(Game.EXTRA_TRANSITION_TYPE, transition.type.name());
+                presentation.putString(Game.EXTRA_TRANSITION_HOST_ID, transition.hostId);
+                presentation.putString(Game.EXTRA_TRANSITION_PLAYNITE_GAME_ID,
+                        transition.playniteGameId);
+                presentation.putLong(Game.EXTRA_TRANSITION_CREATED_AT,
+                        transition.createdAtMillis);
                 ServerHelper.doStart(ConsoleActivity.this, app, ready, managerBinder,
                         quickLaunchKey, presentation);
                 overridePendingTransition(0, 0);
             });
         });
+        if (streamLoadingView != null) {
+            streamLoadingView.doAfterNextFrame(startAfterOverlayFrame);
+        } else {
+            startAfterOverlayFrame.run();
+        }
+    }
+
+    private void closePreviousSession(int token, ComputerDetails host, int targetAppId)
+            throws IOException, XmlPullParserException {
+        if (host.runningGameId == 0 || host.runningGameId == targetAppId) return;
+        setLoadingStatus(token, getString(R.string.transition_closing_session));
+        NvHTTP connection = new NvHTTP(
+                ServerHelper.getCurrentAddressFromComputer(host), host.httpsPort,
+                managerBinder.getUniqueId(), host.serverCert,
+                PlatformBinding.getCryptoProvider(this));
+        if (!connection.quitApp()) {
+            throw new IOException("Host rejected closing the previous session.");
+        }
+        long deadline = SystemClock.uptimeMillis() + PREVIOUS_SESSION_CLOSE_TIMEOUT_MS;
+        IOException lastError = null;
+        while (token == launchGeneration.get() && active
+                && SystemClock.uptimeMillis() < deadline) {
+            try {
+                ComputerDetails current = connection.getComputerDetails(true);
+                if (current.runningGameId == 0) return;
+                if (current.runningGameId == targetAppId) return;
+                lastError = null;
+            } catch (IOException error) {
+                lastError = error;
+            }
+            try {
+                Thread.sleep(300L);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IOException("Interrupted while closing the previous session.",
+                        interrupted);
+            }
+        }
+        if (lastError != null) throw lastError;
+        throw new IOException("Previous host session did not close in time.");
     }
 
     private void showLoading(String hostName, String appName) {
+        showLoading(hostName, appName, LaunchTransitionType.GENERIC);
+    }
+
+    private void showLoading(String hostName, String appName,
+                             LaunchTransitionType transitionType) {
+        showLoading(hostName, appName, transitionType, null);
+    }
+
+    private void showLoading(String hostName, String appName,
+                             LaunchTransitionType transitionType,
+                             String loadingArtworkPath) {
+        lastContentFocus = getCurrentFocus();
+        lastContentFocusTag = lastContentFocus == null ? null : lastContentFocus.getTag();
         homeLayer.setVisibility(View.GONE);
         loadingLayer.setVisibility(View.VISIBLE);
         if (streamLoadingView != null) {
@@ -3124,7 +3248,26 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         streamLoadingEpoch = SystemClock.uptimeMillis();
         streamLoadingView = new ConsoleStreamLoadingView(
                 this, appName, null, streamLoadingEpoch, reducedMotion);
+        streamLoadingView.setSplashArtwork(loadingArtworkPath);
         loadingLayer.addView(streamLoadingView, match());
+        streamLoadingView.configureForPlaynite(
+                transitionType == LaunchTransitionType.PLAYNITE);
+        streamLoadingView.setActions(new ConsoleStreamLoadingView.Actions() {
+            @Override public void onCancel() {
+                launchGeneration.incrementAndGet();
+                showHome();
+            }
+
+            @Override public void onRetry() {
+                launchGeneration.incrementAndGet();
+                showHome();
+            }
+
+            @Override public void onShowStreamAnyway() {
+                // Dashboard preparation never exposes a stream. This action becomes
+                // available only inside Game after a readiness timeout.
+            }
+        });
         streamLoadingView.setStep(1, getString(R.string.console_preparing_host, hostName));
         streamLoadingView.bringToFront();
     }
@@ -3145,6 +3288,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
         loadingLayer.setVisibility(View.GONE);
         homeLayer.setVisibility(View.VISIBLE);
+        View restore = lastContentFocus;
+        if (restore != null && restore.isAttachedToWindow() && restore.isFocusable()) {
+            restore.requestFocus();
+        } else if (launchPlayniteButton != null && "playnite.fullscreen".equals(
+                lastContentFocusTag)) {
+            launchPlayniteButton.requestFocus();
+        }
     }
 
     private void refreshControllers() {

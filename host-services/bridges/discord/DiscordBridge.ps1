@@ -47,6 +47,7 @@ $script:LastRpcError = ""
 $script:Running = $true
 $script:LastHealthRpcAttempt = [datetime]::MinValue
 $script:HealthRpcRetrySeconds = 10
+$script:RpcReadTimeoutMs = 18000
 
 # DISCORD_BRIDGE_ADVANCED_V1
 $StatePath = Join-Path $ScriptRoot "discord_remote_state.json"
@@ -195,7 +196,11 @@ function Read-Exactly {
     $offset = 0
 
     while ($offset -lt $Count) {
-        $read = $Stream.Read($buffer, $offset, $Count - $offset)
+        $pendingRead = $Stream.BeginRead($buffer, $offset, $Count - $offset, $null, $null)
+        if (-not $pendingRead.AsyncWaitHandle.WaitOne($script:RpcReadTimeoutMs)) {
+            throw "Discord RPC nie odpowiedział w ciągu $($script:RpcReadTimeoutMs / 1000) sekund."
+        }
+        $read = $Stream.EndRead($pendingRead)
 
         if ($read -le 0) {
             throw "Discord RPC zamknął potok podczas odczytu ($offset/$Count bajtów)."
@@ -236,7 +241,6 @@ function Write-RpcFrame {
     if ($cmd -eq "AUTHENTICATE") {
         $safeJson = '{"cmd":"AUTHENTICATE","args":{"access_token":"<redacted>"},"nonce":"<redacted>"}'
     }
-
     Write-BridgeLog -Level "TRACE" -Message (
         "RPC SEND opcode=$Opcode bytes=$($body.Length) payload=$safeJson"
     )

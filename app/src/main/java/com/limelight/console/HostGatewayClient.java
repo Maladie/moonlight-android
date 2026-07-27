@@ -694,11 +694,47 @@ final class HostGatewayClient {
         return parsePlayniteReadiness(response.optJSONObject("readiness"));
     }
 
-    PlayniteEvents getPlayniteEvents(Connection connection, long after) throws IOException {
-        if (after < 0) throw new IllegalArgumentException("Invalid Playnite event sequence");
+    void showPlayniteFullscreen(Connection connection) throws IOException {
         JSONObject response = request(connection.endpoint,
-                "/api/v1/playnite/events?after=" + after, "GET", null, connection,
+                "/api/v1/playnite/show-fullscreen", "POST", new JSONObject(),
+                connection, pinnedTrust(connection), 10_000);
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error",
+                    "Playnite Fullscreen could not be restored."), 0);
+        }
+    }
+
+    void focusPlayniteGame(Connection connection) throws IOException {
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/playnite/game/focus", "POST", new JSONObject(),
+                connection, pinnedTrust(connection), 8_000);
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error",
+                    "The game window could not be focused."), 0);
+        }
+    }
+
+    PlayniteEvents getPlayniteEvents(Connection connection, long after) throws IOException {
+        return getPlayniteEvents(connection, after, "");
+    }
+
+    PlayniteEvents getPlayniteEvents(Connection connection, long after,
+                                     String transitionId) throws IOException {
+        if (after < 0) throw new IllegalArgumentException("Invalid Playnite event sequence");
+        String correlation = transitionId == null ? "" : transitionId.trim();
+        if (correlation.length() > 128
+                || !correlation.matches("[A-Za-z0-9._:-]*")) {
+            throw new IllegalArgumentException("Invalid transition ID");
+        }
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/playnite/events?after=" + after + "&transition_id=" +
+                        URLEncoder.encode(correlation, StandardCharsets.UTF_8.name()),
+                "GET", null, connection,
                 pinnedTrust(connection), 25_000);
+        String echoedCorrelation = response.optString("transition_id", "");
+        if (!echoedCorrelation.isEmpty() && !correlation.equals(echoedCorrelation)) {
+            throw new GatewayException("Mismatched transition response.", 409);
+        }
         JSONObject envelope = response.optJSONObject("events");
         JSONArray values = envelope != null ? envelope.optJSONArray("events") : null;
         List<PlayniteEvent> result = new ArrayList<>();
