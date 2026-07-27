@@ -136,7 +136,7 @@ final class HostGatewayStore {
 
     boolean isPlayniteInstalledOnly(String hostUuid) {
         return hostUuid != null && preferences.getBoolean(
-                key(hostUuid, "playnite_installed_only"), true);
+                key(hostUuid, "playnite_installed_only"), false);
     }
 
     void setPlayniteInstalledOnly(String hostUuid, boolean installedOnly) {

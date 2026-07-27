@@ -128,23 +128,39 @@ final class HostGatewayClient {
         final String id;
         final String name;
         final boolean installed;
+        final boolean hidden;
         final boolean favorite;
         final String cover;
         final String background;
         final String lastPlayed;
+        final String source;
+        final String artworkVersion;
+        final long playtimeSeconds;
+        /** Compatibility view for older console code. New code uses seconds. */
         final long playtimeMinutes;
 
         PlayniteGame(String id, String name, boolean installed, boolean favorite,
                      String cover, String background, String lastPlayed,
                      long playtimeMinutes) {
+            this(id, name, installed, false, favorite, cover, background, lastPlayed,
+                    "", "", Math.max(0L, playtimeMinutes) * 60L);
+        }
+
+        PlayniteGame(String id, String name, boolean installed, boolean hidden,
+                     boolean favorite, String cover, String background, String lastPlayed,
+                     String source, String artworkVersion, long playtimeSeconds) {
             this.id = id;
             this.name = name;
             this.installed = installed;
+            this.hidden = hidden;
             this.favorite = favorite;
             this.cover = cover;
             this.background = background;
             this.lastPlayed = lastPlayed;
-            this.playtimeMinutes = Math.max(0L, playtimeMinutes);
+            this.source = source;
+            this.artworkVersion = artworkVersion;
+            this.playtimeSeconds = Math.max(0L, playtimeSeconds);
+            this.playtimeMinutes = this.playtimeSeconds / 60L;
         }
     }
 
@@ -152,11 +168,20 @@ final class HostGatewayClient {
         final List<PlayniteGame> games;
         final String nextCursor;
         final int total;
+        final String revision;
+        final String apiVersion;
 
         PlayniteLibrary(List<PlayniteGame> games, String nextCursor, int total) {
+            this(games, nextCursor, total, "", "");
+        }
+
+        PlayniteLibrary(List<PlayniteGame> games, String nextCursor, int total,
+                        String revision, String apiVersion) {
             this.games = Collections.unmodifiableList(games);
             this.nextCursor = nextCursor;
             this.total = total;
+            this.revision = revision == null ? "" : revision;
+            this.apiVersion = apiVersion == null ? "" : apiVersion;
         }
     }
 
@@ -575,6 +600,47 @@ final class HostGatewayClient {
                 "export-logs".equals(action) ? 25_000 : 8_000);
     }
 
+    JSONObject ensureVibepolloPlayniteApp(Connection connection, String gameId, String name)
+            throws IOException {
+        if (!isPlayniteId(gameId)) {
+            throw new IllegalArgumentException("Invalid Playnite game ID");
+        }
+        String normalizedName = name == null ? "" : name.trim();
+        if (normalizedName.isEmpty() || normalizedName.length() > 200 ||
+                normalizedName.matches(".*[\\x00-\\x1f\\x7f].*")) {
+            throw new IllegalArgumentException("Invalid application name");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("playnite_game_id", gameId.toLowerCase(Locale.ROOT));
+            body.put("name", normalizedName);
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/vibepollo/apps/ensure", "POST", body, connection,
+                pinnedTrust(connection), 15_000);
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error",
+                    "Vibepollo application was not created."), 0);
+        }
+        return response.optJSONObject("app") != null
+                ? response.optJSONObject("app") : new JSONObject();
+    }
+
+    static Integer parseVibepolloAppId(JSONObject app) {
+        if (app == null) return null;
+        long value = app.optLong("app_id", 0L);
+        return value > 0L && value <= Integer.MAX_VALUE ? (int) value : null;
+    }
+
+    static String parseVibepolloAppUuid(JSONObject app) {
+        if (app == null) return "";
+        String value = app.optString("uuid", "").trim();
+        return value.matches("(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+                ? value.toLowerCase(Locale.ROOT) : "";
+    }
+
     JSONObject sleepHost(Connection connection) throws IOException {
         return request(connection.endpoint, "/api/v1/system/sleep", "POST",
                 new JSONObject(), connection, pinnedTrust(connection), READ_TIMEOUT_MS);
@@ -653,33 +719,6 @@ final class HostGatewayClient {
         return new PlayniteEvents(result, latest);
     }
 
-    JSONObject startPlayniteGame(Connection connection, String gameId) throws IOException {
-        if (!isPlayniteId(gameId)) throw new IllegalArgumentException("Invalid Playnite game ID");
-        JSONObject body = new JSONObject();
-        try { body.put("game_id", gameId.toLowerCase(Locale.ROOT)); }
-        catch (JSONException impossible) { throw new IOException(impossible); }
-        return request(connection.endpoint, "/api/v1/playnite/game/start", "POST",
-                body, connection, pinnedTrust(connection), 18_000);
-    }
-
-    JSONObject stopPlayniteGame(Connection connection, String gameId) throws IOException {
-        if (gameId != null && !gameId.isEmpty() && !isPlayniteId(gameId)) {
-            throw new IllegalArgumentException("Invalid Playnite game ID");
-        }
-        JSONObject body = new JSONObject();
-        try {
-            body.put("force", false);
-            if (gameId != null && !gameId.isEmpty()) body.put("game_id", gameId);
-        } catch (JSONException impossible) { throw new IOException(impossible); }
-        return request(connection.endpoint, "/api/v1/playnite/game/stop", "POST",
-                body, connection, pinnedTrust(connection), 18_000);
-    }
-
-    JSONObject showPlayniteFullscreen(Connection connection) throws IOException {
-        return request(connection.endpoint, "/api/v1/playnite/show-fullscreen", "POST",
-                new JSONObject(), connection, pinnedTrust(connection), 12_000);
-    }
-
     static PlayniteLibrary parsePlayniteLibrary(JSONObject library) {
         JSONObject safe = library == null ? new JSONObject() : library;
         JSONArray values = safe.optJSONArray("games");
@@ -692,20 +731,33 @@ final class HostGatewayClient {
                 if (!isPlayniteId(id)) continue;
                 String name = value.optString("name", "").trim();
                 if (name.isEmpty()) continue;
+                long seconds = value.has("playtimeSeconds")
+                        ? value.optLong("playtimeSeconds", 0L)
+                        : value.has("playtime_seconds")
+                        ? value.optLong("playtime_seconds", 0L)
+                        : value.has("playtimeMinutes")
+                        ? value.optLong("playtimeMinutes", 0L) * 60L
+                        : value.has("playtime_minutes")
+                        ? value.optLong("playtime_minutes", 0L) * 60L
+                        : value.optLong("playtime", 0L);
                 games.add(new PlayniteGame(id.toLowerCase(Locale.ROOT), name,
                         value.optBoolean("installed", value.optBoolean("isInstalled", false)),
+                        value.optBoolean("hidden", value.optBoolean("isHidden", false)),
                         value.optBoolean("favorite", value.optBoolean("isFavorite", false)),
                         firstText(value, "cover", "coverImage", "cover_image", "boxArtPath"),
                         firstText(value, "background", "backgroundImage", "background_image",
                                 "backgroundImagePath"),
                         firstText(value, "lastPlayed", "last_played", "lastActivity"),
-                        Math.max(0L, value.optLong("playtimeMinutes",
-                                value.optLong("playtime_minutes",
-                                        value.optLong("playtime", 0L))))));
+                        firstText(value, "source", "sourceName", "source_name"),
+                        firstText(value, "artworkVersion", "artwork_version", "artworkHash",
+                                "artwork_hash", "cover"),
+                        Math.max(0L, seconds)));
             }
         }
         return new PlayniteLibrary(games, safe.optString("next_cursor", ""),
-                safe.optInt("total", games.size()));
+                safe.optInt("total", games.size()),
+                firstText(safe, "revision", "library_revision", "hash"),
+                firstText(safe, "api_version", "apiVersion", "version"));
     }
 
     static PlayniteReadiness parsePlayniteReadiness(JSONObject value) {

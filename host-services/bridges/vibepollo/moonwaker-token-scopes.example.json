@@ -1,0 +1,23 @@
+{
+  "scopes": [
+    { "path": "/api/metadata", "methods": ["GET"] },
+    { "path": "/api/session/status", "methods": ["GET"] },
+    { "path": "/api/host/stats", "methods": ["GET"] },
+    { "path": "/api/host/info", "methods": ["GET"] },
+    { "path": "/api/rtsp/sessions", "methods": ["GET"] },
+    { "path": "/api/webrtc/sessions", "methods": ["GET"] },
+    { "path": "/api/history/sessions/active", "methods": ["GET"] },
+    { "path": "/api/history/sessions", "methods": ["GET"] },
+    { "path": "/api/apps", "methods": ["GET", "POST"] },
+    { "path": "/api/clients/list", "methods": ["GET"] },
+    { "path": "/api/rtss/status", "methods": ["GET"] },
+    { "path": "/api/lossless_scaling/status", "methods": ["GET"] },
+    { "path": "/api/logs", "methods": ["GET"] },
+    { "path": "/api/logs/export", "methods": ["GET"] },
+    { "path": "/api/apps/launch", "methods": ["POST"] },
+    { "path": "/api/apps/close", "methods": ["POST"] },
+    { "path": "/api/clients/disconnect", "methods": ["POST"] },
+    { "path": "/api/restart", "methods": ["POST"] },
+    { "path": "/api/reset-display-device-persistence", "methods": ["POST"] }
+  ]
+}

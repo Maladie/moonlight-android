@@ -659,6 +659,10 @@ public class NvHTTP {
                     app.setAppName(xpp.getText());
                 } else if (currentTag.peek().equals("ID")) {
                     app.setAppId(xpp.getText());
+                } else if (currentTag.peek().equals("UUID")) {
+                    app.setAppUuid(xpp.getText());
+                } else if (currentTag.peek().equals("ArtVersion")) {
+                    app.setArtVersion(xpp.getText());
                 } else if (currentTag.peek().equals("IsHdrSupported")) {
                     app.setHdrSupported(xpp.getText().equals("1"));
                 }

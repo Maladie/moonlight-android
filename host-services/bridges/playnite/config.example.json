@@ -1,0 +1,8 @@
+{
+  "listen_host": "127.0.0.1",
+  "listen_port": 8780,
+  "streamed_display": "",
+  "vibepollo_bridge": "http://127.0.0.1:8775",
+  "playnite_desktop_executable": "",
+  "playnite_fullscreen_executable": ""
+}

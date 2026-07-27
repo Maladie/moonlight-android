@@ -84,6 +84,7 @@ import com.limelight.utils.UiHelper;
 import com.limelight.ui.OverridesView;
 import com.limelight.ui.ConsoleStreamLoadingView;
 
+import org.json.JSONObject;
 import org.xmlpull.v1.XmlPullParserException;
 
 import java.io.File;
@@ -107,6 +108,7 @@ import java.util.Deque;
 import java.util.HashSet;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** TV-first dashboard adapted from Wake & Play and backed by Moonlight's internal APIs. */
@@ -116,11 +118,20 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private static final long CONTROLLER_REFRESH_MS = 30_000L;
     private static final long DISCOVERY_INTERVAL_MS = 60_000L;
     private static final long DISCOVERY_VISIBLE_MS = 4_000L;
+    private static final long PLAYNITE_REFRESH_MS = 60_000L;
+    private static final long VIBEPOLLO_APP_WAIT_MS = 35_000L;
+    private static final long VIBEPOLLO_APP_STABLE_MS = 2_000L;
+    private static final int VIBEPOLLO_APP_STABLE_POLLS = 3;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newFixedThreadPool(3);
+    private final ExecutorService playniteExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService playniteArtworkExecutor = Executors.newSingleThreadExecutor();
     private final AtomicInteger launchGeneration = new AtomicInteger();
     private final AtomicInteger artworkGeneration = new AtomicInteger();
     private final AtomicInteger discordStatusGeneration = new AtomicInteger();
+    private final AtomicInteger playniteGeneration = new AtomicInteger();
+    private final AtomicInteger playniteArtworkGeneration = new AtomicInteger();
+    private final AtomicInteger sunshineAppsGeneration = new AtomicInteger();
     private final Map<String, ComputerDetails> hosts = new LinkedHashMap<>();
     private final Set<String> newlyDiscoveredHosts = new LinkedHashSet<>();
 
@@ -131,6 +142,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private DiscordPanelController discordPanelController;
     private HostGatewayClient hostGatewayClient;
     private HostGatewayStore hostGatewayStore;
+    private PlayniteLibraryRepository playniteLibraryRepository;
+    private PlayniteArtworkCache playniteArtworkCache;
+    private PlayniteLaunchTargetStore playniteLaunchTargetStore;
     private QuickLaunchManager quickLaunchManager;
     private ShortcutHelper shortcutHelper;
     private ComputerManagerService.ComputerManagerBinder managerBinder;
@@ -167,6 +181,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private TextView optionsButton;
     private TextView hostSelector;
     private TextView discoveryStatus;
+    private TextView launchPlayniteButton;
+    private TextView installedFilterButton;
+    private TextView playniteLibraryStatus;
     private ProgressBar discoverySpinner;
     private TextView quickResumeButton;
     private LinearLayout quickActions;
@@ -187,6 +204,26 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private String renderedAppsSignature;
     private String renderedControllersSignature;
     private boolean discoveryActive;
+    private Future<?> playniteRequest;
+    private Future<?> playniteArtworkPrefetch;
+    private String playniteArtworkPrefetchSignature;
+    private List<PlayniteLibraryGame> currentPlayniteGames = Collections.emptyList();
+    private List<PlayniteDashboardItem> renderedPlayniteItems = Collections.emptyList();
+    private final Set<String> vibepolloEnsureInFlight =
+            Collections.synchronizedSet(new HashSet<>());
+    private List<NvApp> currentSunshineApps = Collections.emptyList();
+    private boolean playniteLibraryCached;
+    private boolean playniteLibraryRefreshing;
+    private PlayniteLibraryRepository.ErrorKind playniteLibraryError;
+    private String currentPlayniteHostUuid;
+
+    private final Runnable playniteRefreshCycle = new Runnable() {
+        @Override public void run() {
+            if (!active || loadingLayer != null && loadingLayer.getVisibility() == View.VISIBLE) return;
+            ComputerDetails host = hosts.get(selectedHostUuid);
+            if (host != null) requestPlayniteRefresh(host, false);
+        }
+    };
 
     private final Runnable endDiscoveryIndicator = () -> {
         discoveryActive = false;
@@ -261,6 +298,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         inputManager = (InputManager) getSystemService(INPUT_SERVICE);
         hostGatewayClient = new HostGatewayClient();
         hostGatewayStore = new HostGatewayStore(this);
+        playniteLibraryRepository = new PlayniteLibraryRepository(hostGatewayClient,
+                new PlayniteLibraryCache(this));
+        playniteArtworkCache = new PlayniteArtworkCache(this);
+        playniteLaunchTargetStore = new PlayniteLaunchTargetStore(this);
         quickLaunchManager = QuickLaunchManager.getInstance(this);
         shortcutHelper = new ShortcutHelper(this);
         getWindow().setFormat(PixelFormat.OPAQUE);
@@ -318,7 +359,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
         startPolling();
         ComputerDetails selected = hosts.get(selectedHostUuid);
-        if (selected != null && appListPoller == null) startAppListPoller(selected);
+        if (selected != null) {
+            if (appListPoller == null) startAppListPoller(selected);
+            if (!renderedPlayniteItems.isEmpty()) {
+                schedulePlayniteArtworkPrefetch(selected, renderedPlayniteItems);
+            }
+            loadPlayniteForHost(selected);
+        }
         refreshControllers();
         refreshDiscordIndicator();
         mainHandler.postDelayed(controllerRefresh, CONTROLLER_REFRESH_MS);
@@ -335,6 +382,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         mainHandler.removeCallbacks(controllerRefresh);
         mainHandler.removeCallbacks(discoveryIndicatorCycle);
         mainHandler.removeCallbacks(endDiscoveryIndicator);
+        mainHandler.removeCallbacks(playniteRefreshCycle);
+        cancelPlayniteRequest();
+        cancelPlayniteArtworkPrefetch();
         discoveryActive = false;
         if (streamLoadingView != null) streamLoadingView.stop();
         saveScrollPositions();
@@ -355,6 +405,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (discordPanelController != null) discordPanelController.destroy();
         if (sideDialog != null) sideDialog.dismiss();
         if (serviceBound) unbindService(serviceConnection);
+        cancelPlayniteRequest();
+        cancelPlayniteArtworkPrefetch();
+        playniteExecutor.shutdownNow();
+        playniteArtworkExecutor.shutdownNow();
         executor.shutdownNow();
         super.onDestroy();
     }
@@ -497,6 +551,30 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
         resumeParams.leftMargin = dp(14);
         discoveryAndSession.addView(quickResumeButton, resumeParams);
+        launchPlayniteButton = text(getString(R.string.playnite_launch),
+                12, 0xFFD7E4EA, true);
+        launchPlayniteButton.setId(View.generateViewId());
+        launchPlayniteButton.setTag("playnite.fullscreen");
+        launchPlayniteButton.setFocusable(true);
+        launchPlayniteButton.setClickable(true);
+        launchPlayniteButton.setGravity(Gravity.CENTER);
+        launchPlayniteButton.setMinWidth(dp(48));
+        launchPlayniteButton.setMinHeight(dp(48));
+        launchPlayniteButton.setPadding(dp(13), dp(5), dp(13), dp(5));
+        launchPlayniteButton.setContentDescription(
+                getString(R.string.playnite_launch_description));
+        launchPlayniteButton.setOnClickListener(view -> launchPlayniteFullscreen());
+        launchPlayniteButton.setOnLongClickListener(view -> {
+            showPlayniteFullscreenTargetPicker();
+            return true;
+        });
+        launchPlayniteButton.setOnFocusChangeListener((view, focused) ->
+                styleCompactButton(launchPlayniteButton, focused));
+        styleCompactButton(launchPlayniteButton, false);
+        LinearLayout.LayoutParams playniteParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
+        playniteParams.leftMargin = dp(10);
+        discoveryAndSession.addView(launchPlayniteButton, playniteParams);
         quickLine.addView(discoveryAndSession, portraitLayout
                 ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                         ViewGroup.LayoutParams.WRAP_CONTENT)
@@ -543,8 +621,36 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         homeContent.addView(controllerScroll, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(58)));
 
+        LinearLayout libraryHeader = new LinearLayout(this);
+        libraryHeader.setOrientation(LinearLayout.HORIZONTAL);
+        libraryHeader.setGravity(Gravity.CENTER_VERTICAL);
         appsLabel = sectionLabel(getString(R.string.console_apps));
-        homeContent.addView(appsLabel, sectionWithTop(10));
+        libraryHeader.addView(appsLabel, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        playniteLibraryStatus = text("", 11, 0xFF8790A8, false);
+        playniteLibraryStatus.setPadding(dp(8), 0, dp(8), 0);
+        libraryHeader.addView(playniteLibraryStatus, wrapLinear());
+        installedFilterButton = text(getString(R.string.playnite_installed),
+                11, 0xFFD7E4EA, true);
+        installedFilterButton.setId(View.generateViewId());
+        installedFilterButton.setTag("playnite.filter");
+        installedFilterButton.setFocusable(true);
+        installedFilterButton.setClickable(true);
+        installedFilterButton.setGravity(Gravity.CENTER);
+        installedFilterButton.setMinHeight(dp(48));
+        installedFilterButton.setMinWidth(dp(48));
+        installedFilterButton.setPadding(dp(12), dp(4), dp(12), dp(4));
+        installedFilterButton.setOnClickListener(view -> togglePlayniteInstalledFilter());
+        installedFilterButton.setOnFocusChangeListener((view, focused) ->
+                styleInstalledFilter(focused));
+        styleInstalledFilter(false);
+        LinearLayout.LayoutParams filterParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
+        filterParams.leftMargin = dp(8);
+        libraryHeader.addView(installedFilterButton, filterParams);
+        LinearLayout.LayoutParams libraryHeaderParams = sectionWithTop(2);
+        libraryHeaderParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
+        homeContent.addView(libraryHeader, libraryHeaderParams);
         appRow = horizontalRow();
         if (portraitLayout) {
             appRow.setOrientation(LinearLayout.VERTICAL);
@@ -675,8 +781,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         boolean visible = host != null && ConsoleActionCatalog.isOnline(host)
                 && ConsoleActionCatalog.isPaired(host) && host.runningGameId != 0;
         boolean restoreFocus = quickResumeButton.hasFocus() && !visible;
+        boolean moveFocusToResume = launchPlayniteButton != null
+                && launchPlayniteButton.hasFocus() && visible;
         quickResumeButton.setVisibility(visible ? View.VISIBLE : View.GONE);
         quickResumeButton.setEnabled(visible);
+        if (launchPlayniteButton != null) {
+            launchPlayniteButton.setVisibility(visible ? View.GONE : View.VISIBLE);
+        }
         if (visible) {
             String appName = findAppName(host, host.runningGameId);
             quickResumeButton.setText(appName == null
@@ -685,6 +796,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             quickResumeButton.setContentDescription(getString(
                     R.string.console_quick_resume_description,
                     appName == null ? getString(R.string.console_status_active_session) : appName));
+            if (moveFocusToResume) quickResumeButton.post(quickResumeButton::requestFocus);
         } else if (restoreFocus) {
             View fallback = firstFocusableChild(quickActions);
             View target = fallback != null ? fallback : hostSelector;
@@ -800,6 +912,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             managerBinder.invalidateStateForComputer(host.uuid);
         }
         if (appListPoller != null) appListPoller.pollNow();
+        ComputerDetails selected = hosts.get(selectedHostUuid);
+        if (selected != null) requestPlayniteRefresh(selected, true);
         mainHandler.removeCallbacks(discoveryIndicatorCycle);
         mainHandler.removeCallbacks(endDiscoveryIndicator);
         discoveryIndicatorCycle.run();
@@ -1485,6 +1599,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private void selectHost(ComputerDetails host, boolean focusApps) {
+        boolean changed = !host.uuid.equals(selectedHostUuid);
+        if (changed) cancelPlayniteArtworkPrefetch();
         selectedHostUuid = host.uuid;
         preferences.edit().putString("selected_host", host.uuid).apply();
         newlyDiscoveredHosts.remove(host.uuid);
@@ -1494,6 +1610,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         updateHostSelector();
         startAppListPoller(host);
         renderAppsAsync(host, focusApps);
+        if (changed || currentPlayniteGames.isEmpty()) loadPlayniteForHost(host);
     }
 
     private void startAppListPoller(ComputerDetails host) {
@@ -1522,7 +1639,16 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             List<NvApp> apps = loadApps(host);
             mainHandler.post(() -> {
                 if (!uuid.equals(selectedHostUuid)) return;
-                renderApps(host, apps);
+                currentSunshineApps = Collections.unmodifiableList(new ArrayList<>(apps));
+                sunshineAppsGeneration.incrementAndGet();
+                updateLaunchPlayniteButton(host, apps);
+                if (!currentPlayniteGames.isEmpty() ||
+                        hostGatewayStore.loadClientConnection(host.uuid,
+                                host.activeAddress != null ? host.activeAddress.address : null) != null) {
+                    renderPlayniteLibrary(host, apps);
+                } else {
+                    renderApps(host, apps);
+                }
                 if (focusApps && !apps.isEmpty()) appRow.getChildAt(0).requestFocus();
             });
         });
@@ -1555,10 +1681,923 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
     }
 
+    private void loadPlayniteForHost(ComputerDetails host) {
+        if (host == null) return;
+        if (host.uuid.equals(currentPlayniteHostUuid) && !currentPlayniteGames.isEmpty()) {
+            requestPlayniteRefresh(host, false);
+            return;
+        }
+        cancelPlayniteRequest();
+        int token = playniteGeneration.incrementAndGet();
+        currentPlayniteHostUuid = host.uuid;
+        currentPlayniteGames = Collections.emptyList();
+        renderedPlayniteItems = Collections.emptyList();
+        playniteLibraryCached = false;
+        playniteLibraryError = null;
+        updatePlayniteLibraryStatus(host);
+        playniteRequest = playniteExecutor.submit(() -> {
+            PlayniteLibraryCache.Entry cached = playniteLibraryRepository.cached(host.uuid);
+            mainHandler.post(() -> {
+                if (token != playniteGeneration.get() ||
+                        !host.uuid.equals(selectedHostUuid)) return;
+                if (cached != null) {
+                    currentPlayniteGames = cached.games;
+                    playniteLibraryCached = true;
+                    renderPlayniteLibrary(host, currentSunshineApps);
+                }
+                requestPlayniteRefresh(host, false);
+            });
+        });
+    }
+
+    private void requestPlayniteRefresh(ComputerDetails host, boolean manual) {
+        if (!active || host == null || !host.uuid.equals(selectedHostUuid)) return;
+        String address = host.activeAddress != null ? host.activeAddress.address : null;
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(host.uuid, address);
+        mainHandler.removeCallbacks(playniteRefreshCycle);
+        if (connection == null) {
+            playniteLibraryRefreshing = false;
+            playniteLibraryError = PlayniteLibraryRepository.ErrorKind.AUTHENTICATION;
+            updatePlayniteLibraryStatus(host);
+            mainHandler.postDelayed(playniteRefreshCycle, PLAYNITE_REFRESH_MS);
+            return;
+        }
+        cancelPlayniteRequest();
+        int token = playniteGeneration.incrementAndGet();
+        playniteLibraryRefreshing = true;
+        playniteLibraryError = null;
+        updatePlayniteLibraryStatus(host);
+        playniteRequest = playniteExecutor.submit(() -> {
+            PlayniteLibraryRepository.Result result = playniteLibraryRepository.refresh(
+                    host.uuid, connection, () -> token != playniteGeneration.get() ||
+                            Thread.currentThread().isInterrupted());
+            mainHandler.post(() -> {
+                if (token != playniteGeneration.get() || !active ||
+                        !host.uuid.equals(selectedHostUuid)) return;
+                playniteLibraryRefreshing = false;
+                if (result.entry != null) {
+                    currentPlayniteGames = result.entry.games;
+                    playniteLibraryCached = false;
+                    playniteLibraryError = null;
+                    renderPlayniteLibrary(host, currentSunshineApps);
+                } else {
+                    playniteLibraryError = result.error;
+                    playniteLibraryCached = !currentPlayniteGames.isEmpty();
+                    updatePlayniteLibraryStatus(host);
+                }
+                mainHandler.removeCallbacks(playniteRefreshCycle);
+                mainHandler.postDelayed(playniteRefreshCycle, PLAYNITE_REFRESH_MS);
+            });
+        });
+    }
+
+    private void cancelPlayniteRequest() {
+        if (playniteRequest != null) {
+            playniteRequest.cancel(true);
+            playniteRequest = null;
+        }
+    }
+
+    private void updatePlayniteLibraryStatus(ComputerDetails host) {
+        if (playniteLibraryStatus == null) return;
+        int textId;
+        if (playniteLibraryRefreshing && currentPlayniteGames.isEmpty()) {
+            textId = R.string.playnite_refreshing_library;
+        } else if (playniteLibraryError == PlayniteLibraryRepository.ErrorKind.AUTHENTICATION) {
+            String address = host != null && host.activeAddress != null
+                    ? host.activeAddress.address : null;
+            textId = host != null && hostGatewayStore.loadClientConnection(host.uuid, address) == null
+                    ? R.string.playnite_gateway_not_configured
+                    : R.string.playnite_authentication_error;
+        } else if (playniteLibraryError == PlayniteLibraryRepository.ErrorKind.TIMEOUT) {
+            textId = R.string.playnite_timeout;
+        } else if (playniteLibraryError == PlayniteLibraryRepository.ErrorKind.INVALID_RESPONSE ||
+                playniteLibraryError == PlayniteLibraryRepository.ErrorKind.API_VERSION) {
+            textId = R.string.playnite_invalid_response;
+        } else if (playniteLibraryError == PlayniteLibraryRepository.ErrorKind.SERVER) {
+            textId = R.string.playnite_server_error;
+        } else if (playniteLibraryError != null) {
+            textId = R.string.playnite_gateway_unavailable;
+        } else if (playniteLibraryCached) {
+            textId = R.string.playnite_cached_library;
+        } else if (playniteLibraryRefreshing) {
+            textId = R.string.playnite_refreshing_library;
+        } else {
+            textId = R.string.playnite_data_current;
+        }
+        playniteLibraryStatus.setText(textId);
+        playniteLibraryStatus.setTextColor(playniteLibraryError != null
+                ? 0xFFFFB74D : playniteLibraryCached ? 0xFFB8C9DC : 0xFF8790A8);
+    }
+
+    private void togglePlayniteInstalledFilter() {
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host == null) return;
+        boolean installedOnly = !hostGatewayStore.isPlayniteInstalledOnly(host.uuid);
+        hostGatewayStore.setPlayniteInstalledOnly(host.uuid, installedOnly);
+        renderPlayniteLibrary(host, currentSunshineApps);
+        styleInstalledFilter(true);
+        installedFilterButton.requestFocus();
+    }
+
+    private void styleInstalledFilter(boolean focused) {
+        if (installedFilterButton == null) return;
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        boolean activeFilter = host != null &&
+                hostGatewayStore.isPlayniteInstalledOnly(host.uuid);
+        installedFilterButton.setText(activeFilter
+                ? R.string.playnite_installed : R.string.playnite_all_games);
+        installedFilterButton.setContentDescription(getString(
+                R.string.playnite_filter_description,
+                getString(activeFilter ? R.string.playnite_installed : R.string.playnite_all_games)));
+        int top = focused ? 0xFF24343F : activeFilter ? 0x55314755 : 0x26242B32;
+        int bottom = focused ? 0xFF18242C : activeFilter ? 0x55314755 : 0x4813181D;
+        GradientDrawable background = gradient(top, bottom, 10);
+        background.setStroke(dp(focused ? 2 : 1), focused ? 0xFF8DDCFF
+                : activeFilter ? 0x8873D7FF : 0x384C5962);
+        installedFilterButton.setBackground(background);
+    }
+
+    private void renderPlayniteLibrary(ComputerDetails host, List<NvApp> apps) {
+        if (host == null || !host.uuid.equals(selectedHostUuid)) return;
+        List<PlayniteLibraryGame> ordered = PlayniteLibraryOrdering.order(
+                currentPlayniteGames, hostGatewayStore.isPlayniteInstalledOnly(host.uuid),
+                getResources().getConfiguration().getLocales().get(0));
+        List<PlayniteDashboardItem> items = new ArrayList<>();
+        for (PlayniteLibraryGame game : ordered) {
+            items.add(PlayniteTargetResolver.resolve(host.uuid, game, apps,
+                    playniteLaunchTargetStore));
+        }
+        installedFilterButton.setVisibility(View.VISIBLE);
+        applyPlayniteDiff(host, apps, items);
+        schedulePlayniteArtworkPrefetch(host, items);
+        renderedAppsSignature = null;
+        appsLabel.setText(getString(R.string.playnite_library,
+                host.name.toUpperCase(Locale.ROOT)));
+        styleInstalledFilter(installedFilterButton.hasFocus());
+        updatePlayniteLibraryStatus(host);
+    }
+
+    private void applyPlayniteDiff(ComputerDetails host, List<NvApp> apps,
+                                   List<PlayniteDashboardItem> requestedItems) {
+        Object focusTag = getCurrentFocus() != null ? getCurrentFocus().getTag() : null;
+        String focusedId = focusTag instanceof String &&
+                ((String) focusTag).startsWith("playnite:")
+                ? ((String) focusTag).substring("playnite:".length()) : null;
+        int previousIndex = getCurrentFocus() != null
+                ? Math.max(0, appRow.indexOfChild(getCurrentFocus())) : 0;
+
+        List<PlayniteDashboardItem> items = requestedItems;
+        if (focusedId != null && containsPlayniteId(requestedItems, focusedId)) {
+            items = preserveOrderDuringFocus(requestedItems);
+        }
+        Map<String, View> existing = new LinkedHashMap<>();
+        boolean containsNonPlaynite = false;
+        for (int index = 0; index < appRow.getChildCount(); index++) {
+            View child = appRow.getChildAt(index);
+            Object tag = child.getTag();
+            if (tag instanceof String && ((String) tag).startsWith("playnite:")) {
+                existing.put(((String) tag).substring("playnite:".length()), child);
+            } else {
+                containsNonPlaynite = true;
+            }
+        }
+        if (containsNonPlaynite) {
+            appRow.removeAllViews();
+            existing.clear();
+        }
+        Map<String, PlayniteDashboardItem> previous = new LinkedHashMap<>();
+        for (PlayniteDashboardItem item : renderedPlayniteItems) previous.put(item.stableId(), item);
+        Set<String> wanted = new HashSet<>();
+        for (PlayniteDashboardItem item : items) wanted.add(item.stableId());
+        for (Map.Entry<String, View> entry : existing.entrySet()) {
+            if (!wanted.contains(entry.getKey())) appRow.removeView(entry.getValue());
+        }
+        if (items.isEmpty()) {
+            if (appRow.getChildCount() == 0) {
+                TextView empty = text(getString(hostGatewayStore.isPlayniteInstalledOnly(host.uuid)
+                                ? R.string.playnite_no_installed_games : R.string.playnite_library_empty),
+                        15, 0xFFFFB74D, false);
+                empty.setTag("playnite.empty");
+                appRow.addView(empty, new LinearLayout.LayoutParams(
+                        dp(700), ViewGroup.LayoutParams.MATCH_PARENT));
+            }
+            renderedPlayniteItems = Collections.emptyList();
+            wireHomeFocusNavigation();
+            return;
+        }
+        for (int index = 0; index < items.size(); index++) {
+            PlayniteDashboardItem item = items.get(index);
+            View card = existing.get(item.stableId());
+            PlayniteDashboardItem old = previous.get(item.stableId());
+            if (card == null || "playnite.empty".equals(card.getTag())) {
+                card = playniteCard(host, item, apps);
+            } else if (!item.equals(old)) {
+                bindPlayniteCard(card, host, item, apps,
+                        playnitePayload(old, item));
+            }
+            int currentIndex = appRow.indexOfChild(card);
+            if (currentIndex < 0) {
+                appRow.addView(card, Math.min(index, appRow.getChildCount()),
+                        playniteCardSpacing());
+            } else if (currentIndex != index && focusedId == null) {
+                appRow.removeViewAt(currentIndex);
+                appRow.addView(card, Math.min(index, appRow.getChildCount()),
+                        playniteCardSpacing());
+            }
+        }
+        renderedPlayniteItems = Collections.unmodifiableList(new ArrayList<>(items));
+        String selection = PlayniteLibraryDiff.selectionAfter(focusedId, previousIndex, items);
+        if (focusedId != null && selection != null) {
+            restoreTaggedFocus(appRow, "playnite:" + selection);
+        }
+        wireHomeFocusNavigation();
+    }
+
+    private List<PlayniteDashboardItem> preserveOrderDuringFocus(
+            List<PlayniteDashboardItem> requested) {
+        Map<String, PlayniteDashboardItem> values = new LinkedHashMap<>();
+        for (PlayniteDashboardItem item : requested) values.put(item.stableId(), item);
+        List<PlayniteDashboardItem> result = new ArrayList<>();
+        for (PlayniteDashboardItem old : renderedPlayniteItems) {
+            PlayniteDashboardItem replacement = values.remove(old.stableId());
+            if (replacement != null) result.add(replacement);
+        }
+        result.addAll(values.values());
+        return result;
+    }
+
+    private boolean containsPlayniteId(List<PlayniteDashboardItem> items, String id) {
+        for (PlayniteDashboardItem item : items) if (item.stableId().equals(id)) return true;
+        return false;
+    }
+
+    private int playnitePayload(PlayniteDashboardItem old, PlayniteDashboardItem item) {
+        if (old == null) return PlayniteLibraryDiff.TEXT | PlayniteLibraryDiff.ARTWORK |
+                PlayniteLibraryDiff.LAUNCH;
+        int payload = 0;
+        if (!old.game.name.equals(item.game.name) || old.game.installed != item.game.installed ||
+                old.game.playtimeSeconds != item.game.playtimeSeconds ||
+                !old.game.source.equals(item.game.source)) payload |= PlayniteLibraryDiff.TEXT;
+        if (!old.game.coverKey.equals(item.game.coverKey) ||
+                !old.game.backgroundKey.equals(item.game.backgroundKey)) {
+            payload |= PlayniteLibraryDiff.ARTWORK;
+        }
+        if (!Objects.equals(old.sunshineAppId, item.sunshineAppId) ||
+                old.mappingState != item.mappingState) payload |= PlayniteLibraryDiff.LAUNCH;
+        return payload;
+    }
+
+    private View playniteCard(ComputerDetails host, PlayniteDashboardItem item, List<NvApp> apps) {
+        LinearLayout card = cardBase(dp(portraitLayout ? 220 : 205),
+                dp(portraitLayout ? 225 : 190));
+        card.setOrientation(LinearLayout.VERTICAL);
+        card.setGravity(Gravity.TOP);
+        card.setPadding(0, 0, 0, 0);
+        card.setClipToOutline(true);
+        FrameLayout artworkFrame = new FrameLayout(this);
+        artworkFrame.setBackground(gradient(0xFF26333D, 0xFF172128, 12));
+        ImageView backdrop = new ImageView(this);
+        backdrop.setTag("playnite.poster.backdrop");
+        backdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        backdrop.setAlpha(.42f);
+        backdrop.setVisibility(View.GONE);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            backdrop.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(
+                    dp(10), dp(10), android.graphics.Shader.TileMode.CLAMP));
+        }
+        artworkFrame.addView(backdrop, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        ImageView poster = new ImageView(this);
+        poster.setTag("playnite.poster");
+        poster.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        poster.setImageResource(R.drawable.ic_computer);
+        poster.setPadding(dp(72), dp(54), dp(72), dp(54));
+        artworkFrame.addView(poster, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        card.addView(artworkFrame, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(portraitLayout ? 140 : 115)));
+        LinearLayout copy = new LinearLayout(this);
+        copy.setOrientation(LinearLayout.VERTICAL);
+        copy.setPadding(dp(14), dp(10), dp(14), dp(8));
+        TextView name = text("", 15, Color.WHITE, true);
+        name.setTag("playnite.name");
+        name.setMaxLines(1);
+        name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        copy.addView(name, matchLinearWidth());
+        TextView playtime = text("", 10, 0xFFB8C9DC, false);
+        playtime.setTag("playnite.playtime");
+        copy.addView(playtime, matchLinearWidth());
+        TextView state = text("", 10, 0xFF929BAD, false);
+        state.setTag("playnite.state");
+        state.setMaxLines(1);
+        state.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        copy.addView(state, matchLinearWidth());
+        card.addView(copy, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+        bindPlayniteCard(card, host, item, apps,
+                PlayniteLibraryDiff.TEXT | PlayniteLibraryDiff.ARTWORK |
+                        PlayniteLibraryDiff.LAUNCH);
+        return card;
+    }
+
+    private LinearLayout.LayoutParams matchLinearWidth() {
+        return new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT);
+    }
+
+    private LinearLayout.LayoutParams playniteCardSpacing() {
+        LinearLayout.LayoutParams params = portraitLayout
+                ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(225))
+                : new LinearLayout.LayoutParams(dp(205), dp(190));
+        if (portraitLayout) params.bottomMargin = dp(14);
+        else params.rightMargin = dp(14);
+        return params;
+    }
+
+    private void bindPlayniteCard(View card, ComputerDetails host,
+                                  PlayniteDashboardItem item, List<NvApp> apps, int payload) {
+        card.setTag("playnite:" + item.stableId());
+        TextView name = (TextView) findTaggedChild((ViewGroup) card, "playnite.name");
+        TextView playtime = (TextView) findTaggedChild((ViewGroup) card, "playnite.playtime");
+        TextView state = (TextView) findTaggedChild((ViewGroup) card, "playnite.state");
+        ImageView poster = (ImageView) findTaggedChild((ViewGroup) card, "playnite.poster");
+        String playtimeText = formatPlayniteTime(item.game.playtimeSeconds);
+        String stateText = playniteState(item);
+        if ((payload & PlayniteLibraryDiff.TEXT) != 0) {
+            name.setText(item.game.name);
+            playtime.setText(playtimeText);
+        }
+        if ((payload & (PlayniteLibraryDiff.TEXT | PlayniteLibraryDiff.LAUNCH)) != 0) {
+            state.setText(stateText);
+        }
+        if ((payload & PlayniteLibraryDiff.ARTWORK) != 0) resetPlaynitePoster(poster, item);
+        card.setOnClickListener(view -> activatePlayniteItem(host.uuid, item));
+        card.setOnLongClickListener(view -> {
+            showPlayniteTargetPicker(currentHost(host.uuid), item, currentSunshineApps);
+            return true;
+        });
+        card.setContentDescription(getString(R.string.playnite_card_description,
+                item.game.name, playtimeText, stateText));
+        card.setOnFocusChangeListener((view, focused) -> {
+            styleCard(card, focused);
+            if (focused) {
+                preferences.edit().putString("selected_playnite." + host.uuid,
+                        item.stableId()).apply();
+                if (portraitLayout) smoothCenterOn(appVerticalScroll, card);
+                else smoothCenterOn(appScroll, card);
+                loadPlaynitePoster(host, item, poster, true);
+            }
+        });
+    }
+
+    private View findTaggedChild(ViewGroup parent, String tag) {
+        for (int index = 0; index < parent.getChildCount(); index++) {
+            View child = parent.getChildAt(index);
+            if (tag.equals(child.getTag())) return child;
+            if (child instanceof ViewGroup) {
+                View result = findTaggedChild((ViewGroup) child, tag);
+                if (result != null) return result;
+            }
+        }
+        return null;
+    }
+
+    private String formatPlayniteTime(long seconds) {
+        return PlaynitePlaytimeFormatter.format(seconds, new PlaynitePlaytimeFormatter.Labels(
+                getString(R.string.playnite_never_played),
+                getString(R.string.playnite_hours_short),
+                getString(R.string.playnite_minutes_short)));
+    }
+
+    private String playniteState(PlayniteDashboardItem item) {
+        if (!item.game.installed) return getString(R.string.playnite_not_installed);
+        if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
+            return getString(R.string.playnite_game_installed);
+        }
+        if (item.mappingState == PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE) {
+            return getString(R.string.playnite_launch_via_playnite);
+        }
+        return getString(R.string.playnite_launch_not_configured);
+    }
+
+    private void resetPlaynitePoster(ImageView poster, PlayniteDashboardItem item) {
+        ImageView backdrop = playnitePosterBackdrop(poster);
+        if (backdrop != null) {
+            backdrop.setImageDrawable(null);
+            backdrop.setVisibility(View.GONE);
+        }
+        poster.setImageResource(R.drawable.ic_computer);
+        poster.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        poster.setPadding(dp(72), dp(54), dp(72), dp(54));
+        poster.setTag(R.id.playnite_artwork_key, playniteArtworkTag(item));
+    }
+
+    private void loadPlaynitePoster(ComputerDetails host, PlayniteDashboardItem item,
+                                    ImageView poster, boolean allowNetwork) {
+        ComputerDetails latestHost = currentHost(host.uuid);
+        if (latestHost == null) return;
+        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forGame(item.game);
+        if (!spec.available()) return;
+        ArtworkResult cached = cachedPlayniteArtwork(latestHost.uuid, item, spec);
+        String expectedTag = playniteArtworkTag(item);
+        if (cached != null) {
+            loadPlayniteBitmap(cached.file, poster, expectedTag, cached.kind);
+            showArtwork(cached.file, poster.getDrawable());
+            return;
+        }
+        if (!allowNetwork) return;
+        String address = latestHost.activeAddress != null
+                ? latestHost.activeAddress.address : null;
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(latestHost.uuid, address);
+        if (connection == null) return;
+        executor.execute(() -> {
+            try {
+                ArtworkResult result = fetchPlayniteArtwork(connection, latestHost.uuid,
+                        item, spec);
+                mainHandler.post(() -> {
+                    Object expected = poster.getTag(R.id.playnite_artwork_key);
+                    if (expectedTag.equals(expected)) {
+                        loadPlayniteBitmap(result.file, poster, expectedTag, result.kind);
+                        if (poster.hasFocus() || cardParentHasFocus(poster)) {
+                            showArtwork(result.file, poster.getDrawable());
+                        }
+                    }
+                });
+            } catch (IOException ignored) { }
+        });
+    }
+
+    private void schedulePlayniteArtworkPrefetch(ComputerDetails host,
+                                                  List<PlayniteDashboardItem> items) {
+        if (!active || host == null || items.isEmpty()) return;
+        StringBuilder signature = new StringBuilder(host.uuid);
+        for (PlayniteDashboardItem item : items) {
+            signature.append('|').append(item.stableId()).append(':')
+                    .append(PlayniteArtworkSpec.forGame(item.game).cacheIdentity());
+        }
+        String nextSignature = signature.toString();
+        if (nextSignature.equals(playniteArtworkPrefetchSignature)) return;
+        cancelPlayniteArtworkPrefetch();
+        playniteArtworkPrefetchSignature = nextSignature;
+        ComputerDetails latestHost = currentHost(host.uuid);
+        if (latestHost == null) return;
+        String address = latestHost.activeAddress != null
+                ? latestHost.activeAddress.address : null;
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(latestHost.uuid, address);
+        if (connection == null) return;
+        int token = playniteArtworkGeneration.incrementAndGet();
+        List<PlayniteDashboardItem> snapshot = new ArrayList<>(items);
+        playniteArtworkPrefetch = playniteArtworkExecutor.submit(() -> {
+            for (PlayniteDashboardItem item : snapshot) {
+                if (Thread.currentThread().isInterrupted() ||
+                        token != playniteArtworkGeneration.get()) return;
+                PlayniteArtworkSpec spec = PlayniteArtworkSpec.forGame(item.game);
+                if (!spec.available()) continue;
+                try {
+                    ArtworkResult result = cachedPlayniteArtwork(latestHost.uuid, item, spec);
+                    if (result == null) {
+                        result = fetchPlayniteArtwork(connection, latestHost.uuid, item, spec);
+                    }
+                    ArtworkResult ready = result;
+                    mainHandler.post(() -> applyPrefetchedPlayniteArtwork(
+                            token, latestHost.uuid, item, ready));
+                } catch (IOException ignored) { }
+            }
+        });
+    }
+
+    private void cancelPlayniteArtworkPrefetch() {
+        playniteArtworkGeneration.incrementAndGet();
+        if (playniteArtworkPrefetch != null) {
+            playniteArtworkPrefetch.cancel(true);
+            playniteArtworkPrefetch = null;
+        }
+        playniteArtworkPrefetchSignature = null;
+    }
+
+    private ArtworkResult cachedPlayniteArtwork(String hostUuid, PlayniteDashboardItem item,
+                                                 PlayniteArtworkSpec spec) {
+        File primary = playniteArtworkCache.get(hostUuid, item.stableId(),
+                spec.kind, spec.version);
+        if (primary != null && primary.isFile() && primary.length() > 0) {
+            return new ArtworkResult(primary, spec.kind);
+        }
+        if (!spec.hasFallback()) return null;
+        File fallback = playniteArtworkCache.get(hostUuid, item.stableId(),
+                spec.fallbackKind, spec.fallbackVersion);
+        return fallback != null && fallback.isFile() && fallback.length() > 0
+                ? new ArtworkResult(fallback, spec.fallbackKind) : null;
+    }
+
+    private ArtworkResult fetchPlayniteArtwork(HostGatewayClient.Connection connection,
+                                                String hostUuid,
+                                                PlayniteDashboardItem item,
+                                                PlayniteArtworkSpec spec) throws IOException {
+        try {
+            return new ArtworkResult(playniteArtworkCache.fetch(hostGatewayClient, connection,
+                    hostUuid, item.stableId(), spec.kind, spec.version), spec.kind);
+        } catch (IOException primaryFailure) {
+            if (!spec.hasFallback()) throw primaryFailure;
+            return new ArtworkResult(playniteArtworkCache.fetch(hostGatewayClient, connection,
+                    hostUuid, item.stableId(), spec.fallbackKind, spec.fallbackVersion),
+                    spec.fallbackKind);
+        }
+    }
+
+    private void applyPrefetchedPlayniteArtwork(int token, String hostUuid,
+                                                 PlayniteDashboardItem item,
+                                                 ArtworkResult result) {
+        if (token != playniteArtworkGeneration.get() || !hostUuid.equals(selectedHostUuid)) return;
+        View card = directChildWithTag(appRow, "playnite:" + item.stableId());
+        if (!(card instanceof ViewGroup)) return;
+        ImageView poster = (ImageView) findTaggedChild((ViewGroup) card, "playnite.poster");
+        if (poster == null || !playniteArtworkTag(item).equals(
+                poster.getTag(R.id.playnite_artwork_key))) return;
+        loadPlayniteBitmap(result.file, poster, playniteArtworkTag(item), result.kind);
+        if (card.hasFocus()) showArtwork(result.file, poster.getDrawable());
+    }
+
+    private View directChildWithTag(ViewGroup parent, Object tag) {
+        for (int index = 0; index < parent.getChildCount(); index++) {
+            View child = parent.getChildAt(index);
+            if (Objects.equals(tag, child.getTag())) return child;
+        }
+        return null;
+    }
+
+    private String playniteArtworkTag(PlayniteDashboardItem item) {
+        return item.stableId() + ":" + PlayniteArtworkSpec.forGame(item.game).cacheIdentity();
+    }
+
+    private boolean cardParentHasFocus(View view) {
+        ViewParent parent = view.getParent();
+        while (parent instanceof View) {
+            if (((View) parent).hasFocus()) return true;
+            parent = parent.getParent();
+        }
+        return false;
+    }
+
+    private void loadPlayniteBitmap(File file, ImageView poster,
+                                    String expectedTag, String kind) {
+        executor.execute(() -> {
+            Bitmap bitmap = decodeSampledBitmap(file, 640, 360);
+            mainHandler.post(() -> {
+                Object expected = poster.getTag(R.id.playnite_artwork_key);
+                if (bitmap != null && expectedTag.equals(expected)) {
+                    poster.setPadding(0, 0, 0, 0);
+                    boolean landscape = "background".equals(kind);
+                    poster.setScaleType(landscape
+                            ? ImageView.ScaleType.CENTER_CROP : ImageView.ScaleType.FIT_CENTER);
+                    ImageView backdrop = playnitePosterBackdrop(poster);
+                    if (backdrop != null) {
+                        if (landscape) {
+                            backdrop.setImageDrawable(null);
+                            backdrop.setVisibility(View.GONE);
+                        } else {
+                            backdrop.setImageBitmap(bitmap);
+                            backdrop.setVisibility(View.VISIBLE);
+                        }
+                    }
+                    poster.setImageBitmap(bitmap);
+                }
+            });
+        });
+    }
+
+    private ImageView playnitePosterBackdrop(ImageView poster) {
+        ViewParent parent = poster.getParent();
+        if (!(parent instanceof ViewGroup)) return null;
+        View value = findTaggedChild((ViewGroup) parent, "playnite.poster.backdrop");
+        return value instanceof ImageView ? (ImageView) value : null;
+    }
+
+    private static Bitmap decodeSampledBitmap(File file, int requestedWidth,
+                                              int requestedHeight) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+        int sample = 1;
+        while (bounds.outWidth / (sample * 2) >= requestedWidth &&
+                bounds.outHeight / (sample * 2) >= requestedHeight) {
+            sample *= 2;
+        }
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sample;
+        return BitmapFactory.decodeFile(file.getAbsolutePath(), options);
+    }
+
+    private static final class ArtworkResult {
+        final File file;
+        final String kind;
+
+        ArtworkResult(File file, String kind) {
+            this.file = file;
+            this.kind = kind;
+        }
+    }
+
+    private void activatePlayniteItem(String hostUuid, PlayniteDashboardItem item) {
+        ComputerDetails host = currentHost(hostUuid);
+        if (host == null) {
+            Toast.makeText(this, R.string.error_pc_offline, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        List<NvApp> apps = currentSunshineApps;
+        if (!item.game.installed) {
+            Toast.makeText(this, R.string.playnite_not_installed, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
+            NvApp target = PlayniteTargetResolver.findById(apps, item.sunshineAppId);
+            if (target != null) {
+                launchOrConfirm(host, target);
+                return;
+            }
+        }
+        if (item.mappingState == PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE) {
+            NvApp fallback = PlayniteTargetResolver.findById(apps, item.sunshineAppId);
+            if (fallback != null) {
+                launchOrConfirm(host, fallback);
+                return;
+            }
+        }
+        NvApp fallback = PlayniteTargetResolver.resolvePlayniteFullscreen(
+                host.uuid, apps, playniteLaunchTargetStore);
+        if (fallback != null) {
+            ensureVibepolloAppThenLaunch(host, item, fallback);
+            return;
+        }
+        showPlayniteTargetPicker(host, item, apps);
+    }
+
+    private void ensureVibepolloAppThenLaunch(ComputerDetails host,
+                                               PlayniteDashboardItem item,
+                                               NvApp fallback) {
+        ComputerDetails latestHost = currentHost(host.uuid);
+        // The Gateway and Vibepollo live on the host.  When the machine is
+        // asleep, wake it first instead of treating an unavailable Gateway as
+        // a reason to launch the Playnite fallback.
+        if (!ConsoleActionCatalog.isOnline(latestHost)) {
+            prepareHostThenEnsureVibepolloApp(host, item, fallback);
+            return;
+        }
+        String address = latestHost != null && latestHost.activeAddress != null
+                ? latestHost.activeAddress.address : null;
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(host.uuid, address);
+        if (connection == null) {
+            launchPlayniteFallback(host.uuid, item, fallback);
+            return;
+        }
+        String ensureKey = host.uuid + ":" + item.game.playniteGameId;
+        if (!vibepolloEnsureInFlight.add(ensureKey)) return;
+        Toast.makeText(this, R.string.playnite_creating_vibepollo_app,
+                Toast.LENGTH_SHORT).show();
+        executor.execute(() -> {
+            boolean ensured = false;
+            Integer ensuredAppId = null;
+            String ensuredAppUuid = "";
+            try {
+                JSONObject ensuredApp = hostGatewayClient.ensureVibepolloPlayniteApp(connection,
+                        item.game.playniteGameId, item.game.name);
+                ensured = true;
+                ensuredAppId = HostGatewayClient.parseVibepolloAppId(ensuredApp);
+                ensuredAppUuid = HostGatewayClient.parseVibepolloAppUuid(ensuredApp);
+            } catch (IOException | IllegalArgumentException ignored) { }
+            boolean created = ensured;
+            Integer targetAppId = ensuredAppId;
+            String targetAppUuid = ensuredAppUuid;
+            mainHandler.post(() -> {
+                if (!created) {
+                    vibepolloEnsureInFlight.remove(ensureKey);
+                    // Older Gateway/Bridge installations remain compatible:
+                    // Playnite Fullscreen is the default launch target.
+                    launchPlayniteFallback(host.uuid, item, fallback);
+                    return;
+                }
+                if (appListPoller != null) appListPoller.pollNow();
+                if (streamLoadingView != null) {
+                    streamLoadingView.setStep(2, getString(
+                            R.string.playnite_creating_vibepollo_app));
+                }
+                awaitVibepolloTarget(host.uuid, item, fallback, targetAppId, targetAppUuid,
+                        ensureKey, SystemClock.uptimeMillis() + VIBEPOLLO_APP_WAIT_MS,
+                        null, -1, 0, 0L);
+            });
+        });
+    }
+
+    private void prepareHostThenEnsureVibepolloApp(ComputerDetails host,
+                                                    PlayniteDashboardItem item,
+                                                    NvApp fallback) {
+        if (managerBinder == null) {
+            Toast.makeText(this, R.string.console_initializing, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        int token = launchGeneration.incrementAndGet();
+        showLoading(host.name, item.game.name);
+        executor.execute(() -> {
+            ComputerDetails ready = HostReadiness.await(
+                    () -> managerBinder != null ? managerBinder.getComputer(host.uuid) : null,
+                    host,
+                    () -> token != launchGeneration.get() || !active,
+                    message -> setLoadingStatus(token, message),
+                    getString(R.string.console_wol_status, host.name),
+                    getString(R.string.console_waiting_stream_ports));
+            mainHandler.post(() -> {
+                if (token != launchGeneration.get() || !active) return;
+                if (ready == null) {
+                    if (streamLoadingView != null) {
+                        streamLoadingView.showError(getString(R.string.console_host_not_ready),
+                                getString(R.string.console_host_timeout));
+                    }
+                    return;
+                }
+                ensureVibepolloAppThenLaunch(ready, item, fallback);
+            });
+        });
+    }
+
+    private void awaitVibepolloTarget(String hostUuid, PlayniteDashboardItem item,
+                                      NvApp fallback, Integer expectedAppId,
+                                      String expectedAppUuid, String ensureKey, long deadline,
+                                      Integer stableAppId, int stableGeneration,
+                                      int stablePolls, long stableSince) {
+        // The Bridge response identifies the exact record Vibepollo created.
+        // Prefer that identity over a similarly named stale Sunshine app;
+        // launching the stale record is what produced the first-launch 404.
+        NvApp synchronizedTarget = null;
+        if (!expectedAppUuid.isEmpty()) {
+            synchronizedTarget = PlayniteTargetResolver.findByUuid(
+                    currentSunshineApps, expectedAppUuid);
+        }
+        if (synchronizedTarget == null && expectedAppId != null) {
+            synchronizedTarget = PlayniteTargetResolver.findById(
+                    currentSunshineApps, expectedAppId);
+        }
+        if (synchronizedTarget == null) {
+            synchronizedTarget = PlayniteTargetResolver.findPlayableExactName(
+                    currentSunshineApps, item.game.name);
+        }
+        long now = SystemClock.uptimeMillis();
+        int generation = sunshineAppsGeneration.get();
+        Integer nextStableAppId = stableAppId;
+        int nextStableGeneration = stableGeneration;
+        int nextStablePolls = stablePolls;
+        long nextStableSince = stableSince;
+        if (synchronizedTarget != null) {
+            int candidateId = synchronizedTarget.getAppId();
+            if (!Objects.equals(stableAppId, candidateId)) {
+                nextStableAppId = candidateId;
+                nextStableGeneration = generation;
+                nextStablePolls = 1;
+                nextStableSince = now;
+            } else if (generation != stableGeneration) {
+                nextStableGeneration = generation;
+                nextStablePolls++;
+            }
+        } else {
+            nextStableAppId = null;
+            nextStableGeneration = -1;
+            nextStablePolls = 0;
+            nextStableSince = 0L;
+        }
+        if (synchronizedTarget != null &&
+                nextStablePolls >= VIBEPOLLO_APP_STABLE_POLLS &&
+                now - nextStableSince >= VIBEPOLLO_APP_STABLE_MS) {
+            vibepolloEnsureInFlight.remove(ensureKey);
+            playniteLaunchTargetStore.setGameTarget(hostUuid, item.stableId(),
+                    synchronizedTarget.getAppId());
+            renderPlayniteLibrary(currentHost(hostUuid), currentSunshineApps);
+            launchOrConfirm(currentHost(hostUuid), synchronizedTarget);
+            return;
+        }
+        if (now >= deadline) {
+            vibepolloEnsureInFlight.remove(ensureKey);
+            launchPlayniteFallback(hostUuid, item, fallback);
+            return;
+        }
+        if (appListPoller != null) appListPoller.pollNow();
+        Integer pendingAppId = nextStableAppId;
+        int pendingGeneration = nextStableGeneration;
+        int pendingPolls = nextStablePolls;
+        long pendingSince = nextStableSince;
+        mainHandler.postDelayed(() -> awaitVibepolloTarget(
+                hostUuid, item, fallback, expectedAppId, expectedAppUuid, ensureKey, deadline,
+                pendingAppId, pendingGeneration, pendingPolls, pendingSince), 400L);
+    }
+
+    private void launchPlayniteFallback(String hostUuid, PlayniteDashboardItem item,
+                                        NvApp fallback) {
+        playniteLaunchTargetStore.setGameTarget(hostUuid, item.stableId(),
+                fallback.getAppId());
+        renderPlayniteLibrary(currentHost(hostUuid), currentSunshineApps);
+        launchOrConfirm(currentHost(hostUuid), fallback);
+    }
+
+    private void showPlayniteTargetPicker(ComputerDetails host, PlayniteDashboardItem item,
+                                          List<NvApp> apps) {
+        if (host == null) {
+            Toast.makeText(this, R.string.error_pc_offline, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        if (!item.game.installed) {
+            Toast.makeText(this, R.string.playnite_not_installed, Toast.LENGTH_SHORT).show();
+            return;
+        }
+        List<View> actions = new ArrayList<>();
+        for (NvApp app : apps) {
+            TextView choose = panelAction(app.getAppName());
+            choose.setTag("playnite.target:" + app.getAppId());
+            choose.setOnClickListener(view -> {
+                playniteLaunchTargetStore.setGameTarget(host.uuid,
+                        item.stableId(), app.getAppId());
+                hideSidePanel();
+                Toast.makeText(this, getString(R.string.playnite_target_saved,
+                        item.game.name), Toast.LENGTH_SHORT).show();
+                renderPlayniteLibrary(host, currentSunshineApps);
+            });
+            actions.add(choose);
+        }
+        Integer saved = playniteLaunchTargetStore.gameTarget(host.uuid, item.stableId());
+        if (saved != null) {
+            TextView clear = panelAction(getString(R.string.playnite_clear_target));
+            clear.setOnClickListener(view -> {
+                playniteLaunchTargetStore.clearGameTarget(host.uuid, item.stableId());
+                hideSidePanel();
+                renderPlayniteLibrary(host, currentSunshineApps);
+            });
+            actions.add(clear);
+        }
+        if (actions.isEmpty()) actions.add(label(getString(R.string.playnite_launch_unavailable)));
+        showSidePanel(getString(R.string.playnite_select_launch_target), item.game.name,
+                getString(R.string.playnite_select_target_details),
+                actions.toArray(new View[0]));
+    }
+
+    private void updateLaunchPlayniteButton(ComputerDetails host, List<NvApp> apps) {
+        if (launchPlayniteButton == null || host == null) return;
+        NvApp target = PlayniteTargetResolver.resolvePlayniteFullscreen(
+                host.uuid, apps, playniteLaunchTargetStore);
+        boolean hasApps = !apps.isEmpty();
+        launchPlayniteButton.setEnabled(hasApps);
+        launchPlayniteButton.setAlpha(hasApps ? 1f : .48f);
+        launchPlayniteButton.setContentDescription(target != null
+                ? getString(R.string.playnite_launch_description)
+                : getString(R.string.playnite_no_fullscreen_target));
+    }
+
+    private void launchPlayniteFullscreen() {
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host == null) return;
+        NvApp target = PlayniteTargetResolver.resolvePlayniteFullscreen(
+                host.uuid, currentSunshineApps, playniteLaunchTargetStore);
+        if (target != null) {
+            playniteLaunchTargetStore.setPlayniteTarget(host.uuid, target.getAppId());
+            launchOrConfirm(host, target);
+        } else {
+            showPlayniteFullscreenTargetPicker();
+        }
+    }
+
+    private void showPlayniteFullscreenTargetPicker() {
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host == null) return;
+        List<NvApp> ordered = new ArrayList<>();
+        List<NvApp> preferred = PlayniteTargetResolver.playniteCandidates(currentSunshineApps);
+        ordered.addAll(preferred);
+        for (NvApp app : currentSunshineApps) if (!preferred.contains(app)) ordered.add(app);
+        List<View> actions = new ArrayList<>();
+        for (NvApp app : ordered) {
+            TextView choose = panelAction(app.getAppName());
+            choose.setTag("playnite.fullscreen.target:" + app.getAppId());
+            choose.setOnClickListener(view -> {
+                playniteLaunchTargetStore.setPlayniteTarget(host.uuid, app.getAppId());
+                hideSidePanel();
+                updateLaunchPlayniteButton(host, currentSunshineApps);
+            });
+            actions.add(choose);
+        }
+        if (actions.isEmpty()) actions.add(label(getString(R.string.playnite_no_fullscreen_target)));
+        showSidePanel(getString(R.string.playnite_select_launch_target),
+                getString(R.string.playnite_launch),
+                getString(R.string.playnite_fullscreen_target_details),
+                actions.toArray(new View[0]));
+    }
+
     private void renderApps(ComputerDetails host, List<NvApp> apps) {
         String signature = appRenderSignature(host, apps);
-        if (signature.equals(renderedAppsSignature) && appRow.getChildCount() > 0) return;
+        Object firstTag = appRow.getChildCount() > 0 ? appRow.getChildAt(0).getTag() : null;
+        if (signature.equals(renderedAppsSignature) && firstTag instanceof String &&
+                ((String) firstTag).startsWith("app:")) return;
         renderedAppsSignature = signature;
+        renderedPlayniteItems = Collections.emptyList();
+        if (installedFilterButton != null) installedFilterButton.setVisibility(View.GONE);
         int restored = preferences.getInt("app_scroll." + host.uuid, 0);
         Object focusedTag = getCurrentFocus() != null ? getCurrentFocus().getTag() : null;
         int previousFocusedIndex = getCurrentFocus() != null
@@ -1654,7 +2693,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
         card.addView(copy, copyParams);
         card.setOnClickListener(v -> {
-            if (hostReady) launchOrConfirm(host, app);
+            // A paired offline host is launchable: beginLaunch() sends WOL and
+            // waits for its streaming ports while the five-step loader is shown.
+            if (ConsoleActionCatalog.isPaired(host)) launchOrConfirm(host, app);
             else showAppActions(host, app, poster);
         });
         card.setOnLongClickListener(view -> {
@@ -1711,19 +2752,30 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private void launchOrConfirm(ComputerDetails host, NvApp app) {
-        if (!ConsoleActionCatalog.isOnline(host)) {
-            Toast.makeText(this, R.string.error_pc_offline, Toast.LENGTH_SHORT).show();
-            return;
-        }
-        if (!ConsoleActionCatalog.isPaired(host)) {
+        ComputerDetails latestHost = host == null ? null : currentHost(host.uuid);
+        if (!ConsoleActionCatalog.isPaired(latestHost)) {
             Toast.makeText(this, R.string.scut_not_paired, Toast.LENGTH_SHORT).show();
             return;
         }
-        if (host.runningGameId != 0 && host.runningGameId != app.getAppId()) {
-            UiHelper.displayQuitConfirmationDialog(this, () -> beginLaunch(host, app), null);
+        if (latestHost.runningGameId != 0 && latestHost.runningGameId != app.getAppId()) {
+            UiHelper.displayQuitConfirmationDialog(this,
+                    () -> beginLaunch(latestHost, app), null);
         } else {
-            beginLaunch(host, app);
+            beginLaunch(latestHost, app);
         }
+    }
+
+    private ComputerDetails currentHost(String hostUuid) {
+        if (hostUuid == null) return null;
+        if (managerBinder != null) {
+            ComputerDetails managed = managerBinder.getComputer(hostUuid);
+            if (managed != null) {
+                ComputerDetails copy = new ComputerDetails(managed);
+                hosts.put(hostUuid, copy);
+                return copy;
+            }
+        }
+        return hosts.get(hostUuid);
     }
 
     private void showAppActions(ComputerDetails host, NvApp app, ImageView poster) {
@@ -2659,20 +3711,33 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         View resume = quickResumeButton != null
                 && quickResumeButton.getVisibility() == View.VISIBLE
                 && quickResumeButton.isEnabled() ? quickResumeButton : null;
+        View playnite = launchPlayniteButton != null
+                && launchPlayniteButton.getVisibility() == View.VISIBLE
+                && launchPlayniteButton.isEnabled() ? launchPlayniteButton : null;
+        View filter = installedFilterButton != null
+                && installedFilterButton.getVisibility() == View.VISIBLE
+                && installedFilterButton.isEnabled() ? installedFilterButton : null;
         View quick = firstFocusableChild(quickActions);
         View controller = firstFocusableChild(controllerRow);
         View app = firstFocusableChild(appRow);
 
-        View belowOptions = resume != null ? resume
+        View belowOptions = resume != null ? resume : playnite != null ? playnite
                 : quick != null ? quick : controller != null ? controller : app;
         if (belowOptions != null) optionsButton.setNextFocusDownId(belowOptions.getId());
 
         int down = controller != null ? controller.getId()
-                : app != null ? app.getId() : View.NO_ID;
+                : filter != null ? filter.getId() : app != null ? app.getId() : View.NO_ID;
         if (resume != null) {
             resume.setNextFocusUpId(optionsButton.getId());
-            if (quick != null) resume.setNextFocusRightId(quick.getId());
+            if (playnite != null) resume.setNextFocusRightId(playnite.getId());
+            else if (quick != null) resume.setNextFocusRightId(quick.getId());
             if (down != View.NO_ID) resume.setNextFocusDownId(down);
+        }
+        if (playnite != null) {
+            playnite.setNextFocusUpId(optionsButton.getId());
+            if (resume != null) playnite.setNextFocusLeftId(resume.getId());
+            if (quick != null) playnite.setNextFocusRightId(quick.getId());
+            if (down != View.NO_ID) playnite.setNextFocusDownId(down);
         }
 
         if (quickActions != null) {
@@ -2681,17 +3746,25 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 if (!child.isFocusable()) continue;
                 child.setNextFocusUpId(optionsButton.getId());
                 if (down != View.NO_ID) child.setNextFocusDownId(down);
-                if (index == 0 && resume != null) child.setNextFocusLeftId(resume.getId());
+                if (index == 0 && playnite != null) child.setNextFocusLeftId(playnite.getId());
+                else if (index == 0 && resume != null) child.setNextFocusLeftId(resume.getId());
             }
         }
 
         if (controller != null) {
             controller.setNextFocusUpId(quick != null ? quick.getId() : optionsButton.getId());
-            if (app != null) controller.setNextFocusDownId(app.getId());
+            if (filter != null) controller.setNextFocusDownId(filter.getId());
+            else if (app != null) controller.setNextFocusDownId(app.getId());
+        }
+
+        if (filter != null) {
+            filter.setNextFocusUpId(controller != null ? controller.getId()
+                    : quick != null ? quick.getId() : optionsButton.getId());
+            if (app != null) filter.setNextFocusDownId(app.getId());
         }
 
         if (appRow != null) {
-            int up = controller != null ? controller.getId()
+            int up = filter != null ? filter.getId() : controller != null ? controller.getId()
                     : quick != null ? quick.getId() : optionsButton.getId();
             for (int index = 0; index < appRow.getChildCount(); index++) {
                 View child = appRow.getChildAt(index);
