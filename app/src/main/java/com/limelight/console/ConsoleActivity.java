@@ -119,9 +119,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private static final long DISCOVERY_INTERVAL_MS = 60_000L;
     private static final long DISCOVERY_VISIBLE_MS = 4_000L;
     private static final long PLAYNITE_REFRESH_MS = 60_000L;
-    private static final long VIBEPOLLO_APP_WAIT_MS = 35_000L;
-    private static final long VIBEPOLLO_APP_STABLE_MS = 2_000L;
-    private static final int VIBEPOLLO_APP_STABLE_POLLS = 3;
+    private static final long VIBEPOLLO_APP_WAIT_MS = 5 * 60_000L;
+    private static final long VIBEPOLLO_ENSURE_RETRY_MS = 3_000L;
+    private static final long VIBEPOLLO_APP_STABLE_MS = 30_000L;
+    private static final int VIBEPOLLO_APP_STABLE_POLLS = 5;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newFixedThreadPool(3);
     private final ExecutorService playniteExecutor = Executors.newSingleThreadExecutor();
@@ -523,16 +524,18 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         discoverySpinner.setContentDescription(getString(R.string.console_discovering));
         discoverySpinner.setFocusable(false);
         discoverySpinner.setVisibility(View.GONE);
-        LinearLayout.LayoutParams spinnerParams = new LinearLayout.LayoutParams(dp(18), dp(18));
-        spinnerParams.rightMargin = dp(8);
+        LinearLayout.LayoutParams spinnerParams = new LinearLayout.LayoutParams(dp(14), dp(14));
+        spinnerParams.rightMargin = dp(6);
         discoveryBlock.addView(discoverySpinner, spinnerParams);
-        discoveryStatus = text(getString(R.string.console_discovering), 13, 0xFFB8C9DC, false);
+        discoveryStatus = text(getString(R.string.console_discovering), 10, 0xFF8F9AAF, false);
         discoveryBlock.addView(discoveryStatus, wrapLinear());
+        LinearLayout.LayoutParams discoveryParams = sectionWithTop(2);
+        discoveryParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
+        homeContent.addView(discoveryBlock, discoveryParams);
 
         LinearLayout discoveryAndSession = new LinearLayout(this);
         discoveryAndSession.setOrientation(LinearLayout.HORIZONTAL);
         discoveryAndSession.setGravity(Gravity.CENTER_VERTICAL);
-        discoveryAndSession.addView(discoveryBlock, wrapLinear());
         quickResumeButton = text(getString(R.string.console_quick_resume),
                 12, 0xFFE8F6FF, true);
         quickResumeButton.setId(View.generateViewId());
@@ -559,7 +562,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         launchPlayniteButton.setClickable(true);
         launchPlayniteButton.setGravity(Gravity.CENTER);
         launchPlayniteButton.setMinWidth(dp(48));
-        launchPlayniteButton.setMinHeight(dp(48));
+        launchPlayniteButton.setMinHeight(dp(42));
         launchPlayniteButton.setPadding(dp(13), dp(5), dp(13), dp(5));
         launchPlayniteButton.setContentDescription(
                 getString(R.string.playnite_launch_description));
@@ -572,7 +575,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 styleCompactButton(launchPlayniteButton, focused));
         styleCompactButton(launchPlayniteButton, false);
         LinearLayout.LayoutParams playniteParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
         playniteParams.leftMargin = dp(10);
         discoveryAndSession.addView(launchPlayniteButton, playniteParams);
         quickLine.addView(discoveryAndSession, portraitLayout
@@ -1893,9 +1896,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             PlayniteDashboardItem old = previous.get(item.stableId());
             if (card == null || "playnite.empty".equals(card.getTag())) {
                 card = playniteCard(host, item, apps);
-            } else if (!item.equals(old)) {
+            } else if (!item.equals(old) || isVibepolloEnsureInFlight(host.uuid, item)) {
                 bindPlayniteCard(card, host, item, apps,
-                        playnitePayload(old, item));
+                        !item.equals(old) ? playnitePayload(old, item) : PlayniteLibraryDiff.TEXT);
             }
             int currentIndex = appRow.indexOfChild(card);
             if (currentIndex < 0) {
@@ -2024,7 +2027,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         TextView state = (TextView) findTaggedChild((ViewGroup) card, "playnite.state");
         ImageView poster = (ImageView) findTaggedChild((ViewGroup) card, "playnite.poster");
         String playtimeText = formatPlayniteTime(item.game.playtimeSeconds);
-        String stateText = playniteState(item);
+        String stateText = playniteState(host.uuid, item);
         if ((payload & PlayniteLibraryDiff.TEXT) != 0) {
             name.setText(item.game.name);
             playtime.setText(playtimeText);
@@ -2071,8 +2074,11 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 getString(R.string.playnite_minutes_short)));
     }
 
-    private String playniteState(PlayniteDashboardItem item) {
+    private String playniteState(String hostUuid, PlayniteDashboardItem item) {
         if (!item.game.installed) return getString(R.string.playnite_not_installed);
+        if (isVibepolloEnsureInFlight(hostUuid, item)) {
+            return getString(R.string.playnite_creating_vibepollo_app);
+        }
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
             return getString(R.string.playnite_game_installed);
         }
@@ -2080,6 +2086,14 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             return getString(R.string.playnite_launch_via_playnite);
         }
         return getString(R.string.playnite_launch_not_configured);
+    }
+
+    private String vibepolloEnsureKey(String hostUuid, PlayniteDashboardItem item) {
+        return hostUuid + ":" + item.game.playniteGameId;
+    }
+
+    private boolean isVibepolloEnsureInFlight(String hostUuid, PlayniteDashboardItem item) {
+        return vibepolloEnsureInFlight.contains(vibepolloEnsureKey(hostUuid, item));
     }
 
     private void resetPlaynitePoster(ImageView poster, PlayniteDashboardItem item) {
@@ -2312,6 +2326,11 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             Toast.makeText(this, R.string.playnite_not_installed, Toast.LENGTH_SHORT).show();
             return;
         }
+        if (isVibepolloEnsureInFlight(hostUuid, item)) {
+            Toast.makeText(this, R.string.playnite_creating_vibepollo_app,
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
             NvApp target = PlayniteTargetResolver.findById(apps, item.sunshineAppId);
             if (target != null) {
@@ -2354,40 +2373,45 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             launchPlayniteFallback(host.uuid, item, fallback);
             return;
         }
-        String ensureKey = host.uuid + ":" + item.game.playniteGameId;
-        if (!vibepolloEnsureInFlight.add(ensureKey)) return;
-        Toast.makeText(this, R.string.playnite_creating_vibepollo_app,
-                Toast.LENGTH_SHORT).show();
+        String ensureKey = vibepolloEnsureKey(host.uuid, item);
+        if (!vibepolloEnsureInFlight.add(ensureKey)) {
+            Toast.makeText(this, R.string.playnite_creating_vibepollo_app,
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        // The first activation only prepares the Sunshine entry. Do not launch
+        // an app whose creation is still propagating: that was the source of
+        // the initial 404. The card becomes launchable after stable polling.
+        renderPlayniteLibrary(host, currentSunshineApps);
+        ensureVibepolloApp(host.uuid, item, fallback, connection, ensureKey,
+                SystemClock.uptimeMillis() + VIBEPOLLO_APP_WAIT_MS);
+    }
+
+    private void ensureVibepolloApp(String hostUuid, PlayniteDashboardItem item,
+                                    NvApp fallback, HostGatewayClient.Connection connection,
+                                    String ensureKey, long deadline) {
         executor.execute(() -> {
-            boolean ensured = false;
-            Integer ensuredAppId = null;
-            String ensuredAppUuid = "";
+            JSONObject ensuredApp = null;
             try {
-                JSONObject ensuredApp = hostGatewayClient.ensureVibepolloPlayniteApp(connection,
+                ensuredApp = hostGatewayClient.ensureVibepolloPlayniteApp(connection,
                         item.game.playniteGameId, item.game.name);
-                ensured = true;
-                ensuredAppId = HostGatewayClient.parseVibepolloAppId(ensuredApp);
-                ensuredAppUuid = HostGatewayClient.parseVibepolloAppUuid(ensuredApp);
             } catch (IOException | IllegalArgumentException ignored) { }
-            boolean created = ensured;
-            Integer targetAppId = ensuredAppId;
-            String targetAppUuid = ensuredAppUuid;
+            JSONObject result = ensuredApp;
             mainHandler.post(() -> {
-                if (!created) {
+                if (!active || !vibepolloEnsureInFlight.contains(ensureKey)) return;
+                if (result != null) {
+                    if (appListPoller != null) appListPoller.pollNow();
+                    awaitVibepolloTarget(hostUuid, item, fallback,
+                            HostGatewayClient.parseVibepolloAppId(result),
+                            HostGatewayClient.parseVibepolloAppUuid(result), ensureKey, deadline,
+                            null, -1, 0, 0L);
+                } else if (SystemClock.uptimeMillis() >= deadline) {
                     vibepolloEnsureInFlight.remove(ensureKey);
-                    // Older Gateway/Bridge installations remain compatible:
-                    // Playnite Fullscreen is the default launch target.
-                    launchPlayniteFallback(host.uuid, item, fallback);
-                    return;
+                    launchPlayniteFallback(hostUuid, item, fallback);
+                } else {
+                    mainHandler.postDelayed(() -> ensureVibepolloApp(hostUuid, item, fallback,
+                            connection, ensureKey, deadline), VIBEPOLLO_ENSURE_RETRY_MS);
                 }
-                if (appListPoller != null) appListPoller.pollNow();
-                if (streamLoadingView != null) {
-                    streamLoadingView.setStep(2, getString(
-                            R.string.playnite_creating_vibepollo_app));
-                }
-                awaitVibepolloTarget(host.uuid, item, fallback, targetAppId, targetAppUuid,
-                        ensureKey, SystemClock.uptimeMillis() + VIBEPOLLO_APP_WAIT_MS,
-                        null, -1, 0, 0L);
             });
         });
     }
@@ -2418,6 +2442,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     }
                     return;
                 }
+                // This path only wakes the host so Vibepollo can prepare the
+                // entry. It is not a stream launch yet, so return to the tile.
+                showHome();
                 ensureVibepolloAppThenLaunch(ready, item, fallback);
             });
         });
@@ -2457,7 +2484,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 nextStableGeneration = generation;
                 nextStablePolls = 1;
                 nextStableSince = now;
-            } else if (generation != stableGeneration) {
+            } else {
                 nextStableGeneration = generation;
                 nextStablePolls++;
             }
@@ -2474,7 +2501,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             playniteLaunchTargetStore.setGameTarget(hostUuid, item.stableId(),
                     synchronizedTarget.getAppId());
             renderPlayniteLibrary(currentHost(hostUuid), currentSunshineApps);
-            launchOrConfirm(currentHost(hostUuid), synchronizedTarget);
             return;
         }
         if (now >= deadline) {
@@ -2489,7 +2515,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         long pendingSince = nextStableSince;
         mainHandler.postDelayed(() -> awaitVibepolloTarget(
                 hostUuid, item, fallback, expectedAppId, expectedAppUuid, ensureKey, deadline,
-                pendingAppId, pendingGeneration, pendingPolls, pendingSince), 400L);
+                pendingAppId, pendingGeneration, pendingPolls, pendingSince), 1_000L);
     }
 
     private void launchPlayniteFallback(String hostUuid, PlayniteDashboardItem item,

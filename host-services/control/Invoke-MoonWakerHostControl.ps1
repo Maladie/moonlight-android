@@ -59,6 +59,9 @@ function Get-ProfileRoot([object]$Entry, [string]$Id) {
 
 function Get-SupervisorStatus([string]$Root) {
     if ([string]::IsNullOrWhiteSpace($Root)) { return "unavailable" }
+    if (Test-Path -LiteralPath (Join-Path $Root "profile-bridge-manually-stopped")) {
+        return "manually_stopped"
+    }
     $statePath = Join-Path $Root "profile-bridge-state.json"
     try {
         $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
@@ -80,6 +83,32 @@ function Get-ProfileProcessId([string]$Root, [string]$Name) {
     return 0
 }
 
+function Test-GatewayManualStop([string]$Directory) {
+    return Test-Path -LiteralPath (Join-Path $Directory "gateway-manually-stopped")
+}
+
+function Ensure-BackgroundServices([object]$Gateway, [string]$GatewayDirectory, [int]$GatewayPort) {
+    if (-not (Test-TcpPort "127.0.0.1" $GatewayPort) -and -not (Test-GatewayManualStop $GatewayDirectory)) {
+        try { Start-Gateway } catch {}
+    }
+    if (-not $Gateway.profiles) { return }
+    $currentProfilesRoot = [IO.Path]::GetFullPath((Join-Path (Get-InstallRoot) "profiles"))
+    foreach ($property in $Gateway.profiles.PSObject.Properties) {
+        $id = [string]$property.Name
+        $root = Get-ProfileRoot $property.Value $id
+        if ([string]::IsNullOrWhiteSpace($root) -or
+            (Test-Path -LiteralPath (Join-Path $root "profile-bridge-manually-stopped"))) { continue }
+        try {
+            $resolvedRoot = [IO.Path]::GetFullPath($root)
+            if (-not $resolvedRoot.StartsWith($currentProfilesRoot + [IO.Path]::DirectorySeparatorChar,
+                [StringComparison]::OrdinalIgnoreCase)) { continue }
+            if ((Get-SupervisorStatus $root) -ne "running") {
+                Invoke-ProfileControl $id "start"
+            }
+        } catch {}
+    }
+}
+
 function Get-Status {
     $gatewayDirectory = Get-GatewayDirectory
     $configPath = Join-Path $gatewayDirectory "gateway.json"
@@ -87,6 +116,7 @@ function Get-Status {
         Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
     } else { [pscustomobject]@{ listen_port = 8785; profiles = [pscustomobject]@{}; clients = @() } }
     $port = if ($gateway.PSObject.Properties["listen_port"]) { [int]$gateway.listen_port } else { 8785 }
+    Ensure-BackgroundServices $gateway $gatewayDirectory $port
     $runtime = $null
     try { $runtime = Get-Content -LiteralPath (Join-Path $gatewayDirectory "runtime-status.json") -Raw | ConvertFrom-Json } catch {}
     $pairing = $false
@@ -102,6 +132,8 @@ function Get-Status {
             $id = [string]$property.Name
             $entry = $property.Value
             $root = Get-ProfileRoot $entry $id
+            $manuallyStopped = -not [string]::IsNullOrWhiteSpace($root) -and
+                (Test-Path -LiteralPath (Join-Path $root "profile-bridge-manually-stopped"))
             $profiles += [ordered]@{
                 id = $id
                 name = if ($entry.PSObject.Properties["name"]) { [string]$entry.name } else { $id }
@@ -111,11 +143,11 @@ function Get-Status {
                     $root.StartsWith((Join-Path (Get-InstallRoot) "profiles"), [StringComparison]::OrdinalIgnoreCase)
                 supervisor = Get-SupervisorStatus $root
                 supervisor_pid = Get-ProfileProcessId $root "supervisor"
-                discord = Test-HttpHealth ([string]$entry.discord_bridge)
+                discord = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth ([string]$entry.discord_bridge) }
                 discord_pid = Get-ProfileProcessId $root "discord"
-                vibepollo = Test-HttpHealth ([string]$entry.vibepollo_bridge)
+                vibepollo = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth ([string]$entry.vibepollo_bridge) }
                 vibepollo_pid = Get-ProfileProcessId $root "vibepollo"
-                playnite = Test-HttpHealth ([string]$entry.playnite_bridge)
+                playnite = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth ([string]$entry.playnite_bridge) }
                 playnite_pid = Get-ProfileProcessId $root "playnite"
                 last_used = $runtime -and [string]$runtime.profile_id -eq $id
                 last_used_at = if ($runtime -and [string]$runtime.profile_id -eq $id) { [int64]$runtime.updated_at } else { 0 }

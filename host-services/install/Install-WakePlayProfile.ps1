@@ -203,18 +203,58 @@ function Remove-LegacyBridgeStartup {
 function Register-ProfileAgent {
     param([string]$StartScript)
     $Name = "MoonWaker Profile Bridge ($ProfileId)"
-    # A Startup shortcut belongs to this Windows account.  Unlike a task made
-    # by an elevated installer, it can be managed and started by the same user.
+    $profileAgent = Join-Path (Split-Path -Parent $StartScript) "MoonWakerProfileBridge.ps1"
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    try {
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument (
+            '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -ProfileRoot "{1}" -ProfileId "{2}"' -f `
+                $profileAgent, (Split-Path -Parent $StartScript), $ProfileId)
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
+        $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
+            -ExecutionTimeLimit (New-TimeSpan -Days 3650) -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries -StartWhenAvailable
+        $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
+        Register-ScheduledTask -TaskName $Name -Action $action -Trigger $trigger -Settings $settings `
+            -Principal $principal -Force | Out-Null
+        Write-Host "Registered per-user Profile Bridge recovery task."
+    } catch {
+        Write-Warning "Could not register the Profile Bridge recovery task: $($_.Exception.Message)"
+    }
+    # Keep a per-user Startup shortcut as a fallback for Windows editions where
+    # task registration is restricted. The supervisor mutex makes this safe.
     $startup = Join-Path $env:APPDATA "Microsoft\Windows\Start Menu\Programs\Startup"
     New-Item -ItemType Directory -Path $startup -Force | Out-Null
     $shell = New-Object -ComObject WScript.Shell
     $shortcut = $shell.CreateShortcut((Join-Path $startup "MoonWaker Profile Bridge ($ProfileId).lnk"))
     $shortcut.TargetPath = "powershell.exe"
-    $shortcut.Arguments = "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$StartScript`""
-    $shortcut.WorkingDirectory = Split-Path -Parent $StartScript
+    $shortcut.Arguments = '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -ProfileRoot "{1}" -ProfileId "{2}"' -f `
+        $profileAgent, (Split-Path -Parent $StartScript), $ProfileId
+    $shortcut.WorkingDirectory = Split-Path -Parent $profileAgent
     $shortcut.Description = "MoonWaker Profile Bridge supervisor ($ProfileId)"
     $shortcut.Save()
     Write-Host "Registered per-user Profile Bridge startup shortcut."
+}
+
+function Register-GatewaySupervisor {
+    param([string]$GatewayDirectory)
+    $supervisor = Join-Path $GatewayDirectory "MoonWakerGatewaySupervisor.ps1"
+    if (-not (Test-Path -LiteralPath $supervisor)) { return }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+    try {
+        $action = New-ScheduledTaskAction -Execute "powershell.exe" -Argument (
+            '-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File "{0}" -GatewayDirectory "{1}"' -f `
+                $supervisor, $GatewayDirectory)
+        $trigger = New-ScheduledTaskTrigger -AtLogOn -User $identity
+        $settings = New-ScheduledTaskSettingsSet -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) `
+            -ExecutionTimeLimit (New-TimeSpan -Days 3650) -AllowStartIfOnBatteries `
+            -DontStopIfGoingOnBatteries -StartWhenAvailable
+        $principal = New-ScheduledTaskPrincipal -UserId $identity -LogonType Interactive -RunLevel Limited
+        Register-ScheduledTask -TaskName "MoonWaker Gateway Supervisor" -Action $action -Trigger $trigger `
+            -Settings $settings -Principal $principal -Force | Out-Null
+        Write-Host "Registered per-user Gateway recovery task."
+    } catch {
+        Write-Warning "Could not register the Gateway recovery task: $($_.Exception.Message)"
+    }
 }
 
 function Register-UserStartup {
@@ -245,8 +285,10 @@ foreach ($file in @("MoonWakerProfileBridge.ps1", "Start-MoonWakerProfileBridge.
 Register-ProfileAgent (Join-Path $profileRoot "Start-MoonWakerProfileBridge.ps1")
 if ([string]::IsNullOrWhiteSpace($GatewayDirectory)) { $GatewayDirectory = Split-Path -Parent $GatewayConfigPath }
 $gatewayStart = Join-Path $GatewayDirectory "Start-MoonWakerGateway.ps1"
+$gatewaySupervisor = Join-Path $GatewayDirectory "MoonWakerGatewaySupervisor.ps1"
 Register-UserStartup "MoonWaker Gateway" "powershell.exe" (
-    "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$gatewayStart`"") "MoonWaker Gateway supervisor"
+    "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$gatewaySupervisor`" -GatewayDirectory `"$GatewayDirectory`"") "MoonWaker Gateway supervisor"
+Register-GatewaySupervisor $GatewayDirectory
 Register-UserStartup "MoonWaker Host Control" $HostControlExecutable "--tray" "MoonWaker Host Control"
 
 $discordDirectory = $null

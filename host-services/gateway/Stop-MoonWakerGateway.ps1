@@ -3,6 +3,7 @@
 param([string]$GatewayDirectory = $PSScriptRoot)
 
 $GatewayDirectory = [IO.Path]::GetFullPath($GatewayDirectory)
+New-Item -ItemType File -Path (Join-Path $GatewayDirectory "gateway-manually-stopped") -Force | Out-Null
 New-Item -ItemType File -Path (Join-Path $GatewayDirectory "gateway-supervisor-stop") -Force | Out-Null
 $port = 8785
 try { $port = [int](Get-Content -LiteralPath (Join-Path $GatewayDirectory "gateway.json") -Raw | ConvertFrom-Json).listen_port } catch {}

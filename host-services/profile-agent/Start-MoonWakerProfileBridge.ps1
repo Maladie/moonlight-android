@@ -6,6 +6,8 @@ param(
 )
 $ErrorActionPreference = "Stop"
 $statePath = Join-Path $ProfileRoot "profile-bridge-state.json"
+$manualStopPath = Join-Path $ProfileRoot "profile-bridge-manually-stopped"
+Remove-Item -LiteralPath $manualStopPath -Force -ErrorAction SilentlyContinue
 if (Test-Path -LiteralPath $statePath) {
     try {
         $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
