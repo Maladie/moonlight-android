@@ -680,15 +680,19 @@ class GatewayState:
                 result, "Unable to read Playnite state."),
         }
 
-    def playnite_events(self, after: Any) -> tuple[int, Any]:
+    def playnite_events(self, after: Any, transition_id: Any = "") -> tuple[int, Any]:
         sequence = int(after or 0)
         if sequence < 0 or sequence > 9_223_372_036_854_775_807:
             raise ValueError("Invalid Playnite event sequence.")
+        correlation = str(transition_id or "").strip()
+        if len(correlation) > 128 or not re.fullmatch(r"[A-Za-z0-9._:-]*", correlation):
+            raise ValueError("Invalid transition ID.")
         ok, result = self.proxy("playnite", "/events?" + urllib.parse.urlencode({
             "after": sequence,
         }), timeout=22.0)
         return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), {
             "ok": ok,
+            "transition_id": correlation,
             "events": result if ok and isinstance(result, dict) else {},
             "error": "" if ok else self.upstream_error(
                 result, "Unable to read Playnite lifecycle events."),
@@ -705,6 +709,10 @@ class GatewayState:
                 payload["game_id"] = self._playnite_game_id(body.get("game_id"))
             path = "/game/stop"
             timeout = 15.0
+        elif action == "game/focus":
+            payload = {}
+            path = "/game/focus"
+            timeout = 6.0
         elif action == "show-fullscreen":
             payload = {}
             path = "/playnite/show-fullscreen"
@@ -856,7 +864,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_json(status, result)
         elif path == f"{API_PREFIX}/playnite/events":
             status, result = self.state.playnite_events(
-                query.get("after", ["0"])[0])
+                query.get("after", ["0"])[0],
+                query.get("transition_id", [""])[0])
             self.send_json(status, result)
         else:
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found."})

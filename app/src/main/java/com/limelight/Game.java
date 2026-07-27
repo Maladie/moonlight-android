@@ -18,6 +18,12 @@ import com.limelight.binding.video.MediaCodecDecoderRenderer;
 import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.console.DiscordOverlayController;
+import com.limelight.console.PlayniteTransitionGateway;
+import com.limelight.console.transition.LaunchTransitionController;
+import com.limelight.console.transition.LaunchTransitionSnapshot;
+import com.limelight.console.transition.LaunchTransitionSpec;
+import com.limelight.console.transition.LaunchTransitionState;
+import com.limelight.console.transition.LaunchTransitionType;
 import com.limelight.nvstream.NvConnection;
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.nvstream.StreamConfiguration;
@@ -69,6 +75,7 @@ import android.os.PowerManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.SystemClock;
 import android.text.Html;
 import android.util.Rational;
 import android.view.Display;
@@ -94,12 +101,16 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Locale;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 
 public class Game extends Activity implements SurfaceHolder.Callback,
@@ -133,6 +144,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private NvConnection conn;
     private SpinnerDialog spinner;
     private ConsoleStreamLoadingView consoleLoadingView;
+    private LaunchTransitionController transitionController;
+    private LaunchTransitionSpec transitionSpec;
+    private final ExecutorService transitionExecutor = Executors.newSingleThreadExecutor();
+    private Future<?> transitionObservation;
+    private volatile boolean transitionObservationStopped;
+    private boolean lastTransitionOverlayVisible = true;
     private boolean displayedFailureDialog = false;
     private boolean connecting = false;
     private boolean connected = false;
@@ -197,16 +214,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         @Override
         public void onReceive(Context context, Intent intent) {
             if (ACTION_QUIT_APP.equals(intent.getAction())) {
-                // Set flag to quit the app on the server (same as gamepad quit gesture)
-                if (controllerHandler != null) {
-                    controllerHandler.pendingApplicationQuit = true;
-                }
-
-                // Stop the connection (which will call doQuit if pendingApplicationQuit is set)
-                stopConnection();
-
-                // Finish the activity
-                finish();
+                closeStreamWithPrivacy(true);
             }
         }
     };
@@ -229,7 +237,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_CONSOLE_LOADING_EPOCH = "ConsoleLoadingEpoch";
     public static final String EXTRA_CONSOLE_LOADING_STEP = "ConsoleLoadingStep";
     public static final String EXTRA_CONSOLE_LOADING_STATUS = "ConsoleLoadingStatus";
+    public static final String EXTRA_CONSOLE_LOADING_ARTWORK = "ConsoleLoadingArtwork";
     public static final String EXTRA_CONSOLE_REDUCED_MOTION = "ConsoleReducedMotion";
+    public static final String EXTRA_TRANSITION_ID = "ConsoleTransitionId";
+    public static final String EXTRA_TRANSITION_TYPE = "ConsoleTransitionType";
+    public static final String EXTRA_TRANSITION_HOST_ID = "ConsoleTransitionHostId";
+    public static final String EXTRA_TRANSITION_PLAYNITE_GAME_ID =
+            "ConsoleTransitionPlayniteGameId";
+    public static final String EXTRA_TRANSITION_CREATED_AT = "ConsoleTransitionCreatedAt";
     public static final String ACTION_QUIT_APP = "com.limelight.QUIT_STREAMING_APP";
 
     @Override
@@ -284,16 +299,39 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         setContentView(R.layout.activity_game);
 
         if (getIntent().getBooleanExtra(EXTRA_CONSOLE_LOADING, false)) {
+            transitionSpec = readTransitionSpec();
             consoleLoadingView = new ConsoleStreamLoadingView(
                     this,
                     getIntent().getStringExtra(EXTRA_APP_NAME),
                     getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_MESSAGE),
                     getIntent().getLongExtra(EXTRA_CONSOLE_LOADING_EPOCH, 0L),
                     getIntent().getBooleanExtra(EXTRA_CONSOLE_REDUCED_MOTION, false));
+            consoleLoadingView.setSplashArtwork(
+                    getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_ARTWORK));
             ((FrameLayout) findViewById(android.R.id.content)).addView(consoleLoadingView,
                     new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT));
             consoleLoadingView.bringToFront();
+            if (transitionSpec != null) {
+                consoleLoadingView.configureForPlaynite(
+                        transitionSpec.type == LaunchTransitionType.PLAYNITE);
+                transitionController = new LaunchTransitionController(
+                        this::onTransitionChanged);
+                transitionController.begin(transitionSpec);
+                consoleLoadingView.setActions(new ConsoleStreamLoadingView.Actions() {
+                    @Override public void onCancel() {
+                        cancelTransition();
+                    }
+
+                    @Override public void onRetry() {
+                        retryTransition();
+                    }
+
+                    @Override public void onShowStreamAnyway() {
+                        transitionController.showStreamAnyway(transitionSpec.id);
+                    }
+                });
+            }
             consoleLoadingView.setStep(
                     getIntent().getIntExtra(EXTRA_CONSOLE_LOADING_STEP, 2),
                     getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_STATUS));
@@ -340,6 +378,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Listen for non-touch events on the game surface
         streamView = findViewById(R.id.surfaceView);
+        streamView.setZOrderOnTop(false);
+        streamView.setZOrderMediaOverlay(false);
         streamView.setOnGenericMotionListener(this);
         streamView.setOnKeyListener(this);
         streamView.setInputCallbacks(this);
@@ -617,6 +657,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 httpsPort, uniqueId, config,
                 PlatformBinding.getCryptoProvider(this), serverCert);
         controllerHandler = new ControllerHandler(this, conn, this, prefConfig);
+        if (transitionController != null) {
+            controllerHandler.setInputSuppressed(true);
+            transitionController.inputPipelineReady(transitionSpec.id);
+        }
         keyboardTranslator = new KeyboardTranslator();
 
         // Setup overlay menu now that controllerHandler is initialized
@@ -675,8 +719,39 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             registerReceiver(quitAppReceiver, filter);
         }
 
-        // The connection will be started when the surface gets created
-        streamView.getHolder().addCallback(this);
+        // The connection is armed only after Android has submitted an opaque
+        // overlay frame. This preserves show -> frame -> operation ordering.
+        if (transitionController != null && consoleLoadingView != null) {
+            // Register immediately so we cannot miss an already-created Surface.
+            // surfaceChanged() still gates conn.start() on operationAuthorized.
+            streamView.getHolder().addCallback(this);
+            consoleLoadingView.doAfterNextFrame(() -> {
+                if (isFinishing() || isDestroyed()) return;
+                transitionController.overlayRendered(transitionSpec.id);
+                startConnectionIfReady(streamView.getHolder());
+                startTransitionObservation();
+            });
+        } else {
+            streamView.getHolder().addCallback(this);
+        }
+    }
+
+    private LaunchTransitionSpec readTransitionSpec() {
+        String id = getIntent().getStringExtra(EXTRA_TRANSITION_ID);
+        String hostId = getIntent().getStringExtra(EXTRA_TRANSITION_HOST_ID);
+        String rawType = getIntent().getStringExtra(EXTRA_TRANSITION_TYPE);
+        if (id == null || id.isEmpty() || hostId == null || hostId.isEmpty()
+                || rawType == null) return null;
+        try {
+            return new LaunchTransitionSpec(id, hostId,
+                    LaunchTransitionType.valueOf(rawType),
+                    getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID),
+                    getIntent().getStringExtra(EXTRA_TRANSITION_PLAYNITE_GAME_ID),
+                    getIntent().getLongExtra(EXTRA_TRANSITION_CREATED_AT,
+                            System.currentTimeMillis()));
+        } catch (IllegalArgumentException invalidType) {
+            return null;
+        }
     }
 
     private void setPreferredOrientationForCurrentDisplay() {
@@ -1173,6 +1248,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        transitionObservationStopped = true;
+        if (transitionObservation != null) transitionObservation.cancel(true);
+        transitionExecutor.shutdownNow();
         if (discordOverlayController != null) {
             discordOverlayController.destroy();
             discordOverlayController = null;
@@ -1488,6 +1566,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public boolean handleKeyDown(KeyEvent event) {
+        if (isTransitionInputBlocked()) {
+            return true;
+        }
         if (isImeVisible && isAndroidTV && event.getDeviceId() >= 0) {
             switch (event.getKeyCode()) {
                 case KeyEvent.KEYCODE_DPAD_UP:
@@ -1590,6 +1671,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public boolean handleKeyUp(KeyEvent event) {
+        if (isTransitionInputBlocked()) {
+            if (event.getKeyCode() == KeyEvent.KEYCODE_BACK
+                    || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B) {
+                cancelTransition();
+            }
+            return true;
+        }
         if (isImeVisible && isAndroidTV && event.getDeviceId() >= 0) {
             switch (event.getKeyCode()) {
                 case KeyEvent.KEYCODE_DPAD_UP:
@@ -1710,6 +1798,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void onTextCommitted(String text) {
+        if (isTransitionInputBlocked()) return;
         if (conn != null && text != null) {
             conn.sendUtf8Text(text);
         }
@@ -1725,6 +1814,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void onImeKeyReceived(KeyEvent event) {
+        if (isTransitionInputBlocked()) return;
         if (conn != null) {
             short translated = keyboardTranslator.translate(event.getKeyCode(), event.getDeviceId());
             if (translated != 0) {
@@ -2014,6 +2104,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     // Returns true if the event was consumed
     // NB: View is only present if called from a view callback
     private boolean handleMotionEvent(View view, MotionEvent event) {
+        if (isTransitionInputBlocked()) return true;
         // Pass through mouse/touch/joystick input if we're not grabbing
         if (!grabbedInput) {
             return false;
@@ -2365,6 +2456,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
+        if (isTransitionInputBlocked()) return true;
         // If overlay menu is visible, route all motion events to it
         if (overlayMenuView != null && overlayMenuView.getVisibility() == View.VISIBLE) {
             return overlayMenuView.onGenericMotionEvent(event);
@@ -2441,6 +2533,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @SuppressLint("ClickableViewAccessibility")
     @Override
     public boolean onTouch(View view, MotionEvent event) {
+        if (isTransitionInputBlocked()) return true;
         if (event.getAction() == MotionEvent.ACTION_DOWN) {
             // Tell the OS not to buffer input events for us
             //
@@ -2478,6 +2571,29 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void stopConnection() {
         stopConnection(null);
+    }
+
+    private void closeStreamWithPrivacy(boolean quitApplication) {
+        userInitiatedDisconnect = true;
+        if (transitionController == null || consoleLoadingView == null) {
+            if (controllerHandler != null) {
+                controllerHandler.pendingApplicationQuit = quitApplication;
+            }
+            stopConnection();
+            finish();
+            return;
+        }
+        transitionController.closingStream(transitionSpec.id);
+        consoleLoadingView.showOpaque();
+        consoleLoadingView.doAfterNextFrame(() -> {
+            if (controllerHandler != null) {
+                controllerHandler.pendingApplicationQuit = quitApplication;
+            }
+            stopConnection(() -> {
+                transitionController.returningToDashboard(transitionSpec.id);
+                finish();
+            });
+        });
     }
 
     private void stopConnection(Runnable afterStopped) {
@@ -2545,7 +2661,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             @Override
             public void run() {
                 if (consoleLoadingView != null) {
-                    consoleLoadingView.stopAndHide();
+                    if (transitionController != null) {
+                        transitionController.error(transitionSpec.id,
+                                getString(R.string.conn_error_msg) + " " + stage);
+                    } else {
+                        consoleLoadingView.stopAndHide();
+                    }
                 }
                 if (spinner != null) {
                     spinner.dismiss();
@@ -2595,6 +2716,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                if (transitionController != null) {
+                    transitionController.closingStream(transitionSpec.id);
+                }
                 // Let the display go to sleep now
                 getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
 
@@ -2661,7 +2785,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                 message, true);
                     }
                     else {
-                        finish();
+                        if (transitionController != null && consoleLoadingView != null) {
+                            consoleLoadingView.doAfterNextFrame(() -> {
+                                transitionController.returningToDashboard(
+                                        transitionSpec.id);
+                                finish();
+                            });
+                        } else {
+                            finish();
+                        }
                     }
                 }
             }
@@ -2704,11 +2836,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             @Override
             public void run() {
                 if (consoleLoadingView != null) {
-                    consoleLoadingView.waitingForVideo();
-                    // Conservative fallback for vendor decoders that omit frame callbacks.
-                    consoleLoadingView.postDelayed(() -> {
-                        if (consoleLoadingView != null) consoleLoadingView.revealStream();
-                    }, 8000L);
+                    if (transitionController != null) {
+                        transitionController.streamConnected(transitionSpec.id);
+                    } else {
+                        consoleLoadingView.waitingForVideo();
+                    }
                 }
                 if (spinner != null) {
                     spinner.dismiss();
@@ -2759,7 +2891,307 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void onFirstVideoFrameRendered() {
         runOnUiThread(() -> {
-            if (consoleLoadingView != null) consoleLoadingView.revealStream();
+            if (transitionController != null) {
+                transitionController.videoFrameRendered(transitionSpec.id);
+            } else if (consoleLoadingView != null) {
+                consoleLoadingView.revealStream();
+            }
+        });
+    }
+
+    private void onTransitionChanged(LaunchTransitionSnapshot snapshot) {
+        runOnUiThread(() -> applyTransitionSnapshot(snapshot));
+    }
+
+    private void applyTransitionSnapshot(LaunchTransitionSnapshot snapshot) {
+        if (transitionSpec == null || snapshot.spec == null
+                || !transitionSpec.id.equals(snapshot.spec.id)
+                || consoleLoadingView == null) return;
+        if (controllerHandler != null) {
+            controllerHandler.setInputSuppressed(snapshot.inputBlocked);
+        }
+        if (snapshot.overlayVisible) {
+            boolean newlyCovered = !lastTransitionOverlayVisible;
+            consoleLoadingView.showOpaque();
+            consoleLoadingView.setStep(snapshot.step, transitionStatus(snapshot));
+            if (newlyCovered && decoderRenderer != null
+                    && snapshot.state != LaunchTransitionState.CLOSING_STREAM
+                    && snapshot.state != LaunchTransitionState.RETURNING_TO_DASHBOARD) {
+                decoderRenderer.requestNextFrameRendered(() ->
+                        transitionController.videoFrameRendered(transitionSpec.id));
+            }
+        }
+        if (snapshot.state == LaunchTransitionState.ERROR
+                || snapshot.state == LaunchTransitionState.TIMED_OUT) {
+            int title = transitionSpec.type == LaunchTransitionType.PLAYNITE
+                    ? (snapshot.step >= 4
+                    ? R.string.transition_playnite_fullscreen_failed
+                    : R.string.transition_playnite_failed)
+                    : R.string.transition_game_failed;
+            consoleLoadingView.showError(getString(title),
+                    snapshot.detail.isEmpty()
+                            ? getString(R.string.transition_readiness_unconfirmed)
+                            : snapshot.detail,
+                    snapshot.uncertain);
+        } else if (snapshot.state == LaunchTransitionState.CANCELLED) {
+            consoleLoadingView.showError(getString(R.string.transition_cancel),
+                    getString(R.string.transition_cancel_details), false);
+        }
+        if (snapshot.revealAuthorized && snapshot.overlayVisible) {
+            consoleLoadingView.revealStream(() ->
+                    transitionController.revealCompleted(transitionSpec.id));
+        }
+        lastTransitionOverlayVisible = snapshot.overlayVisible;
+    }
+
+    private String transitionStatus(LaunchTransitionSnapshot snapshot) {
+        switch (snapshot.state) {
+            case PREPARING_SESSION:
+                return getString(R.string.transition_preparing_session);
+            case CONNECTING_STREAM:
+            case WAITING_FOR_VIDEO_SURFACE:
+                return getString(R.string.transition_connecting_stream);
+            case PLAYNITE_STARTING:
+            case PLAYNITE_PROCESS_RUNNING:
+                return getString(R.string.transition_starting_playnite);
+            case PLAYNITE_FULLSCREEN_STARTING:
+                return getString(R.string.transition_waiting_fullscreen);
+            case GAME_START_REQUESTED:
+            case GAME_STARTING:
+            case GAME_PROCESS_RUNNING:
+                return getString(R.string.transition_starting_game);
+            case GAME_WINDOW_STABILIZING:
+                return getString(R.string.transition_window_stabilizing);
+            case GAME_STOPPING:
+            case PLAYNITE_RETURNING:
+                return getString(R.string.transition_waiting_playnite_return);
+            case PLAYNITE_STOPPING:
+            case CLOSING_STREAM:
+            case RETURNING_TO_DASHBOARD:
+                return getString(R.string.transition_closing_session);
+            case GAME_READY:
+            case GAME_RUNNING:
+            case PLAYNITE_FULLSCREEN_READY:
+            case IDLE:
+                return getString(R.string.transition_ready);
+            default:
+                return snapshot.detail.isEmpty()
+                        ? getString(R.string.transition_waiting_gateway) : snapshot.detail;
+        }
+    }
+
+    private void startTransitionObservation() {
+        if (transitionSpec == null || transitionSpec.type == LaunchTransitionType.GENERIC) {
+            return;
+        }
+        PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
+                this, transitionSpec.hostId, getIntent().getStringExtra(EXTRA_HOST));
+        if (gateway == null) {
+            transitionController.timedOut(transitionSpec.id,
+                    getString(R.string.transition_gateway_unavailable));
+            return;
+        }
+        transitionObservationStopped = false;
+        transitionObservation = transitionExecutor.submit(() ->
+                observeTransition(gateway, transitionSpec.id, transitionSpec.hostId));
+    }
+
+    private void observeTransition(PlayniteTransitionGateway gateway,
+                                   String transitionId, String hostId) {
+        long sequence = 0L;
+        int failures = 0;
+        boolean baselineEstablished = false;
+        boolean gameWasRunning = false;
+        boolean fullscreenRequested = false;
+        int gameFocusAttempts = 0;
+        long lastGameFocusAttempt = 0L;
+        String lastReadinessReason = "";
+        LaunchTransitionState observedState = null;
+        long stateSince = SystemClock.uptimeMillis();
+        while (!transitionObservationStopped && !Thread.currentThread().isInterrupted()) {
+            try {
+                PlayniteTransitionGateway.Snapshot gatewaySnapshot = gateway.snapshot();
+                lastReadinessReason = gatewaySnapshot.reason;
+                applyGatewaySnapshot(transitionId, hostId, gatewaySnapshot);
+                if (!fullscreenRequested
+                        && transitionSpec.type == LaunchTransitionType.PLAYNITE
+                        && !gatewaySnapshot.windowReady) {
+                    gateway.showFullscreen();
+                    fullscreenRequested = true;
+                }
+                long now = SystemClock.uptimeMillis();
+                if ("game".equalsIgnoreCase(gatewaySnapshot.targetKind)
+                        && !gatewaySnapshot.windowReady
+                        && "target_not_foreground".equals(gatewaySnapshot.reason)
+                        && gameFocusAttempts < 3
+                        && now - lastGameFocusAttempt >= 3_000L) {
+                    lastGameFocusAttempt = now;
+                    gameFocusAttempts++;
+                    try {
+                        gateway.focusGame();
+                    } catch (IOException ignored) {
+                        // Readiness remains closed and a later bounded attempt may succeed.
+                    }
+                }
+                if ("running".equalsIgnoreCase(gatewaySnapshot.gameState)
+                        && gatewaySnapshot.processId > 0) gameWasRunning = true;
+                if (gameWasRunning && "idle".equalsIgnoreCase(gatewaySnapshot.gameState)
+                        && "playnite".equalsIgnoreCase(gatewaySnapshot.targetKind)) {
+                    transitionController.gameStopping(transitionId, hostId,
+                            transitionSpec.playniteGameId);
+                    transitionController.playniteReturning(transitionId, hostId);
+                    gameWasRunning = false;
+                }
+                PlayniteTransitionGateway.Events events =
+                        gateway.awaitEvents(sequence, transitionId);
+                sequence = events.latestSequence;
+                if (baselineEstablished) {
+                    for (PlayniteTransitionGateway.Event event : events.values) {
+                        applyGatewayEvent(transitionId, hostId, event);
+                    }
+                } else {
+                    baselineEstablished = true;
+                }
+                failures = 0;
+
+                LaunchTransitionSnapshot current = transitionController.snapshot();
+                if (current.state != observedState) {
+                    observedState = current.state;
+                    stateSince = SystemClock.uptimeMillis();
+                }
+                long timeout = timeoutFor(current.state);
+                if (timeout > 0L && SystemClock.uptimeMillis() - stateSince >= timeout) {
+                    transitionController.timedOut(transitionId,
+                            readinessFailureMessage(lastReadinessReason));
+                }
+            } catch (IOException | RuntimeException error) {
+                failures++;
+                if (failures >= 3) {
+                    transitionController.error(transitionId,
+                            getString(R.string.transition_gateway_unavailable));
+                }
+                if (transitionObservationStopped) return;
+                try {
+                    Thread.sleep(Math.min(4_000L, failures * 1_000L));
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return;
+                }
+            }
+        }
+    }
+
+    private String readinessFailureMessage(String reason) {
+        if ("host_session_locked".equals(reason)) {
+            return getString(R.string.transition_host_session_locked);
+        }
+        if ("stream_display_not_configured".equals(reason)) {
+            return getString(R.string.transition_stream_display_not_configured);
+        }
+        return getString(R.string.transition_readiness_unconfirmed);
+    }
+
+    private void applyGatewaySnapshot(String transitionId, String hostId,
+                                      PlayniteTransitionGateway.Snapshot snapshot) {
+        if (!snapshot.gatewayReady || !snapshot.connectorReady) return;
+        transitionController.gatewayConnected(transitionId, hostId);
+        if ("host_session_locked".equals(snapshot.reason)) {
+            transitionController.error(transitionId,
+                    getString(R.string.transition_host_session_locked));
+            return;
+        }
+        LaunchTransitionType kind = "game".equalsIgnoreCase(snapshot.targetKind)
+                ? LaunchTransitionType.GAME : LaunchTransitionType.PLAYNITE;
+        String gameId = snapshot.gameId == null || snapshot.gameId.isEmpty()
+                ? transitionSpec.playniteGameId : snapshot.gameId;
+        if (snapshot.processId > 0) {
+            transitionController.targetProcessRunning(transitionId, hostId, kind, gameId);
+        }
+        if (snapshot.windowReady) {
+            transitionController.targetWindowReady(transitionId, hostId, kind, gameId);
+        } else if (snapshot.stableSamples > 0
+                || "stabilizing_target_window".equals(snapshot.reason)) {
+            transitionController.targetWindowStabilizing(transitionId, hostId, kind,
+                    gameId, getString(R.string.transition_window_stabilizing));
+        }
+    }
+
+    private void applyGatewayEvent(String transitionId, String hostId,
+                                   PlayniteTransitionGateway.Event event) {
+        String name = event.name == null ? "" : event.name;
+        if ("game-starting".equals(name)) {
+            transitionController.targetStarting(transitionId, hostId,
+                    LaunchTransitionType.GAME, event.gameId);
+        } else if ("game-running".equals(name)) {
+            transitionController.targetProcessRunning(transitionId, hostId,
+                    LaunchTransitionType.GAME, event.gameId);
+        } else if ("game-stopping".equals(name) || "game-stopped".equals(name)) {
+            transitionController.gameStopping(transitionId, hostId, event.gameId);
+            transitionController.playniteReturning(transitionId, hostId);
+        } else if ("bridge-disconnected".equals(name)) {
+            transitionController.playniteStopping(transitionId, hostId);
+        }
+    }
+
+    private static long timeoutFor(LaunchTransitionState state) {
+        switch (state) {
+            case PREPARING_SESSION:
+                return 90_000L;
+            case CONNECTING_STREAM:
+                return 30_000L;
+            case WAITING_FOR_VIDEO_SURFACE:
+                return 15_000L;
+            case PLAYNITE_STARTING:
+            case PLAYNITE_PROCESS_RUNNING:
+                return 45_000L;
+            case PLAYNITE_FULLSCREEN_STARTING:
+                return 30_000L;
+            case GAME_START_REQUESTED:
+            case GAME_STARTING:
+            case GAME_PROCESS_RUNNING:
+                return 120_000L;
+            case GAME_WINDOW_STABILIZING:
+                return 30_000L;
+            case PLAYNITE_RETURNING:
+                return 45_000L;
+            case PLAYNITE_STOPPING:
+            case CLOSING_STREAM:
+                return 15_000L;
+            default:
+                return 0L;
+        }
+    }
+
+    private void cancelTransition() {
+        if (transitionController == null) return;
+        transitionController.cancel(transitionSpec.id);
+        transitionObservationStopped = true;
+        if (transitionObservation != null) transitionObservation.cancel(true);
+        consoleLoadingView.doAfterNextFrame(() -> {
+            userInitiatedDisconnect = true;
+            stopConnection();
+            finish();
+        });
+    }
+
+    private void retryTransition() {
+        if (transitionSpec == null) return;
+        transitionObservationStopped = true;
+        if (transitionObservation != null) transitionObservation.cancel(true);
+        Intent retry = new Intent(getIntent());
+        LaunchTransitionSpec next = LaunchTransitionSpec.create(
+                transitionSpec.hostId, transitionSpec.type, transitionSpec.sunshineAppId,
+                transitionSpec.playniteGameId, System.currentTimeMillis());
+        retry.putExtra(EXTRA_TRANSITION_ID, next.id);
+        retry.putExtra(EXTRA_TRANSITION_CREATED_AT, next.createdAtMillis);
+        consoleLoadingView.showOpaque();
+        consoleLoadingView.doAfterNextFrame(() -> {
+            userInitiatedDisconnect = true;
+            stopConnection(() -> {
+                finish();
+                startActivity(retry);
+                overridePendingTransition(0, 0);
+            });
         });
     }
 
@@ -2821,26 +3253,36 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             throw new IllegalStateException("Surface changed before creation!");
         }
 
-        if (!attemptedConnection) {
-            attemptedConnection = true;
+        startConnectionIfReady(holder);
+    }
 
-            // Update GameManager state to indicate we're "loading" while connecting
-            UiHelper.notifyStreamConnecting(Game.this);
+    private void startConnectionIfReady(SurfaceHolder holder) {
+        if (attemptedConnection || !surfaceCreated || holder == null
+                || holder.getSurface() == null || !holder.getSurface().isValid()) {
+            return;
+        }
+        if (transitionController != null
+                && !transitionController.snapshot().operationAuthorized) {
+            return;
+        }
+        attemptedConnection = true;
 
-            // Show stream configuration to user
-            String configMessage = String.format(Locale.getDefault(),
+        // Update GameManager state to indicate we're "loading" while connecting
+        UiHelper.notifyStreamConnecting(Game.this);
+
+        // Show stream configuration to user
+        String configMessage = String.format(Locale.getDefault(),
                 "Streaming %dx%d @ %d FPS, %d Mbps%s",
                 prefConfig.width,
                 prefConfig.height,
                 prefConfig.fps,
                 prefConfig.bitrate / 1000,
                 prefConfig.enableHdr ? ", HDR" : "");
-            Toast.makeText(Game.this, configMessage, Toast.LENGTH_LONG).show();
+        Toast.makeText(Game.this, configMessage, Toast.LENGTH_LONG).show();
 
-            decoderRenderer.setRenderTarget(holder);
-            conn.start(new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx),
-                    decoderRenderer, Game.this);
-        }
+        decoderRenderer.setRenderTarget(holder);
+        conn.start(new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx),
+                decoderRenderer, Game.this);
     }
 
     @Override
@@ -2848,6 +3290,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         float desiredFrameRate;
 
         surfaceCreated = true;
+        if (transitionController != null) {
+            transitionController.surfaceReady(transitionSpec.id);
+        }
 
         // Android will pick the lowest matching refresh rate for a given frame rate value, so we want
         // to report the true FPS value if refresh rate reduction is enabled. We also report the true
@@ -2897,11 +3342,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void mouseMove(int deltaX, int deltaY) {
+        if (isTransitionInputBlocked()) return;
         conn.sendMouseMove((short) deltaX, (short) deltaY);
     }
 
     @Override
     public void mouseButtonEvent(int buttonId, boolean down) {
+        if (isTransitionInputBlocked()) return;
         byte buttonIndex;
 
         switch (buttonId)
@@ -2936,16 +3383,19 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void mouseVScroll(byte amount) {
+        if (isTransitionInputBlocked()) return;
         conn.sendMouseScroll(amount);
     }
 
     @Override
     public void mouseHScroll(byte amount) {
+        if (isTransitionInputBlocked()) return;
         conn.sendMouseHScroll(amount);
     }
 
     @Override
     public void keyboardEvent(boolean buttonDown, short keyCode) {
+        if (isTransitionInputBlocked()) return;
         short keyMap = keyboardTranslator.translate(keyCode, -1);
         if (keyMap != 0) {
             // handleSpecialKeys() takes the Android keycode
@@ -2976,6 +3426,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         else if ((visibility & View.SYSTEM_UI_FLAG_HIDE_NAVIGATION) == 0) {
             hideSystemUi(2000);
         }
+    }
+
+    private boolean isTransitionInputBlocked() {
+        return transitionController != null
+                && transitionController.snapshot().inputBlocked;
     }
 
     @Override
@@ -3037,17 +3492,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         overlayMenuView.setMenuActionListener(new OverlayMenuView.MenuActionListener() {
             @Override
             public void onDisconnect() {
-                userInitiatedDisconnect = true;
-                stopConnection();
-                finish();
+                closeStreamWithPrivacy(false);
             }
 
             @Override
             public void onQuitSession() {
-                userInitiatedDisconnect = true;
-                controllerHandler.pendingApplicationQuit = true;
-                stopConnection();
-                finish();
+                closeStreamWithPrivacy(true);
             }
 
             @Override
@@ -3206,16 +3656,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             case CustomCommand.POST_ACTION_CLOSE_MENU:
                 return () -> overlayMenuView.closeMenu();
             case CustomCommand.POST_ACTION_DISCONNECT:
-                return () -> {
-                    stopConnection();
-                    finish();
-                };
+                return () -> closeStreamWithPrivacy(false);
             case CustomCommand.POST_ACTION_QUIT:
-                return () -> {
-                    controllerHandler.pendingApplicationQuit = true;
-                    stopConnection();
-                    finish();
-                };
+                return () -> closeStreamWithPrivacy(true);
             case CustomCommand.POST_ACTION_SLEEP:
                 return () -> {
                     android.app.admin.DevicePolicyManager dpm =

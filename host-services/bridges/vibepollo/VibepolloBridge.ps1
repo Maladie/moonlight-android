@@ -426,6 +426,110 @@ function Get-Snapshot {
     return $script:SnapshotCache
 }
 
+function Get-ActiveDisplayDiagnostics {
+    try {
+        if (-not ([System.Management.Automation.PSTypeName]"MoonWakerDisplayProbe").Type) {
+            Add-Type -TypeDefinition @"
+using System;
+using System.Collections.Generic;
+using System.Runtime.InteropServices;
+
+public static class MoonWakerDisplayProbe
+{
+    [StructLayout(LayoutKind.Sequential)]
+    private struct RECT
+    {
+        public int Left;
+        public int Top;
+        public int Right;
+        public int Bottom;
+    }
+
+    [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+    private struct MONITORINFOEX
+    {
+        public int Size;
+        public RECT Monitor;
+        public RECT Work;
+        public uint Flags;
+        [MarshalAs(UnmanagedType.ByValTStr, SizeConst = 32)]
+        public string DeviceName;
+    }
+
+    public sealed class Display
+    {
+        public string Name { get; set; }
+        public bool Primary { get; set; }
+        public int X { get; set; }
+        public int Y { get; set; }
+        public int Width { get; set; }
+        public int Height { get; set; }
+    }
+
+    private delegate bool MonitorCallback(
+        IntPtr monitor, IntPtr deviceContext, ref RECT bounds, IntPtr data);
+
+    [DllImport("user32.dll")]
+    private static extern bool EnumDisplayMonitors(
+        IntPtr deviceContext, IntPtr clip, MonitorCallback callback, IntPtr data);
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern bool GetMonitorInfo(IntPtr monitor, ref MONITORINFOEX info);
+
+    public static Display[] Enumerate()
+    {
+        var result = new List<Display>();
+        MonitorCallback callback = delegate(
+            IntPtr monitor, IntPtr deviceContext, ref RECT bounds, IntPtr data)
+        {
+            var info = new MONITORINFOEX();
+            info.Size = Marshal.SizeOf(typeof(MONITORINFOEX));
+            if (GetMonitorInfo(monitor, ref info) && !String.IsNullOrWhiteSpace(info.DeviceName))
+            {
+                result.Add(new Display {
+                    Name = info.DeviceName,
+                    Primary = (info.Flags & 1U) != 0,
+                    X = info.Monitor.Left,
+                    Y = info.Monitor.Top,
+                    Width = info.Monitor.Right - info.Monitor.Left,
+                    Height = info.Monitor.Bottom - info.Monitor.Top
+                });
+            }
+            return true;
+        };
+        EnumDisplayMonitors(IntPtr.Zero, IntPtr.Zero, callback, IntPtr.Zero);
+        return result.ToArray();
+    }
+}
+"@ -ErrorAction Stop
+        }
+        $displays = @([MoonWakerDisplayProbe]::Enumerate() | ForEach-Object {
+            [pscustomobject]@{
+                display_name = [string]$_.Name
+                primary = [bool]$_.Primary
+                bounds = [pscustomobject]@{
+                    x = [int]$_.X
+                    y = [int]$_.Y
+                    width = [int]$_.Width
+                    height = [int]$_.Height
+                }
+            }
+        })
+        return [pscustomobject]@{
+            ok = $true
+            source = "Win32.EnumDisplayMonitors"
+            value = [pscustomobject]@{ displays = $displays }
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            ok = $false
+            source = "Win32.EnumDisplayMonitors"
+            error = "Active display enumeration is unavailable."
+        }
+    }
+}
+
 function Build-StreamSourceDiagnostics {
     $sources = @(
         @{ name = "session"; path = "/api/session/status" },
@@ -453,6 +557,7 @@ function Build-StreamSourceDiagnostics {
             }
         }
     }
+    $results["active_displays"] = Get-ActiveDisplayDiagnostics
     return [pscustomobject]@{
         generated_at = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
         sources = [pscustomobject]$results
@@ -467,6 +572,7 @@ function Get-StreamSourceDiagnostics {
     # permanently starve /health on this deliberately small loopback server.
     if ($null -ne $script:DiagnosticsCache -and
         (($now - $script:DiagnosticsCacheTime).TotalSeconds -lt 60)) {
+        $script:DiagnosticsCache.sources.active_displays = Get-ActiveDisplayDiagnostics
         return $script:DiagnosticsCache
     }
     $script:DiagnosticsCache = Build-StreamSourceDiagnostics

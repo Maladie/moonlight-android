@@ -3,13 +3,52 @@ import tempfile
 from pathlib import Path
 
 from PatchPlayniteConnector import (
-    PATCH_MARKER, READER_ANCHOR, SEND_BUILD_ANCHOR, SEND_PARAM_ANCHOR,
-    STARTED_ANCHOR, STATUS_OBJECT_ANCHOR, STATUS_PARAM_ANCHOR, patch_text,
+    ARTWORK_LOOKUP_ANCHOR, ARTWORK_PAYLOAD_ANCHOR, PATCH_MARKER,
+    READER_ANCHOR, SEND_BUILD_ANCHOR, SEND_PARAM_ANCHOR, STARTED_ANCHOR,
+    STATUS_OBJECT_ANCHOR, STATUS_PARAM_ANCHOR, patch_text,
 )
-from PlayniteBridge import BridgeState, StreamDisplayResolver
+from PlayniteBridge import (
+    BridgeState, REQUIRED_GAME_STABLE_SAMPLES, StreamDisplayResolver, WindowProbe,
+)
 
 
 GAME_ID = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+
+
+class WindowProbeTest(unittest.TestCase):
+    def test_accepts_fullscreen_ui_owned_by_either_playnite_process(self):
+        self.assertTrue(WindowProbe.is_playnite_ui_image("Playnite.FullscreenApp.exe"))
+        self.assertTrue(WindowProbe.is_playnite_ui_image("PLAYNITE.DESKTOPAPP.EXE"))
+        self.assertFalse(WindowProbe.is_playnite_ui_image("explorer.exe"))
+
+    def test_headless_fallback_requires_window_to_fill_stream_monitor(self):
+        monitor = [0, 0, 1920, 1080]
+        self.assertTrue(WindowProbe.fills_monitor([0, 0, 1920, 1080], monitor))
+        self.assertTrue(WindowProbe.fills_monitor([-8, -8, 1928, 1048], monitor))
+        self.assertFalse(WindowProbe.fills_monitor([100, 100, 1380, 820], monitor))
+        self.assertFalse(WindowProbe.fills_monitor([0, 0, 1920, 1080], []))
+
+    def test_fullscreen_target_can_ignore_focus_on_another_monitor_only(self):
+        bounds = [0, 0, 1920, 1080]
+        monitor = [0, 0, 1920, 1080]
+        self.assertTrue(WindowProbe.can_reveal_without_global_foreground(
+            bounds, monitor, r"\\.\DISPLAY2", r"\\.\DISPLAY15"))
+        self.assertTrue(WindowProbe.can_reveal_without_global_foreground(
+            bounds, monitor, "", r"\\.\DISPLAY15"))
+        self.assertFalse(WindowProbe.can_reveal_without_global_foreground(
+            bounds, monitor, r"\\.\DISPLAY15", r"\\.\DISPLAY15"))
+        self.assertFalse(WindowProbe.can_reveal_without_global_foreground(
+            [100, 100, 1380, 820], monitor, r"\\.\DISPLAY2", r"\\.\DISPLAY15"))
+
+    def test_game_process_may_be_resolved_within_exact_install_directory(self):
+        install = r"E:\Games\Hollow Knight"
+        self.assertTrue(WindowProbe.belongs_to_install_directory(
+            r"E:\Games\Hollow Knight\hollow_knight.exe", install))
+        self.assertFalse(WindowProbe.belongs_to_install_directory(
+            r"E:\Games\Hollow Knight 2\not-the-game.exe", install))
+        self.assertFalse(WindowProbe.belongs_to_install_directory(
+            r"D:\Tools\unrelated.exe", install))
+        self.assertFalse(WindowProbe.belongs_to_install_directory("", install))
 
 
 class BridgeStateTest(unittest.TestCase):
@@ -18,10 +57,15 @@ class BridgeStateTest(unittest.TestCase):
         self.commands = []
         self.closed_processes = []
         self.fullscreen_calls = []
+        self.focus_calls = []
         self.state.set_transport(True, self.commands.append)
         self.state.set_window_actions(
             lambda process_id: not self.closed_processes.append(process_id),
-            lambda: self.fullscreen_calls.append(True) or {"started": False})
+            lambda: self.fullscreen_calls.append(True) or {"started": False},
+            lambda process_id, install_dir, display: self.focus_calls.append(
+                (process_id, install_dir, display)) or {
+                    "focused": True, "process_id": process_id, "display": display,
+                })
 
     def test_start_is_allowlisted_and_closes_privacy_gate(self):
         result = self.state.start_game(GAME_ID.upper())
@@ -135,6 +179,23 @@ class BridgeStateTest(unittest.TestCase):
         self.assertFalse(self.state.readiness["ready"])
         self.assertEqual("waiting_for_playnite_window", self.state.readiness["reason"])
 
+    def test_focus_current_game_closes_gate_and_uses_install_identity(self):
+        self.state.set_expected_display(r"\\.\DISPLAY15")
+        self.state.handle_message({
+            "type": "status",
+            "status": {
+                "name": "gameStarted", "id": GAME_ID, "processId": 4242,
+                "installDir": r"E:\Games\Baba Is You",
+            },
+        })
+        result = self.state.focus_game()
+        self.assertTrue(result["focused"])
+        self.assertEqual(
+            [(4242, r"E:\Games\Baba Is You", r"\\.\DISPLAY15")],
+            self.focus_calls)
+        self.assertFalse(self.state.readiness["ready"])
+        self.assertEqual("game_focus_requested", self.state.readiness["reason"])
+
     def test_stream_display_is_resolved_only_from_named_fields(self):
         payload = {
             "sources": {
@@ -149,6 +210,7 @@ class BridgeStateTest(unittest.TestCase):
         fixture = "\n".join([
             READER_ANCHOR, STATUS_PARAM_ANCHOR, STATUS_OBJECT_ANCHOR,
             SEND_PARAM_ANCHOR, SEND_BUILD_ANCHOR, STARTED_ANCHOR,
+            ARTWORK_LOOKUP_ANCHOR, ARTWORK_PAYLOAD_ANCHOR,
             "function Start-ConnectorLoop {", "}",
         ])
         patched, changed = patch_text(fixture)
@@ -156,11 +218,12 @@ class BridgeStateTest(unittest.TestCase):
         self.assertIn(PATCH_MARKER, patched)
         self.assertIn("Send-WakePlaySnapshotToLauncher", patched)
         self.assertIn("StartedProcessId", patched)
+        self.assertIn("backgroundImagePath", patched)
         second, changed_again = patch_text(patched)
         self.assertFalse(changed_again)
         self.assertEqual(patched, second)
 
-    def test_readiness_requires_three_stable_samples_and_closes_immediately(self):
+    def test_game_readiness_requires_sustained_stability_and_closes_immediately(self):
         self.state.handle_message({
             "type": "status",
             "status": {"name": "gameStarted", "id": GAME_ID, "processId": 4242},
@@ -168,8 +231,8 @@ class BridgeStateTest(unittest.TestCase):
         sample = {"qualified": True, "reason": "stabilizing_target_window",
                   "process_id": 4242, "hwnd": 17, "display": r"\\.\DISPLAY15",
                   "bounds": [0, 0, 1920, 1080]}
-        self.state.apply_window_sample(sample)
-        self.state.apply_window_sample(sample)
+        for _ in range(REQUIRED_GAME_STABLE_SAMPLES - 1):
+            self.state.apply_window_sample(sample)
         self.assertFalse(self.state.readiness["ready"])
         self.state.apply_window_sample(sample)
         self.assertTrue(self.state.readiness["ready"])

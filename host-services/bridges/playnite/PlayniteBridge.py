@@ -7,6 +7,7 @@ import argparse
 import ctypes
 import json
 import mimetypes
+import ntpath
 import os
 import re
 import subprocess
@@ -27,7 +28,12 @@ GAME_ID_PATTERN = re.compile(
 MAX_BODY_BYTES = 16 * 1024
 MAX_ARTWORK_BYTES = 8 * 1024 * 1024
 REQUIRED_STABLE_SAMPLES = 3
+REQUIRED_GAME_STABLE_SAMPLES = 40
 DISPLAY_NAME_PATTERN = re.compile(r"^(?:\\\\\.\\)?DISPLAY[0-9]+$", re.IGNORECASE)
+PLAYNITE_UI_IMAGES = {
+    "playnite.fullscreenapp.exe",
+    "playnite.desktopapp.exe",
+}
 
 
 class StreamDisplayResolver:
@@ -91,6 +97,7 @@ class WindowProbe:
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     MONITOR_DEFAULTTONEAREST = 2
     DWMWA_CLOAKED = 14
+    DESKTOP_SWITCHDESKTOP = 0x0100
     WM_CLOSE = 0x0010
     SW_RESTORE = 9
 
@@ -102,11 +109,27 @@ class WindowProbe:
             self.user32 = ctypes.WinDLL("user32", use_last_error=True)
             self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
             self.user32.GetForegroundWindow.restype = wintypes.HWND
+            self.user32.OpenInputDesktop.argtypes = [
+                wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
+            self.user32.OpenInputDesktop.restype = wintypes.HANDLE
+            self.user32.SwitchDesktop.argtypes = [wintypes.HANDLE]
+            self.user32.SwitchDesktop.restype = wintypes.BOOL
+            self.user32.CloseDesktop.argtypes = [wintypes.HANDLE]
+            self.user32.CloseDesktop.restype = wintypes.BOOL
             self.user32.IsWindowVisible.argtypes = [wintypes.HWND]
             self.user32.IsWindowVisible.restype = wintypes.BOOL
             self.user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND,
                                                               ctypes.POINTER(wintypes.DWORD)]
             self.user32.GetWindowThreadProcessId.restype = wintypes.DWORD
+            self.user32.AttachThreadInput.argtypes = [
+                wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
+            self.user32.AttachThreadInput.restype = wintypes.BOOL
+            self.user32.BringWindowToTop.argtypes = [wintypes.HWND]
+            self.user32.BringWindowToTop.restype = wintypes.BOOL
+            self.user32.SetActiveWindow.argtypes = [wintypes.HWND]
+            self.user32.SetActiveWindow.restype = wintypes.HWND
+            self.user32.SetFocus.argtypes = [wintypes.HWND]
+            self.user32.SetFocus.restype = wintypes.HWND
             self.user32.GetWindowRect.argtypes = [wintypes.HWND, ctypes.POINTER(wintypes.RECT)]
             self.user32.GetWindowRect.restype = wintypes.BOOL
             self.user32.PostMessageW.argtypes = [wintypes.HWND, wintypes.UINT,
@@ -154,6 +177,36 @@ class WindowProbe:
     def _process_image(self, process_id: int) -> str:
         return os.path.basename(self._process_path(process_id)).casefold()
 
+    def is_session_locked(self) -> bool:
+        if not self.user32:
+            return True
+        desktop = self.user32.OpenInputDesktop(
+            0, False, self.DESKTOP_SWITCHDESKTOP)
+        if not desktop:
+            return True
+        try:
+            return not bool(self.user32.SwitchDesktop(desktop))
+        finally:
+            self.user32.CloseDesktop(desktop)
+
+    @staticmethod
+    def is_playnite_ui_image(image_name: str) -> bool:
+        # Recent Playnite versions can hand Fullscreen activation to the already
+        # running DesktopApp process and then exit FullscreenApp. Both images are
+        # therefore valid owners of the foreground Playnite UI.
+        return image_name.casefold() in PLAYNITE_UI_IMAGES
+
+    @staticmethod
+    def belongs_to_install_directory(process_path: str, install_directory: str) -> bool:
+        if not process_path or not install_directory:
+            return False
+        try:
+            process = ntpath.normcase(ntpath.normpath(process_path))
+            directory = ntpath.normcase(ntpath.normpath(install_directory))
+            return ntpath.commonpath([process, directory]) == directory and process != directory
+        except ValueError:
+            return False
+
     def _matching_windows(self, process_id: int = 0,
                           image_name: str = "") -> list[int]:
         if not self.user32:
@@ -182,6 +235,44 @@ class WindowProbe:
             self.user32.PostMessageW(hwnd, self.WM_CLOSE, 0, 0)
         return bool(windows)
 
+    def focus_game_window(self, process_id: int, install_directory: str,
+                          expected_display: str) -> dict[str, Any]:
+        sample = self.sample("game", process_id, expected_display, install_directory)
+        if sample.get("reason") == "host_session_locked":
+            raise PermissionError("The Windows session is locked.")
+        hwnd = int(sample.get("hwnd") or 0)
+        if not hwnd or str(sample.get("display", "")).casefold() != \
+                expected_display.casefold():
+            raise RuntimeError("No game window is available on the streamed display.")
+        if not self.fills_monitor(
+                list(sample.get("bounds") or []),
+                list(sample.get("monitor_bounds") or [])):
+            raise RuntimeError("The game window does not fill the streamed display.")
+        current_thread = int(self.kernel32.GetCurrentThreadId())
+        target_thread = int(self.user32.GetWindowThreadProcessId(hwnd, None))
+        foreground = int(self.user32.GetForegroundWindow() or 0)
+        foreground_thread = int(
+            self.user32.GetWindowThreadProcessId(foreground, None)) if foreground else 0
+        attached: list[int] = []
+        for thread_id in {target_thread, foreground_thread}:
+            if thread_id and thread_id != current_thread and self.user32.AttachThreadInput(
+                    current_thread, thread_id, True):
+                attached.append(thread_id)
+        try:
+            self.user32.ShowWindow(hwnd, self.SW_RESTORE)
+            self.user32.BringWindowToTop(hwnd)
+            self.user32.SetActiveWindow(hwnd)
+            self.user32.SetFocus(hwnd)
+            focused = bool(self.user32.SetForegroundWindow(hwnd))
+        finally:
+            for thread_id in reversed(attached):
+                self.user32.AttachThreadInput(current_thread, thread_id, False)
+        return {
+            "focused": focused,
+            "process_id": int(sample.get("process_id") or 0),
+            "display": str(sample.get("display") or ""),
+        }
+
     def show_playnite_fullscreen(self, configured_path: str = "") -> dict[str, Any]:
         if not self.user32:
             raise OSError("Playnite Fullscreen activation requires Windows.")
@@ -205,9 +296,9 @@ class WindowProbe:
         process = subprocess.Popen([str(executable)], cwd=str(executable.parent))
         return {"started": True, "process_id": process.pid}
 
-    def _display_name(self, hwnd: int) -> str:
+    def _monitor_details(self, hwnd: int) -> tuple[str, list[int]]:
         if not self.user32:
-            return ""
+            return "", []
 
         class MonitorInfoEx(ctypes.Structure):
             _fields_ = [("cbSize", wintypes.DWORD), ("rcMonitor", wintypes.RECT),
@@ -218,18 +309,50 @@ class WindowProbe:
         info = MonitorInfoEx()
         info.cbSize = ctypes.sizeof(info)
         if monitor and self.user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
-            return str(info.szDevice)
-        return ""
+            bounds = info.rcMonitor
+            return str(info.szDevice), [
+                bounds.left, bounds.top, bounds.right, bounds.bottom,
+            ]
+        return "", []
+
+    @staticmethod
+    def fills_monitor(bounds: list[int], monitor_bounds: list[int],
+                      minimum_coverage: float = 0.90) -> bool:
+        if len(bounds) != 4 or len(monitor_bounds) != 4:
+            return False
+        left = max(bounds[0], monitor_bounds[0])
+        top = max(bounds[1], monitor_bounds[1])
+        right = min(bounds[2], monitor_bounds[2])
+        bottom = min(bounds[3], monitor_bounds[3])
+        intersection = max(0, right - left) * max(0, bottom - top)
+        monitor_area = max(0, monitor_bounds[2] - monitor_bounds[0]) * \
+            max(0, monitor_bounds[3] - monitor_bounds[1])
+        return monitor_area > 0 and intersection / monitor_area >= minimum_coverage
+
+    @classmethod
+    def can_reveal_without_global_foreground(
+            cls, bounds: list[int], monitor_bounds: list[int],
+            foreground_display: str, expected_display: str) -> bool:
+        foreground_is_on_stream = bool(foreground_display) and \
+            foreground_display.casefold() == expected_display.casefold()
+        return not foreground_is_on_stream and cls.fills_monitor(bounds, monitor_bounds)
 
     def sample(self, target_kind: str, process_id: int,
-               expected_display: str) -> dict[str, Any]:
+               expected_display: str, install_directory: str = "") -> dict[str, Any]:
         if not self.user32:
             return {"qualified": False, "reason": "window_probe_unavailable"}
-        if not expected_display:
-            return {"qualified": False, "reason": "stream_display_not_configured"}
+        if self.is_session_locked():
+            return {"qualified": False, "reason": "host_session_locked"}
 
         windows: list[dict[str, Any]] = []
         foreground = int(self.user32.GetForegroundWindow() or 0)
+        foreground_display = self._monitor_details(foreground)[0] if foreground else ""
+        foreground_process_id = 0
+        if foreground:
+            foreground_pid = wintypes.DWORD()
+            self.user32.GetWindowThreadProcessId(foreground, ctypes.byref(foreground_pid))
+            foreground_process_id = int(foreground_pid.value)
+        foreground_image = self._process_image(foreground_process_id)
         callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
 
         def visit(hwnd: int, _lparam: int) -> bool:
@@ -237,10 +360,16 @@ class WindowProbe:
                 return True
             pid = wintypes.DWORD()
             self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-            image = self._process_image(int(pid.value))
-            if target_kind == "game" and int(pid.value) != process_id:
-                return True
-            if target_kind == "playnite" and image != "playnite.fullscreenapp.exe":
+            candidate_process_id = int(pid.value)
+            process_path = self._process_path(candidate_process_id)
+            image = os.path.basename(process_path).casefold()
+            if target_kind == "game":
+                exact_process = candidate_process_id == process_id
+                installed_process = self.belongs_to_install_directory(
+                    process_path, install_directory)
+                if not exact_process and not installed_process:
+                    return True
+            if target_kind == "playnite" and not self.is_playnite_ui_image(image):
                 return True
             cloaked = wintypes.DWORD()
             if self.dwmapi:
@@ -252,11 +381,17 @@ class WindowProbe:
             width, height = rect.right - rect.left, rect.bottom - rect.top
             if width < 640 or height < 360:
                 return True
+            display, monitor_bounds = self._monitor_details(hwnd)
             windows.append({
-                "hwnd": int(hwnd), "process_id": int(pid.value), "image": image,
-                "display": self._display_name(hwnd),
+                "hwnd": int(hwnd), "process_id": candidate_process_id, "image": image,
+                "display": display,
                 "bounds": [rect.left, rect.top, rect.right, rect.bottom],
+                "monitor_bounds": monitor_bounds,
                 "foreground": int(hwnd) == foreground,
+                "foreground_hwnd": foreground,
+                "foreground_display": foreground_display,
+                "foreground_process_id": foreground_process_id,
+                "foreground_image": foreground_image,
             })
             return True
 
@@ -265,11 +400,29 @@ class WindowProbe:
         if not windows:
             reason = "waiting_for_game_window" if target_kind == "game" else "waiting_for_playnite_window"
             return {"qualified": False, "reason": reason}
-        candidate = next((item for item in windows if item["foreground"]), windows[0])
-        if not candidate["foreground"]:
-            return {"qualified": False, "reason": "target_not_foreground", **candidate}
+        candidate = next((item for item in windows if item["foreground"]), None)
+        if candidate is None:
+            candidate = max(
+                windows,
+                key=lambda item: (
+                    bool(expected_display) and
+                    item["display"].casefold() == expected_display.casefold(),
+                    max(0, item["bounds"][2] - item["bounds"][0]) *
+                    max(0, item["bounds"][3] - item["bounds"][1]),
+                ),
+            )
+        if not expected_display:
+            return {"qualified": False, "reason": "stream_display_not_configured", **candidate}
         if candidate["display"].casefold() != expected_display.casefold():
             return {"qualified": False, "reason": "target_on_wrong_display", **candidate}
+        if not self.fills_monitor(candidate["bounds"], candidate["monitor_bounds"]):
+            return {"qualified": False, "reason": "target_not_fullscreen", **candidate}
+        if not candidate["foreground"] and not self.can_reveal_without_global_foreground(
+                candidate["bounds"], candidate["monitor_bounds"],
+                foreground_display, expected_display):
+            reason = "host_session_locked" \
+                if foreground_image.casefold() == "lockapp.exe" else "target_not_foreground"
+            return {"qualified": False, "reason": reason, **candidate}
         return {"qualified": True, "reason": "stabilizing_target_window", **candidate}
 
 
@@ -301,6 +454,7 @@ class BridgeState:
         self._last_window_signature: tuple[Any, ...] | None = None
         self.graceful_close: Callable[[int], bool] | None = None
         self.show_fullscreen_action: Callable[[], dict[str, Any]] | None = None
+        self.focus_game_action: Callable[[int, str, str], dict[str, Any]] | None = None
         self.cache_path = cache_path
         self._load_library_cache()
 
@@ -354,9 +508,11 @@ class BridgeState:
                 pass
 
     def set_window_actions(self, graceful_close: Callable[[int], bool],
-                           show_fullscreen: Callable[[], dict[str, Any]]) -> None:
+                           show_fullscreen: Callable[[], dict[str, Any]],
+                           focus_game: Callable[[int, str, str], dict[str, Any]]) -> None:
         self.graceful_close = graceful_close
         self.show_fullscreen_action = show_fullscreen
+        self.focus_game_action = focus_game
 
     def set_expected_display(self, display: str) -> None:
         normalized = StreamDisplayResolver._normalize(display)
@@ -530,6 +686,26 @@ class BridgeState:
         details = action()
         return {"accepted": True, "command": "show-fullscreen", **details}
 
+    def focus_game(self) -> dict[str, Any]:
+        with self.lock:
+            if str(self.current.get("state", "")).casefold() != "running":
+                raise ValueError("No Playnite game is currently running.")
+            process_id = int(
+                self.current.get("processId") or self.current.get("process_id") or 0)
+            install_directory = str(
+                self.current.get("installDir") or self.current.get("install_dir") or "")
+            expected_display = self.expected_display
+            action = self.focus_game_action
+            self.readiness.update({
+                "ready": False, "reason": "game_focus_requested", "stable_samples": 0})
+            self._last_window_signature = None
+        if not action:
+            raise RuntimeError("Game focus activation is unavailable.")
+        details = action(process_id, install_directory, expected_display)
+        if not details.get("focused"):
+            raise RuntimeError("Windows rejected the game focus request.")
+        return {"accepted": True, "command": "focus", **details}
+
     def apply_window_sample(self, sample: dict[str, Any]) -> None:
         with self.lock:
             previous_ready = bool(self.readiness.get("ready"))
@@ -540,7 +716,10 @@ class BridgeState:
                     "reason": str(sample.get("reason", "window_not_ready")),
                     "stable_samples": 0,
                 })
-                for key in ("process_id", "display", "bounds"):
+                for key in (
+                        "process_id", "display", "bounds", "monitor_bounds",
+                        "foreground", "foreground_hwnd", "foreground_display",
+                        "foreground_process_id", "foreground_image"):
                     if key in sample:
                         self.readiness[key] = sample[key]
                 if previous_ready:
@@ -553,7 +732,10 @@ class BridgeState:
             stable = int(self.readiness.get("stable_samples", 0)) + 1 \
                 if signature == self._last_window_signature else 1
             self._last_window_signature = signature
-            ready = stable >= REQUIRED_STABLE_SAMPLES
+            required_samples = REQUIRED_GAME_STABLE_SAMPLES \
+                if str(self.readiness.get("target_kind", "")).casefold() == "game" \
+                else REQUIRED_STABLE_SAMPLES
+            ready = stable >= required_samples
             self.readiness.update({
                 "ready": ready,
                 "reason": "target_window_ready" if ready else "stabilizing_target_window",
@@ -561,6 +743,12 @@ class BridgeState:
                 "process_id": sample.get("process_id"),
                 "display": sample.get("display"),
                 "bounds": sample.get("bounds"),
+                "monitor_bounds": sample.get("monitor_bounds"),
+                "foreground": sample.get("foreground"),
+                "foreground_hwnd": sample.get("foreground_hwnd"),
+                "foreground_display": sample.get("foreground_display"),
+                "foreground_process_id": sample.get("foreground_process_id"),
+                "foreground_image": sample.get("foreground_image"),
             })
             if ready and not previous_ready:
                 self._publish_locked("target-window-ready", dict(self.readiness))
@@ -638,12 +826,15 @@ class WindowReadinessWorker:
                 expected_display = self.state.expected_display
             target_kind = str(readiness.get("target_kind", "playnite"))
             process_id = int(current.get("processId") or current.get("process_id") or 0)
-            if target_kind == "game" and not process_id:
+            install_directory = str(
+                current.get("installDir") or current.get("install_dir") or "")
+            if target_kind == "game" and not process_id and not install_directory:
                 self.state.apply_window_sample({
-                    "qualified": False, "reason": "waiting_for_game_process_id"})
+                    "qualified": False, "reason": "waiting_for_game_identity"})
             else:
                 self.state.apply_window_sample(
-                    self.probe.sample(target_kind, process_id, expected_display))
+                    self.probe.sample(
+                        target_kind, process_id, expected_display, install_directory))
             time.sleep(0.25)
 
 class WindowsPipeClient:
@@ -851,6 +1042,8 @@ class PlayniteHandler(BaseHTTPRequestHandler):
                 if bool(body.get("force", False)):
                     raise ValueError("Forced game termination is not exposed by this Bridge.")
                 result = self.state.stop_game(body.get("game_id", ""))
+            elif path == "/game/focus":
+                result = self.state.focus_game()
             elif path == "/playnite/show-fullscreen":
                 result = self.state.show_fullscreen()
             else:
@@ -913,7 +1106,8 @@ def main() -> None:
     display_resolver = StreamDisplayResolver(str(config.get("vibepollo_bridge", "")).strip())
     state.set_window_actions(
         window_probe.request_graceful_close,
-        lambda: window_probe.show_playnite_fullscreen(fullscreen_path))
+        lambda: window_probe.show_playnite_fullscreen(fullscreen_path),
+        window_probe.focus_game_window)
     threading.Thread(
         target=WindowReadinessWorker(state, window_probe, display_resolver).run,
         name="PlayniteWindowReadiness", daemon=True).start()

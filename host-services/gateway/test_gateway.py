@@ -401,6 +401,18 @@ class GatewayStateTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(("/game/stop", {"force": False}), requests[0])
 
+    def test_playnite_focus_is_narrow_and_bodyless(self):
+        state = GatewayState(self.config_path, None)
+        requests = []
+        state.proxy_json = lambda name, path, body, timeout=8.0: (
+            requests.append((name, path, body, timeout)) is None, {"focused": True})
+
+        status, result = state.playnite_action("game/focus", {})
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["ok"])
+        self.assertEqual(("playnite", "/game/focus", {}, 6.0), requests[0])
+
     def test_playnite_events_sequence_is_allowlisted(self):
         state = GatewayState(self.config_path, None)
         requests = []
@@ -408,12 +420,15 @@ class GatewayStateTest(unittest.TestCase):
             requests.append((name, path, timeout)) is None,
             {"events": [{"sequence": 12, "event": "game-stopped"}]},
         )
-        status, result = state.playnite_events("11")
+        status, result = state.playnite_events("11", "host:game:42:1000:1")
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
+        self.assertEqual("host:game:42:1000:1", result["transition_id"])
         self.assertEqual("/events?after=11", requests[0][1])
         with self.assertRaises(ValueError):
             state.playnite_events("../../logs")
+        with self.assertRaises(ValueError):
+            state.playnite_events("11", "../../wrong")
 
 
 if __name__ == "__main__":

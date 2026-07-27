@@ -42,6 +42,7 @@ namespace MoonWaker.HostInstaller
         private readonly Label installationStatus = new Label();
         private readonly Button install = new Button();
         private readonly RichTextBox log = new RichTextBox();
+        private bool restartHostControl;
 
         internal InstallerForm()
         {
@@ -135,6 +136,7 @@ namespace MoonWaker.HostInstaller
         {
             string validation = ValidateInput();
             if (validation != null) { MessageBox.Show(this, validation, "MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Warning); return; }
+            if (!PrepareHostControlUpdate()) return;
             install.Enabled = false;
             log.Text = "Przygotowywanie instalacji…\r\n";
             try
@@ -152,7 +154,83 @@ namespace MoonWaker.HostInstaller
             finally
             {
                 discordSecret.Clear(); vibepolloToken.Clear(); vibepolloPassword.Clear();
+                RestartHostControlIfNeeded();
                 install.Enabled = true;
+            }
+        }
+
+        private bool PrepareHostControlUpdate()
+        {
+            restartHostControl = false;
+            if (!installMachine.Checked) return true;
+
+            string executable = Path.GetFullPath(Path.Combine(
+                installPath.Text.Trim(), "control", "MoonWakerHostControl.exe"));
+            List<Process> running = new List<Process>();
+            foreach (Process process in Process.GetProcessesByName("MoonWakerHostControl"))
+            {
+                try
+                {
+                    if (String.Equals(process.MainModule.FileName, executable,
+                            StringComparison.OrdinalIgnoreCase))
+                        running.Add(process);
+                    else
+                        process.Dispose();
+                }
+                catch { process.Dispose(); }
+            }
+            if (running.Count == 0) return true;
+
+            DialogResult answer = MessageBox.Show(this,
+                "MoonWaker Host Control jest uruchomiony i blokuje aktualizację.\n\n" +
+                "Zamknąć go automatycznie i uruchomić ponownie po instalacji?",
+                "Aktualizacja MoonWaker Host Control",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            if (answer != DialogResult.Yes)
+            {
+                foreach (Process process in running) process.Dispose();
+                return false;
+            }
+
+            try
+            {
+                restartHostControl = true;
+                foreach (Process process in running)
+                {
+                    using (process)
+                    {
+                        process.Kill();
+                        if (!process.WaitForExit(5000))
+                            throw new InvalidOperationException(
+                                "Nie udało się zamknąć MoonWaker Host Control.");
+                    }
+                }
+                return true;
+            }
+            catch (Exception error)
+            {
+                RestartHostControlIfNeeded();
+                MessageBox.Show(this, error.Message, "MoonWaker",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                return false;
+            }
+        }
+
+        private void RestartHostControlIfNeeded()
+        {
+            if (!restartHostControl) return;
+            restartHostControl = false;
+            string executable = Path.GetFullPath(Path.Combine(
+                installPath.Text.Trim(), "control", "MoonWakerHostControl.exe"));
+            if (!File.Exists(executable)) return;
+            try
+            {
+                Process.Start(new ProcessStartInfo(executable) { UseShellExecute = true });
+            }
+            catch (Exception error)
+            {
+                log.AppendText("\r\nNie udało się ponownie uruchomić Host Control: " +
+                    error.Message);
             }
         }
 
