@@ -202,6 +202,26 @@ public class LaunchTransitionControllerTest {
     }
 
     @Test
+    public void losingTheReadyGameWindowRecoversThePrivacyGate() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        controller.gatewayConnected("transition-1", HOST);
+        controller.targetWindowReady("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME);
+        transportReady(controller);
+        controller.revealCompleted("transition-1");
+        assertFalse(controller.snapshot().overlayVisible);
+
+        controller.targetWindowLost("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME, "window lost");
+
+        assertTrue(controller.snapshot().overlayVisible);
+        assertTrue(controller.snapshot().inputBlocked);
+        assertFalse(controller.snapshot().revealAuthorized);
+        assertEquals(LaunchTransitionState.GAME_WINDOW_STABILIZING,
+                controller.snapshot().state);
+    }
+
+    @Test
     public void gameReturnToPlayniteRequiresFreshFrameAndFullscreenWindow() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         transportReady(controller);

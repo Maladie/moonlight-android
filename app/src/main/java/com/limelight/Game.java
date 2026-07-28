@@ -75,6 +75,7 @@ import android.os.PowerManager;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
+import android.os.Looper;
 import android.os.SystemClock;
 import android.text.Html;
 import android.util.Rational;
@@ -133,6 +134,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private static final int STYLUS_UP_DEAD_ZONE_RADIUS = 50;
 
     private static final int THREE_FINGER_TAP_THRESHOLD = 300;
+    private static final long AUTOMATIC_REVEAL_DELAY_MS = 1200L;
 
     private ControllerHandler controllerHandler;
     private KeyboardTranslator keyboardTranslator;
@@ -150,6 +152,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private Future<?> transitionObservation;
     private volatile boolean transitionObservationStopped;
     private boolean lastTransitionOverlayVisible = true;
+    private final Handler transitionUiHandler = new Handler(Looper.getMainLooper());
+    private Runnable pendingAutomaticReveal;
+    private boolean manualRevealRequested;
     private boolean displayedFailureDialog = false;
     private boolean connecting = false;
     private boolean connected = false;
@@ -328,6 +333,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }
 
                     @Override public void onShowStreamAnyway() {
+                        manualRevealRequested = true;
                         transitionController.showStreamAnyway(transitionSpec.id);
                     }
                 });
@@ -1249,6 +1255,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onDestroy() {
         transitionObservationStopped = true;
+        cancelPendingAutomaticReveal();
         if (transitionObservation != null) transitionObservation.cancel(true);
         transitionExecutor.shutdownNow();
         if (discordOverlayController != null) {
@@ -1567,6 +1574,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public boolean handleKeyDown(KeyEvent event) {
         if (isTransitionInputBlocked()) {
+            if (consoleLoadingView != null) {
+                consoleLoadingView.handleControllerKey(event);
+            }
             return true;
         }
         if (isImeVisible && isAndroidTV && event.getDeviceId() >= 0) {
@@ -1672,6 +1682,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public boolean handleKeyUp(KeyEvent event) {
         if (isTransitionInputBlocked()) {
+            if (consoleLoadingView != null
+                    && consoleLoadingView.handleControllerKey(event)) {
+                return true;
+            }
             if (event.getKeyCode() == KeyEvent.KEYCODE_BACK
                     || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B) {
                 cancelTransition();
@@ -2938,11 +2952,48 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             consoleLoadingView.showError(getString(R.string.transition_cancel),
                     getString(R.string.transition_cancel_details), false);
         }
+        if (!snapshot.revealAuthorized || !snapshot.overlayVisible) {
+            cancelPendingAutomaticReveal();
+            if (!snapshot.overlayVisible) manualRevealRequested = false;
+        }
         if (snapshot.revealAuthorized && snapshot.overlayVisible) {
-            consoleLoadingView.revealStream(() ->
-                    transitionController.revealCompleted(transitionSpec.id));
+            if (!manualRevealRequested) {
+                scheduleAutomaticReveal();
+            } else {
+                revealTransitionNow();
+            }
         }
         lastTransitionOverlayVisible = snapshot.overlayVisible;
+    }
+
+    private void scheduleAutomaticReveal() {
+        if (pendingAutomaticReveal != null || transitionSpec == null) return;
+        String transitionId = transitionSpec.id;
+        pendingAutomaticReveal = () -> {
+            pendingAutomaticReveal = null;
+            if (transitionController == null || transitionSpec == null
+                    || !transitionId.equals(transitionSpec.id)) return;
+            LaunchTransitionSnapshot latest = transitionController.snapshot();
+            if (latest.revealAuthorized && latest.overlayVisible) revealTransitionNow();
+        };
+        transitionUiHandler.postDelayed(
+                pendingAutomaticReveal, AUTOMATIC_REVEAL_DELAY_MS);
+    }
+
+    private void revealTransitionNow() {
+        cancelPendingAutomaticReveal();
+        if (consoleLoadingView == null || transitionController == null
+                || transitionSpec == null) return;
+        consoleLoadingView.revealStream(() -> {
+            manualRevealRequested = false;
+            transitionController.revealCompleted(transitionSpec.id);
+        });
+    }
+
+    private void cancelPendingAutomaticReveal() {
+        if (pendingAutomaticReveal == null) return;
+        transitionUiHandler.removeCallbacks(pendingAutomaticReveal);
+        pendingAutomaticReveal = null;
     }
 
     private String transitionStatus(LaunchTransitionSnapshot snapshot) {
@@ -3110,6 +3161,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         if (snapshot.windowReady) {
             transitionController.targetWindowReady(transitionId, hostId, kind, gameId);
+        } else if (kind == LaunchTransitionType.GAME
+                && transitionController.snapshot().state == LaunchTransitionState.GAME_RUNNING) {
+            transitionController.targetWindowLost(transitionId, hostId, kind, gameId,
+                    getString(R.string.transition_window_stabilizing));
         } else if (snapshot.stableSamples > 0
                 || "stabilizing_target_window".equals(snapshot.reason)) {
             transitionController.targetWindowStabilizing(transitionId, hostId, kind,
@@ -3129,6 +3184,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         } else if ("game-stopping".equals(name) || "game-stopped".equals(name)) {
             transitionController.gameStopping(transitionId, hostId, event.gameId);
             transitionController.playniteReturning(transitionId, hostId);
+        } else if ("privacy-gate-closed".equals(name)) {
+            transitionController.targetWindowLost(transitionId, hostId,
+                    LaunchTransitionType.GAME, transitionSpec.playniteGameId,
+                    getString(R.string.transition_window_stabilizing));
         } else if ("bridge-disconnected".equals(name)) {
             transitionController.playniteStopping(transitionId, hostId);
         }
