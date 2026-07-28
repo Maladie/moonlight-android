@@ -171,6 +171,24 @@ public final class LaunchTransitionController {
         evaluateReady();
     }
 
+    public synchronized void targetWindowLost(String transitionId, String hostId,
+                                              LaunchTransitionType kind,
+                                              String gameId, String reason) {
+        if (!acceptTarget(transitionId, hostId, kind, gameId)) return;
+        overlayVisible = true;
+        inputBlocked = true;
+        revealAuthorized = false;
+        manualRevealAvailable = false;
+        revealCompleted = false;
+        targetWindowReady = false;
+        videoFrameReady = false;
+        detail = reason == null ? "" : reason;
+        state = kind == LaunchTransitionType.GAME
+                ? LaunchTransitionState.GAME_WINDOW_STABILIZING
+                : LaunchTransitionState.PLAYNITE_FULLSCREEN_STARTING;
+        publish();
+    }
+
     public synchronized void gameStopping(String transitionId, String hostId, String gameId) {
         if (!acceptTarget(transitionId, hostId, LaunchTransitionType.GAME, gameId)) return;
         overlayVisible = true;

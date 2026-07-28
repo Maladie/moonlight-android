@@ -563,7 +563,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         styleCompactButton(quickResumeButton, false);
         LinearLayout.LayoutParams resumeParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        resumeParams.leftMargin = dp(14);
         discoveryAndSession.addView(quickResumeButton, resumeParams);
         launchPlayniteButton = text(getString(R.string.playnite_launch),
                 12, 0xFFD7E4EA, true);
@@ -1385,7 +1384,56 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             running = new NvApp(name == null ? "Moonlight" : name,
                     host.runningGameId, false);
         }
-        beginLaunch(host, running);
+        String cachedGameId = uniquePlayniteGameIdForRunningApp(host, running.getAppId());
+        if (!cachedGameId.isEmpty()) {
+            beginLaunch(host, running, null, LaunchTransitionType.GAME, cachedGameId);
+            return;
+        }
+
+        String address = host.activeAddress != null ? host.activeAddress.address : null;
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(host.uuid, address);
+        if (connection == null) {
+            beginLaunch(host, running);
+            return;
+        }
+
+        NvApp resolvedRunning = running;
+        executor.execute(() -> {
+            String currentGameId = "";
+            try {
+                HostGatewayClient.PlayniteCurrentGame current =
+                        hostGatewayClient.getPlayniteCurrentGame(connection);
+                if (HostGatewayClient.isPlayniteId(current.id)) {
+                    currentGameId = current.id;
+                }
+            } catch (IOException ignored) {
+                // A generic resume remains available when the profile bridge is unavailable.
+            }
+            String playniteGameId = currentGameId;
+            mainHandler.post(() -> {
+                if (!active) return;
+                ComputerDetails latest = hosts.get(host.uuid);
+                ComputerDetails targetHost = latest != null ? latest : host;
+                if (playniteGameId.isEmpty()) {
+                    beginLaunch(targetHost, resolvedRunning);
+                } else {
+                    beginLaunch(targetHost, resolvedRunning, null,
+                            LaunchTransitionType.GAME, playniteGameId);
+                }
+            });
+        });
+    }
+
+    private String uniquePlayniteGameIdForRunningApp(ComputerDetails host, int appId) {
+        if (host == null || !host.uuid.equals(selectedHostUuid)) return "";
+        String match = "";
+        for (PlayniteDashboardItem item : renderedPlayniteItems) {
+            if (item.sunshineAppId == null || item.sunshineAppId != appId) continue;
+            if (!match.isEmpty()) return "";
+            match = item.game.playniteGameId;
+        }
+        return HostGatewayClient.isPlayniteId(match) ? match : "";
     }
 
     private void pairHost(ComputerDetails host) {

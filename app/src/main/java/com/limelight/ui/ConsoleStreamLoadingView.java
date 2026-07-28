@@ -14,6 +14,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.util.AttributeSet;
 import android.view.Gravity;
+import android.view.KeyEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
@@ -194,7 +195,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         configureForPlaynite(false);
         setStep(1, context.getString(R.string.transition_preparing_session));
         scheduleLoadingMessage(false);
-        post(this::requestFocus);
+        post(this::requestDefaultActionFocus);
     }
 
     public void setActions(Actions actions) {
@@ -204,32 +205,25 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     public void setSplashArtwork(String artworkPath) {
         if (artworkPath == null || artworkPath.trim().isEmpty() || stopped) return;
         String path = artworkPath.trim();
-        Thread loader = new Thread(() -> {
-            BitmapFactory.Options bounds = new BitmapFactory.Options();
-            bounds.inJustDecodeBounds = true;
-            BitmapFactory.decodeFile(path, bounds);
-            if (!LoadingArtworkPolicy.canUseAsSplash(
-                    bounds.outWidth, bounds.outHeight)) return;
-            int sample = 1;
-            while (bounds.outWidth / (sample * 2) >= 1920
-                    && bounds.outHeight / (sample * 2) >= 1080) {
-                sample *= 2;
-            }
-            BitmapFactory.Options options = new BitmapFactory.Options();
-            options.inSampleSize = sample;
-            options.inPreferredConfig = Bitmap.Config.ARGB_8888;
-            Bitmap bitmap = BitmapFactory.decodeFile(path, options);
-            if (bitmap == null) return;
-            handler.post(() -> {
-                if (stopped) {
-                    bitmap.recycle();
-                    return;
-                }
-                applySplashArtwork(bitmap);
-            });
-        }, "MoonWaker loading artwork");
-        loader.setDaemon(true);
-        loader.start();
+        Bitmap bitmap = decodeSplashArtwork(path);
+        if (bitmap != null) applySplashArtwork(bitmap);
+    }
+
+    private Bitmap decodeSplashArtwork(String path) {
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(path, bounds);
+        if (!LoadingArtworkPolicy.canUseAsSplash(
+                bounds.outWidth, bounds.outHeight)) return null;
+        int sample = 1;
+        while (bounds.outWidth / (sample * 2) >= 1920
+                && bounds.outHeight / (sample * 2) >= 1080) {
+            sample *= 2;
+        }
+        BitmapFactory.Options options = new BitmapFactory.Options();
+        options.inSampleSize = sample;
+        options.inPreferredConfig = Bitmap.Config.ARGB_8888;
+        return BitmapFactory.decodeFile(path, options);
     }
 
     public void configureForPlaynite(boolean playnite) {
@@ -343,6 +337,40 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         }
     }
 
+    public boolean handleControllerKey(KeyEvent event) {
+        if (event == null) return false;
+        int keyCode = event.getKeyCode();
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            return isLoadingActionKey(keyCode);
+        }
+        if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() > 0) {
+            return false;
+        }
+        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_BUTTON_B) {
+            return cancelView.performClick();
+        }
+        if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+            return focusPreviousAction();
+        }
+        if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            return focusNextAction();
+        }
+        if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+            requestDefaultActionFocus();
+            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER
+                || keyCode == KeyEvent.KEYCODE_ENTER
+                || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+                || keyCode == KeyEvent.KEYCODE_BUTTON_A) {
+            View focused = findFocus();
+            if (isVisibleAction(focused)) return focused.performClick();
+            requestDefaultActionFocus();
+            return true;
+        }
+        return false;
+    }
+
     public void waitingForVideo() {
         setStep(4, getContext().getString(R.string.console_stream_waiting_video));
     }
@@ -385,7 +413,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         setAlpha(1f);
         setVisibility(VISIBLE);
         bringToFront();
-        requestFocus();
+        requestDefaultActionFocus();
         if (!error) scheduleLoadingMessage(false);
     }
 
@@ -549,7 +577,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         bringChildToFront(messageView);
         bringChildToFront(lower);
         bringChildToFront(centerControls);
-        requestFocus();
+        requestDefaultActionFocus();
         showSplashMessageImmediately();
     }
 
@@ -593,7 +621,60 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         view.setMinHeight(dp(48));
         view.setPadding(dp(16), dp(8), dp(16), dp(8));
         view.setBackgroundColor(0xFF172532);
+        view.setOnFocusChangeListener((focusedView, focused) ->
+                focusedView.setBackgroundColor(focused ? 0xFF355B78 : 0xFF172532));
         return view;
+    }
+
+    private void requestDefaultActionFocus() {
+        View focused = findFocus();
+        if (isVisibleAction(focused)) return;
+        if (showAnywayView.getVisibility() == VISIBLE) showAnywayView.requestFocus();
+        else if (retryView.getVisibility() == VISIBLE) retryView.requestFocus();
+        else cancelView.requestFocus();
+    }
+
+    private boolean focusPreviousAction() {
+        View focused = findFocus();
+        if (focused == showAnywayView && retryView.getVisibility() == VISIBLE) {
+            return retryView.requestFocus();
+        }
+        if (focused == showAnywayView || focused == retryView) {
+            return cancelView.requestFocus();
+        }
+        requestDefaultActionFocus();
+        return true;
+    }
+
+    private boolean focusNextAction() {
+        View focused = findFocus();
+        if (focused == cancelView && retryView.getVisibility() == VISIBLE) {
+            return retryView.requestFocus();
+        }
+        if ((focused == cancelView || focused == retryView)
+                && showAnywayView.getVisibility() == VISIBLE) {
+            return showAnywayView.requestFocus();
+        }
+        requestDefaultActionFocus();
+        return true;
+    }
+
+    private boolean isVisibleAction(View view) {
+        return view != null && view.getVisibility() == VISIBLE
+                && (view == cancelView || view == retryView || view == showAnywayView);
+    }
+
+    private static boolean isLoadingActionKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_BACK
+                || keyCode == KeyEvent.KEYCODE_BUTTON_B
+                || keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+                || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                || keyCode == KeyEvent.KEYCODE_DPAD_UP
+                || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                || keyCode == KeyEvent.KEYCODE_DPAD_CENTER
+                || keyCode == KeyEvent.KEYCODE_ENTER
+                || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+                || keyCode == KeyEvent.KEYCODE_BUTTON_A;
     }
 
     private TextView text(String value, float size, int color, boolean bold) {
