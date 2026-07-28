@@ -39,7 +39,8 @@ $activePorts = @()
 if (-not $SkipDiscord) { $activePorts += $DiscordPort }
 if (-not $SkipVibepollo) { $activePorts += $VibepolloPort }
 if (-not $SkipPlaynite) { $activePorts += $PlaynitePort }
-if (($activePorts | Select-Object -Unique).Count -ne $activePorts.Count) {
+$uniqueActivePorts = @($activePorts | Select-Object -Unique)
+if ($uniqueActivePorts.Count -ne $activePorts.Count) {
     throw "Discord, Vibepollo and Playnite Bridges must use different ports."
 }
 if ($ProfileId -ne "default" -and (
@@ -59,7 +60,11 @@ if (-not (Test-Path -LiteralPath $sourceRoot)) {
 }
 
 $profileRoot = Join-Path $InstallRoot $ProfileId
+$hostVersionPath = Join-Path (Split-Path -Parent $InstallRoot) "version.json"
 New-Item -ItemType Directory -Path $profileRoot -Force | Out-Null
+if (Test-Path -LiteralPath $hostVersionPath) {
+    Copy-Item -LiteralPath $hostVersionPath -Destination (Join-Path $profileRoot "moonwaker-version.json") -Force
+}
 $agentSource = Join-Path $hostServicesRoot "profile-agent"
 if (-not (Test-Path -LiteralPath $agentSource)) {
     $agentSource = Join-Path (Split-Path -Parent $PSScriptRoot) "profile-agent-source"

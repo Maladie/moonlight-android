@@ -9,6 +9,7 @@ import json
 import mimetypes
 import ntpath
 import os
+import queue
 import re
 import subprocess
 import threading
@@ -28,7 +29,7 @@ GAME_ID_PATTERN = re.compile(
 MAX_BODY_BYTES = 16 * 1024
 MAX_ARTWORK_BYTES = 8 * 1024 * 1024
 REQUIRED_STABLE_SAMPLES = 3
-REQUIRED_GAME_STABLE_SAMPLES = 40
+REQUIRED_GAME_STABLE_SAMPLES = 4
 DISPLAY_NAME_PATTERN = re.compile(r"^(?:\\\\\.\\)?DISPLAY[0-9]+$", re.IGNORECASE)
 PLAYNITE_UI_IMAGES = {
     "playnite.fullscreenapp.exe",
@@ -431,7 +432,8 @@ def compact_json(value: Any) -> bytes:
 
 
 class BridgeState:
-    def __init__(self, expected_display: str = "", cache_path: Path | None = None) -> None:
+    def __init__(self, expected_display: str = "", cache_path: Path | None = None,
+                 version_path: Path | None = None) -> None:
         self.lock = threading.RLock()
         self.events_changed = threading.Condition(self.lock)
         self.connected = False
@@ -456,7 +458,24 @@ class BridgeState:
         self.show_fullscreen_action: Callable[[], dict[str, Any]] | None = None
         self.focus_game_action: Callable[[int, str, str], dict[str, Any]] | None = None
         self.cache_path = cache_path
+        self.started_at = int(time.time())
+        self.version_info = self._load_version_info(version_path)
         self._load_library_cache()
+
+    @staticmethod
+    def _load_version_info(version_path: Path | None) -> dict[str, Any]:
+        result: dict[str, Any] = {"version": "unknown", "build": "unknown"}
+        if version_path is None:
+            return result
+        try:
+            value = json.loads(version_path.read_text(encoding="utf-8-sig"))
+            if isinstance(value, dict):
+                for key in ("version", "build", "protocol_version"):
+                    if key in value:
+                        result[key] = value[key]
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+        return result
 
     def _load_library_cache(self) -> None:
         if self.cache_path is None or not self.cache_path.is_file():
@@ -850,6 +869,9 @@ class WindowsPipeClient:
         self.handle: int | None = None
         self.write_lock = threading.Lock()
         self.stopping = threading.Event()
+        self.outbound: queue.Queue[dict[str, Any]] = queue.Queue(maxsize=16)
+        threading.Thread(
+            target=self._write_commands, name="PlaynitePipeWriter", daemon=True).start()
 
     @staticmethod
     def _kernel32():
@@ -928,12 +950,33 @@ class WindowsPipeClient:
                 raise ConnectionError("Playnite pipe is not connected.")
             self._write(self.handle, encoded)
 
+    def _queue_send(self, message: dict[str, Any]) -> None:
+        try:
+            self.outbound.put_nowait(dict(message))
+        except queue.Full as error:
+            raise ConnectionError("Playnite command queue is full.") from error
+
+    def _write_commands(self) -> None:
+        while not self.stopping.is_set():
+            try:
+                message = self.outbound.get(timeout=0.25)
+            except queue.Empty:
+                continue
+            try:
+                self._send(message)
+            except Exception as error:
+                self.state.set_transport(False, None, str(error))
+            finally:
+                self.outbound.task_done()
+
     def run(self) -> None:
         while not self.stopping.is_set():
             handle = None
             try:
                 handle = self._connect()
-                self.state.set_transport(True, self._send)
+                # HTTP requests enqueue commands instead of waiting on a Playnite
+                # pipe write. Playnite may stop reading while it swaps UI processes.
+                self.state.set_transport(True, self._queue_send)
                 pending = b""
                 while not self.stopping.is_set():
                     chunk = self._read(handle, 8192)
@@ -1003,6 +1046,9 @@ class PlayniteHandler(BaseHTTPRequestHandler):
                         "connector_connected": self.state.connected,
                         "library_count": len(self.state.library),
                         "error": self.state.last_error,
+                        "pid": os.getpid(),
+                        "started_at": self.state.started_at,
+                        **self.state.version_info,
                     })
             elif target.path == "/library/list":
                 cursor = query.get("cursor", ["0"])[0] or "0"
@@ -1099,7 +1145,8 @@ def main() -> None:
     if listen_host not in {"127.0.0.1", "localhost"}:
         raise ValueError("Playnite Bridge must remain on loopback.")
     expected_display = str(config.get("streamed_display", "")).strip()
-    state = BridgeState(expected_display, config_path.with_name("library-cache.json"))
+    state = BridgeState(expected_display, config_path.with_name("library-cache.json"),
+                        config_path.parent.parent / "moonwaker-version.json")
     window_probe = WindowProbe()
     ensure_playnite_desktop(str(config.get("playnite_desktop_executable", "")).strip())
     fullscreen_path = str(config.get("playnite_fullscreen_executable", "")).strip()

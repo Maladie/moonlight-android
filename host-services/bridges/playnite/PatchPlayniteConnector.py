@@ -10,7 +10,28 @@ from pathlib import Path
 
 PATCH_MARKER_V1 = "# WAKEPLAY-CONSOLE-SNAPSHOT-V1"
 PATCH_MARKER_V2 = "# WAKEPLAY-CONSOLE-BRIDGE-V2"
-PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V3"
+PATCH_MARKER_V3 = "# WAKEPLAY-CONSOLE-BRIDGE-V3"
+PATCH_MARKER_V4 = "# WAKEPLAY-CONSOLE-BRIDGE-V4"
+PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V5"
+
+LAUNCH_PREP_ANCHOR = """          Register-SunshineLaunchedGame -Id $obj.id
+          [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)"""
+
+LAUNCH_PREP_REPLACEMENT = """          try {
+            $prepareBody = @{ game_id = [string]$obj.id } | ConvertTo-Json -Compress
+            Invoke-RestMethod -Uri 'http://127.0.0.1:8780/game/prepare' -Method Post `
+              -ContentType 'application/json' -Body $prepareBody -TimeoutSec 3 | Out-Null
+          }
+          catch {
+            Write-Log "WakePlay display preparation skipped for $($obj.id): $($_.Exception.Message)"
+          }
+          Register-SunshineLaunchedGame -Id $obj.id
+          [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)
+          # WAKEPLAY-CONSOLE-BRIDGE-V4"""
+
+LAUNCH_CLEAN_REPLACEMENT = """          Register-SunshineLaunchedGame -Id $obj.id
+          [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)
+          # WAKEPLAY-CONSOLE-BRIDGE-V5"""
 
 READER_ANCHOR = """        if ($obj.type -eq 'command' -and $obj.command -eq 'launch' -and $obj.id) {
           Register-SunshineLaunchedGame -Id $obj.id
@@ -99,10 +120,18 @@ ARTWORK_PAYLOAD_REPLACEMENT = """      boxArtPath      = $boxArt
 def patch_text(source: str) -> tuple[str, bool]:
     if PATCH_MARKER in source:
         return source, False
+    if PATCH_MARKER_V4 in source:
+        if LAUNCH_PREP_REPLACEMENT not in source:
+            raise ValueError("Unsupported Sunshine Playnite Connector; V4 launch block is incomplete")
+        return source.replace(LAUNCH_PREP_REPLACEMENT, LAUNCH_CLEAN_REPLACEMENT, 1), True
     anchors = [
-        ("background artwork lookup", ARTWORK_LOOKUP_ANCHOR),
-        ("background artwork payload", ARTWORK_PAYLOAD_ANCHOR),
+        ("launch display preparation", LAUNCH_PREP_ANCHOR),
     ]
+    if PATCH_MARKER_V3 not in source:
+        anchors += [
+            ("background artwork lookup", ARTWORK_LOOKUP_ANCHOR),
+            ("background artwork payload", ARTWORK_PAYLOAD_ANCHOR),
+        ]
     if PATCH_MARKER_V2 not in source:
         anchors += [
             ("status parameters", STATUS_PARAM_ANCHOR),
@@ -129,8 +158,12 @@ def patch_text(source: str) -> tuple[str, bool]:
             (STARTED_ANCHOR, STARTED_REPLACEMENT),
         ):
             patched = patched.replace(anchor, replacement, 1)
-    patched = patched.replace(ARTWORK_LOOKUP_ANCHOR, ARTWORK_LOOKUP_REPLACEMENT, 1)
-    patched = patched.replace(ARTWORK_PAYLOAD_ANCHOR, ARTWORK_PAYLOAD_REPLACEMENT, 1)
+    if PATCH_MARKER_V3 not in source:
+        patched = patched.replace(ARTWORK_LOOKUP_ANCHOR, ARTWORK_LOOKUP_REPLACEMENT, 1)
+        patched = patched.replace(ARTWORK_PAYLOAD_ANCHOR, ARTWORK_PAYLOAD_REPLACEMENT, 1)
+    # The connector has no authoritative stream target while the session is
+    # starting. Preparation is performed by Android before launch instead.
+    patched = patched.replace(LAUNCH_PREP_ANCHOR, LAUNCH_CLEAN_REPLACEMENT, 1)
     return patched, True
 
 

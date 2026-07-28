@@ -14,6 +14,7 @@ param(
     [switch]$SkipVibepollo,
     [switch]$SkipPlaynite,
     [switch]$ProfileOnly,
+    [switch]$InitializeMachineData,
     [switch]$SkipFirewall
 )
 
@@ -139,8 +140,30 @@ function Unprotect-MachineText {
     return [Text.Encoding]::UTF8.GetString($plain)
 }
 
+function Import-MachineDiscordApplication {
+    $machineRoot = Join-Path $script:HostRoot "machine-data"
+    $applicationPath = Join-Path $machineRoot "discord-app.json"
+    $secretPath = Join-Path $machineRoot "discord-app-secret.dpapi"
+    if (-not (Test-Path -LiteralPath $applicationPath) -or
+        -not (Test-Path -LiteralPath $secretPath)) {
+        throw "Shared Discord application data was not found. Enter Client ID and Client Secret for this profile."
+    }
+    try {
+        $application = Get-Content -LiteralPath $applicationPath -Raw | ConvertFrom-Json
+        $clientId = [string]$application.client_id
+        $clientSecret = Unprotect-MachineText (Get-Content -LiteralPath $secretPath -Raw)
+        if ($clientId -notmatch '^[0-9]{17,20}$' -or [string]::IsNullOrWhiteSpace($clientSecret)) {
+            throw "Shared Discord application data is incomplete."
+        }
+        $env:MOONWAKER_DISCORD_CLIENT_ID = $clientId
+        $env:MOONWAKER_DISCORD_CLIENT_SECRET = $clientSecret
+    } catch {
+        throw "The current Windows profile cannot use the shared Discord application data. " +
+            "Allow the installer elevation request, or enter profile-specific Discord credentials. Details: $($_.Exception.Message)"
+    }
+}
+
 function Initialize-MachineDiscordApplication {
-    param([bool]$ProfileAlreadyConfigured)
     $machineRoot = Join-Path $script:HostRoot "machine-data"
     $applicationPath = Join-Path $machineRoot "discord-app.json"
     $secretPath = Join-Path $machineRoot "discord-app-secret.dpapi"
@@ -165,15 +188,10 @@ function Initialize-MachineDiscordApplication {
         return
     }
     if ((Test-Path -LiteralPath $applicationPath) -and (Test-Path -LiteralPath $secretPath)) {
-        $application = Get-Content -LiteralPath $applicationPath -Raw | ConvertFrom-Json
-        $env:MOONWAKER_DISCORD_CLIENT_ID = [string]$application.client_id
-        $env:MOONWAKER_DISCORD_CLIENT_SECRET = Unprotect-MachineText `
-            (Get-Content -LiteralPath $secretPath -Raw)
+        Import-MachineDiscordApplication
         return
     }
-    if (-not $ProfileAlreadyConfigured) {
-        throw "Discord application data is required once for this computer."
-    }
+    throw "Shared Discord application data is required once for this computer. Enter Client ID and Client Secret."
 }
 
 function New-MoonWakerVibepolloToken {
@@ -310,21 +328,21 @@ if (-not (Test-Path -LiteralPath $machineRoot) -and (Test-Path -LiteralPath $leg
     Copy-Item -LiteralPath $legacyMachineRoot -Destination $machineRoot -Recurse -Force
 }
 if (-not $SkipDiscord) {
-    $profileDiscordConfigured = Test-Path -LiteralPath `
-        (Join-Path $profileRoot "discord\discord_bridge_config.json")
-    if ($ProfileOnly) {
-        if (-not $profileDiscordConfigured -and (
-            [string]::IsNullOrWhiteSpace($env:MOONWAKER_DISCORD_CLIENT_ID) -or
-            [string]::IsNullOrWhiteSpace($env:MOONWAKER_DISCORD_CLIENT_SECRET))) {
-            throw "Discord credentials are required when adding a new Windows profile."
+    $providedDiscordId = [string]$env:MOONWAKER_DISCORD_CLIENT_ID
+    $providedDiscordSecret = [string]$env:MOONWAKER_DISCORD_CLIENT_SECRET
+    if ($ProfileOnly -and -not $InitializeMachineData) {
+        if ([string]::IsNullOrWhiteSpace($providedDiscordId) -xor
+            [string]::IsNullOrWhiteSpace($providedDiscordSecret)) {
+            throw "Enter both Discord Client ID and Client Secret, or leave both fields empty to reuse the shared computer application."
+        }
+        if ([string]::IsNullOrWhiteSpace($providedDiscordId)) {
+            # A new Windows profile reuses the computer application by default.
+            # The installer grants this profile read access to the LocalMachine
+            # DPAPI source immediately before this code runs.
+            Import-MachineDiscordApplication
         }
     } else {
-        try {
-            Initialize-MachineDiscordApplication $profileDiscordConfigured
-        } catch {
-            if (-not $profileDiscordConfigured) { throw }
-            Write-Host "Using this profile's existing Discord application credentials."
-        }
+        Initialize-MachineDiscordApplication
     }
 }
 if (-not $SkipVibepollo -and $env:MOONWAKER_VIBEPOLLO_CREATE_TOKEN -eq "1") {
@@ -377,6 +395,32 @@ try {
         & $installedPatch -PlayniteDirectory $resolvedPlaynite
     }
 
+    $runtimePath = Join-Path $gatewayDirectory "gateway-runtime.json"
+    $versionPath = Join-Path $hostRoot "version.json"
+    $expectedVersion = (Get-Content -LiteralPath $versionPath -Raw | ConvertFrom-Json)
+    # Starting the supervisor is asynchronous. On machines that have just
+    # replaced the Gateway process Windows can take longer than 15 seconds to
+    # release the port and start Python, even though the update has succeeded.
+    # Keep this bounded, but do not report a false failed update while that
+    # handover is still in progress.
+    $deadline = [DateTime]::UtcNow.AddSeconds(45)
+    $runtime = $null
+    while ([DateTime]::UtcNow -lt $deadline) {
+        try {
+            $runtime = Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json
+            if ([string]$runtime.version -eq [string]$expectedVersion.version -and
+                [string]$runtime.build -eq [string]$expectedVersion.build) { break }
+        } catch {}
+        Start-Sleep -Milliseconds 250
+    }
+    if ($null -eq $runtime -or [string]$runtime.version -ne [string]$expectedVersion.version -or
+        [string]$runtime.build -ne [string]$expectedVersion.build) {
+        $reportedVersion = if ($null -eq $runtime) { "no runtime report" } else {
+            "version $([string]$runtime.version), build $([string]$runtime.build)"
+        }
+        throw "Gateway update verification failed after 45 seconds. Expected version $([string]$expectedVersion.version), build $([string]$expectedVersion.build); last report: $reportedVersion."
+    }
+
     [ordered]@{
         ok = $true
         profile_id = $ProfileId
@@ -386,7 +430,9 @@ try {
         discord_port = if ($SkipDiscord) { 0 } else { $ports[0] }
         vibepollo_port = if ($SkipVibepollo) { 0 } else { $ports[1] }
         playnite_port = if ($SkipPlaynite) { 0 } else { $ports[2] }
-        restart_required = $true
+        restart_required = $false
+        version = [string]$expectedVersion.version
+        build = [string]$expectedVersion.build
     } | ConvertTo-Json -Compress | ForEach-Object { "MOONWAKER_INSTALL_RESULT=$_" }
 } finally {
     $env:MOONWAKER_DISCORD_CLIENT_SECRET = $null

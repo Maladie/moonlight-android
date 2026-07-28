@@ -20,6 +20,7 @@ class GatewayStateTest(unittest.TestCase):
         self.config_path.unlink(missing_ok=True)
         self.config_path.with_name("pairing-code.json").unlink(missing_ok=True)
         self.config_path.with_name("runtime-status.json").unlink(missing_ok=True)
+        self.config_path.with_name("gateway-runtime.json").unlink(missing_ok=True)
 
     def test_pair_stores_only_token_hash(self):
         state = GatewayState(self.config_path, "123456")
@@ -34,6 +35,15 @@ class GatewayStateTest(unittest.TestCase):
         state = GatewayState(self.config_path, "123456")
         with self.assertRaises(PermissionError):
             state.pair("192.0.2.1", "000000", "TV")
+
+    def test_runtime_report_identifies_the_running_gateway_build(self):
+        state = GatewayState(self.config_path, None)
+        state.write_runtime_info()
+
+        runtime = json.loads(state.gateway_runtime_path.read_text(encoding="utf-8"))
+        self.assertEqual(os.getpid(), runtime["pid"])
+        self.assertIn("version", runtime)
+        self.assertIn("source_sha256", runtime)
 
     def test_running_gateway_accepts_locally_activated_pairing_code(self):
         state = GatewayState(self.config_path, None)

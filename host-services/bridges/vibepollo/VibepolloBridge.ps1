@@ -774,16 +774,28 @@ function Ensure-PlayniteApp {
         $canonical = Select-CanonicalPlayniteApp $existing
         $managed = [string](Get-PropertyValue $canonical.app @("playnite-managed") "")
         if ($managed -in @("manual", "auto")) {
-            return New-EnsuredPlayniteAppResult $canonical $false $false 0
+            # The native Playnite integration launches a short-lived helper process.
+            # Monitoring that helper as the streamed application makes Vibepollo end a
+            # healthy session a few seconds after the real game has started. Keep the
+            # stream detached from the helper; game lifetime remains observable through
+            # the Playnite integration itself.
+            if ([bool](Get-PropertyValue $canonical.app @("auto-detach") $false)) {
+                return New-EnsuredPlayniteAppResult $canonical $false $false 0
+            }
+            $payload = ConvertTo-RemoteJsonSafe $canonical.app
+            $payload["index"] = [int]$canonical.index
+            $created = $false
         }
-        # Older MoonWaker versions used a private marker. Vibepollo's native
-        # manual marker is required so its Playnite integration enriches the
-        # same record instead of publishing a second transient application.
-        $payload = ConvertTo-RemoteJsonSafe $canonical.app
-        $payload["index"] = [int]$canonical.index
-        $payload["playnite-managed"] = "manual"
-        [void]$payload.Remove("playnite-source")
-        $created = $false
+        else {
+            # Older MoonWaker versions used a private marker. Vibepollo's native
+            # manual marker is required so its Playnite integration enriches the
+            # same record instead of publishing a second transient application.
+            $payload = ConvertTo-RemoteJsonSafe $canonical.app
+            $payload["index"] = [int]$canonical.index
+            $payload["playnite-managed"] = "manual"
+            [void]$payload.Remove("playnite-source")
+            $created = $false
+        }
     }
     else {
         $expectedName = Get-NormalizedAppName $normalizedName
@@ -813,6 +825,9 @@ function Ensure-PlayniteApp {
             [void]$payload.Remove("playnite-source")
         }
     }
+    # A Playnite game is launched through a helper which exits after handing off
+    # to the game. Its exit must not be treated as the end of the stream.
+    $payload["auto-detach"] = $true
     [void](Invoke-VibepolloApi "/api/apps" POST $payload)
     $script:CacheTime.Clear()
     $script:SnapshotCache = $null

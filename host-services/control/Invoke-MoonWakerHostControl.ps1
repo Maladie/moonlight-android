@@ -25,6 +25,20 @@ function Get-GatewayDirectory {
     return (Join-Path (Get-InstallRoot) "gateway")
 }
 
+function Get-MoonWakerVersion {
+    $path = Join-Path (Get-InstallRoot) "version.json"
+    try {
+        $value = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+        return [ordered]@{
+            version = [string]$value.version
+            build = [string]$value.build
+            protocol_version = [int]$value.protocol_version
+        }
+    } catch {
+        return [ordered]@{ version = "unknown"; build = "unknown"; protocol_version = 0 }
+    }
+}
+
 function Test-TcpPort([string]$HostName, [int]$Port) {
     $client = [Net.Sockets.TcpClient]::new()
     try {
@@ -87,6 +101,14 @@ function Test-GatewayManualStop([string]$Directory) {
     return Test-Path -LiteralPath (Join-Path $Directory "gateway-manually-stopped")
 }
 
+function Test-CurrentProfileOwner([object]$Entry) {
+    if (-not $Entry -or -not $Entry.PSObject.Properties["owner"]) { return $true }
+    $owner = [string]$Entry.owner
+    if ([string]::IsNullOrWhiteSpace($owner)) { return $true }
+    return $owner.Equals([Security.Principal.WindowsIdentity]::GetCurrent().Name,
+        [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Ensure-BackgroundServices([object]$Gateway, [string]$GatewayDirectory, [int]$GatewayPort) {
     if (-not (Test-TcpPort "127.0.0.1" $GatewayPort) -and -not (Test-GatewayManualStop $GatewayDirectory)) {
         try { Start-Gateway } catch {}
@@ -96,6 +118,10 @@ function Ensure-BackgroundServices([object]$Gateway, [string]$GatewayDirectory, 
     foreach ($property in $Gateway.profiles.PSObject.Properties) {
         $id = [string]$property.Name
         $root = Get-ProfileRoot $property.Value $id
+        # A profile contains user-DPAPI-protected credentials. Starting it from
+        # another Windows account makes it look alive while every protected
+        # integration fails immediately.
+        if (-not (Test-CurrentProfileOwner $property.Value)) { continue }
         if ([string]::IsNullOrWhiteSpace($root) -or
             (Test-Path -LiteralPath (Join-Path $root "profile-bridge-manually-stopped"))) { continue }
         try {
@@ -119,6 +145,9 @@ function Get-Status {
     Ensure-BackgroundServices $gateway $gatewayDirectory $port
     $runtime = $null
     try { $runtime = Get-Content -LiteralPath (Join-Path $gatewayDirectory "runtime-status.json") -Raw | ConvertFrom-Json } catch {}
+    $gatewayRuntime = $null
+    try { $gatewayRuntime = Get-Content -LiteralPath (Join-Path $gatewayDirectory "gateway-runtime.json") -Raw | ConvertFrom-Json } catch {}
+    $version = Get-MoonWakerVersion
     $pairing = $false
     $pairingSeconds = 0
     try {
@@ -156,6 +185,7 @@ function Get-Status {
     }
     return [ordered]@{
         ok = $true
+        version = $version
         gateway = [ordered]@{
             installed = Test-Path -LiteralPath $configPath
             running = Test-TcpPort "127.0.0.1" $port
@@ -164,6 +194,15 @@ function Get-Status {
             pairing = $pairing
             pairing_seconds = $pairingSeconds
             paired_clients = @($gateway.clients).Count
+            installed_version = [string]$version.version
+            installed_build = [string]$version.build
+            runtime_version = if ($gatewayRuntime) { [string]$gatewayRuntime.version } else { "" }
+            runtime_build = if ($gatewayRuntime) { [string]$gatewayRuntime.build } else { "" }
+            runtime_pid = if ($gatewayRuntime) { [int]$gatewayRuntime.pid } else { 0 }
+            runtime_started_at = if ($gatewayRuntime) { [int64]$gatewayRuntime.started_at } else { 0 }
+            version_mismatch = $gatewayRuntime -and (
+                [string]$gatewayRuntime.version -ne [string]$version.version -or
+                [string]$gatewayRuntime.build -ne [string]$version.build)
         }
         active_profile = if ($runtime) { [string]$runtime.profile_id } else { "" }
         profiles = $profiles
@@ -239,6 +278,20 @@ function Resolve-Profile([string]$Id) {
 
 function Invoke-ProfileControl([string]$Id, [string]$Mode) {
     $profile = Resolve-Profile $Id
+    if (-not (Test-CurrentProfileOwner $profile.entry)) {
+        # A legacy Host Control may already have started this profile under the
+        # wrong account. Let that same account stop its own accidental process,
+        # but never let it start or restart another user's profile.
+        $stateOwner = ""
+        try {
+            $stateOwner = [string](Get-Content -LiteralPath (Join-Path $profile.root "profile-bridge-state.json") `
+                -Raw | ConvertFrom-Json).owner
+        } catch {}
+        $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+        if ($Mode -ne "stop" -or -not $stateOwner.Equals($currentUser, [StringComparison]::OrdinalIgnoreCase)) {
+            throw "Profile '$Id' belongs to $([string]$profile.entry.owner). Sign in to that Windows account to control its Bridge."
+        }
+    }
     if ([string]::IsNullOrWhiteSpace($profile.root)) { throw "This profile must be controlled from its Windows account." }
     $currentProfileRoot = [IO.Path]::GetFullPath((Join-Path (Get-InstallRoot) "profiles"))
     $resolvedProfileRoot = [IO.Path]::GetFullPath($profile.root)

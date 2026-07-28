@@ -4,10 +4,15 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+
+[assembly: AssemblyVersion("0.5.7.0")]
+[assembly: AssemblyFileVersion("0.5.7.0")]
+[assembly: AssemblyInformationalVersion("0.5.7+2026.07.28")]
 
 namespace MoonWaker.HostControl
 {
@@ -42,12 +47,14 @@ namespace MoonWaker.HostControl
         private readonly bool startInTray;
         private bool refreshing;
         private bool exiting;
+        private readonly string hostVersion;
 
         public ControlForm(bool startInTray)
         {
             this.startInTray = startInTray;
             script = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Invoke-MoonWakerHostControl.ps1");
-            Text = "MoonWaker Host Control";
+            hostVersion = ReadHostVersion();
+            Text = "MoonWaker Host Control " + hostVersion;
             Icon = moonWakerIcon;
             ClientSize = new Size(1040, 708);
             MinimumSize = new Size(940, 640);
@@ -62,7 +69,7 @@ namespace MoonWaker.HostControl
             Label title = MakeLabel("MOONWAKER", 24F, FontStyle.Bold, Color.White);
             title.SetBounds(100, 18, 520, 45);
             Controls.Add(title);
-            Label subtitle = MakeLabel("HOST CONTROL", 9F, FontStyle.Bold, muted);
+            Label subtitle = MakeLabel("HOST CONTROL  •  " + hostVersion, 9F, FontStyle.Bold, muted);
             subtitle.SetBounds(103, 66, 260, 20);
             Controls.Add(subtitle);
 
@@ -74,7 +81,7 @@ namespace MoonWaker.HostControl
             gatewayState.SetBounds(26, 54, 280, 26);
             gatewayState.Font = new Font("Segoe UI", 11F, FontStyle.Bold);
             gatewayPanel.Controls.Add(gatewayState);
-            gatewayDetails.SetBounds(26, 82, 360, 45);
+            gatewayDetails.SetBounds(26, 82, 390, 60);
             gatewayDetails.ForeColor = muted;
             gatewayPanel.Controls.Add(gatewayDetails);
             AddActionButton(gatewayPanel, "Uruchom", 430, 27, delegate { RunAction("StartGateway", null); }, 116);
@@ -250,8 +257,14 @@ namespace MoonWaker.HostControl
             bool running = GetBool(gateway, "running");
             gatewayState.Text = running ? "● ONLINE" : "● ZATRZYMANY";
             gatewayState.ForeColor = running ? Color.FromArgb(129, 226, 169) : Color.FromArgb(255, 170, 170);
+            string installedVersion = GetText(gateway, "installed_version", hostVersion);
+            string runtimeVersion = GetText(gateway, "runtime_version", "");
+            string versionLine = String.IsNullOrWhiteSpace(runtimeVersion)
+                ? "Wersja: " + installedVersion + " (proces nie zgłosił wersji)"
+                : "Wersja: " + installedVersion + " / działa: " + runtimeVersion;
+            if (GetBool(gateway, "version_mismatch")) versionLine += "  ⚠ Różnica wersji";
             gatewayDetails.Text = "Port " + GetText(gateway, "port", "—") + "  •  sparowane urządzenia: " +
-                GetText(gateway, "paired_clients", "0") + (GetBool(gateway, "pairing") ? "\nParowanie aktywne" : "\nParowanie nieaktywne");
+                GetText(gateway, "paired_clients", "0") + "\n" + versionLine;
             string active = GetText(result, "active_profile", "");
             activeProfile.Text = String.IsNullOrWhiteSpace(active) ? "Ostatnio używany profil: brak danych" : "Ostatnio używany profil: " + active;
 
@@ -428,6 +441,20 @@ namespace MoonWaker.HostControl
         {
             object found;
             return value.TryGetValue(key, out found) && found != null ? found.ToString() : fallback;
+        }
+
+        private static string ReadHostVersion()
+        {
+            try
+            {
+                string path = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "..", "version.json");
+                string text = File.ReadAllText(Path.GetFullPath(path), Encoding.UTF8);
+                System.Text.RegularExpressions.Match match = System.Text.RegularExpressions.Regex.Match(
+                    text, "\\\"version\\\"\\s*:\\s*\\\"([^\\\"]+)\\\"");
+                if (match.Success) return "v" + match.Groups[1].Value;
+            }
+            catch { }
+            return "v?";
         }
 
         private static string Quote(string value) { return "\"" + value.Replace("\"", "\\\"") + "\""; }

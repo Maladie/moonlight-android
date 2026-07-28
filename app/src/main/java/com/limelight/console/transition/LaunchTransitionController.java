@@ -21,6 +21,7 @@ public final class LaunchTransitionController {
     private boolean inputBlocked;
     private boolean operationAuthorized;
     private boolean revealAuthorized;
+    private boolean manualRevealAvailable;
     private boolean revealCompleted;
     private boolean surfaceReady;
     private boolean streamConnected;
@@ -48,6 +49,7 @@ public final class LaunchTransitionController {
         inputBlocked = true;
         operationAuthorized = false;
         revealAuthorized = false;
+        manualRevealAvailable = false;
         revealCompleted = false;
         surfaceReady = false;
         streamConnected = false;
@@ -126,6 +128,7 @@ public final class LaunchTransitionController {
             overlayVisible = true;
             inputBlocked = true;
             revealAuthorized = false;
+            manualRevealAvailable = false;
             revealCompleted = false;
             targetProcessRunning = false;
             targetWindowReady = false;
@@ -173,6 +176,7 @@ public final class LaunchTransitionController {
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
+        manualRevealAvailable = false;
         revealCompleted = false;
         targetWindowReady = false;
         videoFrameReady = false;
@@ -187,6 +191,7 @@ public final class LaunchTransitionController {
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
+        manualRevealAvailable = false;
         revealCompleted = false;
         targetProcessRunning = false;
         targetWindowReady = false;
@@ -200,6 +205,7 @@ public final class LaunchTransitionController {
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
+        manualRevealAvailable = false;
         revealCompleted = false;
         state = LaunchTransitionState.PLAYNITE_STOPPING;
         publish();
@@ -210,6 +216,7 @@ public final class LaunchTransitionController {
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
+        manualRevealAvailable = false;
         revealCompleted = false;
         state = LaunchTransitionState.CLOSING_STREAM;
         publish();
@@ -227,6 +234,7 @@ public final class LaunchTransitionController {
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
+        manualRevealAvailable = false;
         uncertain = true;
         detail = reason == null ? "" : reason;
         publish();
@@ -238,6 +246,7 @@ public final class LaunchTransitionController {
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
+        manualRevealAvailable = false;
         detail = reason == null ? "" : reason;
         publish();
     }
@@ -252,8 +261,9 @@ public final class LaunchTransitionController {
     }
 
     public synchronized void showStreamAnyway(String transitionId) {
-        if (!accept(transitionId, null) || !uncertain) return;
+        if (!accept(transitionId, null) || (!manualRevealAvailable && !uncertain)) return;
         revealAuthorized = true;
+        manualRevealAvailable = false;
         publish();
     }
 
@@ -299,11 +309,17 @@ public final class LaunchTransitionController {
         boolean transportReady = surfaceReady && streamConnected && videoFrameReady && inputReady;
         boolean targetReady = gatewayReady && targetProcessRunning && targetWindowReady;
         if (transportReady && targetReady && !revealAuthorized) {
+            manualRevealAvailable = false;
             revealAuthorized = true;
             if (currentTarget == LaunchTransitionType.GAME) state = LaunchTransitionState.GAME_READY;
             else if (currentTarget == LaunchTransitionType.PLAYNITE) {
                 state = LaunchTransitionState.PLAYNITE_FULLSCREEN_READY;
             }
+        } else if (transportReady && !targetReady && !revealAuthorized
+                && currentTarget != LaunchTransitionType.GENERIC) {
+            // The user can explicitly reveal a confirmed video stream while the
+            // host-side readiness signal is still catching up.
+            manualRevealAvailable = true;
         }
         publish();
     }
@@ -322,7 +338,7 @@ public final class LaunchTransitionController {
     private LaunchTransitionSnapshot snapshotValue() {
         return new LaunchTransitionSnapshot(spec, state, activeStep,
                 overlayVisible, inputBlocked, operationAuthorized, revealAuthorized,
-                uncertain, detail);
+                manualRevealAvailable, uncertain, detail);
     }
 
     static int stepForState(LaunchTransitionState state) {
