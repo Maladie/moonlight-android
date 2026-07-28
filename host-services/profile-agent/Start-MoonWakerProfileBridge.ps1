@@ -5,6 +5,20 @@ param(
     [string]$ProfileId = (Split-Path -Leaf $PSScriptRoot)
 )
 $ErrorActionPreference = "Stop"
+$ProfileRoot = [IO.Path]::GetFullPath($ProfileRoot)
+$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+try {
+    $installRoot = Split-Path -Parent (Split-Path -Parent $ProfileRoot)
+    $gateway = Get-Content -LiteralPath (Join-Path $installRoot "gateway\gateway.json") -Raw | ConvertFrom-Json
+    $expectedOwner = [string]$gateway.profiles.$ProfileId.owner
+    if (-not [string]::IsNullOrWhiteSpace($expectedOwner) -and
+        -not $expectedOwner.Equals($currentUser, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "Profile '$ProfileId' belongs to $expectedOwner and cannot run under $currentUser."
+    }
+} catch {
+    Write-Error $_.Exception.Message
+    exit 1
+}
 $statePath = Join-Path $ProfileRoot "profile-bridge-state.json"
 $manualStopPath = Join-Path $ProfileRoot "profile-bridge-manually-stopped"
 Remove-Item -LiteralPath $manualStopPath -Force -ErrorAction SilentlyContinue

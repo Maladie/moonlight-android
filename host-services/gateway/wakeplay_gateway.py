@@ -68,12 +68,46 @@ class GatewayState:
         self.lock = threading.RLock()
         self.request_context = threading.local()
         self.runtime_status_path = self.config_path.with_name("runtime-status.json")
+        self.gateway_runtime_path = self.config_path.with_name("gateway-runtime.json")
+        self.started_at = int(time.time())
+        self.version_info = self._load_version_info()
         self.last_runtime_profile = ""
         self.last_runtime_write = 0.0
 
     @property
     def base_dir(self) -> Path:
         return self.config_path.parent
+
+    def _load_version_info(self) -> dict[str, Any]:
+        fallback = {"product": "MoonWaker Host", "version": "unknown", "build": "unknown"}
+        try:
+            value = json.loads((self.base_dir / "version.json").read_text(encoding="utf-8-sig"))
+            if isinstance(value, dict):
+                fallback.update({key: str(value[key]) for key in ("product", "version", "build")
+                                 if value.get(key) is not None})
+                fallback["protocol_version"] = int(value.get("protocol_version", 1))
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            pass
+        return fallback
+
+    def runtime_info(self) -> dict[str, Any]:
+        source = Path(__file__).resolve()
+        try:
+            source_sha256 = hashlib.sha256(source.read_bytes()).hexdigest()
+        except OSError:
+            source_sha256 = ""
+        return {
+            **self.version_info,
+            "pid": os.getpid(),
+            "started_at": self.started_at,
+            "source_sha256": source_sha256,
+        }
+
+    def write_runtime_info(self) -> None:
+        temporary = self.gateway_runtime_path.with_suffix(".json.tmp")
+        temporary.write_text(json.dumps(self.runtime_info(), ensure_ascii=False, indent=2) + "\n",
+                             encoding="utf-8")
+        os.replace(temporary, self.gateway_runtime_path)
 
     def path_from_config(self, key: str) -> Path:
         value = Path(str(self.config[key]))
@@ -256,6 +290,7 @@ class GatewayState:
                 "online": True,
                 "api_version": 1,
                 "integration_profile_id": self.profile_id,
+                **self.runtime_info(),
             },
             "capabilities": {
                 "vibepollo_fix": {"available": vibepollo_ok, "health": vibepollo},
@@ -810,7 +845,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
         path = target.path
         query = urllib.parse.parse_qs(target.query, keep_blank_values=True)
         if path == f"{API_PREFIX}/hello":
-            self.send_json(HTTPStatus.OK, {"name": "Wake & Play Host Gateway", "api_version": 1, "pairing": self.state.pairing_active()})
+            self.send_json(HTTPStatus.OK, {
+                "name": "Wake & Play Host Gateway", "api_version": 1,
+                "pairing": self.state.pairing_active(), **self.state.runtime_info(),
+            })
             return
         if not self.require_auth():
             return
@@ -987,6 +1025,7 @@ def main() -> None:
     context.minimum_version = ssl.TLSVersion.TLSv1_2
     context.load_cert_chain(state.path_from_config("certificate"), state.path_from_config("private_key"))
     server.socket = context.wrap_socket(server.socket, server_side=True)
+    state.write_runtime_info()
     print(f"Wake & Play Host Gateway listening on https://{state.config['listen_host']}:{state.config['listen_port']}", flush=True)
     print("Pairing is active for 10 minutes." if args.pairing_code else "Pairing is disabled for this run.", flush=True)
     try:

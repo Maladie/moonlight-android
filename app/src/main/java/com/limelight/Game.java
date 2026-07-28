@@ -2914,6 +2914,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             boolean newlyCovered = !lastTransitionOverlayVisible;
             consoleLoadingView.showOpaque();
             consoleLoadingView.setStep(snapshot.step, transitionStatus(snapshot));
+            consoleLoadingView.setManualRevealAvailable(snapshot.manualRevealAvailable);
             if (newlyCovered && decoderRenderer != null
                     && snapshot.state != LaunchTransitionState.CLOSING_STREAM
                     && snapshot.state != LaunchTransitionState.RETURNING_TO_DASHBOARD) {

@@ -34,6 +34,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
+import android.text.TextUtils;
 import android.view.Gravity;
 import android.view.InputDevice;
 import android.view.KeyEvent;
@@ -531,9 +532,16 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         spinnerParams.rightMargin = dp(6);
         discoveryBlock.addView(discoverySpinner, spinnerParams);
         discoveryStatus = text(getString(R.string.console_discovering), 10, 0xFF8F9AAF, false);
-        discoveryBlock.addView(discoveryStatus, wrapLinear());
+        discoveryStatus.setSingleLine(true);
+        discoveryStatus.setEllipsize(TextUtils.TruncateAt.END);
+        discoveryStatus.setGravity(Gravity.CENTER_VERTICAL);
+        discoveryBlock.addView(discoveryStatus, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
         LinearLayout.LayoutParams discoveryParams = sectionWithTop(2);
         discoveryParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
+        // Discovery updates must not reflow the dashboard when their translated
+        // text or a newly-found-host badge is longer than usual.
+        discoveryParams.height = dp(24);
         homeContent.addView(discoveryBlock, discoveryParams);
 
         LinearLayout discoveryAndSession = new LinearLayout(this);
@@ -579,7 +587,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         styleCompactButton(launchPlayniteButton, false);
         LinearLayout.LayoutParams playniteParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        playniteParams.leftMargin = dp(10);
         discoveryAndSession.addView(launchPlayniteButton, playniteParams);
         quickLine.addView(discoveryAndSession, portraitLayout
                 ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,

@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 $sourceDirectory = $PSScriptRoot
+$versionSource = Join-Path (Split-Path -Parent $sourceDirectory) "version.json"
 $files = @(
     "wakeplay_gateway.py",
     "Start-WakePlayGateway.ps1",
@@ -51,6 +52,9 @@ foreach ($path in @($privateKey, $configPath)) {
     & icacls.exe $path /inheritance:r /grant:r `
         "*S-1-5-11:(M)" "*S-1-5-18:(F)" "*S-1-5-32-544:(F)" | Out-Null
     if ($LASTEXITCODE -ne 0) { throw "Unable to secure $path" }
+}
+if (Test-Path -LiteralPath $versionSource) {
+    Copy-Item -LiteralPath $versionSource -Destination (Join-Path $InstallDirectory "version.json") -Force
 }
 
 if (-not $SkipFirewall) {

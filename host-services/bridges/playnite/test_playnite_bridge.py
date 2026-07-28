@@ -219,6 +219,7 @@ class BridgeStateTest(unittest.TestCase):
         self.assertIn("Send-WakePlaySnapshotToLauncher", patched)
         self.assertIn("StartedProcessId", patched)
         self.assertIn("backgroundImagePath", patched)
+        self.assertNotIn("/game/prepare", patched)
         second, changed_again = patch_text(patched)
         self.assertFalse(changed_again)
         self.assertEqual(patched, second)
@@ -238,7 +239,6 @@ class BridgeStateTest(unittest.TestCase):
         self.assertTrue(self.state.readiness["ready"])
         self.state.apply_window_sample({"qualified": False, "reason": "target_not_foreground"})
         self.assertFalse(self.state.readiness["ready"])
-
 
 if __name__ == "__main__":
     unittest.main()

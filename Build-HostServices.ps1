@@ -38,6 +38,8 @@ try {
         Copy-Item -LiteralPath (Join-Path $hostServices $directory) `
             -Destination $payloadRoot -Recurse -Force
     }
+    Copy-Item -LiteralPath (Join-Path $hostServices "version.json") `
+        -Destination $payloadRoot -Force
     $controlTarget = Join-Path $payloadRoot "control"
     New-Item -ItemType Directory -Path $controlTarget -Force | Out-Null
     foreach ($file in @("Build-MoonWakerHostControl.ps1", "Invoke-MoonWakerHostControl.ps1",
@@ -84,10 +86,15 @@ try {
     $csc = Join-Path $csc "csc.exe"
     $installerSource = Join-Path $hostServices "installer\MoonWakerHostInstaller.cs"
     $installerManifest = Join-Path $hostServices "installer\MoonWakerHostInstaller.manifest"
+    $installerIcon = Join-Path $hostServices "installer\moonwaker-host.ico"
+    if (-not (Test-Path -LiteralPath $installerIcon)) {
+        throw "MoonWaker installer icon was not found: $installerIcon"
+    }
     $compilerArguments = @(
         "/nologo", "/target:winexe", "/optimize+", "/platform:anycpu",
-        "/out:$installer", "/win32manifest:$installerManifest",
+        "/out:$installer", "/win32icon:$installerIcon", "/win32manifest:$installerManifest",
         "/resource:$zipPath,MoonWaker.HostServices.zip",
+        "/resource:$(Join-Path $hostServices 'version.json'),MoonWaker.Version.json",
         "/reference:System.dll", "/reference:System.Core.dll",
         "/reference:System.Drawing.dll", "/reference:System.Windows.Forms.dll",
         "/reference:System.IO.Compression.dll", "/reference:System.IO.Compression.FileSystem.dll",

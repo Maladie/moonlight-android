@@ -7,11 +7,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $python = (Get-Command python.exe -ErrorAction Stop).Source
-$openssl = (Get-Command openssl.exe -ErrorAction Stop).Source
 $certificate = Join-Path $PSScriptRoot "gateway-cert.pem"
 $privateKey = Join-Path $PSScriptRoot "gateway-key.pem"
 
 if (-not (Test-Path -LiteralPath $certificate) -or -not (Test-Path -LiteralPath $privateKey)) {
+    $openssl = (Get-Command openssl.exe -ErrorAction Stop).Source
     & $openssl req -x509 -newkey rsa:3072 -sha256 -nodes `
         -keyout $privateKey -out $certificate -days 825 `
         -subj "/CN=Wake and Play Host Gateway" `

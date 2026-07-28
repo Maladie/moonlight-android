@@ -17,6 +17,14 @@ $mutex = [Threading.Mutex]::new($false, "Local\MoonWakerProfileBridge_${sid}_$Pr
 $ownsMutex = $false
 $children = @{}
 
+function Get-ExpectedProfileOwner {
+    try {
+        $installRoot = Split-Path -Parent (Split-Path -Parent $ProfileRoot)
+        $gateway = Get-Content -LiteralPath (Join-Path $installRoot "gateway\gateway.json") -Raw | ConvertFrom-Json
+        return [string]$gateway.profiles.$ProfileId.owner
+    } catch { return "" }
+}
+
 function Write-AgentLog([string]$Message) {
     $line = "{0:o} {1}" -f [DateTimeOffset]::Now, $Message
     Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8
@@ -123,6 +131,15 @@ function Stop-Components {
     foreach ($process in @($children.Values)) {
         try { if ($null -ne $process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force } } catch {}
     }
+}
+
+$expectedOwner = Get-ExpectedProfileOwner
+$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
+if (-not [string]::IsNullOrWhiteSpace($expectedOwner) -and
+    -not $expectedOwner.Equals($currentUser, [StringComparison]::OrdinalIgnoreCase)) {
+    Write-AgentLog "Profile Bridge refused to run under $currentUser; this profile belongs to $expectedOwner."
+    Write-State "wrong_user"
+    exit 1
 }
 
 try {

@@ -747,6 +747,7 @@
     <string name="transition_cancel">Anuluj</string>
     <string name="transition_retry">Ponów</string>
     <string name="transition_show_anyway">Pokaż obraz mimo to</string>
+    <string name="transition_reveal_now">Odsłoń teraz</string>
     <string name="transition_return_dashboard">Wróć do dashboardu</string>
     <string name="transition_playnite_failed">Nie udało się uruchomić Playnite</string>
     <string name="transition_playnite_fullscreen_failed">Playnite Fullscreen nie osiągnęło stanu gotowości</string>

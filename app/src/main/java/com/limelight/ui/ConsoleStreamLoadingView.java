@@ -176,13 +176,15 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         defaultContent.addView(actionsRow, actionsParams);
 
         cancelView = action(context.getString(R.string.transition_cancel));
+        cancelView.setId(View.generateViewId());
         cancelView.setOnClickListener(view -> { if (actions != null) actions.onCancel(); });
         actionsRow.addView(cancelView, actionParams());
         retryView = action(context.getString(R.string.transition_retry));
         retryView.setVisibility(GONE);
         retryView.setOnClickListener(view -> { if (actions != null) actions.onRetry(); });
         actionsRow.addView(retryView, actionParams());
-        showAnywayView = action(context.getString(R.string.transition_show_anyway));
+        showAnywayView = action(context.getString(R.string.transition_reveal_now));
+        showAnywayView.setId(View.generateViewId());
         showAnywayView.setVisibility(GONE);
         showAnywayView.setOnClickListener(view -> {
             if (actions != null) actions.onShowStreamAnyway();
@@ -315,6 +317,30 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         renderSteps();
         retryView.requestFocus();
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+    }
+
+    /**
+     * Exposes a deliberate, DPAD-focusable opt-in after a real stream frame is
+     * available, while game/Playnite readiness is still being verified.
+     */
+    public void setManualRevealAvailable(boolean available) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(() -> setManualRevealAvailable(available));
+            return;
+        }
+        if (stopped || error || revealRequested) return;
+        boolean changed = showAnywayView.getVisibility() != (available ? VISIBLE : GONE);
+        showAnywayView.setVisibility(available ? VISIBLE : GONE);
+        if (available) {
+            // Keep the existing Cancel focus, but make Odsłoń teraz the explicit
+            // next DPAD-right option for remotes and controllers.
+            cancelView.setNextFocusRightId(showAnywayView.getId());
+            showAnywayView.setNextFocusLeftId(cancelView.getId());
+            showAnywayView.requestFocus();
+            if (changed) {
+                sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+            }
+        }
     }
 
     public void waitingForVideo() {

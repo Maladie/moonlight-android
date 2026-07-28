@@ -19,6 +19,7 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 }
 
 $hostServicesRoot = Split-Path -Parent $PSScriptRoot
+$versionSource = Join-Path $hostServicesRoot "version.json"
 $gatewaySource = Join-Path $hostServicesRoot "gateway"
 $bridgeSource = Join-Path $hostServicesRoot "bridges"
 $profileAgentSource = Join-Path $hostServicesRoot "profile-agent"
@@ -29,6 +30,9 @@ if (-not (Test-Path -LiteralPath $gatewaySource) -or
     -not (Test-Path -LiteralPath $controlSource)) {
     throw "Run this installer from the versioned host-services package."
 }
+if (-not (Test-Path -LiteralPath $versionSource)) {
+    throw "The MoonWaker version manifest is missing from the host package."
+}
 
 if ([string]::IsNullOrWhiteSpace($GatewayDirectory)) {
     $GatewayDirectory = Join-Path $InstallDirectory "gateway"
@@ -37,8 +41,53 @@ $sourceDirectory = Join-Path $InstallDirectory "bridge-source"
 $profileAgentDirectory = Join-Path $InstallDirectory "profile-agent"
 $controlDirectory = Join-Path $InstallDirectory "control"
 $installScripts = Join-Path $InstallDirectory "install"
+
+function Stop-ExistingGatewayForUpdate {
+    param([string]$Directory)
+    $stopScript = Join-Path $Directory "Stop-MoonWakerGateway.ps1"
+    if (-not (Test-Path -LiteralPath $stopScript)) { return }
+    Write-Host "Stopping the existing MoonWaker Gateway before update..."
+    & $stopScript -GatewayDirectory $Directory
+    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $statePath = Join-Path $Directory "gateway-supervisor-state.json"
+        $running = $false
+        try {
+            $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
+            $process = Get-Process -Id ([int]$state.pid) -ErrorAction SilentlyContinue
+            $running = $process -and -not $process.HasExited
+        } catch {}
+        if (-not $running) { return }
+        Start-Sleep -Milliseconds 200
+    }
+    throw "The existing MoonWaker Gateway supervisor did not stop in time."
+}
+
+function Stop-MoonWakerHostControlForUpdate {
+    # Host Control can be started independently from more than one Windows
+    # profile. Stop every running copy immediately before replacing its files;
+    # closing only the instance seen by the GUI leaves a short restart race.
+    $deadline = [DateTime]::UtcNow.AddSeconds(12)
+    do {
+        $running = @(Get-Process -Name "MoonWakerHostControl" -ErrorAction SilentlyContinue)
+        if ($running.Count -eq 0) { return }
+        foreach ($process in $running) {
+            try { Stop-Process -Id $process.Id -Force -ErrorAction Stop } catch {}
+        }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    $remaining = @(Get-Process -Name "MoonWakerHostControl" -ErrorAction SilentlyContinue)
+    if ($remaining.Count -gt 0) {
+        throw "MoonWaker Host Control did not close in time. Close it on every Windows profile and try again."
+    }
+}
+
+if (Test-Path -LiteralPath (Join-Path $GatewayDirectory "gateway.json")) {
+    Stop-ExistingGatewayForUpdate $GatewayDirectory
+}
 New-Item -ItemType Directory -Path $InstallDirectory, $sourceDirectory, $profileAgentDirectory, `
     $controlDirectory, $installScripts -Force | Out-Null
+Copy-Item -LiteralPath $versionSource -Destination (Join-Path $InstallDirectory "version.json") -Force
 
 Copy-Item -LiteralPath (Join-Path $bridgeSource "discord") `
     -Destination $sourceDirectory -Recurse -Force
@@ -48,6 +97,20 @@ Copy-Item -LiteralPath (Join-Path $bridgeSource "playnite") `
     -Destination $sourceDirectory -Recurse -Force
 Copy-Item -Path (Join-Path $profileAgentSource "*") `
     -Destination $profileAgentDirectory -Recurse -Force
+# Keep existing profile supervisors on the current safety logic. These scripts
+# contain no credentials; profile-specific tokens and configuration stay put.
+$profilesDirectory = Join-Path $InstallDirectory "profiles"
+if (Test-Path -LiteralPath $profilesDirectory) {
+    Get-ChildItem -LiteralPath $profilesDirectory -Directory | ForEach-Object {
+        foreach ($name in @("MoonWakerProfileBridge.ps1", "Start-MoonWakerProfileBridge.ps1", "Stop-MoonWakerProfileBridge.ps1")) {
+            Copy-Item -LiteralPath (Join-Path $profileAgentSource $name) `
+                -Destination (Join-Path $_.FullName $name) -Force
+        }
+    }
+}
+# Do this at the last possible moment. A profile's Startup entry can relaunch
+# Host Control after the installer GUI originally closed it.
+Stop-MoonWakerHostControlForUpdate
 Copy-Item -Path (Join-Path $controlSource "*") `
     -Destination $controlDirectory -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Install-WakePlayProfile.ps1") `

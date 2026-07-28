@@ -114,10 +114,19 @@ public class LaunchTransitionControllerTest {
     }
 
     @Test
-    public void explicitShowAnywayIsOnlyAvailableAfterUncertainTimeout() {
+    public void explicitRevealIsAvailableAfterTransportButBeforeHostReadiness() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         controller.showStreamAnyway("transition-1");
         assertFalse(controller.snapshot().revealAuthorized);
+        transportReady(controller);
+        assertTrue(controller.snapshot().manualRevealAvailable);
+        controller.showStreamAnyway("transition-1");
+        assertTrue(controller.snapshot().revealAuthorized);
+    }
+
+    @Test
+    public void explicitRevealRemainsAvailableAfterAnUncertainTimeout() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         controller.timedOut("transition-1", "uncertain");
         controller.showStreamAnyway("transition-1");
         assertTrue(controller.snapshot().revealAuthorized);
