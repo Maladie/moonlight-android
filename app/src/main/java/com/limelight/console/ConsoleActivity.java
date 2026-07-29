@@ -56,6 +56,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.limelight.AppView;
+import com.limelight.BuildConfig;
 import com.limelight.Game;
 import com.limelight.PcView;
 import com.limelight.R;
@@ -119,6 +120,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private static final String PREFS = "console_dashboard";
     private static final int REQUEST_BLUETOOTH_CONNECT = 2201;
     private static final long CONTROLLER_REFRESH_MS = 30_000L;
+    private static final long DUPLICATE_NAVIGATION_WINDOW_MS = 70L;
     private static final long DISCOVERY_INTERVAL_MS = 60_000L;
     private static final long DISCOVERY_VISIBLE_MS = 4_000L;
     private static final long PLAYNITE_REFRESH_MS = 60_000L;
@@ -179,6 +181,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private View sidePanelBusyBanner;
     private boolean sidePanelTransient;
     private ImageView artworkBackdrop;
+    private ImageView artworkBackdropNext;
     private ImageView artworkHero;
     private View artworkScrim;
     private TextView controllersLabel;
@@ -186,6 +189,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private TextView optionsButton;
     private TextView hostSelector;
     private TextView discoveryStatus;
+    private FrameLayout discoveryIndicatorSlot;
+    private ImageButton discoveredHostButton;
     private TextView launchPlayniteButton;
     private TextView installedFilterButton;
     private TextView playniteLibraryStatus;
@@ -204,16 +209,20 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private View lastContentFocus;
     private Object lastContentFocusTag;
     private ControllerInfo pendingController;
+    private final NavigationInputDeduplicator navigationInputDeduplicator =
+            new NavigationInputDeduplicator(DUPLICATE_NAVIGATION_WINDOW_MS);
     private BluetoothAction pendingBluetoothAction;
     private int glassAccent = 0xFF73D7FF;
     private String renderedAppsSignature;
     private String renderedControllersSignature;
+    private String renderedControllerDevicesSignature;
     private boolean discoveryActive;
     private Future<?> playniteRequest;
     private Future<?> playniteArtworkPrefetch;
     private String playniteArtworkPrefetchSignature;
     private List<PlayniteLibraryGame> currentPlayniteGames = Collections.emptyList();
     private List<PlayniteDashboardItem> renderedPlayniteItems = Collections.emptyList();
+    private String resumePlayniteGameId = "";
     private final Set<String> vibepolloEnsureInFlight =
             Collections.synchronizedSet(new HashSet<>());
     private List<NvApp> currentSunshineApps = Collections.emptyList();
@@ -380,6 +389,23 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     @Override
+    public boolean dispatchKeyEvent(KeyEvent event) {
+        if (BuildConfig.DEBUG && event != null
+                && event.getAction() == KeyEvent.ACTION_DOWN
+                && event.getRepeatCount() == 0
+                && isDirectionalNavigationKey(event.getKeyCode())) {
+            if (navigationInputDeduplicator.shouldSuppress(
+                    event.getKeyCode(), event.getEventTime())) {
+                android.util.Log.d("MoonWakerInput",
+                        "Suppressed duplicate navigation key " + event.getKeyCode()
+                                + " from device " + event.getDeviceId());
+                return true;
+            }
+        }
+        return super.dispatchKeyEvent(event);
+    }
+
+    @Override
     protected void onPause() {
         active = false;
         launchGeneration.incrementAndGet();
@@ -465,10 +491,16 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         artworkBackdrop.setAlpha(0f);
         homeLayer.addView(artworkBackdrop, match());
 
+        artworkBackdropNext = new ImageView(this);
+        artworkBackdropNext.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        artworkBackdropNext.setAlpha(0f);
+        homeLayer.addView(artworkBackdropNext, match());
+
         artworkHero = new ImageView(this);
         artworkHero.setScaleType(ImageView.ScaleType.FIT_CENTER);
         artworkHero.setAlpha(0f);
         artworkHero.setPadding(dp(30), dp(56), dp(30), dp(56));
+        if (BuildConfig.DEBUG) artworkHero.setVisibility(View.GONE);
         FrameLayout.LayoutParams hero = new FrameLayout.LayoutParams(dp(500),
                 ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END | Gravity.CENTER_VERTICAL);
         hero.rightMargin = dp(16);
@@ -476,7 +508,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
         artworkScrim = new View(this);
         artworkScrim.setBackground(new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                new int[]{0xF405060A, 0xD405060A, 0x5005060A}));
+                BuildConfig.DEBUG
+                        ? new int[]{0xD805060A, 0x7205060A, 0x2405060A,
+                                0x6005060A, 0xC805060A}
+                        : new int[]{0xF405060A, 0xD405060A, 0x5005060A}));
         artworkScrim.setAlpha(0f);
         homeLayer.addView(artworkScrim, match());
 
@@ -487,62 +522,144 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         homeContent.setClipToPadding(false);
         homeLayer.addView(homeContent, match());
 
+        buildQuickActions();
         LinearLayout header = new LinearLayout(this);
         header.setOrientation(portraitLayout ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         header.setGravity(portraitLayout ? Gravity.START : Gravity.CENTER_VERTICAL);
-        LinearLayout titleBlock = new LinearLayout(this);
-        titleBlock.setOrientation(LinearLayout.VERTICAL);
-        TextView title = text(getString(R.string.console_title), 24, Color.WHITE, true);
-        TextView subtitle = text(getString(R.string.console_subtitle),
-                14, 0xFFBCC3DD, false);
-        titleBlock.addView(title, wrapLinear());
-        titleBlock.addView(subtitle, wrapLinear());
-        header.addView(titleBlock, portraitLayout
-                ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT)
-                : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        header.setClipChildren(false);
+        header.setClipToPadding(false);
+        if (!BuildConfig.DEBUG) {
+            LinearLayout titleBlock = new LinearLayout(this);
+            titleBlock.setOrientation(LinearLayout.VERTICAL);
+            TextView title = text(getString(R.string.console_title), 24, Color.WHITE, true);
+            TextView subtitle = text(getString(R.string.console_subtitle),
+                    14, 0xFFBCC3DD, false);
+            titleBlock.addView(title, wrapLinear());
+            titleBlock.addView(subtitle, wrapLinear());
+            header.addView(titleBlock, portraitLayout
+                    ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT)
+                    : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        }
         hostSelector = compactButton(getString(R.string.console_no_hosts));
         hostSelector.setContentDescription(getString(R.string.console_action_hosts));
         hostSelector.setOnClickListener(v -> showHostPanel());
         optionsButton = hostSelector;
         hostSelector.setSingleLine(true);
-        hostSelector.setMaxWidth(dp(430));
+        hostSelector.setMaxWidth(dp(BuildConfig.DEBUG ? 300 : 430));
+        if (BuildConfig.DEBUG) {
+            hostSelector.setTextSize(11);
+            hostSelector.setMinHeight(dp(38));
+            hostSelector.setPadding(dp(11), dp(4), dp(11), dp(4));
+            hostSelector.setOnFocusChangeListener((view, focused) ->
+                    styleHostSelector(focused));
+            styleHostSelector(false);
+        }
         LinearLayout.LayoutParams selectorParams = new LinearLayout.LayoutParams(
                 portraitLayout ? ViewGroup.LayoutParams.MATCH_PARENT
                         : ViewGroup.LayoutParams.WRAP_CONTENT, dp(52));
         if (portraitLayout) selectorParams.topMargin = dp(12);
-        header.addView(hostSelector, selectorParams);
+        if (BuildConfig.DEBUG) {
+            LinearLayout.LayoutParams hostParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(38));
+            header.addView(hostSelector, hostParams);
+            discoveryIndicatorSlot = new FrameLayout(this);
+            discoveryIndicatorSlot.setClipChildren(false);
+            discoveryIndicatorSlot.setClipToPadding(false);
+            discoveryIndicatorSlot.setVisibility(View.INVISIBLE);
+
+            discoverySpinner = new ProgressBar(
+                    this, null, android.R.attr.progressBarStyleSmall);
+            discoverySpinner.setIndeterminate(true);
+            discoverySpinner.setIndeterminateTintList(
+                    ColorStateList.valueOf(0xFF8DDCFF));
+            discoverySpinner.setContentDescription(getString(R.string.console_discovering));
+            discoverySpinner.setFocusable(false);
+            FrameLayout.LayoutParams spinnerParams = new FrameLayout.LayoutParams(
+                    dp(16), dp(16), Gravity.CENTER);
+            discoveryIndicatorSlot.addView(discoverySpinner, spinnerParams);
+
+            discoveredHostButton = new ImageButton(this);
+            discoveredHostButton.setId(View.generateViewId());
+            discoveredHostButton.setImageResource(R.drawable.ic_console_computer_add);
+            discoveredHostButton.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+            discoveredHostButton.setPadding(dp(9), dp(9), dp(9), dp(9));
+            discoveredHostButton.setFocusable(true);
+            discoveredHostButton.setClickable(true);
+            discoveredHostButton.setContentDescription(
+                    getString(R.string.console_pair_discovered_host));
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                discoveredHostButton.setTooltipText(
+                        getString(R.string.console_pair_discovered_host));
+            }
+            discoveredHostButton.setOnClickListener(view -> pairDiscoveredHost());
+            discoveredHostButton.setOnFocusChangeListener((view, focused) ->
+                    styleQuickAction(discoveredHostButton, focused));
+            styleQuickAction(discoveredHostButton, false);
+            discoveredHostButton.setVisibility(View.GONE);
+            discoveryIndicatorSlot.addView(discoveredHostButton,
+                    new FrameLayout.LayoutParams(dp(38), dp(38), Gravity.CENTER));
+
+            LinearLayout.LayoutParams indicatorParams =
+                    new LinearLayout.LayoutParams(dp(42), dp(38));
+            indicatorParams.leftMargin = dp(3);
+            header.addView(discoveryIndicatorSlot, indicatorParams);
+            quickActions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+            LinearLayout.LayoutParams toolsParams = portraitLayout
+                    ? new LinearLayout.LayoutParams(
+                            ViewGroup.LayoutParams.MATCH_PARENT, dp(56))
+                    : new LinearLayout.LayoutParams(
+                            0, dp(56), 1f);
+            toolsParams.leftMargin = dp(14);
+            header.addView(quickActions, toolsParams);
+        } else {
+            header.addView(hostSelector, selectorParams);
+        }
         homeContent.addView(header, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        if (BuildConfig.DEBUG) {
+            controllersLabel = sectionLabel("");
+            controllerScroll = horizontalScroll();
+            controllerScroll.setFillViewport(true);
+            controllerRow = horizontalRow();
+            controllerRow.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+            controllerScroll.addView(controllerRow, new HorizontalScrollView.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        }
 
         LinearLayout quickLine = new LinearLayout(this);
         quickLine.setOrientation(portraitLayout ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         quickLine.setGravity(portraitLayout ? Gravity.START : Gravity.CENTER_VERTICAL);
-        LinearLayout discoveryBlock = new LinearLayout(this);
-        discoveryBlock.setOrientation(LinearLayout.HORIZONTAL);
-        discoveryBlock.setGravity(Gravity.CENTER_VERTICAL);
-        discoveryBlock.setFocusable(false);
-        discoverySpinner = new ProgressBar(this, null, android.R.attr.progressBarStyleSmall);
-        discoverySpinner.setIndeterminate(true);
-        discoverySpinner.setIndeterminateTintList(ColorStateList.valueOf(0xFF8DDCFF));
-        discoverySpinner.setContentDescription(getString(R.string.console_discovering));
-        discoverySpinner.setFocusable(false);
-        discoverySpinner.setVisibility(View.GONE);
-        LinearLayout.LayoutParams spinnerParams = new LinearLayout.LayoutParams(dp(14), dp(14));
-        spinnerParams.rightMargin = dp(6);
-        discoveryBlock.addView(discoverySpinner, spinnerParams);
-        discoveryStatus = text(getString(R.string.console_discovering), 10, 0xFF8F9AAF, false);
-        discoveryStatus.setSingleLine(true);
-        discoveryStatus.setEllipsize(TextUtils.TruncateAt.END);
-        discoveryStatus.setGravity(Gravity.CENTER_VERTICAL);
-        discoveryBlock.addView(discoveryStatus, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-        LinearLayout.LayoutParams discoveryParams = sectionWithTop(2);
-        discoveryParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
-        // Discovery updates must not reflow the dashboard when their translated
-        // text or a newly-found-host badge is longer than usual.
-        discoveryParams.height = dp(24);
-        homeContent.addView(discoveryBlock, discoveryParams);
+        if (!BuildConfig.DEBUG) {
+            LinearLayout discoveryBlock = new LinearLayout(this);
+            discoveryBlock.setOrientation(LinearLayout.HORIZONTAL);
+            discoveryBlock.setGravity(Gravity.CENTER_VERTICAL);
+            discoveryBlock.setFocusable(false);
+            discoverySpinner = new ProgressBar(
+                    this, null, android.R.attr.progressBarStyleSmall);
+            discoverySpinner.setIndeterminate(true);
+            discoverySpinner.setIndeterminateTintList(
+                    ColorStateList.valueOf(0xFF8DDCFF));
+            discoverySpinner.setContentDescription(getString(R.string.console_discovering));
+            discoverySpinner.setFocusable(false);
+            discoverySpinner.setVisibility(View.GONE);
+            LinearLayout.LayoutParams spinnerParams =
+                    new LinearLayout.LayoutParams(dp(14), dp(14));
+            spinnerParams.rightMargin = dp(6);
+            discoveryBlock.addView(discoverySpinner, spinnerParams);
+            discoveryStatus = text(
+                    getString(R.string.console_discovering), 10, 0xFF8F9AAF, false);
+            discoveryStatus.setSingleLine(true);
+            discoveryStatus.setEllipsize(TextUtils.TruncateAt.END);
+            discoveryStatus.setGravity(Gravity.CENTER_VERTICAL);
+            discoveryBlock.addView(discoveryStatus, new LinearLayout.LayoutParams(
+                    0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+            LinearLayout.LayoutParams discoveryParams = sectionWithTop(2);
+            discoveryParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
+            discoveryParams.height = dp(24);
+            homeContent.addView(discoveryBlock, discoveryParams);
+        }
 
         LinearLayout discoveryAndSession = new LinearLayout(this);
         discoveryAndSession.setOrientation(LinearLayout.HORIZONTAL);
@@ -563,7 +680,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         styleCompactButton(quickResumeButton, false);
         LinearLayout.LayoutParams resumeParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        discoveryAndSession.addView(quickResumeButton, resumeParams);
+        if (!BuildConfig.DEBUG) {
+            discoveryAndSession.addView(quickResumeButton, resumeParams);
+        }
         launchPlayniteButton = text(getString(R.string.playnite_launch),
                 12, 0xFFD7E4EA, true);
         launchPlayniteButton.setId(View.generateViewId());
@@ -586,52 +705,41 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         styleCompactButton(launchPlayniteButton, false);
         LinearLayout.LayoutParams playniteParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        discoveryAndSession.addView(launchPlayniteButton, playniteParams);
-        quickLine.addView(discoveryAndSession, portraitLayout
-                ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT)
-                : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        quickActions = horizontalRow();
-        addQuickAction(globalAction("global.refresh", R.string.console_action_refresh,
-                R.drawable.ic_console_refresh, this::refreshDashboard));
-        addQuickAction(globalAction("global.add_host", R.string.console_action_add_host,
-                R.drawable.ic_console_add, this::addHost));
-        addQuickAction(globalAction("global.quick_launch", R.string.console_action_quick_launch,
-                R.drawable.ic_console_play, this::showQuickLaunchPanel));
-        addQuickAction(globalAction("global.settings", R.string.console_action_stream_settings,
-                R.drawable.ic_console_settings, this::showOptionsPanel));
-        addQuickAction(globalAction("global.overrides", R.string.console_action_overrides,
-                R.drawable.ic_console_sliders, this::showOverridesPanel));
-        addQuickAction(globalAction("global.auto_resume", R.string.console_action_auto_resume,
-                R.drawable.ic_console_auto_resume, this::toggleAutoResume));
-        discordActionButton = addQuickAction(globalAction("global.discord",
-                R.string.console_action_discord, R.drawable.ic_console_discord, this::showHostIntegrations));
-        addQuickAction(globalAction("global.help", R.string.console_action_help,
-                R.drawable.ic_console_help, () -> HelpLauncher.launchSetupGuide(this)));
-        if (portraitLayout) {
+        if (!BuildConfig.DEBUG) {
+            discoveryAndSession.addView(launchPlayniteButton, playniteParams);
+            quickLine.addView(discoveryAndSession, portraitLayout
+                    ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                            ViewGroup.LayoutParams.WRAP_CONTENT)
+                    : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        }
+        if (!BuildConfig.DEBUG && portraitLayout) {
             HorizontalScrollView quickScroll = horizontalScroll();
             quickScroll.addView(quickActions, new HorizontalScrollView.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, dp(52)));
             quickLine.addView(quickScroll, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
-        } else {
+        } else if (!BuildConfig.DEBUG) {
             quickLine.addView(quickActions, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, dp(52)));
         }
-        LinearLayout.LayoutParams quickLineParams = sectionWithTop(10);
-        quickLineParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
-        homeContent.addView(quickLine, quickLineParams);
+        if (!BuildConfig.DEBUG) {
+            LinearLayout.LayoutParams quickLineParams = sectionWithTop(10);
+            quickLineParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
+            homeContent.addView(quickLine, quickLineParams);
+        }
 
-        controllersLabel = sectionLabel(getString(R.string.console_controllers_none));
-        LinearLayout.LayoutParams section = wrapLinear();
-        section.topMargin = dp(13);
-        homeContent.addView(controllersLabel, section);
-        controllerScroll = horizontalScroll();
-        controllerRow = horizontalRow();
-        controllerScroll.addView(controllerRow, new HorizontalScrollView.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        homeContent.addView(controllerScroll, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(58)));
+        if (!BuildConfig.DEBUG) {
+            controllersLabel = sectionLabel(getString(R.string.console_controllers_none));
+            LinearLayout.LayoutParams section = wrapLinear();
+            section.topMargin = dp(13);
+            homeContent.addView(controllersLabel, section);
+            controllerScroll = horizontalScroll();
+            controllerRow = horizontalRow();
+            controllerScroll.addView(controllerRow, new HorizontalScrollView.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
+            homeContent.addView(controllerScroll, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(58)));
+        }
 
         LinearLayout libraryHeader = new LinearLayout(this);
         libraryHeader.setOrientation(LinearLayout.HORIZONTAL);
@@ -652,6 +760,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         installedFilterButton.setMinHeight(dp(48));
         installedFilterButton.setMinWidth(dp(48));
         installedFilterButton.setPadding(dp(12), dp(4), dp(12), dp(4));
+        installedFilterButton.setCompoundDrawablesWithIntrinsicBounds(
+                R.drawable.ic_console_filter, 0, 0, 0);
+        installedFilterButton.setCompoundDrawablePadding(dp(7));
         installedFilterButton.setOnClickListener(view -> togglePlayniteInstalledFilter());
         installedFilterButton.setOnFocusChangeListener((view, focused) ->
                 styleInstalledFilter(focused));
@@ -659,10 +770,12 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         LinearLayout.LayoutParams filterParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
         filterParams.leftMargin = dp(8);
-        libraryHeader.addView(installedFilterButton, filterParams);
-        LinearLayout.LayoutParams libraryHeaderParams = sectionWithTop(2);
-        libraryHeaderParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
-        homeContent.addView(libraryHeader, libraryHeaderParams);
+        if (!BuildConfig.DEBUG) {
+            libraryHeader.addView(installedFilterButton, filterParams);
+            LinearLayout.LayoutParams libraryHeaderParams = sectionWithTop(2);
+            libraryHeaderParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
+            homeContent.addView(libraryHeader, libraryHeaderParams);
+        }
         appRow = horizontalRow();
         if (portraitLayout) {
             appRow.setOrientation(LinearLayout.VERTICAL);
@@ -671,16 +784,43 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             appVerticalScroll.addView(appRow, new ScrollView.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             homeContent.addView(appVerticalScroll, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(235)));
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(BuildConfig.DEBUG ? 180 : 235)));
         } else {
             appScroll = horizontalScroll();
             appScroll.addView(appRow, new HorizontalScrollView.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
-            homeContent.addView(appScroll, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(235)));
+            LinearLayout.LayoutParams appScrollParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(BuildConfig.DEBUG ? 180 : 235));
+            if (BuildConfig.DEBUG) appScrollParams.topMargin = dp(8);
+            homeContent.addView(appScroll, appScrollParams);
         }
         appRow.addView(text(getString(R.string.console_choose_host), 15, 0xFFBDC4D8, false),
                 new LinearLayout.LayoutParams(dp(500), ViewGroup.LayoutParams.MATCH_PARENT));
+        if (BuildConfig.DEBUG) {
+            LinearLayout libraryActions = new LinearLayout(this);
+            libraryActions.setOrientation(LinearLayout.HORIZONTAL);
+            libraryActions.setGravity(Gravity.CENTER_VERTICAL);
+            libraryActions.setClipChildren(false);
+            libraryActions.setClipToPadding(false);
+            LinearLayout.LayoutParams debugFilterParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
+            debugFilterParams.rightMargin = dp(10);
+            libraryActions.addView(installedFilterButton, debugFilterParams);
+            libraryActions.addView(launchPlayniteButton, new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
+            libraryActions.addView(new View(this), new LinearLayout.LayoutParams(
+                    0, 1, 1f));
+            LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
+            actionParams.topMargin = dp(5);
+            homeContent.addView(libraryActions, actionParams);
+
+            homeContent.addView(new View(this), new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+            LinearLayout.LayoutParams controllerStrip = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(28));
+            homeContent.addView(controllerScroll, controllerStrip);
+        }
         wireHomeFocusNavigation();
 
         container.addView(homeLayer, match());
@@ -784,12 +924,65 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 if (discoverySpinner != null) discoverySpinner.setVisibility(View.GONE);
             }
         }
+        updateDiscoveryIndicator();
         updateQuickResumeButton(host);
         refreshDiscordIndicator();
     }
 
+    private ComputerDetails firstDiscoveredHost() {
+        for (String uuid : new ArrayList<>(newlyDiscoveredHosts)) {
+            ComputerDetails host = hosts.get(uuid);
+            if (host != null) return host;
+            newlyDiscoveredHosts.remove(uuid);
+        }
+        return null;
+    }
+
+    private void updateDiscoveryIndicator() {
+        if (discoveryIndicatorSlot == null || discoveredHostButton == null) return;
+        ComputerDetails discoveredHost = firstDiscoveredHost();
+        boolean hasDiscoveredHost = discoveredHost != null;
+        boolean wasFocused = discoveredHostButton.hasFocus();
+
+        discoveryIndicatorSlot.setVisibility(
+                hasDiscoveredHost || discoveryActive ? View.VISIBLE : View.INVISIBLE);
+        discoveredHostButton.setVisibility(hasDiscoveredHost ? View.VISIBLE : View.GONE);
+        discoveredHostButton.setEnabled(hasDiscoveredHost);
+        discoverySpinner.setVisibility(
+                !hasDiscoveredHost && discoveryActive ? View.VISIBLE : View.GONE);
+        if (hasDiscoveredHost) {
+            discoveredHostButton.setContentDescription(getString(
+                    R.string.console_pair_discovered_host_named, discoveredHost.name));
+        } else if (wasFocused) {
+            hostSelector.post(hostSelector::requestFocus);
+        }
+        wireHomeFocusNavigation();
+    }
+
+    private void pairDiscoveredHost() {
+        ComputerDetails host = firstDiscoveredHost();
+        if (host == null) {
+            updateDiscoveryIndicator();
+            return;
+        }
+        if (ConsoleActionCatalog.isOnline(host) && ConsoleActionCatalog.isPaired(host)) {
+            newlyDiscoveredHosts.remove(host.uuid);
+            selectHost(host, true);
+            return;
+        }
+        pairHost(host);
+    }
+
     private void updateQuickResumeButton(ComputerDetails host) {
         if (quickResumeButton == null) return;
+        if (BuildConfig.DEBUG) {
+            quickResumeButton.setVisibility(View.GONE);
+            quickResumeButton.setEnabled(false);
+            if (launchPlayniteButton != null) {
+                launchPlayniteButton.setVisibility(View.VISIBLE);
+            }
+            return;
+        }
         boolean visible = host != null && ConsoleActionCatalog.isOnline(host)
                 && ConsoleActionCatalog.isPaired(host) && host.runningGameId != 0;
         boolean restoreFocus = quickResumeButton.hasFocus() && !visible;
@@ -1185,6 +1378,27 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private ConsoleAction globalAction(String id, int label, int icon, Runnable handler) {
         return ConsoleAction.enabled(id, getString(label), icon, ConsoleAction.Context.GLOBAL,
                 false, handler);
+    }
+
+    private void buildQuickActions() {
+        quickActions = horizontalRow();
+        addQuickAction(globalAction("global.refresh", R.string.console_action_refresh,
+                R.drawable.ic_console_refresh, this::refreshDashboard));
+        addQuickAction(globalAction("global.add_host", R.string.console_action_add_host,
+                R.drawable.ic_console_add, this::addHost));
+        addQuickAction(globalAction("global.quick_launch", R.string.console_action_quick_launch,
+                R.drawable.ic_console_play, this::showQuickLaunchPanel));
+        addQuickAction(globalAction("global.settings", R.string.console_action_stream_settings,
+                R.drawable.ic_console_settings, this::showOptionsPanel));
+        addQuickAction(globalAction("global.overrides", R.string.console_action_overrides,
+                R.drawable.ic_console_sliders, this::showOverridesPanel));
+        addQuickAction(globalAction("global.auto_resume", R.string.console_action_auto_resume,
+                R.drawable.ic_console_auto_resume, this::toggleAutoResume));
+        discordActionButton = addQuickAction(globalAction("global.discord",
+                R.string.console_action_discord, R.drawable.ic_console_discord,
+                this::showHostIntegrations));
+        addQuickAction(globalAction("global.help", R.string.console_action_help,
+                R.drawable.ic_console_help, () -> HelpLauncher.launchSetupGuide(this)));
     }
 
     private ImageButton addQuickAction(ConsoleAction resolved) {
@@ -1890,6 +2104,11 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             items.add(PlayniteTargetResolver.resolve(host.uuid, game, apps,
                     playniteLaunchTargetStore));
         }
+        if (BuildConfig.DEBUG) {
+            items = putActiveSessionFirst(host, items);
+        } else {
+            resumePlayniteGameId = "";
+        }
         installedFilterButton.setVisibility(View.VISIBLE);
         applyPlayniteDiff(host, apps, items);
         schedulePlayniteArtworkPrefetch(host, items);
@@ -1898,6 +2117,36 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 host.name.toUpperCase(Locale.ROOT)));
         styleInstalledFilter(installedFilterButton.hasFocus());
         updatePlayniteLibraryStatus(host);
+    }
+
+    private List<PlayniteDashboardItem> putActiveSessionFirst(
+            ComputerDetails host, List<PlayniteDashboardItem> items) {
+        resumePlayniteGameId = "";
+        if (host == null || host.runningGameId == 0 || items.isEmpty()) return items;
+        List<PlayniteDashboardItem> matches = new ArrayList<>();
+        for (PlayniteDashboardItem item : items) {
+            if (item.sunshineAppId != null && item.sunshineAppId == host.runningGameId) {
+                matches.add(item);
+            }
+        }
+        PlayniteDashboardItem active = matches.size() == 1 ? matches.get(0) : null;
+        if (active == null && !matches.isEmpty()) {
+            String selectedId = preferences.getString(
+                    "selected_playnite." + host.uuid, "");
+            for (PlayniteDashboardItem item : matches) {
+                if (item.stableId().equals(selectedId)) {
+                    active = item;
+                    break;
+                }
+            }
+        }
+        if (active == null) return items;
+        resumePlayniteGameId = active.stableId();
+        if (items.get(0) == active) return items;
+        List<PlayniteDashboardItem> reordered = new ArrayList<>(items);
+        reordered.remove(active);
+        reordered.add(0, active);
+        return reordered;
     }
 
     private void applyPlayniteDiff(ComputerDetails host, List<NvApp> apps,
@@ -1910,7 +2159,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 ? Math.max(0, appRow.indexOfChild(getCurrentFocus())) : 0;
 
         List<PlayniteDashboardItem> items = requestedItems;
-        if (focusedId != null && containsPlayniteId(requestedItems, focusedId)) {
+        if (focusedId != null && resumePlayniteGameId.isEmpty()
+                && containsPlayniteId(requestedItems, focusedId)) {
             items = preserveOrderDuringFocus(requestedItems);
         }
         Map<String, View> existing = new LinkedHashMap<>();
@@ -1954,9 +2204,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             PlayniteDashboardItem old = previous.get(item.stableId());
             if (card == null || "playnite.empty".equals(card.getTag())) {
                 card = playniteCard(host, item, apps);
-            } else if (!item.equals(old) || isVibepolloEnsureInFlight(host.uuid, item)) {
+            } else if (BuildConfig.DEBUG || !item.equals(old)
+                    || isVibepolloEnsureInFlight(host.uuid, item)) {
                 bindPlayniteCard(card, host, item, apps,
-                        !item.equals(old) ? playnitePayload(old, item) : PlayniteLibraryDiff.TEXT);
+                        BuildConfig.DEBUG
+                                ? PlayniteLibraryDiff.TEXT | PlayniteLibraryDiff.LAUNCH
+                                : !item.equals(old) ? playnitePayload(old, item)
+                                : PlayniteLibraryDiff.TEXT);
             }
             int currentIndex = appRow.indexOfChild(card);
             if (currentIndex < 0) {
@@ -2011,8 +2265,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private View playniteCard(ComputerDetails host, PlayniteDashboardItem item, List<NvApp> apps) {
-        LinearLayout card = cardBase(dp(portraitLayout ? 220 : 205),
-                dp(portraitLayout ? 225 : 190));
+        boolean debugCarousel = BuildConfig.DEBUG && !portraitLayout;
+        LinearLayout card = cardBase(dp(portraitLayout ? 220 : debugCarousel ? 84 : 205),
+                dp(portraitLayout ? 225 : debugCarousel ? 150 : 190));
         card.setOrientation(LinearLayout.VERTICAL);
         card.setGravity(Gravity.TOP);
         card.setPadding(0, 0, 0, 0);
@@ -2032,27 +2287,32 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         ImageView poster = new ImageView(this);
         poster.setTag("playnite.poster");
-        poster.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        poster.setScaleType(debugCarousel
+                ? ImageView.ScaleType.CENTER_CROP : ImageView.ScaleType.FIT_CENTER);
         poster.setImageResource(R.drawable.ic_computer);
-        poster.setPadding(dp(72), dp(54), dp(72), dp(54));
+        poster.setPadding(dp(debugCarousel ? 24 : 72), dp(debugCarousel ? 36 : 54),
+                dp(debugCarousel ? 24 : 72), dp(debugCarousel ? 36 : 54));
         artworkFrame.addView(poster, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         card.addView(artworkFrame, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(portraitLayout ? 140 : 115)));
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(portraitLayout ? 140 : debugCarousel ? 110 : 115)));
         LinearLayout copy = new LinearLayout(this);
         copy.setOrientation(LinearLayout.VERTICAL);
-        copy.setPadding(dp(14), dp(10), dp(14), dp(8));
-        TextView name = text("", 15, Color.WHITE, true);
+        copy.setPadding(dp(debugCarousel ? 7 : 14), dp(debugCarousel ? 4 : 10),
+                dp(debugCarousel ? 7 : 14), dp(debugCarousel ? 3 : 8));
+        TextView name = text("", debugCarousel ? 9 : 15, Color.WHITE, true);
         name.setTag("playnite.name");
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         copy.addView(name, matchLinearWidth());
-        TextView playtime = text("", 10, 0xFFB8C9DC, false);
+        TextView playtime = text("", debugCarousel ? 8 : 10, 0xFFB8C9DC, false);
         playtime.setTag("playnite.playtime");
+        if (debugCarousel) playtime.setVisibility(View.GONE);
         copy.addView(playtime, matchLinearWidth());
-        TextView state = text("", 10, 0xFF929BAD, false);
+        TextView state = text("", debugCarousel ? 7 : 10, 0xFF929BAD, false);
         state.setTag("playnite.state");
-        state.setMaxLines(1);
+        state.setMaxLines(debugCarousel ? 2 : 1);
         state.setEllipsize(android.text.TextUtils.TruncateAt.END);
         copy.addView(state, matchLinearWidth());
         card.addView(copy, new LinearLayout.LayoutParams(
@@ -2071,21 +2331,28 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private LinearLayout.LayoutParams playniteCardSpacing() {
         LinearLayout.LayoutParams params = portraitLayout
                 ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(225))
-                : new LinearLayout.LayoutParams(dp(205), dp(190));
+                : new LinearLayout.LayoutParams(
+                        dp(BuildConfig.DEBUG ? 84 : 205),
+                        dp(BuildConfig.DEBUG ? 150 : 190));
         if (portraitLayout) params.bottomMargin = dp(14);
-        else params.rightMargin = dp(14);
+        else params.rightMargin = dp(BuildConfig.DEBUG ? 10 : 14);
         return params;
     }
 
     private void bindPlayniteCard(View card, ComputerDetails host,
                                   PlayniteDashboardItem item, List<NvApp> apps, int payload) {
         card.setTag("playnite:" + item.stableId());
+        styleCard(card, card.hasFocus());
         TextView name = (TextView) findTaggedChild((ViewGroup) card, "playnite.name");
         TextView playtime = (TextView) findTaggedChild((ViewGroup) card, "playnite.playtime");
         TextView state = (TextView) findTaggedChild((ViewGroup) card, "playnite.state");
         ImageView poster = (ImageView) findTaggedChild((ViewGroup) card, "playnite.poster");
         String playtimeText = formatPlayniteTime(item.game.playtimeSeconds);
-        String stateText = playniteState(host.uuid, item);
+        boolean resumeSession = BuildConfig.DEBUG
+                && item.stableId().equals(resumePlayniteGameId)
+                && host.runningGameId != 0;
+        String stateText = resumeSession
+                ? getString(R.string.console_resume_session) : playniteState(host.uuid, item);
         if ((payload & PlayniteLibraryDiff.TEXT) != 0) {
             name.setText(item.game.name);
             playtime.setText(playtimeText);
@@ -2094,7 +2361,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             state.setText(stateText);
         }
         if ((payload & PlayniteLibraryDiff.ARTWORK) != 0) resetPlaynitePoster(poster, item);
-        card.setOnClickListener(view -> activatePlayniteItem(host.uuid, item));
+        card.setOnClickListener(view -> {
+            if (resumeSession) resumeSession(currentHost(host.uuid));
+            else activatePlayniteItem(host.uuid, item);
+        });
         card.setOnLongClickListener(view -> {
             showPlayniteTargetPicker(currentHost(host.uuid), item, currentSunshineApps);
             return true;
@@ -2103,6 +2373,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 item.game.name, playtimeText, stateText));
         card.setOnFocusChangeListener((view, focused) -> {
             styleCard(card, focused);
+            updateCarouselMarquee(name, focused);
             if (focused) {
                 preferences.edit().putString("selected_playnite." + host.uuid,
                         item.stableId()).apply();
@@ -2161,8 +2432,12 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             backdrop.setVisibility(View.GONE);
         }
         poster.setImageResource(R.drawable.ic_computer);
-        poster.setScaleType(ImageView.ScaleType.FIT_CENTER);
-        poster.setPadding(dp(72), dp(54), dp(72), dp(54));
+        poster.setScaleType(BuildConfig.DEBUG
+                ? ImageView.ScaleType.CENTER_CROP : ImageView.ScaleType.FIT_CENTER);
+        poster.setPadding(dp(BuildConfig.DEBUG ? 24 : 72),
+                dp(BuildConfig.DEBUG ? 36 : 54),
+                dp(BuildConfig.DEBUG ? 24 : 72),
+                dp(BuildConfig.DEBUG ? 36 : 54));
         poster.setTag(R.id.playnite_artwork_key, playniteArtworkTag(item));
     }
 
@@ -2170,13 +2445,21 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                                     ImageView poster, boolean allowNetwork) {
         ComputerDetails latestHost = currentHost(host.uuid);
         if (latestHost == null) return;
-        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forGame(item.game);
+        PlayniteArtworkSpec spec = playniteCardArtworkSpec(item.game);
         if (!spec.available()) return;
         ArtworkResult cached = cachedPlayniteArtwork(latestHost.uuid, item, spec);
+        if (BuildConfig.DEBUG && allowNetwork && cached != null
+                && !spec.kind.equals(cached.kind)) {
+            cached = null;
+        }
         String expectedTag = playniteArtworkTag(item);
         if (cached != null) {
             loadPlayniteBitmap(cached.file, poster, expectedTag, cached.kind);
-            showArtwork(cached.file, poster.getDrawable());
+            if (BuildConfig.DEBUG) {
+                showPlayniteBackdrop(latestHost, item, poster, allowNetwork);
+            } else {
+                showArtwork(cached.file, poster.getDrawable());
+            }
             if (spec.kind.equals(cached.kind) || !allowNetwork) return;
         }
         if (!allowNetwork) return;
@@ -2194,7 +2477,11 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     if (expectedTag.equals(expected)) {
                         loadPlayniteBitmap(result.file, poster, expectedTag, result.kind);
                         if (poster.hasFocus() || cardParentHasFocus(poster)) {
-                            showArtwork(result.file, poster.getDrawable());
+                            if (BuildConfig.DEBUG) {
+                                showPlayniteBackdrop(latestHost, item, poster, true);
+                            } else {
+                                showArtwork(result.file, poster.getDrawable());
+                            }
                         }
                     }
                 });
@@ -2208,7 +2495,12 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         StringBuilder signature = new StringBuilder(host.uuid);
         for (PlayniteDashboardItem item : items) {
             signature.append('|').append(item.stableId()).append(':')
-                    .append(PlayniteArtworkSpec.forGame(item.game).cacheIdentity());
+                    .append(playniteCardArtworkSpec(item.game).cacheIdentity());
+            if (BuildConfig.DEBUG) {
+                signature.append(':')
+                        .append(PlayniteArtworkSpec.forBackdrop(
+                                item.game).cacheIdentity());
+            }
         }
         String nextSignature = signature.toString();
         if (nextSignature.equals(playniteArtworkPrefetchSignature)) return;
@@ -2227,7 +2519,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             for (PlayniteDashboardItem item : snapshot) {
                 if (Thread.currentThread().isInterrupted() ||
                         token != playniteArtworkGeneration.get()) return;
-                PlayniteArtworkSpec spec = PlayniteArtworkSpec.forGame(item.game);
+                PlayniteArtworkSpec spec = playniteCardArtworkSpec(item.game);
                 if (!spec.available()) continue;
                 try {
                     ArtworkResult result = cachedPlayniteArtwork(latestHost.uuid, item, spec);
@@ -2242,6 +2534,32 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     ArtworkResult ready = result;
                     mainHandler.post(() -> applyPrefetchedPlayniteArtwork(
                             token, latestHost.uuid, item, ready));
+                    if (BuildConfig.DEBUG) {
+                        PlayniteArtworkSpec backdropSpec =
+                                PlayniteArtworkSpec.forBackdrop(item.game);
+                        if (backdropSpec.available()
+                                && !backdropSpec.cacheIdentity().equals(spec.cacheIdentity())) {
+                            ArtworkResult backdrop = cachedPlayniteArtwork(
+                                    latestHost.uuid, item, backdropSpec);
+                            if (backdrop == null || !backdropSpec.kind.equals(backdrop.kind)) {
+                                try {
+                                    backdrop = fetchPlayniteArtwork(connection,
+                                            latestHost.uuid, item, backdropSpec);
+                                } catch (IOException primaryFailure) {
+                                    if (backdrop == null) throw primaryFailure;
+                                }
+                            }
+                            ArtworkResult readyBackdrop = backdrop;
+                            mainHandler.post(() -> {
+                                View card = directChildWithTag(appRow,
+                                        "playnite:" + item.stableId());
+                                if (token == playniteArtworkGeneration.get()
+                                        && card != null && card.hasFocus()) {
+                                    showArtwork(readyBackdrop.file, null);
+                                }
+                            });
+                        }
+                    }
                 } catch (IOException ignored) { }
             }
         });
@@ -2308,7 +2626,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (poster == null || !playniteArtworkTag(item).equals(
                 poster.getTag(R.id.playnite_artwork_key))) return;
         loadPlayniteBitmap(result.file, poster, playniteArtworkTag(item), result.kind);
-        if (card.hasFocus()) showArtwork(result.file, poster.getDrawable());
+        if (card.hasFocus()) {
+            if (BuildConfig.DEBUG) {
+                showPlayniteBackdrop(currentHost(hostUuid), item, poster, true);
+            } else {
+                showArtwork(result.file, poster.getDrawable());
+            }
+        }
     }
 
     private View directChildWithTag(ViewGroup parent, Object tag) {
@@ -2320,7 +2644,43 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private String playniteArtworkTag(PlayniteDashboardItem item) {
-        return item.stableId() + ":" + PlayniteArtworkSpec.forGame(item.game).cacheIdentity();
+        return item.stableId() + ":" + playniteCardArtworkSpec(
+                item.game).cacheIdentity();
+    }
+
+    private PlayniteArtworkSpec playniteCardArtworkSpec(PlayniteLibraryGame game) {
+        return BuildConfig.DEBUG
+                ? PlayniteArtworkSpec.forCard(game)
+                : PlayniteArtworkSpec.forGame(game);
+    }
+
+    private void showPlayniteBackdrop(ComputerDetails host, PlayniteDashboardItem item,
+                                      ImageView poster, boolean allowNetwork) {
+        if (host == null) return;
+        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forBackdrop(item.game);
+        if (!spec.available()) return;
+        ArtworkResult cached = cachedPlayniteArtwork(host.uuid, item, spec);
+        if (cached != null) {
+            showArtwork(cached.file, poster.getDrawable());
+            if (spec.kind.equals(cached.kind) || !allowNetwork) return;
+        }
+        if (!allowNetwork) return;
+        String address = host.activeAddress != null ? host.activeAddress.address : null;
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(host.uuid, address);
+        if (connection == null) return;
+        String expectedTag = playniteArtworkTag(item);
+        executor.execute(() -> {
+            try {
+                ArtworkResult result = fetchPlayniteArtwork(
+                        connection, host.uuid, item, spec);
+                mainHandler.post(() -> {
+                    if (!expectedTag.equals(poster.getTag(R.id.playnite_artwork_key))
+                            || !(poster.hasFocus() || cardParentHasFocus(poster))) return;
+                    showArtwork(result.file, poster.getDrawable());
+                });
+            } catch (IOException ignored) { }
+        });
     }
 
     private boolean cardParentHasFocus(View view) {
@@ -2341,11 +2701,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 if (bitmap != null && expectedTag.equals(expected)) {
                     poster.setPadding(0, 0, 0, 0);
                     boolean landscape = "background".equals(kind);
-                    poster.setScaleType(landscape
-                            ? ImageView.ScaleType.CENTER_CROP : ImageView.ScaleType.FIT_CENTER);
+                    poster.setScaleType(BuildConfig.DEBUG
+                            ? ImageView.ScaleType.CENTER_CROP
+                            : landscape ? ImageView.ScaleType.CENTER_CROP
+                            : ImageView.ScaleType.FIT_CENTER);
                     ImageView backdrop = playnitePosterBackdrop(poster);
                     if (backdrop != null) {
-                        if (landscape) {
+                        if (BuildConfig.DEBUG || landscape) {
                             backdrop.setImageDrawable(null);
                             backdrop.setVisibility(View.GONE);
                         } else {
@@ -2750,30 +3112,37 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private View appCard(ComputerDetails host, NvApp app) {
-        LinearLayout card = cardBase(dp(portraitLayout ? 220 : 205),
-                dp(portraitLayout ? 225 : 225));
+        boolean debugCarousel = BuildConfig.DEBUG && !portraitLayout;
+        LinearLayout card = cardBase(dp(portraitLayout ? 220 : debugCarousel ? 84 : 205),
+                dp(portraitLayout ? 225 : debugCarousel ? 150 : 225));
         card.setOrientation(LinearLayout.VERTICAL);
         card.setGravity(Gravity.TOP);
         card.setPadding(0, 0, 0, 0);
         card.setClipToOutline(true);
         card.setTag("app:" + host.uuid + ":" + app.getAppId());
+        styleCard(card, false);
         ImageView poster = new ImageView(this);
-        poster.setScaleType(ImageView.ScaleType.FIT_CENTER);
+        poster.setScaleType(debugCarousel
+                ? ImageView.ScaleType.CENTER_CROP : ImageView.ScaleType.FIT_CENTER);
         poster.setImageResource(R.drawable.ic_computer);
-        poster.setPadding(dp(72), dp(54), dp(72), dp(54));
+        poster.setPadding(dp(debugCarousel ? 24 : 72), dp(debugCarousel ? 36 : 54),
+                dp(debugCarousel ? 24 : 72), dp(debugCarousel ? 36 : 54));
         poster.setBackground(gradient(0xFF26333D, 0xFF172128, 12));
         card.addView(poster, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(portraitLayout ? 140 : 142)));
+                ViewGroup.LayoutParams.MATCH_PARENT,
+                dp(portraitLayout ? 140 : debugCarousel ? 110 : 142)));
         File artwork = assetLoader.getFile(host.uuid, app.getAppId());
         loadPoster(host, app, artwork, poster);
 
         LinearLayout copy = new LinearLayout(this);
         copy.setOrientation(LinearLayout.VERTICAL);
         copy.setGravity(Gravity.TOP);
-        copy.setPadding(dp(14), dp(12), dp(14), dp(10));
-        TextView name = text(app.getAppName(), 15, Color.WHITE, true);
-        name.setMaxLines(2);
+        copy.setPadding(dp(debugCarousel ? 7 : 14), dp(debugCarousel ? 4 : 12),
+                dp(debugCarousel ? 7 : 14), dp(debugCarousel ? 3 : 10));
+        TextView name = text(app.getAppName(), debugCarousel ? 9 : 15, Color.WHITE, true);
+        name.setMaxLines(debugCarousel ? 1 : 2);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
+        updateCarouselMarquee(name, false);
         copy.addView(name, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         long playedAt = preferences.getLong(appHistoryKey(host.uuid, app.getAppId()), 0L);
@@ -2793,11 +3162,11 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 : getString(R.string.console_app_ready);
         if (customSettings) metadata += getString(R.string.console_app_custom_settings_suffix);
         if (quickLaunch) metadata += getString(R.string.console_app_quick_suffix);
-        TextView metadataView = text(metadata, 10, 0xFF929BAD, false);
+        TextView metadataView = text(metadata, debugCarousel ? 7 : 10, 0xFF929BAD, false);
         metadataView.setMaxLines(2);
         metadataView.setEllipsize(android.text.TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams metadataParams = wrapLinear();
-        metadataParams.topMargin = dp(5);
+        metadataParams.topMargin = dp(debugCarousel ? 1 : 5);
         copy.addView(metadataView, metadataParams);
         LinearLayout.LayoutParams copyParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f);
@@ -2827,6 +3196,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                         : getString(R.string.console_app_options_action)));
         card.setOnFocusChangeListener((v, focused) -> {
             styleCard(card, focused);
+            updateCarouselMarquee(name, focused);
             if (focused) {
                 preferences.edit().putString("selected_app." + host.uuid,
                         String.valueOf(card.getTag())).apply();
@@ -2836,6 +3206,16 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             }
         });
         return card;
+    }
+
+    private void updateCarouselMarquee(TextView title, boolean focused) {
+        if (!BuildConfig.DEBUG || title == null) return;
+        title.setSingleLine(true);
+        title.setHorizontallyScrolling(focused);
+        title.setEllipsize(focused
+                ? TextUtils.TruncateAt.MARQUEE : TextUtils.TruncateAt.END);
+        title.setMarqueeRepeatLimit(focused ? -1 : 0);
+        title.setSelected(focused);
     }
 
     private boolean isQuickLaunch(String hostUuid, int appId) {
@@ -3029,7 +3409,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             mainHandler.post(() -> {
                 if (bitmap != null && view.isAttachedToWindow()) {
                     view.setPadding(0, 0, 0, 0);
-                    view.setScaleType(ImageView.ScaleType.FIT_CENTER);
+                    view.setScaleType(BuildConfig.DEBUG
+                            ? ImageView.ScaleType.CENTER_CROP : ImageView.ScaleType.FIT_CENTER);
                     view.clearColorFilter();
                     view.setImageBitmap(bitmap);
                 }
@@ -3039,9 +3420,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private void showArtwork(File file, Drawable preview) {
         int token = artworkGeneration.incrementAndGet();
-        if (preview != null) {
-            Drawable current = artworkHero.getDrawable();
+        if (preview != null && !BuildConfig.DEBUG) {
             Drawable next = cloneDrawable(preview);
+            Drawable current = artworkHero.getDrawable();
             artworkHero.animate().cancel();
             if (current != null && !reducedMotion) {
                 TransitionDrawable transition = new TransitionDrawable(
@@ -3052,7 +3433,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             } else {
                 artworkHero.setImageDrawable(next);
             }
-            artworkHero.animate().alpha(.72f).setDuration(reducedMotion ? 0 : 180).start();
+            artworkHero.animate().alpha(.72f)
+                    .setDuration(reducedMotion ? 0 : 180).start();
             artworkScrim.animate().cancel();
             artworkScrim.animate().alpha(1f).setDuration(reducedMotion ? 0 : 180).start();
         }
@@ -3060,30 +3442,37 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             return;
         }
         executor.execute(() -> {
-            Bitmap bitmap = decodeArtwork(file, 1200);
+            Bitmap bitmap = decodeArtwork(file, BuildConfig.DEBUG ? 1920 : 1200);
             int accent = sampleAccent(bitmap);
             mainHandler.post(() -> {
                 if (token != artworkGeneration.get() || bitmap == null) return;
                 glassAccent = accent;
-                Drawable oldBackdrop = artworkBackdrop.getDrawable();
-                BitmapDrawable nextBackdrop = new BitmapDrawable(getResources(), bitmap);
-                if (oldBackdrop != null && !reducedMotion) {
-                    TransitionDrawable transition = new TransitionDrawable(
-                            new Drawable[]{oldBackdrop, nextBackdrop});
-                    transition.setCrossFadeEnabled(true);
-                    artworkBackdrop.setImageDrawable(transition);
-                    transition.startTransition(380);
-                    mainHandler.postDelayed(() -> {
-                        if (token == artworkGeneration.get()) artworkBackdrop.setImageBitmap(bitmap);
-                    }, 420L);
-                } else {
-                    artworkBackdrop.setImageBitmap(bitmap);
+                ImageView outgoingBackdrop = artworkBackdrop;
+                ImageView incomingBackdrop = artworkBackdropNext;
+                outgoingBackdrop.animate().cancel();
+                incomingBackdrop.animate().cancel();
+                incomingBackdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+                incomingBackdrop.setImageBitmap(bitmap);
+                incomingBackdrop.setAlpha(reducedMotion
+                        ? (BuildConfig.DEBUG ? .72f : .16f) : 0f);
+                if (!BuildConfig.DEBUG) {
+                    // The preview and final hero have identical geometry. Replacing the
+                    // preview avoids a soft double-image while retaining the tile-to-tile crossfade.
+                    artworkHero.setImageBitmap(bitmap);
+                    artworkHero.animate().alpha(.72f)
+                            .setDuration(reducedMotion ? 0 : 220).start();
                 }
-                // The preview and final hero have identical geometry. Replacing the
-                // preview avoids a soft double-image while retaining the tile-to-tile crossfade.
-                artworkHero.setImageBitmap(bitmap);
-                artworkBackdrop.animate().alpha(.16f).setDuration(reducedMotion ? 0 : 260).start();
-                artworkHero.animate().alpha(.72f).setDuration(reducedMotion ? 0 : 220).start();
+                float targetAlpha = BuildConfig.DEBUG ? .72f : .16f;
+                if (reducedMotion) {
+                    outgoingBackdrop.setAlpha(0f);
+                    finishBackdropSwap(token, outgoingBackdrop, incomingBackdrop);
+                } else {
+                    incomingBackdrop.animate().alpha(targetAlpha).setDuration(320).start();
+                    outgoingBackdrop.animate().alpha(0f).setDuration(320)
+                            .withEndAction(() -> finishBackdropSwap(
+                                    token, outgoingBackdrop, incomingBackdrop))
+                            .start();
+                }
                 artworkScrim.animate().alpha(1f).setDuration(reducedMotion ? 0 : 220).start();
                 View focused = getCurrentFocus();
                 if (focused != null && focused.getTag() instanceof String
@@ -3094,6 +3483,15 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         });
     }
 
+    private void finishBackdropSwap(int token, ImageView outgoing, ImageView incoming) {
+        if (token != artworkGeneration.get()) return;
+        artworkBackdrop = incoming;
+        artworkBackdropNext = outgoing;
+        artworkBackdropNext.animate().cancel();
+        artworkBackdropNext.setAlpha(0f);
+        artworkBackdropNext.setImageDrawable(null);
+    }
+
     private void clearArtwork() {
         int token = artworkGeneration.incrementAndGet();
         glassAccent = 0xFF73D7FF;
@@ -3101,12 +3499,18 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             artworkBackdrop.animate().cancel();
             artworkBackdrop.animate().alpha(0f).setDuration(reducedMotion ? 0 : 260).start();
         }
+        if (artworkBackdropNext != null) {
+            artworkBackdropNext.animate().cancel();
+            artworkBackdropNext.animate().alpha(0f)
+                    .setDuration(reducedMotion ? 0 : 260).start();
+        }
         if (artworkHero != null) {
             artworkHero.animate().cancel();
             artworkHero.animate().alpha(0f).setDuration(reducedMotion ? 0 : 260)
                     .withEndAction(() -> {
                         if (token != artworkGeneration.get()) return;
                         artworkBackdrop.setImageDrawable(null);
+                        artworkBackdropNext.setImageDrawable(null);
                         artworkHero.setImageDrawable(null);
                     }).start();
         }
@@ -3397,23 +3801,40 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private void renderControllers(List<ControllerInfo> controllers) {
         StringBuilder signature = new StringBuilder();
+        StringBuilder devicesSignature = new StringBuilder();
         for (ControllerInfo controller : controllers) {
             signature.append(controller.deviceId).append(':').append(controller.name)
                     .append(':').append(controller.percentage).append(':')
                     .append(controller.batteryStatus).append(';');
+            devicesSignature.append(controller.deviceId).append(':')
+                    .append(controller.name).append(';');
         }
         if (signature.toString().equals(renderedControllersSignature)) return;
+        boolean devicesChanged = !devicesSignature.toString().equals(
+                renderedControllerDevicesSignature);
         renderedControllersSignature = signature.toString();
+        renderedControllerDevicesSignature = devicesSignature.toString();
         int scroll = controllerScroll.getScrollX();
         Object focusedTag = getCurrentFocus() != null ? getCurrentFocus().getTag() : null;
         controllerRow.removeAllViews();
+        if (BuildConfig.DEBUG) {
+            controllerScroll.setVisibility(
+                    controllers.isEmpty() ? View.INVISIBLE : View.VISIBLE);
+        }
         controllersLabel.setText(controllers.isEmpty()
                 ? getString(R.string.console_controllers_none)
                 : getResources().getQuantityString(R.plurals.console_controller_count,
                         controllers.size(), controllers.size()));
         int player = 1;
         for (ControllerInfo controller : controllers) {
-            controllerRow.addView(controllerCard(player++, controller), cardSpacing());
+            controllerRow.addView(controllerCard(player++, controller),
+                    BuildConfig.DEBUG ? controllerPillSpacing() : cardSpacing());
+        }
+        if (BuildConfig.DEBUG && devicesChanged && !controllers.isEmpty()) {
+            controllerRow.setAlpha(0f);
+            controllerRow.setTranslationX(-dp(24));
+            controllerRow.animate().alpha(1f).translationX(0f)
+                    .setDuration(reducedMotion ? 0 : 240).start();
         }
         controllerScroll.post(() -> controllerScroll.scrollTo(scroll != 0 ? scroll
                 : preferences.getInt("controller_scroll", 0), 0));
@@ -3422,6 +3843,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private View controllerCard(int player, ControllerInfo controller) {
+        if (BuildConfig.DEBUG) return controllerPill(player, controller);
         LinearLayout card = cardBase(dp(220), dp(50));
         card.setTag("controller:" + controller.deviceId);
         card.setFocusable(true);
@@ -3464,6 +3886,49 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         card.setOnClickListener(view -> showControllerMenu(player, controller));
         card.setOnFocusChangeListener((view, focused) -> styleCard(card, focused));
         return card;
+    }
+
+    private View controllerPill(int player, ControllerInfo controller) {
+        LinearLayout pill = cardBase(dp(62), dp(26));
+        pill.setOrientation(LinearLayout.HORIZONTAL);
+        pill.setGravity(Gravity.CENTER_VERTICAL);
+        pill.setPadding(dp(7), dp(2), dp(8), dp(2));
+        pill.setTag("controller:" + controller.deviceId);
+        int batteryColor = controller.percentage < 0 ? 0xFFB3B8C8
+                : controller.isCharging() ? 0xFF64B5F6
+                : controller.percentage <= 10 ? 0xFFFF5252
+                : controller.percentage <= 30 ? 0xFFFFB74D : 0xFF69F0AE;
+        ImageView controllerIcon = new ImageView(this);
+        controllerIcon.setImageDrawable(new ControllerGlyphDrawable(controller.name));
+        LinearLayout.LayoutParams iconParams = new LinearLayout.LayoutParams(dp(30), dp(20));
+        iconParams.rightMargin = dp(5);
+        pill.addView(controllerIcon, iconParams);
+
+        String battery;
+        if (controller.percentage < 0) {
+            battery = getString(R.string.console_controller_battery_unknown);
+        } else if (controller.isFull()) {
+            battery = getString(R.string.console_controller_battery_full, controller.percentage);
+        } else if (controller.isCharging()) {
+            battery = getString(R.string.console_controller_battery_charging,
+                    controller.percentage);
+        } else {
+            battery = getString(R.string.console_controller_battery_level,
+                    controller.percentage);
+        }
+        TextView level = text(controller.percentage < 0
+                        ? "?" : controller.percentage + "%",
+                9, batteryColor, true);
+        pill.addView(level, wrapLinear());
+        controllerIcon.setContentDescription(compactControllerName(controller.name));
+        pill.setContentDescription(getString(R.string.console_controller_description,
+                getString(R.string.console_controller_player_name,
+                        player, compactControllerName(controller.name)), battery));
+        pill.setOnClickListener(view -> showControllerMenu(player, controller));
+        pill.setOnFocusChangeListener((view, focused) ->
+                styleControllerPill(pill, focused));
+        styleControllerPill(pill, false);
+        return pill;
     }
 
     private void showControllerMenu(int player, ControllerInfo controller) {
@@ -3884,6 +4349,34 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private void styleCard(View card, boolean focused) {
+        Object tag = card.getTag();
+        boolean carouselCard = BuildConfig.DEBUG && tag instanceof String
+                && (((String) tag).startsWith("app:")
+                || ((String) tag).startsWith("playnite:"));
+        if (carouselCard) {
+            GradientDrawable background = gradient(
+                    focused ? 0xF019222B : 0xC012171D,
+                    focused ? 0xF00C1116 : 0xD00A0E12, 12);
+            background.setStroke(dp(focused ? 2 : 1),
+                    focused ? 0xFFEAF8FF : 0x305F6D76);
+            card.setBackground(background);
+            card.setElevation(dp(focused ? 12 : 2));
+            card.setPivotX(card.getWidth() > 0 ? card.getWidth() / 2f : dp(42));
+            card.setPivotY(card.getHeight() > 0 ? card.getHeight() / 2f : dp(75));
+            float scale = focused ? 1.08f : 1f;
+            float lift = 0f;
+            card.animate().cancel();
+            if (reducedMotion || !card.isLaidOut()) {
+                card.setScaleX(scale);
+                card.setScaleY(scale);
+                card.setTranslationY(lift);
+            } else {
+                card.animate().scaleX(scale).scaleY(scale).translationY(lift)
+                        .setDuration(getResources().getInteger(
+                                R.integer.console_motion_focus_ms)).start();
+            }
+            return;
+        }
         int top = focused ? 0xFF202A32 : 0xE01B2026;
         int bottom = focused ? 0xFF151C22 : 0xF012161B;
         GradientDrawable background = gradient(top, bottom, 14);
@@ -3891,6 +4384,17 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         card.setBackground(background);
         card.setElevation(dp(focused ? 7 : 2));
         animateScale(card, focused ? 1.04f : 1f);
+    }
+
+    private void styleControllerPill(View pill, boolean focused) {
+        GradientDrawable background = gradient(
+                focused ? 0xF02A3A46 : 0xB51A222A,
+                focused ? 0xF018242D : 0xC010151A, 18);
+        background.setStroke(dp(focused ? 2 : 1),
+                focused ? 0xFFBDEBFF : 0x465F7482);
+        pill.setBackground(background);
+        pill.setElevation(dp(focused ? 5 : 1));
+        animateScale(pill, focused ? 1.04f : 1f);
     }
 
     private void styleCompactButton(View button, boolean focused) {
@@ -3901,6 +4405,16 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 ? getResources().getColor(R.color.console_accent) : 0x384C5962);
         button.setBackground(background);
         button.setElevation(dp(focused ? 4 : 0));
+    }
+
+    private void styleHostSelector(boolean focused) {
+        if (hostSelector == null) return;
+        GradientDrawable background = gradient(
+                focused ? 0x78223039 : 0x42151C22,
+                focused ? 0x7816222A : 0x5410151A, 10);
+        background.setStroke(dp(1), focused ? 0x7073D7FF : 0x284C5962);
+        hostSelector.setBackground(background);
+        hostSelector.setElevation(0f);
     }
 
     private void styleQuickAction(ImageButton button, boolean focused) {
@@ -3951,6 +4465,11 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         View quick = firstFocusableChild(quickActions);
         View controller = firstFocusableChild(controllerRow);
         View app = firstFocusableChild(appRow);
+
+        if (BuildConfig.DEBUG) {
+            wireDebugHomeFocusNavigation(resume, playnite, filter, quick, controller, app);
+            return;
+        }
 
         View belowOptions = resume != null ? resume : playnite != null ? playnite
                 : quick != null ? quick : controller != null ? controller : app;
@@ -4099,7 +4618,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                         ViewGroup.LayoutParams.WRAP_CONTENT)
                 : wrapLinear();
         if (portraitLayout) params.bottomMargin = dp(14);
-        else params.rightMargin = dp(14);
+        else params.rightMargin = dp(BuildConfig.DEBUG ? 10 : 14);
+        return params;
+    }
+
+    private LinearLayout.LayoutParams controllerPillSpacing() {
+        LinearLayout.LayoutParams params = wrapLinear();
+        params.rightMargin = dp(8);
         return params;
     }
 
@@ -4141,6 +4666,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         int sources = device.getSources();
         return (sources & InputDevice.SOURCE_GAMEPAD) == InputDevice.SOURCE_GAMEPAD
                 || (sources & InputDevice.SOURCE_JOYSTICK) == InputDevice.SOURCE_JOYSTICK;
+    }
+
+    private static boolean isDirectionalNavigationKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_DPAD_LEFT
+                || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                || keyCode == KeyEvent.KEYCODE_DPAD_UP
+                || keyCode == KeyEvent.KEYCODE_DPAD_DOWN;
     }
 
     private static String compactControllerName(String name) {
@@ -4187,6 +4719,92 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
         boolean isCharging() { return batteryStatus == BatteryState.STATUS_CHARGING; }
         boolean isFull() { return batteryStatus == BatteryState.STATUS_FULL; }
+    }
+
+    private static final class ControllerGlyphDrawable extends Drawable {
+        private enum Kind { DUALSENSE, XBOX, STEAM, GENERIC }
+
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final Path body = new Path();
+        private final Kind kind;
+
+        ControllerGlyphDrawable(String name) {
+            String normalized = name == null ? "" : name.toLowerCase(Locale.ROOT);
+            if (normalized.contains("dualsense") || normalized.contains("dualshock")
+                    || normalized.contains("wireless controller")) {
+                kind = Kind.DUALSENSE;
+            } else if (normalized.contains("steam")) {
+                kind = Kind.STEAM;
+            } else if (normalized.contains("xbox") || normalized.contains("xinput")) {
+                kind = Kind.XBOX;
+            } else {
+                kind = Kind.GENERIC;
+            }
+        }
+
+        @Override public void draw(Canvas canvas) {
+            float scale = Math.min(getBounds().width() / 34f, getBounds().height() / 24f);
+            float x = getBounds().left + (getBounds().width() - 34f * scale) / 2f;
+            float y = getBounds().top + (getBounds().height() - 24f * scale) / 2f;
+            canvas.save();
+            canvas.translate(x, y);
+            canvas.scale(scale, scale);
+            body.reset();
+            body.moveTo(3f, 10f);
+            body.cubicTo(4f, 5f, 8f, 3f, 12f, 5f);
+            body.cubicTo(15f, 6.5f, 19f, 6.5f, 22f, 5f);
+            body.cubicTo(26f, 3f, 30f, 5f, 31f, 10f);
+            body.lineTo(33f, 18f);
+            body.cubicTo(34f, 22f, 29f, 24f, 26f, 21f);
+            body.lineTo(22f, 17f);
+            body.lineTo(12f, 17f);
+            body.lineTo(8f, 21f);
+            body.cubicTo(5f, 24f, 0f, 22f, 1f, 18f);
+            body.close();
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(kind == Kind.DUALSENSE ? 0xFFE7EDF2 : 0xFF53606B);
+            canvas.drawPath(body, paint);
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(1.2f);
+            paint.setColor(0xFFBDEBFF);
+            canvas.drawPath(body, paint);
+
+            if (kind == Kind.DUALSENSE) {
+                paint.setStyle(Paint.Style.FILL);
+                paint.setColor(0xFF202A33);
+                canvas.drawRoundRect(new RectF(13f, 6f, 21f, 11f), 1.5f, 1.5f, paint);
+                canvas.drawCircle(13f, 14f, 1.5f, paint);
+                canvas.drawCircle(21f, 14f, 1.5f, paint);
+            } else if (kind == Kind.STEAM) {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(1.4f);
+                paint.setColor(0xFFDDE8EF);
+                canvas.drawCircle(10f, 11f, 3.2f, paint);
+                canvas.drawCircle(24f, 11f, 3.2f, paint);
+                canvas.drawCircle(17f, 15f, 1.4f, paint);
+            } else {
+                paint.setStyle(Paint.Style.STROKE);
+                paint.setStrokeWidth(1.4f);
+                paint.setColor(0xFFDDE8EF);
+                canvas.drawLine(8f, 11f, 14f, 11f, paint);
+                canvas.drawLine(11f, 8f, 11f, 14f, paint);
+                paint.setStyle(Paint.Style.FILL);
+                canvas.drawCircle(24f, 9f, 1.3f, paint);
+                canvas.drawCircle(27f, 12f, 1.3f, paint);
+                canvas.drawCircle(kind == Kind.XBOX ? 14f : 15f, 15f, 1.4f, paint);
+                canvas.drawCircle(kind == Kind.XBOX ? 20f : 19f, 14f, 1.4f, paint);
+            }
+            canvas.restore();
+        }
+
+        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
+        @Override public void setColorFilter(android.graphics.ColorFilter filter) {
+            paint.setColorFilter(filter);
+        }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+        @Override public int getIntrinsicWidth() { return 34; }
+        @Override public int getIntrinsicHeight() { return 24; }
     }
 
     private static final class ControllerBatteryDrawable extends Drawable {
@@ -4255,6 +4873,64 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             this.children = children;
             this.focused = focused;
             this.focusedTag = focusedTag;
+        }
+    }
+
+    private void wireDebugHomeFocusNavigation(View resume, View playnite, View filter,
+                                               View quick, View controller, View app) {
+        View discovered = discoveredHostButton != null
+                && discoveredHostButton.getVisibility() == View.VISIBLE
+                ? discoveredHostButton : null;
+        View belowHeader = app != null ? app
+                : playnite != null ? playnite : filter != null ? filter : controller;
+        if (belowHeader != null) optionsButton.setNextFocusDownId(belowHeader.getId());
+        if (quick != null) {
+            optionsButton.setNextFocusRightId(
+                    discovered != null ? discovered.getId() : quick.getId());
+            quick.setNextFocusLeftId(
+                    discovered != null ? discovered.getId() : optionsButton.getId());
+        }
+        if (discovered != null) {
+            discovered.setNextFocusLeftId(optionsButton.getId());
+            if (quick != null) discovered.setNextFocusRightId(quick.getId());
+            if (belowHeader != null) discovered.setNextFocusDownId(belowHeader.getId());
+        }
+
+        if (playnite != null) {
+            if (app != null) playnite.setNextFocusUpId(app.getId());
+            if (filter != null) playnite.setNextFocusLeftId(filter.getId());
+            if (controller != null) playnite.setNextFocusDownId(controller.getId());
+        }
+        if (filter != null) {
+            if (app != null) filter.setNextFocusUpId(app.getId());
+            if (playnite != null) filter.setNextFocusRightId(playnite.getId());
+            if (controller != null) filter.setNextFocusDownId(controller.getId());
+        }
+        if (controller != null) {
+            View aboveController = filter != null ? filter
+                    : playnite != null ? playnite : app;
+            if (aboveController != null) controller.setNextFocusUpId(aboveController.getId());
+        }
+        if (quickActions != null) {
+            for (int index = 0; index < quickActions.getChildCount(); index++) {
+                View child = quickActions.getChildAt(index);
+                if (!child.isFocusable()) continue;
+                if (belowHeader != null) child.setNextFocusDownId(belowHeader.getId());
+                if (index == 0) {
+                    child.setNextFocusLeftId(discovered != null
+                            ? discovered.getId() : optionsButton.getId());
+                }
+            }
+        }
+        View belowApps = filter != null ? filter
+                : playnite != null ? playnite : controller;
+        if (appRow != null) {
+            for (int index = 0; index < appRow.getChildCount(); index++) {
+                View child = appRow.getChildAt(index);
+                if (!child.isFocusable()) continue;
+                child.setNextFocusUpId(optionsButton.getId());
+                if (belowApps != null) child.setNextFocusDownId(belowApps.getId());
+            }
         }
     }
 

@@ -18,6 +18,10 @@ final class PlayniteArtworkSpec {
     }
 
     static PlayniteArtworkSpec forGame(PlayniteLibraryGame game) {
+        return forBackdrop(game);
+    }
+
+    static PlayniteArtworkSpec forBackdrop(PlayniteLibraryGame game) {
         Objects.requireNonNull(game, "game");
         if (!game.backgroundKey.isEmpty()) {
             return new PlayniteArtworkSpec("background", game.backgroundKey,
@@ -25,6 +29,18 @@ final class PlayniteArtworkSpec {
         }
         if (!game.coverKey.isEmpty()) {
             return new PlayniteArtworkSpec("cover", game.coverKey, "", "");
+        }
+        return new PlayniteArtworkSpec("", "", "", "");
+    }
+
+    static PlayniteArtworkSpec forCard(PlayniteLibraryGame game) {
+        Objects.requireNonNull(game, "game");
+        if (!game.coverKey.isEmpty()) {
+            return new PlayniteArtworkSpec("cover", game.coverKey,
+                    game.backgroundKey.isEmpty() ? "" : "background", game.backgroundKey);
+        }
+        if (!game.backgroundKey.isEmpty()) {
+            return new PlayniteArtworkSpec("background", game.backgroundKey, "", "");
         }
         return new PlayniteArtworkSpec("", "", "", "");
     }

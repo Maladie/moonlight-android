@@ -519,6 +519,7 @@
     <string name="console_play">PLAY  ›</string>
     <string name="console_resume">RESUME  ›</string>
     <string name="console_quick_resume">Resume session</string>
+    <string name="console_resume_session">Resume session</string>
     <string name="console_quick_resume_app">Resume session (%1$s)</string>
     <string name="console_quick_resume_description">Resume active session: %1$s</string>
     <string name="console_more">⋯</string>
@@ -530,6 +531,8 @@
     <string name="console_action_hosts">Hosts</string>
     <string name="console_action_refresh">Refresh</string>
     <string name="console_action_add_host">Add host</string>
+    <string name="console_pair_discovered_host">Pair discovered host</string>
+    <string name="console_pair_discovered_host_named">Pair discovered host %1$s</string>
     <string name="console_action_quick_launch">Quick Launch</string>
     <string name="console_action_stream_settings">Streaming settings</string>
     <string name="console_action_overrides">Overrides</string>

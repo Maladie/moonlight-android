@@ -485,6 +485,7 @@
     <string name="console_play">URUCHOM  ›</string>
     <string name="console_resume">WZNÓW  ›</string>
     <string name="console_quick_resume">Wznów sesję</string>
+    <string name="console_resume_session">Wznów sesję</string>
     <string name="console_quick_resume_app">Wznów sesję (%1$s)</string>
     <string name="console_quick_resume_description">Wznów aktywną sesję: %1$s</string>
     <string name="console_more">⋯</string>
@@ -496,6 +497,8 @@
     <string name="console_action_hosts">Hosty</string>
     <string name="console_action_refresh">Odśwież</string>
     <string name="console_action_add_host">Dodaj hosta</string>
+    <string name="console_pair_discovered_host">Sparuj wykryty host</string>
+    <string name="console_pair_discovered_host_named">Sparuj wykryty host %1$s</string>
     <string name="console_action_quick_launch">Szybkie uruchamianie</string>
     <string name="console_action_stream_settings">Ustawienia streamingu</string>
     <string name="console_action_overrides">Nadpisania</string>
