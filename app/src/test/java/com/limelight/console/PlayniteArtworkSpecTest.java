@@ -8,7 +8,7 @@ import static org.junit.Assert.assertTrue;
 
 public class PlayniteArtworkSpecTest {
     @Test public void landscapeBackgroundIsPreferredWithCoverFallback() {
-        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forGame(game("cover", "background"));
+        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forBackdrop(game("cover", "background"));
 
         assertEquals("background", spec.kind);
         assertEquals("background", spec.version);
@@ -18,7 +18,7 @@ public class PlayniteArtworkSpecTest {
     }
 
     @Test public void coverIsUsedWhenBackgroundIsMissing() {
-        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forGame(game("cover", ""));
+        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forBackdrop(game("cover", ""));
 
         assertEquals("cover", spec.kind);
         assertEquals("cover", spec.version);
@@ -27,6 +27,16 @@ public class PlayniteArtworkSpecTest {
 
     @Test public void missingArtworkProducesUnavailableSpec() {
         assertFalse(PlayniteArtworkSpec.forGame(game("", "")).available());
+    }
+
+    @Test public void portraitCoverIsPreferredForCards() {
+        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forCard(game("cover", "background"));
+
+        assertEquals("cover", spec.kind);
+        assertEquals("cover", spec.version);
+        assertEquals("background", spec.fallbackKind);
+        assertEquals("background", spec.fallbackVersion);
+        assertTrue(spec.hasFallback());
     }
 
     private static PlayniteLibraryGame game(String cover, String background) {
