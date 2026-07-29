@@ -21,13 +21,37 @@ final class PlayniteLibraryOrdering {
 
     static List<PlayniteLibraryGame> order(List<PlayniteLibraryGame> source,
                                            boolean installedOnly, Locale locale) {
+        return order(source, installedOnly
+                ? PlayniteLibraryFilter.INSTALLED : PlayniteLibraryFilter.ALL, locale);
+    }
+
+    static List<PlayniteLibraryGame> order(List<PlayniteLibraryGame> source,
+                                           PlayniteLibraryFilter filter, Locale locale) {
+        PlayniteLibraryFilter safeFilter = filter == null
+                ? PlayniteLibraryFilter.ALL : filter;
         List<PlayniteLibraryGame> visible = new ArrayList<>();
         for (PlayniteLibraryGame game : source) {
-            if (game.hidden || (installedOnly && !game.installed)) continue;
+            if (game.hidden || !matches(game, safeFilter)) continue;
             visible.add(game);
         }
 
         Comparator<PlayniteLibraryGame> alphabetic = alphabetic(locale);
+        if (safeFilter == PlayniteLibraryFilter.RECENTLY_PLAYED) {
+            visible.sort(recentFirst(alphabetic));
+            return visible;
+        }
+        if (safeFilter == PlayniteLibraryFilter.MOST_LAUNCHED) {
+            Comparator<PlayniteLibraryGame> recent = recentFirst(alphabetic);
+            visible.sort((left, right) -> {
+                int byCount = Integer.compare(right.playCount, left.playCount);
+                return byCount != 0 ? byCount : recent.compare(left, right);
+            });
+            return visible;
+        }
+        if (safeFilter == PlayniteLibraryFilter.NEVER_LAUNCHED) {
+            visible.sort(alphabetic);
+            return visible;
+        }
         List<PlayniteLibraryGame> played = new ArrayList<>();
         for (PlayniteLibraryGame game : visible) {
             if (activityEpoch(game.lastActivity) != Long.MIN_VALUE) played.add(game);
@@ -52,6 +76,34 @@ final class PlayniteLibraryOrdering {
         remaining.sort(alphabetic);
         result.addAll(remaining);
         return result;
+    }
+
+    private static boolean matches(PlayniteLibraryGame game, PlayniteLibraryFilter filter) {
+        switch (filter) {
+            case INSTALLED:
+                return game.installed;
+            case UNINSTALLED:
+                return !game.installed;
+            case RECENTLY_PLAYED:
+                return activityEpoch(game.lastActivity) != Long.MIN_VALUE;
+            case MOST_LAUNCHED:
+                return game.playCount > 0;
+            case NEVER_LAUNCHED:
+                return game.playCount == 0 &&
+                        activityEpoch(game.lastActivity) == Long.MIN_VALUE;
+            case ALL:
+            default:
+                return true;
+        }
+    }
+
+    private static Comparator<PlayniteLibraryGame> recentFirst(
+            Comparator<PlayniteLibraryGame> alphabetic) {
+        return (left, right) -> {
+            int byDate = Long.compare(activityEpoch(right.lastActivity),
+                    activityEpoch(left.lastActivity));
+            return byDate != 0 ? byDate : alphabetic.compare(left, right);
+        };
     }
 
     private static Comparator<PlayniteLibraryGame> alphabetic(Locale locale) {

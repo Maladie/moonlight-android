@@ -57,7 +57,8 @@ public class HostGatewayClientTest {
                 "\"games\":[{\"id\":\"00000001-0000-0000-0000-000000000000\"," +
                 "\"name\":\"Game\",\"isInstalled\":true,\"hidden\":false," +
                 "\"playtime\":3600,\"lastActivity\":\"2026-07-20T10:00:00Z\"," +
-                "\"source\":\"Steam\",\"cover\":\"hash\"}]}" );
+                "\"source\":\"Steam\",\"description\":\"Short overview\",\"playCount\":17," +
+                "\"cover\":\"hash\"}]}" );
 
         HostGatewayClient.PlayniteLibrary parsed =
                 HostGatewayClient.parsePlayniteLibrary(library);
@@ -65,6 +66,8 @@ public class HostGatewayClientTest {
         assertEquals(1, parsed.games.size());
         assertEquals(3600L, parsed.games.get(0).playtimeSeconds);
         assertEquals("Steam", parsed.games.get(0).source);
+        assertEquals("Short overview", parsed.games.get(0).description);
+        assertEquals(17, parsed.games.get(0).playCount);
         assertEquals("42", parsed.revision);
     }
 }

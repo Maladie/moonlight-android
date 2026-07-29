@@ -135,14 +135,32 @@ final class HostGatewayStore {
     }
 
     boolean isPlayniteInstalledOnly(String hostUuid) {
-        return hostUuid != null && preferences.getBoolean(
-                key(hostUuid, "playnite_installed_only"), false);
+        return playniteLibraryFilter(hostUuid) == PlayniteLibraryFilter.INSTALLED;
     }
 
     void setPlayniteInstalledOnly(String hostUuid, boolean installedOnly) {
+        setPlayniteLibraryFilter(hostUuid, installedOnly
+                ? PlayniteLibraryFilter.INSTALLED : PlayniteLibraryFilter.ALL);
+    }
+
+    PlayniteLibraryFilter playniteLibraryFilter(String hostUuid) {
+        if (hostUuid == null) return PlayniteLibraryFilter.ALL;
+        String filterKey = key(hostUuid, "playnite_library_filter");
+        String stored = preferences.contains(filterKey)
+                ? preferences.getString(filterKey, null) : null;
+        boolean legacyInstalledOnly = preferences.getBoolean(
+                key(hostUuid, "playnite_installed_only"), false);
+        return PlayniteLibraryFilter.fromPreference(stored, legacyInstalledOnly);
+    }
+
+    void setPlayniteLibraryFilter(String hostUuid, PlayniteLibraryFilter filter) {
         if (hostUuid == null || hostUuid.isEmpty()) return;
-        preferences.edit().putBoolean(
-                key(hostUuid, "playnite_installed_only"), installedOnly).apply();
+        PlayniteLibraryFilter safe = filter == null ? PlayniteLibraryFilter.ALL : filter;
+        preferences.edit()
+                .putString(key(hostUuid, "playnite_library_filter"), safe.preferenceValue)
+                .putBoolean(key(hostUuid, "playnite_installed_only"),
+                        safe == PlayniteLibraryFilter.INSTALLED)
+                .apply();
     }
 
     boolean isDiscordAutoConnectEnabled(String hostUuid, String profileId) {
