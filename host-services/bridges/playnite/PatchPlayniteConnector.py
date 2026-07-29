@@ -12,7 +12,9 @@ PATCH_MARKER_V1 = "# WAKEPLAY-CONSOLE-SNAPSHOT-V1"
 PATCH_MARKER_V2 = "# WAKEPLAY-CONSOLE-BRIDGE-V2"
 PATCH_MARKER_V3 = "# WAKEPLAY-CONSOLE-BRIDGE-V3"
 PATCH_MARKER_V4 = "# WAKEPLAY-CONSOLE-BRIDGE-V4"
-PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V5"
+PATCH_MARKER_V5 = "# WAKEPLAY-CONSOLE-BRIDGE-V5"
+PATCH_MARKER_V6 = "# WAKEPLAY-CONSOLE-BRIDGE-V6"
+PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V7"
 
 LAUNCH_PREP_ANCHOR = """          Register-SunshineLaunchedGame -Id $obj.id
           [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)"""
@@ -116,14 +118,44 @@ ARTWORK_PAYLOAD_REPLACEMENT = """      boxArtPath      = $boxArt
       iconPath        = $icon
       # WAKEPLAY-CONSOLE-BRIDGE-V3"""
 
+DESCRIPTION_PAYLOAD_ANCHOR = """      backgroundImagePath = $backgroundArt
+      iconPath        = $icon"""
+DESCRIPTION_PAYLOAD_REPLACEMENT = """      backgroundImagePath = $backgroundArt
+      description     = [string]$g.Description
+      playCount       = [int]$g.PlayCount
+      iconPath        = $icon
+      # WAKEPLAY-CONSOLE-BRIDGE-V7"""
+
+PLAY_COUNT_PAYLOAD_ANCHOR = """      description     = [string]$g.Description
+      iconPath        = $icon
+      # WAKEPLAY-CONSOLE-BRIDGE-V6"""
+PLAY_COUNT_PAYLOAD_REPLACEMENT = """      description     = [string]$g.Description
+      playCount       = [int]$g.PlayCount
+      iconPath        = $icon
+      # WAKEPLAY-CONSOLE-BRIDGE-V7"""
+
 
 def patch_text(source: str) -> tuple[str, bool]:
     if PATCH_MARKER in source:
         return source, False
+    if PATCH_MARKER_V6 in source:
+        if PLAY_COUNT_PAYLOAD_ANCHOR not in source:
+            raise ValueError("Unsupported Sunshine Playnite Connector; V6 game payload is incomplete")
+        return source.replace(
+            PLAY_COUNT_PAYLOAD_ANCHOR, PLAY_COUNT_PAYLOAD_REPLACEMENT, 1), True
+    if PATCH_MARKER_V5 in source:
+        if DESCRIPTION_PAYLOAD_ANCHOR not in source:
+            raise ValueError("Unsupported Sunshine Playnite Connector; V5 game payload is incomplete")
+        return source.replace(
+            DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1), True
     if PATCH_MARKER_V4 in source:
         if LAUNCH_PREP_REPLACEMENT not in source:
             raise ValueError("Unsupported Sunshine Playnite Connector; V4 launch block is incomplete")
-        return source.replace(LAUNCH_PREP_REPLACEMENT, LAUNCH_CLEAN_REPLACEMENT, 1), True
+        patched = source.replace(LAUNCH_PREP_REPLACEMENT, LAUNCH_CLEAN_REPLACEMENT, 1)
+        if DESCRIPTION_PAYLOAD_ANCHOR not in patched:
+            raise ValueError("Unsupported Sunshine Playnite Connector; V4 game payload is incomplete")
+        return patched.replace(
+            DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1), True
     anchors = [
         ("launch display preparation", LAUNCH_PREP_ANCHOR),
     ]
@@ -164,6 +196,9 @@ def patch_text(source: str) -> tuple[str, bool]:
     # The connector has no authoritative stream target while the session is
     # starting. Preparation is performed by Android before launch instead.
     patched = patched.replace(LAUNCH_PREP_ANCHOR, LAUNCH_CLEAN_REPLACEMENT, 1)
+    if DESCRIPTION_PAYLOAD_ANCHOR in patched:
+        patched = patched.replace(
+            DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1)
     return patched, True
 
 

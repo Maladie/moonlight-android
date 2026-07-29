@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import html
 import json
 import mimetypes
 import ntpath
@@ -596,6 +597,23 @@ class BridgeState:
                                    by_name.get("lastactivity") or "")
                     if last_played:
                         normalized["lastPlayed"] = str(last_played)
+                    description = str(by_name.get("description") or
+                                      by_name.get("overview") or "").strip()
+                    if description:
+                        description = re.sub(r"<br\s*/?>", "\n", description,
+                                             flags=re.IGNORECASE)
+                        description = re.sub(r"<[^>]+>", " ", description)
+                        description = html.unescape(description)
+                        description = re.sub(r"[ \t\r\f\v]+", " ", description)
+                        description = re.sub(r" *\n *", "\n", description).strip()
+                        description = re.sub(r"\n{3,}", "\n\n", description)
+                    normalized["description"] = description[:2000]
+                    try:
+                        normalized["playCount"] = max(0, int(
+                            by_name.get("playcount") or
+                            by_name.get("play_count") or 0))
+                    except (TypeError, ValueError):
+                        normalized["playCount"] = 0
                     try:
                         if "playtimeminutes" in by_name:
                             playtime_minutes = int(by_name["playtimeminutes"] or 0)

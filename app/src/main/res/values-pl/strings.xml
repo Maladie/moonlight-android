@@ -706,8 +706,17 @@
     <string name="playnite_launch_description">Uruchom lub wznów Playnite Fullscreen przez wybraną aplikację Sunshine</string>
     <string name="playnite_installed">Zainstalowane</string>
     <string name="playnite_game_installed">Gotowa do uruchomienia</string>
+    <string name="playnite_recently_played">Ostatnio grane</string>
+    <string name="playnite_uninstalled">Niezainstalowane</string>
+    <string name="playnite_most_launched">Najczęściej uruchamiane</string>
+    <string name="playnite_never_launched">Nigdy nie uruchamiane</string>
     <string name="playnite_all_games">Wszystkie gry</string>
     <string name="playnite_filter_description">Filtr biblioteki: %1$s</string>
+    <string name="playnite_open_full_library">Otwórz pełną bibliotekę gier</string>
+    <string name="playnite_full_library">Pełna biblioteka</string>
+    <string name="playnite_full_library_hint">Pokaż wszystkie gry w przewijanej siatce</string>
+    <string name="playnite_selected_game_facts">Ostatnio grana: %1$s\nCzas w grze: %2$s</string>
+    <string name="playnite_description_unavailable">Opis gry nie jest jeszcze dostępny.</string>
     <string name="playnite_playtime">Czas gry</string>
     <string name="playnite_never_played">Nie grano</string>
     <string name="playnite_hours_short">godz.</string>

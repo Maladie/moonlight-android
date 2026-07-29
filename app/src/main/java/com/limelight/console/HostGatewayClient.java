@@ -133,6 +133,8 @@ final class HostGatewayClient {
         final String cover;
         final String background;
         final String lastPlayed;
+        final String description;
+        final int playCount;
         final String source;
         final String artworkVersion;
         final long playtimeSeconds;
@@ -143,12 +145,28 @@ final class HostGatewayClient {
                      String cover, String background, String lastPlayed,
                      long playtimeMinutes) {
             this(id, name, installed, false, favorite, cover, background, lastPlayed,
-                    "", "", Math.max(0L, playtimeMinutes) * 60L);
+                    "", 0, "", "", Math.max(0L, playtimeMinutes) * 60L);
         }
 
         PlayniteGame(String id, String name, boolean installed, boolean hidden,
                      boolean favorite, String cover, String background, String lastPlayed,
                      String source, String artworkVersion, long playtimeSeconds) {
+            this(id, name, installed, hidden, favorite, cover, background, lastPlayed,
+                    "", 0, source, artworkVersion, playtimeSeconds);
+        }
+
+        PlayniteGame(String id, String name, boolean installed, boolean hidden,
+                     boolean favorite, String cover, String background, String lastPlayed,
+                     String description, String source, String artworkVersion,
+                     long playtimeSeconds) {
+            this(id, name, installed, hidden, favorite, cover, background, lastPlayed,
+                    description, 0, source, artworkVersion, playtimeSeconds);
+        }
+
+        PlayniteGame(String id, String name, boolean installed, boolean hidden,
+                     boolean favorite, String cover, String background, String lastPlayed,
+                     String description, int playCount, String source, String artworkVersion,
+                     long playtimeSeconds) {
             this.id = id;
             this.name = name;
             this.installed = installed;
@@ -157,6 +175,8 @@ final class HostGatewayClient {
             this.cover = cover;
             this.background = background;
             this.lastPlayed = lastPlayed;
+            this.description = description;
+            this.playCount = Math.max(0, playCount);
             this.source = source;
             this.artworkVersion = artworkVersion;
             this.playtimeSeconds = Math.max(0L, playtimeSeconds);
@@ -784,6 +804,10 @@ final class HostGatewayClient {
                         firstText(value, "background", "backgroundImage", "background_image",
                                 "backgroundImagePath"),
                         firstText(value, "lastPlayed", "last_played", "lastActivity"),
+                        firstText(value, "description", "overview", "summary"),
+                        Math.max(0, value.has("playCount")
+                                ? value.optInt("playCount", 0)
+                                : value.optInt("play_count", 0)),
                         firstText(value, "source", "sourceName", "source_name"),
                         firstText(value, "artworkVersion", "artwork_version", "artworkHash",
                                 "artwork_hash", "cover"),

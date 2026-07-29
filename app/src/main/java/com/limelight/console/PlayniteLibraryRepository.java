@@ -83,7 +83,7 @@ final class PlayniteLibraryRepository {
         for (HostGatewayClient.PlayniteGame game : pages.games) {
             games.add(new PlayniteLibraryGame(game.id, game.name,
                     game.installed, game.hidden, game.playtimeSeconds, game.lastPlayed,
-                    game.cover, game.background, game.source));
+                    game.cover, game.background, game.description, game.playCount, game.source));
         }
         return new PlayniteLibraryCache.Entry(games, System.currentTimeMillis(),
                 pages.revision, pages.apiVersion);

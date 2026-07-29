@@ -107,7 +107,9 @@ class BridgeStateTest(unittest.TestCase):
                 {"id": GAME_ID, "name": "Baba Is You", "installed": True},
                 {"id": "65705ca9-b9c7-4ada-b4b7-f73ffb8ac64f",
                  "name": "Resident Evil 3", "installed": True,
-                 "Playtime": 7500, "LastActivity": "2026-07-15T20:10:00Z"},
+                 "Playtime": 7500, "LastActivity": "2026-07-15T20:10:00Z",
+                 "PlayCount": 14,
+                 "Description": "<b>Escape the city.</b><br>Survive Nemesis."},
             ],
         })
 
@@ -117,6 +119,9 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual("Resident Evil 3", second["games"][0]["name"])
         self.assertEqual(125, second["games"][0]["playtimeMinutes"])
         self.assertEqual("2026-07-15T20:10:00Z", second["games"][0]["lastPlayed"])
+        self.assertEqual("Escape the city.\nSurvive Nemesis.",
+                         second["games"][0]["description"])
+        self.assertEqual(14, second["games"][0]["playCount"])
         self.assertEqual("", second["next_cursor"])
 
     def test_complete_snapshot_is_loaded_from_disk_after_restart(self):
@@ -219,6 +224,8 @@ class BridgeStateTest(unittest.TestCase):
         self.assertIn("Send-WakePlaySnapshotToLauncher", patched)
         self.assertIn("StartedProcessId", patched)
         self.assertIn("backgroundImagePath", patched)
+        self.assertIn("description     = [string]$g.Description", patched)
+        self.assertIn("playCount       = [int]$g.PlayCount", patched)
         self.assertNotIn("/game/prepare", patched)
         second, changed_again = patch_text(patched)
         self.assertFalse(changed_again)

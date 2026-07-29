@@ -54,10 +54,49 @@ public class PlayniteLibraryOrderingTest {
                 Arrays.asList(hidden), false, Locale.ENGLISH).size());
     }
 
+    @Test public void supportsEveryLibraryFilterAndItsOrdering() {
+        PlayniteLibraryGame recent = game(1, "Recent", true,
+                "2026-07-28T10:00:00Z", 2);
+        PlayniteLibraryGame frequent = game(2, "Frequent", true,
+                "2026-07-20T10:00:00Z", 12);
+        PlayniteLibraryGame unavailable = game(3, "Unavailable", false,
+                "2026-07-25T10:00:00Z", 3);
+        PlayniteLibraryGame never = game(4, "Never", false, "", 0);
+        List<PlayniteLibraryGame> source = Arrays.asList(
+                never, recent, unavailable, frequent);
+
+        assertEquals(Arrays.asList("Recent", "Frequent"), names(
+                PlayniteLibraryOrdering.order(source, PlayniteLibraryFilter.INSTALLED,
+                        Locale.ENGLISH)));
+        assertEquals(Arrays.asList("Recent", "Unavailable", "Frequent"), names(
+                PlayniteLibraryOrdering.order(source, PlayniteLibraryFilter.RECENTLY_PLAYED,
+                        Locale.ENGLISH)));
+        assertEquals(Arrays.asList("Unavailable", "Never"), names(
+                PlayniteLibraryOrdering.order(source, PlayniteLibraryFilter.UNINSTALLED,
+                        Locale.ENGLISH)));
+        assertEquals(Arrays.asList("Frequent", "Unavailable", "Recent"), names(
+                PlayniteLibraryOrdering.order(source, PlayniteLibraryFilter.MOST_LAUNCHED,
+                        Locale.ENGLISH)));
+        assertEquals(Arrays.asList("Never"), names(
+                PlayniteLibraryOrdering.order(source, PlayniteLibraryFilter.NEVER_LAUNCHED,
+                        Locale.ENGLISH)));
+    }
+
+    @Test public void collapsesExcessiveDescriptionParagraphSpacing() {
+        PlayniteLibraryGame item = new PlayniteLibraryGame(id(1), "Game", true,
+                false, 0L, "", "", "", "First\n\n\n\nSecond", 0, "Steam");
+        assertEquals("First\n\nSecond", item.description);
+    }
+
     private static PlayniteLibraryGame game(int suffix, String name, boolean installed,
                                             String lastActivity) {
+        return game(suffix, name, installed, lastActivity, 0);
+    }
+
+    private static PlayniteLibraryGame game(int suffix, String name, boolean installed,
+                                            String lastActivity, int playCount) {
         return new PlayniteLibraryGame(id(suffix), name, installed, false,
-                0L, lastActivity, "", "", "Steam");
+                0L, lastActivity, "", "", "", playCount, "Steam");
     }
 
     private static String id(int value) {

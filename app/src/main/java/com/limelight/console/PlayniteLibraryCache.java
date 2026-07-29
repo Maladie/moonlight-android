@@ -69,6 +69,8 @@ final class PlayniteLibraryCache {
                             value.optString("last_activity", ""),
                             value.optString("cover", ""),
                             value.optString("background", ""),
+                            value.optString("description", ""),
+                            Math.max(0, value.optInt("play_count", 0)),
                             value.optString("source", "")));
                 }
             }
@@ -101,6 +103,8 @@ final class PlayniteLibraryCache {
                 value.put("last_activity", game.lastActivity);
                 value.put("cover", game.coverKey);
                 value.put("background", game.backgroundKey);
+                value.put("description", game.description);
+                value.put("play_count", game.playCount);
                 value.put("source", game.source);
                 values.put(value);
             }
