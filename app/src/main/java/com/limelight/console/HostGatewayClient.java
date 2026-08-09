@@ -137,6 +137,7 @@ final class HostGatewayClient {
         final String description;
         final int playCount;
         final String source;
+        final String genres;
         final String artworkVersion;
         final long playtimeSeconds;
         /** Compatibility view for older console code. New code uses seconds. */
@@ -176,6 +177,15 @@ final class HostGatewayClient {
                      boolean hidden, boolean favorite, String cover, String background,
                      String lastPlayed, String description, int playCount, String source,
                      String artworkVersion, long playtimeSeconds) {
+            this(id, name, installed, installing, hidden, favorite, cover, background,
+                    lastPlayed, description, playCount, source, "", artworkVersion,
+                    playtimeSeconds);
+        }
+
+        PlayniteGame(String id, String name, boolean installed, boolean installing,
+                     boolean hidden, boolean favorite, String cover, String background,
+                     String lastPlayed, String description, int playCount, String source,
+                     String genres, String artworkVersion, long playtimeSeconds) {
             this.id = id;
             this.name = name;
             this.installed = installed;
@@ -188,6 +198,7 @@ final class HostGatewayClient {
             this.description = description;
             this.playCount = Math.max(0, playCount);
             this.source = source;
+            this.genres = genres;
             this.artworkVersion = artworkVersion;
             this.playtimeSeconds = Math.max(0L, playtimeSeconds);
             this.playtimeMinutes = this.playtimeSeconds / 60L;
@@ -854,6 +865,7 @@ final class HostGatewayClient {
                                 ? value.optInt("playCount", 0)
                                 : value.optInt("play_count", 0)),
                         firstText(value, "source", "sourceName", "source_name"),
+                        joinedText(value, "genres", "genre"),
                         firstText(value, "artworkVersion", "artwork_version", "artworkHash",
                                 "artwork_hash", "cover"),
                         Math.max(0L, seconds)));
@@ -879,6 +891,25 @@ final class HostGatewayClient {
         for (String key : keys) {
             String result = value.optString(key, "").trim();
             if (!result.isEmpty()) return result;
+        }
+        return "";
+    }
+
+    private static String joinedText(JSONObject value, String... keys) {
+        for (String key : keys) {
+            JSONArray array = value.optJSONArray(key);
+            if (array != null) {
+                StringBuilder result = new StringBuilder();
+                for (int index = 0; index < array.length(); index++) {
+                    String item = array.optString(index, "").trim();
+                    if (item.isEmpty()) continue;
+                    if (result.length() > 0) result.append(", ");
+                    result.append(item);
+                }
+                if (result.length() > 0) return result.toString();
+            }
+            String text = value.optString(key, "").trim();
+            if (!text.isEmpty()) return text;
         }
         return "";
     }

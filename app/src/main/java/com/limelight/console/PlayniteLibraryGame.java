@@ -16,6 +16,7 @@ final class PlayniteLibraryGame {
     final String description;
     final int playCount;
     final String source;
+    final String genres;
 
     PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
                         boolean hidden, long playtimeSeconds, String lastActivity,
@@ -44,6 +45,14 @@ final class PlayniteLibraryGame {
                         boolean installing, boolean hidden, long playtimeSeconds,
                         String lastActivity, String coverKey, String backgroundKey,
                         String description, int playCount, String source) {
+        this(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
+                lastActivity, coverKey, backgroundKey, description, playCount, source, "");
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean installing, boolean hidden, long playtimeSeconds,
+                        String lastActivity, String coverKey, String backgroundKey,
+                        String description, int playCount, String source, String genres) {
         this.playniteGameId = playniteGameId;
         this.name = name;
         this.installed = installed;
@@ -56,6 +65,7 @@ final class PlayniteLibraryGame {
         this.description = descriptionText(description);
         this.playCount = Math.max(0, playCount);
         this.source = text(source);
+        this.genres = text(genres);
     }
 
     @Override public boolean equals(Object value) {
@@ -69,12 +79,12 @@ final class PlayniteLibraryGame {
                 lastActivity.equals(game.lastActivity) && coverKey.equals(game.coverKey) &&
                 backgroundKey.equals(game.backgroundKey) &&
                 description.equals(game.description) && playCount == game.playCount &&
-                source.equals(game.source);
+                source.equals(game.source) && genres.equals(game.genres);
     }
 
     @Override public int hashCode() {
         return Objects.hash(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
-                lastActivity, coverKey, backgroundKey, description, playCount, source);
+                lastActivity, coverKey, backgroundKey, description, playCount, source, genres);
     }
 
     private static String text(String value) { return value == null ? "" : value.trim(); }

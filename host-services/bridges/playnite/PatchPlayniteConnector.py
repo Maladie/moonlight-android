@@ -16,7 +16,8 @@ PATCH_MARKER_V5 = "# WAKEPLAY-CONSOLE-BRIDGE-V5"
 PATCH_MARKER_V6 = "# WAKEPLAY-CONSOLE-BRIDGE-V6"
 PATCH_MARKER_V7 = "# WAKEPLAY-CONSOLE-BRIDGE-V7"
 PATCH_MARKER_V8 = "# WAKEPLAY-CONSOLE-BRIDGE-V8"
-PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V9"
+PATCH_MARKER_V9 = "# WAKEPLAY-CONSOLE-BRIDGE-V9"
+PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V10"
 
 LAUNCH_PREP_ANCHOR = """          Register-SunshineLaunchedGame -Id $obj.id
           [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)"""
@@ -150,6 +151,24 @@ SOURCE_PAYLOAD_REPLACEMENT = """      playCount       = [int]$g.PlayCount
       iconPath        = $icon
       # WAKEPLAY-CONSOLE-BRIDGE-V9"""
 
+GENRE_PAYLOAD_ANCHOR = SOURCE_PAYLOAD_REPLACEMENT
+GENRE_PAYLOAD_REPLACEMENT = """      playCount       = [int]$g.PlayCount
+      source          = [string]$(try {
+        $sourceName = [string]$g.Source.Name
+        if ([string]::IsNullOrWhiteSpace($sourceName) -and $g.SourceId) {
+          $sourceName = [string]$PlayniteApi.Database.Sources.Get($g.SourceId).Name
+        }
+        $sourceName
+      } catch { '' })
+      genres          = @($(try {
+        foreach ($genreId in @($g.GenreIds)) {
+          $genre = $PlayniteApi.Database.Genres.Get($genreId)
+          if ($genre -and $genre.Name) { [string]$genre.Name }
+        }
+      } catch {}))
+      iconPath        = $icon
+      # WAKEPLAY-CONSOLE-BRIDGE-V10"""
+
 INSTALL_UI_ANCHOR = """    public static void StartGameByGuidStringOnUIThread(string guidStr)
     {
         var d = Dispatcher;
@@ -233,25 +252,37 @@ def add_source_support(source: str) -> str:
     return source.replace(SOURCE_PAYLOAD_ANCHOR, SOURCE_PAYLOAD_REPLACEMENT, 1)
 
 
+def add_genre_support(source: str) -> str:
+    if GENRE_PAYLOAD_ANCHOR not in source:
+        raise ValueError("Unsupported Sunshine Playnite Connector; V9 game payload is incomplete")
+    return source.replace(GENRE_PAYLOAD_ANCHOR, GENRE_PAYLOAD_REPLACEMENT, 1)
+
+
+def add_latest_metadata(source: str) -> str:
+    return add_genre_support(add_source_support(source))
+
+
 def patch_text(source: str) -> tuple[str, bool]:
     if PATCH_MARKER in source:
         return source, False
+    if PATCH_MARKER_V9 in source:
+        return add_genre_support(source), True
     if PATCH_MARKER_V8 in source:
-        return add_source_support(source), True
+        return add_latest_metadata(source), True
     if PATCH_MARKER_V7 in source:
-        return add_source_support(add_install_support(source)), True
+        return add_latest_metadata(add_install_support(source)), True
     if PATCH_MARKER_V6 in source:
         if PLAY_COUNT_PAYLOAD_ANCHOR not in source:
             raise ValueError("Unsupported Sunshine Playnite Connector; V6 game payload is incomplete")
         patched = source.replace(
             PLAY_COUNT_PAYLOAD_ANCHOR, PLAY_COUNT_PAYLOAD_REPLACEMENT, 1)
-        return add_source_support(add_install_support(patched)), True
+        return add_latest_metadata(add_install_support(patched)), True
     if PATCH_MARKER_V5 in source:
         if DESCRIPTION_PAYLOAD_ANCHOR not in source:
             raise ValueError("Unsupported Sunshine Playnite Connector; V5 game payload is incomplete")
         patched = source.replace(
             DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1)
-        return add_source_support(add_install_support(patched)), True
+        return add_latest_metadata(add_install_support(patched)), True
     if PATCH_MARKER_V4 in source:
         if LAUNCH_PREP_REPLACEMENT not in source:
             raise ValueError("Unsupported Sunshine Playnite Connector; V4 launch block is incomplete")
@@ -260,7 +291,7 @@ def patch_text(source: str) -> tuple[str, bool]:
             raise ValueError("Unsupported Sunshine Playnite Connector; V4 game payload is incomplete")
         patched = patched.replace(
             DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1)
-        return add_source_support(add_install_support(patched)), True
+        return add_latest_metadata(add_install_support(patched)), True
     anchors = [
         ("launch display preparation", LAUNCH_PREP_ANCHOR),
     ]
@@ -304,7 +335,7 @@ def patch_text(source: str) -> tuple[str, bool]:
     if DESCRIPTION_PAYLOAD_ANCHOR in patched:
         patched = patched.replace(
             DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1)
-    return add_source_support(add_install_support(patched)), True
+    return add_latest_metadata(add_install_support(patched)), True
 
 
 def patch_file(path: Path, apply: bool) -> str:

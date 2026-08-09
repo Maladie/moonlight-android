@@ -626,6 +626,11 @@ class BridgeState:
                         by_name.get("source") or
                         by_name.get("sourcename") or
                         by_name.get("source_name") or "").strip()
+                    genres = by_name.get("genres") or by_name.get("genre") or []
+                    if isinstance(genres, str):
+                        genres = [genres]
+                    normalized["genres"] = [str(value).strip() for value in genres
+                                              if str(value).strip()][:16]
                     try:
                         if "playtimeminutes" in by_name:
                             playtime_minutes = int(by_name["playtimeminutes"] or 0)
