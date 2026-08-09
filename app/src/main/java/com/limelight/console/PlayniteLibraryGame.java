@@ -7,6 +7,7 @@ final class PlayniteLibraryGame {
     final String playniteGameId;
     final String name;
     final boolean installed;
+    final boolean installing;
     final boolean hidden;
     final long playtimeSeconds;
     final String lastActivity;
@@ -35,9 +36,18 @@ final class PlayniteLibraryGame {
                         boolean hidden, long playtimeSeconds, String lastActivity,
                         String coverKey, String backgroundKey, String description,
                         int playCount, String source) {
+        this(playniteGameId, name, installed, false, hidden, playtimeSeconds, lastActivity,
+                coverKey, backgroundKey, description, playCount, source);
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean installing, boolean hidden, long playtimeSeconds,
+                        String lastActivity, String coverKey, String backgroundKey,
+                        String description, int playCount, String source) {
         this.playniteGameId = playniteGameId;
         this.name = name;
         this.installed = installed;
+        this.installing = installing;
         this.hidden = hidden;
         this.playtimeSeconds = Math.max(0L, playtimeSeconds);
         this.lastActivity = text(lastActivity);
@@ -52,7 +62,8 @@ final class PlayniteLibraryGame {
         if (this == value) return true;
         if (!(value instanceof PlayniteLibraryGame)) return false;
         PlayniteLibraryGame game = (PlayniteLibraryGame) value;
-        return installed == game.installed && hidden == game.hidden &&
+        return installed == game.installed && installing == game.installing &&
+                hidden == game.hidden &&
                 playtimeSeconds == game.playtimeSeconds &&
                 playniteGameId.equals(game.playniteGameId) && name.equals(game.name) &&
                 lastActivity.equals(game.lastActivity) && coverKey.equals(game.coverKey) &&
@@ -62,7 +73,7 @@ final class PlayniteLibraryGame {
     }
 
     @Override public int hashCode() {
-        return Objects.hash(playniteGameId, name, installed, hidden, playtimeSeconds,
+        return Objects.hash(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
                 lastActivity, coverKey, backgroundKey, description, playCount, source);
     }
 

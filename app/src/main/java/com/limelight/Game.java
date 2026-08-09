@@ -2929,7 +2929,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             consoleLoadingView.showOpaque();
             consoleLoadingView.setStep(snapshot.step, transitionStatus(snapshot));
             consoleLoadingView.setManualRevealAvailable(snapshot.manualRevealAvailable);
-            if (newlyCovered && decoderRenderer != null
+            boolean waitingForPostTargetFrame = !snapshot.revealAuthorized
+                    && (snapshot.state == LaunchTransitionState.GAME_READY
+                    || snapshot.state == LaunchTransitionState.PLAYNITE_FULLSCREEN_READY);
+            if ((newlyCovered || waitingForPostTargetFrame) && decoderRenderer != null
                     && snapshot.state != LaunchTransitionState.CLOSING_STREAM
                     && snapshot.state != LaunchTransitionState.RETURNING_TO_DASHBOARD) {
                 decoderRenderer.requestNextFrameRendered(() ->
@@ -3175,7 +3178,22 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void applyGatewayEvent(String transitionId, String hostId,
                                    PlayniteTransitionGateway.Event event) {
         String name = event.name == null ? "" : event.name;
-        if ("game-starting".equals(name)) {
+        if ("game-installed".equals(name)) {
+            String gameName = event.gameName == null || event.gameName.isEmpty()
+                    ? getString(R.string.playnite_game_fallback_name) : event.gameName;
+            getSharedPreferences("console_dashboard", MODE_PRIVATE).edit()
+                    .putLong(playniteInstallNotificationKey(hostId, event.gameId),
+                            System.currentTimeMillis())
+                    .apply();
+            displayMessage(getString(R.string.playnite_install_complete, gameName));
+        } else if ("game-installation-cancelled".equals(name)
+                || "game-installation-failed".equals(name)) {
+            String gameName = event.gameName == null || event.gameName.isEmpty()
+                    ? getString(R.string.playnite_game_fallback_name) : event.gameName;
+            displayMessage(getString("game-installation-cancelled".equals(name)
+                    ? R.string.playnite_install_cancelled
+                    : R.string.playnite_install_failed, gameName));
+        } else if ("game-starting".equals(name)) {
             transitionController.targetStarting(transitionId, hostId,
                     LaunchTransitionType.GAME, event.gameId);
         } else if ("game-running".equals(name)) {
@@ -3191,6 +3209,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         } else if ("bridge-disconnected".equals(name)) {
             transitionController.playniteStopping(transitionId, hostId);
         }
+    }
+
+    private static String playniteInstallNotificationKey(String hostId, String gameId) {
+        return "playnite_install_notified." + hostId + ":" + gameId;
     }
 
     private static long timeoutFor(LaunchTransitionState state) {

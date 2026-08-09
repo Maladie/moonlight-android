@@ -128,6 +128,7 @@ final class HostGatewayClient {
         final String id;
         final String name;
         final boolean installed;
+        final boolean installing;
         final boolean hidden;
         final boolean favorite;
         final String cover;
@@ -167,9 +168,18 @@ final class HostGatewayClient {
                      boolean favorite, String cover, String background, String lastPlayed,
                      String description, int playCount, String source, String artworkVersion,
                      long playtimeSeconds) {
+            this(id, name, installed, false, hidden, favorite, cover, background, lastPlayed,
+                    description, playCount, source, artworkVersion, playtimeSeconds);
+        }
+
+        PlayniteGame(String id, String name, boolean installed, boolean installing,
+                     boolean hidden, boolean favorite, String cover, String background,
+                     String lastPlayed, String description, int playCount, String source,
+                     String artworkVersion, long playtimeSeconds) {
             this.id = id;
             this.name = name;
             this.installed = installed;
+            this.installing = installing;
             this.hidden = hidden;
             this.favorite = favorite;
             this.cover = cover;
@@ -252,11 +262,13 @@ final class HostGatewayClient {
         final long sequence;
         final String name;
         final String gameId;
+        final String gameName;
 
-        PlayniteEvent(long sequence, String name, String gameId) {
+        PlayniteEvent(long sequence, String name, String gameId, String gameName) {
             this.sequence = sequence;
             this.name = name;
             this.gameId = gameId;
+            this.gameName = gameName == null ? "" : gameName.trim();
         }
     }
 
@@ -677,6 +689,18 @@ final class HostGatewayClient {
         return parsePlayniteLibrary(response.optJSONObject("library"));
     }
 
+    String refreshPlayniteLibrary(Connection connection) throws IOException {
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/playnite/library/refresh", "POST", new JSONObject(),
+                connection, pinnedTrust(connection), 8_000);
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error",
+                    "The Playnite library refresh could not be started."), 0);
+        }
+        JSONObject result = response.optJSONObject("result");
+        return result == null ? "" : result.optString("previous_revision", "");
+    }
+
     byte[] getPlayniteArtwork(Connection connection, String gameId, String kind)
             throws IOException {
         if (!isPlayniteId(gameId)) throw new IllegalArgumentException("Invalid Playnite game ID");
@@ -734,6 +758,25 @@ final class HostGatewayClient {
         }
     }
 
+    void installPlayniteGame(Connection connection, String gameId) throws IOException {
+        if (!isPlayniteId(gameId)) {
+            throw new IllegalArgumentException("Invalid Playnite game ID");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("game_id", gameId.toLowerCase(Locale.ROOT));
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/playnite/game/install", "POST", body, connection,
+                pinnedTrust(connection), 15_000);
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error",
+                    "The game installation could not be started."), 0);
+        }
+    }
+
     PlayniteEvents getPlayniteEvents(Connection connection, long after) throws IOException {
         return getPlayniteEvents(connection, after, "");
     }
@@ -768,7 +811,8 @@ final class HostGatewayClient {
                 JSONObject payload = value.optJSONObject("payload");
                 String gameId = payload != null ? payload.optString("id", "") : "";
                 result.add(new PlayniteEvent(sequence,
-                        value.optString("event", ""), gameId));
+                        value.optString("event", ""), gameId,
+                        payload != null ? payload.optString("name", "") : ""));
                 latest = Math.max(latest, sequence);
             }
         }
@@ -798,6 +842,7 @@ final class HostGatewayClient {
                         : value.optLong("playtime", 0L);
                 games.add(new PlayniteGame(id.toLowerCase(Locale.ROOT), name,
                         value.optBoolean("installed", value.optBoolean("isInstalled", false)),
+                        value.optBoolean("installing", value.optBoolean("isInstalling", false)),
                         value.optBoolean("hidden", value.optBoolean("isHidden", false)),
                         value.optBoolean("favorite", value.optBoolean("isFavorite", false)),
                         firstText(value, "cover", "coverImage", "cover_image", "boxArtPath"),

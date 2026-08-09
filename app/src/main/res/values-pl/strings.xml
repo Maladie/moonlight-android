@@ -712,6 +712,10 @@
     <string name="playnite_never_launched">Nigdy nie uruchamiane</string>
     <string name="playnite_all_games">Wszystkie gry</string>
     <string name="playnite_filter_description">Filtr biblioteki: %1$s</string>
+    <string name="playnite_sources_all">Wszystkie biblioteki</string>
+    <string name="playnite_sources_selected">Biblioteki %1$d/%2$d</string>
+    <string name="playnite_sources_filter_description">Widoczne biblioteki gier: %1$s</string>
+    <string name="playnite_sources_done">Gotowe</string>
     <string name="playnite_open_full_library">Otwórz pełną bibliotekę gier</string>
     <string name="playnite_full_library">Pełna biblioteka</string>
     <string name="playnite_full_library_hint">Pokaż wszystkie gry w przewijanej siatce</string>
@@ -722,6 +726,13 @@
     <string name="playnite_hours_short">godz.</string>
     <string name="playnite_minutes_short">min</string>
     <string name="playnite_not_installed">Niezainstalowana</string>
+    <string name="playnite_installing">Instalowanie…</string>
+    <string name="playnite_install_starting">Rozpoczynam instalację „%1$s”…</string>
+    <string name="playnite_install_in_progress">Gra „%1$s” jest już instalowana.</string>
+    <string name="playnite_install_complete">Gra „%1$s” została zainstalowana.</string>
+    <string name="playnite_install_cancelled">Instalacja gry „%1$s” została anulowana.</string>
+    <string name="playnite_install_failed">Nie udało się rozpocząć instalacji gry „%1$s”.</string>
+    <string name="playnite_game_fallback_name">wybrana gra</string>
     <string name="playnite_launch_unavailable">Brak uruchamiania</string>
     <string name="playnite_gateway_unavailable">Gateway Playnite jest niedostępny</string>
     <string name="playnite_cached_library">Biblioteka z pamięci podręcznej</string>
@@ -732,6 +743,7 @@
     <string name="playnite_no_fullscreen_target">Brak celu Playnite Fullscreen</string>
     <string name="playnite_library">BIBLIOTEKA PLAYNITE · %1$s</string>
     <string name="playnite_library_empty">Biblioteka Playnite jest pusta.</string>
+    <string name="playnite_library_page">Strona %1$d z %2$d</string>
     <string name="playnite_no_installed_games">Biblioteka Playnite nie zawiera zainstalowanych gier.</string>
     <string name="playnite_launch_not_configured">Uruchamianie nieskonfigurowane</string>
     <string name="playnite_launch_via_playnite">Uruchamiana przez Playnite</string>

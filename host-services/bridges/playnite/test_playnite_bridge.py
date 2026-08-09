@@ -1,14 +1,18 @@
 import unittest
 import tempfile
+import ctypes
 from pathlib import Path
+from unittest import mock
 
 from PatchPlayniteConnector import (
-    ARTWORK_LOOKUP_ANCHOR, ARTWORK_PAYLOAD_ANCHOR, PATCH_MARKER,
+    ARTWORK_LOOKUP_ANCHOR, ARTWORK_PAYLOAD_ANCHOR, PATCH_MARKER, PATCH_MARKER_V8,
+    INSTALL_EVENT_ANCHOR, INSTALL_UI_ANCHOR, INSTALLING_PAYLOAD_ANCHOR,
     READER_ANCHOR, SEND_BUILD_ANCHOR, SEND_PARAM_ANCHOR, STARTED_ANCHOR,
-    STATUS_OBJECT_ANCHOR, STATUS_PARAM_ANCHOR, patch_text,
+    SOURCE_PAYLOAD_ANCHOR, STATUS_OBJECT_ANCHOR, STATUS_PARAM_ANCHOR, patch_text,
 )
 from PlayniteBridge import (
     BridgeState, REQUIRED_GAME_STABLE_SAMPLES, StreamDisplayResolver, WindowProbe,
+    WindowsPipeClient,
 )
 
 
@@ -49,6 +53,21 @@ class WindowProbeTest(unittest.TestCase):
         self.assertFalse(WindowProbe.belongs_to_install_directory(
             r"D:\Tools\unrelated.exe", install))
         self.assertFalse(WindowProbe.belongs_to_install_directory("", install))
+
+    def test_large_playnite_messages_keep_windows_more_data_chunk(self):
+        payload = b"x" * 8
+
+        class PartialRead:
+            @staticmethod
+            def ReadFile(handle, buffer, size, read, overlapped):
+                ctypes.memmove(buffer, payload, len(payload))
+                read._obj.value = len(payload)
+                return False
+
+        client = WindowsPipeClient.__new__(WindowsPipeClient)
+        client._kernel32 = lambda: PartialRead()
+        with mock.patch("PlayniteBridge.ctypes.get_last_error", return_value=234):
+            self.assertEqual(payload, client._read(123, len(payload)))
 
 
 class BridgeStateTest(unittest.TestCase):
@@ -109,6 +128,7 @@ class BridgeStateTest(unittest.TestCase):
                  "name": "Resident Evil 3", "installed": True,
                  "Playtime": 7500, "LastActivity": "2026-07-15T20:10:00Z",
                  "PlayCount": 14,
+                 "Source": "Steam",
                  "Description": "<b>Escape the city.</b><br>Survive Nemesis."},
             ],
         })
@@ -122,6 +142,7 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual("Escape the city.\nSurvive Nemesis.",
                          second["games"][0]["description"])
         self.assertEqual(14, second["games"][0]["playCount"])
+        self.assertEqual("Steam", second["games"][0]["source"])
         self.assertEqual("", second["next_cursor"])
 
     def test_complete_snapshot_is_loaded_from_disk_after_restart(self):
@@ -142,6 +163,36 @@ class BridgeStateTest(unittest.TestCase):
             self.assertEqual("Baba Is You", page["games"][0]["name"])
             self.assertEqual([{"id": "action"}], page["categories"])
             self.assertEqual([{"id": "steam"}], page["plugins"])
+
+    def test_bracketed_snapshot_keeps_previous_library_until_complete(self):
+        self.state.handle_message({"type": "games", "payload": [{
+            "id": GAME_ID, "name": "Old game", "installed": True,
+        }]})
+        previous_revision = self.state.library_page("0", 10)["revision"]
+        self.state.handle_message({"type": "snapshotStart"})
+        self.state.handle_message({"type": "plugins", "payload": []})
+        self.state.handle_message({"type": "games", "payload": [{
+            "id": "65705ca9-b9c7-4ada-b4b7-f73ffb8ac64f",
+            "name": "New game", "installed": True,
+        }]})
+        before_complete = self.state.library_page("0", 10)
+        self.assertEqual(["Old game"], [game["name"] for game in before_complete["games"]])
+        self.assertEqual(previous_revision, before_complete["revision"])
+
+        self.state.handle_message({"type": "snapshotComplete"})
+        completed = self.state.library_page("0", 10)
+        self.assertEqual(["New game"], [game["name"] for game in completed["games"]])
+        self.assertNotEqual(previous_revision, completed["revision"])
+
+    def test_refresh_requests_new_snapshot_without_clearing_library(self):
+        self.state.handle_message({"type": "games", "payload": [{
+            "id": GAME_ID, "name": "Baba Is You", "installed": True,
+        }]})
+        result = self.state.refresh_library()
+        self.assertTrue(result["accepted"])
+        self.assertEqual(self.state.library_page("0", 10)["revision"],
+                         result["previous_revision"])
+        self.assertEqual({"type": "command", "command": "snapshot"}, self.commands[-1])
 
     def test_malformed_library_cache_is_ignored(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -184,6 +235,38 @@ class BridgeStateTest(unittest.TestCase):
         self.assertFalse(self.state.readiness["ready"])
         self.assertEqual("waiting_for_playnite_window", self.state.readiness["reason"])
 
+    def test_install_is_non_blocking_and_completion_updates_library(self):
+        self.state.handle_message({
+            "type": "games",
+            "payload": [{"id": GAME_ID, "name": "Baba Is You", "installed": False}],
+        })
+
+        result = self.state.install_game(GAME_ID.upper())
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual({
+            "type": "command", "command": "install", "id": GAME_ID,
+        }, self.commands[-1])
+        self.assertTrue(self.state.library[GAME_ID]["installing"])
+        self.state.handle_message({
+            "type": "status",
+            "status": {"name": "gameInstalled", "id": GAME_ID},
+        })
+        self.assertTrue(self.state.library[GAME_ID]["installed"])
+        self.assertFalse(self.state.library[GAME_ID]["installing"])
+        self.assertEqual("game-installed", self.state.events[-1]["event"])
+        self.assertEqual("Baba Is You", self.state.events[-1]["payload"]["name"])
+
+    def test_install_rejects_unknown_or_already_installed_game(self):
+        with self.assertRaises(FileNotFoundError):
+            self.state.install_game(GAME_ID)
+        self.state.handle_message({
+            "type": "games",
+            "payload": [{"id": GAME_ID, "name": "Baba Is You", "installed": True}],
+        })
+        with self.assertRaises(ValueError):
+            self.state.install_game(GAME_ID)
+
     def test_focus_current_game_closes_gate_and_uses_install_identity(self):
         self.state.set_expected_display(r"\\.\DISPLAY15")
         self.state.handle_message({
@@ -213,9 +296,11 @@ class BridgeStateTest(unittest.TestCase):
 
     def test_connector_patch_is_guarded_and_idempotent(self):
         fixture = "\n".join([
+            INSTALL_UI_ANCHOR,
             READER_ANCHOR, STATUS_PARAM_ANCHOR, STATUS_OBJECT_ANCHOR,
             SEND_PARAM_ANCHOR, SEND_BUILD_ANCHOR, STARTED_ANCHOR,
             ARTWORK_LOOKUP_ANCHOR, ARTWORK_PAYLOAD_ANCHOR,
+            INSTALLING_PAYLOAD_ANCHOR, INSTALL_EVENT_ANCHOR,
             "function Start-ConnectorLoop {", "}",
         ])
         patched, changed = patch_text(fixture)
@@ -226,10 +311,21 @@ class BridgeStateTest(unittest.TestCase):
         self.assertIn("backgroundImagePath", patched)
         self.assertIn("description     = [string]$g.Description", patched)
         self.assertIn("playCount       = [int]$g.PlayCount", patched)
+        self.assertIn("$PlayniteApi.Database.Sources.Get($g.SourceId).Name", patched)
+        self.assertIn("source          =", patched)
+        self.assertIn("InstallGameByGuidStringOnUIThread", patched)
+        self.assertIn("gameInstallationCancelled", patched)
+        self.assertIn("installing      = [bool]$g.IsInstalling", patched)
         self.assertNotIn("/game/prepare", patched)
         second, changed_again = patch_text(patched)
         self.assertFalse(changed_again)
         self.assertEqual(patched, second)
+
+    def test_connector_v8_is_upgraded_with_library_source(self):
+        patched, changed = patch_text(PATCH_MARKER_V8 + "\n" + SOURCE_PAYLOAD_ANCHOR)
+        self.assertTrue(changed)
+        self.assertIn(PATCH_MARKER, patched)
+        self.assertIn("source          =", patched)
 
     def test_game_readiness_requires_sustained_stability_and_closes_immediately(self):
         self.state.handle_message({

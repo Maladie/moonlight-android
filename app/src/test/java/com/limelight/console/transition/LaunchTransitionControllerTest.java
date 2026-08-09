@@ -48,9 +48,28 @@ public class LaunchTransitionControllerTest {
 
         controller.targetWindowReady("transition-1", HOST,
                 LaunchTransitionType.PLAYNITE, "");
+        assertFalse(controller.snapshot().revealAuthorized);
+        controller.videoFrameRendered("transition-1");
         assertTrue(controller.snapshot().revealAuthorized);
         assertEquals(LaunchTransitionState.PLAYNITE_FULLSCREEN_READY,
                 controller.snapshot().state);
+    }
+
+    @Test
+    public void frameRenderedBeforeTargetWindowReadinessCannotRevealDesktop() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        transportReady(controller);
+        controller.gatewayConnected("transition-1", HOST);
+        controller.targetProcessRunning("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME);
+
+        controller.targetWindowReady("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME);
+
+        assertFalse(controller.snapshot().revealAuthorized);
+        assertTrue(controller.snapshot().overlayVisible);
+        controller.videoFrameRendered("transition-1");
+        assertTrue(controller.snapshot().revealAuthorized);
     }
 
     @Test

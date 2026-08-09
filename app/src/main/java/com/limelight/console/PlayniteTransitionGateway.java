@@ -42,11 +42,13 @@ public final class PlayniteTransitionGateway {
         public final long sequence;
         public final String name;
         public final String gameId;
+        public final String gameName;
 
-        Event(long sequence, String name, String gameId) {
+        Event(long sequence, String name, String gameId, String gameName) {
             this.sequence = sequence;
             this.name = name;
             this.gameId = gameId;
+            this.gameName = gameName;
         }
     }
 
@@ -90,7 +92,7 @@ public final class PlayniteTransitionGateway {
                 client.getPlayniteEvents(connection, after, transitionId);
         List<Event> values = new ArrayList<>();
         for (HostGatewayClient.PlayniteEvent event : result.events) {
-            values.add(new Event(event.sequence, event.name, event.gameId));
+            values.add(new Event(event.sequence, event.name, event.gameId, event.gameName));
         }
         return new Events(values, result.latestSequence);
     }

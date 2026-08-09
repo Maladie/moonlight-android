@@ -44,6 +44,7 @@ final class PlayniteLibraryDiff {
             int payload = oldIndex == newIndex ? 0 : POSITION;
             if (!old.game.name.equals(next.game.name) ||
                     old.game.installed != next.game.installed ||
+                    old.game.installing != next.game.installing ||
                     old.game.playtimeSeconds != next.game.playtimeSeconds ||
                     old.game.playCount != next.game.playCount ||
                     !old.game.lastActivity.equals(next.game.lastActivity) ||

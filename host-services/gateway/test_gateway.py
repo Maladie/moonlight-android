@@ -399,6 +399,36 @@ class GatewayStateTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             state.playnite_action("game/start", {"game_id": "../../cmd.exe"})
 
+    def test_playnite_install_is_forwarded_without_waiting_for_completion(self):
+        state = GatewayState(self.config_path, None)
+        requests = []
+        state.proxy_json = lambda name, path, body, timeout=8.0: (
+            requests.append((name, path, body, timeout)) is None, {"accepted": True})
+
+        status, result = state.playnite_action("game/install", {
+            "game_id": "840317C9-B9A4-4F72-BE8E-807414E36A9B",
+        })
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["ok"])
+        self.assertEqual(("playnite", "/game/install", {
+            "game_id": "840317c9-b9a4-4f72-be8e-807414e36a9b",
+        }, 15.0), requests[0])
+
+    def test_playnite_library_refresh_is_forwarded_as_non_blocking_action(self):
+        state = GatewayState(self.config_path, None)
+        requests = []
+        state.proxy_json = lambda name, path, body, timeout=8.0: (
+            requests.append((name, path, body, timeout)) is None,
+            {"accepted": True, "previous_revision": "17"})
+
+        status, result = state.playnite_action("library/refresh", {})
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["ok"])
+        self.assertEqual(
+            ("playnite", "/library/refresh", {}, 5.0), requests[0])
+
     def test_playnite_stop_is_graceful_by_contract(self):
         state = GatewayState(self.config_path, None)
         requests = []
