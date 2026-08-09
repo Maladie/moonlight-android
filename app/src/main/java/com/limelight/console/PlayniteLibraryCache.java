@@ -72,7 +72,8 @@ final class PlayniteLibraryCache {
                             value.optString("background", ""),
                             value.optString("description", ""),
                             Math.max(0, value.optInt("play_count", 0)),
-                            value.optString("source", "")));
+                            value.optString("source", ""),
+                            value.optString("genres", "")));
                 }
             }
             return new Entry(games, root.optLong("saved_at", file.lastModified()),
@@ -108,6 +109,7 @@ final class PlayniteLibraryCache {
                 value.put("description", game.description);
                 value.put("play_count", game.playCount);
                 value.put("source", game.source);
+                value.put("genres", game.genres);
                 values.put(value);
             }
             root.put("games", values);

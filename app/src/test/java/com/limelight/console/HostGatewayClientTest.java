@@ -58,7 +58,8 @@ public class HostGatewayClientTest {
                 "\"name\":\"Game\",\"isInstalled\":false,\"isInstalling\":true," +
                 "\"hidden\":false," +
                 "\"playtime\":3600,\"lastActivity\":\"2026-07-20T10:00:00Z\"," +
-                "\"source\":\"Steam\",\"description\":\"Short overview\",\"playCount\":17," +
+                "\"source\":\"Steam\",\"genres\":[\"Action\",\"RPG\"]," +
+                "\"description\":\"Short overview\",\"playCount\":17," +
                 "\"cover\":\"hash\"}]}" );
 
         HostGatewayClient.PlayniteLibrary parsed =
@@ -67,6 +68,7 @@ public class HostGatewayClientTest {
         assertEquals(1, parsed.games.size());
         assertEquals(3600L, parsed.games.get(0).playtimeSeconds);
         assertEquals("Steam", parsed.games.get(0).source);
+        assertEquals("Action, RPG", parsed.games.get(0).genres);
         assertEquals("Short overview", parsed.games.get(0).description);
         assertEquals(17, parsed.games.get(0).playCount);
         assertTrue(parsed.games.get(0).installing);

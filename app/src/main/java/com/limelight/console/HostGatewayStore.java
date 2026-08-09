@@ -183,6 +183,27 @@ final class HostGatewayStore {
                 .apply();
     }
 
+    void clearPlayniteLibrarySources(String hostUuid) {
+        if (hostUuid == null || hostUuid.isEmpty()) return;
+        preferences.edit()
+                .remove(key(hostUuid, "playnite_library_sources_configured"))
+                .remove(key(hostUuid, "playnite_library_sources"))
+                .apply();
+    }
+
+    PlayniteLibrarySort playniteLibrarySort(String hostUuid) {
+        if (hostUuid == null) return PlayniteLibrarySort.RECENT;
+        return PlayniteLibrarySort.fromPreference(preferences.getString(
+                key(hostUuid, "playnite_library_sort"), null));
+    }
+
+    void setPlayniteLibrarySort(String hostUuid, PlayniteLibrarySort sort) {
+        if (hostUuid == null || hostUuid.isEmpty()) return;
+        PlayniteLibrarySort safe = sort == null ? PlayniteLibrarySort.RECENT : sort;
+        preferences.edit().putString(key(hostUuid, "playnite_library_sort"),
+                safe.preferenceValue).apply();
+    }
+
     boolean isDiscordAutoConnectEnabled(String hostUuid, String profileId) {
         if (hostUuid == null || profileId == null) return false;
         String profileKey = discordKey(hostUuid, profileId, "auto_connect");

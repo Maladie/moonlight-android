@@ -3105,6 +3105,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         applyGatewayEvent(transitionId, hostId, event);
                     }
                 } else {
+                    // Transition events from before this stream are stale, but an install
+                    // can finish while the stream Activity is still starting. Preserve only
+                    // lifecycle events for installs explicitly requested by this client.
+                    for (PlayniteTransitionGateway.Event event : events.values) {
+                        if (isPendingInstallationEvent(hostId, event)) {
+                            applyGatewayEvent(transitionId, hostId, event);
+                        }
+                    }
                     baselineEstablished = true;
                 }
                 failures = 0;
@@ -3179,17 +3187,22 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                    PlayniteTransitionGateway.Event event) {
         String name = event.name == null ? "" : event.name;
         if ("game-installed".equals(name)) {
+            if (!isPendingInstallation(hostId, event.gameId)) return;
             String gameName = event.gameName == null || event.gameName.isEmpty()
-                    ? getString(R.string.playnite_game_fallback_name) : event.gameName;
+                    ? pendingInstallationName(hostId, event.gameId) : event.gameName;
             getSharedPreferences("console_dashboard", MODE_PRIVATE).edit()
                     .putLong(playniteInstallNotificationKey(hostId, event.gameId),
                             System.currentTimeMillis())
+                    .remove(playniteInstallPendingKey(hostId, event.gameId))
                     .apply();
             displayMessage(getString(R.string.playnite_install_complete, gameName));
         } else if ("game-installation-cancelled".equals(name)
                 || "game-installation-failed".equals(name)) {
+            if (!isPendingInstallation(hostId, event.gameId)) return;
             String gameName = event.gameName == null || event.gameName.isEmpty()
-                    ? getString(R.string.playnite_game_fallback_name) : event.gameName;
+                    ? pendingInstallationName(hostId, event.gameId) : event.gameName;
+            getSharedPreferences("console_dashboard", MODE_PRIVATE).edit()
+                    .remove(playniteInstallPendingKey(hostId, event.gameId)).apply();
             displayMessage(getString("game-installation-cancelled".equals(name)
                     ? R.string.playnite_install_cancelled
                     : R.string.playnite_install_failed, gameName));
@@ -3213,6 +3226,31 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private static String playniteInstallNotificationKey(String hostId, String gameId) {
         return "playnite_install_notified." + hostId + ":" + gameId;
+    }
+
+    private static String playniteInstallPendingKey(String hostId, String gameId) {
+        return "playnite_install_pending." + hostId + ":" + gameId;
+    }
+
+    private boolean isPendingInstallation(String hostId, String gameId) {
+        return gameId != null && !gameId.isEmpty()
+                && getSharedPreferences("console_dashboard", MODE_PRIVATE)
+                .contains(playniteInstallPendingKey(hostId, gameId));
+    }
+
+    private String pendingInstallationName(String hostId, String gameId) {
+        return getSharedPreferences("console_dashboard", MODE_PRIVATE).getString(
+                playniteInstallPendingKey(hostId, gameId),
+                getString(R.string.playnite_game_fallback_name));
+    }
+
+    private boolean isPendingInstallationEvent(String hostId,
+                                                PlayniteTransitionGateway.Event event) {
+        if (event == null) return false;
+        return ("game-installed".equals(event.name)
+                || "game-installation-cancelled".equals(event.name)
+                || "game-installation-failed".equals(event.name))
+                && isPendingInstallation(hostId, event.gameId);
     }
 
     private static long timeoutFor(LaunchTransitionState state) {
