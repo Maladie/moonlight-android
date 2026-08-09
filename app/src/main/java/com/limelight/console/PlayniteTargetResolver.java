@@ -11,6 +11,13 @@ final class PlayniteTargetResolver {
     static PlayniteDashboardItem resolve(String hostUuid, PlayniteLibraryGame game,
                                          List<NvApp> apps,
                                          PlayniteLaunchTargetStore store) {
+        return resolve(hostUuid, game, apps, store, true);
+    }
+
+    static PlayniteDashboardItem resolve(String hostUuid, PlayniteLibraryGame game,
+                                         List<NvApp> apps,
+                                         PlayniteLaunchTargetStore store,
+                                         boolean appListAuthoritative) {
         if (!game.installed) {
             return new PlayniteDashboardItem(game, null, "",
                     PlayniteDashboardItem.MappingState.NOT_INSTALLED);
@@ -22,6 +29,13 @@ final class PlayniteTargetResolver {
                     isPlayniteFullscreen(mapped)
                             ? PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE
                             : PlayniteDashboardItem.MappingState.MAPPED);
+        }
+        // An offline host cannot provide a current Sunshine app list. Keep the
+        // persisted app ID so selection can enter the normal launch path, send
+        // Wake-on-LAN, and validate the target after the host becomes ready.
+        if (saved != null && !appListAuthoritative) {
+            return new PlayniteDashboardItem(game, saved, game.name,
+                    PlayniteDashboardItem.MappingState.MAPPED);
         }
         if (saved != null && store != null) store.clearGameTarget(hostUuid, game.playniteGameId);
 
@@ -67,6 +81,16 @@ final class PlayniteTargetResolver {
         if (id == null) return null;
         for (NvApp app : apps) if (app.getAppId() == id) return app;
         return null;
+    }
+
+    static NvApp launchTarget(PlayniteDashboardItem item, List<NvApp> apps,
+                              boolean hostOnline) {
+        if (item == null || item.sunshineAppId == null) return null;
+        NvApp current = findById(apps, item.sunshineAppId);
+        if (current != null || hostOnline) return current;
+        String name = item.sunshineAppName.isEmpty()
+                ? item.game.name : item.sunshineAppName;
+        return new NvApp(name, item.sunshineAppId, false);
     }
 
     static NvApp findByUuid(List<NvApp> apps, String uuid) {

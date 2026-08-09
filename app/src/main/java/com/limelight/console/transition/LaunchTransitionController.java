@@ -162,8 +162,13 @@ public final class LaunchTransitionController {
                                                LaunchTransitionType kind,
                                                String gameId) {
         if (!acceptTarget(transitionId, hostId, kind, gameId)) return;
+        boolean newlyReady = !targetWindowReady;
         targetWindowReady = true;
         targetProcessRunning = true;
+        // A frame rendered before the target window became ready can still contain
+        // the desktop or a launcher. Require one frame produced after this exact
+        // readiness edge before the privacy overlay may be removed.
+        if (newlyReady) videoFrameReady = false;
         state = kind == LaunchTransitionType.GAME
                 ? LaunchTransitionState.GAME_READY
                 : LaunchTransitionState.PLAYNITE_FULLSCREEN_READY;

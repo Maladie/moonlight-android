@@ -738,6 +738,10 @@ class GatewayState:
             payload = {"game_id": self._playnite_game_id(body.get("game_id"))}
             path = "/game/start"
             timeout = 15.0
+        elif action == "game/install":
+            payload = {"game_id": self._playnite_game_id(body.get("game_id"))}
+            path = "/game/install"
+            timeout = 15.0
         elif action == "game/stop":
             payload = {"force": False}
             if body.get("game_id"):
@@ -752,6 +756,10 @@ class GatewayState:
             payload = {}
             path = "/playnite/show-fullscreen"
             timeout = 10.0
+        elif action == "library/refresh":
+            payload = {}
+            path = "/library/refresh"
+            timeout = 5.0
         else:
             return HTTPStatus.NOT_FOUND, {"error": "Unknown Playnite action."}
         ok, result = self.proxy_json("playnite", path, payload, timeout=timeout)

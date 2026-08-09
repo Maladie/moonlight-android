@@ -441,6 +441,8 @@ class BridgeState:
         self.last_error = "Playnite connector is not connected."
         self.library: dict[str, dict[str, Any]] = {}
         self.library_staging: dict[str, dict[str, Any]] = {}
+        self.library_revision = ""
+        self.snapshot_in_progress = False
         self.categories: list[dict[str, Any]] = []
         self.plugins: list[dict[str, Any]] = []
         self.current: dict[str, Any] = {"state": "idle"}
@@ -498,6 +500,7 @@ class BridgeState:
                                if isinstance(item, dict)]
             self.plugins = [dict(item) for item in (cached.get("plugins") or [])
                             if isinstance(item, dict)]
+            self.library_revision = str(cached.get("revision") or cached.get("saved_at") or "")
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             # A broken cache must never prevent the Bridge from starting. It will
             # be replaced after the next complete connector snapshot.
@@ -511,6 +514,7 @@ class BridgeState:
         payload = {
             "version": 1,
             "saved_at": int(time.time()),
+            "revision": self.library_revision,
             "library": list(self.library.values()),
             "categories": list(self.categories),
             "plugins": list(self.plugins),
@@ -576,9 +580,13 @@ class BridgeState:
     def handle_message(self, message: dict[str, Any]) -> None:
         kind = str(message.get("type", ""))
         with self.lock:
-            if kind == "plugins":
-                self.plugins = list(message.get("payload") or [])
+            if kind == "snapshotStart":
                 self.library_staging = {}
+                self.snapshot_in_progress = True
+            elif kind == "plugins":
+                self.plugins = list(message.get("payload") or [])
+                if not self.snapshot_in_progress:
+                    self.library_staging = {}
             elif kind == "categories":
                 self.categories = list(message.get("payload") or [])
             elif kind == "games":
@@ -614,6 +622,10 @@ class BridgeState:
                             by_name.get("play_count") or 0))
                     except (TypeError, ValueError):
                         normalized["playCount"] = 0
+                    normalized["source"] = str(
+                        by_name.get("source") or
+                        by_name.get("sourcename") or
+                        by_name.get("source_name") or "").strip()
                     try:
                         if "playtimeminutes" in by_name:
                             playtime_minutes = int(by_name["playtimeminutes"] or 0)
@@ -626,12 +638,20 @@ class BridgeState:
                     except (TypeError, ValueError):
                         normalized["playtimeMinutes"] = 0
                     self.library_staging[game_id] = normalized
-                self.library = dict(self.library_staging)
-                self._publish_locked("library-updated", {"count": len(self.library)})
+                # Older connectors did not bracket snapshots. Preserve their
+                # behavior while keeping the visible cache stable for current
+                # connectors until snapshotComplete arrives.
+                if not self.snapshot_in_progress:
+                    self.library = dict(self.library_staging)
+                    self.library_revision = str(time.time_ns())
+                    self._publish_locked("library-updated", {"count": len(self.library)})
             elif kind == "snapshotComplete":
                 self.library = dict(self.library_staging)
+                self.library_revision = str(time.time_ns())
+                self.snapshot_in_progress = False
                 self._save_library_cache_locked()
-                self._publish_locked("library-updated", {"count": len(self.library)})
+                self._publish_locked("library-updated", {
+                    "count": len(self.library), "revision": self.library_revision})
             elif kind == "status" and isinstance(message.get("status"), dict):
                 status = dict(message["status"])
                 name = str(status.pop("name", ""))
@@ -664,6 +684,20 @@ class BridgeState:
                     }
                     self._last_window_signature = None
                     self._publish_locked("game-stopped", previous)
+                elif name in {"gameInstalled", "gameInstallationCancelled"}:
+                    game = self.library.get(game_id)
+                    title = str((game or {}).get("name") or status.get("title") or "")
+                    if game is not None:
+                        game["installing"] = False
+                        if name == "gameInstalled":
+                            game["installed"] = True
+                        self._save_library_cache_locked()
+                    event_name = "game-installed" if name == "gameInstalled" \
+                        else "game-installation-cancelled"
+                    self._publish_locked(event_name, {
+                        "id": game_id,
+                        "name": title,
+                    })
                 else:
                     self._publish_locked(name or "playnite-status", status)
 
@@ -689,6 +723,37 @@ class BridgeState:
             self._publish_locked("game-starting", {"id": normalized})
             self._last_window_signature = None
         return self.send_command("launch", id=normalized)
+
+    def install_game(self, game_id: Any) -> dict[str, Any]:
+        normalized = self.game_id(game_id)
+        with self.lock:
+            game = self.library.get(normalized)
+            if game is None:
+                raise FileNotFoundError("Playnite game was not found.")
+            if bool(game.get("installed")):
+                raise ValueError("Playnite game is already installed.")
+            if bool(game.get("installing")):
+                return {"accepted": True, "command": "install", "already_installing": True}
+            game["installing"] = True
+            title = str(game.get("name") or "")
+            self._save_library_cache_locked()
+            self._publish_locked("game-installing", {
+                "id": normalized,
+                "name": title,
+            })
+        try:
+            return self.send_command("install", id=normalized)
+        except Exception:
+            with self.lock:
+                current = self.library.get(normalized)
+                if current is not None:
+                    current["installing"] = False
+                    self._save_library_cache_locked()
+                self._publish_locked("game-installation-failed", {
+                    "id": normalized,
+                    "name": title,
+                })
+            raise
 
     def stop_game(self, game_id: Any = "") -> dict[str, Any]:
         normalized = self.game_id(game_id) if game_id else ""
@@ -802,9 +867,17 @@ class BridgeState:
                 "games": page,
                 "next_cursor": str(next_offset) if next_offset < len(games) else "",
                 "total": len(games),
+                "revision": self.library_revision,
                 "categories": list(self.categories),
                 "plugins": list(self.plugins),
             }
+
+    def refresh_library(self) -> dict[str, Any]:
+        with self.lock:
+            previous_revision = self.library_revision
+        result = self.send_command("snapshot")
+        result["previous_revision"] = previous_revision
+        return result
 
     def artwork(self, game_id: Any, kind: str) -> tuple[bytes, str]:
         normalized = self.game_id(game_id)
@@ -880,6 +953,7 @@ class WindowsPipeClient:
     GENERIC_WRITE = 0x40000000
     OPEN_EXISTING = 3
     ERROR_PIPE_BUSY = 231
+    ERROR_MORE_DATA = 234
     INVALID_HANDLE_VALUE = ctypes.c_void_p(-1).value
 
     def __init__(self, state: BridgeState) -> None:
@@ -921,8 +995,17 @@ class WindowsPipeClient:
         kernel32 = self._kernel32()
         buffer = ctypes.create_string_buffer(size)
         read = wintypes.DWORD()
-        if not kernel32.ReadFile(handle, buffer, size, ctypes.byref(read), None):
-            raise OSError(ctypes.get_last_error(), "Playnite pipe read failed")
+        succeeded = kernel32.ReadFile(handle, buffer, size, ctypes.byref(read), None)
+        if not succeeded:
+            error = ctypes.get_last_error()
+            # The Playnite data pipe uses message mode. A snapshot batch can be
+            # much larger than our read buffer (especially when descriptions are
+            # included), in which case Windows returns ERROR_MORE_DATA together
+            # with a valid first chunk. Keep accumulating until the trailing
+            # newline arrives instead of dropping the connection and stale-cache
+            # fallback.
+            if error != self.ERROR_MORE_DATA or read.value == 0:
+                raise OSError(error, "Playnite pipe read failed")
         return buffer.raw[:read.value]
 
     def _write(self, handle: int, value: bytes) -> None:
@@ -1102,6 +1185,10 @@ class PlayniteHandler(BaseHTTPRequestHandler):
             path = urllib.parse.urlsplit(self.path).path
             if path == "/game/start":
                 result = self.state.start_game(body.get("game_id"))
+            elif path == "/game/install":
+                result = self.state.install_game(body.get("game_id"))
+            elif path == "/library/refresh":
+                result = self.state.refresh_library()
             elif path == "/game/stop":
                 if bool(body.get("force", False)):
                     raise ValueError("Forced game termination is not exposed by this Bridge.")

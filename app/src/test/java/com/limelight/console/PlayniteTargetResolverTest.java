@@ -8,6 +8,7 @@ import java.util.Arrays;
 import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 
 public class PlayniteTargetResolverTest {
@@ -48,6 +49,26 @@ public class PlayniteTargetResolverTest {
 
         assertEquals(PlayniteDashboardItem.MappingState.MAPPED, item.mappingState);
         assertEquals(Integer.valueOf(2), item.sunshineAppId);
+    }
+
+    @Test public void offlineMappedGameCreatesLaunchTargetFromPersistedIdentity() {
+        PlayniteDashboardItem item = new PlayniteDashboardItem(game("My Game"), 42,
+                "My Game", PlayniteDashboardItem.MappingState.MAPPED);
+
+        NvApp target = PlayniteTargetResolver.launchTarget(item,
+                Collections.emptyList(), false);
+
+        assertNotNull(target);
+        assertEquals(42, target.getAppId());
+        assertEquals("My Game", target.getAppName());
+    }
+
+    @Test public void onlineMissingMappingDoesNotCreatePlaceholderTarget() {
+        PlayniteDashboardItem item = new PlayniteDashboardItem(game("My Game"), 42,
+                "My Game", PlayniteDashboardItem.MappingState.MAPPED);
+
+        assertNull(PlayniteTargetResolver.launchTarget(item,
+                Collections.emptyList(), true));
     }
 
     private static NvApp app(String name, int id, String uuid, String artVersion) {

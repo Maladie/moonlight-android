@@ -10,7 +10,8 @@ if (Test-Path -LiteralPath $configPath) {
 }
 
 try {
-    Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port/shutdown" | Out-Null
+    Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port/shutdown" `
+        -TimeoutSec 2 | Out-Null
     Write-Host "Wysłano polecenie zatrzymania bridge."
 }
 catch {

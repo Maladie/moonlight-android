@@ -55,7 +55,8 @@ public class HostGatewayClientTest {
     public void playniteContractUsesSdkSecondsAndPreservesMetadata() throws Exception {
         JSONObject library = new JSONObject("{\"revision\":\"42\",\"api_version\":\"1\"," +
                 "\"games\":[{\"id\":\"00000001-0000-0000-0000-000000000000\"," +
-                "\"name\":\"Game\",\"isInstalled\":true,\"hidden\":false," +
+                "\"name\":\"Game\",\"isInstalled\":false,\"isInstalling\":true," +
+                "\"hidden\":false," +
                 "\"playtime\":3600,\"lastActivity\":\"2026-07-20T10:00:00Z\"," +
                 "\"source\":\"Steam\",\"description\":\"Short overview\",\"playCount\":17," +
                 "\"cover\":\"hash\"}]}" );
@@ -68,6 +69,7 @@ public class HostGatewayClientTest {
         assertEquals("Steam", parsed.games.get(0).source);
         assertEquals("Short overview", parsed.games.get(0).description);
         assertEquals(17, parsed.games.get(0).playCount);
+        assertTrue(parsed.games.get(0).installing);
         assertEquals("42", parsed.revision);
     }
 }

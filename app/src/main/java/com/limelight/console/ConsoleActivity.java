@@ -130,6 +130,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private static final long DISCOVERY_INTERVAL_MS = 60_000L;
     private static final long DISCOVERY_VISIBLE_MS = 4_000L;
     private static final long PLAYNITE_REFRESH_MS = 60_000L;
+    private static final long PLAYNITE_INSTALL_REFRESH_MS = 3_000L;
     private static final long VIBEPOLLO_APP_WAIT_MS = 5 * 60_000L;
     private static final long VIBEPOLLO_ENSURE_RETRY_MS = 3_000L;
     private static final long VIBEPOLLO_APP_STABLE_MS = 30_000L;
@@ -213,11 +214,15 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private TextView expandedGameFacts;
     private TextView expandedGameDescription;
     private TextView expandedFilterButton;
+    private TextView expandedSourceFilterButton;
+    private TextView expandedPageIndicator;
     private PopupWindow playniteFilterPopup;
     private ScrollView expandedDescriptionScroll;
     private int expandedDescriptionScrollGeneration;
     private boolean expandedLibraryMode;
     private boolean libraryTransitionRunning;
+    private int expandedLibraryPage;
+    private int pendingExpandedFocusIndex = -1;
     private List<PlayniteDashboardItem> renderedExpandedItems = Collections.emptyList();
     private ProgressBar discoverySpinner;
     private TextView quickResumeButton;
@@ -251,6 +256,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private String resumePlayniteGameId = "";
     private final Set<String> vibepolloEnsureInFlight =
             Collections.synchronizedSet(new HashSet<>());
+    private final Map<String, String> playniteInstallRequests = new LinkedHashMap<>();
+    private final Set<String> playniteInstallObserved = new HashSet<>();
     private List<NvApp> currentSunshineApps = Collections.emptyList();
     private boolean playniteLibraryCached;
     private boolean playniteLibraryRefreshing;
@@ -445,6 +452,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 return true;
             }
         }
+        if (handleExpandedGridPaging(event)) return true;
         return super.dispatchKeyEvent(event);
     }
 
@@ -973,6 +981,35 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
         expandedFilterParams.topMargin = dp(8);
         details.addView(expandedFilterButton, expandedFilterParams);
+
+        expandedSourceFilterButton = text(getString(R.string.playnite_sources_all),
+                11, 0xFFD7E4EA, true);
+        expandedSourceFilterButton.setId(View.generateViewId());
+        expandedSourceFilterButton.setFocusable(true);
+        expandedSourceFilterButton.setClickable(true);
+        expandedSourceFilterButton.setGravity(Gravity.CENTER);
+        expandedSourceFilterButton.setMinHeight(dp(42));
+        expandedSourceFilterButton.setPadding(dp(12), dp(4), dp(12), dp(4));
+        expandedSourceFilterButton.setCompoundDrawablesWithIntrinsicBounds(
+                R.drawable.ic_console_library_grid, 0, 0, 0);
+        expandedSourceFilterButton.setCompoundDrawablePadding(dp(7));
+        expandedSourceFilterButton.setOnClickListener(view ->
+                showPlayniteSourceSelector(expandedSourceFilterButton));
+        expandedSourceFilterButton.setOnFocusChangeListener((view, focused) -> {
+            styleSourceFilterButton(focused);
+            if (focused) stopExpandedDescriptionAutoScroll();
+        });
+        LinearLayout.LayoutParams expandedSourceParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
+        expandedSourceParams.topMargin = dp(6);
+        details.addView(expandedSourceFilterButton, expandedSourceParams);
+
+        expandedPageIndicator = text("", 9, 0xFF8F9AAF, false);
+        expandedPageIndicator.setGravity(Gravity.CENTER_HORIZONTAL);
+        expandedPageIndicator.setFocusable(false);
+        LinearLayout.LayoutParams pageIndicatorParams = matchLinearWidth();
+        pageIndicatorParams.topMargin = dp(7);
+        details.addView(expandedPageIndicator, pageIndicatorParams);
 
         LinearLayout.LayoutParams detailsParams = new LinearLayout.LayoutParams(
                 dp(205), ViewGroup.LayoutParams.MATCH_PARENT);
@@ -2169,7 +2206,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             playniteLibraryRefreshing = false;
             playniteLibraryError = PlayniteLibraryRepository.ErrorKind.AUTHENTICATION;
             updatePlayniteLibraryStatus(host);
-            mainHandler.postDelayed(playniteRefreshCycle, PLAYNITE_REFRESH_MS);
+            scheduleNextPlayniteRefresh();
             return;
         }
         cancelPlayniteRequest();
@@ -2180,16 +2217,19 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         playniteRequest = playniteExecutor.submit(() -> {
             PlayniteLibraryRepository.Result result = playniteLibraryRepository.refresh(
                     host.uuid, connection, () -> token != playniteGeneration.get() ||
-                            Thread.currentThread().isInterrupted());
+                            Thread.currentThread().isInterrupted(), manual);
             mainHandler.post(() -> {
                 if (token != playniteGeneration.get() || !active ||
                         !host.uuid.equals(selectedHostUuid)) return;
                 playniteLibraryRefreshing = false;
                 if (result.entry != null) {
+                    List<PlayniteLibraryGame> previousGames = currentPlayniteGames;
                     boolean libraryChanged = !result.entry.games.equals(currentPlayniteGames);
                     currentPlayniteGames = result.entry.games;
                     playniteLibraryCached = false;
                     playniteLibraryError = null;
+                    reconcilePlayniteInstallations(host, previousGames,
+                            currentPlayniteGames);
                     if (libraryChanged) renderPlayniteLibrary(host, currentSunshineApps);
                     else updatePlayniteLibraryStatus(host);
                 } else {
@@ -2198,9 +2238,69 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     updatePlayniteLibraryStatus(host);
                 }
                 mainHandler.removeCallbacks(playniteRefreshCycle);
-                mainHandler.postDelayed(playniteRefreshCycle, PLAYNITE_REFRESH_MS);
+                scheduleNextPlayniteRefresh();
             });
         });
+    }
+
+    private void scheduleNextPlayniteRefresh() {
+        mainHandler.removeCallbacks(playniteRefreshCycle);
+        mainHandler.postDelayed(playniteRefreshCycle,
+                hasActivePlayniteInstallation()
+                        ? PLAYNITE_INSTALL_REFRESH_MS : PLAYNITE_REFRESH_MS);
+    }
+
+    private boolean hasActivePlayniteInstallation() {
+        if (!playniteInstallRequests.isEmpty()) return true;
+        for (PlayniteLibraryGame game : currentPlayniteGames) {
+            if (game.installing) return true;
+        }
+        return false;
+    }
+
+    private void reconcilePlayniteInstallations(ComputerDetails host,
+                                                List<PlayniteLibraryGame> previous,
+                                                List<PlayniteLibraryGame> current) {
+        if (host == null || playniteInstallRequests.isEmpty()) return;
+        Map<String, PlayniteLibraryGame> currentById = new LinkedHashMap<>();
+        for (PlayniteLibraryGame game : current) {
+            currentById.put(game.playniteGameId, game);
+        }
+        List<String> completed = new ArrayList<>();
+        for (Map.Entry<String, String> request : playniteInstallRequests.entrySet()) {
+            String prefix = host.uuid + ":";
+            if (!request.getKey().startsWith(prefix)) continue;
+            String gameId = request.getKey().substring(prefix.length());
+            PlayniteLibraryGame game = currentById.get(gameId);
+            if (game == null) continue;
+            if (game.installing) {
+                playniteInstallObserved.add(request.getKey());
+                continue;
+            }
+            if (game.installed) {
+                boolean alreadyShownInStream = preferences.getLong(
+                        playniteInstallNotificationKey(host.uuid, gameId), 0L) > 0L;
+                if (!alreadyShownInStream) {
+                    Toast.makeText(this, getString(R.string.playnite_install_complete,
+                            request.getValue()), Toast.LENGTH_LONG).show();
+                }
+                preferences.edit().remove(
+                        playniteInstallNotificationKey(host.uuid, gameId)).apply();
+                completed.add(request.getKey());
+            } else if (playniteInstallObserved.contains(request.getKey())) {
+                Toast.makeText(this, getString(R.string.playnite_install_cancelled,
+                        request.getValue()), Toast.LENGTH_LONG).show();
+                completed.add(request.getKey());
+            }
+        }
+        for (String key : completed) {
+            playniteInstallRequests.remove(key);
+            playniteInstallObserved.remove(key);
+        }
+    }
+
+    private static String playniteInstallNotificationKey(String hostUuid, String gameId) {
+        return "playnite_install_notified." + hostUuid + ":" + gameId;
     }
 
     private void cancelPlayniteRequest() {
@@ -2263,6 +2363,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         styleFilterButton(expandedFilterButton,
                 expandedFilterButton != null && expandedFilterButton.hasFocus()
                         || focused && expandedLibraryMode);
+        styleSourceFilterButton(expandedSourceFilterButton != null
+                && expandedSourceFilterButton.hasFocus());
     }
 
     private void styleFilterButton(TextView button, boolean focused) {
@@ -2282,6 +2384,31 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         background.setStroke(dp(focused ? 2 : 1), focused ? 0xFF8DDCFF
                 : activeFilter ? 0x8873D7FF : 0x384C5962);
         button.setBackground(background);
+    }
+
+    private void styleSourceFilterButton(boolean focused) {
+        if (expandedSourceFilterButton == null) return;
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        Set<String> selected = host == null ? null
+                : hostGatewayStore.playniteLibrarySources(host.uuid);
+        Map<String, String> available = PlayniteLibrarySources.available(
+                currentPlayniteGames,
+                getResources().getConfiguration().getLocales().get(0));
+        boolean activeFilter = selected != null
+                && !selected.equals(available.keySet());
+        String label = activeFilter
+                ? getString(R.string.playnite_sources_selected,
+                selected.size(), available.size())
+                : getString(R.string.playnite_sources_all);
+        expandedSourceFilterButton.setText(label);
+        expandedSourceFilterButton.setContentDescription(getString(
+                R.string.playnite_sources_filter_description, label));
+        int top = focused ? 0xFF24343F : activeFilter ? 0x55314755 : 0x26242B32;
+        int bottom = focused ? 0xFF18242C : activeFilter ? 0x55314755 : 0x4813181D;
+        GradientDrawable background = gradient(top, bottom, 10);
+        background.setStroke(dp(focused ? 2 : 1), focused ? 0xFF8DDCFF
+                : activeFilter ? 0x8873D7FF : 0x384C5962);
+        expandedSourceFilterButton.setBackground(background);
     }
 
     private int playniteFilterLabel(PlayniteLibraryFilter filter) {
@@ -2358,6 +2485,130 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
     }
 
+    private void showPlayniteSourceSelector(TextView anchor) {
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (!expandedLibraryMode || host == null || anchor == null) return;
+        if (playniteFilterPopup != null && playniteFilterPopup.isShowing()) {
+            playniteFilterPopup.dismiss();
+        }
+        Locale locale = getResources().getConfiguration().getLocales().get(0);
+        Map<String, String> available = PlayniteLibrarySources.available(
+                currentPlayniteGames, locale);
+        Set<String> stored = hostGatewayStore.playniteLibrarySources(host.uuid);
+        Set<String> selected = new LinkedHashSet<>(stored == null
+                ? available.keySet() : stored);
+        selected.retainAll(available.keySet());
+
+        LinearLayout menu = new LinearLayout(this);
+        menu.setOrientation(LinearLayout.VERTICAL);
+        menu.setPadding(dp(7), dp(7), dp(7), dp(7));
+        GradientDrawable panel = gradient(0xFC182129, 0xFC0C1116, 12);
+        panel.setStroke(dp(1), 0x886E8291);
+        menu.setBackground(panel);
+
+        Map<String, TextView> sourceItems = new LinkedHashMap<>();
+        TextView all = sourceFilterOption(getString(R.string.playnite_sources_all));
+        menu.addView(all, sourceFilterOptionParams(menu));
+        for (Map.Entry<String, String> source : available.entrySet()) {
+            TextView item = sourceFilterOption(source.getValue());
+            sourceItems.put(source.getKey(), item);
+            menu.addView(item, sourceFilterOptionParams(menu));
+        }
+        Runnable refreshStyles = () -> {
+            styleSourceFilterOption(all,
+                    selected.size() == available.size(), all.hasFocus());
+            for (Map.Entry<String, TextView> source : sourceItems.entrySet()) {
+                TextView item = source.getValue();
+                styleSourceFilterOption(item, selected.contains(source.getKey()),
+                        item.hasFocus());
+            }
+        };
+        all.setOnClickListener(view -> {
+            if (selected.size() == available.size()) selected.clear();
+            else {
+                selected.clear();
+                selected.addAll(available.keySet());
+            }
+            refreshStyles.run();
+        });
+        all.setOnFocusChangeListener((view, focused) -> refreshStyles.run());
+        for (Map.Entry<String, TextView> source : sourceItems.entrySet()) {
+            source.getValue().setOnClickListener(view -> {
+                if (!selected.add(source.getKey())) selected.remove(source.getKey());
+                refreshStyles.run();
+            });
+            source.getValue().setOnFocusChangeListener((view, focused) ->
+                    refreshStyles.run());
+        }
+        TextView done = sourceFilterOption(getString(R.string.playnite_sources_done));
+        done.setOnClickListener(view -> playniteFilterPopup.dismiss());
+        done.setOnFocusChangeListener((view, focused) ->
+                styleSourceFilterOption(done, false, focused));
+        menu.addView(done, sourceFilterOptionParams(menu));
+        refreshStyles.run();
+
+        playniteFilterPopup = new PopupWindow(menu, dp(270),
+                ViewGroup.LayoutParams.WRAP_CONTENT, true);
+        playniteFilterPopup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
+        playniteFilterPopup.setOutsideTouchable(true);
+        playniteFilterPopup.setClippingEnabled(true);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
+            playniteFilterPopup.setElevation(dp(12));
+        }
+        playniteFilterPopup.setOnDismissListener(() -> {
+            hostGatewayStore.setPlayniteLibrarySources(host.uuid, selected);
+            expandedLibraryPage = 0;
+            pendingExpandedFocusIndex = 0;
+            renderPlayniteLibrary(host, currentSunshineApps);
+            if (expandedSourceFilterButton != null) {
+                expandedSourceFilterButton.post(
+                        expandedSourceFilterButton::requestFocus);
+            }
+        });
+        int[] location = new int[2];
+        anchor.getLocationOnScreen(location);
+        int optionCount = available.size() + 2;
+        int menuHeight = dp(14 + optionCount * 42
+                + Math.max(0, optionCount - 1) * 3);
+        int x = Math.max(dp(12), location[0]);
+        int y = Math.max(dp(12), location[1] - menuHeight - dp(6));
+        playniteFilterPopup.showAtLocation(homeLayer, Gravity.NO_GRAVITY, x, y);
+        all.post(all::requestFocus);
+    }
+
+    private TextView sourceFilterOption(String label) {
+        TextView item = text(label, 15, Color.WHITE, false);
+        item.setFocusable(true);
+        item.setClickable(true);
+        item.setSingleLine(true);
+        item.setGravity(Gravity.CENTER_VERTICAL);
+        item.setMinHeight(dp(42));
+        item.setPadding(dp(14), 0, dp(14), 0);
+        item.setCompoundDrawablePadding(dp(8));
+        return item;
+    }
+
+    private LinearLayout.LayoutParams sourceFilterOptionParams(LinearLayout menu) {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
+        if (menu.getChildCount() > 0) params.topMargin = dp(3);
+        return params;
+    }
+
+    private void styleSourceFilterOption(TextView item, boolean selected,
+                                         boolean focused) {
+        GradientDrawable background = gradient(
+                focused ? 0xFF334653 : selected ? 0xAA294252 : 0x00182129,
+                focused ? 0xFF1E2C35 : selected ? 0xAA1B303D : 0x000C1116, 8);
+        background.setStroke(dp(focused ? 2 : 1),
+                focused ? 0xFF8DDCFF : selected ? 0x8873D7FF : 0x223F4C54);
+        item.setBackground(background);
+        item.setTextColor(focused || selected ? Color.WHITE : 0xFFCFD8DE);
+        item.setCompoundDrawablesWithIntrinsicBounds(
+                selected ? android.R.drawable.checkbox_on_background
+                        : android.R.drawable.checkbox_off_background, 0, 0, 0);
+    }
+
     private void stylePlayniteFilterOption(TextView item, boolean selected, boolean focused) {
         GradientDrawable background = gradient(
                 focused ? 0xFF334653 : selected ? 0xAA294252 : 0x00182129,
@@ -2373,6 +2624,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private void applyPlayniteFilter(ComputerDetails host, PlayniteLibraryFilter filter,
                                      TextView anchor) {
         hostGatewayStore.setPlayniteLibraryFilter(host.uuid, filter);
+        expandedLibraryPage = 0;
+        pendingExpandedFocusIndex = 0;
         if (playniteFilterPopup != null) playniteFilterPopup.dismiss();
         renderPlayniteLibrary(host, currentSunshineApps);
         TextView target = expandedLibraryMode && expandedFilterButton != null
@@ -2383,15 +2636,21 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private void renderPlayniteLibrary(ComputerDetails host, List<NvApp> apps) {
         if (host == null || !host.uuid.equals(selectedHostUuid)) return;
+        List<PlayniteLibraryGame> sourceFiltered = PlayniteLibrarySources.filter(
+                currentPlayniteGames,
+                hostGatewayStore.playniteLibrarySources(host.uuid));
         List<PlayniteLibraryGame> ordered = PlayniteLibraryOrdering.order(
-                currentPlayniteGames, hostGatewayStore.playniteLibraryFilter(host.uuid),
+                sourceFiltered, hostGatewayStore.playniteLibraryFilter(host.uuid),
                 getResources().getConfiguration().getLocales().get(0));
+        ordered = promoteInstallingGames(host, ordered, sourceFiltered);
         List<PlayniteDashboardItem> items = new ArrayList<>();
+        boolean appListAuthoritative = ConsoleActionCatalog.isOnline(host);
         for (PlayniteLibraryGame game : ordered) {
             items.add(PlayniteTargetResolver.resolve(host.uuid, game, apps,
-                    playniteLaunchTargetStore));
+                    playniteLaunchTargetStore, appListAuthoritative));
         }
         if (BuildConfig.DEBUG) {
+            items = putInstallingItemsFirst(host, items);
             items = putActiveSessionFirst(host, items);
         } else {
             resumePlayniteGameId = "";
@@ -2456,6 +2715,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (!BuildConfig.DEBUG || expandedLibrary == null || allPlayniteItems.isEmpty()
                 || libraryTransitionRunning) return;
         expandedLibraryMode = true;
+        expandedLibraryPage = 0;
+        pendingExpandedFocusIndex = 0;
         ComputerDetails host = hosts.get(selectedHostUuid);
         if (host != null) renderExpandedLibrary(host);
         if (reducedMotion) {
@@ -2486,6 +2747,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         stopExpandedDescriptionAutoScroll();
         if (reducedMotion) {
             expandedLibrary.setVisibility(View.GONE);
+            releaseExpandedGrid();
             revealNormalLibraryAfterTransition();
             return;
         }
@@ -2497,6 +2759,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     expandedLibrary.setVisibility(View.GONE);
                     expandedLibrary.setAlpha(1f);
                     expandedLibrary.setTranslationX(0f);
+                    releaseExpandedGrid();
                 }).start();
         animateNormalLibraryIn();
     }
@@ -2568,21 +2831,44 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private void renderExpandedLibrary(ComputerDetails host) {
         if (!expandedLibraryMode || expandedGrid == null || host == null) return;
         boolean filterFocused = expandedFilterButton.hasFocus();
+        boolean sourceFilterFocused = expandedSourceFilterButton != null
+                && expandedSourceFilterButton.hasFocus();
         Object focusedTag = getCurrentFocus() != null ? getCurrentFocus().getTag() : null;
-        if (allPlayniteItems.equals(renderedExpandedItems)
-                && expandedGrid.getChildCount() == allPlayniteItems.size()) {
+        int columns = expandedGridColumns();
+        int pageSize = Math.max(columns, columns * 3);
+        int pageCount = Math.max(1, (allPlayniteItems.size() + pageSize - 1) / pageSize);
+        if (pendingExpandedFocusIndex < 0
+                && focusedTag instanceof String && ((String) focusedTag).startsWith("playnite:")
+                && isDescendant(expandedGrid, getCurrentFocus())) {
+            String stableId = ((String) focusedTag).substring("playnite:".length());
+            int focusedItem = expandedItemIndex(stableId);
+            if (focusedItem >= 0) expandedLibraryPage = focusedItem / pageSize;
+        }
+        expandedLibraryPage = Math.max(0, Math.min(expandedLibraryPage, pageCount - 1));
+        int pageStart = expandedLibraryPage * pageSize;
+        int pageEnd = Math.min(allPlayniteItems.size(), pageStart + pageSize);
+        List<PlayniteDashboardItem> pageItems = new ArrayList<>(
+                allPlayniteItems.subList(pageStart, pageEnd));
+        updateExpandedPageIndicator(pageCount);
+        if (pageItems.equals(renderedExpandedItems)
+                && expandedGrid.getChildCount() == pageItems.size()) {
             styleFilterButton(expandedFilterButton, filterFocused);
+            styleSourceFilterButton(sourceFilterFocused);
             View cachedTarget = focusedTag != null
                     ? directChildWithTag(expandedGrid, focusedTag) : firstFocusableChild(expandedGrid);
             if (filterFocused) expandedFilterButton.post(expandedFilterButton::requestFocus);
+            else if (sourceFilterFocused) {
+                expandedSourceFilterButton.post(expandedSourceFilterButton::requestFocus);
+            }
             else if (cachedTarget != null) cachedTarget.post(cachedTarget::requestFocus);
             return;
         }
+        releaseExpandedGridArtwork();
         expandedGrid.removeAllViews();
-        int columns = expandedGridColumns();
         expandedGrid.setColumnCount(columns);
-        for (int index = 0; index < allPlayniteItems.size(); index++) {
-            PlayniteDashboardItem item = allPlayniteItems.get(index);
+        List<View> gridCards = new ArrayList<>();
+        for (int index = 0; index < pageItems.size(); index++) {
+            PlayniteDashboardItem item = pageItems.get(index);
             View card = playniteCard(host, item, currentSunshineApps);
             GridLayout.LayoutParams params = new GridLayout.LayoutParams(
                     GridLayout.spec(index / columns), GridLayout.spec(index % columns));
@@ -2590,27 +2876,135 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             params.height = dp(132);
             params.setMargins(dp(4), dp(4), dp(4), dp(4));
             expandedGrid.addView(card, params);
+            gridCards.add(card);
             ImageView poster = (ImageView) findTaggedChild((ViewGroup) card, "playnite.poster");
             if (poster != null) loadPlaynitePoster(host, item, poster, false);
-            if (index % columns == 0) {
-                card.setNextFocusLeftId(expandedFilterButton.getId());
+        }
+        for (int index = 0; index < gridCards.size(); index++) {
+            View card = gridCards.get(index);
+            int column = index % columns;
+            int row = index / columns;
+            int lastRow = (gridCards.size() - 1) / columns;
+            card.setNextFocusLeftId(column == 0
+                    ? expandedFilterButton.getId() : gridCards.get(index - 1).getId());
+            card.setNextFocusRightId(index + 1 < gridCards.size() && column + 1 < columns
+                    ? gridCards.get(index + 1).getId() : card.getId());
+            if (row == lastRow) {
+                card.setNextFocusDownId(card.getId());
+            } else {
+                int below = Math.min(index + columns, gridCards.size() - 1);
+                card.setNextFocusDownId(gridCards.get(below).getId());
             }
         }
         renderedExpandedItems = Collections.unmodifiableList(
-                new ArrayList<>(allPlayniteItems));
+                new ArrayList<>(pageItems));
         styleFilterButton(expandedFilterButton, false);
-        View target = focusedTag != null ? directChildWithTag(expandedGrid, focusedTag) : null;
+        styleSourceFilterButton(false);
+        View target = pendingExpandedFocusIndex >= 0
+                && pendingExpandedFocusIndex < gridCards.size()
+                ? gridCards.get(pendingExpandedFocusIndex)
+                : focusedTag != null ? directChildWithTag(expandedGrid, focusedTag) : null;
+        pendingExpandedFocusIndex = -1;
         if (target == null) target = firstFocusableChild(expandedGrid);
         View first = firstFocusableChild(expandedGrid);
         if (first != null) {
             expandedFilterButton.setNextFocusRightId(first.getId());
-            expandedFilterButton.setNextFocusDownId(first.getId());
+            expandedFilterButton.setNextFocusUpId(expandedFilterButton.getId());
+            expandedFilterButton.setNextFocusDownId(expandedSourceFilterButton.getId());
+            expandedSourceFilterButton.setNextFocusUpId(expandedFilterButton.getId());
+            expandedSourceFilterButton.setNextFocusDownId(
+                    expandedSourceFilterButton.getId());
+            expandedSourceFilterButton.setNextFocusRightId(first.getId());
         }
         if (filterFocused) {
             expandedFilterButton.post(expandedFilterButton::requestFocus);
+        } else if (sourceFilterFocused) {
+            expandedSourceFilterButton.post(expandedSourceFilterButton::requestFocus);
         } else if (target != null) {
             View focusTarget = target;
             focusTarget.post(focusTarget::requestFocus);
+        }
+        expandedGridScroll.scrollTo(0, 0);
+        expandedGrid.setAlpha(reducedMotion ? 1f : .35f);
+        expandedGrid.animate().alpha(1f).setDuration(reducedMotion ? 0L : 140L).start();
+        schedulePlayniteArtworkPrefetch(host, pageItems, false);
+    }
+
+    private int expandedItemIndex(String stableId) {
+        for (int index = 0; index < allPlayniteItems.size(); index++) {
+            if (allPlayniteItems.get(index).stableId().equals(stableId)) return index;
+        }
+        return -1;
+    }
+
+    private void updateExpandedPageIndicator(int pageCount) {
+        if (expandedPageIndicator == null) return;
+        expandedPageIndicator.setText(getString(R.string.playnite_library_page,
+                expandedLibraryPage + 1, pageCount));
+    }
+
+    private boolean handleExpandedGridPaging(KeyEvent event) {
+        if (!expandedLibraryMode || expandedGrid == null || event == null
+                || event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() != 0) {
+            return false;
+        }
+        int direction = event.getKeyCode();
+        if (direction != KeyEvent.KEYCODE_DPAD_DOWN
+                && direction != KeyEvent.KEYCODE_DPAD_UP) return false;
+        View focused = getCurrentFocus();
+        int index = expandedGrid.indexOfChild(focused);
+        if (index < 0) return false;
+        int columns = expandedGridColumns();
+        int pageSize = columns * 3;
+        int pageCount = Math.max(1, (allPlayniteItems.size() + pageSize - 1) / pageSize);
+        int row = index / columns;
+        int lastRow = Math.max(0, (expandedGrid.getChildCount() - 1) / columns);
+        int column = index % columns;
+        if (direction == KeyEvent.KEYCODE_DPAD_DOWN
+                && row == lastRow && expandedLibraryPage + 1 < pageCount) {
+            expandedLibraryPage++;
+            pendingExpandedFocusIndex = Math.min(column,
+                    Math.max(0, Math.min(pageSize, allPlayniteItems.size()
+                            - expandedLibraryPage * pageSize) - 1));
+        } else if (direction == KeyEvent.KEYCODE_DPAD_UP
+                && row == 0 && expandedLibraryPage > 0) {
+            expandedLibraryPage--;
+            int itemsOnPreviousPage = Math.min(pageSize,
+                    allPlayniteItems.size() - expandedLibraryPage * pageSize);
+            int previousLastRowStart = Math.max(0,
+                    ((itemsOnPreviousPage - 1) / columns) * columns);
+            pendingExpandedFocusIndex = previousLastRowStart
+                    + Math.min(column, itemsOnPreviousPage - previousLastRowStart - 1);
+        } else {
+            return false;
+        }
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host != null) renderExpandedLibrary(host);
+        return true;
+    }
+
+    private void releaseExpandedGrid() {
+        if (expandedGrid == null) return;
+        releaseExpandedGridArtwork();
+        expandedGrid.removeAllViews();
+        renderedExpandedItems = Collections.emptyList();
+        pendingExpandedFocusIndex = -1;
+    }
+
+    private void releaseExpandedGridArtwork() {
+        if (expandedGrid == null) return;
+        for (int index = 0; index < expandedGrid.getChildCount(); index++) {
+            View child = expandedGrid.getChildAt(index);
+            if (!(child instanceof ViewGroup)) continue;
+            ImageView poster = (ImageView) findTaggedChild(
+                    (ViewGroup) child, "playnite.poster");
+            ImageView backdrop = (ImageView) findTaggedChild(
+                    (ViewGroup) child, "playnite.poster.backdrop");
+            if (poster != null) {
+                poster.setTag(R.id.playnite_artwork_key, "released");
+                poster.setImageDrawable(null);
+            }
+            if (backdrop != null) backdrop.setImageDrawable(null);
         }
     }
 
@@ -2658,6 +3052,38 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         reordered.remove(active);
         reordered.add(0, active);
         return reordered;
+    }
+
+    private List<PlayniteLibraryGame> promoteInstallingGames(
+            ComputerDetails host, List<PlayniteLibraryGame> ordered,
+            List<PlayniteLibraryGame> sourceFiltered) {
+        if (host == null || sourceFiltered.isEmpty()) return ordered;
+        List<PlayniteLibraryGame> result = new ArrayList<>();
+        Set<String> included = new HashSet<>();
+        for (PlayniteLibraryGame game : sourceFiltered) {
+            if (isPlayniteInstalling(host.uuid, game)) {
+                result.add(game);
+                included.add(game.playniteGameId);
+            }
+        }
+        for (PlayniteLibraryGame game : ordered) {
+            if (included.add(game.playniteGameId)) result.add(game);
+        }
+        return result;
+    }
+
+    private List<PlayniteDashboardItem> putInstallingItemsFirst(
+            ComputerDetails host, List<PlayniteDashboardItem> items) {
+        if (host == null || items.isEmpty()) return items;
+        List<PlayniteDashboardItem> installing = new ArrayList<>();
+        List<PlayniteDashboardItem> remaining = new ArrayList<>();
+        for (PlayniteDashboardItem item : items) {
+            if (isPlayniteInstalling(host.uuid, item)) installing.add(item);
+            else remaining.add(item);
+        }
+        if (installing.isEmpty()) return items;
+        installing.addAll(remaining);
+        return installing;
     }
 
     private void applyPlayniteDiff(ComputerDetails host, List<NvApp> apps,
@@ -2716,7 +3142,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             if (card == null || "playnite.empty".equals(card.getTag())) {
                 card = playniteCard(host, item, apps);
             } else if (!item.equals(old)
-                    || isVibepolloEnsureInFlight(host.uuid, item)) {
+                    || isVibepolloEnsureInFlight(host.uuid, item)
+                    || isPlayniteInstalling(host.uuid, item)) {
                 bindPlayniteCard(card, host, item, apps,
                         !item.equals(old) ? playnitePayload(old, item)
                                 : PlayniteLibraryDiff.TEXT);
@@ -2762,6 +3189,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 PlayniteLibraryDiff.LAUNCH;
         int payload = 0;
         if (!old.game.name.equals(item.game.name) || old.game.installed != item.game.installed ||
+                old.game.installing != item.game.installing ||
                 old.game.playtimeSeconds != item.game.playtimeSeconds ||
                 old.game.playCount != item.game.playCount ||
                 !old.game.description.equals(item.game.description) ||
@@ -2866,6 +3294,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         boolean resumeSession = BuildConfig.DEBUG
                 && item.stableId().equals(resumePlayniteGameId)
                 && host.runningGameId != 0;
+        boolean installing = isPlayniteInstalling(host.uuid, item);
+        card.setAlpha(installing ? .55f : 1f);
         String stateText = resumeSession
                 ? getString(R.string.console_resume_session) : playniteState(host.uuid, item);
         if ((payload & PlayniteLibraryDiff.TEXT) != 0) {
@@ -2888,6 +3318,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 item.game.name, playtimeText, stateText));
         card.setOnFocusChangeListener((view, focused) -> {
             styleCard(card, focused);
+            card.setAlpha(isPlayniteInstalling(host.uuid, item) ? .55f : 1f);
             updateCarouselMarquee(name, focused);
             if (focused) {
                 showGameMetadata(item);
@@ -2958,9 +3389,20 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             return;
         }
         if (expandedDescriptionScroll.getScrollY() > 0) {
-            expandedDescriptionScroll.smoothScrollTo(0, 0);
             mainHandler.postDelayed(
-                    () -> advanceExpandedDescriptionAutoScroll(generation), 2_000L);
+                    () -> {
+                        if (generation != expandedDescriptionScrollGeneration
+                                || !expandedLibraryMode
+                                || expandedDescriptionScroll == null) return;
+                        View currentFocus = getCurrentFocus();
+                        if (currentFocus == null || expandedGrid == null
+                                || !isDescendant(expandedGrid, currentFocus)) return;
+                        expandedDescriptionScroll.smoothScrollTo(0, 0);
+                        mainHandler.postDelayed(
+                                () -> advanceExpandedDescriptionAutoScroll(generation),
+                                2_000L);
+                    },
+                    2_500L);
         }
     }
 
@@ -3003,6 +3445,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private String playniteState(String hostUuid, PlayniteDashboardItem item) {
+        if (isPlayniteInstalling(hostUuid, item)) {
+            return getString(R.string.playnite_installing);
+        }
         if (!item.game.installed) return getString(R.string.playnite_not_installed);
         if (isVibepolloEnsureInFlight(hostUuid, item)) {
             return getString(R.string.playnite_creating_vibepollo_app);
@@ -3022,6 +3467,24 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private boolean isVibepolloEnsureInFlight(String hostUuid, PlayniteDashboardItem item) {
         return vibepolloEnsureInFlight.contains(vibepolloEnsureKey(hostUuid, item));
+    }
+
+    private String playniteInstallKey(String hostUuid, PlayniteDashboardItem item) {
+        return playniteInstallKey(hostUuid, item.game.playniteGameId);
+    }
+
+    private String playniteInstallKey(String hostUuid, String gameId) {
+        return hostUuid + ":" + gameId;
+    }
+
+    private boolean isPlayniteInstalling(String hostUuid, PlayniteDashboardItem item) {
+        return item.game.installing
+                || playniteInstallRequests.containsKey(playniteInstallKey(hostUuid, item));
+    }
+
+    private boolean isPlayniteInstalling(String hostUuid, PlayniteLibraryGame game) {
+        return game.installing || playniteInstallRequests.containsKey(
+                playniteInstallKey(hostUuid, game.playniteGameId));
     }
 
     private void resetPlaynitePoster(ImageView poster, PlayniteDashboardItem item) {
@@ -3090,12 +3553,18 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private void schedulePlayniteArtworkPrefetch(ComputerDetails host,
                                                   List<PlayniteDashboardItem> items) {
+        schedulePlayniteArtworkPrefetch(host, items, true);
+    }
+
+    private void schedulePlayniteArtworkPrefetch(ComputerDetails host,
+                                                  List<PlayniteDashboardItem> items,
+                                                  boolean includeBackdrops) {
         if (!active || host == null || items.isEmpty()) return;
         StringBuilder signature = new StringBuilder(host.uuid);
         for (PlayniteDashboardItem item : items) {
             signature.append('|').append(item.stableId()).append(':')
                     .append(playniteCardArtworkSpec(item.game).cacheIdentity());
-            if (BuildConfig.DEBUG) {
+            if (BuildConfig.DEBUG && includeBackdrops) {
                 signature.append(':')
                         .append(PlayniteArtworkSpec.forBackdrop(
                                 item.game).cacheIdentity());
@@ -3133,7 +3602,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     ArtworkResult ready = result;
                     mainHandler.post(() -> applyPrefetchedPlayniteArtwork(
                             token, latestHost.uuid, item, ready));
-                    if (BuildConfig.DEBUG) {
+                    if (BuildConfig.DEBUG && includeBackdrops) {
                         PlayniteArtworkSpec backdropSpec =
                                 PlayniteArtworkSpec.forBackdrop(item.game);
                         if (backdropSpec.available()
@@ -3220,6 +3689,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                                                  ArtworkResult result) {
         if (token != playniteArtworkGeneration.get() || !hostUuid.equals(selectedHostUuid)) return;
         View card = directChildWithTag(appRow, "playnite:" + item.stableId());
+        if (card == null && expandedGrid != null) {
+            card = directChildWithTag(expandedGrid, "playnite:" + item.stableId());
+        }
         if (!(card instanceof ViewGroup)) return;
         ImageView poster = (ImageView) findTaggedChild((ViewGroup) card, "playnite.poster");
         if (poster == null || !playniteArtworkTag(item).equals(
@@ -3358,9 +3830,14 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             Toast.makeText(this, R.string.error_pc_offline, Toast.LENGTH_SHORT).show();
             return;
         }
+        if (isPlayniteInstalling(hostUuid, item)) {
+            Toast.makeText(this, getString(R.string.playnite_install_in_progress,
+                    item.game.name), Toast.LENGTH_SHORT).show();
+            return;
+        }
         List<NvApp> apps = currentSunshineApps;
         if (!item.game.installed) {
-            Toast.makeText(this, R.string.playnite_not_installed, Toast.LENGTH_SHORT).show();
+            startPlayniteInstallation(host, item);
             return;
         }
         if (isVibepolloEnsureInFlight(hostUuid, item)) {
@@ -3369,7 +3846,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             return;
         }
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
-            NvApp target = PlayniteTargetResolver.findById(apps, item.sunshineAppId);
+            NvApp target = PlayniteTargetResolver.launchTarget(item, apps,
+                    ConsoleActionCatalog.isOnline(host));
             if (target != null) {
                 launchOrConfirm(host, target, LaunchTransitionType.GAME,
                         item.game.playniteGameId);
@@ -3377,7 +3855,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             }
         }
         if (item.mappingState == PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE) {
-            NvApp fallback = PlayniteTargetResolver.findById(apps, item.sunshineAppId);
+            NvApp fallback = PlayniteTargetResolver.launchTarget(item, apps,
+                    ConsoleActionCatalog.isOnline(host));
             if (fallback != null) {
                 launchOrConfirm(host, fallback, LaunchTransitionType.GAME,
                         item.game.playniteGameId);
@@ -3391,6 +3870,49 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             return;
         }
         showPlayniteTargetPicker(host, item, apps);
+    }
+
+    private void startPlayniteInstallation(ComputerDetails host,
+                                           PlayniteDashboardItem item) {
+        if (host == null || item == null) return;
+        String address = host.activeAddress != null ? host.activeAddress.address : null;
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(host.uuid, address);
+        if (connection == null) {
+            Toast.makeText(this, R.string.playnite_gateway_not_configured,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        String key = playniteInstallKey(host.uuid, item);
+        playniteInstallRequests.put(key, item.game.name);
+        playniteInstallObserved.remove(key);
+        preferences.edit().remove(playniteInstallNotificationKey(
+                host.uuid, item.game.playniteGameId)).apply();
+        renderPlayniteLibrary(host, currentSunshineApps);
+        Toast.makeText(this, getString(R.string.playnite_install_starting,
+                item.game.name), Toast.LENGTH_LONG).show();
+        executor.execute(() -> {
+            try {
+                hostGatewayClient.installPlayniteGame(
+                        connection, item.game.playniteGameId);
+                mainHandler.post(() -> {
+                    if (!active || !host.uuid.equals(selectedHostUuid)) return;
+                    requestPlayniteRefresh(currentHost(host.uuid), false);
+                });
+            } catch (IOException | RuntimeException error) {
+                mainHandler.post(() -> {
+                    playniteInstallRequests.remove(key);
+                    playniteInstallObserved.remove(key);
+                    ComputerDetails current = currentHost(host.uuid);
+                    if (current != null && host.uuid.equals(selectedHostUuid)) {
+                        renderedPlayniteItems = Collections.emptyList();
+                        renderPlayniteLibrary(current, currentSunshineApps);
+                    }
+                    Toast.makeText(this, getString(R.string.playnite_install_failed,
+                            item.game.name), Toast.LENGTH_LONG).show();
+                });
+            }
+        });
     }
 
     private void ensureVibepolloAppThenLaunch(ComputerDetails host,
@@ -5526,11 +6048,18 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         View belowApps = filter != null ? filter
                 : playnite != null ? playnite : controller;
         if (appRow != null) {
+            List<View> focusableApps = new ArrayList<>();
             for (int index = 0; index < appRow.getChildCount(); index++) {
                 View child = appRow.getChildAt(index);
                 if (!child.isFocusable()) continue;
+                focusableApps.add(child);
                 child.setNextFocusUpId(optionsButton.getId());
                 if (belowApps != null) child.setNextFocusDownId(belowApps.getId());
+            }
+            for (int index = 0; index < focusableApps.size(); index++) {
+                View child = focusableApps.get(index);
+                child.setNextFocusRightId(index + 1 < focusableApps.size()
+                        ? focusableApps.get(index + 1).getId() : child.getId());
             }
         }
     }

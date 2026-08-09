@@ -64,6 +64,7 @@ final class PlayniteLibraryCache {
                     if (!HostGatewayClient.isPlayniteId(id) || name.isEmpty()) continue;
                     games.add(new PlayniteLibraryGame(id, name,
                             value.optBoolean("installed", false),
+                            value.optBoolean("installing", false),
                             value.optBoolean("hidden", false),
                             Math.max(0L, value.optLong("playtime_seconds", 0L)),
                             value.optString("last_activity", ""),
@@ -98,6 +99,7 @@ final class PlayniteLibraryCache {
                 value.put("id", game.playniteGameId);
                 value.put("name", game.name);
                 value.put("installed", game.installed);
+                value.put("installing", game.installing);
                 value.put("hidden", game.hidden);
                 value.put("playtime_seconds", game.playtimeSeconds);
                 value.put("last_activity", game.lastActivity);

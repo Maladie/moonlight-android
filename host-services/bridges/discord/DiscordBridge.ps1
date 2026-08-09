@@ -1522,7 +1522,6 @@ function Get-EndpointResponse {
 
     switch ($path) {
         "/health" {
-            Try-EnsureRpcForHealth
             $connected = (
                 $null -ne $script:RpcStream -and
                 $script:RpcStream.IsConnected

@@ -14,7 +14,9 @@ PATCH_MARKER_V3 = "# WAKEPLAY-CONSOLE-BRIDGE-V3"
 PATCH_MARKER_V4 = "# WAKEPLAY-CONSOLE-BRIDGE-V4"
 PATCH_MARKER_V5 = "# WAKEPLAY-CONSOLE-BRIDGE-V5"
 PATCH_MARKER_V6 = "# WAKEPLAY-CONSOLE-BRIDGE-V6"
-PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V7"
+PATCH_MARKER_V7 = "# WAKEPLAY-CONSOLE-BRIDGE-V7"
+PATCH_MARKER_V8 = "# WAKEPLAY-CONSOLE-BRIDGE-V8"
+PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V9"
 
 LAUNCH_PREP_ANCHOR = """          Register-SunshineLaunchedGame -Id $obj.id
           [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)"""
@@ -134,28 +136,131 @@ PLAY_COUNT_PAYLOAD_REPLACEMENT = """      description     = [string]$g.Descripti
       iconPath        = $icon
       # WAKEPLAY-CONSOLE-BRIDGE-V7"""
 
+SOURCE_PAYLOAD_ANCHOR = """      playCount       = [int]$g.PlayCount
+      iconPath        = $icon
+      # WAKEPLAY-CONSOLE-BRIDGE-V7"""
+SOURCE_PAYLOAD_REPLACEMENT = """      playCount       = [int]$g.PlayCount
+      source          = [string]$(try {
+        $sourceName = [string]$g.Source.Name
+        if ([string]::IsNullOrWhiteSpace($sourceName) -and $g.SourceId) {
+          $sourceName = [string]$PlayniteApi.Database.Sources.Get($g.SourceId).Name
+        }
+        $sourceName
+      } catch { '' })
+      iconPath        = $icon
+      # WAKEPLAY-CONSOLE-BRIDGE-V9"""
+
+INSTALL_UI_ANCHOR = """    public static void StartGameByGuidStringOnUIThread(string guidStr)
+    {
+        var d = Dispatcher;
+        if (d != null) { d.BeginInvoke(new Action(() => StartGameByGuidString(guidStr))); }
+        else { StartGameByGuidString(guidStr); }
+    }
+}"""
+INSTALL_UI_REPLACEMENT = """    public static void StartGameByGuidStringOnUIThread(string guidStr)
+    {
+        var d = Dispatcher;
+        if (d != null) { d.BeginInvoke(new Action(() => StartGameByGuidString(guidStr))); }
+        else { StartGameByGuidString(guidStr); }
+    }
+
+    public static void InstallGameByGuidString(string guidStr)
+    {
+        if (string.IsNullOrWhiteSpace(guidStr)) return;
+        Guid gid; if (!Guid.TryParse(guidStr, out gid)) return;
+        var api = Api; if (api == null) return;
+        var method = api.GetType().GetMethod("InstallGame", new Type[] { typeof(Guid) });
+        if (method != null) method.Invoke(api, new object[] { gid });
+    }
+
+    public static void InstallGameByGuidStringOnUIThread(string guidStr)
+    {
+        var d = Dispatcher;
+        if (d != null) { d.BeginInvoke(new Action(() => InstallGameByGuidString(guidStr))); }
+        else { InstallGameByGuidString(guidStr); }
+    }
+}"""
+
+INSTALL_READER_ANCHOR = """        elseif ($obj.type -eq 'command' -and $obj.command -eq 'snapshot') {"""
+INSTALL_READER_REPLACEMENT = """        elseif ($obj.type -eq 'command' -and $obj.command -eq 'install' -and $obj.id) {
+          [UIBridge]::InstallGameByGuidStringOnUIThread([string]$obj.id)
+          Write-Log "LauncherConn[$Guid]: install dispatched for $($obj.id)"
+        }
+        elseif ($obj.type -eq 'command' -and $obj.command -eq 'snapshot') {"""
+
+INSTALLING_PAYLOAD_ANCHOR = """      installed       = $installed"""
+INSTALLING_PAYLOAD_REPLACEMENT = """      installed       = $installed
+      installing      = [bool]$g.IsInstalling"""
+
+INSTALL_EVENT_ANCHOR = "function Register-GameCollectionEvents {"
+INSTALL_EVENT_REPLACEMENT = r'''function OnGameInstalled() {
+  param($evnArgs)
+  $game = $evnArgs.Game
+  Write-Log "OnGameInstalled: $($game.Name) [$($game.Id)]"
+  Send-StatusMessage -Name 'gameInstalled' -Game $game
+}
+
+function OnGameInstallationCancelled() {
+  param($evnArgs)
+  $game = $evnArgs.Game
+  Write-Log "OnGameInstallationCancelled: $($game.Name) [$($game.Id)]"
+  Send-StatusMessage -Name 'gameInstallationCancelled' -Game $game
+}
+# WAKEPLAY-CONSOLE-BRIDGE-V8
+
+function Register-GameCollectionEvents {'''
+
+
+def add_install_support(source: str) -> str:
+    anchors = (
+        ("UI install bridge", INSTALL_UI_ANCHOR),
+        ("launcher install command", INSTALL_READER_ANCHOR),
+        ("installing game payload", INSTALLING_PAYLOAD_ANCHOR),
+        ("installation lifecycle events", INSTALL_EVENT_ANCHOR),
+    )
+    missing = [name for name, anchor in anchors if anchor not in source]
+    if missing:
+        raise ValueError("Unsupported Sunshine Playnite Connector; missing " + ", ".join(missing))
+    patched = source.replace(INSTALL_UI_ANCHOR, INSTALL_UI_REPLACEMENT, 1)
+    patched = patched.replace(INSTALL_READER_ANCHOR, INSTALL_READER_REPLACEMENT, 1)
+    patched = patched.replace(INSTALLING_PAYLOAD_ANCHOR, INSTALLING_PAYLOAD_REPLACEMENT, 1)
+    return patched.replace(INSTALL_EVENT_ANCHOR, INSTALL_EVENT_REPLACEMENT, 1)
+
+
+def add_source_support(source: str) -> str:
+    if SOURCE_PAYLOAD_ANCHOR not in source:
+        raise ValueError("Unsupported Sunshine Playnite Connector; source payload is incomplete")
+    return source.replace(SOURCE_PAYLOAD_ANCHOR, SOURCE_PAYLOAD_REPLACEMENT, 1)
+
 
 def patch_text(source: str) -> tuple[str, bool]:
     if PATCH_MARKER in source:
         return source, False
+    if PATCH_MARKER_V8 in source:
+        return add_source_support(source), True
+    if PATCH_MARKER_V7 in source:
+        return add_source_support(add_install_support(source)), True
     if PATCH_MARKER_V6 in source:
         if PLAY_COUNT_PAYLOAD_ANCHOR not in source:
             raise ValueError("Unsupported Sunshine Playnite Connector; V6 game payload is incomplete")
-        return source.replace(
-            PLAY_COUNT_PAYLOAD_ANCHOR, PLAY_COUNT_PAYLOAD_REPLACEMENT, 1), True
+        patched = source.replace(
+            PLAY_COUNT_PAYLOAD_ANCHOR, PLAY_COUNT_PAYLOAD_REPLACEMENT, 1)
+        return add_source_support(add_install_support(patched)), True
     if PATCH_MARKER_V5 in source:
         if DESCRIPTION_PAYLOAD_ANCHOR not in source:
             raise ValueError("Unsupported Sunshine Playnite Connector; V5 game payload is incomplete")
-        return source.replace(
-            DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1), True
+        patched = source.replace(
+            DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1)
+        return add_source_support(add_install_support(patched)), True
     if PATCH_MARKER_V4 in source:
         if LAUNCH_PREP_REPLACEMENT not in source:
             raise ValueError("Unsupported Sunshine Playnite Connector; V4 launch block is incomplete")
         patched = source.replace(LAUNCH_PREP_REPLACEMENT, LAUNCH_CLEAN_REPLACEMENT, 1)
         if DESCRIPTION_PAYLOAD_ANCHOR not in patched:
             raise ValueError("Unsupported Sunshine Playnite Connector; V4 game payload is incomplete")
-        return patched.replace(
-            DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1), True
+        patched = patched.replace(
+            DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1)
+        return add_source_support(add_install_support(patched)), True
     anchors = [
         ("launch display preparation", LAUNCH_PREP_ANCHOR),
     ]
@@ -199,7 +304,7 @@ def patch_text(source: str) -> tuple[str, bool]:
     if DESCRIPTION_PAYLOAD_ANCHOR in patched:
         patched = patched.replace(
             DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1)
-    return patched, True
+    return add_source_support(add_install_support(patched)), True
 
 
 def patch_file(path: Path, apply: bool) -> str:

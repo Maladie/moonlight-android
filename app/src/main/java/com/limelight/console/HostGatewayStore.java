@@ -5,6 +5,8 @@ import android.content.SharedPreferences;
 
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Additive MoonWaker view of Wake & Play's host-keyed Gateway preference schema.
@@ -160,6 +162,24 @@ final class HostGatewayStore {
                 .putString(key(hostUuid, "playnite_library_filter"), safe.preferenceValue)
                 .putBoolean(key(hostUuid, "playnite_installed_only"),
                         safe == PlayniteLibraryFilter.INSTALLED)
+                .apply();
+    }
+
+    Set<String> playniteLibrarySources(String hostUuid) {
+        if (hostUuid == null || hostUuid.isEmpty()
+                || !preferences.getBoolean(key(hostUuid,
+                "playnite_library_sources_configured"), false)) return null;
+        Set<String> stored = preferences.getStringSet(
+                key(hostUuid, "playnite_library_sources"), null);
+        return stored == null ? new HashSet<>() : new HashSet<>(stored);
+    }
+
+    void setPlayniteLibrarySources(String hostUuid, Set<String> sources) {
+        if (hostUuid == null || hostUuid.isEmpty()) return;
+        Set<String> safe = sources == null ? new HashSet<>() : new HashSet<>(sources);
+        preferences.edit()
+                .putBoolean(key(hostUuid, "playnite_library_sources_configured"), true)
+                .putStringSet(key(hostUuid, "playnite_library_sources"), safe)
                 .apply();
     }
 
