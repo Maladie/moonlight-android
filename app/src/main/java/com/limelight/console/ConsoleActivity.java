@@ -11,7 +11,6 @@ import android.content.Intent;
 import android.content.ServiceConnection;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
-import android.content.res.ColorStateList;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
@@ -39,6 +38,9 @@ import android.preference.PreferenceManager;
 import android.provider.Settings;
 import android.text.TextUtils;
 import android.text.InputType;
+import android.text.SpannableString;
+import android.text.Spanned;
+import android.text.style.ForegroundColorSpan;
 import android.util.LruCache;
 import android.view.Gravity;
 import android.view.InputDevice;
@@ -57,7 +59,6 @@ import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
-import android.widget.ProgressBar;
 import android.widget.PopupWindow;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -131,8 +132,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private static final int REQUEST_BLUETOOTH_CONNECT = 2201;
     private static final long CONTROLLER_REFRESH_MS = 30_000L;
     private static final long DUPLICATE_NAVIGATION_WINDOW_MS = 70L;
-    private static final long DISCOVERY_INTERVAL_MS = 60_000L;
-    private static final long DISCOVERY_VISIBLE_MS = 4_000L;
     private static final long PLAYNITE_REFRESH_MS = 60_000L;
     private static final long PLAYNITE_INSTALL_REFRESH_MS = 3_000L;
     private static final long VIBEPOLLO_APP_WAIT_MS = 5 * 60_000L;
@@ -185,9 +184,20 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private boolean refreshHostsOnResume;
     private boolean initialHostsLoaded;
     private boolean showHiddenApps;
+    private boolean hostSelectionVisible = true;
+    private boolean initialHostSelectionResolved;
+    private boolean hostSelectionLongPressConsumed;
+    private String autoLoginHostUuid;
 
     private FrameLayout root;
     private FrameLayout homeLayer;
+    private FrameLayout hostSelectionLayer;
+    private HorizontalScrollView hostSelectionScroll;
+    private LinearLayout hostSelectionRow;
+    private TextView hostSelectionClock;
+    private String renderedHostSelectionSignature;
+    private String hostSelectionFocusUuid;
+    private final Map<String, HostSelectionTile> hostSelectionTiles = new LinkedHashMap<>();
     private LinearLayout homeContent;
     private LinearLayout dashboardHeader;
     private FrameLayout loadingLayer;
@@ -209,9 +219,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private TextView appsLabel;
     private TextView optionsButton;
     private TextView hostSelector;
-    private TextView discoveryStatus;
-    private FrameLayout discoveryIndicatorSlot;
-    private ImageButton discoveredHostButton;
     private TextView launchPlayniteButton;
     private TextView installedFilterButton;
     private TextView playniteLibraryStatus;
@@ -245,9 +252,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private int renderedExpandedWindowStartRow = -1;
     private long lastExpandedGridNavigationAt;
     private ValueAnimator expandedGridScrollAnimator;
-    private ProgressBar discoverySpinner;
     private TextView quickResumeButton;
     private LinearLayout quickActions;
+    private TextView quickActionHint;
     private ImageButton discordActionButton;
     private int discordIndicatorColor = 0xFF9FAAB2;
     private LinearLayout controllerRow;
@@ -257,6 +264,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private ScrollView appVerticalScroll;
     private boolean portraitLayout;
     private String selectedHostUuid;
+    private boolean pendingInitialGameFocus;
     private View lastContentFocus;
     private Object lastContentFocusTag;
     private ControllerInfo pendingController;
@@ -267,7 +275,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private String renderedAppsSignature;
     private String renderedControllersSignature;
     private String renderedControllerDevicesSignature;
-    private boolean discoveryActive;
     private Future<?> playniteRequest;
     private Future<?> playniteArtworkPrefetch;
     private String playniteArtworkPrefetchSignature;
@@ -299,22 +306,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             if (!active || loadingLayer != null && loadingLayer.getVisibility() == View.VISIBLE) return;
             ComputerDetails host = hosts.get(selectedHostUuid);
             if (host != null) requestPlayniteRefresh(host, false);
-        }
-    };
-
-    private final Runnable endDiscoveryIndicator = () -> {
-        discoveryActive = false;
-        updateHostSelector();
-    };
-
-    private final Runnable discoveryIndicatorCycle = new Runnable() {
-        @Override public void run() {
-            if (!active || !polling) return;
-            discoveryActive = true;
-            updateHostSelector();
-            mainHandler.removeCallbacks(endDiscoveryIndicator);
-            mainHandler.postDelayed(endDiscoveryIndicator, DISCOVERY_VISIBLE_MS);
-            mainHandler.postDelayed(this, DISCOVERY_INTERVAL_MS);
         }
     };
 
@@ -359,9 +350,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         @Override public void onServiceDisconnected(ComponentName name) {
             managerBinder = null;
             polling = false;
-            discoveryActive = false;
-            mainHandler.removeCallbacks(discoveryIndicatorCycle);
-            mainHandler.removeCallbacks(endDiscoveryIndicator);
             updateHostSelector();
         }
     };
@@ -375,6 +363,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         showCarouselGameDescription = preferences.getBoolean(
                 "show_carousel_game_description", true);
         selectedHostUuid = preferences.getString("selected_host", null);
+        autoLoginHostUuid = preferences.getString("auto_login_host", "");
         assetLoader = new DiskAssetLoader(this);
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
         inputManager = (InputManager) getSystemService(INPUT_SERVICE);
@@ -452,12 +441,45 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         refreshDiscordIndicator();
         mainHandler.postDelayed(controllerRefresh, CONTROLLER_REFRESH_MS);
         if (loadingLayer != null && loadingLayer.getVisibility() == View.VISIBLE) showHome();
-        if (homeLayer != null) homeLayer.setVisibility(View.VISIBLE);
+        if (homeLayer != null) {
+            homeLayer.setVisibility(hostSelectionVisible ? View.GONE : View.VISIBLE);
+        }
+        if (hostSelectionLayer != null) {
+            hostSelectionLayer.setVisibility(hostSelectionVisible ? View.VISIBLE : View.GONE);
+        }
         hideSystemUi();
     }
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (hostSelectionVisible && event != null && isHostSelectionConfirmKey(
+                event.getKeyCode())) {
+            if (event.getAction() == KeyEvent.ACTION_DOWN
+                    && (event.getRepeatCount() > 0 || event.isLongPress())) {
+                ComputerDetails host = focusedHostSelection();
+                if (host != null && !hostSelectionLongPressConsumed) {
+                    hostSelectionLongPressConsumed = true;
+                    showHostSelectionOptions(host);
+                }
+                return host != null;
+            }
+            if (event.getAction() == KeyEvent.ACTION_UP && hostSelectionLongPressConsumed) {
+                hostSelectionLongPressConsumed = false;
+                return true;
+            }
+        }
+        if (hostSelectionVisible && event != null
+                && event.getAction() == KeyEvent.ACTION_UP
+                && (event.getKeyCode() == KeyEvent.KEYCODE_MENU
+                || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_START)) {
+            View focused = getCurrentFocus();
+            Object tag = focused != null ? focused.getTag() : null;
+            if (tag instanceof String && ((String) tag).startsWith("host.select:")) {
+                ComputerDetails host = hosts.get(((String) tag).substring("host.select:".length()));
+                if (host != null) showHostSelectionOptions(host);
+                return true;
+            }
+        }
         if (playniteFilterPopup != null && playniteFilterPopup.isShowing()
                 && event != null && event.getAction() == KeyEvent.ACTION_UP
                 && (event.getKeyCode() == KeyEvent.KEYCODE_BACK
@@ -496,6 +518,22 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
         if (handleExpandedGridNavigation(event)) return true;
         return super.dispatchKeyEvent(event);
+    }
+
+    private static boolean isHostSelectionConfirmKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_DPAD_CENTER
+                || keyCode == KeyEvent.KEYCODE_ENTER
+                || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
+                || keyCode == KeyEvent.KEYCODE_BUTTON_A;
+    }
+
+    private ComputerDetails focusedHostSelection() {
+        View focused = getCurrentFocus();
+        Object tag = focused != null ? focused.getTag() : null;
+        if (!(tag instanceof String) || !((String) tag).startsWith("host.select:")) {
+            return null;
+        }
+        return hosts.get(((String) tag).substring("host.select:".length()));
     }
 
     private boolean handleExpandedLibraryShortcut(int keyCode) {
@@ -553,13 +591,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         launchGeneration.incrementAndGet();
         artworkGeneration.incrementAndGet();
         mainHandler.removeCallbacks(controllerRefresh);
-        mainHandler.removeCallbacks(discoveryIndicatorCycle);
-        mainHandler.removeCallbacks(endDiscoveryIndicator);
         mainHandler.removeCallbacks(playniteRefreshCycle);
         cancelPlayniteRequest();
         cancelPlayniteArtworkPrefetch();
         stopExpandedDescriptionAutoScroll();
-        discoveryActive = false;
         if (streamLoadingView != null) streamLoadingView.stop();
         saveScrollPositions();
         stopAppListPoller();
@@ -597,6 +632,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             showHome();
         } else if (expandedLibraryMode) {
             exitExpandedLibrary();
+        } else if (hostSelectionVisible) {
+            showExitConfirmation();
         } else {
             showExitConfirmation();
         }
@@ -611,6 +648,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 for (ComputerDetails host : known) hosts.put(host.uuid, host);
                 initialHostsLoaded = true;
                 renderHosts();
+                resolveInitialHostSelection();
             });
         });
     }
@@ -619,8 +657,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (!active || polling || managerBinder == null) return;
         polling = true;
         managerBinder.startPolling(computerListener);
-        mainHandler.removeCallbacks(discoveryIndicatorCycle);
-        discoveryIndicatorCycle.run();
         ComputerDetails selected = hosts.get(selectedHostUuid);
         if (selected != null) startAppListPoller(selected);
     }
@@ -689,17 +725,23 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         }
         hostSelector = compactButton(getString(R.string.console_no_hosts));
-        hostSelector.setContentDescription(getString(R.string.console_action_hosts));
-        hostSelector.setOnClickListener(v -> showHostPanel());
+        hostSelector.setOnClickListener(v -> toggleCurrentHostPower());
         optionsButton = hostSelector;
         hostSelector.setSingleLine(true);
-        hostSelector.setMaxWidth(dp(BuildConfig.DEBUG ? 300 : 430));
+        hostSelector.setMaxWidth(dp(BuildConfig.DEBUG ? 260 : 430));
         if (BuildConfig.DEBUG) {
-            hostSelector.setTextSize(11);
-            hostSelector.setMinHeight(dp(38));
-            hostSelector.setPadding(dp(11), dp(4), dp(11), dp(4));
-            hostSelector.setOnFocusChangeListener((view, focused) ->
-                    styleHostSelector(focused));
+            hostSelector.setTextSize(9);
+            hostSelector.setMinHeight(dp(28));
+            hostSelector.setMinWidth(0);
+            hostSelector.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
+            hostSelector.setPadding(dp(10), dp(3), dp(10), dp(3));
+            hostSelector.setCompoundDrawablesWithIntrinsicBounds(
+                    R.drawable.ic_console_host_power, 0, 0, 0);
+            hostSelector.setCompoundDrawablePadding(dp(8));
+            hostSelector.setOnFocusChangeListener((view, focused) -> {
+                styleHostSelector(focused);
+                updateHostPowerLabel(focused);
+            });
             styleHostSelector(false);
         }
         LinearLayout.LayoutParams selectorParams = new LinearLayout.LayoutParams(
@@ -707,50 +749,15 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                         : ViewGroup.LayoutParams.WRAP_CONTENT, dp(52));
         if (portraitLayout) selectorParams.topMargin = dp(12);
         if (BuildConfig.DEBUG) {
-            LinearLayout.LayoutParams hostParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(38));
-            header.addView(hostSelector, hostParams);
-            discoveryIndicatorSlot = new FrameLayout(this);
-            discoveryIndicatorSlot.setClipChildren(false);
-            discoveryIndicatorSlot.setClipToPadding(false);
-            discoveryIndicatorSlot.setVisibility(View.INVISIBLE);
+            FrameLayout hostPowerSlot = new FrameLayout(this);
+            FrameLayout.LayoutParams hostPowerButtonParams = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT,
+                    Gravity.START | Gravity.CENTER_VERTICAL);
+            hostPowerSlot.addView(hostSelector, hostPowerButtonParams);
+            header.addView(hostPowerSlot, new LinearLayout.LayoutParams(
+                    dp(300), dp(56)));
 
-            discoverySpinner = new ProgressBar(
-                    this, null, android.R.attr.progressBarStyleSmall);
-            discoverySpinner.setIndeterminate(true);
-            discoverySpinner.setIndeterminateTintList(
-                    ColorStateList.valueOf(0xFF8DDCFF));
-            discoverySpinner.setContentDescription(getString(R.string.console_discovering));
-            discoverySpinner.setFocusable(false);
-            FrameLayout.LayoutParams spinnerParams = new FrameLayout.LayoutParams(
-                    dp(16), dp(16), Gravity.CENTER);
-            discoveryIndicatorSlot.addView(discoverySpinner, spinnerParams);
-
-            discoveredHostButton = new ImageButton(this);
-            discoveredHostButton.setId(View.generateViewId());
-            discoveredHostButton.setImageResource(R.drawable.ic_console_computer_add);
-            discoveredHostButton.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-            discoveredHostButton.setPadding(dp(9), dp(9), dp(9), dp(9));
-            discoveredHostButton.setFocusable(true);
-            discoveredHostButton.setClickable(true);
-            discoveredHostButton.setContentDescription(
-                    getString(R.string.console_pair_discovered_host));
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                discoveredHostButton.setTooltipText(
-                        getString(R.string.console_pair_discovered_host));
-            }
-            discoveredHostButton.setOnClickListener(view -> pairDiscoveredHost());
-            discoveredHostButton.setOnFocusChangeListener((view, focused) ->
-                    styleQuickAction(discoveredHostButton, focused));
-            styleQuickAction(discoveredHostButton, false);
-            discoveredHostButton.setVisibility(View.GONE);
-            discoveryIndicatorSlot.addView(discoveredHostButton,
-                    new FrameLayout.LayoutParams(dp(38), dp(38), Gravity.CENTER));
-
-            LinearLayout.LayoutParams indicatorParams =
-                    new LinearLayout.LayoutParams(dp(42), dp(38));
-            indicatorParams.leftMargin = dp(3);
-            header.addView(discoveryIndicatorSlot, indicatorParams);
             quickActions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
             LinearLayout.LayoutParams toolsParams = portraitLayout
                     ? new LinearLayout.LayoutParams(
@@ -764,6 +771,16 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
         homeContent.addView(header, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        if (BuildConfig.DEBUG) {
+            quickActionHint = text("", 9, 0xFFC5D2DC, true);
+            quickActionHint.setGravity(Gravity.CENTER);
+            quickActionHint.setSingleLine(true);
+            quickActionHint.setVisibility(View.INVISIBLE);
+            FrameLayout.LayoutParams hintParams = new FrameLayout.LayoutParams(
+                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(16), Gravity.TOP | Gravity.START);
+            hintParams.topMargin = dp(80);
+            homeLayer.addView(quickActionHint, hintParams);
+        }
 
         if (BuildConfig.DEBUG) {
             controllersLabel = sectionLabel("");
@@ -778,36 +795,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         LinearLayout quickLine = new LinearLayout(this);
         quickLine.setOrientation(portraitLayout ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
         quickLine.setGravity(portraitLayout ? Gravity.START : Gravity.CENTER_VERTICAL);
-        if (!BuildConfig.DEBUG) {
-            LinearLayout discoveryBlock = new LinearLayout(this);
-            discoveryBlock.setOrientation(LinearLayout.HORIZONTAL);
-            discoveryBlock.setGravity(Gravity.CENTER_VERTICAL);
-            discoveryBlock.setFocusable(false);
-            discoverySpinner = new ProgressBar(
-                    this, null, android.R.attr.progressBarStyleSmall);
-            discoverySpinner.setIndeterminate(true);
-            discoverySpinner.setIndeterminateTintList(
-                    ColorStateList.valueOf(0xFF8DDCFF));
-            discoverySpinner.setContentDescription(getString(R.string.console_discovering));
-            discoverySpinner.setFocusable(false);
-            discoverySpinner.setVisibility(View.GONE);
-            LinearLayout.LayoutParams spinnerParams =
-                    new LinearLayout.LayoutParams(dp(14), dp(14));
-            spinnerParams.rightMargin = dp(6);
-            discoveryBlock.addView(discoverySpinner, spinnerParams);
-            discoveryStatus = text(
-                    getString(R.string.console_discovering), 10, 0xFF8F9AAF, false);
-            discoveryStatus.setSingleLine(true);
-            discoveryStatus.setEllipsize(TextUtils.TruncateAt.END);
-            discoveryStatus.setGravity(Gravity.CENTER_VERTICAL);
-            discoveryBlock.addView(discoveryStatus, new LinearLayout.LayoutParams(
-                    0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-            LinearLayout.LayoutParams discoveryParams = sectionWithTop(2);
-            discoveryParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
-            discoveryParams.height = dp(24);
-            homeContent.addView(discoveryBlock, discoveryParams);
-        }
-
         LinearLayout discoveryAndSession = new LinearLayout(this);
         discoveryAndSession.setOrientation(LinearLayout.HORIZONTAL);
         discoveryAndSession.setGravity(Gravity.CENTER_VERTICAL);
@@ -1006,9 +993,307 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         wireHomeFocusNavigation();
 
         container.addView(homeLayer, match());
+        buildHostSelectionLayer(container);
         buildSidePanel();
         buildLoadingLayer(container);
         return container;
+    }
+
+    private void buildHostSelectionLayer(FrameLayout container) {
+        hostSelectionLayer = new FrameLayout(this);
+        hostSelectionLayer.setVisibility(View.VISIBLE);
+        hostSelectionLayer.setBackground(new HostSelectionBackdropDrawable());
+
+        TextView clock = text("", 11, 0xFFDDE3EB, false);
+        hostSelectionClock = clock;
+        clock.setGravity(Gravity.END);
+        FrameLayout.LayoutParams clockParams = new FrameLayout.LayoutParams(
+                dp(150), dp(40), Gravity.TOP | Gravity.END);
+        clockParams.topMargin = dp(28);
+        clockParams.rightMargin = dp(38);
+        hostSelectionLayer.addView(clock, clockParams);
+
+        LinearLayout content = new LinearLayout(this);
+        content.setOrientation(LinearLayout.VERTICAL);
+        content.setGravity(Gravity.CENTER_HORIZONTAL);
+        content.setClipChildren(false);
+        content.setClipToPadding(false);
+
+        TextView title = text(getString(R.string.console_host_selection_title),
+                23, Color.WHITE, false);
+        title.setGravity(Gravity.CENTER);
+        content.addView(title, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+
+        TextView subtitle = text(getString(R.string.console_host_selection_subtitle),
+                11, 0xFFB8C0CD, false);
+        subtitle.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams subtitleParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+        subtitleParams.topMargin = dp(5);
+        content.addView(subtitle, subtitleParams);
+
+        hostSelectionScroll = new HorizontalScrollView(this);
+        hostSelectionScroll.setFillViewport(true);
+        hostSelectionScroll.setHorizontalScrollBarEnabled(false);
+        hostSelectionScroll.setClipChildren(false);
+        hostSelectionScroll.setClipToPadding(false);
+        hostSelectionScroll.setPadding(dp(24), dp(10), dp(24), dp(10));
+        hostSelectionRow = new LinearLayout(this);
+        hostSelectionRow.setOrientation(LinearLayout.HORIZONTAL);
+        hostSelectionRow.setGravity(Gravity.CENTER);
+        hostSelectionRow.setClipChildren(false);
+        hostSelectionRow.setClipToPadding(false);
+        hostSelectionScroll.addView(hostSelectionRow, new HorizontalScrollView.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(176));
+        rowParams.topMargin = dp(18);
+        content.addView(hostSelectionScroll, rowParams);
+
+        FrameLayout.LayoutParams contentParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(250), Gravity.CENTER);
+        contentParams.leftMargin = dp(34);
+        contentParams.rightMargin = dp(34);
+        hostSelectionLayer.addView(content, contentParams);
+
+        TextView legend = text(getString(R.string.console_host_selection_legend),
+                9, 0xFFD7DDE7, false);
+        legend.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        FrameLayout.LayoutParams legendParams = new FrameLayout.LayoutParams(
+                dp(310), dp(38), Gravity.BOTTOM | Gravity.END);
+        legendParams.rightMargin = dp(38);
+        legendParams.bottomMargin = dp(20);
+        hostSelectionLayer.addView(legend, legendParams);
+
+        homeLayer.setVisibility(View.GONE);
+        container.addView(hostSelectionLayer, match());
+        renderHostSelection();
+    }
+
+    private void resolveInitialHostSelection() {
+        if (initialHostSelectionResolved) return;
+        initialHostSelectionResolved = true;
+        ComputerDetails automatic = autoLoginHostUuid == null || autoLoginHostUuid.isEmpty()
+                ? null : hosts.get(autoLoginHostUuid);
+        if (automatic != null) {
+            selectHost(automatic, false);
+        } else {
+            showHostSelection(selectedHostUuid);
+        }
+    }
+
+    private void showHostSelection(String focusUuid) {
+        hostSelectionVisible = true;
+        hostSelectionFocusUuid = focusUuid;
+        stopAppListPoller();
+        cancelPlayniteArtworkPrefetch();
+        if (loadingLayer != null) loadingLayer.setVisibility(View.GONE);
+        if (homeLayer != null) homeLayer.setVisibility(View.GONE);
+        if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.VISIBLE);
+        renderHostSelection();
+        requestHostSelectionFocus();
+    }
+
+    private void renderHostSelection() {
+        if (hostSelectionRow == null) return;
+        if (hostSelectionClock != null) {
+            hostSelectionClock.setText(DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()));
+        }
+        List<ComputerDetails> sorted = new ArrayList<>(hosts.values());
+        sorted.removeIf(host -> newlyDiscoveredHosts.contains(host.uuid));
+        sorted.sort(Comparator.comparing(host -> host.name, String.CASE_INSENSITIVE_ORDER));
+        StringBuilder signature = new StringBuilder();
+        for (ComputerDetails host : sorted) {
+            signature.append(host.uuid).append(':').append(host.name).append('|');
+        }
+        if (signature.toString().equals(renderedHostSelectionSignature)) {
+            for (ComputerDetails host : sorted) updateHostSelectionTile(host);
+            return;
+        }
+
+        renderedHostSelectionSignature = signature.toString();
+        hostSelectionTiles.clear();
+        hostSelectionRow.removeAllViews();
+        hostSelectionRow.addView(createAddHostTile(), hostSelectionTileParams());
+        for (ComputerDetails host : sorted) {
+            View tile = createHostSelectionTile(host);
+            hostSelectionRow.addView(tile, hostSelectionTileParams());
+        }
+        wireHostSelectionFocus();
+        if (hostSelectionVisible) requestHostSelectionFocus();
+    }
+
+    private LinearLayout.LayoutParams hostSelectionTileParams() {
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(112), dp(160));
+        params.leftMargin = dp(7);
+        params.rightMargin = dp(7);
+        return params;
+    }
+
+    private View createAddHostTile() {
+        LinearLayout tile = hostSelectionTileBase();
+        tile.setTag("host.add");
+        FrameLayout avatar = new FrameLayout(this);
+        TextView plus = text("+", 31, Color.WHITE, false);
+        plus.setGravity(Gravity.CENTER);
+        avatar.addView(plus, match());
+        styleHostSelectionAvatar(avatar, false, true);
+        tile.addView(avatar, new LinearLayout.LayoutParams(dp(78), dp(78)));
+        TextView label = text(getString(R.string.console_add_host_short),
+                10, Color.WHITE, false);
+        label.setGravity(Gravity.CENTER);
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(28));
+        labelParams.topMargin = dp(7);
+        tile.addView(label, labelParams);
+        TextView hint = text("", 8, 0xFFC8D0DB, false);
+        tile.addView(hint, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(22)));
+        tile.setOnClickListener(view -> showAddHostPanel());
+        tile.setOnFocusChangeListener((view, focused) -> {
+            styleHostSelectionAvatar(avatar, focused, true);
+            hint.setText(focused ? getString(R.string.console_select_hint) : "");
+            animateScale(tile, focused ? 1.07f : 1f);
+            if (focused) smoothCenterOn(hostSelectionScroll, tile);
+        });
+        return tile;
+    }
+
+    private View createHostSelectionTile(ComputerDetails host) {
+        LinearLayout tile = hostSelectionTileBase();
+        tile.setTag("host.select:" + host.uuid);
+        FrameLayout avatar = new FrameLayout(this);
+        ImageView artwork = new ImageView(this);
+        artwork.setImageDrawable(new HostAvatarDrawable(host.uuid));
+        artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        FrameLayout.LayoutParams artworkParams = new FrameLayout.LayoutParams(
+                dp(70), dp(70), Gravity.CENTER);
+        avatar.addView(artwork, artworkParams);
+        styleHostSelectionAvatar(avatar, false, false);
+        tile.addView(avatar, new LinearLayout.LayoutParams(dp(78), dp(78)));
+
+        TextView name = text(host.name, 10, Color.WHITE, false);
+        name.setGravity(Gravity.CENTER);
+        name.setSingleLine(true);
+        name.setEllipsize(TextUtils.TruncateAt.END);
+        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(24));
+        nameParams.topMargin = dp(5);
+        tile.addView(name, nameParams);
+
+        LinearLayout statusRow = new LinearLayout(this);
+        statusRow.setOrientation(LinearLayout.HORIZONTAL);
+        statusRow.setGravity(Gravity.CENTER);
+        View dot = new View(this);
+        statusRow.addView(dot, new LinearLayout.LayoutParams(dp(6), dp(6)));
+        TextView status = text("", 8, 0xFFC7CED8, false);
+        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(20));
+        statusParams.leftMargin = dp(4);
+        statusRow.addView(status, statusParams);
+        tile.addView(statusRow, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(20)));
+
+        TextView options = text(getString(R.string.console_host_options_hint),
+                8, 0xFFDCE3ED, false);
+        options.setGravity(Gravity.CENTER);
+        options.setVisibility(View.INVISIBLE);
+        tile.addView(options, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(22)));
+
+        HostSelectionTile views = new HostSelectionTile(tile, avatar, dot, status, options);
+        hostSelectionTiles.put(host.uuid, views);
+        updateHostSelectionTile(host);
+        tile.setOnClickListener(view -> activateHostFromSelection(host.uuid));
+        tile.setOnLongClickListener(view -> {
+            ComputerDetails current = hosts.get(host.uuid);
+            if (current != null) showHostSelectionOptions(current);
+            return true;
+        });
+        tile.setOnFocusChangeListener((view, focused) -> {
+            styleHostSelectionAvatar(avatar, focused, false);
+            options.setVisibility(focused ? View.VISIBLE : View.INVISIBLE);
+            animateScale(tile, focused ? 1.07f : 1f);
+            if (focused) {
+                hostSelectionFocusUuid = host.uuid;
+                smoothCenterOn(hostSelectionScroll, tile);
+            }
+        });
+        return tile;
+    }
+
+    private LinearLayout hostSelectionTileBase() {
+        LinearLayout tile = new LinearLayout(this);
+        tile.setId(View.generateViewId());
+        tile.setOrientation(LinearLayout.VERTICAL);
+        tile.setGravity(Gravity.CENTER_HORIZONTAL);
+        tile.setPadding(dp(5), dp(5), dp(5), dp(2));
+        tile.setFocusable(true);
+        tile.setFocusableInTouchMode(true);
+        tile.setClickable(true);
+        tile.setSoundEffectsEnabled(uiSoundsEnabled);
+        tile.setClipChildren(false);
+        tile.setClipToPadding(false);
+        return tile;
+    }
+
+    private void styleHostSelectionAvatar(View avatar, boolean focused, boolean add) {
+        GradientDrawable ring = new GradientDrawable();
+        ring.setShape(GradientDrawable.OVAL);
+        ring.setColor(add ? (focused ? 0x704D5968 : 0x45434A54) : 0x24000000);
+        ring.setStroke(dp(focused ? 2 : 1),
+                focused ? 0xFFF2F6FA : add ? 0x406E7782 : 0x507C8792);
+        avatar.setBackground(ring);
+        avatar.setElevation(dp(focused ? 8 : 1));
+    }
+
+    private void updateHostSelectionTile(ComputerDetails host) {
+        HostSelectionTile tile = hostSelectionTiles.get(host.uuid);
+        if (tile == null) return;
+        boolean online = host.state == ComputerDetails.State.ONLINE;
+        tile.status.setText(getString(online
+                ? R.string.console_status_online : R.string.console_status_offline));
+        GradientDrawable lamp = new GradientDrawable();
+        lamp.setShape(GradientDrawable.OVAL);
+        lamp.setColor(online ? 0xFF62E68B : 0xFFFF6464);
+        tile.dot.setBackground(lamp);
+        tile.root.setContentDescription(getString(R.string.console_host_selection_description,
+                host.name, getString(online
+                        ? R.string.console_status_online : R.string.console_status_offline)));
+    }
+
+    private void requestHostSelectionFocus() {
+        if (!hostSelectionVisible || hostSelectionRow == null) return;
+        View target = null;
+        String uuid = hostSelectionFocusUuid != null ? hostSelectionFocusUuid : selectedHostUuid;
+        if (uuid != null) target = hostSelectionRow.findViewWithTag("host.select:" + uuid);
+        if (target == null) target = hostSelectionRow.findViewWithTag("host.add");
+        if (target != null) target.post(target::requestFocus);
+    }
+
+    private void wireHostSelectionFocus() {
+        List<View> focusable = new ArrayList<>();
+        collectFocusable(hostSelectionRow, focusable);
+        for (int index = 0; index < focusable.size(); index++) {
+            View current = focusable.get(index);
+            current.setNextFocusLeftId(focusable.get(Math.max(0, index - 1)).getId());
+            current.setNextFocusRightId(
+                    focusable.get(Math.min(focusable.size() - 1, index + 1)).getId());
+            current.setNextFocusUpId(current.getId());
+            current.setNextFocusDownId(current.getId());
+        }
+    }
+
+    private void activateHostFromSelection(String uuid) {
+        ComputerDetails host = hosts.get(uuid);
+        if (host == null) return;
+        if (host.pairState != PairingManager.PairState.PAIRED) {
+            pairHost(host);
+            return;
+        }
+        newlyDiscoveredHosts.remove(uuid);
+        selectHost(host, true);
     }
 
     private void buildExpandedLibrary() {
@@ -1309,11 +1594,17 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private void renderHosts() {
         List<ComputerDetails> sorted = new ArrayList<>(hosts.values());
         sorted.sort(Comparator.comparing(host -> host.name, String.CASE_INSENSITIVE_ORDER));
-        if (selectedHostUuid == null && !sorted.isEmpty()) selectedHostUuid = sorted.get(0).uuid;
+        if (selectedHostUuid != null && !hosts.containsKey(selectedHostUuid)) {
+            selectedHostUuid = null;
+        }
+        renderHostSelection();
         updateHostSelector();
         wireHomeFocusNavigation();
         ComputerDetails selected = hosts.get(selectedHostUuid);
-        if (selected != null && appRow != null && appRow.getChildCount() <= 1) selectHost(selected, false);
+        if (!hostSelectionVisible && selected != null
+                && appRow != null && appRow.getChildCount() <= 1) {
+            selectHost(selected, false);
+        }
     }
 
     private void updateHostSelector() {
@@ -1321,82 +1612,47 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         ComputerDetails host = hosts.get(selectedHostUuid);
         if (host == null) {
             hostSelector.setText(getString(R.string.console_no_hosts));
-            hostSelector.setEnabled(true);
+            hostSelector.setContentDescription(getString(R.string.console_no_hosts));
+            hostSelector.setEnabled(false);
+            hostSelector.setAlpha(.45f);
         } else {
-            hostSelector.setText(getString(R.string.console_host_selector,
-                    host.name, hostStatus(host)));
+            boolean online = host.state == ComputerDetails.State.ONLINE;
+            updateHostPowerLabel(hostSelector.hasFocus());
+            hostSelector.setContentDescription(getString(online
+                    ? R.string.console_host_power_sleep_description
+                    : R.string.console_host_power_wake_description, host.name));
             hostSelector.setEnabled(true);
+            hostSelector.setAlpha(1f);
         }
-        if (discoveryStatus != null) {
-            if (!newlyDiscoveredHosts.isEmpty()) {
-                discoveryStatus.setText(getResources().getQuantityString(
-                        R.plurals.console_new_hosts, newlyDiscoveredHosts.size(),
-                        newlyDiscoveredHosts.size()));
-                discoveryStatus.setTextColor(0xFFFFC36A);
-                discoveryStatus.setBackground(gradient(0x20FFB74D, 0x12FFB74D, 8));
-                discoveryStatus.setPadding(dp(8), dp(3), dp(8), dp(3));
-                if (discoverySpinner != null) discoverySpinner.setVisibility(View.GONE);
-            } else if (discoveryActive) {
-                discoveryStatus.setText(getString(R.string.console_discovering));
-                discoveryStatus.setTextColor(0xFFB8C9DC);
-                discoveryStatus.setBackground(null);
-                discoveryStatus.setPadding(0, 0, 0, 0);
-                if (discoverySpinner != null) discoverySpinner.setVisibility(View.VISIBLE);
-            } else {
-                discoveryStatus.setText(getString(R.string.console_discovery_next_scan));
-                discoveryStatus.setTextColor(0xFF8790A8);
-                discoveryStatus.setBackground(null);
-                discoveryStatus.setPadding(0, 0, 0, 0);
-                if (discoverySpinner != null) discoverySpinner.setVisibility(View.GONE);
-            }
-        }
-        updateDiscoveryIndicator();
         updateQuickResumeButton(host);
         refreshDiscordIndicator();
     }
 
-    private ComputerDetails firstDiscoveredHost() {
-        for (String uuid : new ArrayList<>(newlyDiscoveredHosts)) {
-            ComputerDetails host = hosts.get(uuid);
-            if (host != null) return host;
-            newlyDiscoveredHosts.remove(uuid);
-        }
-        return null;
+    private void updateHostPowerLabel(boolean focused) {
+        if (hostSelector == null) return;
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host == null) return;
+        boolean online = host.state == ComputerDetails.State.ONLINE;
+        String value = focused
+                ? getString(online ? R.string.console_host_power_focused_sleep
+                        : R.string.console_host_power_focused_wake, host.name)
+                : getString(R.string.console_host_power_indicator, host.name,
+                        getString(online ? R.string.console_status_online
+                                : R.string.console_status_offline));
+        SpannableString label = new SpannableString(value);
+        label.setSpan(new ForegroundColorSpan(online ? 0xFF62E68B : 0xFFFF6464),
+                0, 1, Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        hostSelector.setText(label);
     }
 
-    private void updateDiscoveryIndicator() {
-        if (discoveryIndicatorSlot == null || discoveredHostButton == null) return;
-        ComputerDetails discoveredHost = firstDiscoveredHost();
-        boolean hasDiscoveredHost = discoveredHost != null;
-        boolean wasFocused = discoveredHostButton.hasFocus();
-
-        discoveryIndicatorSlot.setVisibility(
-                hasDiscoveredHost || discoveryActive ? View.VISIBLE : View.INVISIBLE);
-        discoveredHostButton.setVisibility(hasDiscoveredHost ? View.VISIBLE : View.GONE);
-        discoveredHostButton.setEnabled(hasDiscoveredHost);
-        discoverySpinner.setVisibility(
-                !hasDiscoveredHost && discoveryActive ? View.VISIBLE : View.GONE);
-        if (hasDiscoveredHost) {
-            discoveredHostButton.setContentDescription(getString(
-                    R.string.console_pair_discovered_host_named, discoveredHost.name));
-        } else if (wasFocused) {
-            hostSelector.post(hostSelector::requestFocus);
+    private void toggleCurrentHostPower() {
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host == null) return;
+        if (host.state == ComputerDetails.State.ONLINE) {
+            confirmSleepHost(host);
+        } else {
+            wakeHost(host);
         }
-        wireHomeFocusNavigation();
-    }
-
-    private void pairDiscoveredHost() {
-        ComputerDetails host = firstDiscoveredHost();
-        if (host == null) {
-            updateDiscoveryIndicator();
-            return;
-        }
-        if (ConsoleActionCatalog.isOnline(host) && ConsoleActionCatalog.isPaired(host)) {
-            newlyDiscoveredHosts.remove(host.uuid);
-            selectHost(host, true);
-            return;
-        }
-        pairHost(host);
     }
 
     private void updateQuickResumeButton(ComputerDetails host) {
@@ -1474,53 +1730,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         return null;
     }
 
-    private void showHostPanel() {
-        List<ComputerDetails> sorted = new ArrayList<>(hosts.values());
-        sorted.sort(Comparator.comparing(host -> host.name, String.CASE_INSENSITIVE_ORDER));
-        List<View> actions = new ArrayList<>();
-        if (sorted.isEmpty()) actions.add(label(getString(R.string.console_no_hosts_details)));
-        for (ComputerDetails host : sorted) {
-            String selected = host.uuid.equals(selectedHostUuid)
-                    ? getString(R.string.console_selected_suffix) : "";
-            String discovered = newlyDiscoveredHosts.contains(host.uuid)
-                    ? getString(R.string.console_new_host_suffix) : "";
-            TextView choose = panelAction(getString(R.string.console_host_choice,
-                    host.name, hostStatus(host), selected + discovered));
-            choose.setTag("host:" + host.uuid);
-            choose.setAlpha(host.state == ComputerDetails.State.OFFLINE ? .62f : 1f);
-            choose.setOnClickListener(view -> {
-                newlyDiscoveredHosts.remove(host.uuid);
-                if (ConsoleActionCatalog.isOnline(host) && ConsoleActionCatalog.isPaired(host)) {
-                    selectHost(host, true);
-                    hideSidePanel();
-                } else {
-                    showHostActions(host);
-                }
-            });
-            actions.add(choose);
-        }
-        ComputerDetails selectedHost = hosts.get(selectedHostUuid);
-        if (selectedHost != null) {
-            TextView manage = panelAction(getString(R.string.console_manage_host, selectedHost.name));
-            manage.setOnClickListener(view -> showHostActions(selectedHost));
-            actions.add(manage);
-        }
-        TextView refresh = panelAction(getString(R.string.console_refresh));
-        refresh.setOnClickListener(view -> {
-            hideSidePanel();
-            refreshDashboard();
-        });
-        TextView add = panelAction(getString(R.string.console_add_host));
-        add.setOnClickListener(view -> addHost());
-        actions.add(refresh);
-        actions.add(add);
-        showSidePanel(getString(R.string.console_hosts_eyebrow),
-                getString(R.string.console_hosts_title),
-                discoveryActive ? getString(R.string.console_hosts_scanning)
-                        : getString(R.string.console_hosts_ready),
-                actions.toArray(new View[0]));
-    }
-
     private TextView label(String value) {
         TextView view = text(value, 13, 0xFFBDC4D8, false);
         view.setPadding(dp(8), dp(7), dp(8), dp(7));
@@ -1534,6 +1743,86 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         startActivity(intent);
     }
 
+    private void showAddHostPanel() {
+        List<View> actions = new ArrayList<>();
+        List<ComputerDetails> discovered = new ArrayList<>();
+        for (String uuid : new ArrayList<>(newlyDiscoveredHosts)) {
+            ComputerDetails host = hosts.get(uuid);
+            if (host != null) discovered.add(host);
+        }
+        discovered.sort(Comparator.comparing(host -> host.name, String.CASE_INSENSITIVE_ORDER));
+        if (discovered.isEmpty()) {
+            actions.add(label(getString(R.string.console_add_host_none_found)));
+        } else {
+            for (ComputerDetails host : discovered) {
+                TextView result = panelAction(getString(R.string.console_add_discovered_host,
+                        host.name, host.state == ComputerDetails.State.ONLINE
+                                ? getString(R.string.console_status_online)
+                                : getString(R.string.console_status_offline)));
+                result.setTag("host.discovered:" + host.uuid);
+                result.setEnabled(host.state == ComputerDetails.State.ONLINE);
+                result.setAlpha(result.isEnabled() ? 1f : .5f);
+                result.setOnClickListener(view -> activateHostFromSelection(host.uuid));
+                actions.add(result);
+            }
+        }
+        TextView refresh = panelAction(getString(R.string.console_add_host_refresh_results));
+        refresh.setOnClickListener(view -> {
+            loadKnownHosts();
+            Toast.makeText(this, R.string.console_add_host_searching, Toast.LENGTH_SHORT).show();
+            mainHandler.postDelayed(this::showAddHostPanel, 900L);
+        });
+        TextView manual = panelAction(getString(R.string.console_add_host_by_ip));
+        manual.setOnClickListener(view -> {
+            hideSidePanel();
+            addHost();
+        });
+        actions.add(refresh);
+        actions.add(manual);
+        showSidePanel(getString(R.string.console_hosts_eyebrow),
+                getString(R.string.console_add_host_short),
+                getString(R.string.console_add_host_details),
+                actions.toArray(new View[0]));
+    }
+
+    private void showHostSelectionOptions(ComputerDetails host) {
+        boolean online = host.state == ComputerDetails.State.ONLINE;
+        boolean paired = host.pairState == PairingManager.PairState.PAIRED;
+        String address = host.activeAddress != null ? host.activeAddress.address : null;
+        boolean canSleep = online
+                && hostGatewayStore.loadClientConnection(host.uuid, address) != null;
+
+        TextView wake = hostSelectionMenuAction(getString(R.string.console_wake_host),
+                !online && host.macAddress != null);
+        wake.setOnClickListener(view -> {
+            hideSidePanel();
+            wakeHost(host);
+        });
+        TextView unpair = hostSelectionMenuAction(getString(R.string.console_unpair_host),
+                online && paired);
+        unpair.setTextColor(unpair.isEnabled() ? 0xFFFF9B92 : 0x88FF9B92);
+        unpair.setOnClickListener(view -> unpairHost(host));
+        TextView test = hostSelectionMenuAction(
+                getString(R.string.pcview_menu_test_network), true);
+        test.setOnClickListener(view -> {
+            hideSidePanel();
+            ServerHelper.doNetworkTest(this);
+        });
+        TextView sleep = hostSelectionMenuAction(getString(R.string.console_sleep_host), canSleep);
+        sleep.setOnClickListener(view -> confirmSleepHost(host));
+        showSidePanel(getString(R.string.console_host_eyebrow), host.name,
+                getString(online ? R.string.console_host_online_details
+                        : R.string.console_host_offline_details),
+                wake, unpair, test, sleep);
+    }
+
+    private TextView hostSelectionMenuAction(String label, boolean enabled) {
+        TextView action = panelAction(label);
+        action.setEnabled(enabled);
+        action.setAlpha(enabled ? 1f : .42f);
+        return action;
+    }
+
     private void refreshDashboard() {
         if (managerBinder == null) {
             Toast.makeText(this, R.string.error_manager_not_running, Toast.LENGTH_LONG).show();
@@ -1545,9 +1834,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (appListPoller != null) appListPoller.pollNow();
         ComputerDetails selected = hosts.get(selectedHostUuid);
         if (selected != null) requestPlayniteRefresh(selected, true);
-        mainHandler.removeCallbacks(discoveryIndicatorCycle);
-        mainHandler.removeCallbacks(endDiscoveryIndicator);
-        discoveryIndicatorCycle.run();
         Toast.makeText(this, R.string.console_refresh_started, Toast.LENGTH_SHORT).show();
     }
 
@@ -1802,19 +2088,16 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         quickActions = horizontalRow();
         addQuickAction(globalAction("global.refresh", R.string.console_action_refresh,
                 R.drawable.ic_console_refresh, this::refreshDashboard));
-        addQuickAction(globalAction("global.add_host", R.string.console_action_add_host,
-                R.drawable.ic_console_add, this::addHost));
         addQuickAction(globalAction("global.quick_launch", R.string.console_action_quick_launch,
                 R.drawable.ic_console_play, this::showQuickLaunchPanel));
         addQuickAction(globalAction("global.settings", R.string.console_action_stream_settings,
                 R.drawable.ic_console_settings, this::showOptionsPanel));
-        addQuickAction(globalAction("global.overrides", R.string.console_action_overrides,
-                R.drawable.ic_console_sliders, this::showOverridesPanel));
         discordActionButton = addQuickAction(globalAction("global.discord",
                 R.string.console_action_discord, R.drawable.ic_console_discord,
                 this::showDiscordPanel));
-        addQuickAction(globalAction("global.help", R.string.console_action_help,
-                R.drawable.ic_console_help, () -> HelpLauncher.launchSetupGuide(this)));
+        addQuickAction(globalAction("global.leave_host", R.string.console_action_leave_host,
+                R.drawable.ic_console_leave_host,
+                () -> showHostSelection(selectedHostUuid)));
     }
 
     private ImageButton addQuickAction(ConsoleAction resolved) {
@@ -1835,12 +2118,36 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             button.setTooltipText(resolved.label);
         }
         button.setOnClickListener(view -> resolved.handler.run());
-        button.setOnFocusChangeListener((view, focused) -> styleQuickAction(button, focused));
+        button.setOnFocusChangeListener((view, focused) -> {
+            styleQuickAction(button, focused);
+            if (quickActionHint != null) {
+                quickActionHint.setText(focused ? resolved.label : "");
+                quickActionHint.setVisibility(focused ? View.VISIBLE : View.INVISIBLE);
+                if (focused) positionQuickActionHint(button);
+            }
+        });
         styleQuickAction(button, false);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(target, target);
         params.leftMargin = getResources().getDimensionPixelSize(R.dimen.console_space_xs);
         quickActions.addView(button, params);
         return button;
+    }
+
+    private void positionQuickActionHint(View anchor) {
+        if (quickActionHint == null || anchor == null || homeLayer == null) return;
+        quickActionHint.post(() -> {
+            int[] location = new int[2];
+            anchor.getLocationInWindow(location);
+            int width = quickActionHint.getWidth();
+            int minimum = dp(54);
+            int maximum = Math.max(minimum,
+                    homeLayer.getWidth() - dp(54) - width);
+            int left = location[0] + anchor.getWidth() / 2 - width / 2;
+            FrameLayout.LayoutParams params =
+                    (FrameLayout.LayoutParams) quickActionHint.getLayoutParams();
+            params.leftMargin = Math.max(minimum, Math.min(maximum, left));
+            quickActionHint.setLayoutParams(params);
+        });
     }
 
     private void refreshDiscordIndicator() {
@@ -1910,88 +2217,6 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) button.setTooltipText(state);
         styleQuickAction(button, button.hasFocus());
         button.setAlpha(1f);
-    }
-
-    private void showHostActions(ComputerDetails host) {
-        boolean online = ConsoleActionCatalog.isOnline(host);
-        boolean known = host.state != ComputerDetails.State.UNKNOWN;
-        boolean paired = ConsoleActionCatalog.isPaired(host);
-        boolean activeSession = host.runningGameId != 0;
-        String activeAddress = host.activeAddress != null ? host.activeAddress.address : null;
-        boolean gatewayPaired = hostGatewayStore.loadClientConnection(host.uuid, activeAddress) != null;
-        List<ConsoleAction> resolved = new ArrayList<>();
-        addHostAction(resolved, ConsoleActionCatalog.HostCapability.SELECT_APPS,
-                getString(R.string.pcview_menu_app_list), online, known, paired, activeSession,
-                host.macAddress != null, gatewayPaired, false, () -> {
-                    selectHost(host, true);
-                    hideSidePanel();
-                });
-        addHostAction(resolved, ConsoleActionCatalog.HostCapability.PAIR,
-                getString(R.string.pcview_menu_pair_pc), online, known, paired, activeSession,
-                host.macAddress != null, gatewayPaired, false, () -> pairHost(host));
-        addHostAction(resolved, ConsoleActionCatalog.HostCapability.WAKE,
-                getString(R.string.pcview_menu_send_wol), online, known, paired, activeSession,
-                host.macAddress != null, gatewayPaired, false, () -> {
-                    hideSidePanel();
-                    wakeHost(host);
-                });
-        addHostAction(resolved, ConsoleActionCatalog.HostCapability.RESUME,
-                getString(R.string.applist_menu_resume), online, known, paired, activeSession,
-                host.macAddress != null, gatewayPaired, false, () -> {
-                    hideSidePanel();
-                    resumeSession(host);
-                });
-        addHostAction(resolved, ConsoleActionCatalog.HostCapability.QUIT_SESSION,
-                getString(R.string.applist_menu_quit), online, known, paired, activeSession,
-                host.macAddress != null, gatewayPaired, true,
-                () -> UiHelper.displayQuitConfirmationDialog(this, () -> {
-                    hideSidePanel();
-                    ServerHelper.doQuit(this, host, new NvApp("app", 0, false),
-                            managerBinder, () -> {
-                                if (appListPoller != null) appListPoller.pollNow();
-                            });
-                }, null));
-        addHostAction(resolved, ConsoleActionCatalog.HostCapability.NETWORK_TEST,
-                getString(R.string.pcview_menu_test_network), online, known, paired, activeSession,
-                host.macAddress != null, gatewayPaired, false,
-                () -> ServerHelper.doNetworkTest(this));
-        addHostAction(resolved, ConsoleActionCatalog.HostCapability.HOST_INTEGRATIONS,
-                getString(R.string.console_host_integrations), online, known, paired, activeSession,
-                host.macAddress != null, gatewayPaired, false, () -> {
-                    String address = host.activeAddress != null ? host.activeAddress.address : null;
-                    discordPanelController.showHostIntegrations(host.uuid, address, host.name);
-                });
-        addHostAction(resolved, ConsoleActionCatalog.HostCapability.SLEEP,
-                getString(R.string.console_sleep_host), online, known, paired, activeSession,
-                host.macAddress != null, gatewayPaired, false, () -> confirmSleepHost(host));
-        addHostAction(resolved, ConsoleActionCatalog.HostCapability.UNPAIR,
-                getString(R.string.pcview_menu_unpair_pc), online, known, paired, activeSession,
-                host.macAddress != null, gatewayPaired, true, () -> unpairHost(host));
-        addHostAction(resolved, ConsoleActionCatalog.HostCapability.DETAILS,
-                getString(R.string.pcview_menu_details), online, known, paired, activeSession,
-                host.macAddress != null, gatewayPaired, false, () -> Dialog.displayDialog(this,
-                        getString(R.string.title_details), host.toString(), false));
-        addHostAction(resolved, ConsoleActionCatalog.HostCapability.REMOVE,
-                getString(R.string.pcview_menu_delete_pc), online, known, paired, activeSession,
-                host.macAddress != null, gatewayPaired, true, () -> confirmRemoveHost(host));
-        List<View> actions = new ArrayList<>();
-        for (ConsoleAction action : resolved) actions.add(actionView(action));
-        showSidePanel(getString(R.string.console_host_eyebrow), host.name,
-                getString(online ? R.string.console_host_online_details
-                        : R.string.console_host_offline_details),
-                actions.toArray(new View[0]));
-    }
-
-    private void addHostAction(List<ConsoleAction> actions,
-                               ConsoleActionCatalog.HostCapability capability,
-                               CharSequence label, boolean online, boolean known, boolean paired,
-                               boolean activeSession, boolean hasMac, boolean gatewayPaired,
-                               boolean destructive, Runnable handler) {
-        boolean visible = ConsoleActionCatalog.hostActionVisible(capability, online, known,
-                paired, activeSession, hasMac, gatewayPaired);
-        if (!visible) return;
-        actions.add(ConsoleAction.enabled("host." + capability.name().toLowerCase(Locale.ROOT),
-                label, 0, ConsoleAction.Context.HOST, destructive, handler));
     }
 
     private void resumeSession(ComputerDetails host) {
@@ -2069,7 +2294,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             Toast.makeText(this, R.string.error_manager_not_running, Toast.LENGTH_LONG).show();
             return;
         }
-        hideSidePanel();
+        if (sideDialog != null && sideDialog.isShowing()) hideSidePanel();
         Toast.makeText(this, R.string.pairing, Toast.LENGTH_SHORT).show();
         executor.execute(() -> {
             String message = null;
@@ -2254,6 +2479,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 host, getString(R.string.scut_deleted_pc));
         hostGatewayStore.remove(host.uuid);
         hosts.remove(host.uuid);
+        if (host.uuid.equals(autoLoginHostUuid)) {
+            autoLoginHostUuid = "";
+            preferences.edit().remove("auto_login_host").apply();
+        }
 
         if (host.uuid.equals(selectedHostUuid)) {
             stopAppListPoller();
@@ -2284,8 +2513,14 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private void selectHost(ComputerDetails host, boolean focusApps) {
+        boolean enteringHost = hostSelectionVisible;
         boolean changed = !host.uuid.equals(selectedHostUuid);
         if (changed) cancelPlayniteArtworkPrefetch();
+        hostSelectionVisible = false;
+        if (enteringHost || focusApps) pendingInitialGameFocus = true;
+        hostSelectionFocusUuid = host.uuid;
+        if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.GONE);
+        if (homeLayer != null) homeLayer.setVisibility(View.VISIBLE);
         selectedHostUuid = host.uuid;
         preferences.edit().putString("selected_host", host.uuid).apply();
         newlyDiscoveredHosts.remove(host.uuid);
@@ -2327,14 +2562,15 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 currentSunshineApps = Collections.unmodifiableList(new ArrayList<>(apps));
                 sunshineAppsGeneration.incrementAndGet();
                 updateLaunchPlayniteButton(host, apps);
-                if (!currentPlayniteGames.isEmpty() ||
+                boolean playniteAvailable = !currentPlayniteGames.isEmpty() ||
                         hostGatewayStore.loadClientConnection(host.uuid,
-                                host.activeAddress != null ? host.activeAddress.address : null) != null) {
+                                host.activeAddress != null ? host.activeAddress.address : null) != null;
+                if (playniteAvailable) {
                     renderPlayniteLibrary(host, apps);
                 } else {
                     renderApps(host, apps);
                 }
-                if (focusApps && !apps.isEmpty()) appRow.getChildAt(0).requestFocus();
+                if (!playniteAvailable) requestPendingInitialGameFocus(host);
             });
         });
     }
@@ -3066,6 +3302,52 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 host.name.toUpperCase(Locale.ROOT)));
         styleInstalledFilter(installedFilterButton.hasFocus());
         updatePlayniteLibraryStatus(host);
+        requestPendingInitialGameFocus(host);
+    }
+
+    private void requestPendingInitialGameFocus(ComputerDetails host) {
+        if (!pendingInitialGameFocus || hostSelectionVisible || host == null || appRow == null
+                || !host.uuid.equals(selectedHostUuid)) return;
+        View target = null;
+        if (!resumePlayniteGameId.isEmpty()) {
+            target = directChildWithTag(appRow, "playnite:" + resumePlayniteGameId);
+        }
+        if (target == null && !renderedPlayniteItems.isEmpty()) {
+            PlayniteDashboardItem mostRecent = null;
+            long latest = Long.MIN_VALUE;
+            for (PlayniteDashboardItem item : renderedPlayniteItems) {
+                if (!item.game.installed || isPlayniteInstalling(host.uuid, item)) continue;
+                long activity = PlayniteLibraryOrdering.activityEpoch(item.game.lastActivity);
+                if (activity > latest) {
+                    latest = activity;
+                    mostRecent = item;
+                }
+            }
+            if (mostRecent != null && latest != Long.MIN_VALUE) {
+                target = directChildWithTag(appRow, "playnite:" + mostRecent.stableId());
+            }
+        }
+        if (target == null && !renderedPlayniteItems.isEmpty()) {
+            String selected = preferences.getString("selected_playnite." + host.uuid, "");
+            target = directChildWithTag(appRow, "playnite:" + selected);
+        }
+        if (target == null) {
+            long latest = Long.MIN_VALUE;
+            for (NvApp app : currentSunshineApps) {
+                long played = preferences.getLong(appHistoryKey(host.uuid, app.getAppId()), 0L);
+                View candidate = directChildWithTag(appRow,
+                        "app:" + host.uuid + ":" + app.getAppId());
+                if (candidate != null && played > latest) {
+                    latest = played;
+                    target = candidate;
+                }
+            }
+        }
+        if (target == null) target = firstFocusableChild(appRow);
+        if (target == null) return;
+        pendingInitialGameFocus = false;
+        View resolved = target;
+        resolved.post(resolved::requestFocus);
     }
 
     private int maxCarouselGameCount() {
@@ -5784,49 +6066,116 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private void showOptionsPanel() {
-        TextView sounds = panelAction(getString(R.string.console_ui_sounds,
-                getString(uiSoundsEnabled ? R.string.console_on : R.string.console_off)));
-        TextView motion = panelAction(getString(R.string.console_reduced_motion,
-                getString(reducedMotion ? R.string.console_on : R.string.console_off)));
-        TextView carouselDescription = panelAction(getString(
-                R.string.console_carousel_game_description,
-                getString(showCarouselGameDescription
-                        ? R.string.console_on : R.string.console_off)));
+        LinearLayout sounds = settingsToggle(
+                getString(R.string.console_ui_sounds_label), uiSoundsEnabled);
+        LinearLayout motion = settingsToggle(
+                getString(R.string.console_reduced_motion_label), reducedMotion);
+        LinearLayout carouselDescription = settingsToggle(getString(
+                R.string.console_carousel_game_description_label),
+                showCarouselGameDescription);
+        LinearLayout hiddenApps = settingsToggle(
+                getString(R.string.console_hidden_apps_label), showHiddenApps);
+        TextView autoLogin = panelAction(getString(R.string.console_auto_login_host,
+                autoLoginHostLabel()));
+        autoLogin.setTag("options.auto_login_host");
         TextView settings = panelAction(getString(R.string.console_streaming_settings));
-        TextView hiddenApps = panelAction(getString(R.string.console_hidden_apps_setting,
-                getString(showHiddenApps ? R.string.console_on : R.string.console_off)));
+        TextView overrides = panelAction(getString(R.string.console_options_overrides));
+        TextView integrations = panelAction(getString(R.string.console_host_integrations));
+        ComputerDetails selectedHost = hosts.get(selectedHostUuid);
+        integrations.setEnabled(selectedHost != null);
+        integrations.setAlpha(selectedHost != null ? 1f : .45f);
+        TextView readme = panelAction(getString(R.string.console_options_readme));
         sounds.setOnClickListener(v -> {
             uiSoundsEnabled = !uiSoundsEnabled;
             preferences.edit().putBoolean("ui_sounds", uiSoundsEnabled).apply();
-            sounds.setText(getString(R.string.console_ui_sounds,
-                    getString(uiSoundsEnabled ? R.string.console_on : R.string.console_off)));
+            updateSettingsToggle(sounds, uiSoundsEnabled);
         });
         motion.setOnClickListener(v -> {
             reducedMotion = !reducedMotion;
             preferences.edit().putBoolean("reduced_motion", reducedMotion).apply();
-            motion.setText(getString(R.string.console_reduced_motion,
-                    getString(reducedMotion ? R.string.console_on : R.string.console_off)));
+            updateSettingsToggle(motion, reducedMotion);
         });
         carouselDescription.setOnClickListener(v -> {
             showCarouselGameDescription = !showCarouselGameDescription;
             preferences.edit().putBoolean("show_carousel_game_description",
                     showCarouselGameDescription).apply();
             applyCarouselDescriptionVisibility();
-            carouselDescription.setText(getString(R.string.console_carousel_game_description,
-                    getString(showCarouselGameDescription
-                            ? R.string.console_on : R.string.console_off)));
+            updateSettingsToggle(carouselDescription, showCarouselGameDescription);
         });
+        autoLogin.setOnClickListener(v -> showAutoLoginHostPanel());
         hiddenApps.setOnClickListener(v -> {
             toggleHiddenApps();
-            showOptionsPanel();
+            updateSettingsToggle(hiddenApps, showHiddenApps);
         });
         settings.setOnClickListener(v -> {
             hideSidePanel();
             startActivity(new Intent(this, StreamSettings.class));
         });
+        overrides.setOnClickListener(v -> showOverridesPanel());
+        integrations.setOnClickListener(v -> {
+            ComputerDetails host = hosts.get(selectedHostUuid);
+            if (host == null) return;
+            String address = host.activeAddress != null ? host.activeAddress.address : null;
+            discordPanelController.showHostIntegrations(host.uuid, address, host.name);
+        });
+        readme.setOnClickListener(v -> {
+            hideSidePanel();
+            HelpLauncher.launchSetupGuide(this);
+        });
         showSidePanel(getString(R.string.console_title), getString(R.string.console_options_title),
                 getString(R.string.console_options_details),
-                sounds, motion, carouselDescription, hiddenApps, settings);
+                settingsSectionHeader(R.string.console_options_section_interface),
+                sounds, motion, carouselDescription, hiddenApps,
+                settingsSectionHeader(R.string.console_options_section_host),
+                autoLogin, integrations,
+                settingsSectionHeader(R.string.console_options_section_streaming),
+                settings, overrides,
+                settingsSectionHeader(R.string.console_options_section_help), readme);
+    }
+
+    private String autoLoginHostLabel() {
+        ComputerDetails host = autoLoginHostUuid == null || autoLoginHostUuid.isEmpty()
+                ? null : hosts.get(autoLoginHostUuid);
+        return host == null ? getString(R.string.console_auto_login_none) : host.name;
+    }
+
+    private void showAutoLoginHostPanel() {
+        List<View> actions = new ArrayList<>();
+        TextView none = panelAction(getString(R.string.console_auto_login_none));
+        none.setTag("auto_login:");
+        none.setOnClickListener(view -> setAutoLoginHost(""));
+        actions.add(none);
+        List<ComputerDetails> sorted = new ArrayList<>(hosts.values());
+        sorted.sort(Comparator.comparing(host -> host.name, String.CASE_INSENSITIVE_ORDER));
+        for (ComputerDetails host : sorted) {
+            String suffix = host.uuid.equals(autoLoginHostUuid)
+                    ? getString(R.string.console_selected_suffix) : "";
+            TextView choice = panelAction(host.name + suffix);
+            choice.setTag("auto_login:" + host.uuid);
+            choice.setOnClickListener(view -> setAutoLoginHost(host.uuid));
+            actions.add(choice);
+        }
+        showSidePanel(getString(R.string.console_title),
+                getString(R.string.console_auto_login_title),
+                getString(R.string.console_auto_login_details),
+                actions.toArray(new View[0]));
+    }
+
+    private void setAutoLoginHost(String uuid) {
+        autoLoginHostUuid = uuid == null ? "" : uuid;
+        SharedPreferences.Editor editor = preferences.edit();
+        if (autoLoginHostUuid.isEmpty()) editor.remove("auto_login_host");
+        else editor.putString("auto_login_host", autoLoginHostUuid);
+        editor.apply();
+        handlePanelBack();
+        mainHandler.post(() -> {
+            View action = sidePanel != null
+                    ? sidePanel.findViewWithTag("options.auto_login_host") : null;
+            if (action instanceof TextView) {
+                ((TextView) action).setText(getString(
+                        R.string.console_auto_login_host, autoLoginHostLabel()));
+            }
+        });
     }
 
     private void applyCarouselDescriptionVisibility() {
@@ -5893,6 +6242,11 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             panelHistory.clear();
             homeLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
             homeLayer.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+            if (hostSelectionLayer != null) {
+                hostSelectionLayer.setImportantForAccessibility(
+                        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+                hostSelectionLayer.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+            }
         } else if (!sidePanelTransient && currentPanelKey != null
                 && !currentPanelKey.equals(nextKey)) {
             PanelSnapshot snapshot = capturePanelSnapshot();
@@ -5989,6 +6343,11 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             sidePanelTransient = false;
             homeLayer.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
             homeLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+            if (hostSelectionLayer != null) {
+                hostSelectionLayer.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+                hostSelectionLayer.setImportantForAccessibility(
+                        View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+            }
             restoreContentFocus();
         };
         if (reducedMotion) finish.run();
@@ -6089,8 +6448,14 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 && lastContentFocus.isShown() && lastContentFocus.isFocusable()) {
             target = lastContentFocus;
         } else if (lastContentFocusTag != null) {
-            View tagged = homeLayer.findViewWithTag(lastContentFocusTag);
+            ViewGroup activeLayer = hostSelectionVisible && hostSelectionLayer != null
+                    ? hostSelectionLayer : homeLayer;
+            View tagged = activeLayer.findViewWithTag(lastContentFocusTag);
             if (tagged != null && tagged.isShown() && tagged.isFocusable()) target = tagged;
+        }
+        if (target == null && hostSelectionVisible) {
+            requestHostSelectionFocus();
+            return;
         }
         if (target == null) target = firstFocusableChild(appRow);
         if (target == null) target = hostSelector;
@@ -6105,9 +6470,100 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         action.setTag("panel.action:" + label);
         action.setMinHeight(dp(46));
         action.setPadding(dp(16), dp(7), dp(16), dp(7));
-        action.setOnFocusChangeListener((view, focused) -> styleCompactButton(action, focused));
+        action.setOnFocusChangeListener((view, focused) -> {
+            styleCompactButton(action, focused);
+            if (focused) revealSidePanelFocus(action);
+        });
         styleCompactButton(action, false);
         return action;
+    }
+
+    private TextView settingsSectionHeader(int label) {
+        TextView header = text(getString(label).toUpperCase(Locale.ROOT),
+                10, 0xFF83CAE9, true);
+        header.setPadding(dp(5), dp(8), dp(5), dp(2));
+        header.setFocusable(false);
+        return header;
+    }
+
+    private LinearLayout settingsToggle(String label, boolean checked) {
+        LinearLayout row = new LinearLayout(this);
+        row.setId(View.generateViewId());
+        row.setOrientation(LinearLayout.HORIZONTAL);
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setFocusable(true);
+        row.setClickable(true);
+        row.setMinimumHeight(dp(48));
+        row.setPadding(dp(16), dp(6), dp(12), dp(6));
+        row.setTag("settings.toggle:" + label);
+        TextView title = text(label, 14, 0xFFF0E9FF, true);
+        title.setTag("settings.toggle.label");
+        title.setSingleLine(true);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        row.addView(title, new LinearLayout.LayoutParams(
+                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
+        TextView state = text("", 9, Color.WHITE, true);
+        state.setTag("settings.toggle.state");
+        state.setGravity(Gravity.CENTER);
+        row.addView(state, new LinearLayout.LayoutParams(dp(48), dp(26)));
+        row.setOnFocusChangeListener((view, focused) -> {
+            styleSettingsToggle(row, focused);
+            if (focused) revealSidePanelFocus(row);
+        });
+        styleSettingsToggle(row, false);
+        updateSettingsToggle(row, checked);
+        return row;
+    }
+
+    private void updateSettingsToggle(LinearLayout row, boolean checked) {
+        if (row == null) return;
+        TextView title = (TextView) findTaggedChild(row, "settings.toggle.label");
+        TextView state = (TextView) findTaggedChild(row, "settings.toggle.state");
+        if (state == null) return;
+        String value = getString(checked ? R.string.console_on : R.string.console_off);
+        state.setText(value);
+        GradientDrawable track = gradient(
+                checked ? 0xFF2383A5 : 0xFF343B42,
+                checked ? 0xFF176782 : 0xFF252B30, 13);
+        track.setStroke(dp(1), checked ? 0xFF73D7FF : 0xFF58626B);
+        state.setBackground(track);
+        if (title != null) row.setContentDescription(title.getText() + ". " + value);
+    }
+
+    private void styleSettingsToggle(View row, boolean focused) {
+        GradientDrawable background = gradient(
+                focused ? 0xFF24343F : 0x26242B32,
+                focused ? 0xFF18242C : 0x4813181D, 10);
+        background.setStroke(dp(focused ? 2 : 1), focused
+                ? getResources().getColor(R.color.console_accent) : 0x384C5962);
+        row.setBackground(background);
+        row.setElevation(dp(focused ? 4 : 0));
+    }
+
+    private void revealSidePanelFocus(View view) {
+        if (sidePanelScroll == null || view == null) return;
+        view.post(() -> {
+            if (sideDialog == null || !sideDialog.isShowing()
+                    || !view.isAttachedToWindow()) return;
+            Rect bounds = new Rect();
+            view.getDrawingRect(bounds);
+            sidePanelScroll.offsetDescendantRectToMyCoords(view, bounds);
+            int margin = dp(16);
+            int viewportTop = sidePanelScroll.getScrollY() + margin;
+            int viewportBottom = sidePanelScroll.getScrollY()
+                    + sidePanelScroll.getHeight() - margin;
+            int target = sidePanelScroll.getScrollY();
+            if (bounds.bottom > viewportBottom) {
+                target += bounds.bottom - viewportBottom;
+            } else if (bounds.top < viewportTop) {
+                target -= viewportTop - bounds.top;
+            }
+            target = Math.max(0, target);
+            if (target != sidePanelScroll.getScrollY()) {
+                if (reducedMotion) sidePanelScroll.scrollTo(0, target);
+                else sidePanelScroll.smoothScrollTo(0, target);
+            }
+        });
     }
 
     private TextView actionView(ConsoleAction resolved) {
@@ -6207,11 +6663,12 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private void styleHostSelector(boolean focused) {
         if (hostSelector == null) return;
         GradientDrawable background = gradient(
-                focused ? 0x78223039 : 0x42151C22,
-                focused ? 0x7816222A : 0x5410151A, 10);
-        background.setStroke(dp(1), focused ? 0x7073D7FF : 0x284C5962);
+                focused ? 0xD9233038 : 0x00000000,
+                focused ? 0xD9182229 : 0x00000000, 10);
+        if (focused) background.setStroke(dp(1), 0xB873D7FF);
         hostSelector.setBackground(background);
-        hostSelector.setElevation(0f);
+        hostSelector.setElevation(dp(focused ? 2 : 0));
+        animateScale(hostSelector, focused ? 1.03f : 1f);
     }
 
     private void styleQuickAction(ImageButton button, boolean focused) {
@@ -6676,25 +7133,135 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
     }
 
+    private static final class HostSelectionTile {
+        final View root;
+        final View avatar;
+        final View dot;
+        final TextView status;
+        final TextView options;
+
+        HostSelectionTile(View root, View avatar, View dot,
+                          TextView status, TextView options) {
+            this.root = root;
+            this.avatar = avatar;
+            this.dot = dot;
+            this.status = status;
+            this.options = options;
+        }
+    }
+
+    private static final class HostAvatarDrawable extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final int seed;
+
+        HostAvatarDrawable(String value) {
+            seed = value == null ? 0 : value.hashCode();
+        }
+
+        @Override public void draw(Canvas canvas) {
+            Rect bounds = getBounds();
+            float cx = bounds.exactCenterX();
+            float cy = bounds.exactCenterY();
+            float radius = Math.min(bounds.width(), bounds.height()) / 2f;
+            Path clip = new Path();
+            clip.addCircle(cx, cy, radius, Path.Direction.CW);
+            canvas.save();
+            canvas.clipPath(clip);
+
+            float hue = Math.abs(seed % 360);
+            paint.setColor(Color.HSVToColor(new float[]{hue, .58f, .62f}));
+            canvas.drawCircle(cx, cy, radius, paint);
+            for (int index = 0; index < 6; index++) {
+                int shifted = seed >> (index * 3);
+                float x = bounds.left + bounds.width() * (.12f + .17f * (index % 4));
+                float y = bounds.top + bounds.height() * (.12f + .21f * ((shifted & 3)));
+                float width = radius * (.75f + .12f * (index % 3));
+                float height = radius * (.35f + .1f * ((index + 1) % 3));
+                float blobHue = (hue + 48f + index * 43f) % 360f;
+                paint.setColor(Color.HSVToColor(185,
+                        new float[]{blobHue, .62f, .94f}));
+                canvas.save();
+                canvas.rotate((shifted & 63) - 31f, x, y);
+                canvas.drawOval(new RectF(x - width, y - height,
+                        x + width, y + height), paint);
+                canvas.restore();
+            }
+            paint.setStyle(Paint.Style.STROKE);
+            paint.setStrokeWidth(Math.max(2f, radius * .08f));
+            paint.setColor(0x55FFFFFF);
+            Path wave = new Path();
+            wave.moveTo(bounds.left - radius * .2f, cy + radius * .35f);
+            wave.cubicTo(cx - radius * .6f, cy - radius * .7f,
+                    cx + radius * .25f, cy + radius * .8f,
+                    bounds.right + radius * .2f, cy - radius * .2f);
+            canvas.drawPath(wave, paint);
+            paint.setStyle(Paint.Style.FILL);
+            canvas.restore();
+        }
+
+        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
+        @Override public void setColorFilter(android.graphics.ColorFilter filter) {
+            paint.setColorFilter(filter);
+        }
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+    }
+
+    private static final class HostSelectionBackdropDrawable extends Drawable {
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+
+        @Override public void draw(Canvas canvas) {
+            Rect bounds = getBounds();
+            canvas.drawColor(0xFF070A10);
+            paint.setColor(0x342C4868);
+            canvas.drawOval(new RectF(bounds.left - bounds.width() * .1f,
+                    bounds.top - bounds.height() * .2f,
+                    bounds.left + bounds.width() * .58f,
+                    bounds.top + bounds.height() * 1.15f), paint);
+            paint.setColor(0x263E284B);
+            canvas.drawOval(new RectF(bounds.left + bounds.width() * .44f,
+                    bounds.top - bounds.height() * .08f,
+                    bounds.right + bounds.width() * .12f,
+                    bounds.bottom + bounds.height() * .18f), paint);
+            paint.setColor(0x1F9B6334);
+            for (int index = 0; index < 18; index++) {
+                float x = bounds.left + bounds.width() * ((index * 37 % 100) / 100f);
+                float y = bounds.top + bounds.height() * (.28f
+                        + ((index * 19 % 52) / 100f));
+                float radius = Math.max(2f, bounds.width() * (.0015f + (index % 3) * .0008f));
+                canvas.drawCircle(x, y, radius, paint);
+            }
+            paint.setColor(0x62000000);
+            canvas.drawRect(bounds.left, bounds.top, bounds.right,
+                    bounds.top + bounds.height() * .08f, paint);
+            canvas.drawRect(bounds.left, bounds.bottom - bounds.height() * .08f,
+                    bounds.right, bounds.bottom, paint);
+        }
+
+        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
+        @Override public void setColorFilter(android.graphics.ColorFilter filter) {
+            paint.setColorFilter(filter);
+        }
+        @Override public int getOpacity() { return PixelFormat.OPAQUE; }
+    }
+
     private void wireDebugHomeFocusNavigation(View resume, View playnite, View filter,
                                                View quick, View controller, View app) {
-        View discovered = discoveredHostButton != null
-                && discoveredHostButton.getVisibility() == View.VISIBLE
-                ? discoveredHostButton : null;
         View belowHeader = app != null ? app
                 : playnite != null ? playnite : filter != null ? filter : controller;
+        View lastQuick = null;
+        if (quickActions != null) {
+            for (int index = quickActions.getChildCount() - 1; index >= 0; index--) {
+                View child = quickActions.getChildAt(index);
+                if (child.isFocusable()) {
+                    lastQuick = child;
+                    break;
+                }
+            }
+        }
         if (belowHeader != null) optionsButton.setNextFocusDownId(belowHeader.getId());
-        if (quick != null) {
-            optionsButton.setNextFocusRightId(
-                    discovered != null ? discovered.getId() : quick.getId());
-            quick.setNextFocusLeftId(
-                    discovered != null ? discovered.getId() : optionsButton.getId());
-        }
-        if (discovered != null) {
-            discovered.setNextFocusLeftId(optionsButton.getId());
-            if (quick != null) discovered.setNextFocusRightId(quick.getId());
-            if (belowHeader != null) discovered.setNextFocusDownId(belowHeader.getId());
-        }
+        optionsButton.setNextFocusLeftId(optionsButton.getId());
+        optionsButton.setNextFocusRightId(quick != null ? quick.getId() : optionsButton.getId());
+        optionsButton.setNextFocusUpId(optionsButton.getId());
 
         if (playnite != null) {
             if (app != null) playnite.setNextFocusUpId(app.getId());
@@ -6715,10 +7282,11 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             for (int index = 0; index < quickActions.getChildCount(); index++) {
                 View child = quickActions.getChildAt(index);
                 if (!child.isFocusable()) continue;
-                if (belowHeader != null) child.setNextFocusDownId(belowHeader.getId());
+                if (belowHeader != null) {
+                    child.setNextFocusDownId(belowHeader.getId());
+                }
                 if (index == 0) {
-                    child.setNextFocusLeftId(discovered != null
-                            ? discovered.getId() : optionsButton.getId());
+                    child.setNextFocusLeftId(optionsButton.getId());
                 }
             }
         }
@@ -6730,7 +7298,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 View child = appRow.getChildAt(index);
                 if (!child.isFocusable()) continue;
                 focusableApps.add(child);
-                child.setNextFocusUpId(optionsButton.getId());
+                child.setNextFocusUpId(quick != null ? quick.getId() : optionsButton.getId());
                 if (belowApps != null) child.setNextFocusDownId(belowApps.getId());
             }
             for (int index = 0; index < focusableApps.size(); index++) {
