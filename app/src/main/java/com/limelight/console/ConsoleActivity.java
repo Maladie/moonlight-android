@@ -194,6 +194,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private FrameLayout hostSelectionLayer;
     private HorizontalScrollView hostSelectionScroll;
     private LinearLayout hostSelectionRow;
+    private LinearLayout hostSelectionLegend;
     private TextView hostSelectionClock;
     private String renderedHostSelectionSignature;
     private String hostSelectionFocusUuid;
@@ -295,6 +296,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             Collections.synchronizedSet(new HashSet<>());
     private final Map<String, String> playniteInstallRequests = new LinkedHashMap<>();
     private final Set<String> playniteInstallObserved = new HashSet<>();
+    private final Set<String> completedPlayniteInstallAnimations = new HashSet<>();
     private List<NvApp> currentSunshineApps = Collections.emptyList();
     private boolean playniteLibraryCached;
     private boolean playniteLibraryRefreshing;
@@ -1057,14 +1059,21 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         contentParams.rightMargin = dp(34);
         hostSelectionLayer.addView(content, contentParams);
 
-        TextView legend = text(getString(R.string.console_host_selection_legend),
-                9, 0xFFD7DDE7, false);
-        legend.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
+        hostSelectionLegend = new LinearLayout(this);
+        hostSelectionLegend.setOrientation(LinearLayout.HORIZONTAL);
+        hostSelectionLegend.setGravity(Gravity.CENTER_VERTICAL);
+        hostSelectionLegend.setPadding(dp(9), dp(5), dp(9), dp(5));
+        GradientDrawable hostLegendBackground = gradient(
+                0xB8161E25, 0xD00C1116, 14);
+        hostLegendBackground.setStroke(dp(1), 0x3D6E8291);
+        hostSelectionLegend.setBackground(hostLegendBackground);
+        rebuildHostSelectionLegend(Collections.emptyList());
         FrameLayout.LayoutParams legendParams = new FrameLayout.LayoutParams(
-                dp(310), dp(38), Gravity.BOTTOM | Gravity.END);
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
         legendParams.rightMargin = dp(38);
         legendParams.bottomMargin = dp(20);
-        hostSelectionLayer.addView(legend, legendParams);
+        hostSelectionLayer.addView(hostSelectionLegend, legendParams);
 
         homeLayer.setVisibility(View.GONE);
         container.addView(hostSelectionLayer, match());
@@ -1167,9 +1176,14 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         ImageView artwork = new ImageView(this);
         artwork.setImageDrawable(new HostAvatarDrawable(host.uuid));
         artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        artwork.setAlpha(.88f);
         FrameLayout.LayoutParams artworkParams = new FrameLayout.LayoutParams(
                 dp(70), dp(70), Gravity.CENTER);
         avatar.addView(artwork, artworkParams);
+        TextView initials = text(hostInitials(host.name), 14, Color.WHITE, true);
+        initials.setGravity(Gravity.CENTER);
+        initials.setShadowLayer(dp(3), 0f, dp(1), 0xE0000000);
+        avatar.addView(initials, match());
         styleHostSelectionAvatar(avatar, false, false);
         tile.addView(avatar, new LinearLayout.LayoutParams(dp(78), dp(78)));
 
@@ -1221,6 +1235,17 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             }
         });
         return tile;
+    }
+
+    private String hostInitials(String name) {
+        if (name == null || name.trim().isEmpty()) return "PC";
+        String[] words = name.trim().split("\\s+");
+        if (words.length > 1) {
+            return (words[0].substring(0, 1)
+                    + words[words.length - 1].substring(0, 1)).toUpperCase(Locale.ROOT);
+        }
+        String value = words[0];
+        return value.substring(0, Math.min(2, value.length())).toUpperCase(Locale.ROOT);
     }
 
     private LinearLayout hostSelectionTileBase() {
@@ -1481,16 +1506,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private void rebuildExpandedNavigationLegend(List<ControllerInfo> controllers) {
         if (expandedNavigationLegend == null) return;
-        boolean playStation = false;
-        for (ControllerInfo controller : controllers) {
-            String name = controller.name.toLowerCase(Locale.ROOT);
-            if (name.contains("dualsense") || name.contains("dualshock")
-                    || name.contains("playstation") || name.contains("sony interactive")
-                    || name.contains("wireless controller")) {
-                playStation = true;
-                break;
-            }
-        }
+        boolean playStation = usesPlayStationButtons(controllers);
         expandedNavigationLegend.removeAllViews();
         addNavigationLegendItem("R3", 0xFF26343E,
                 getString(R.string.playnite_legend_filters));
@@ -1502,6 +1518,53 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         addNavigationLegendItem(playStation ? "○" : "B",
                 playStation ? 0xFF26343E : 0xFFC74444,
                 getString(R.string.playnite_legend_back));
+    }
+
+    private boolean usesPlayStationButtons(List<ControllerInfo> controllers) {
+        for (ControllerInfo controller : controllers) {
+            String name = controller.name.toLowerCase(Locale.ROOT);
+            if (name.contains("dualsense") || name.contains("dualshock")
+                    || name.contains("playstation") || name.contains("sony interactive")
+                    || name.contains("wireless controller")) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private void rebuildHostSelectionLegend(List<ControllerInfo> controllers) {
+        if (hostSelectionLegend == null) return;
+        boolean playStation = usesPlayStationButtons(controllers);
+        String selectGlyph = controllers.isEmpty() ? "OK" : playStation ? "×" : "A";
+        hostSelectionLegend.removeAllViews();
+        addHostSelectionLegendItem(selectGlyph,
+                getString(R.string.console_select_hint));
+        addHostSelectionLegendItem("≡",
+                getString(R.string.console_host_options_label));
+    }
+
+    private void addHostSelectionLegendItem(String glyph, String label) {
+        if (hostSelectionLegend.getChildCount() > 0) {
+            View separator = new View(this);
+            separator.setBackgroundColor(0x336E8291);
+            LinearLayout.LayoutParams separatorParams = new LinearLayout.LayoutParams(
+                    dp(1), dp(18));
+            separatorParams.setMargins(dp(9), 0, dp(9), 0);
+            hostSelectionLegend.addView(separator, separatorParams);
+        }
+        TextView button = text(glyph, glyph.length() > 1 ? 7 : 11,
+                Color.WHITE, true);
+        button.setGravity(Gravity.CENTER);
+        GradientDrawable background = new GradientDrawable();
+        background.setShape(GradientDrawable.OVAL);
+        background.setColor(0xFF26343E);
+        background.setStroke(dp(1), 0xBFE8F1F5);
+        button.setBackground(background);
+        hostSelectionLegend.addView(button, new LinearLayout.LayoutParams(dp(23), dp(23)));
+        TextView description = text(label, 9, 0xFFD7E4EA, true);
+        LinearLayout.LayoutParams descriptionParams = wrapLinear();
+        descriptionParams.leftMargin = dp(5);
+        hostSelectionLegend.addView(description, descriptionParams);
     }
 
     private void addNavigationLegendItem(String glyph, int glyphColor, String label) {
@@ -2723,6 +2786,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 preferences.edit().remove(
                         playniteInstallNotificationKey(host.uuid, gameId))
                         .remove(playniteInstallPendingKey(host.uuid, gameId)).apply();
+                completedPlayniteInstallAnimations.add(request.getKey());
                 completed.add(request.getKey());
             } else if (playniteInstallObserved.contains(request.getKey())) {
                 Toast.makeText(this, getString(R.string.playnite_install_cancelled,
@@ -4102,9 +4166,12 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         copy.addView(playtime, matchLinearWidth());
         TextView state = text("", debugCarousel ? 7 : 10, 0xFF929BAD, false);
         state.setTag("playnite.state");
-        state.setMaxLines(debugCarousel ? 2 : 1);
+        state.setSingleLine(true);
+        state.setMaxWidth(dp(debugCarousel ? 70 : expandedCard ? 118 : 170));
         state.setEllipsize(android.text.TextUtils.TruncateAt.END);
-        copy.addView(state, matchLinearWidth());
+        LinearLayout.LayoutParams stateParams = wrapLinear();
+        stateParams.topMargin = dp(2);
+        copy.addView(state, stateParams);
         card.addView(copy, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         bindPlayniteCard(card, host, item, apps,
@@ -4142,7 +4209,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 && item.stableId().equals(resumePlayniteGameId)
                 && host.runningGameId != 0;
         boolean installing = isPlayniteInstalling(host.uuid, item);
-        card.setAlpha(installing ? .55f : 1f);
+        float cardAlpha = installing ? .68f : item.game.installed ? 1f : .80f;
+        card.setAlpha(cardAlpha);
         String stateText = resumeSession
                 ? getString(R.string.console_resume_session) : playniteState(host.uuid, item);
         if ((payload & PlayniteLibraryDiff.TEXT) != 0) {
@@ -4150,9 +4218,22 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             playtime.setText(playtimeText);
         }
         if ((payload & (PlayniteLibraryDiff.TEXT | PlayniteLibraryDiff.LAUNCH)) != 0) {
-            state.setText(stateText);
+            state.setText(playniteStateGlyph(host.uuid, item, resumeSession)
+                    + playniteStateChipLabel(host.uuid, item, resumeSession));
+            stylePlayniteStateChip(state, host.uuid, item, resumeSession);
         }
         if ((payload & PlayniteLibraryDiff.ARTWORK) != 0) resetPlaynitePoster(poster, item);
+        String installKey = playniteInstallKey(host.uuid, item);
+        if (completedPlayniteInstallAnimations.remove(installKey)) {
+            card.animate().cancel();
+            if (reducedMotion) {
+                card.setAlpha(1f);
+            } else {
+                card.setAlpha(.55f);
+                card.setTranslationY(dp(5));
+                card.animate().alpha(1f).translationY(0f).setDuration(420L).start();
+            }
+        }
         card.setOnClickListener(view -> {
             if (resumeSession) resumeSession(currentHost(host.uuid));
             else activatePlayniteItem(host.uuid, item);
@@ -4165,7 +4246,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 item.game.name, playtimeText, stateText));
         card.setOnFocusChangeListener((view, focused) -> {
             styleCard(card, focused);
-            card.setAlpha(isPlayniteInstalling(host.uuid, item) ? .55f : 1f);
+            card.setAlpha(isPlayniteInstalling(host.uuid, item)
+                    ? .68f : item.game.installed ? 1f : .80f);
             updateCarouselMarquee(name, focused);
             if (focused) {
                 showGameMetadata(item);
@@ -4306,6 +4388,67 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             return getString(R.string.playnite_launch_via_playnite);
         }
         return getString(R.string.playnite_launch_not_configured);
+    }
+
+    private String playniteStateGlyph(String hostUuid, PlayniteDashboardItem item,
+                                      boolean resumeSession) {
+        if (resumeSession) return "▶  ";
+        if (isPlayniteInstalling(hostUuid, item)) return "↓  ";
+        if (!item.game.installed) return "+  ";
+        if (isVibepolloEnsureInFlight(hostUuid, item)) return "…  ";
+        if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) return "✓  ";
+        if (item.mappingState == PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE) {
+            return "↗  ";
+        }
+        return "!  ";
+    }
+
+    private String playniteStateChipLabel(String hostUuid, PlayniteDashboardItem item,
+                                          boolean resumeSession) {
+        if (resumeSession) return getString(R.string.console_resume);
+        if (isPlayniteInstalling(hostUuid, item)) return getString(R.string.playnite_installing);
+        if (!item.game.installed) return getString(R.string.playnite_install_action_short);
+        if (isVibepolloEnsureInFlight(hostUuid, item)) {
+            return getString(R.string.playnite_preparing_short);
+        }
+        if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
+            return getString(R.string.playnite_ready_short);
+        }
+        if (item.mappingState == PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE) {
+            return getString(R.string.playnite_via_playnite_short);
+        }
+        return getString(R.string.playnite_configuration_short);
+    }
+
+    private void stylePlayniteStateChip(TextView state, String hostUuid,
+                                        PlayniteDashboardItem item,
+                                        boolean resumeSession) {
+        boolean installing = isPlayniteInstalling(hostUuid, item);
+        boolean unavailable = item.game.installed
+                && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED
+                && item.mappingState != PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE
+                && !isVibepolloEnsureInFlight(hostUuid, item);
+        int textColor;
+        int fill;
+        int stroke;
+        if (resumeSession) {
+            textColor = 0xFFC8F2FF; fill = 0x80306B80; stroke = 0xB873D7FF;
+        } else if (installing) {
+            textColor = 0xFFFFE2A8; fill = 0x805C451A; stroke = 0xB8E4B34B;
+        } else if (!item.game.installed) {
+            textColor = 0xFFD7DCE1; fill = 0x70404950; stroke = 0x805F6A73;
+        } else if (unavailable) {
+            textColor = 0xFFFFB5AE; fill = 0x805A2926; stroke = 0xB8E16D63;
+        } else if (isVibepolloEnsureInFlight(hostUuid, item)) {
+            textColor = 0xFFFFE2A8; fill = 0x805C451A; stroke = 0xB8E4B34B;
+        } else {
+            textColor = 0xFFBFE9CD; fill = 0x70304D3A; stroke = 0x9062C985;
+        }
+        state.setTextColor(textColor);
+        state.setPadding(dp(4), dp(1), dp(4), dp(1));
+        GradientDrawable background = gradient(fill, fill, 6);
+        background.setStroke(dp(1), stroke);
+        state.setBackground(background);
     }
 
     private String vibepolloEnsureKey(String hostUuid, PlayniteDashboardItem item) {
@@ -5854,7 +5997,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
         boolean devicesChanged = !devicesSignature.toString().equals(
                 renderedControllerDevicesSignature);
-        if (devicesChanged) rebuildExpandedNavigationLegend(controllers);
+        if (devicesChanged) {
+            rebuildExpandedNavigationLegend(controllers);
+            rebuildHostSelectionLegend(controllers);
+        }
         if (signature.toString().equals(renderedControllersSignature)) return;
         renderedControllersSignature = signature.toString();
         renderedControllerDevicesSignature = devicesSignature.toString();

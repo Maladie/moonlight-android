@@ -715,9 +715,10 @@
     <string name="console_host_selection_title">Witaj ponownie w MoonWaker</string>
     <string name="console_host_selection_subtitle">Którego hosta chcesz użyć?</string>
     <string name="console_host_selection_legend">OK  Wybierz     OPTIONS  Opcje hosta</string>
-    <string name="console_add_host_short">Add Host</string>
+    <string name="console_add_host_short">Dodaj hosta</string>
     <string name="console_select_hint">Wybierz</string>
-    <string name="console_host_options_hint">▤  Opcje</string>
+    <string name="console_host_options_hint">≡  Opcje</string>
+    <string name="console_host_options_label">Opcje hosta</string>
     <string name="console_host_selection_description">%1$s. %2$s. Wciśnij Wybierz, aby otworzyć, lub Options, aby zarządzać.</string>
     <string name="console_add_host_none_found">Nie znaleziono jeszcze nowych hostów. Wyszukiwanie trwa w tle.</string>
     <string name="console_add_discovered_host">%1$s · %2$s</string>
@@ -860,6 +861,11 @@
     <string name="playnite_minutes_short">min</string>
     <string name="playnite_not_installed">Niezainstalowana</string>
     <string name="playnite_installing">Instalowanie…</string>
+    <string name="playnite_install_action_short">Zainstaluj</string>
+    <string name="playnite_preparing_short">Przygotowanie…</string>
+    <string name="playnite_ready_short">Gotowa</string>
+    <string name="playnite_via_playnite_short">Przez Playnite</string>
+    <string name="playnite_configuration_short">Konfiguracja</string>
     <string name="playnite_install_starting">Rozpoczynam instalację „%1$s”…</string>
     <string name="playnite_install_in_progress">Gra „%1$s” jest już instalowana.</string>
     <string name="playnite_install_complete">Gra „%1$s” została zainstalowana.</string>

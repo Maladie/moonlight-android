@@ -751,7 +751,8 @@
     <string name="console_host_selection_legend">OK  Select     OPTIONS  Host options</string>
     <string name="console_add_host_short">Add Host</string>
     <string name="console_select_hint">Select</string>
-    <string name="console_host_options_hint">▤  Options</string>
+    <string name="console_host_options_hint">≡  Options</string>
+    <string name="console_host_options_label">Host options</string>
     <string name="console_host_selection_description">%1$s. %2$s. Press Select to open or Options to manage.</string>
     <string name="console_add_host_none_found">No new hosts found yet. Discovery continues in the background.</string>
     <string name="console_add_discovered_host">%1$s · %2$s</string>
@@ -894,6 +895,11 @@
     <string name="playnite_minutes_short">min</string>
     <string name="playnite_not_installed">Not installed</string>
     <string name="playnite_installing">Installing…</string>
+    <string name="playnite_install_action_short">Install</string>
+    <string name="playnite_preparing_short">Preparing…</string>
+    <string name="playnite_ready_short">Ready</string>
+    <string name="playnite_via_playnite_short">Via Playnite</string>
+    <string name="playnite_configuration_short">Setup needed</string>
     <string name="playnite_install_starting">Starting installation of “%1$s”…</string>
     <string name="playnite_install_in_progress">“%1$s” is already being installed.</string>
     <string name="playnite_install_complete">“%1$s” has been installed.</string>
