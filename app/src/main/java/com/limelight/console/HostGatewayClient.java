@@ -31,6 +31,7 @@ import javax.net.ssl.X509TrustManager;
 
 final class HostGatewayClient {
     static final int DEFAULT_PORT = 8785;
+    static final int REQUIRED_GAMEPLAY_PERMISSIONS = 0x07001F00;
     private static final int CONNECT_TIMEOUT_MS = 2_500;
     private static final int READ_TIMEOUT_MS = 5_000;
 
@@ -65,10 +66,12 @@ final class HostGatewayClient {
     static final class Pairing {
         final Connection connection;
         final String clientId;
+        final String streamPairTicket;
 
-        Pairing(Connection connection, String clientId) {
+        Pairing(Connection connection, String clientId, String streamPairTicket) {
             this.connection = connection;
             this.clientId = clientId;
+            this.streamPairTicket = streamPairTicket == null ? "" : streamPairTicket;
         }
     }
 
@@ -139,6 +142,10 @@ final class HostGatewayClient {
         final String source;
         final String genres;
         final String artworkVersion;
+        final boolean installRequiresAttention;
+        final String installAttentionReason;
+        final String installWindowTitle;
+        final String installLauncher;
         final long playtimeSeconds;
         /** Compatibility view for older console code. New code uses seconds. */
         final long playtimeMinutes;
@@ -186,6 +193,17 @@ final class HostGatewayClient {
                      boolean hidden, boolean favorite, String cover, String background,
                      String lastPlayed, String description, int playCount, String source,
                      String genres, String artworkVersion, long playtimeSeconds) {
+            this(id, name, installed, installing, hidden, favorite, cover, background,
+                    lastPlayed, description, playCount, source, genres, artworkVersion,
+                    playtimeSeconds, false, "", "", "");
+        }
+
+        PlayniteGame(String id, String name, boolean installed, boolean installing,
+                     boolean hidden, boolean favorite, String cover, String background,
+                     String lastPlayed, String description, int playCount, String source,
+                     String genres, String artworkVersion, long playtimeSeconds,
+                     boolean installRequiresAttention, String installAttentionReason,
+                     String installWindowTitle, String installLauncher) {
             this.id = id;
             this.name = name;
             this.installed = installed;
@@ -200,6 +218,10 @@ final class HostGatewayClient {
             this.source = source;
             this.genres = genres;
             this.artworkVersion = artworkVersion;
+            this.installRequiresAttention = installRequiresAttention;
+            this.installAttentionReason = installAttentionReason;
+            this.installWindowTitle = installWindowTitle == null ? "" : installWindowTitle;
+            this.installLauncher = installLauncher == null ? "" : installLauncher;
             this.playtimeSeconds = Math.max(0L, playtimeSeconds);
             this.playtimeMinutes = this.playtimeSeconds / 60L;
         }
@@ -583,7 +605,50 @@ final class HostGatewayClient {
         String token = response.optString("token", "");
         if (token.isEmpty()) throw new GatewayException("The gateway returned no client token.", 0);
         return new Pairing(new Connection(endpoint, token, fingerprint),
-                response.optString("client_id", ""));
+                response.optString("client_id", ""),
+                response.optString("stream_pair_ticket", ""));
+    }
+
+    String requestVibepolloPairingTicket(Connection connection) throws IOException {
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/vibepollo/pair/ticket", "POST", new JSONObject(),
+                connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+        String ticket = response.optString("stream_pair_ticket", "");
+        if (ticket.isEmpty()) {
+            throw new GatewayException("The gateway returned no stream pairing ticket.", 0);
+        }
+        return ticket;
+    }
+
+    JSONObject pairVibepolloClient(Connection connection, String ticket,
+                                   String pin, String name) throws IOException {
+        if (ticket == null || ticket.trim().isEmpty()) {
+            throw new IllegalArgumentException("Missing stream pairing ticket");
+        }
+        if (pin == null || !pin.matches("[0-9]{4}")) {
+            throw new IllegalArgumentException("Invalid Moonlight pairing PIN");
+        }
+        String safeName = name == null ? "" : name.trim();
+        if (safeName.isEmpty() || safeName.length() > 80 ||
+                safeName.matches(".*[\\x00-\\x1f\\x7f].*")) {
+            throw new IllegalArgumentException("Invalid Moonlight client name");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("ticket", ticket);
+            body.put("pin", pin);
+            body.put("name", safeName);
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/vibepollo/pair", "POST", body, connection,
+                pinnedTrust(connection), 16_000);
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error",
+                    "The Moonlight client could not be paired."), 0);
+        }
+        return response;
     }
 
     Capabilities getCapabilities(Connection connection) throws IOException {
@@ -788,6 +853,25 @@ final class HostGatewayClient {
         }
     }
 
+    void focusPlayniteInstallation(Connection connection, String gameId) throws IOException {
+        if (!isPlayniteId(gameId)) {
+            throw new IllegalArgumentException("Invalid Playnite game ID");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("game_id", gameId.toLowerCase(Locale.ROOT));
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/playnite/game/install/focus", "POST", body, connection,
+                pinnedTrust(connection), 8_000);
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error",
+                    "The installation window could not be opened."), 0);
+        }
+    }
+
     PlayniteEvents getPlayniteEvents(Connection connection, long after) throws IOException {
         return getPlayniteEvents(connection, after, "");
     }
@@ -868,7 +952,13 @@ final class HostGatewayClient {
                         joinedText(value, "genres", "genre"),
                         firstText(value, "artworkVersion", "artwork_version", "artworkHash",
                                 "artwork_hash", "cover"),
-                        Math.max(0L, seconds)));
+                        Math.max(0L, seconds),
+                        value.optBoolean("installRequiresAttention",
+                                value.optBoolean("install_requires_attention", false)),
+                        firstText(value, "installAttentionReason",
+                                "install_attention_reason"),
+                        firstText(value, "installWindowTitle", "install_window_title"),
+                        firstText(value, "installLauncher", "install_launcher")));
             }
         }
         return new PlayniteLibrary(games, safe.optString("next_cursor", ""),

@@ -118,7 +118,9 @@ final class PlayniteLibraryRepository {
                     game.installed, game.installing, game.hidden, game.playtimeSeconds,
                     game.lastPlayed,
                     game.cover, game.background, game.description, game.playCount,
-                    game.source, game.genres));
+                    game.source, game.genres, game.installRequiresAttention,
+                    game.installAttentionReason, game.installWindowTitle,
+                    game.installLauncher));
         }
         return new PlayniteLibraryCache.Entry(games, System.currentTimeMillis(),
                 pages.revision, pages.apiVersion);

@@ -71,6 +71,23 @@ public class PlayniteTargetResolverTest {
                 Collections.emptyList(), true));
     }
 
+    @Test public void installationPrefersNeutralDesktopOverPlaynite() {
+        NvApp target = PlayniteTargetResolver.resolveInstallationStream("host",
+                Arrays.asList(new NvApp("Playnite", 7, false),
+                        new NvApp("Desktop", 8, false)), null);
+
+        assertNotNull(target);
+        assertEquals(8, target.getAppId());
+    }
+
+    @Test public void installationFallsBackToPlayniteWithoutDesktop() {
+        NvApp target = PlayniteTargetResolver.resolveInstallationStream("host",
+                Collections.singletonList(new NvApp("Playnite", 7, false)), null);
+
+        assertNotNull(target);
+        assertEquals(7, target.getAppId());
+    }
+
     private static NvApp app(String name, int id, String uuid, String artVersion) {
         NvApp app = new NvApp(name, id, false);
         app.setAppUuid(uuid);

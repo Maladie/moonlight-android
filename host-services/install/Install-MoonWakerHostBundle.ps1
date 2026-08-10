@@ -219,6 +219,15 @@ function New-MoonWakerVibepolloToken {
         "POST" -notin @($appsScope.methods)) {
         throw "The Vibepollo token scope must allow GET and POST /api/apps."
     }
+    $pinScope = @($scopeDocument.scopes | Where-Object { $_.path -eq "/api/pin" }) |
+        Select-Object -First 1
+    $clientUpdateScope = @($scopeDocument.scopes | Where-Object {
+        $_.path -eq "/api/clients/update"
+    }) | Select-Object -First 1
+    if ($null -eq $pinScope -or "POST" -notin @($pinScope.methods) -or
+        $null -eq $clientUpdateScope -or "POST" -notin @($clientUpdateScope.methods)) {
+        throw "The Vibepollo token scope must allow automatic client pairing and permission updates."
+    }
     $request = [ordered]@{
         base_url = $baseUrl.TrimEnd('/')
         path = "/api/token"

@@ -104,4 +104,8 @@ public final class PlayniteTransitionGateway {
     public void focusGame() throws IOException {
         client.focusPlayniteGame(connection);
     }
+
+    public void focusInstallation(String gameId) throws IOException {
+        client.focusPlayniteInstallation(connection, gameId);
+    }
 }

@@ -82,6 +82,7 @@ $script:SnapshotCache = $null
 $script:SnapshotCacheTime = [datetime]::MinValue
 $script:DiagnosticsCache = $null
 $script:DiagnosticsCacheTime = [datetime]::MinValue
+$script:MoonWakerClientPermissions = 0x07001F00 # list, view, launch and all input devices
 
 function Invoke-VibepolloApi {
     param(
@@ -408,6 +409,87 @@ function Build-Snapshot {
         apps = $apps
         clients = $clients
         integrations = [pscustomobject]@{ rtss = $rtss; lossless_scaling = $lossless }
+    }
+}
+
+function Get-VibepolloClientRecords {
+    $response = Invoke-VibepolloApi "/api/clients/list"
+    return @(Convert-Collection (Get-PropertyValue $response @("named_certs", "clients") @()))
+}
+
+function New-ClientUpdatePayload {
+    param([Parameter(Mandatory)]$Client, [Parameter(Mandatory)][string]$Name)
+    return [ordered]@{
+        uuid = [string](Get-PropertyValue $Client @("uuid") "")
+        name = $Name
+        perm = [uint32]$script:MoonWakerClientPermissions
+        enable_legacy_ordering = [bool](Get-PropertyValue $Client @("enable_legacy_ordering") $true)
+        allow_client_commands = [bool](Get-PropertyValue $Client @("allow_client_commands") $true)
+        do = @(Convert-Collection (Get-PropertyValue $Client @("do") @()))
+        undo = @(Convert-Collection (Get-PropertyValue $Client @("undo") @()))
+        display_mode = [string](Get-PropertyValue $Client @("display_mode") "")
+        output_name_override = [string](Get-PropertyValue $Client @("output_name_override") "")
+        always_use_virtual_display = [bool](Get-PropertyValue $Client @("always_use_virtual_display") $false)
+        virtual_display_mode = [string](Get-PropertyValue $Client @("virtual_display_mode") "")
+        virtual_display_layout = [string](Get-PropertyValue $Client @("virtual_display_layout") "")
+        prefer_10bit_sdr = [bool](Get-PropertyValue $Client @("prefer_10bit_sdr") $false)
+        hdr_profile = [string](Get-PropertyValue $Client @("hdr_profile") "")
+        config_overrides = Get-PropertyValue $Client @("config_overrides") ([pscustomobject]@{})
+    }
+}
+
+function Pair-MoonWakerClient {
+    param([Parameter(Mandatory)][string]$Pin, [Parameter(Mandatory)][string]$Name)
+    if ($Pin -notmatch '^[0-9]{4}$') { throw "Pairing PIN must contain four digits" }
+    $safeName = $Name.Trim()
+    if (-not $safeName -or $safeName.Length -gt 80 -or $safeName -match '[\x00-\x1f\x7f]') {
+        throw "Invalid pairing client name"
+    }
+
+    $before = @{}
+    foreach ($client in @(Get-VibepolloClientRecords)) {
+        $uuid = [string](Get-PropertyValue $client @("uuid") "")
+        if ($uuid) { $before[$uuid] = $true }
+    }
+    $accepted = Invoke-VibepolloApi "/api/pin" POST @{ pin = $Pin; name = $safeName }
+    if (-not [bool](Get-PropertyValue $accepted @("status") $false)) {
+        throw "Vibepollo did not accept the pending Moonlight pairing PIN"
+    }
+
+    $deadline = (Get-Date).AddSeconds(10)
+    $pairedClient = $null
+    do {
+        Start-Sleep -Milliseconds 150
+        $candidates = @(Get-VibepolloClientRecords | Where-Object {
+            $uuid = [string](Get-PropertyValue $_ @("uuid") "")
+            -not $before.ContainsKey($uuid) -and
+                [string](Get-PropertyValue $_ @("name") "") -eq $safeName
+        })
+        if ($candidates.Count -eq 1) { $pairedClient = $candidates[0]; break }
+        if ($candidates.Count -gt 1) { throw "Vibepollo returned multiple newly paired clients" }
+    } while ((Get-Date) -lt $deadline)
+    if ($null -eq $pairedClient) {
+        throw "The paired Moonlight client did not appear in Vibepollo before the timeout"
+    }
+
+    $payload = New-ClientUpdatePayload $pairedClient $safeName
+    $updated = Invoke-VibepolloApi "/api/clients/update" POST $payload
+    if (-not [bool](Get-PropertyValue $updated @("status") $false)) {
+        throw "Vibepollo rejected the MoonWaker client permission update"
+    }
+
+    $verified = @(Get-VibepolloClientRecords | Where-Object {
+        [string](Get-PropertyValue $_ @("uuid") "") -eq [string]$payload.uuid
+    }) | Select-Object -First 1
+    $actualPermissions = [uint32](Get-PropertyValue $verified @("perm") 0)
+    if (($actualPermissions -band [uint32]$script:MoonWakerClientPermissions) -ne
+        [uint32]$script:MoonWakerClientPermissions) {
+        throw "Vibepollo did not persist the required MoonWaker client permissions"
+    }
+    return [pscustomobject]@{
+        ok = $true
+        client_uuid = [string]$payload.uuid
+        permissions = $actualPermissions
     }
 }
 
@@ -946,6 +1028,16 @@ try {
                     Send-JsonResponse $request.Stream $result $(if ($result.created) { 201 } else { 200 })
                 }
                 '^/clients$' { Send-JsonResponse $request.Stream ([pscustomobject]@{ clients = (Get-Snapshot).clients }) }
+                '^/pair$' {
+                    if ($request.Method -ne "POST") {
+                        Send-JsonResponse $request.Stream ([pscustomobject]@{ ok = $false; error = "POST required" }) 405
+                        continue
+                    }
+                    $body = if ([string]::IsNullOrWhiteSpace($request.Body)) {
+                        [pscustomobject]@{}
+                    } else { $request.Body | ConvertFrom-Json }
+                    Send-JsonResponse $request.Stream (Pair-MoonWakerClient ([string]$body.pin) ([string]$body.name))
+                }
                 '^/action/([^/]+)$' {
                     $actionName = $Matches[1]
                     $result = Invoke-Action $actionName $request.Query

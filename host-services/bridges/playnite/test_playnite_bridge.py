@@ -54,6 +54,30 @@ class WindowProbeTest(unittest.TestCase):
             r"D:\Tools\unrelated.exe", install))
         self.assertFalse(WindowProbe.belongs_to_install_directory("", install))
 
+    def test_install_prompt_scoring_accepts_launchers_and_new_generic_dialogs(self):
+        baseline = {
+            "foreground_hwnd": 10,
+            "windows": {
+                "20": {"title": "Steam", "image": "steam.exe"},
+                "40": {"title": "Unrelated", "image": "unrelated.exe"},
+            },
+        }
+        known = {"hwnd": 20, "image": "steam.exe", "title": "Steam",
+                 "foreground": True, "bounds": [100, 100, 900, 700],
+                 "monitor_bounds": [0, 0, 1920, 1080]}
+        background_launcher = dict(known, foreground=False)
+        generic = {"hwnd": 30, "image": "futurelauncher.exe", "title": "Choose folder",
+                   "foreground": False, "bounds": [200, 160, 1000, 760],
+                   "monitor_bounds": [0, 0, 1920, 1080]}
+        unchanged = {"hwnd": 40, "image": "unrelated.exe", "title": "Unrelated",
+                     "foreground": False, "bounds": [0, 0, 1920, 1080],
+                     "monitor_bounds": [0, 0, 1920, 1080]}
+        self.assertGreaterEqual(WindowProbe.installation_candidate_score(baseline, known), 5)
+        self.assertLess(WindowProbe.installation_candidate_score(
+            baseline, background_launcher), 5)
+        self.assertGreaterEqual(WindowProbe.installation_candidate_score(baseline, generic), 5)
+        self.assertEqual(0, WindowProbe.installation_candidate_score(baseline, unchanged))
+
     def test_large_playnite_messages_keep_windows_more_data_chunk(self):
         payload = b"x" * 8
 
@@ -69,6 +93,17 @@ class WindowProbeTest(unittest.TestCase):
         with mock.patch("PlayniteBridge.ctypes.get_last_error", return_value=234):
             self.assertEqual(payload, client._read(123, len(payload)))
 
+    def test_pipe_availability_is_peeked_without_starting_a_read(self):
+        class AvailableBytes:
+            @staticmethod
+            def PeekNamedPipe(handle, buffer, size, read, available, remaining):
+                available._obj.value = 37
+                return True
+
+        client = WindowsPipeClient.__new__(WindowsPipeClient)
+        client._kernel32 = lambda: AvailableBytes()
+        self.assertEqual(37, client._available(123))
+
 
 class BridgeStateTest(unittest.TestCase):
     def setUp(self):
@@ -77,6 +112,7 @@ class BridgeStateTest(unittest.TestCase):
         self.closed_processes = []
         self.fullscreen_calls = []
         self.focus_calls = []
+        self.installation_focus_calls = []
         self.state.set_transport(True, self.commands.append)
         self.state.set_window_actions(
             lambda process_id: not self.closed_processes.append(process_id),
@@ -84,7 +120,12 @@ class BridgeStateTest(unittest.TestCase):
             lambda process_id, install_dir, display: self.focus_calls.append(
                 (process_id, install_dir, display)) or {
                     "focused": True, "process_id": process_id, "display": display,
-                })
+                },
+            lambda: {"foreground_hwnd": 1, "windows": {}},
+            None,
+            lambda hwnd: self.installation_focus_calls.append(hwnd) or {
+                "focused": True, "hwnd": hwnd,
+            })
 
     def test_start_is_allowlisted_and_closes_privacy_gate(self):
         result = self.state.start_game(GAME_ID.upper())
@@ -193,6 +234,39 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual(self.state.library_page("0", 10)["revision"],
                          result["previous_revision"])
         self.assertEqual({"type": "command", "command": "snapshot"}, self.commands[-1])
+
+    def test_installation_prompt_is_stabilized_published_and_focusable(self):
+        self.state.handle_message({"type": "games", "payload": [{
+            "id": GAME_ID, "name": "Baba Is You", "installed": False,
+        }]})
+        self.state.install_game(GAME_ID)
+        sample = {"requires_attention": True, "reason": "launcher_prompt",
+                  "hwnd": 77, "process_id": 123, "title": "Choose install location",
+                  "image": "futurelauncher.exe"}
+        for _ in range(3):
+            self.state.apply_installation_probe(GAME_ID, sample)
+        game = self.state.library_page("0", 10)["games"][0]
+        self.assertTrue(game["installRequiresAttention"])
+        self.assertEqual("Choose install location", game["installWindowTitle"])
+        self.assertEqual("game-installation-attention-required",
+                         self.state.events[-1]["event"])
+        self.state.handle_message({"type": "games", "payload": [{
+            "id": GAME_ID, "name": "Baba Is You", "installed": False,
+            "installing": False,
+        }]})
+        refreshed = self.state.library_page("0", 10)["games"][0]
+        self.assertTrue(refreshed["installing"])
+        self.assertTrue(refreshed["installRequiresAttention"])
+        result = self.state.focus_installation(GAME_ID)
+        self.assertTrue(result["accepted"])
+        self.assertEqual([77], self.installation_focus_calls)
+
+        self.state.handle_message({"type": "status", "status": {
+            "name": "gameInstalled", "id": GAME_ID,
+        }})
+        completed = self.state.library_page("0", 10)["games"][0]
+        self.assertTrue(completed["installed"])
+        self.assertFalse(completed["installRequiresAttention"])
 
     def test_malformed_library_cache_is_ignored(self):
         with tempfile.TemporaryDirectory() as temporary:

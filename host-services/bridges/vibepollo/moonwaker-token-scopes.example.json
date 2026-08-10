@@ -10,6 +10,8 @@
     { "path": "/api/history/sessions", "methods": ["GET"] },
     { "path": "/api/apps", "methods": ["GET", "POST"] },
     { "path": "/api/clients/list", "methods": ["GET"] },
+    { "path": "/api/clients/update", "methods": ["POST"] },
+    { "path": "/api/pin", "methods": ["POST"] },
     { "path": "/api/rtss/status", "methods": ["GET"] },
     { "path": "/api/lossless_scaling/status", "methods": ["GET"] },
     { "path": "/api/logs", "methods": ["GET"] },
