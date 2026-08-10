@@ -466,6 +466,9 @@
     <string name="console_status_online">Online</string>
     <string name="console_status_offline">Offline</string>
     <string name="console_status_connecting">Connecting</string>
+    <string name="console_status_waking">Waking…</string>
+    <string name="console_status_asleep">Asleep</string>
+    <string name="console_status_unreachable">Unreachable</string>
     <string name="console_status_unpaired">Online · not paired</string>
     <string name="console_status_active_session">Active session</string>
     <string name="console_status_active_app">Active session · %1$s</string>
@@ -766,7 +769,9 @@
     <string name="console_host_power_indicator">●  %1$s · %2$s</string>
     <string name="console_host_power_focused_sleep">●  %1$s · Sleep</string>
     <string name="console_host_power_focused_wake">●  %1$s · Wake</string>
+    <string name="console_host_power_waking">●  %1$s · Waking…</string>
     <string name="console_host_power_wake_description">%1$s is offline. Press Select to wake the host.</string>
+    <string name="console_host_waking_description">%1$s is waking. Please wait.</string>
     <string name="console_host_power_sleep_description">%1$s is online. Press Select to put the host to sleep.</string>
     <string name="console_options_overrides">Streaming overrides  ›</string>
     <string name="console_options_readme">README and help  ›</string>
@@ -909,6 +914,7 @@
     <string name="playnite_launch_unavailable">Launch unavailable</string>
     <string name="playnite_gateway_unavailable">Playnite gateway unavailable</string>
     <string name="playnite_cached_library">Cached library</string>
+    <string name="playnite_cached_library_age">Cached library · updated %1$s</string>
     <string name="playnite_refreshing_library">Refreshing library</string>
     <string name="playnite_authentication_error">Authentication error</string>
     <string name="playnite_configure_gateway">Configure gateway</string>

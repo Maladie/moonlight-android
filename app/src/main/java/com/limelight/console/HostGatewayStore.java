@@ -111,7 +111,12 @@ final class HostGatewayStore {
                 .remove(key(hostUuid, "token"))
                 .remove(key(hostUuid, "certificate"))
                 .remove(key(hostUuid, "integration_profile"))
-                .remove(key(hostUuid, "discord_auto_connect"));
+                .remove(key(hostUuid, "discord_auto_connect"))
+                .remove(key(hostUuid, "playnite_library_filter"))
+                .remove(key(hostUuid, "playnite_installed_only"))
+                .remove(key(hostUuid, "playnite_library_sources_configured"))
+                .remove(key(hostUuid, "playnite_library_sources"))
+                .remove(key(hostUuid, "playnite_library_sort"));
         String discordPrefix = hostUuid + ".discord.";
         for (String preferenceKey : preferences.getAll().keySet()) {
             if (preferenceKey.startsWith(discordPrefix)) editor.remove(preferenceKey);
