@@ -63,6 +63,14 @@ function Get-ConnectedDevices {
 }
 
 $devices = @(Get-ConnectedDevices)
+if ($Serial -and $Serial -match '^\S+:\d+$' -and $devices -notcontains $Serial) {
+    $connectResult = & $adb connect $Serial
+    if ($LASTEXITCODE -ne 0) {
+        throw "ADB could not connect to $Serial. $connectResult"
+    }
+    Write-Host $connectResult
+    $devices = @(Get-ConnectedDevices)
+}
 if ($devices.Count -eq 0) {
     $discovered = @(& $adb mdns services | ForEach-Object {
         if ($_ -match '_adb(?:-tls-connect)?\._tcp\s+(\S+:\d+)\s*$') {

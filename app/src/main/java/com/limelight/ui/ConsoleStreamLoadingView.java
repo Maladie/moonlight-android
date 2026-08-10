@@ -142,9 +142,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
         stepsView = new LinearLayout(context);
         stepsView.setOrientation(LinearLayout.VERTICAL);
-        LinearLayout.LayoutParams stepsParams = row();
-        stepsParams.topMargin = dp(24);
-        defaultContent.addView(stepsView, stepsParams);
+        stepsView.setVisibility(GONE);
         for (int index = 0; index < stepViews.length; index++) {
             stepViews[index] = text("", 17, 0xFF8E99AA, false);
             stepViews[index].setMinHeight(dp(42));
@@ -520,7 +518,6 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         defaultContent.setVisibility(GONE);
 
         detach(messageView);
-        detach(stepsView);
         detach(statusLine);
         detach(actionsRow);
         titleView.setVisibility(GONE);
@@ -533,23 +530,6 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
                 Gravity.TOP | Gravity.CENTER_HORIZONTAL);
         messageParams.setMargins(dp(64), dp(32), dp(64), 0);
         addView(messageView, messageParams);
-
-        LinearLayout lower = new LinearLayout(getContext());
-        lower.setOrientation(LinearLayout.VERTICAL);
-        lower.setGravity(Gravity.START);
-        for (TextView stepView : stepViews) {
-            stepView.setTextSize(13);
-            stepView.setMinHeight(dp(28));
-            stepView.setPadding(0, 0, 0, 0);
-            stepView.setShadowLayer(dp(3), 0, dp(1), 0xE6000000);
-        }
-        LinearLayout.LayoutParams compactSteps = row();
-        lower.addView(stepsView, compactSteps);
-
-        LayoutParams lowerParams = new LayoutParams(dp(660),
-                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.START);
-        lowerParams.setMargins(dp(24), 0, 0, dp(20));
-        addView(lower, lowerParams);
 
         LinearLayout centerControls = new LinearLayout(getContext());
         centerControls.setOrientation(LinearLayout.VERTICAL);
@@ -575,7 +555,6 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
         artwork.animate().alpha(1f).setDuration(reducedMotion ? 0L : 260L).start();
         bringChildToFront(messageView);
-        bringChildToFront(lower);
         bringChildToFront(centerControls);
         requestDefaultActionFocus();
         showSplashMessageImmediately();
