@@ -36,6 +36,46 @@ class GatewayStateTest(unittest.TestCase):
         with self.assertRaises(PermissionError):
             state.pair("192.0.2.1", "000000", "TV")
 
+    def test_pair_issues_short_lived_stream_pair_ticket(self):
+        state = GatewayState(self.config_path, "123456")
+        result = state.pair("192.0.2.1", "123456", "TV")
+
+        self.assertTrue(result["stream_pair_ticket"])
+        self.assertGreater(result["stream_pair_expires_seconds"], 0)
+        self.assertNotIn(result["stream_pair_ticket"],
+                         self.config_path.read_text(encoding="utf-8"))
+
+    def test_stream_pair_ticket_is_bound_to_gateway_client_and_consumed(self):
+        state = GatewayState(self.config_path, "123456")
+        pairing = state.pair("192.0.2.1", "123456", "TV")
+        client = state.client_for_token(pairing["token"])
+        calls = []
+        state.proxy_json = lambda name, path, body, timeout=8.0: (
+            calls.append((name, path, body, timeout)) or
+            (True, {"client_uuid": "paired-client", "permissions": 0x07001F00}))
+
+        status, result = state.vibepollo_pair_client(
+            "192.0.2.1", client, pairing["stream_pair_ticket"],
+            {"pin": "1234", "name": "MoonWaker TV"})
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["ok"])
+        self.assertEqual(("vibepollo", "/pair",
+                          {"pin": "1234", "name": "MoonWaker TV"}, 13.0), calls[0])
+        with self.assertRaises(PermissionError):
+            state.vibepollo_pair_client(
+                "192.0.2.1", client, pairing["stream_pair_ticket"],
+                {"pin": "1234", "name": "MoonWaker TV"})
+
+    def test_stream_pair_ticket_rejects_another_address(self):
+        state = GatewayState(self.config_path, "123456")
+        pairing = state.pair("192.0.2.1", "123456", "TV")
+        client = state.client_for_token(pairing["token"])
+        with self.assertRaises(PermissionError):
+            state.vibepollo_pair_client(
+                "192.0.2.2", client, pairing["stream_pair_ticket"],
+                {"pin": "1234", "name": "MoonWaker TV"})
+
     def test_runtime_report_identifies_the_running_gateway_build(self):
         state = GatewayState(self.config_path, None)
         state.write_runtime_info()
@@ -414,6 +454,22 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(("playnite", "/game/install", {
             "game_id": "840317c9-b9a4-4f72-be8e-807414e36a9b",
         }, 15.0), requests[0])
+
+    def test_playnite_installation_focus_is_scoped_to_the_requested_game(self):
+        state = GatewayState(self.config_path, None)
+        requests = []
+        state.proxy_json = lambda name, path, body, timeout=8.0: (
+            requests.append((name, path, body, timeout)) is None, {"focused": True})
+
+        status, result = state.playnite_action("game/install/focus", {
+            "game_id": "840317C9-B9A4-4F72-BE8E-807414E36A9B",
+        })
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["ok"])
+        self.assertEqual(("playnite", "/installation/focus", {
+            "game_id": "840317c9-b9a4-4f72-be8e-807414e36a9b",
+        }, 6.0), requests[0])
 
     def test_playnite_library_refresh_is_forwarded_as_non_blocking_action(self):
         state = GatewayState(self.config_path, None)

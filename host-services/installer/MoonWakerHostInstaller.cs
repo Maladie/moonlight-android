@@ -11,9 +11,9 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.6.3.0")]
-[assembly: AssemblyFileVersion("0.6.3.0")]
-[assembly: AssemblyInformationalVersion("0.6.3+2026.08.09")]
+[assembly: AssemblyVersion("0.6.4.0")]
+[assembly: AssemblyFileVersion("0.6.4.0")]
+[assembly: AssemblyInformationalVersion("0.6.4+2026.08.10")]
 
 namespace MoonWaker.HostInstaller
 {
@@ -113,7 +113,10 @@ namespace MoonWaker.HostInstaller
             content.Controls.Add(vibepolloUrl); content.Controls.Add(vibepolloToken); y += 48;
             ConfigureCheckBox(createVibepolloToken, "Utwórz/odnów token automatycznie", 30, y);
             content.Controls.Add(createVibepolloToken);
-            createVibepolloToken.CheckedChanged += delegate { UpdateTokenFields(); }; y += 38;
+            createVibepolloToken.CheckedChanged += delegate {
+                UpdateTokenFields();
+                RefreshInstallationStatus();
+            }; y += 38;
             AddLabel(content, "Login administratora Vibepollo", 9F, FontStyle.Regular, 30, y, 310, 22);
             AddLabel(content, "Hasło", 9F, FontStyle.Regular, 430, y, 200, 22); y += 22;
             ConfigureTextBox(vibepolloAdmin, 30, y, 370, false);
@@ -484,7 +487,11 @@ namespace MoonWaker.HostInstaller
                     installationStatus.Text += " Discord użyje wspólnej aplikacji tego komputera.";
                 }
                 if (profileHasVibepollo)
+                {
                     installationStatus.Text += " Token Vibepollo dla tego profilu zostanie zachowany, jeśli pole tokena pozostanie puste.";
+                    if (updateRequired && !createVibepolloToken.Checked)
+                        installationStatus.Text += " Aby włączyć automatyczne parowanie klienta i nadawanie uprawnień do gier, zaznacz „Utwórz/odnów token automatycznie” i podaj dane administratora Vibepollo.";
+                }
             }
             else
             {

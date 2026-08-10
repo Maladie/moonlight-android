@@ -18,6 +18,14 @@ Existing apps are matched by Playnite GUID first; legacy exact-name entries are
 migrated by sending their complete record so custom commands, images and hooks
 are preserved.
 
+`POST /pair` is the loopback-only half of MoonWaker's unified host pairing flow.
+It submits the pending Moonlight PIN to Vibepollo, identifies the newly paired
+client and grants only the standard gameplay permissions: list applications,
+view streams, launch applications and controller/touch/pen/mouse/keyboard input.
+It intentionally does not grant clipboard, file-transfer or server-command
+permissions. The Bridge token therefore also requires `POST /api/pin` and
+`POST /api/clients/update`.
+
 Use one instance per profile when credentials or runtime state differ, and give
 each concurrently installed instance a distinct loopback port. Never commit
 `api_token.dpapi`, `config.json`, logs or exported diagnostics.

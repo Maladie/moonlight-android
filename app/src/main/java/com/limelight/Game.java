@@ -2888,6 +2888,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 // Show overlay menu hint toast
                 showOverlayMenuHint();
+
+                refocusPendingInstallationAfterStreamStarted();
             }
         });
 
@@ -2900,6 +2902,32 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (appName != null) {
             // This may be null if launched from the "Resume Session" PC context menu item
             shortcutHelper.reportGameLaunched(computer, app);
+        }
+    }
+
+    private void refocusPendingInstallationAfterStreamStarted() {
+        if (transitionSpec == null || transitionSpec.type != LaunchTransitionType.GENERIC
+                || transitionSpec.playniteGameId == null
+                || transitionSpec.playniteGameId.isEmpty()) return;
+        PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
+                this, transitionSpec.hostId, getIntent().getStringExtra(EXTRA_HOST));
+        if (gateway == null) return;
+        long[] delays = {0L, 1_500L, 4_000L};
+        for (long delay : delays) {
+            transitionUiHandler.postDelayed(() -> {
+                if (isFinishing() || isDestroyed() || transitionExecutor.isShutdown()) return;
+                try {
+                    transitionExecutor.execute(() -> {
+                        try {
+                            gateway.focusInstallation(transitionSpec.playniteGameId);
+                        } catch (IOException | RuntimeException ignored) {
+                            // Confirmation may close the prompt between bounded retries.
+                        }
+                    });
+                } catch (RuntimeException ignored) {
+                    // The Activity may be destroyed while a delayed retry is pending.
+                }
+            }, delay);
         }
     }
 
@@ -3206,6 +3234,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             displayMessage(getString("game-installation-cancelled".equals(name)
                     ? R.string.playnite_install_cancelled
                     : R.string.playnite_install_failed, gameName));
+        } else if ("game-installation-attention-required".equals(name)) {
+            if (!isPendingInstallation(hostId, event.gameId)) return;
+            String gameName = event.gameName == null || event.gameName.isEmpty()
+                    ? pendingInstallationName(hostId, event.gameId) : event.gameName;
+            displayMessage(getString(R.string.playnite_install_attention_overlay, gameName));
         } else if ("game-starting".equals(name)) {
             transitionController.targetStarting(transitionId, hostId,
                     LaunchTransitionType.GAME, event.gameId);
@@ -3249,7 +3282,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (event == null) return false;
         return ("game-installed".equals(event.name)
                 || "game-installation-cancelled".equals(event.name)
-                || "game-installation-failed".equals(event.name))
+                || "game-installation-failed".equals(event.name)
+                || "game-installation-attention-required".equals(event.name))
                 && isPendingInstallation(hostId, event.gameId);
     }
 

@@ -69,6 +69,14 @@ final class PlayniteTargetResolver {
         return candidates.size() == 1 ? candidates.get(0) : null;
     }
 
+    static NvApp resolveInstallationStream(String hostUuid, List<NvApp> apps,
+                                           PlayniteLaunchTargetStore store) {
+        List<NvApp> desktop = exactName(apps, "Desktop");
+        NvApp neutral = preferredEquivalent(desktop);
+        return neutral != null ? neutral
+                : resolvePlayniteFullscreen(hostUuid, apps, store);
+    }
+
     static List<NvApp> playniteCandidates(List<NvApp> apps) {
         List<NvApp> result = new ArrayList<>();
         for (NvApp app : apps) {

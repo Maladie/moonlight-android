@@ -36,6 +36,15 @@ PLAYNITE_UI_IMAGES = {
     "playnite.fullscreenapp.exe",
     "playnite.desktopapp.exe",
 }
+INSTALLER_IMAGES = {
+    "steam.exe", "epicgameslauncher.exe", "galaxyclient.exe", "goggalaxy.exe",
+    "ubisoftconnect.exe", "upc.exe", "eadesktop.exe", "ealauncher.exe",
+    "origin.exe", "xboxpcapp.exe", "gamingservicesui.exe", "msiexec.exe",
+}
+INSTALLER_EXCLUDED_IMAGES = PLAYNITE_UI_IMAGES | {
+    "explorer.exe", "searchhost.exe", "searchapp.exe", "shellexperiencehost.exe",
+    "startmenuexperiencehost.exe", "textinputhost.exe", "lockapp.exe",
+}
 
 
 class StreamDisplayResolver:
@@ -120,6 +129,13 @@ class WindowProbe:
             self.user32.CloseDesktop.restype = wintypes.BOOL
             self.user32.IsWindowVisible.argtypes = [wintypes.HWND]
             self.user32.IsWindowVisible.restype = wintypes.BOOL
+            self.user32.IsWindow.argtypes = [wintypes.HWND]
+            self.user32.IsWindow.restype = wintypes.BOOL
+            self.user32.GetWindowTextLengthW.argtypes = [wintypes.HWND]
+            self.user32.GetWindowTextLengthW.restype = ctypes.c_int
+            self.user32.GetWindowTextW.argtypes = [wintypes.HWND, wintypes.LPWSTR,
+                                                    ctypes.c_int]
+            self.user32.GetWindowTextW.restype = ctypes.c_int
             self.user32.GetWindowThreadProcessId.argtypes = [wintypes.HWND,
                                                               ctypes.POINTER(wintypes.DWORD)]
             self.user32.GetWindowThreadProcessId.restype = wintypes.DWORD
@@ -179,6 +195,16 @@ class WindowProbe:
     def _process_image(self, process_id: int) -> str:
         return os.path.basename(self._process_path(process_id)).casefold()
 
+    def _window_title(self, hwnd: int) -> str:
+        if not self.user32:
+            return ""
+        length = int(self.user32.GetWindowTextLengthW(hwnd) or 0)
+        if length <= 0 or length > 4096:
+            return ""
+        buffer = ctypes.create_unicode_buffer(length + 1)
+        copied = int(self.user32.GetWindowTextW(hwnd, buffer, len(buffer)) or 0)
+        return buffer.value[:copied].strip() if copied > 0 else ""
+
     def is_session_locked(self) -> bool:
         if not self.user32:
             return True
@@ -236,6 +262,133 @@ class WindowProbe:
         for hwnd in windows:
             self.user32.PostMessageW(hwnd, self.WM_CLOSE, 0, 0)
         return bool(windows)
+
+    def interactive_windows(self) -> list[dict[str, Any]]:
+        """Return visible user-facing top-level windows without interpreting their UI."""
+        if not self.user32:
+            return []
+        foreground = int(self.user32.GetForegroundWindow() or 0)
+        result: list[dict[str, Any]] = []
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def visit(hwnd: int, _lparam: int) -> bool:
+            if not self.user32.IsWindowVisible(hwnd):
+                return True
+            title = self._window_title(hwnd)
+            if not title:
+                return True
+            cloaked = wintypes.DWORD()
+            if self.dwmapi:
+                self.dwmapi.DwmGetWindowAttribute(
+                    hwnd, self.DWMWA_CLOAKED, ctypes.byref(cloaked), ctypes.sizeof(cloaked))
+            rect = wintypes.RECT()
+            if cloaked.value or not self.user32.GetWindowRect(hwnd, ctypes.byref(rect)):
+                return True
+            width, height = rect.right - rect.left, rect.bottom - rect.top
+            if width < 240 or height < 120:
+                return True
+            pid = wintypes.DWORD()
+            self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+            process_id = int(pid.value)
+            process_path = self._process_path(process_id)
+            image = os.path.basename(process_path).casefold()
+            if not image or image in INSTALLER_EXCLUDED_IMAGES:
+                return True
+            display, monitor_bounds = self._monitor_details(hwnd)
+            result.append({
+                "hwnd": int(hwnd), "process_id": process_id, "image": image,
+                "process_path": process_path, "title": title[:300],
+                "foreground": int(hwnd) == foreground, "display": display,
+                "bounds": [rect.left, rect.top, rect.right, rect.bottom],
+                "monitor_bounds": monitor_bounds,
+            })
+            return True
+
+        self.user32.EnumWindows(callback_type(visit), 0)
+        return result
+
+    def installation_baseline(self) -> dict[str, Any]:
+        windows = self.interactive_windows()
+        foreground = next((item["hwnd"] for item in windows if item["foreground"]), 0)
+        return {
+            "captured_at": time.time(),
+            "foreground_hwnd": foreground,
+            "windows": {str(item["hwnd"]): {
+                "process_id": item["process_id"], "image": item["image"],
+                "title": item["title"],
+            } for item in windows},
+        }
+
+    @staticmethod
+    def installation_candidate_score(baseline: dict[str, Any],
+                                     candidate: dict[str, Any]) -> int:
+        previous_windows = baseline.get("windows") or {}
+        previous = previous_windows.get(str(candidate.get("hwnd") or 0))
+        image = str(candidate.get("image") or "").casefold()
+        title = str(candidate.get("title") or "").casefold()
+        known_launcher = image in INSTALLER_IMAGES or any(token in image or token in title
+            for token in ("launcher", "install", "setup", "steam", "epic", "ubisoft",
+                          "gog galaxy", "ea app", "microsoft store"))
+        new_window = previous is None
+        changed_title = previous is not None and str(previous.get("title") or "") != \
+            str(candidate.get("title") or "")
+        foreground = bool(candidate.get("foreground"))
+        changed_foreground = foreground and int(candidate.get("hwnd") or 0) != \
+            int(baseline.get("foreground_hwnd") or 0)
+        bounds = list(candidate.get("bounds") or [])
+        monitor = list(candidate.get("monitor_bounds") or [])
+        dialog_sized = not WindowProbe.fills_monitor(bounds, monitor, .92)
+        score = (3 if known_launcher else 0) + (4 if new_window else 0) + \
+            (3 if changed_title else 0) + (2 if foreground else 0) + \
+            (2 if changed_foreground else 0) + (1 if dialog_sized else 0)
+        if not (known_launcher or new_window or changed_title):
+            return 0
+        return score
+
+    def installation_prompt(self, baseline: dict[str, Any]) -> dict[str, Any]:
+        if not self.user32:
+            return {"requires_attention": False, "reason": "window_probe_unavailable"}
+        if self.is_session_locked():
+            return {"requires_attention": True, "reason": "secure_desktop",
+                    "hwnd": 0, "title": "", "image": ""}
+        candidates = []
+        for candidate in self.interactive_windows():
+            score = self.installation_candidate_score(baseline, candidate)
+            if score >= 5:
+                candidates.append((score, candidate))
+        if not candidates:
+            return {"requires_attention": False, "reason": "no_prompt"}
+        _score, selected = max(candidates, key=lambda value: (
+            value[0], bool(value[1].get("foreground")),
+            int(value[1].get("hwnd") or 0)))
+        return {"requires_attention": True, "reason": "launcher_prompt",
+                **selected}
+
+    def focus_installation_window(self, hwnd: int) -> dict[str, Any]:
+        if not self.user32 or hwnd <= 0 or not self.user32.IsWindow(hwnd):
+            raise RuntimeError("The installation window is no longer available.")
+        if self.is_session_locked():
+            raise PermissionError("The installation requires confirmation on the PC.")
+        current_thread = int(self.kernel32.GetCurrentThreadId())
+        target_thread = int(self.user32.GetWindowThreadProcessId(hwnd, None))
+        foreground = int(self.user32.GetForegroundWindow() or 0)
+        foreground_thread = int(
+            self.user32.GetWindowThreadProcessId(foreground, None)) if foreground else 0
+        attached: list[int] = []
+        for thread_id in {target_thread, foreground_thread}:
+            if thread_id and thread_id != current_thread and self.user32.AttachThreadInput(
+                    current_thread, thread_id, True):
+                attached.append(thread_id)
+        try:
+            self.user32.ShowWindow(hwnd, self.SW_RESTORE)
+            self.user32.BringWindowToTop(hwnd)
+            self.user32.SetActiveWindow(hwnd)
+            self.user32.SetFocus(hwnd)
+            focused = bool(self.user32.SetForegroundWindow(hwnd))
+        finally:
+            for thread_id in reversed(attached):
+                self.user32.AttachThreadInput(current_thread, thread_id, False)
+        return {"focused": focused, "hwnd": hwnd, "title": self._window_title(hwnd)}
 
     def focus_game_window(self, process_id: int, install_directory: str,
                           expected_display: str) -> dict[str, Any]:
@@ -460,6 +613,10 @@ class BridgeState:
         self.graceful_close: Callable[[int], bool] | None = None
         self.show_fullscreen_action: Callable[[], dict[str, Any]] | None = None
         self.focus_game_action: Callable[[int, str, str], dict[str, Any]] | None = None
+        self.installation_baseline_action: Callable[[], dict[str, Any]] | None = None
+        self.installation_probe_action: Callable[[dict[str, Any]], dict[str, Any]] | None = None
+        self.focus_installation_action: Callable[[int], dict[str, Any]] | None = None
+        self.installations: dict[str, dict[str, Any]] = {}
         self.cache_path = cache_path
         self.started_at = int(time.time())
         self.version_info = self._load_version_info(version_path)
@@ -533,10 +690,16 @@ class BridgeState:
 
     def set_window_actions(self, graceful_close: Callable[[int], bool],
                            show_fullscreen: Callable[[], dict[str, Any]],
-                           focus_game: Callable[[int, str, str], dict[str, Any]]) -> None:
+                           focus_game: Callable[[int, str, str], dict[str, Any]],
+                           installation_baseline: Callable[[], dict[str, Any]] | None = None,
+                           installation_probe: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
+                           focus_installation: Callable[[int], dict[str, Any]] | None = None) -> None:
         self.graceful_close = graceful_close
         self.show_fullscreen_action = show_fullscreen
         self.focus_game_action = focus_game
+        self.installation_baseline_action = installation_baseline
+        self.installation_probe_action = installation_probe
+        self.focus_installation_action = focus_installation
 
     def set_expected_display(self, display: str) -> None:
         normalized = StreamDisplayResolver._normalize(display)
@@ -576,6 +739,23 @@ class BridgeState:
         self.next_sequence += 1
         self.events.append(event)
         self.events_changed.notify_all()
+
+    def _apply_installation_fields_locked(self, game_id: str,
+                                          game: dict[str, Any]) -> None:
+        session = self.installations.get(game_id)
+        attention = bool(session and session.get("requires_attention"))
+        if session:
+            # The launcher may keep Playnite's IsInstalling false while its own
+            # confirmation dialog is open. The Bridge session remains authoritative
+            # until Playnite reports completion or cancellation.
+            game["installing"] = True
+        game["installRequiresAttention"] = attention
+        game["installAttentionReason"] = str(
+            (session or {}).get("reason") or "") if attention else ""
+        game["installWindowTitle"] = str(
+            (session or {}).get("window_title") or "") if attention else ""
+        game["installLauncher"] = str(
+            (session or {}).get("image") or "") if attention else ""
 
     def handle_message(self, message: dict[str, Any]) -> None:
         kind = str(message.get("type", ""))
@@ -642,6 +822,17 @@ class BridgeState:
                         normalized["playtimeMinutes"] = max(0, playtime_minutes)
                     except (TypeError, ValueError):
                         normalized["playtimeMinutes"] = 0
+                    connector_installing = bool(
+                        by_name.get("installing") or by_name.get("isinstalling"))
+                    if connector_installing and game_id not in self.installations:
+                        baseline = self.installation_baseline_action() \
+                            if self.installation_baseline_action else {}
+                        self.installations[game_id] = {
+                            "baseline": baseline, "requested_at": time.time(),
+                            "requires_attention": False, "stable_samples": 0,
+                            "candidate_signature": None,
+                        }
+                    self._apply_installation_fields_locked(game_id, normalized)
                     self.library_staging[game_id] = normalized
                 # Older connectors did not bracket snapshots. Preserve their
                 # behavior while keeping the visible cache stable for current
@@ -692,10 +883,12 @@ class BridgeState:
                 elif name in {"gameInstalled", "gameInstallationCancelled"}:
                     game = self.library.get(game_id)
                     title = str((game or {}).get("name") or status.get("title") or "")
+                    self.installations.pop(game_id, None)
                     if game is not None:
                         game["installing"] = False
                         if name == "gameInstalled":
                             game["installed"] = True
+                        self._apply_installation_fields_locked(game_id, game)
                         self._save_library_cache_locked()
                     event_name = "game-installed" if name == "gameInstalled" \
                         else "game-installation-cancelled"
@@ -731,15 +924,23 @@ class BridgeState:
 
     def install_game(self, game_id: Any) -> dict[str, Any]:
         normalized = self.game_id(game_id)
+        baseline = self.installation_baseline_action() \
+            if self.installation_baseline_action else {}
         with self.lock:
             game = self.library.get(normalized)
             if game is None:
                 raise FileNotFoundError("Playnite game was not found.")
-            if bool(game.get("installed")):
+            if bool(game.get("installed") or game.get("isInstalled")):
                 raise ValueError("Playnite game is already installed.")
-            if bool(game.get("installing")):
+            if bool(game.get("installing") or game.get("isInstalling")):
                 return {"accepted": True, "command": "install", "already_installing": True}
+            self.installations[normalized] = {
+                "baseline": baseline, "requested_at": time.time(),
+                "requires_attention": False, "stable_samples": 0,
+                "candidate_signature": None,
+            }
             game["installing"] = True
+            self._apply_installation_fields_locked(normalized, game)
             title = str(game.get("name") or "")
             self._save_library_cache_locked()
             self._publish_locked("game-installing", {
@@ -753,12 +954,87 @@ class BridgeState:
                 current = self.library.get(normalized)
                 if current is not None:
                     current["installing"] = False
+                    self.installations.pop(normalized, None)
+                    self._apply_installation_fields_locked(normalized, current)
                     self._save_library_cache_locked()
                 self._publish_locked("game-installation-failed", {
                     "id": normalized,
                     "name": title,
                 })
             raise
+
+    def installation_probes(self) -> list[tuple[str, dict[str, Any]]]:
+        with self.lock:
+            return [(game_id, dict(session.get("baseline") or {}))
+                    for game_id, session in self.installations.items()
+                    if time.time() - float(session.get("requested_at") or 0) >= 1.5]
+
+    def apply_installation_probe(self, game_id: str, sample: dict[str, Any]) -> None:
+        with self.lock:
+            session = self.installations.get(game_id)
+            game = self.library.get(game_id)
+            if session is None or game is None or bool(
+                    game.get("installed") or game.get("isInstalled")):
+                return
+            requires_attention = bool(sample.get("requires_attention"))
+            signature = (str(sample.get("reason") or ""), int(sample.get("hwnd") or 0),
+                         int(sample.get("process_id") or 0), str(sample.get("title") or ""))
+            stable = int(session.get("stable_samples") or 0) + 1 \
+                if signature == session.get("candidate_signature") else 1
+            session["candidate_signature"] = signature
+            session["stable_samples"] = stable
+            if not requires_attention:
+                if session.get("requires_attention"):
+                    if stable < 3:
+                        return
+                    session.update({
+                        "requires_attention": False, "reason": "", "hwnd": 0,
+                        "window_title": "", "image": "", "stable_samples": 0,
+                    })
+                    self._apply_installation_fields_locked(game_id, game)
+                    self._save_library_cache_locked()
+                    self._publish_locked("game-installation-resumed", {
+                        "id": game_id, "name": str(game.get("name") or ""),
+                    })
+                return
+            required_samples = 2 if sample.get("reason") == "secure_desktop" else 3
+            if stable < required_samples:
+                return
+            first_attention = not bool(session.get("requires_attention"))
+            session.update({
+                "requires_attention": True,
+                "reason": str(sample.get("reason") or "launcher_prompt"),
+                "hwnd": int(sample.get("hwnd") or 0),
+                "process_id": int(sample.get("process_id") or 0),
+                "window_title": str(sample.get("title") or "")[:300],
+                "image": str(sample.get("image") or "")[:200],
+            })
+            self._apply_installation_fields_locked(game_id, game)
+            self._save_library_cache_locked()
+            if first_attention:
+                self._publish_locked("game-installation-attention-required", {
+                    "id": game_id, "name": str(game.get("name") or ""),
+                    "reason": session["reason"],
+                    "window_title": session["window_title"],
+                    "launcher": session["image"],
+                })
+
+    def focus_installation(self, game_id: Any) -> dict[str, Any]:
+        normalized = self.game_id(game_id)
+        with self.lock:
+            session = dict(self.installations.get(normalized) or {})
+            action = self.focus_installation_action
+        if not session or not session.get("requires_attention"):
+            raise ValueError("This installation does not require confirmation.")
+        if session.get("reason") == "secure_desktop":
+            raise PermissionError("The installation requires confirmation on the PC.")
+        hwnd = int(session.get("hwnd") or 0)
+        if not action or not hwnd:
+            raise RuntimeError("The installation window is unavailable.")
+        details = action(hwnd)
+        if not details.get("focused"):
+            raise RuntimeError("Windows rejected the installation window focus request.")
+        return {"accepted": True, "command": "focus-installation", **details}
 
     def stop_game(self, game_id: Any = "") -> dict[str, Any]:
         normalized = self.game_id(game_id) if game_id else ""
@@ -950,6 +1226,15 @@ class WindowReadinessWorker:
                 self.state.apply_window_sample(
                     self.probe.sample(
                         target_kind, process_id, expected_display, install_directory))
+            for game_id, baseline in self.state.installation_probes():
+                probe = self.state.installation_probe_action
+                if probe:
+                    try:
+                        self.state.apply_installation_probe(game_id, probe(baseline))
+                    except Exception:
+                        # Window inspection is advisory. A transient Win32 failure must
+                        # never stop readiness or installation lifecycle monitoring.
+                        pass
             time.sleep(0.25)
 
 class WindowsPipeClient:
@@ -979,7 +1264,27 @@ class WindowsPipeClient:
                                          wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD,
                                          wintypes.HANDLE]
         kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.PeekNamedPipe.argtypes = [
+            wintypes.HANDLE, wintypes.LPVOID, wintypes.DWORD,
+            ctypes.POINTER(wintypes.DWORD), ctypes.POINTER(wintypes.DWORD),
+            ctypes.POINTER(wintypes.DWORD)]
+        kernel32.PeekNamedPipe.restype = wintypes.BOOL
         return kernel32
+
+    def _available(self, handle: int) -> int:
+        """Return queued bytes without starting a blocking synchronous read.
+
+        A synchronous ReadFile pending on the duplex pipe can serialize a WriteFile
+        issued by the command-writer thread on the same handle. Peeking first keeps
+        the handle free while Playnite is idle, so commands can still flow back to
+        the connector.
+        """
+        kernel32 = self._kernel32()
+        available = wintypes.DWORD()
+        if not kernel32.PeekNamedPipe(
+                handle, None, 0, None, ctypes.byref(available), None):
+            raise OSError(ctypes.get_last_error(), "Playnite pipe peek failed")
+        return int(available.value)
 
     def _open(self, path: str, timeout_ms: int = 3000) -> int:
         kernel32 = self._kernel32()
@@ -1085,7 +1390,11 @@ class WindowsPipeClient:
                 self.state.set_transport(True, self._queue_send)
                 pending = b""
                 while not self.stopping.is_set():
-                    chunk = self._read(handle, 8192)
+                    available = self._available(handle)
+                    if available <= 0:
+                        self.stopping.wait(0.05)
+                        continue
+                    chunk = self._read(handle, min(8192, available))
                     if not chunk:
                         raise ConnectionError("Playnite pipe closed.")
                     pending += chunk
@@ -1192,6 +1501,8 @@ class PlayniteHandler(BaseHTTPRequestHandler):
                 result = self.state.start_game(body.get("game_id"))
             elif path == "/game/install":
                 result = self.state.install_game(body.get("game_id"))
+            elif path == "/installation/focus":
+                result = self.state.focus_installation(body.get("game_id"))
             elif path == "/library/refresh":
                 result = self.state.refresh_library()
             elif path == "/game/stop":
@@ -1264,7 +1575,10 @@ def main() -> None:
     state.set_window_actions(
         window_probe.request_graceful_close,
         lambda: window_probe.show_playnite_fullscreen(fullscreen_path),
-        window_probe.focus_game_window)
+        window_probe.focus_game_window,
+        window_probe.installation_baseline,
+        window_probe.installation_prompt,
+        window_probe.focus_installation_window)
     threading.Thread(
         target=WindowReadinessWorker(state, window_probe, display_resolver).run,
         name="PlayniteWindowReadiness", daemon=True).start()

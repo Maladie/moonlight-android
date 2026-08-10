@@ -24,6 +24,7 @@ from typing import Any
 
 API_PREFIX = "/api/v1"
 PAIRING_LIFETIME_SECONDS = 10 * 60
+STREAM_PAIR_TICKET_LIFETIME_SECONDS = 60
 IDEMPOTENCY_LIFETIME_SECONDS = 2 * 60
 MAX_BODY_BYTES = 16 * 1024
 DISCORD_ID_PATTERN = re.compile(r"^[0-9]{5,32}$")
@@ -64,6 +65,7 @@ class GatewayState:
         self.pairing_expires_at = time.monotonic() + PAIRING_LIFETIME_SECONDS if pairing_code else 0.0
         self.pairing_control_path = self.config_path.with_name("pairing-code.json")
         self.failed_pair_attempts: dict[str, list[float]] = {}
+        self.stream_pair_tickets: dict[str, dict[str, Any]] = {}
         self.idempotent_results: dict[str, tuple[float, int, Any]] = {}
         self.lock = threading.RLock()
         self.request_context = threading.local()
@@ -153,7 +155,7 @@ class GatewayState:
             self.failed_pair_attempts[address] = recent
             return len(recent) < 5
 
-    def pair(self, address: str, code: str, client_name: str) -> dict[str, str]:
+    def pair(self, address: str, code: str, client_name: str) -> dict[str, Any]:
         self.refresh_pairing_control()
         now = time.monotonic()
         if not self.pairing_code_hash or now > self.pairing_expires_at:
@@ -176,7 +178,78 @@ class GatewayState:
         with self.lock:
             self.config["clients"].append(record)
             self.save()
-        return {"client_id": client_id, "token": token}
+        ticket = self.issue_stream_pair_ticket(address, client_id)
+        return {
+            "client_id": client_id,
+            "token": token,
+            "stream_pair_ticket": ticket,
+            "stream_pair_expires_seconds": STREAM_PAIR_TICKET_LIFETIME_SECONDS,
+        }
+
+    def issue_stream_pair_ticket(self, address: str, client_id: str) -> str:
+        ticket = secrets.token_urlsafe(24)
+        digest = sha256_text(ticket)
+        now = time.monotonic()
+        with self.lock:
+            self.stream_pair_tickets = {
+                key: value for key, value in self.stream_pair_tickets.items()
+                if float(value.get("expires_at", 0)) >= now and not (
+                    str(value.get("client_id", "")) == client_id and
+                    str(value.get("address", "")) == address)
+            }
+            self.stream_pair_tickets[digest] = {
+                "client_id": client_id,
+                "address": address,
+                "expires_at": now + STREAM_PAIR_TICKET_LIFETIME_SECONDS,
+                "in_use": False,
+            }
+        return ticket
+
+    def stream_pair_ticket_for_client(self, address: str, client: dict[str, Any]) -> dict[str, Any]:
+        ticket = self.issue_stream_pair_ticket(address, str(client.get("id", "")))
+        return {
+            "stream_pair_ticket": ticket,
+            "stream_pair_expires_seconds": STREAM_PAIR_TICKET_LIFETIME_SECONDS,
+        }
+
+    def vibepollo_pair_client(self, address: str, client: dict[str, Any],
+                              ticket: str, body: dict[str, Any]) -> tuple[int, Any]:
+        pin = str(body.get("pin", "")).strip()
+        name = str(body.get("name", "")).strip()
+        if not re.fullmatch(r"[0-9]{4}", pin):
+            raise ValueError("The Moonlight pairing PIN must contain four digits.")
+        if not name or len(name) > 80 or re.search(r"[\x00-\x1f\x7f]", name):
+            raise ValueError("Invalid Moonlight client name.")
+        digest = sha256_text(str(ticket or ""))
+        now = time.monotonic()
+        with self.lock:
+            grant = self.stream_pair_tickets.get(digest)
+            if not grant or float(grant.get("expires_at", 0)) < now:
+                raise PermissionError("The stream pairing ticket expired.")
+            if grant.get("in_use"):
+                raise PermissionError("The stream pairing ticket is already in use.")
+            if (str(grant.get("client_id", "")) != str(client.get("id", "")) or
+                    str(grant.get("address", "")) != address):
+                raise PermissionError("The stream pairing ticket belongs to another client.")
+            grant["in_use"] = True
+        ok, result = self.proxy_json(
+            "vibepollo", "/pair", {"pin": pin, "name": name}, timeout=13.0)
+        with self.lock:
+            current = self.stream_pair_tickets.get(digest)
+            if ok:
+                self.stream_pair_tickets.pop(digest, None)
+            elif current:
+                current["in_use"] = False
+        if not ok:
+            return HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "error": self.upstream_error(result, "Unable to pair the Moonlight client."),
+            }
+        return HTTPStatus.OK, {
+            "ok": True,
+            "client_uuid": str(result.get("client_uuid", "")),
+            "permissions": int(result.get("permissions", 0)),
+        }
 
     def select_profile(self, profile_id: str | None, record_use: bool = False) -> str:
         selected = str(profile_id or "default").strip() or "default"
@@ -295,6 +368,7 @@ class GatewayState:
             "capabilities": {
                 "vibepollo_fix": {"available": vibepollo_ok, "health": vibepollo},
                 "vibepollo_apps": {"available": vibepollo_ok, "health": vibepollo},
+                "vibepollo_pairing": {"available": vibepollo_ok, "health": vibepollo},
                 "playnite": {"available": playnite_ok, "health": playnite},
                 "discord": {"available": discord_ok, "health": discord},
                 "virtualhere": {
@@ -742,6 +816,10 @@ class GatewayState:
             payload = {"game_id": self._playnite_game_id(body.get("game_id"))}
             path = "/game/install"
             timeout = 15.0
+        elif action == "game/install/focus":
+            payload = {"game_id": self._playnite_game_id(body.get("game_id"))}
+            path = "/installation/focus"
+            timeout = 6.0
         elif action == "game/stop":
             payload = {"force": False}
             if body.get("game_id"):
@@ -826,9 +904,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
         return value
 
     def authenticated(self) -> bool:
+        return self.authenticated_client() is not None
+
+    def authenticated_client(self) -> dict[str, Any] | None:
         header = self.headers.get("Authorization", "")
         token = header[7:] if header.startswith("Bearer ") else ""
-        return bool(token and self.state.client_for_token(token))
+        return self.state.client_for_token(token) if token else None
 
     def require_auth(self) -> bool:
         if self.authenticated():
@@ -926,7 +1007,21 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 return
             if not self.require_auth():
                 return
+            authenticated_client = self.authenticated_client()
             profile_id = self.select_profile()
+            if path == f"{API_PREFIX}/vibepollo/pair/ticket":
+                self.read_json()
+                self.send_json(HTTPStatus.CREATED,
+                               self.state.stream_pair_ticket_for_client(
+                                   self.client_address[0], authenticated_client))
+                return
+            if path == f"{API_PREFIX}/vibepollo/pair":
+                body = self.read_json()
+                status, result = self.state.vibepollo_pair_client(
+                    self.client_address[0], authenticated_client,
+                    str(body.pop("ticket", "")), body)
+                self.send_json(status, result)
+                return
             if path == f"{API_PREFIX}/system/sleep":
                 request_id = self.headers.get("X-Request-Id", "").strip()
                 if not request_id or len(request_id) > 128:

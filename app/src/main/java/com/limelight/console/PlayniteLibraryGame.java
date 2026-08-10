@@ -17,6 +17,10 @@ final class PlayniteLibraryGame {
     final int playCount;
     final String source;
     final String genres;
+    final boolean installRequiresAttention;
+    final String installAttentionReason;
+    final String installWindowTitle;
+    final String installLauncher;
 
     PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
                         boolean hidden, long playtimeSeconds, String lastActivity,
@@ -53,6 +57,17 @@ final class PlayniteLibraryGame {
                         boolean installing, boolean hidden, long playtimeSeconds,
                         String lastActivity, String coverKey, String backgroundKey,
                         String description, int playCount, String source, String genres) {
+        this(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
+                lastActivity, coverKey, backgroundKey, description, playCount, source,
+                genres, false, "", "", "");
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean installing, boolean hidden, long playtimeSeconds,
+                        String lastActivity, String coverKey, String backgroundKey,
+                        String description, int playCount, String source, String genres,
+                        boolean installRequiresAttention, String installAttentionReason,
+                        String installWindowTitle, String installLauncher) {
         this.playniteGameId = playniteGameId;
         this.name = name;
         this.installed = installed;
@@ -66,6 +81,10 @@ final class PlayniteLibraryGame {
         this.playCount = Math.max(0, playCount);
         this.source = text(source);
         this.genres = text(genres);
+        this.installRequiresAttention = installRequiresAttention;
+        this.installAttentionReason = text(installAttentionReason);
+        this.installWindowTitle = text(installWindowTitle);
+        this.installLauncher = text(installLauncher);
     }
 
     @Override public boolean equals(Object value) {
@@ -73,18 +92,24 @@ final class PlayniteLibraryGame {
         if (!(value instanceof PlayniteLibraryGame)) return false;
         PlayniteLibraryGame game = (PlayniteLibraryGame) value;
         return installed == game.installed && installing == game.installing &&
+                installRequiresAttention == game.installRequiresAttention &&
                 hidden == game.hidden &&
                 playtimeSeconds == game.playtimeSeconds &&
                 playniteGameId.equals(game.playniteGameId) && name.equals(game.name) &&
                 lastActivity.equals(game.lastActivity) && coverKey.equals(game.coverKey) &&
                 backgroundKey.equals(game.backgroundKey) &&
                 description.equals(game.description) && playCount == game.playCount &&
-                source.equals(game.source) && genres.equals(game.genres);
+                source.equals(game.source) && genres.equals(game.genres) &&
+                installAttentionReason.equals(game.installAttentionReason) &&
+                installWindowTitle.equals(game.installWindowTitle) &&
+                installLauncher.equals(game.installLauncher);
     }
 
     @Override public int hashCode() {
         return Objects.hash(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
-                lastActivity, coverKey, backgroundKey, description, playCount, source, genres);
+                lastActivity, coverKey, backgroundKey, description, playCount, source, genres,
+                installRequiresAttention, installAttentionReason, installWindowTitle,
+                installLauncher);
     }
 
     private static String text(String value) { return value == null ? "" : value.trim(); }
