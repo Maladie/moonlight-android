@@ -424,6 +424,9 @@
     <string name="console_status_online">Online</string>
     <string name="console_status_offline">Offline</string>
     <string name="console_status_connecting">Łączenie</string>
+    <string name="console_status_waking">Wybudzanie…</string>
+    <string name="console_status_asleep">Uśpiony</string>
+    <string name="console_status_unreachable">Nieosiągalny</string>
     <string name="console_status_unpaired">Online · niesparowany</string>
     <string name="console_status_active_session">Aktywna sesja</string>
     <string name="console_status_active_app">Aktywna sesja · %1$s</string>
@@ -732,7 +735,9 @@
     <string name="console_host_power_indicator">●  %1$s · %2$s</string>
     <string name="console_host_power_focused_sleep">●  %1$s · Uśpij</string>
     <string name="console_host_power_focused_wake">●  %1$s · Obudź</string>
+    <string name="console_host_power_waking">●  %1$s · Wybudzanie…</string>
     <string name="console_host_power_wake_description">%1$s jest offline. Wciśnij Wybierz, aby obudzić hosta.</string>
+    <string name="console_host_waking_description">Trwa wybudzanie hosta %1$s. Zaczekaj.</string>
     <string name="console_host_power_sleep_description">%1$s jest online. Wciśnij Wybierz, aby uśpić hosta.</string>
     <string name="console_options_overrides">Nadpisania streamu  ›</string>
     <string name="console_options_readme">README i pomoc  ›</string>
@@ -875,6 +880,7 @@
     <string name="playnite_launch_unavailable">Brak uruchamiania</string>
     <string name="playnite_gateway_unavailable">Gateway Playnite jest niedostępny</string>
     <string name="playnite_cached_library">Biblioteka z pamięci podręcznej</string>
+    <string name="playnite_cached_library_age">Biblioteka z pamięci · zaktualizowano %1$s</string>
     <string name="playnite_refreshing_library">Odświeżanie biblioteki</string>
     <string name="playnite_authentication_error">Błąd autoryzacji</string>
     <string name="playnite_configure_gateway">Skonfiguruj gateway</string>
