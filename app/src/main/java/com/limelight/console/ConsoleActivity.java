@@ -89,6 +89,7 @@ import com.limelight.preferences.AddComputerManually;
 import com.limelight.preferences.AppPreferences;
 import com.limelight.preferences.AppStreamSettings;
 import com.limelight.preferences.StreamSettings;
+import com.limelight.stream.BackgroundStreamPreferences;
 import com.limelight.utils.CacheHelper;
 import com.limelight.utils.HelpLauncher;
 import com.limelight.utils.QuickLaunchManager;
@@ -214,6 +215,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private int hostMusicVolume;
     private int menuMusicVolume;
     private int effectsVolume;
+    private int backgroundStreamRetentionMinutes;
     private boolean showCarouselGameDescription;
     private boolean refreshHostsOnResume;
     private boolean initialHostsLoaded;
@@ -448,6 +450,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         hostMusicVolume = preferences.getInt("host_music_volume", 30);
         menuMusicVolume = preferences.getInt("menu_music_volume", 16);
         effectsVolume = preferences.getInt("effects_volume", 40);
+        backgroundStreamRetentionMinutes = BackgroundStreamPreferences.readMinutes(this);
         showCarouselGameDescription = preferences.getBoolean(
                 "show_carousel_game_description", true);
         selectedHostUuid = preferences.getString("selected_host", null);
@@ -8291,6 +8294,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         TextView autoLogin = panelAction(getString(R.string.console_auto_login_host,
                 autoLoginHostLabel()));
         autoLogin.setTag("options.auto_login_host");
+        TextView backgroundStream = panelAction(getString(
+                R.string.console_background_stream_retention,
+                backgroundStreamRetentionLabel()));
+        backgroundStream.setTag("options.background_stream_retention");
         TextView settings = panelAction(getString(R.string.console_streaming_settings));
         TextView overrides = panelAction(getString(R.string.console_options_overrides));
         TextView integrations = panelAction(getString(R.string.console_host_integrations));
@@ -8331,6 +8338,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             updateSettingsToggle(carouselDescription, showCarouselGameDescription);
         });
         autoLogin.setOnClickListener(v -> showAutoLoginHostPanel());
+        backgroundStream.setOnClickListener(v -> showBackgroundStreamRetentionPanel());
         hiddenApps.setOnClickListener(v -> {
             toggleHiddenApps();
             updateSettingsToggle(hiddenApps, showHiddenApps);
@@ -8358,7 +8366,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 settingsSectionHeader(R.string.console_options_section_host),
                 autoLogin, integrations,
                 settingsSectionHeader(R.string.console_options_section_streaming),
-                settings, overrides,
+                backgroundStream, settings, overrides,
                 settingsSectionHeader(R.string.console_options_section_help), readme);
     }
 
@@ -8366,6 +8374,47 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         ComputerDetails host = autoLoginHostUuid == null || autoLoginHostUuid.isEmpty()
                 ? null : hosts.get(autoLoginHostUuid);
         return host == null ? getString(R.string.console_auto_login_none) : host.name;
+    }
+
+    private String backgroundStreamRetentionLabel() {
+        if (backgroundStreamRetentionMinutes == BackgroundStreamPreferences.NEVER) {
+            return getString(R.string.console_background_stream_never);
+        }
+        if (backgroundStreamRetentionMinutes <= 0) {
+            return getString(R.string.console_background_stream_off);
+        }
+        return getString(R.string.console_background_stream_minutes,
+                backgroundStreamRetentionMinutes);
+    }
+
+    private void showBackgroundStreamRetentionPanel() {
+        int[] values = { 0, 5, 10, 30, 60, BackgroundStreamPreferences.NEVER };
+        List<View> actions = new ArrayList<>();
+        for (int value : values) {
+            String label = value == BackgroundStreamPreferences.NEVER
+                    ? getString(R.string.console_background_stream_never)
+                    : value == 0
+                    ? getString(R.string.console_background_stream_off)
+                    : getString(R.string.console_background_stream_minutes, value);
+            if (value == backgroundStreamRetentionMinutes) {
+                label += getString(R.string.console_selected_suffix);
+            }
+            TextView choice = panelAction(label);
+            choice.setTag("background_stream_retention:" + value);
+            choice.setOnClickListener(view -> setBackgroundStreamRetention(value));
+            actions.add(choice);
+        }
+        showSidePanel(getString(R.string.console_title),
+                getString(R.string.console_background_stream_retention_title),
+                getString(R.string.console_background_stream_retention_details),
+                actions.toArray(new View[0]));
+    }
+
+    private void setBackgroundStreamRetention(int minutes) {
+        backgroundStreamRetentionMinutes = minutes;
+        preferences.edit().putInt(BackgroundStreamPreferences.KEY_RETENTION_MINUTES,
+                minutes).apply();
+        showOptionsPanel();
     }
 
     private void showAutoLoginHostPanel() {
