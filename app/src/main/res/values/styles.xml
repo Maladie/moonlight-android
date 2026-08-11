@@ -34,4 +34,13 @@
         <item name="android:windowNoTitle">true</item>
     </style>
 
+    <!-- Keeps the streaming Activity visible (and therefore alive) below ConsoleActivity. -->
+    <style name="ConsoleStreamHomeTheme" parent="AppTheme">
+        <item name="android:windowIsTranslucent">true</item>
+        <item name="android:windowBackground">@android:color/transparent</item>
+        <item name="android:windowIsFloating">false</item>
+        <item name="android:backgroundDimEnabled">false</item>
+        <item name="android:windowNoTitle">true</item>
+    </style>
+
 </resources>

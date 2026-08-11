@@ -323,6 +323,8 @@
     <string name="summary_bitrate_override">Nadpisuje wszystkie ustawienia bitrate. Przesuń maksymalnie w lewo, aby używać ustawień domyślnych.</string>
     <string name="bitrate_use_default">Bitrate: domyślny</string>
     <string name="overlay_menu_disconnect">Rozłącz</string>
+    <string name="overlay_menu_home">Home</string>
+    <string name="console_stream_home_switch_blocked">Wróć do bieżącej sesji i zakończ ją przed uruchomieniem innej gry.</string>
     <string name="overlay_menu_quit_session">Zakończ sesję</string>
     <string name="overlay_menu_suspend_session">Wstrzymaj grę i uśpij komputer</string>
     <string name="overlay_menu_suspend_confirmation">Gra pozostanie uruchomiona podczas uśpienia komputera. Później wznowisz ją z tego hosta.</string>

@@ -83,6 +83,7 @@ import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.NvHTTP;
 import com.limelight.nvstream.http.PairingManager;
+import com.limelight.nvstream.StreamConfiguration;
 import com.limelight.nvstream.wol.WakeOnLanSender;
 import com.limelight.preferences.AddComputerManually;
 import com.limelight.preferences.AppPreferences;
@@ -131,7 +132,15 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 /** TV-first dashboard adapted from Wake & Play and backed by Moonlight's internal APIs. */
-public final class ConsoleActivity extends Activity implements InputManager.InputDeviceListener {
+public class ConsoleActivity extends Activity implements InputManager.InputDeviceListener {
+    public static final String EXTRA_RETAINED_STREAM_HOME =
+            "com.limelight.console.RETAINED_STREAM_HOME";
+    public static final String EXTRA_RETAINED_STREAM_HOST_ID =
+            "com.limelight.console.RETAINED_STREAM_HOST_ID";
+    public static final String EXTRA_RETAINED_STREAM_APP_ID =
+            "com.limelight.console.RETAINED_STREAM_APP_ID";
+    public static final String EXTRA_RETAINED_STREAM_PLAYNITE_GAME_ID =
+            "com.limelight.console.RETAINED_STREAM_PLAYNITE_GAME_ID";
     // The console UI is a product feature and must be identical in debug and release builds.
     private static final boolean CONSOLE_UI_V2 = true;
     private static final String PREFS = "console_dashboard";
@@ -194,6 +203,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private boolean serviceBound;
     private boolean polling;
     private boolean active;
+    private boolean retainedStreamHome;
+    private String retainedStreamHostId = "";
+    private int retainedStreamAppId = StreamConfiguration.INVALID_APP_ID;
+    private String retainedStreamPlayniteGameId = "";
     private boolean inputListenerRegistered;
     private boolean reducedMotion;
     private boolean uiSoundsEnabled;
@@ -415,7 +428,16 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     @Override
     protected void onCreate(Bundle state) {
+        retainedStreamHome = this instanceof StreamHomeActivity
+                || getIntent().getBooleanExtra(EXTRA_RETAINED_STREAM_HOME, false);
+        if (retainedStreamHome) setTheme(R.style.ConsoleStreamHomeTheme);
         super.onCreate(state);
+        retainedStreamHostId = normalizeId(getIntent().getStringExtra(
+                EXTRA_RETAINED_STREAM_HOST_ID));
+        retainedStreamAppId = getIntent().getIntExtra(EXTRA_RETAINED_STREAM_APP_ID,
+                StreamConfiguration.INVALID_APP_ID);
+        retainedStreamPlayniteGameId = normalizeId(getIntent().getStringExtra(
+                EXTRA_RETAINED_STREAM_PLAYNITE_GAME_ID));
         preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
         libraryViewStateStore = new ConsoleLibraryViewStateStore(preferences);
         reducedMotion = preferences.getBoolean("reduced_motion", false);
@@ -429,6 +451,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         showCarouselGameDescription = preferences.getBoolean(
                 "show_carousel_game_description", true);
         selectedHostUuid = preferences.getString("selected_host", null);
+        if (retainedStreamHome && !retainedStreamHostId.isEmpty()) {
+            selectedHostUuid = retainedStreamHostId;
+            hostSelectionVisible = false;
+        }
         autoLoginHostUuid = preferences.getString("auto_login_host", "");
         assetLoader = new DiskAssetLoader(this);
         consoleAudioEngine = new ConsoleAudioEngine(this);
@@ -446,7 +472,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         playniteLaunchTargetStore = new PlayniteLaunchTargetStore(this);
         quickLaunchManager = QuickLaunchManager.getInstance(this);
         shortcutHelper = new ShortcutHelper(this);
-        getWindow().setFormat(PixelFormat.OPAQUE);
+        getWindow().setFormat(retainedStreamHome
+                ? PixelFormat.TRANSLUCENT : PixelFormat.OPAQUE);
         root = buildUi();
         setContentView(root);
         consoleFeedback = new ConsoleUiFeedback(this, root, consoleAudioEngine, reducedMotion);
@@ -493,8 +520,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     protected void onResume() {
         super.onResume();
         active = true;
-        String returnToHosts = SuspendedSessionStore.consumeHostSelectionRequest(this);
-        if (!returnToHosts.isEmpty()) showHostSelection(returnToHosts);
+        // The retained stream Home always belongs to the host backing the live stream.
+        // A stale "return to hosts" request from an earlier suspend flow must not move it
+        // away from that host's carousel.
+        if (!retainedStreamHome) {
+            String returnToHosts = SuspendedSessionStore.consumeHostSelectionRequest(this);
+            if (!returnToHosts.isEmpty()) showHostSelection(returnToHosts);
+        }
         if (consoleAudioEngine != null) {
             consoleAudioEngine.setMenuVisible(loadingLayer == null
                     || loadingLayer.getVisibility() != View.VISIBLE);
@@ -865,6 +897,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             showHome();
         } else if (expandedLibraryMode) {
             exitExpandedLibrary();
+        } else if (retainedStreamHome) {
+            returnToRetainedStream();
         } else if (hostSelectionVisible) {
             showExitConfirmation();
         } else {
@@ -1333,6 +1367,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private void resolveInitialHostSelection() {
         if (initialHostSelectionResolved) return;
         initialHostSelectionResolved = true;
+        if (retainedStreamHome) {
+            ComputerDetails retainedHost = hosts.get(retainedStreamHostId);
+            if (retainedHost != null) {
+                selectHost(retainedHost, true);
+                return;
+            }
+        }
         ComputerDetails automatic = autoLoginHostUuid == null || autoLoginHostUuid.isEmpty()
                 ? null : hosts.get(autoLoginHostUuid);
         if (automatic != null) {
@@ -7300,6 +7341,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         return hosts.get(hostUuid);
     }
 
+    private static String normalizeId(String value) {
+        return value == null ? "" : value.trim();
+    }
+
     private void showAppActions(ComputerDetails host, NvApp app, ImageView poster) {
         boolean online = ConsoleActionCatalog.isOnline(host);
         boolean paired = ConsoleActionCatalog.isPaired(host);
@@ -7693,6 +7738,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private void beginLaunch(ComputerDetails host, NvApp app, String quickLaunchKey,
                              LaunchTransitionType transitionType,
                              String playniteGameId, String loadingArtworkGameId) {
+        if (handleRetainedStreamLaunch(host, app, playniteGameId)) return;
         if (managerBinder == null) {
             ConsoleUiFeedback.makeText(this, R.string.console_initializing, Toast.LENGTH_SHORT).show();
             return;
@@ -7796,6 +7842,28 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         } else {
             startAfterOverlayFrame.run();
         }
+    }
+
+    private boolean handleRetainedStreamLaunch(ComputerDetails host, NvApp app,
+                                                String playniteGameId) {
+        if (!retainedStreamHome) return false;
+        boolean sameHost = host != null && retainedStreamHostId.equalsIgnoreCase(host.uuid);
+        boolean sameApp = app != null && app.getAppId() == retainedStreamAppId;
+        boolean sameGame = !retainedStreamPlayniteGameId.isEmpty()
+                && retainedStreamPlayniteGameId.equalsIgnoreCase(normalizeId(playniteGameId));
+        if (sameHost && (sameApp || sameGame)) {
+            returnToRetainedStream();
+        } else {
+            ConsoleUiFeedback.makeText(this, R.string.console_stream_home_switch_blocked,
+                    Toast.LENGTH_LONG).show();
+        }
+        return true;
+    }
+
+    private void returnToRetainedStream() {
+        if (!retainedStreamHome || isFinishing()) return;
+        finish();
+        overridePendingTransition(0, android.R.anim.fade_out);
     }
 
     private void closePreviousSession(int token, ComputerDetails host, int targetAppId)
