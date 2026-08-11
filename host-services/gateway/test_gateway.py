@@ -117,6 +117,37 @@ class GatewayStateTest(unittest.TestCase):
             self.assertEqual(501, status)
             self.assertEqual([], scheduled)
 
+    def test_suspend_session_validates_and_delays_sleep_for_stream_shutdown(self):
+        state = GatewayState(self.config_path, None)
+        scheduled = []
+        state._schedule_system_sleep = lambda delay=0.75, force=False: scheduled.append((delay, force))
+
+        status, result = state.suspend_session({
+            "sunshine_app_id": 42,
+            "playnite_game_id": "ABC-123",
+            "title": "Hollow Knight",
+        })
+
+        if os.name == "nt":
+            self.assertEqual(202, status)
+            self.assertTrue(result["accepted"])
+            self.assertEqual("abc-123", result["session"]["playnite_game_id"])
+            self.assertEqual([(2.5, True)], scheduled)
+        else:
+            self.assertEqual(501, status)
+            self.assertEqual([], scheduled)
+
+    def test_suspend_session_rejects_missing_sunshine_application(self):
+        state = GatewayState(self.config_path, None)
+        if os.name != "nt":
+            self.skipTest("Windows-only validation path")
+        state._schedule_system_sleep = lambda delay=0.75, force=False: self.fail("must not sleep")
+
+        status, result = state.suspend_session({"playnite_game_id": "abc"})
+
+        self.assertEqual(400, status)
+        self.assertFalse(result["ok"])
+
     def test_profile_selects_its_own_loopback_bridges(self):
         state = GatewayState(self.config_path, None)
         state.config["profiles"]["basia"] = {

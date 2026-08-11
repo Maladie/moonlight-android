@@ -48,9 +48,7 @@
     <string name="wol_pc_online">Computer is online</string>
     <string name="wol_no_mac">Unable to wake PC because there is no stored MAC address</string>
     <string name="wol_waking_pc">Waking PC…</string>
-    <string name="wol_waking_msg">It may take a few seconds for your PC to wake up.
-	    If it doesn\'t, make sure it\'s configured properly for Wake-On-LAN.
-    </string>
+    <string name="wol_waking_msg">Wake-on-LAN signal sent. The PC may take a moment to wake up.</string>
     <string name="wol_fail">Failed to send Wake-On-LAN packets</string>
 
     <!-- Unpair messages -->
@@ -356,6 +354,20 @@
     <!-- Overlay Menu strings -->
     <string name="overlay_menu_disconnect">Disconnect</string>
     <string name="overlay_menu_quit_session">Quit Session</string>
+    <string name="overlay_menu_suspend_session">Suspend game and sleep PC</string>
+    <string name="overlay_menu_suspend_confirmation">The game will remain running while the PC sleeps. You can resume it from this host later.</string>
+    <string name="overlay_menu_suspend_confirm">Suspend</string>
+    <string name="overlay_menu_suspend_unavailable">This host is not ready for session suspend.</string>
+    <string name="overlay_menu_suspend_failed">Could not suspend the session. The stream is still active.</string>
+    <string name="console_status_suspended_game">Suspended · %1$s</string>
+    <string name="console_status_suspending_game">Going to sleep. Suspended: %1$s</string>
+    <string name="console_status_sleeping_suspended_game">Asleep. Suspended: %1$s</string>
+    <string name="console_status_suspending_short">Going to sleep</string>
+    <string name="console_status_suspended_short">Asleep · %1$s</string>
+    <string name="console_resume_suspended">Resume</string>
+    <string name="console_waking_suspended_session">Waking the PC and restoring the suspended game…</string>
+    <string name="console_suspended_resume_timeout">The PC did not become ready. The suspended game remains available.</string>
+    <string name="console_game">Game</string>
     <string name="overlay_menu_toggle_stats">Stats (RB)</string>
     <string name="overlay_menu_mouse_emulation">Mouse (X)</string>
     <string name="overlay_menu_keyboard">Keyboard (Y)</string>
@@ -520,7 +532,7 @@
     <string name="console_play">PLAY  ›</string>
     <string name="console_resume">RESUME  ›</string>
     <string name="console_quick_resume">Resume session</string>
-    <string name="console_resume_session">Resume session</string>
+    <string name="console_resume_session">Resume</string>
     <string name="console_quick_resume_app">Resume session (%1$s)</string>
     <string name="console_quick_resume_description">Resume active session: %1$s</string>
     <string name="console_launch_desktop">Desktop</string>

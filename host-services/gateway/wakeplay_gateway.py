@@ -376,15 +376,17 @@ class GatewayState:
                     "health": virtualhere,
                 },
                 "host_sleep": {"available": os.name == "nt"},
+                "session_suspend": {"available": os.name == "nt"},
             },
         }
 
     @staticmethod
-    def _sleep_windows() -> None:
+    def _sleep_windows(force: bool = False) -> None:
+        force_literal = "$true" if force else "$false"
         command = (
             "Add-Type -AssemblyName System.Windows.Forms; "
             "[System.Windows.Forms.Application]::SetSuspendState("
-            "[System.Windows.Forms.PowerState]::Suspend, $true, $false)"
+            f"[System.Windows.Forms.PowerState]::Suspend, {force_literal}, $false)"
         )
         try:
             subprocess.run(
@@ -396,8 +398,9 @@ class GatewayState:
         except Exception as error:
             print(f"Host sleep command failed: {error}", flush=True)
 
-    def _schedule_system_sleep(self) -> None:
-        timer = threading.Timer(0.75, self._sleep_windows)
+    def _schedule_system_sleep(self, delay_seconds: float = 0.75,
+                               force: bool = False) -> None:
+        timer = threading.Timer(delay_seconds, self._sleep_windows, args=(force,))
         timer.daemon = True
         timer.start()
 
@@ -409,6 +412,33 @@ class GatewayState:
             }
         self._schedule_system_sleep()
         return HTTPStatus.ACCEPTED, {"ok": True, "accepted": True}
+
+    def suspend_session(self, body: dict[str, Any]) -> tuple[int, Any]:
+        if os.name != "nt":
+            return HTTPStatus.NOT_IMPLEMENTED, {
+                "ok": False,
+                "error": "Session suspend is only available on Windows.",
+            }
+        sunshine_app_id = int(body.get("sunshine_app_id") or 0)
+        playnite_game_id = str(body.get("playnite_game_id") or "").strip().lower()[:128]
+        title = str(body.get("title") or "").strip()[:200]
+        if sunshine_app_id <= 0:
+            return HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "A valid Sunshine application id is required.",
+            }
+        # Leave enough time for the authenticated response to reach the TV and
+        # for MoonWaker to close the stream without asking Sunshine to quit it.
+        self._schedule_system_sleep(2.5, True)
+        return HTTPStatus.ACCEPTED, {
+            "ok": True,
+            "accepted": True,
+            "session": {
+                "sunshine_app_id": sunshine_app_id,
+                "playnite_game_id": playnite_game_id,
+                "title": title,
+            },
+        }
 
     def profiles_summary(self) -> dict[str, Any]:
         original_profile = self.profile_id
@@ -1034,6 +1064,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self.read_json()
                 status, result = self.state.idempotent(
                     f"system-sleep:{request_id}", self.state.sleep_host)
+                self.send_json(status, result)
+                return
+            if path == f"{API_PREFIX}/system/suspend-session":
+                request_id = self.headers.get("X-Request-Id", "").strip()
+                if not request_id or len(request_id) > 128:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {"error": "A valid X-Request-Id header is required."})
+                    return
+                body = self.read_json()
+                status, result = self.state.idempotent(
+                    f"session-suspend:{request_id}",
+                    lambda: self.state.suspend_session(body))
                 self.send_json(status, result)
                 return
             if path == f"{API_PREFIX}/vibepollo/apps/ensure":

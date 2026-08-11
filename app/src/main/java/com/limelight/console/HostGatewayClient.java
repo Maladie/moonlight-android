@@ -754,6 +754,11 @@ final class HostGatewayClient {
                 new JSONObject(), connection, pinnedTrust(connection), READ_TIMEOUT_MS);
     }
 
+    JSONObject suspendSession(Connection connection, JSONObject session) throws IOException {
+        return request(connection.endpoint, "/api/v1/system/suspend-session", "POST",
+                session, connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+    }
+
     PlayniteLibrary getPlayniteLibrary(Connection connection, String cursor, int limit)
             throws IOException {
         if (limit < 1 || limit > 100) throw new IllegalArgumentException("Invalid page size");

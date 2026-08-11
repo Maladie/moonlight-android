@@ -6,6 +6,8 @@ import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import org.json.JSONException;
+import org.json.JSONObject;
 
 /**
  * Narrow, credential-safe transition view of the host Gateway. It keeps raw
@@ -111,5 +113,18 @@ public final class PlayniteTransitionGateway {
 
     public boolean verifyInstallation(String gameId) throws IOException {
         return client.verifyPlayniteInstallation(connection, gameId);
+    }
+
+    public void suspendSession(int sunshineAppId, String playniteGameId,
+                               String title) throws IOException {
+        JSONObject body = new JSONObject();
+        try {
+            body.put("sunshine_app_id", sunshineAppId);
+            body.put("playnite_game_id", playniteGameId == null ? "" : playniteGameId);
+            body.put("title", title == null ? "" : title);
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        client.suspendSession(connection, body);
     }
 }

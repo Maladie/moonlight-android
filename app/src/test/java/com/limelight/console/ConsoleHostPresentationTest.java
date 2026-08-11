@@ -19,28 +19,34 @@ public class ConsoleHostPresentationTest {
     }
 
     @Test
-    public void wakeCapableOfflineHostIsAsleep() {
+    public void wakeCapableOfflineHostRemainsOfflineWithoutSleepCommand() {
         ComputerDetails host = host(ComputerDetails.State.OFFLINE);
         host.macAddress = "00:11:22:33:44:55";
 
-        assertEquals(ConsoleHostPresentation.State.ASLEEP,
+        assertEquals(ConsoleHostPresentation.State.OFFLINE,
                 ConsoleHostPresentation.state(host, false));
         assertTrue(ConsoleHostPresentation.canWake(host));
     }
 
     @Test
-    public void addressedHostWithoutWakeDataIsUnreachable() {
+    public void addressedOfflineHostRemainsOffline() {
         ComputerDetails host = host(ComputerDetails.State.OFFLINE);
         host.manualAddress = new ComputerDetails.AddressTuple("192.168.1.20", 47989);
 
-        assertEquals(ConsoleHostPresentation.State.UNREACHABLE,
+        assertEquals(ConsoleHostPresentation.State.OFFLINE,
                 ConsoleHostPresentation.state(host, false));
     }
 
     @Test
-    public void unknownHostIsConnecting() {
-        assertEquals(ConsoleHostPresentation.State.CONNECTING,
+    public void unknownPairedHostIsOffline() {
+        assertEquals(ConsoleHostPresentation.State.OFFLINE,
                 ConsoleHostPresentation.state(host(ComputerDetails.State.UNKNOWN), false));
+    }
+
+    @Test
+    public void onlinePairedHostWithoutSessionIsOnline() {
+        assertEquals(ConsoleHostPresentation.State.ONLINE,
+                ConsoleHostPresentation.state(host(ComputerDetails.State.ONLINE), false));
     }
 
     @Test

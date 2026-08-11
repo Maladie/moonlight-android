@@ -43,6 +43,8 @@ import com.limelight.ui.GameGestures;
 import com.limelight.ui.StreamView;
 import com.limelight.ui.overlay.CustomCommand;
 import com.limelight.ui.overlay.OverlayMenuView;
+import com.limelight.console.SuspendedSessionStore;
+import com.limelight.console.ConsoleConfirmDialog;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.ServerHelper;
 import com.limelight.utils.SessionResumeManager;
@@ -305,6 +307,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         if (getIntent().getBooleanExtra(EXTRA_CONSOLE_LOADING, false)) {
             transitionSpec = readTransitionSpec();
+            if (transitionSpec != null) {
+                SuspendedSessionStore.Session suspended = SuspendedSessionStore.load(
+                        this, transitionSpec.hostId);
+                if (suspended != null
+                        && suspended.sunshineAppId == transitionSpec.sunshineAppId) {
+                    SuspendedSessionStore.markResumed(this, suspended);
+                }
+            }
             consoleLoadingView = new ConsoleStreamLoadingView(
                     this,
                     getIntent().getStringExtra(EXTRA_APP_NAME),
@@ -3686,7 +3696,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
             @Override
             public void onQuitSession() {
+                clearResumedSuspendedSession();
                 closeStreamWithPrivacy(true);
+            }
+
+            @Override
+            public void onSuspendSession() {
+                confirmSuspendSession();
             }
 
             @Override
@@ -3776,6 +3792,70 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 overlayMenuView.setControllerBatteryInfo(controllerHandler.getControllerBatteryInfo());
             }
         });
+    }
+
+    private void confirmSuspendSession() {
+        overlayMenuView.closeMenu();
+        ConsoleConfirmDialog.show(this, getString(R.string.overlay_menu_suspend_session),
+                getString(R.string.overlay_menu_suspend_confirmation),
+                getString(android.R.string.cancel),
+                getString(R.string.overlay_menu_suspend_confirm),
+                this::suspendSessionAndSleep);
+    }
+
+    private void clearResumedSuspendedSession() {
+        if (transitionSpec == null) return;
+        SuspendedSessionStore.Session suspended = SuspendedSessionStore.load(
+                this, transitionSpec.hostId);
+        if (suspended != null && suspended.resumedAt > 0L
+                && suspended.sunshineAppId == transitionSpec.sunshineAppId) {
+            SuspendedSessionStore.markSessionEnded(this, transitionSpec.hostId);
+        }
+    }
+
+    private void suspendSessionAndSleep() {
+        if (transitionSpec == null) {
+            displayTransientMessage(getString(R.string.overlay_menu_suspend_unavailable));
+            return;
+        }
+        transitionController.closingStream(transitionSpec.id);
+        consoleLoadingView.showOpaque();
+        final String host = getIntent().getStringExtra(EXTRA_HOST);
+        final String artwork = getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_ARTWORK);
+        new Thread(() -> {
+            PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
+                    Game.this, transitionSpec.hostId, host);
+            if (gateway == null) {
+                runOnUiThread(() -> {
+                    transitionController.cancel(transitionSpec.id);
+                    consoleLoadingView.stopAndHide();
+                    displayTransientMessage(getString(R.string.overlay_menu_suspend_unavailable));
+                });
+                return;
+            }
+            try {
+                String playniteGameId = transitionSpec.playniteGameId;
+                if (playniteGameId == null || playniteGameId.isEmpty()) {
+                    playniteGameId = getSharedPreferences("console_dashboard", MODE_PRIVATE)
+                            .getString("selected_playnite." + transitionSpec.hostId, "");
+                }
+                gateway.suspendSession(transitionSpec.sunshineAppId,
+                        playniteGameId, appName);
+                SuspendedSessionStore.save(Game.this,
+                        new SuspendedSessionStore.Session(transitionSpec.hostId,
+                                transitionSpec.sunshineAppId,
+                                playniteGameId, appName, artwork,
+                                System.currentTimeMillis()));
+                SuspendedSessionStore.requestHostSelection(Game.this, transitionSpec.hostId);
+                runOnUiThread(() -> closeStreamWithPrivacy(false));
+            } catch (Exception error) {
+                runOnUiThread(() -> {
+                    transitionController.cancel(transitionSpec.id);
+                    consoleLoadingView.stopAndHide();
+                    displayTransientMessage(getString(R.string.overlay_menu_suspend_failed));
+                });
+            }
+        }, "MoonWaker-SuspendSession").start();
     }
 
     private void applyBitrateAndReconnect(int bitrateKbps) {
