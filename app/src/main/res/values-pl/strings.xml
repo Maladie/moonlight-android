@@ -400,7 +400,7 @@
     <string name="title_enable_overlay_menu">Włącz menu nakładki</string>
     <string name="summary_enable_overlay_menu">Przytrzymaj Select przez 5 sekund podczas strumienia, aby otworzyć menu nakładki</string>
     <!-- Ekran konsolowy -->
-    <string name="console_title">Moonlight</string>
+    <string name="console_title">MoonWaker</string>
     <string name="console_subtitle">Graj z dowolnego miejsca w domu</string>
     <string name="console_no_hosts">Brak hostów</string>
     <string name="console_no_hosts_details">Nie znaleziono zapisanych hostów. Dodaj hosta ręcznie lub poczekaj na zakończenie wykrywania.</string>
@@ -547,7 +547,7 @@
     <string name="console_sleep">Uśpij</string>
     <string name="console_host_power">ZASILANIE HOSTA</string>
     <string name="console_sleep_title">Uśpić %1$s?</string>
-    <string name="console_sleep_details">Host zostanie uśpiony bez uruchamiania ani zmiany strumienia Moonlight.</string>
+    <string name="console_sleep_details">Host zostanie uśpiony bez uruchamiania ani zmiany strumienia MoonWaker.</string>
     <string name="console_sleep_request">Wysyłanie żądania uśpienia do %1$s…</string>
     <string name="console_sleep_accepted">Host %1$s przyjął żądanie uśpienia</string>
     <string name="console_sleep_failed">Nie można uśpić hosta %1$s. Sprawdź dostępność sparowanego Gateway.</string>
@@ -708,7 +708,7 @@
     <string name="discord_working_title">Discord</string>
     <string name="console_options_action">Opcje interfejsu  ›</string>
     <string name="console_options_title">Opcje</string>
-    <string name="console_options_details">Dostosuj interfejs konsolowy albo otwórz istniejące ustawienia Moonlight.</string>
+    <string name="console_options_details">Dostosuj interfejs konsolowy albo otwórz istniejące ustawienia MoonWaker.</string>
     <string name="console_ui_sounds">Dźwięki interfejsu · %1$s</string>
     <string name="console_reduced_motion">Ograniczenie animacji · %1$s</string>
     <string name="console_carousel_game_description">Pokaż opis gry (Karuzela) · %1$s</string>
@@ -765,9 +765,9 @@
     <string name="console_options_readme">README i pomoc  ›</string>
     <string name="console_host_integrations">Integracje hosta  ›</string>
     <string name="console_streaming_settings">Ustawienia streamingu  ›</string>
-    <string name="console_classic_ui">Klasyczny interfejs Moonlight  ›</string>
-    <string name="console_exit">Zamknij Moonlight</string>
-    <string name="console_close_title">Zamknąć Moonlight?</string>
+    <string name="console_classic_ui">Klasyczny interfejs MoonWaker  ›</string>
+    <string name="console_exit">Zamknij MoonWaker</string>
+    <string name="console_close_title">Zamknąć MoonWaker?</string>
     <string name="console_close_details">Aktywna sesja na hoście nie zostanie zakończona.</string>
     <string name="console_select_host_first">Najpierw wybierz hosta.</string>
     <string name="console_back_close">WSTECZ · ZAMKNIJ</string>
@@ -844,7 +844,7 @@
         <item>Kompilowanie przepowiedni…</item>
         <item>Rezerwowanie stolika w tawernie za Księżycem…</item>
     </string-array>
-    <string name="console_stream_initializing">Inicjalizowanie potoku streamingu Moonlight…</string>
+    <string name="console_stream_initializing">Inicjalizowanie potoku streamingu MoonWaker…</string>
     <string name="console_stream_preparing">Przygotowywanie strumienia…</string>
     <string name="console_stream_back_cancel">Naciśnij WSTECZ, aby anulować</string>
     <string name="console_stream_waiting_video">Oczekiwanie na pierwszą klatkę obrazu…</string>
@@ -856,12 +856,12 @@
     <string name="console_stream_control">Łączenie kanału kontrolera…</string>
     <string name="console_stream_input">Przygotowywanie kanału wejścia…</string>
     <string name="console_stream_starting_stage">Uruchamianie etapu %1$s…</string>
-    <string name="console_initializing">Moonlight wciąż się inicjalizuje.</string>
+    <string name="console_initializing">MoonWaker wciąż się inicjalizuje.</string>
     <string name="console_wol_status">Wysyłanie Wake-on-LAN do %1$s…</string>
     <string name="console_waiting_stream_ports">Oczekiwanie na dostępność portów streamingu hosta…</string>
     <string name="console_host_not_ready">Host nie osiągnął stanu gotowości.</string>
     <string name="console_host_timeout">Żaden port streamingu nie odpowiedział w ciągu 90 sekund. Naciśnij WSTECZ, aby wrócić.</string>
-    <string name="console_opening_stream">Otwieranie strumienia Moonlight…</string>
+    <string name="console_opening_stream">Otwieranie strumienia MoonWaker…</string>
     <string name="console_preparing_host">Przygotowywanie hosta %1$s…</string>
     <string name="playnite_launch">Uruchom Playnite</string>
     <string name="playnite_launch_description">Uruchom lub wznów Playnite Fullscreen przez wybraną aplikację Sunshine</string>
@@ -949,7 +949,7 @@
     <string name="playnite_launch_via_playnite">Uruchamiana przez Playnite</string>
     <string name="playnite_creating_vibepollo_app">Przygotowywanie gry w Vibepollo…</string>
     <string name="playnite_mapping_suggestion">Wybierz, aby potwierdzić sugerowany cel Sunshine</string>
-    <string name="playnite_select_target_details">Wybierz istniejącą aplikację Sunshine uruchamiającą tę grę. Moonlight użyje zwykłego cyklu życia streamu.</string>
+    <string name="playnite_select_target_details">Wybierz istniejącą aplikację Sunshine uruchamiającą tę grę. MoonWaker użyje zwykłego cyklu życia streamu.</string>
     <string name="playnite_target_saved">Zapisano cel uruchamiania Sunshine dla %1$s</string>
     <string name="playnite_change_target">Zmień cel uruchamiania Sunshine</string>
     <string name="playnite_clear_target">Wyczyść cel uruchamiania</string>

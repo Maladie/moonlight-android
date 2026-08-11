@@ -1,5 +1,7 @@
 package com.limelight.console;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.animation.ValueAnimator;
 import android.Manifest;
 import android.app.Activity;
@@ -129,6 +131,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** TV-first dashboard adapted from Wake & Play and backed by Moonlight's internal APIs. */
 public final class ConsoleActivity extends Activity implements InputManager.InputDeviceListener {
+    // The console UI is a product feature and must be identical in debug and release builds.
+    private static final boolean CONSOLE_UI_V2 = true;
     private static final String PREFS = "console_dashboard";
     private static final int REQUEST_BLUETOOTH_CONNECT = 2201;
     private static final long CONTROLLER_REFRESH_MS = 30_000L;
@@ -276,6 +280,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private boolean expandedWindowWarmupPosted;
     private Runnable expandedWindowWarmupRunnable;
     private Runnable expandedFocusRestoreRunnable;
+    private boolean expandedFocusTransitionInProgress;
     private List<PlayniteDashboardItem> renderedExpandedItems = Collections.emptyList();
     private int renderedExpandedWindowStartRow = -1;
     private long lastExpandedGridNavigationAt;
@@ -567,7 +572,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 return handleExpandedLibraryShortcut(event.getKeyCode());
             }
         }
-        if (BuildConfig.DEBUG && event != null
+        if (CONSOLE_UI_V2 && event != null
                 && event.getAction() == KeyEvent.ACTION_DOWN
                 && event.getRepeatCount() == 0
                 && isDirectionalNavigationKey(event.getKeyCode())) {
@@ -857,7 +862,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         artworkHero.setScaleType(ImageView.ScaleType.FIT_CENTER);
         artworkHero.setAlpha(0f);
         artworkHero.setPadding(dp(30), dp(56), dp(30), dp(56));
-        if (BuildConfig.DEBUG) artworkHero.setVisibility(View.GONE);
+        if (CONSOLE_UI_V2) artworkHero.setVisibility(View.GONE);
         FrameLayout.LayoutParams hero = new FrameLayout.LayoutParams(dp(500),
                 ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END | Gravity.CENTER_VERTICAL);
         hero.rightMargin = dp(16);
@@ -882,7 +887,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         header.setGravity(portraitLayout ? Gravity.START : Gravity.CENTER_VERTICAL);
         header.setClipChildren(false);
         header.setClipToPadding(false);
-        if (!BuildConfig.DEBUG) {
+        if (!CONSOLE_UI_V2) {
             LinearLayout titleBlock = new LinearLayout(this);
             titleBlock.setOrientation(LinearLayout.VERTICAL);
             TextView title = text(getString(R.string.console_title), 24, Color.WHITE, true);
@@ -899,8 +904,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         hostSelector.setOnClickListener(v -> toggleCurrentHostPower());
         optionsButton = hostSelector;
         hostSelector.setSingleLine(true);
-        hostSelector.setMaxWidth(dp(BuildConfig.DEBUG ? 260 : 430));
-        if (BuildConfig.DEBUG) {
+        hostSelector.setMaxWidth(dp(CONSOLE_UI_V2 ? 260 : 430));
+        if (CONSOLE_UI_V2) {
             hostSelector.setTextSize(9);
             hostSelector.setMinHeight(dp(28));
             hostSelector.setMinWidth(0);
@@ -919,7 +924,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 portraitLayout ? ViewGroup.LayoutParams.MATCH_PARENT
                         : ViewGroup.LayoutParams.WRAP_CONTENT, dp(52));
         if (portraitLayout) selectorParams.topMargin = dp(12);
-        if (BuildConfig.DEBUG) {
+        if (CONSOLE_UI_V2) {
             FrameLayout hostPowerSlot = new FrameLayout(this);
             FrameLayout.LayoutParams hostPowerButtonParams = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT,
@@ -942,7 +947,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
         homeContent.addView(header, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        if (BuildConfig.DEBUG) {
+        if (CONSOLE_UI_V2) {
             quickActionHint = text("", 9, 0xFFC5D2DC, true);
             quickActionHint.setGravity(Gravity.CENTER);
             quickActionHint.setSingleLine(true);
@@ -953,7 +958,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             homeLayer.addView(quickActionHint, hintParams);
         }
 
-        if (BuildConfig.DEBUG) {
+        if (CONSOLE_UI_V2) {
             controllersLabel = sectionLabel("");
             controllerScroll = horizontalScroll();
             controllerScroll.setFillViewport(true);
@@ -985,7 +990,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         styleCompactButton(quickResumeButton, false);
         LinearLayout.LayoutParams resumeParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        if (!BuildConfig.DEBUG) {
+        if (!CONSOLE_UI_V2) {
             discoveryAndSession.addView(quickResumeButton, resumeParams);
         }
         launchPlayniteButton = text(getString(R.string.playnite_launch),
@@ -1010,30 +1015,30 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         styleCompactButton(launchPlayniteButton, false);
         LinearLayout.LayoutParams playniteParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        if (!BuildConfig.DEBUG) {
+        if (!CONSOLE_UI_V2) {
             discoveryAndSession.addView(launchPlayniteButton, playniteParams);
             quickLine.addView(discoveryAndSession, portraitLayout
                     ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.WRAP_CONTENT)
                     : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         }
-        if (!BuildConfig.DEBUG && portraitLayout) {
+        if (!CONSOLE_UI_V2 && portraitLayout) {
             HorizontalScrollView quickScroll = horizontalScroll();
             quickScroll.addView(quickActions, new HorizontalScrollView.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, dp(52)));
             quickLine.addView(quickScroll, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
-        } else if (!BuildConfig.DEBUG) {
+        } else if (!CONSOLE_UI_V2) {
             quickLine.addView(quickActions, new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, dp(52)));
         }
-        if (!BuildConfig.DEBUG) {
+        if (!CONSOLE_UI_V2) {
             LinearLayout.LayoutParams quickLineParams = sectionWithTop(10);
             quickLineParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
             homeContent.addView(quickLine, quickLineParams);
         }
 
-        if (!BuildConfig.DEBUG) {
+        if (!CONSOLE_UI_V2) {
             controllersLabel = sectionLabel(getString(R.string.console_controllers_none));
             LinearLayout.LayoutParams section = wrapLinear();
             section.topMargin = dp(13);
@@ -1069,7 +1074,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 R.drawable.ic_console_filter, 0, 0, 0);
         installedFilterButton.setCompoundDrawablePadding(dp(7));
         installedFilterButton.setOnClickListener(view -> {
-            if (BuildConfig.DEBUG) showPlayniteFilterSelector(installedFilterButton);
+            if (CONSOLE_UI_V2) showPlayniteFilterSelector(installedFilterButton);
             else togglePlayniteInstalledFilter();
         });
         installedFilterButton.setOnFocusChangeListener((view, focused) ->
@@ -1079,7 +1084,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
         filterParams.leftMargin = dp(8);
         installedFilterButton.setVisibility(View.GONE);
-        if (!BuildConfig.DEBUG) {
+        if (!CONSOLE_UI_V2) {
             LinearLayout.LayoutParams libraryHeaderParams = sectionWithTop(2);
             libraryHeaderParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
             homeContent.addView(libraryHeader, libraryHeaderParams);
@@ -1092,19 +1097,19 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             appVerticalScroll.addView(appRow, new ScrollView.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
             homeContent.addView(appVerticalScroll, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(BuildConfig.DEBUG ? 180 : 235)));
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(CONSOLE_UI_V2 ? 180 : 235)));
         } else {
             appScroll = horizontalScroll();
             appScroll.addView(appRow, new HorizontalScrollView.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.MATCH_PARENT));
             LinearLayout.LayoutParams appScrollParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(BuildConfig.DEBUG ? 180 : 235));
-            if (BuildConfig.DEBUG) appScrollParams.topMargin = dp(8);
+                    ViewGroup.LayoutParams.MATCH_PARENT, dp(CONSOLE_UI_V2 ? 180 : 235));
+            if (CONSOLE_UI_V2) appScrollParams.topMargin = dp(8);
             homeContent.addView(appScroll, appScrollParams);
         }
         appRow.addView(text(getString(R.string.console_choose_host), 15, 0xFFBDC4D8, false),
                 new LinearLayout.LayoutParams(dp(500), ViewGroup.LayoutParams.MATCH_PARENT));
-        if (BuildConfig.DEBUG) {
+        if (CONSOLE_UI_V2) {
             debugLibraryActions = new LinearLayout(this);
             debugLibraryActions.setOrientation(LinearLayout.HORIZONTAL);
             debugLibraryActions.setGravity(Gravity.CENTER_VERTICAL);
@@ -1943,7 +1948,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private void updateQuickResumeButton(ComputerDetails host) {
         if (quickResumeButton == null) return;
-        if (BuildConfig.DEBUG) {
+        if (CONSOLE_UI_V2) {
             quickResumeButton.setVisibility(View.GONE);
             quickResumeButton.setEnabled(false);
             if (launchPlayniteButton != null) {
@@ -3285,7 +3290,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         CharSequence status = textId == R.string.playnite_cached_library
                 ? cachedLibraryStatusText() : getText(textId);
         boolean hiddenBackgroundStatus = libraryStatus == ConsoleLibraryStatus.State.REFRESHING
-                || (BuildConfig.DEBUG && textId == R.string.playnite_data_current);
+                || (CONSOLE_UI_V2 && textId == R.string.playnite_data_current);
         playniteLibraryStatus.setText(hiddenBackgroundStatus ? "" : status);
         playniteLibraryStatus.setVisibility(
                 hiddenBackgroundStatus ? View.GONE : View.VISIBLE);
@@ -3790,7 +3795,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             PlayniteDashboardItem item = resolvedById.get(game.playniteGameId);
             if (item != null) items.add(item);
         }
-        if (BuildConfig.DEBUG) {
+        if (CONSOLE_UI_V2) {
             items = putInstallingItemsFirst(host, items);
             items = putActiveSessionFirst(host, items);
         } else {
@@ -3805,7 +3810,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 && "playnite:__library__".equals(getCurrentFocus().getTag());
         installedFilterButton.setVisibility(View.GONE);
         applyPlayniteDiff(host, apps, dashboardItems);
-        if (BuildConfig.DEBUG && !portraitLayout && !unfilteredItems.isEmpty()) {
+        if (CONSOLE_UI_V2 && !portraitLayout && !unfilteredItems.isEmpty()) {
             addFullLibraryCard();
             if (libraryTileFocused) {
                 View libraryCard = directChildWithTag(appRow, "playnite:__library__");
@@ -3826,7 +3831,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         appsLabel.setText(getString(R.string.playnite_library,
                 host.name.toUpperCase(Locale.ROOT)));
         updatePlayniteLibraryStatus(host);
-        if (pendingExpandedLibraryRestore && BuildConfig.DEBUG
+        if (pendingExpandedLibraryRestore && CONSOLE_UI_V2
                 && !unfilteredItems.isEmpty()) {
             pendingExpandedLibraryRestore = false;
             appRow.post(() -> enterExpandedLibrary(true));
@@ -3967,7 +3972,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private void enterExpandedLibrary(boolean restoreSavedGridPosition) {
-        if (!BuildConfig.DEBUG || expandedLibrary == null || unfilteredPlayniteItems.isEmpty()
+        if (!CONSOLE_UI_V2 || expandedLibrary == null || unfilteredPlayniteItems.isEmpty()
                 || libraryTransitionRunning) return;
         expandedLibraryMode = true;
         pendingInitialGameFocus = false;
@@ -4359,6 +4364,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (direction != KeyEvent.KEYCODE_DPAD_DOWN && direction != KeyEvent.KEYCODE_DPAD_UP
                 && direction != KeyEvent.KEYCODE_DPAD_LEFT
                 && direction != KeyEvent.KEYCODE_DPAD_RIGHT) return false;
+        // Do not let repeated input outrun the virtual window. The next navigation event is
+        // accepted only after the newly materialized card has focus and is visible.
+        if (expandedFocusTransitionInProgress) return true;
         View focused = getCurrentFocus();
         if (focused == null || !(focused.getTag() instanceof String)
                 || !((String) focused.getTag()).startsWith("playnite:")
@@ -4445,6 +4453,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             mainHandler.removeCallbacks(expandedWindowWarmupRunnable);
         }
         pendingExpandedWindowWarmupIndex = targetIndex;
+        expandedFocusTransitionInProgress = true;
         if (expandedGridScroll != null) {
             boolean loadingAbove = targetIndex / Math.max(1, expandedGridColumns())
                     < expandedGridWindowStartRow;
@@ -4462,8 +4471,15 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             expandedWindowWarmupPosted = false;
             expandedWindowWarmupRunnable = null;
             if (!expandedLibraryMode || host == null
-                    || !host.uuid.equals(selectedHostUuid)) return;
+                    || !host.uuid.equals(selectedHostUuid)) {
+                expandedFocusTransitionInProgress = false;
+                return;
+            }
             List<PlayniteDashboardItem> latestItems = expandedLibraryItems(host);
+            if (latestItems.isEmpty()) {
+                expandedFocusTransitionInProgress = false;
+                return;
+            }
             int safeTarget = Math.max(0, Math.min(
                     latestItems.size() - 1, pendingExpandedWindowWarmupIndex));
             pendingExpandedWindowWarmupIndex = -1;
@@ -4525,11 +4541,44 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (target == null) return;
         if (expandedFocusRestoreRunnable != null) {
             mainHandler.removeCallbacks(expandedFocusRestoreRunnable);
+            if (expandedGrid != null) expandedGrid.removeCallbacks(expandedFocusRestoreRunnable);
             expandedFocusRestoreRunnable = null;
         }
         if (!expandedLibraryMode || !target.isAttachedToWindow()
                 || !target.isShown() || !target.isFocusable()) return;
+        // Keep focus inside the grid while its virtual window is being rebuilt. Android may
+        // otherwise move focus to the header when removeAllViews() temporarily detaches the
+        // previously focused card.
         if (getCurrentFocus() != target) target.requestFocus();
+
+        // requestFocus() runs before GridLayout has assigned the recycled card its new row.
+        // Re-check on the next frame and reveal it only after those coordinates are settled.
+        // This keeps focus and the ScrollView viewport together in both scroll directions.
+        expandedFocusRestoreRunnable = () -> {
+            expandedFocusRestoreRunnable = null;
+            if (!expandedLibraryMode || expandedGrid == null
+                    || !target.isAttachedToWindow() || !target.isShown()
+                    || !target.isFocusable() || target.getParent() != expandedGrid) {
+                expandedFocusTransitionInProgress = false;
+                return;
+            }
+            if (getCurrentFocus() != target) target.requestFocus();
+            target.postOnAnimation(() -> {
+                if (expandedLibraryMode && target.isAttachedToWindow()
+                        && target.getParent() == expandedGrid && target.hasFocus()) {
+                    Runnable focusTransitionTimeout = () ->
+                            expandedFocusTransitionInProgress = false;
+                    mainHandler.postDelayed(focusTransitionTimeout, 650L);
+                    smoothRevealExpandedCard(target, () -> {
+                        mainHandler.removeCallbacks(focusTransitionTimeout);
+                        expandedFocusTransitionInProgress = false;
+                    });
+                } else {
+                    expandedFocusTransitionInProgress = false;
+                }
+            });
+        };
+        expandedGrid.postOnAnimation(expandedFocusRestoreRunnable);
     }
 
     private void releaseExpandedGrid() {
@@ -4543,12 +4592,14 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         pendingExpandedFocusIndex = -1;
         pendingExpandedWindowWarmupIndex = -1;
         expandedWindowWarmupPosted = false;
+        expandedFocusTransitionInProgress = false;
         if (expandedWindowWarmupRunnable != null) {
             mainHandler.removeCallbacks(expandedWindowWarmupRunnable);
             expandedWindowWarmupRunnable = null;
         }
         if (expandedFocusRestoreRunnable != null) {
             mainHandler.removeCallbacks(expandedFocusRestoreRunnable);
+            expandedGrid.removeCallbacks(expandedFocusRestoreRunnable);
             expandedFocusRestoreRunnable = null;
         }
         if (expandedGridScrollAnimator != null) expandedGridScrollAnimator.cancel();
@@ -4583,8 +4634,19 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private void smoothRevealExpandedCard(View card) {
-        if (expandedGridScroll == null || card == null) return;
+        smoothRevealExpandedCard(card, null);
+    }
+
+    private void smoothRevealExpandedCard(View card, Runnable completion) {
+        if (expandedGridScroll == null || card == null) {
+            if (completion != null) completion.run();
+            return;
+        }
         card.post(() -> {
+            if (!card.isAttachedToWindow() || card.getParent() != expandedGrid) {
+                if (completion != null) completion.run();
+                return;
+            }
             int viewport = expandedGridScroll.getHeight();
             int current = expandedGridScroll.getScrollY();
             int topGuard = current + dp(12);
@@ -4596,10 +4658,14 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             }
             int maxScroll = Math.max(0, expandedGrid.getHeight() - viewport);
             target = Math.min(target, maxScroll);
-            if (target == current) return;
+            if (target == current) {
+                if (completion != null) completion.run();
+                return;
+            }
             if (expandedGridScrollAnimator != null) expandedGridScrollAnimator.cancel();
             if (reducedMotion) {
                 expandedGridScroll.scrollTo(0, target);
+                if (completion != null) completion.run();
                 return;
             }
             int distance = Math.abs(target - current);
@@ -4608,6 +4674,27 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     135L + distance / Math.max(1, dp(2))));
             expandedGridScrollAnimator.addUpdateListener(animation ->
                     expandedGridScroll.scrollTo(0, (Integer) animation.getAnimatedValue()));
+            if (completion != null) {
+                expandedGridScrollAnimator.addListener(new AnimatorListenerAdapter() {
+                    private boolean completed;
+
+                    private void completeOnce() {
+                        if (completed) return;
+                        completed = true;
+                        completion.run();
+                    }
+
+                    @Override
+                    public void onAnimationEnd(Animator animation) {
+                        completeOnce();
+                    }
+
+                    @Override
+                    public void onAnimationCancel(Animator animation) {
+                        completeOnce();
+                    }
+                });
+            }
             expandedGridScrollAnimator.start();
         });
     }
@@ -4797,7 +4884,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private View playniteCard(ComputerDetails host, PlayniteDashboardItem item,
                               List<NvApp> apps, boolean expandedCard) {
-        boolean debugCarousel = BuildConfig.DEBUG && !portraitLayout;
+        boolean debugCarousel = CONSOLE_UI_V2 && !portraitLayout;
         expandedCard = debugCarousel && expandedCard;
         LinearLayout card = cardBase(
                 dp(portraitLayout ? 220 : expandedCard ? 76 : debugCarousel ? 84 : 205),
@@ -4871,10 +4958,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         LinearLayout.LayoutParams params = portraitLayout
                 ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(225))
                 : new LinearLayout.LayoutParams(
-                        dp(BuildConfig.DEBUG ? 84 : 205),
-                        dp(BuildConfig.DEBUG ? 150 : 190));
+                        dp(CONSOLE_UI_V2 ? 84 : 205),
+                        dp(CONSOLE_UI_V2 ? 150 : 190));
         if (portraitLayout) params.bottomMargin = dp(14);
-        else params.rightMargin = dp(BuildConfig.DEBUG ? 10 : 14);
+        else params.rightMargin = dp(CONSOLE_UI_V2 ? 10 : 14);
         return params;
     }
 
@@ -4887,7 +4974,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         TextView state = (TextView) findTaggedChild((ViewGroup) card, "playnite.state");
         ImageView poster = (ImageView) findTaggedChild((ViewGroup) card, "playnite.poster");
         String playtimeText = formatPlayniteTime(item.game.playtimeSeconds);
-        boolean resumeSession = BuildConfig.DEBUG
+        boolean resumeSession = CONSOLE_UI_V2
                 && item.stableId().equals(resumePlayniteGameId)
                 && host.runningGameId != 0;
         boolean installing = isPlayniteInstalling(host.uuid, item);
@@ -4953,7 +5040,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 preferences.edit().putString("selected_playnite." + host.uuid,
                         item.stableId()).apply();
                 if (expandedLibraryMode && card.getParent() == expandedGrid) {
-                    smoothRevealExpandedCard(card);
+                    if (!expandedFocusTransitionInProgress) {
+                        smoothRevealExpandedCard(card);
+                    }
                 } else if (portraitLayout) {
                     smoothCenterOn(appVerticalScroll, card);
                 } else {
@@ -5192,12 +5281,12 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             backdrop.setVisibility(View.GONE);
         }
         poster.setImageResource(R.drawable.ic_computer);
-        poster.setScaleType(BuildConfig.DEBUG
+        poster.setScaleType(CONSOLE_UI_V2
                 ? ImageView.ScaleType.CENTER_CROP : ImageView.ScaleType.FIT_CENTER);
-        poster.setPadding(dp(BuildConfig.DEBUG ? 24 : 72),
-                dp(BuildConfig.DEBUG ? 36 : 54),
-                dp(BuildConfig.DEBUG ? 24 : 72),
-                dp(BuildConfig.DEBUG ? 36 : 54));
+        poster.setPadding(dp(CONSOLE_UI_V2 ? 24 : 72),
+                dp(CONSOLE_UI_V2 ? 36 : 54),
+                dp(CONSOLE_UI_V2 ? 24 : 72),
+                dp(CONSOLE_UI_V2 ? 36 : 54));
         poster.setTag(R.id.playnite_artwork_key, playniteArtworkTag(item));
     }
 
@@ -5208,14 +5297,14 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         PlayniteArtworkSpec spec = playniteCardArtworkSpec(item.game);
         if (!spec.available()) return;
         ArtworkResult cached = cachedPlayniteArtwork(latestHost.uuid, item, spec);
-        if (BuildConfig.DEBUG && allowNetwork && cached != null
+        if (CONSOLE_UI_V2 && allowNetwork && cached != null
                 && !spec.kind.equals(cached.kind)) {
             cached = null;
         }
         String expectedTag = playniteArtworkTag(item);
         if (cached != null) {
             loadPlayniteBitmap(cached.file, poster, expectedTag, cached.kind);
-            if (BuildConfig.DEBUG) {
+            if (CONSOLE_UI_V2) {
                 showPlayniteBackdrop(latestHost, item, poster, allowNetwork);
             } else {
                 showArtwork(cached.file, poster.getDrawable());
@@ -5237,7 +5326,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     if (expectedTag.equals(expected)) {
                         loadPlayniteBitmap(result.file, poster, expectedTag, result.kind);
                         if (poster.hasFocus() || cardParentHasFocus(poster)) {
-                            if (BuildConfig.DEBUG) {
+                            if (CONSOLE_UI_V2) {
                                 showPlayniteBackdrop(latestHost, item, poster, true);
                             } else {
                                 showArtwork(result.file, poster.getDrawable());
@@ -5269,7 +5358,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         for (PlayniteDashboardItem item : items) {
             signature.append('|').append(item.stableId()).append(':')
                     .append(playniteCardArtworkSpec(item.game).cacheIdentity());
-            if (BuildConfig.DEBUG && backdropIds.contains(item.stableId())) {
+            if (CONSOLE_UI_V2 && backdropIds.contains(item.stableId())) {
                 signature.append(':')
                         .append(PlayniteArtworkSpec.forBackdrop(
                                 item.game).cacheIdentity());
@@ -5323,7 +5412,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             ArtworkResult ready = result;
             mainHandler.post(() -> applyPrefetchedPlayniteArtwork(
                     token, host.uuid, item, ready));
-            if (!BuildConfig.DEBUG || !includeBackdrops) return;
+            if (!CONSOLE_UI_V2 || !includeBackdrops) return;
             PlayniteArtworkSpec backdropSpec = PlayniteArtworkSpec.forBackdrop(item.game);
             if (!backdropSpec.available()
                     || backdropSpec.cacheIdentity().equals(spec.cacheIdentity())) return;
@@ -5415,7 +5504,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 poster.getTag(R.id.playnite_artwork_key))) return;
         loadPlayniteBitmap(result.file, poster, playniteArtworkTag(item), result.kind);
         if (card.hasFocus()) {
-            if (BuildConfig.DEBUG) {
+            if (CONSOLE_UI_V2) {
                 showPlayniteBackdrop(currentHost(hostUuid), item, poster, true);
             } else {
                 showArtwork(result.file, poster.getDrawable());
@@ -5437,7 +5526,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private PlayniteArtworkSpec playniteCardArtworkSpec(PlayniteLibraryGame game) {
-        return BuildConfig.DEBUG
+        return CONSOLE_UI_V2
                 ? PlayniteArtworkSpec.forCard(game)
                 : PlayniteArtworkSpec.forGame(game);
     }
@@ -5530,14 +5619,14 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         if (bitmap == null || !expectedTag.equals(expected)) return;
         poster.setPadding(0, 0, 0, 0);
         boolean landscape = "background".equals(kind);
-        poster.setScaleType(BuildConfig.DEBUG
+        poster.setScaleType(CONSOLE_UI_V2
                 ? ImageView.ScaleType.CENTER_CROP
                 : landscape ? ImageView.ScaleType.CENTER_CROP
                 : ImageView.ScaleType.FIT_CENTER);
         BitmapDrawable drawable = filteredBitmapDrawable(bitmap);
         ImageView backdrop = playnitePosterBackdrop(poster);
         if (backdrop != null) {
-            if (BuildConfig.DEBUG || landscape) {
+            if (CONSOLE_UI_V2 || landscape) {
                 backdrop.setImageDrawable(null);
                 backdrop.setVisibility(View.GONE);
             } else {
@@ -6175,7 +6264,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private View appCard(ComputerDetails host, NvApp app) {
-        boolean debugCarousel = BuildConfig.DEBUG && !portraitLayout;
+        boolean debugCarousel = CONSOLE_UI_V2 && !portraitLayout;
         LinearLayout card = cardBase(dp(portraitLayout ? 220 : debugCarousel ? 84 : 205),
                 dp(portraitLayout ? 225 : debugCarousel ? 150 : 225));
         card.setOrientation(LinearLayout.VERTICAL);
@@ -6272,7 +6361,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private void updateCarouselMarquee(TextView title, boolean focused) {
-        if (!BuildConfig.DEBUG || title == null) return;
+        if (!CONSOLE_UI_V2 || title == null) return;
         title.setSingleLine(true);
         title.setHorizontallyScrolling(focused);
         title.setEllipsize(focused
@@ -6479,7 +6568,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             mainHandler.post(() -> {
                 if (bitmap != null && view.isAttachedToWindow()) {
                     view.setPadding(0, 0, 0, 0);
-                    view.setScaleType(BuildConfig.DEBUG
+                    view.setScaleType(CONSOLE_UI_V2
                             ? ImageView.ScaleType.CENTER_CROP : ImageView.ScaleType.FIT_CENTER);
                     view.clearColorFilter();
                     view.setImageBitmap(bitmap);
@@ -6532,7 +6621,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private GradientDrawable artworkScrimDrawable(float luminance) {
         return new GradientDrawable(GradientDrawable.Orientation.LEFT_RIGHT,
-                ConsoleArtworkReadability.gradient(luminance, BuildConfig.DEBUG));
+                ConsoleArtworkReadability.gradient(luminance, CONSOLE_UI_V2));
     }
 
     private void showArtwork(File file, Drawable preview) {
@@ -6563,7 +6652,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private void showArtworkSettled(File file, Drawable preview, String artworkKey) {
         int token = artworkGeneration.incrementAndGet();
         loadingArtworkKey = artworkKey;
-        if (preview != null && !BuildConfig.DEBUG) {
+        if (preview != null && !CONSOLE_UI_V2) {
             Drawable next = cloneDrawable(preview);
             Drawable current = artworkHero.getDrawable();
             artworkHero.animate().cancel();
@@ -6582,7 +6671,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             artworkScrim.animate().alpha(1f).setDuration(reducedMotion ? 0 : 180).start();
         }
         executor.execute(() -> {
-            Bitmap bitmap = decodeArtwork(file, BuildConfig.DEBUG ? 1920 : 1200);
+            Bitmap bitmap = decodeArtwork(file, CONSOLE_UI_V2 ? 1920 : 1200);
             int accent = sampleAccent(bitmap);
             mainHandler.post(() -> {
                 if (token != artworkGeneration.get() || bitmap == null) {
@@ -6600,15 +6689,15 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 incomingBackdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
                 incomingBackdrop.setImageBitmap(bitmap);
                 incomingBackdrop.setAlpha(reducedMotion
-                        ? (BuildConfig.DEBUG ? .72f : .16f) : 0f);
-                if (!BuildConfig.DEBUG) {
+                        ? (CONSOLE_UI_V2 ? .72f : .16f) : 0f);
+                if (!CONSOLE_UI_V2) {
                     // The preview and final hero have identical geometry. Replacing the
                     // preview avoids a soft double-image while retaining the tile-to-tile crossfade.
                     artworkHero.setImageBitmap(bitmap);
                     artworkHero.animate().alpha(.72f)
                             .setDuration(reducedMotion ? 0 : 220).start();
                 }
-                float targetAlpha = BuildConfig.DEBUG ? .72f : .16f;
+                float targetAlpha = CONSOLE_UI_V2 ? .72f : .16f;
                 if (reducedMotion) {
                     outgoingBackdrop.setAlpha(0f);
                     finishBackdropSwap(token, outgoingBackdrop, incomingBackdrop);
@@ -6981,7 +7070,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         int scroll = controllerScroll.getScrollX();
         Object focusedTag = getCurrentFocus() != null ? getCurrentFocus().getTag() : null;
         controllerRow.removeAllViews();
-        if (BuildConfig.DEBUG) {
+        if (CONSOLE_UI_V2) {
             controllerScroll.setVisibility(
                     controllers.isEmpty() ? View.INVISIBLE : View.VISIBLE);
         }
@@ -6992,9 +7081,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         int player = 1;
         for (ControllerInfo controller : controllers) {
             controllerRow.addView(controllerCard(player++, controller),
-                    BuildConfig.DEBUG ? controllerPillSpacing() : cardSpacing());
+                    CONSOLE_UI_V2 ? controllerPillSpacing() : cardSpacing());
         }
-        if (BuildConfig.DEBUG && devicesChanged && !controllers.isEmpty()) {
+        if (CONSOLE_UI_V2 && devicesChanged && !controllers.isEmpty()) {
             controllerRow.setAlpha(0f);
             controllerRow.setTranslationX(-dp(24));
             controllerRow.animate().alpha(1f).translationX(0f)
@@ -7007,7 +7096,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private View controllerCard(int player, ControllerInfo controller) {
-        if (BuildConfig.DEBUG) return controllerPill(player, controller);
+        if (CONSOLE_UI_V2) return controllerPill(player, controller);
         LinearLayout card = cardBase(dp(220), dp(50));
         card.setTag("controller:" + controller.deviceId);
         card.setFocusable(true);
@@ -7869,7 +7958,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private void styleCard(View card, boolean focused) {
         Object tag = card.getTag();
-        boolean carouselCard = BuildConfig.DEBUG && tag instanceof String
+        boolean carouselCard = CONSOLE_UI_V2 && tag instanceof String
                 && (((String) tag).startsWith("app:")
                 || ((String) tag).startsWith("playnite:"));
         if (carouselCard) {
@@ -7978,7 +8067,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 hostUuid, preferences.getString("selected_playnite." + hostUuid, ""));
         lastCarouselGameId = state.carouselGameId;
         expandedSearchQuery = state.searchQuery;
-        pendingExpandedLibraryRestore = BuildConfig.DEBUG && state.expandedMode;
+        pendingExpandedLibraryRestore = CONSOLE_UI_V2 && state.expandedMode;
     }
 
     private void wireHomeFocusNavigation() {
@@ -7996,7 +8085,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         View controller = firstFocusableChild(controllerRow);
         View app = firstFocusableChild(appRow);
 
-        if (BuildConfig.DEBUG) {
+        if (CONSOLE_UI_V2) {
             wireDebugHomeFocusNavigation(resume, playnite, filter, quick, controller, app);
             return;
         }
@@ -8149,7 +8238,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                         ViewGroup.LayoutParams.WRAP_CONTENT)
                 : wrapLinear();
         if (portraitLayout) params.bottomMargin = dp(14);
-        else params.rightMargin = dp(BuildConfig.DEBUG ? 10 : 14);
+        else params.rightMargin = dp(CONSOLE_UI_V2 ? 10 : 14);
         return params;
     }
 

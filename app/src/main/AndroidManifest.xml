@@ -108,15 +108,23 @@
         </activity>
         <activity
             android:name=".console.ConsoleActivity"
+            android:label="@string/app_label"
             android:exported="true"
             android:screenOrientation="unspecified"
             android:resizeableActivity="true"
-            android:configChanges="mcc|mnc|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|layoutDirection">
+            android:configChanges="mcc|mnc|touchscreen|keyboard|keyboardHidden|navigation|screenLayout|fontScale|uiMode|layoutDirection" />
+        <activity-alias
+            android:name=".MoonWakerTvLauncher"
+            android:targetActivity=".console.ConsoleActivity"
+            android:label="@string/app_label"
+            android:icon="@drawable/moonwaker_launcher_icon"
+            android:banner="@drawable/moonwaker_launcher_banner"
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
-        </activity>
+        </activity-alias>
         <!-- Small hack to support launcher shortcuts without relaunching over and over again when the back button is pressed -->
         <activity
             android:name=".ShortcutTrampoline"

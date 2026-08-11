@@ -444,7 +444,7 @@
     <string name="title_enable_overlay_menu">Enable overlay menu</string>
     <string name="summary_enable_overlay_menu">Hold select button for 5 seconds during streaming to open the overlay menu</string>
     <!-- Console dashboard -->
-    <string name="console_title">Moonlight</string>
+    <string name="console_title">MoonWaker</string>
     <string name="console_subtitle">Play from anywhere in your home</string>
     <string name="console_no_hosts">No hosts</string>
     <string name="console_no_hosts_details">No saved hosts were found. Add a host manually or wait while discovery continues.</string>
@@ -581,7 +581,7 @@
     <string name="console_sleep">Sleep</string>
     <string name="console_host_power">HOST POWER</string>
     <string name="console_sleep_title">Sleep %1$s?</string>
-    <string name="console_sleep_details">The host will sleep without starting or changing a Moonlight stream.</string>
+    <string name="console_sleep_details">The host will sleep without starting or changing a MoonWaker stream.</string>
     <string name="console_sleep_request">Requesting sleep for %1$s…</string>
     <string name="console_sleep_accepted">Sleep request accepted by %1$s</string>
     <string name="console_sleep_failed">Unable to sleep %1$s. Check that the paired Gateway is available.</string>
@@ -742,7 +742,7 @@
     <string name="discord_working_title">Discord</string>
     <string name="console_options_action">Console options  ›</string>
     <string name="console_options_title">Options</string>
-    <string name="console_options_details">Tune the console interface or open the existing Moonlight preferences.</string>
+    <string name="console_options_details">Tune the console interface or open the existing MoonWaker preferences.</string>
     <string name="console_ui_sounds">UI sounds · %1$s</string>
     <string name="console_reduced_motion">Reduced motion · %1$s</string>
     <string name="console_carousel_game_description">Show game description (Carousel) · %1$s</string>
@@ -799,9 +799,9 @@
     <string name="console_options_readme">README and help  ›</string>
     <string name="console_host_integrations">Host integrations  ›</string>
     <string name="console_streaming_settings">Streaming settings  ›</string>
-    <string name="console_classic_ui">Classic Moonlight UI  ›</string>
-    <string name="console_exit">Exit Moonlight</string>
-    <string name="console_close_title">Close Moonlight?</string>
+    <string name="console_classic_ui">Classic MoonWaker UI  ›</string>
+    <string name="console_exit">Exit MoonWaker</string>
+    <string name="console_close_title">Close MoonWaker?</string>
     <string name="console_close_details">The active host session will not be stopped.</string>
     <string name="console_select_host_first">Select a host first.</string>
     <string name="console_back_close">BACK · CLOSE</string>
@@ -878,7 +878,7 @@
         <item>Compiling the prophecy…</item>
         <item>Reserving a table at the tavern beyond the Moon…</item>
     </string-array>
-    <string name="console_stream_initializing">Initializing Moonlight streaming pipeline…</string>
+    <string name="console_stream_initializing">Initializing MoonWaker streaming pipeline…</string>
     <string name="console_stream_preparing">Preparing stream…</string>
     <string name="console_stream_back_cancel">Press BACK to cancel</string>
     <string name="console_stream_waiting_video">Waiting for the first video frame…</string>
@@ -890,12 +890,12 @@
     <string name="console_stream_control">Connecting controller uplink…</string>
     <string name="console_stream_input">Preparing input channel…</string>
     <string name="console_stream_starting_stage">Starting %1$s…</string>
-    <string name="console_initializing">Moonlight is still initializing.</string>
+    <string name="console_initializing">MoonWaker is still initializing.</string>
     <string name="console_wol_status">Sending Wake-on-LAN to %1$s…</string>
     <string name="console_waiting_stream_ports">Waiting for the host streaming ports to become reachable…</string>
     <string name="console_host_not_ready">The host did not become ready.</string>
     <string name="console_host_timeout">No streaming port responded within 90 seconds. Press BACK to return.</string>
-    <string name="console_opening_stream">Opening Moonlight stream…</string>
+    <string name="console_opening_stream">Opening MoonWaker stream…</string>
     <string name="console_preparing_host">Preparing %1$s…</string>
     <string name="playnite_launch">Launch Playnite</string>
     <string name="playnite_launch_description">Start or resume Playnite Fullscreen through the selected Sunshine app</string>
@@ -983,7 +983,7 @@
     <string name="playnite_launch_via_playnite">Launches through Playnite</string>
     <string name="playnite_creating_vibepollo_app">Preparing the game in Vibepollo…</string>
     <string name="playnite_mapping_suggestion">Select to confirm the suggested Sunshine target</string>
-    <string name="playnite_select_target_details">Choose the existing Sunshine app that starts this game. Moonlight will use its normal stream lifecycle.</string>
+    <string name="playnite_select_target_details">Choose the existing Sunshine app that starts this game. MoonWaker will use its normal stream lifecycle.</string>
     <string name="playnite_target_saved">Sunshine launch target saved for %1$s</string>
     <string name="playnite_change_target">Change Sunshine launch target</string>
     <string name="playnite_clear_target">Clear launch target</string>

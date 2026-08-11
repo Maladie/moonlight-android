@@ -128,4 +128,4 @@ $component = "$packageName/com.limelight.console.ConsoleActivity"
 if ($LASTEXITCODE -ne 0) {
     throw "Moonlight TV activity could not be launched: $component"
 }
-Write-Host "Moonlight $Configuration was installed and launched on $Serial."
+Write-Host "MoonWaker $Configuration was installed and launched on $Serial."
