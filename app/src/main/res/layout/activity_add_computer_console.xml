@@ -24,7 +24,7 @@
         <TextView
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:text="MOONLIGHT"
+            android:text="MOONWAKER"
             android:textColor="#B9ADD8"
             android:textSize="13sp"
             android:textStyle="bold" />
@@ -43,7 +43,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
-            android:text="Enter the host name or IP address. Moonlight will verify and save it."
+            android:text="Enter the host name or IP address. MoonWaker will verify and save it."
             android:textColor="#C9C2DA"
             android:textSize="16sp" />
 
