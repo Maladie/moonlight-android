@@ -986,6 +986,11 @@
     <string name="transition_waiting_playnite_return">Oczekiwanie na powrót Playnite</string>
     <string name="transition_closing_session">Zamykanie sesji</string>
     <string name="console_previous_session_close_failed">Nie udało się zamknąć poprzedniej sesji hosta. Spróbuj ponownie, gdy zniknie wskaźnik aktywnej sesji.</string>
+    <string name="console_terminate_session_title">Zakończyć aktywną sesję?</string>
+    <string name="console_terminate_session_details">Spowoduje to zamknięcie działającej gry lub aplikacji na hoście. To inna operacja niż rozłączenie, które pozostawia sesję uruchomioną.</string>
+    <string name="console_terminate_session_request">Zamykanie sesji hosta…</string>
+    <string name="console_terminate_session_success">Sesja hosta została zakończona.</string>
+    <string name="console_terminate_session_failed">Host nie zakończył sesji.</string>
     <string name="transition_gateway_unavailable">Gateway jest niedostępny</string>
     <string name="transition_stream_disconnected">Stream został rozłączony</string>
     <string name="transition_readiness_unconfirmed">Nie udało się potwierdzić gotowości</string>

@@ -280,9 +280,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private int expandedDescriptionScrollGeneration;
     private boolean expandedLibraryMode;
     private boolean libraryTransitionRunning;
-    private ImageView libraryTransitionGhost;
-    private View libraryTransitionGhostSource;
-    private View libraryTransitionGhostTarget;
+    private final List<LibraryTransitionGhost> libraryTransitionGhosts = new ArrayList<>();
     private int expandedGridWindowStartRow;
     private int pendingExpandedFocusIndex = -1;
     private int pendingExpandedWindowWarmupIndex = -1;
@@ -2256,10 +2254,15 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         });
         TextView sleep = hostSelectionMenuAction(getString(R.string.console_sleep_host), canSleep);
         sleep.setOnClickListener(view -> confirmSleepHost(host));
+        TextView terminate = hostSelectionMenuAction(
+                getString(R.string.overlay_menu_quit_session),
+                online && paired && host.runningGameId != 0);
+        terminate.setTextColor(terminate.isEnabled() ? 0xFFFF9B92 : 0x88FF9B92);
+        terminate.setOnClickListener(view -> confirmTerminateSession(host));
         showSidePanel(getString(R.string.console_host_eyebrow), host.name,
                 getString(online ? R.string.console_host_online_details
                         : R.string.console_host_offline_details),
-                wake, unpair, test, sleep);
+                wake, terminate, unpair, test, sleep);
     }
 
     private TextView hostSelectionMenuAction(String label, boolean enabled) {
@@ -2689,7 +2692,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
         String cachedGameId = uniquePlayniteGameIdForRunningApp(host, running.getAppId());
         if (!cachedGameId.isEmpty()) {
-            beginLaunch(host, running, null, LaunchTransitionType.GENERIC, "");
+            beginLaunch(host, running, null, LaunchTransitionType.GENERIC,
+                    "", cachedGameId);
             return;
         }
 
@@ -2722,7 +2726,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     beginLaunch(targetHost, resolvedRunning);
                 } else {
                     beginLaunch(targetHost, resolvedRunning, null,
-                            LaunchTransitionType.GENERIC, "");
+                            LaunchTransitionType.GENERIC, "", playniteGameId);
                 }
             });
         });
@@ -3063,6 +3067,53 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     mainHandler.postDelayed(() -> finishHostWaking(host.uuid, wakeToken),
                             HOST_WAKING_TIMEOUT_MS);
                 }
+            });
+        });
+    }
+
+    private void confirmTerminateSession(ComputerDetails host) {
+        if (host == null || host.state != ComputerDetails.State.ONLINE
+                || host.runningGameId == 0 || managerBinder == null) return;
+        TextView cancel = panelAction(getString(R.string.console_cancel));
+        TextView terminate = panelAction(getString(R.string.overlay_menu_quit_session));
+        terminate.setTextColor(0xFFFF8A80);
+        cancel.setOnClickListener(view -> handlePanelBack());
+        terminate.setOnClickListener(view -> {
+            hideSidePanel();
+            requestTerminateSession(host);
+        });
+        showSidePanel(getString(R.string.console_status_active_session),
+                getString(R.string.console_terminate_session_title),
+                getString(R.string.console_terminate_session_details),
+                cancel, terminate);
+    }
+
+    private void requestTerminateSession(ComputerDetails host) {
+        ConsoleUiFeedback.makeText(this, R.string.console_terminate_session_request,
+                Toast.LENGTH_SHORT).show();
+        executor.execute(() -> {
+            boolean stopped = false;
+            try {
+                NvHTTP connection = new NvHTTP(
+                        ServerHelper.getCurrentAddressFromComputer(host), host.httpsPort,
+                        managerBinder.getUniqueId(), host.serverCert,
+                        PlatformBinding.getCryptoProvider(this));
+                stopped = connection.quitApp();
+            } catch (IOException | XmlPullParserException ignored) { }
+            boolean success = stopped;
+            mainHandler.post(() -> {
+                if (success) {
+                    activePlayniteGameIds.remove(host.uuid);
+                    activePlayniteGameResolvedAt.remove(host.uuid);
+                    activePlayniteGameResolutionInFlight.remove(host.uuid);
+                    if (managerBinder != null) {
+                        managerBinder.invalidateStateForComputer(host.uuid);
+                    }
+                }
+                ConsoleUiFeedback.makeText(this, getString(success
+                                ? R.string.console_terminate_session_success
+                                : R.string.console_terminate_session_failed),
+                        Toast.LENGTH_LONG).show();
             });
         });
     }
@@ -4170,18 +4221,15 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         libraryTransitionRunning = true;
         int transitionToken = libraryTransitionCoordinator.beginTransition(
                 libraryTransitionGameId);
-        View sourceCard = directChildWithTag(appRow,
-                "playnite:" + libraryTransitionGameId);
-        createLibraryTransitionGhost(sourceCard);
+        createCarouselToGridGhosts();
         expandedLibrary.setAlpha(.18f);
         expandedLibrary.setTranslationX(dp(28));
         expandedLibrary.setScaleX(.985f);
         expandedLibrary.setScaleY(.985f);
         expandedLibrary.setVisibility(View.VISIBLE);
         staggerExpandedGridEntrance();
-        expandedLibrary.post(() -> animateLibraryTransitionGhost(
-                transitionToken, directChildWithTag(expandedGrid,
-                        "playnite:" + libraryTransitionGameId)));
+        expandedLibrary.post(() -> animateLibraryTransitionGhosts(
+                transitionToken, expandedGrid, true));
         animateNormalLibraryOut();
         expandedLibrary.animate().alpha(1f).translationX(0f).scaleX(1f).scaleY(1f)
                 .setDuration(LIBRARY_ENTER_TRANSITION_MS)
@@ -4227,12 +4275,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         prepareCarouselReturnPosition();
         int transitionToken = libraryTransitionCoordinator.beginTransition(
                 libraryTransitionGameId);
-        View sourceCard = directChildWithTag(expandedGrid,
-                "playnite:" + libraryTransitionGameId);
-        createLibraryTransitionGhost(sourceCard);
-        View destinationCard = directChildWithTag(appRow,
-                "playnite:" + libraryTransitionGameId);
-        root.post(() -> animateLibraryTransitionGhost(transitionToken, destinationCard));
+        createGridToCarouselGhosts();
+        root.post(() -> animateLibraryTransitionGhosts(
+                transitionToken, appRow, false));
         prepareNormalLibraryForEntrance();
         expandedLibrary.animate().alpha(0f).translationX(dp(28))
                 .setDuration(LIBRARY_EXIT_TRANSITION_MS)
@@ -4348,9 +4393,48 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         appScroll.scrollTo(desired, 0);
     }
 
-    private void createLibraryTransitionGhost(View card) {
+    private void createCarouselToGridGhosts() {
         removeLibraryTransitionGhost();
-        if (reducedMotion || card == null || !card.isLaidOut()) return;
+        if (reducedMotion || appRow == null) return;
+        for (int index = 0; index < appRow.getChildCount(); index++) {
+            View card = appRow.getChildAt(index);
+            String gameId = playniteCardGameId(card);
+            if (gameId == null) continue;
+            addLibraryTransitionGhost(gameId, card, null, null, true);
+        }
+    }
+
+    private void createGridToCarouselGhosts() {
+        removeLibraryTransitionGhost();
+        if (reducedMotion || appRow == null || expandedGrid == null) return;
+        for (int index = 0; index < appRow.getChildCount(); index++) {
+            View destination = appRow.getChildAt(index);
+            String gameId = playniteCardGameId(destination);
+            if (gameId == null) continue;
+            View source = directChildWithTag(expandedGrid, "playnite:" + gameId);
+            if (source != null && source.isLaidOut()) {
+                addLibraryTransitionGhost(gameId, source, null, null, true);
+                continue;
+            }
+            View poster = findPlaynitePoster(destination);
+            if (poster == null || !poster.isLaidOut()) continue;
+            int[] rootLocation = new int[2];
+            int[] destinationLocation = new int[2];
+            root.getLocationInWindow(rootLocation);
+            poster.getLocationInWindow(destinationLocation);
+            boolean above = expandedGameIndex(gameId) < expandedGameIndex(
+                    libraryTransitionGameId);
+            float startX = destinationLocation[0] - rootLocation[0];
+            float startY = above ? -poster.getHeight() - dp(12)
+                    : root.getHeight() + dp(12);
+            addLibraryTransitionGhost(gameId, destination, startX, startY, false);
+        }
+    }
+
+    private void addLibraryTransitionGhost(String gameId, View card,
+                                           Float startX, Float startY,
+                                           boolean hideSource) {
+        if (card == null || !card.isLaidOut()) return;
         View posterView = card instanceof ViewGroup
                 ? findTaggedChild((ViewGroup) card, "playnite.poster") : null;
         if (!(posterView instanceof ImageView)) return;
@@ -4368,29 +4452,44 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         ghost.setElevation(dp(20));
         FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(
                 posterView.getWidth(), posterView.getHeight());
-        params.leftMargin = cardLocation[0] - rootLocation[0];
-        params.topMargin = cardLocation[1] - rootLocation[1];
+        params.leftMargin = Math.round(startX != null
+                ? startX : cardLocation[0] - rootLocation[0]);
+        params.topMargin = Math.round(startY != null
+                ? startY : cardLocation[1] - rootLocation[1]);
         root.addView(ghost, params);
-        libraryTransitionGhost = ghost;
-        libraryTransitionGhostSource = posterView;
-        posterView.setAlpha(0f);
+        LibraryTransitionGhost transitionGhost = new LibraryTransitionGhost(
+                gameId, ghost, hideSource ? posterView : null);
+        libraryTransitionGhosts.add(transitionGhost);
+        if (hideSource) posterView.setAlpha(0f);
     }
 
-    private void animateLibraryTransitionGhost(int token, View target) {
-        ImageView ghost = libraryTransitionGhost;
-        if (ghost == null || target == null || !target.isLaidOut()
-                || !libraryTransitionCoordinator.isCurrent(token,
-                libraryTransitionGameId)) {
+    private void animateLibraryTransitionGhosts(int token, ViewGroup targetContainer,
+                                                boolean enteringGrid) {
+        if (!libraryTransitionCoordinator.isCurrent(token, libraryTransitionGameId)) {
             removeLibraryTransitionGhost();
             return;
         }
-        View targetPoster = target instanceof ViewGroup
-                ? findTaggedChild((ViewGroup) target, "playnite.poster") : null;
-        if (targetPoster == null || !targetPoster.isLaidOut()) {
-            removeLibraryTransitionGhost();
-            return;
+        List<LibraryTransitionGhost> ghosts = new ArrayList<>(libraryTransitionGhosts);
+        for (int index = 0; index < ghosts.size(); index++) {
+            LibraryTransitionGhost transitionGhost = ghosts.get(index);
+            View target = directChildWithTag(targetContainer,
+                    "playnite:" + transitionGhost.gameId);
+            View targetPoster = findPlaynitePoster(target);
+            if (targetPoster != null && targetPoster.isLaidOut()) {
+                animateLibraryTransitionGhostToTarget(
+                        transitionGhost, targetPoster, index);
+            } else if (enteringGrid) {
+                animateLibraryTransitionGhostToEdge(transitionGhost, index);
+            } else {
+                removeLibraryTransitionGhost(transitionGhost);
+            }
         }
-        libraryTransitionGhostTarget = targetPoster;
+    }
+
+    private void animateLibraryTransitionGhostToTarget(
+            LibraryTransitionGhost transitionGhost, View targetPoster, int order) {
+        ImageView ghost = transitionGhost.view;
+        transitionGhost.target = targetPoster;
         targetPoster.setAlpha(0f);
         int[] rootLocation = new int[2];
         int[] targetLocation = new int[2];
@@ -4400,21 +4499,69 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         float y = targetLocation[1] - rootLocation[1];
         float scaleX = targetPoster.getWidth() / (float) Math.max(1, ghost.getWidth());
         float scaleY = targetPoster.getHeight() / (float) Math.max(1, ghost.getHeight());
-        ghost.animate().x(x).y(y).scaleX(scaleX).scaleY(scaleY).alpha(.12f)
+        ghost.animate().x(x).y(y).scaleX(scaleX).scaleY(scaleY).alpha(.18f)
+                .setStartDelay(Math.min(70L, order * 9L))
                 .setDuration(LIBRARY_SHARED_ARTWORK_MS)
-                .withEndAction(this::removeLibraryTransitionGhost).start();
+                .withEndAction(() -> removeLibraryTransitionGhost(transitionGhost)).start();
+    }
+
+    private void animateLibraryTransitionGhostToEdge(
+            LibraryTransitionGhost transitionGhost, int order) {
+        boolean above = expandedGameIndex(transitionGhost.gameId)
+                < expandedGameIndex(libraryTransitionGameId);
+        float y = above ? -transitionGhost.view.getHeight() - dp(12)
+                : root.getHeight() + dp(12);
+        transitionGhost.view.animate().y(y).alpha(0f).scaleX(.82f).scaleY(.82f)
+                .setStartDelay(Math.min(70L, order * 9L))
+                .setDuration(LIBRARY_SHARED_ARTWORK_MS)
+                .withEndAction(() -> removeLibraryTransitionGhost(transitionGhost)).start();
+    }
+
+    private int expandedGameIndex(String gameId) {
+        ComputerDetails host = currentHost(selectedHostUuid);
+        if (host == null || gameId == null) return Integer.MAX_VALUE;
+        return PlayniteLibraryQuery.indexOf(expandedLibraryItems(host), gameId);
+    }
+
+    private String playniteCardGameId(View card) {
+        Object tag = card != null ? card.getTag() : null;
+        if (!(tag instanceof String) || !((String) tag).startsWith("playnite:")) return null;
+        String gameId = ((String) tag).substring("playnite:".length());
+        return HostGatewayClient.isPlayniteId(gameId) ? gameId : null;
+    }
+
+    private View findPlaynitePoster(View card) {
+        if (!(card instanceof ViewGroup)) return null;
+        return findTaggedChild((ViewGroup) card, "playnite.poster");
     }
 
     private void removeLibraryTransitionGhost() {
-        if (libraryTransitionGhostSource != null) libraryTransitionGhostSource.setAlpha(1f);
-        if (libraryTransitionGhostTarget != null) libraryTransitionGhostTarget.setAlpha(1f);
-        libraryTransitionGhostSource = null;
-        libraryTransitionGhostTarget = null;
-        if (libraryTransitionGhost == null) return;
-        libraryTransitionGhost.animate().cancel();
-        ViewParent parent = libraryTransitionGhost.getParent();
-        if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(libraryTransitionGhost);
-        libraryTransitionGhost = null;
+        for (LibraryTransitionGhost ghost :
+                new ArrayList<>(libraryTransitionGhosts)) {
+            removeLibraryTransitionGhost(ghost);
+        }
+    }
+
+    private void removeLibraryTransitionGhost(LibraryTransitionGhost ghost) {
+        if (ghost == null || !libraryTransitionGhosts.remove(ghost)) return;
+        if (ghost.source != null) ghost.source.setAlpha(1f);
+        if (ghost.target != null) ghost.target.setAlpha(1f);
+        ghost.view.animate().cancel();
+        ViewParent parent = ghost.view.getParent();
+        if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(ghost.view);
+    }
+
+    private static final class LibraryTransitionGhost {
+        final String gameId;
+        final ImageView view;
+        final View source;
+        View target;
+
+        LibraryTransitionGhost(String gameId, ImageView view, View source) {
+            this.gameId = gameId;
+            this.view = view;
+            this.source = source;
+        }
     }
 
     private void focusExpandedLibrary() {
@@ -6117,6 +6264,14 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 activatePlayniteItem(host.uuid, item);
             });
             actions.add(launch);
+            if (item.stableId().equals(resumePlayniteGameId)
+                    && host.runningGameId != 0) {
+                TextView terminate = panelAction(
+                        getString(R.string.overlay_menu_quit_session));
+                terminate.setTextColor(0xFFFF9B92);
+                terminate.setOnClickListener(view -> confirmTerminateSession(host));
+                actions.add(terminate);
+            }
         } else if (installing) {
             if (item.game.installRequiresAttention) {
                 boolean localOnly = "secure_desktop".equals(
@@ -7327,6 +7482,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private void beginLaunch(ComputerDetails host, NvApp app, String quickLaunchKey,
                              LaunchTransitionType transitionType,
                              String playniteGameId) {
+        beginLaunch(host, app, quickLaunchKey, transitionType,
+                playniteGameId, playniteGameId);
+    }
+
+    private void beginLaunch(ComputerDetails host, NvApp app, String quickLaunchKey,
+                             LaunchTransitionType transitionType,
+                             String playniteGameId, String loadingArtworkGameId) {
         if (managerBinder == null) {
             ConsoleUiFeedback.makeText(this, R.string.console_initializing, Toast.LENGTH_SHORT).show();
             return;
@@ -7335,7 +7497,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         LaunchTransitionSpec transition = LaunchTransitionSpec.create(
                 host.uuid, transitionType, app.getAppId(), playniteGameId,
                 System.currentTimeMillis());
-        String loadingArtworkPath = cachedLoadingArtworkPath(host.uuid, playniteGameId);
+        String loadingArtworkPath = cachedLoadingArtworkPath(
+                host.uuid, loadingArtworkGameId);
         showLoading(host.name, app.getAppName(), transitionType, loadingArtworkPath);
         Runnable startAfterOverlayFrame = () -> executor.execute(() -> {
             ComputerDetails ready = HostReadiness.await(
