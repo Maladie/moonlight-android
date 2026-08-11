@@ -145,6 +145,9 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private static final long VIBEPOLLO_APP_STABLE_MS = 30_000L;
     private static final int VIBEPOLLO_APP_STABLE_POLLS = 5;
     private static final long PREVIOUS_SESSION_CLOSE_TIMEOUT_MS = 20_000L;
+    private static final long LIBRARY_ENTER_TRANSITION_MS = 280L;
+    private static final long LIBRARY_EXIT_TRANSITION_MS = 200L;
+    private static final long LIBRARY_SHARED_ARTWORK_MS = 260L;
     private static final long HOST_WAKING_TIMEOUT_MS = 45_000L;
     private static final int EXPANDED_VISIBLE_ROWS = 3;
     private static final int EXPANDED_CACHE_ROWS_EACH_SIDE = 3;
@@ -527,6 +530,13 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (libraryTransitionRunning && event != null
+                && (isDirectionalNavigationKey(event.getKeyCode())
+                || event.getKeyCode() == KeyEvent.KEYCODE_ENTER
+                || event.getKeyCode() == KeyEvent.KEYCODE_DPAD_CENTER
+                || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_A)) {
+            return true;
+        }
         handleConsoleAudioKey(event);
         if (hostSelectionVisible && event != null && isHostSelectionConfirmKey(
                 event.getKeyCode())) {
@@ -2047,8 +2057,12 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             boolean changed = activePlayniteGameIds.remove(host.uuid) != null;
             activePlayniteGameResolvedAt.remove(host.uuid);
             activePlayniteGameResolutionInFlight.remove(host.uuid);
-            if (changed && host.uuid.equals(selectedHostUuid)) {
-                resumePlayniteGameId = "";
+            boolean visibleResumeMarker = host.uuid.equals(selectedHostUuid)
+                    && !resumePlayniteGameId.isEmpty();
+            if ((changed || visibleResumeMarker) && host.uuid.equals(selectedHostUuid)) {
+                android.util.Log.i("MoonWakerSession",
+                        "Clearing resume marker because Sunshine reports no active session"
+                                + " host=" + host.uuid + " game=" + resumePlayniteGameId);
                 renderPlayniteLibrary(host, currentSunshineApps);
             }
             return;
@@ -2065,20 +2079,47 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             activePlayniteGameResolutionInFlight.remove(host.uuid);
             return;
         }
+        int expectedRunningGameId = host.runningGameId;
         executor.execute(() -> {
             String gameId = "";
             try {
                 HostGatewayClient.PlayniteCurrentGame current =
                         hostGatewayClient.getPlayniteCurrentGame(connection);
-                if (HostGatewayClient.isPlayniteId(current.id)) gameId = current.id;
+                if ("running".equalsIgnoreCase(current.state)
+                        && HostGatewayClient.isPlayniteId(current.id)) {
+                    gameId = current.id;
+                }
             } catch (IOException ignored) {
                 // The Sunshine app mapping remains available as a fallback.
             }
             String resolvedGameId = gameId;
             mainHandler.post(() -> {
                 activePlayniteGameResolutionInFlight.remove(host.uuid);
+                ComputerDetails latestHost = currentHost(host.uuid);
+                boolean sessionStillMatches = latestHost != null
+                        && ConsoleActionCatalog.isOnline(latestHost)
+                        && ConsoleActionCatalog.isPaired(latestHost)
+                        && latestHost.runningGameId == expectedRunningGameId
+                        && expectedRunningGameId != 0;
+                if (!sessionStillMatches) {
+                    android.util.Log.i("MoonWakerSession",
+                            "Discarding stale Playnite session response host=" + host.uuid
+                                    + " expectedApp=" + expectedRunningGameId
+                                    + " resolvedGame=" + resolvedGameId);
+                    boolean removed = activePlayniteGameIds.remove(host.uuid) != null;
+                    activePlayniteGameResolvedAt.remove(host.uuid);
+                    if (host.uuid.equals(selectedHostUuid)
+                            && (removed || !resumePlayniteGameId.isEmpty())) {
+                        renderPlayniteLibrary(latestHost, currentSunshineApps);
+                    }
+                    return;
+                }
                 activePlayniteGameResolvedAt.put(host.uuid, SystemClock.uptimeMillis());
                 String previous = activePlayniteGameIds.get(host.uuid);
+                android.util.Log.i("MoonWakerSession",
+                        "Resolved active Playnite session host=" + host.uuid
+                                + " app=" + expectedRunningGameId
+                                + " game=" + resolvedGameId);
                 if (resolvedGameId.isEmpty()) activePlayniteGameIds.remove(host.uuid);
                 else activePlayniteGameIds.put(host.uuid, resolvedGameId);
                 if (active && host.uuid.equals(selectedHostUuid)
@@ -2648,7 +2689,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         }
         String cachedGameId = uniquePlayniteGameIdForRunningApp(host, running.getAppId());
         if (!cachedGameId.isEmpty()) {
-            beginLaunch(host, running, null, LaunchTransitionType.GAME, cachedGameId);
+            beginLaunch(host, running, null, LaunchTransitionType.GENERIC, "");
             return;
         }
 
@@ -2681,7 +2722,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                     beginLaunch(targetHost, resolvedRunning);
                 } else {
                     beginLaunch(targetHost, resolvedRunning, null,
-                            LaunchTransitionType.GAME, playniteGameId);
+                            LaunchTransitionType.GENERIC, "");
                 }
             });
         });
@@ -3877,6 +3918,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private void renderPlayniteLibrary(ComputerDetails host, List<NvApp> apps) {
         if (host == null || !host.uuid.equals(selectedHostUuid)) return;
+        String previousResumeGameId = resumePlayniteGameId;
         Set<String> locallyHidden = locallyHiddenPlayniteGames(host.uuid);
         List<PlayniteLibraryGame> visibleLibraryGames = new ArrayList<>();
         for (PlayniteLibraryGame game : currentPlayniteGames) {
@@ -3922,7 +3964,7 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         boolean libraryTileFocused = getCurrentFocus() != null
                 && "playnite:__library__".equals(getCurrentFocus().getTag());
         installedFilterButton.setVisibility(View.GONE);
-        applyPlayniteDiff(host, apps, dashboardItems);
+        applyPlayniteDiff(host, apps, dashboardItems, previousResumeGameId);
         if (CONSOLE_UI_V2 && !portraitLayout && !unfilteredItems.isEmpty()) {
             addFullLibraryCard();
             if (libraryTileFocused) {
@@ -4131,17 +4173,18 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         View sourceCard = directChildWithTag(appRow,
                 "playnite:" + libraryTransitionGameId);
         createLibraryTransitionGhost(sourceCard);
-        expandedLibrary.setAlpha(0f);
+        expandedLibrary.setAlpha(.18f);
         expandedLibrary.setTranslationX(dp(28));
         expandedLibrary.setScaleX(.985f);
         expandedLibrary.setScaleY(.985f);
         expandedLibrary.setVisibility(View.VISIBLE);
+        staggerExpandedGridEntrance();
         expandedLibrary.post(() -> animateLibraryTransitionGhost(
                 transitionToken, directChildWithTag(expandedGrid,
                         "playnite:" + libraryTransitionGameId)));
         animateNormalLibraryOut();
         expandedLibrary.animate().alpha(1f).translationX(0f).scaleX(1f).scaleY(1f)
-                .setDuration(240L)
+                .setDuration(LIBRARY_ENTER_TRANSITION_MS)
                 .withEndAction(() -> {
                     setNormalLibraryVisibility(View.GONE);
                     resetNormalLibraryTransforms();
@@ -4191,7 +4234,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 "playnite:" + libraryTransitionGameId);
         root.post(() -> animateLibraryTransitionGhost(transitionToken, destinationCard));
         prepareNormalLibraryForEntrance();
-        expandedLibrary.animate().alpha(0f).translationX(dp(28)).setDuration(160L)
+        expandedLibrary.animate().alpha(0f).translationX(dp(28))
+                .setDuration(LIBRARY_EXIT_TRANSITION_MS)
                 .withEndAction(() -> {
                     expandedLibrary.setVisibility(View.GONE);
                     expandedLibrary.setAlpha(1f);
@@ -4227,8 +4271,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private void animateNormalLibraryIn() {
         final List<View> views = normalLibraryViews();
-        for (View view : views) {
-            view.animate().alpha(1f).translationX(0f).setDuration(220L).start();
+        for (int index = 0; index < views.size(); index++) {
+            View view = views.get(index);
+            view.animate().alpha(1f).translationX(0f).setStartDelay(index * 14L)
+                    .setDuration(220L).start();
         }
         appScroll.animate().withEndAction(() -> {
             libraryTransitionRunning = false;
@@ -4250,8 +4296,34 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     private void resetNormalLibraryTransforms() {
         for (View view : normalLibraryViews()) {
             view.animate().cancel();
+            view.animate().setStartDelay(0L);
             view.setAlpha(1f);
             view.setTranslationX(0f);
+        }
+    }
+
+    private void staggerExpandedGridEntrance() {
+        if (reducedMotion || expandedGrid == null) return;
+        int targetIndex = -1;
+        for (int index = 0; index < expandedGrid.getChildCount(); index++) {
+            Object tag = expandedGrid.getChildAt(index).getTag();
+            if (("playnite:" + libraryTransitionGameId).equals(tag)) {
+                targetIndex = index;
+                break;
+            }
+        }
+        for (int index = 0; index < expandedGrid.getChildCount(); index++) {
+            View card = expandedGrid.getChildAt(index);
+            Object tag = card.getTag();
+            if (!(tag instanceof String) || !((String) tag).startsWith("playnite:")) continue;
+            float targetAlpha = card.getAlpha();
+            int distance = targetIndex >= 0 ? Math.abs(index - targetIndex) : index;
+            card.animate().cancel();
+            card.setAlpha(0f);
+            card.setTranslationY(dp(11));
+            card.animate().alpha(targetAlpha).translationY(0f)
+                    .setStartDelay(Math.min(165L, 70L + distance * 16L))
+                    .setDuration(220L).start();
         }
     }
 
@@ -4329,7 +4401,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
         float scaleX = targetPoster.getWidth() / (float) Math.max(1, ghost.getWidth());
         float scaleY = targetPoster.getHeight() / (float) Math.max(1, ghost.getHeight());
         ghost.animate().x(x).y(y).scaleX(scaleX).scaleY(scaleY).alpha(.12f)
-                .setDuration(260L).withEndAction(this::removeLibraryTransitionGhost).start();
+                .setDuration(LIBRARY_SHARED_ARTWORK_MS)
+                .withEndAction(this::removeLibraryTransitionGhost).start();
     }
 
     private void removeLibraryTransitionGhost() {
@@ -5021,7 +5094,8 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
     }
 
     private void applyPlayniteDiff(ComputerDetails host, List<NvApp> apps,
-                                   List<PlayniteDashboardItem> requestedItems) {
+                                   List<PlayniteDashboardItem> requestedItems,
+                                   String previousResumeGameId) {
         Object focusTag = getCurrentFocus() != null ? getCurrentFocus().getTag() : null;
         String focusedId = focusTag instanceof String &&
                 ((String) focusTag).startsWith("playnite:")
@@ -5073,9 +5147,12 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             PlayniteDashboardItem item = items.get(index);
             View card = existing.get(item.stableId());
             PlayniteDashboardItem old = previous.get(item.stableId());
+            boolean resumeStateChanged = item.stableId().equals(previousResumeGameId)
+                    != item.stableId().equals(resumePlayniteGameId);
             if (card == null || "playnite.empty".equals(card.getTag())) {
                 card = playniteCard(host, item, apps, false);
             } else if (!item.equals(old)
+                    || resumeStateChanged
                     || isVibepolloEnsureInFlight(host.uuid, item)
                     || isPlayniteInstalling(host.uuid, item)) {
                 bindPlayniteCard(card, host, item, apps,
@@ -5291,7 +5368,10 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
             updateCarouselMarquee(name, focused);
             if (focused) {
                 libraryTransitionCoordinator.beginSelection(item.stableId(),
-                        () -> loadPlaynitePoster(host, item, poster, true),
+                        () -> {
+                            prepareGameMetadataTransition();
+                            loadPlaynitePoster(host, item, poster, true);
+                        },
                         () -> showGameMetadataHeader(item),
                         () -> showGameMetadataDescription(item));
                 if (!expandedLibraryMode && card.getParent() == appRow) {
@@ -5345,6 +5425,23 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
                 selectedGameFacts, item.game.name, facts);
         bindGameMetadataHeader(expandedLibrary, expandedGameTitle,
                 expandedGameFacts, item.game.name, facts);
+    }
+
+    private void prepareGameMetadataTransition() {
+        if (reducedMotion) return;
+        prepareMetadataViewsForTransition(selectedGameTitle, selectedGameFacts,
+                selectedGameDescription);
+        prepareMetadataViewsForTransition(expandedGameTitle, expandedGameFacts,
+                expandedGameDescription);
+    }
+
+    private void prepareMetadataViewsForTransition(View... views) {
+        for (View view : views) {
+            if (view == null) continue;
+            view.animate().cancel();
+            view.animate().alpha(0f).translationY(dp(3))
+                    .setStartDelay(0L).setDuration(80L).start();
+        }
     }
 
     private void showGameMetadataDescription(PlayniteDashboardItem item) {
@@ -6112,31 +6209,68 @@ public final class ConsoleActivity extends Activity implements InputManager.Inpu
 
     private void animateDetailsPanelIn() {
         if (sidePanelScroll == null) return;
-        sidePanelScroll.animate().cancel();
         if (reducedMotion) {
+            sidePanelScroll.animate().cancel();
             sidePanelScroll.setAlpha(1f);
             sidePanelScroll.setScaleX(1f);
             sidePanelScroll.setScaleY(1f);
             sidePanelScroll.setTranslationX(0f);
+            resetDetailsPanelChildren();
             return;
         }
-        float pivotY = sidePanelScroll.getHeight() / 2f;
-        if (lastContentFocus != null && lastContentFocus.isAttachedToWindow()) {
-            int[] source = new int[2];
-            int[] panel = new int[2];
-            lastContentFocus.getLocationOnScreen(source);
-            sidePanelScroll.getLocationOnScreen(panel);
-            pivotY = Math.max(0f, Math.min(sidePanelScroll.getHeight(),
-                    source[1] + lastContentFocus.getHeight() / 2f - panel[1]));
+        sidePanelScroll.post(() -> {
+            if (sidePanelScroll == null || sideDialog == null || !sideDialog.isShowing()) return;
+            sidePanelScroll.animate().cancel();
+            float pivotY = sidePanelScroll.getHeight() / 2f;
+            if (lastContentFocus != null && lastContentFocus.isAttachedToWindow()) {
+                int[] source = new int[2];
+                int[] panel = new int[2];
+                lastContentFocus.getLocationOnScreen(source);
+                sidePanelScroll.getLocationOnScreen(panel);
+                pivotY = Math.max(0f, Math.min(sidePanelScroll.getHeight(),
+                        source[1] + lastContentFocus.getHeight() / 2f - panel[1]));
+            }
+            sidePanelScroll.setPivotX(0f);
+            sidePanelScroll.setPivotY(pivotY);
+            sidePanelScroll.setAlpha(.28f);
+            sidePanelScroll.setScaleX(.91f);
+            sidePanelScroll.setScaleY(.91f);
+            sidePanelScroll.setTranslationX(dp(42));
+            prepareDetailsPanelChildren();
+            sidePanelScroll.animate().alpha(1f).scaleX(1f).scaleY(1f)
+                    .translationX(0f).setDuration(260L).start();
+            animateDetailsPanelChildrenIn();
+        });
+    }
+
+    private void prepareDetailsPanelChildren() {
+        if (sidePanel == null) return;
+        for (int index = 0; index < sidePanel.getChildCount(); index++) {
+            View child = sidePanel.getChildAt(index);
+            child.animate().cancel();
+            child.setAlpha(0f);
+            child.setTranslationY(dp(7));
         }
-        sidePanelScroll.setPivotX(0f);
-        sidePanelScroll.setPivotY(pivotY);
-        sidePanelScroll.setAlpha(.38f);
-        sidePanelScroll.setScaleX(.94f);
-        sidePanelScroll.setScaleY(.94f);
-        sidePanelScroll.setTranslationX(dp(28));
-        sidePanelScroll.animate().alpha(1f).scaleX(1f).scaleY(1f)
-                .translationX(0f).setDuration(220L).start();
+    }
+
+    private void animateDetailsPanelChildrenIn() {
+        if (sidePanel == null) return;
+        for (int index = 0; index < sidePanel.getChildCount(); index++) {
+            View child = sidePanel.getChildAt(index);
+            child.animate().alpha(1f).translationY(0f)
+                    .setStartDelay(65L + index * 32L)
+                    .setDuration(170L).start();
+        }
+    }
+
+    private void resetDetailsPanelChildren() {
+        if (sidePanel == null) return;
+        for (int index = 0; index < sidePanel.getChildCount(); index++) {
+            View child = sidePanel.getChildAt(index);
+            child.animate().cancel();
+            child.setAlpha(1f);
+            child.setTranslationY(0f);
+        }
     }
 
     private Set<String> locallyHiddenPlayniteGames(String hostUuid) {
