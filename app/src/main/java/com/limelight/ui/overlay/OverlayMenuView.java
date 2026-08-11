@@ -34,6 +34,7 @@ public class OverlayMenuView extends LinearLayout {
     public interface MenuActionListener {
         void onDisconnect();
         void onQuitSession();
+        void onSuspendSession();
         void onToggleStats();
         void onToggleMouseEmulation();
         void onShowKeyboard();
@@ -87,6 +88,7 @@ public class OverlayMenuView extends LinearLayout {
     private static final int ACTION_DISCORD_REJOIN = 13;
     private static final int ACTION_DISCORD_DOCK = 14;
     private static final int ACTION_INSTALLATION_CONFIRMED = 15;
+    private static final int ACTION_SUSPEND_SESSION = 16;
     private static final int ACTION_CUSTOM_BASE = 100;
     private static final int BITRATE_STEP_KBPS = 5000;
     private static final int BITRATE_MIN_KBPS = 1000;
@@ -251,6 +253,9 @@ public class OverlayMenuView extends LinearLayout {
                     getContext().getString(R.string.playnite_install_confirmation_done),
                     ACTION_INSTALLATION_CONFIRMED, spacing);
         }
+        addVerticalButton(R.drawable.ic_overlay_power,
+            getContext().getString(R.string.overlay_menu_suspend_session),
+            ACTION_SUSPEND_SESSION, spacing);
         addVerticalButton(R.drawable.ic_overlay_power,
             getContext().getString(R.string.overlay_menu_quit_session), ACTION_QUIT, spacing);
         addVerticalButton(R.drawable.ic_overlay_monitor,
@@ -1099,6 +1104,9 @@ public class OverlayMenuView extends LinearLayout {
                 shouldCloseMenu = true;
             } else if (action == ACTION_QUIT) {
                 actionListener.onQuitSession();
+                shouldCloseMenu = true;
+            } else if (action == ACTION_SUSPEND_SESSION) {
+                actionListener.onSuspendSession();
                 shouldCloseMenu = true;
             } else if (action == ACTION_TOGGLE_STATS) {
                 actionListener.onToggleStats();

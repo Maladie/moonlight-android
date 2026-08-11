@@ -24,9 +24,7 @@ final class ConsoleHostPresentation {
             return host.runningGameId != 0 ? State.ACTIVE_SESSION : State.ONLINE;
         }
         if (waking) return State.WAKING;
-        if (host.state == ComputerDetails.State.UNKNOWN) return State.CONNECTING;
-        if (hasWakeAddress(host)) return State.ASLEEP;
-        if (hasKnownAddress(host)) return State.UNREACHABLE;
+        if (host.pairState != PairingManager.PairState.PAIRED) return State.UNPAIRED;
         return State.OFFLINE;
     }
 
