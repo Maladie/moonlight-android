@@ -428,6 +428,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         overlayMenuView = findViewById(R.id.overlayMenuView);
         overlayMenuView.setFlipFaceButtons(prefConfig.flipFaceButtons);
         overlayMenuView.setBitrateControlEnabled(prefConfig.runtimeBitrateControl);
+        overlayMenuView.setInstallationConfirmationAvailable(isInstallationConfirmationStream());
         discordOverlayController = new DiscordOverlayController(this, overlayMenuView,
                 (LinearLayout) findViewById(R.id.discordDockView), prefConfig,
                 getIntent().getStringExtra(EXTRA_PC_UUID),
@@ -2931,6 +2932,40 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
     }
 
+    private boolean isInstallationConfirmationStream() {
+        return transitionSpec != null && transitionSpec.type == LaunchTransitionType.GENERIC
+                && transitionSpec.playniteGameId != null
+                && !transitionSpec.playniteGameId.isEmpty();
+    }
+
+    private void confirmPendingInstallation() {
+        if (!isInstallationConfirmationStream()) return;
+        displayMessage(getString(R.string.playnite_install_verifying));
+        PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
+                this, transitionSpec.hostId, getIntent().getStringExtra(EXTRA_HOST));
+        if (gateway == null) {
+            displayMessage(getString(R.string.playnite_install_verify_failed));
+            return;
+        }
+        try {
+            transitionExecutor.execute(() -> {
+                try {
+                    if (!gateway.verifyInstallation(transitionSpec.playniteGameId)) {
+                        runOnUiThread(() -> displayMessage(
+                                getString(R.string.playnite_install_still_needs_confirmation)));
+                        return;
+                    }
+                    runOnUiThread(() -> closeStreamWithPrivacy(false));
+                } catch (IOException | RuntimeException error) {
+                    runOnUiThread(() -> displayMessage(
+                            getString(R.string.playnite_install_verify_failed)));
+                }
+            });
+        } catch (RuntimeException error) {
+            displayMessage(getString(R.string.playnite_install_verify_failed));
+        }
+    }
+
     private void onFirstVideoFrameRendered() {
         runOnUiThread(() -> {
             if (transitionController != null) {
@@ -3717,6 +3752,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             @Override
             public void onDiscordDockToggle() {
                 discordOverlayController.toggleDock();
+            }
+
+            @Override
+            public void onInstallationConfirmed() {
+                confirmPendingInstallation();
             }
 
             @Override

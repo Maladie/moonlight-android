@@ -523,6 +523,13 @@
     <string name="console_resume_session">Resume session</string>
     <string name="console_quick_resume_app">Resume session (%1$s)</string>
     <string name="console_quick_resume_description">Resume active session: %1$s</string>
+    <string name="console_launch_desktop">Desktop</string>
+    <string name="console_launch_desktop_description">Start a streaming session with the host desktop</string>
+    <string name="console_launch_desktop_unavailable">The host does not provide a Desktop streaming app</string>
+    <string name="playnite_install_confirmation_done">Done — verify installation</string>
+    <string name="playnite_install_verifying">Checking installation…</string>
+    <string name="playnite_install_verify_failed">Could not verify the installation. Try again.</string>
+    <string name="playnite_install_still_needs_confirmation">The installer is still waiting for confirmation.</string>
     <string name="console_more">⋯</string>
     <string name="console_app_options">Options for %1$s</string>
     <string name="console_app_description">%1$s. %2$s. %3$s</string>

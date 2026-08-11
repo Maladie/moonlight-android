@@ -471,6 +471,23 @@ class GatewayStateTest(unittest.TestCase):
             "game_id": "840317c9-b9a4-4f72-be8e-807414e36a9b",
         }, 6.0), requests[0])
 
+    def test_playnite_installation_verification_is_forwarded(self):
+        state = GatewayState(self.config_path, None)
+        requests = []
+        state.proxy_json = lambda name, path, body, timeout=8.0: (
+            requests.append((name, path, body, timeout)) is None,
+            {"requires_attention": False, "status": "installing"})
+
+        status, result = state.playnite_action("game/install/verify", {
+            "game_id": "840317C9-B9A4-4F72-BE8E-807414E36A9B",
+        })
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["ok"])
+        self.assertEqual(("playnite", "/installation/verify", {
+            "game_id": "840317c9-b9a4-4f72-be8e-807414e36a9b",
+        }, 8.0), requests[0])
+
     def test_playnite_library_refresh_is_forwarded_as_non_blocking_action(self):
         state = GatewayState(self.config_path, None)
         requests = []
