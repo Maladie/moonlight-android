@@ -872,6 +872,27 @@ final class HostGatewayClient {
         }
     }
 
+    boolean verifyPlayniteInstallation(Connection connection, String gameId) throws IOException {
+        if (!isPlayniteId(gameId)) {
+            throw new IllegalArgumentException("Invalid Playnite game ID");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("game_id", gameId.toLowerCase(Locale.ROOT));
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/playnite/game/install/verify", "POST", body, connection,
+                pinnedTrust(connection), 10_000);
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error",
+                    "The installation could not be verified."), 0);
+        }
+        JSONObject result = response.optJSONObject("result");
+        return result != null && !result.optBoolean("requires_attention", true);
+    }
+
     PlayniteEvents getPlayniteEvents(Connection connection, long after) throws IOException {
         return getPlayniteEvents(connection, after, "");
     }

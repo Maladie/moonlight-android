@@ -44,6 +44,7 @@ public class OverlayMenuView extends LinearLayout {
         void onDiscordLeave();
         void onDiscordRejoin();
         void onDiscordDockToggle();
+        void onInstallationConfirmed();
         void onMenuClosed();
     }
 
@@ -85,6 +86,7 @@ public class OverlayMenuView extends LinearLayout {
     private static final int ACTION_DISCORD_LEAVE = 11;
     private static final int ACTION_DISCORD_REJOIN = 13;
     private static final int ACTION_DISCORD_DOCK = 14;
+    private static final int ACTION_INSTALLATION_CONFIRMED = 15;
     private static final int ACTION_CUSTOM_BASE = 100;
     private static final int BITRATE_STEP_KBPS = 5000;
     private static final int BITRATE_MIN_KBPS = 1000;
@@ -110,6 +112,7 @@ public class OverlayMenuView extends LinearLayout {
     private boolean discordCanRejoin;
     private String discordRejoinChannel = "";
     private boolean discordDocked;
+    private boolean installationConfirmationAvailable;
 
     public OverlayMenuView(Context context) {
         super(context);
@@ -243,6 +246,11 @@ public class OverlayMenuView extends LinearLayout {
             getContext().getString(R.string.overlay_menu_keyboard), ACTION_SHOW_KEYBOARD, spacing);
         addVerticalButton(R.drawable.ic_overlay_perf,
                 getContext().getString(R.string.overlay_menu_toggle_stats), ACTION_TOGGLE_STATS, spacing);
+        if (installationConfirmationAvailable) {
+            addVerticalButton(R.drawable.ic_overlay_play,
+                    getContext().getString(R.string.playnite_install_confirmation_done),
+                    ACTION_INSTALLATION_CONFIRMED, spacing);
+        }
         addVerticalButton(R.drawable.ic_overlay_power,
             getContext().getString(R.string.overlay_menu_quit_session), ACTION_QUIT, spacing);
         addVerticalButton(R.drawable.ic_overlay_monitor,
@@ -397,6 +405,10 @@ public class OverlayMenuView extends LinearLayout {
 
     public void setFlipFaceButtons(boolean flip) {
         this.flipFaceButtons = flip;
+    }
+
+    public void setInstallationConfirmationAvailable(boolean available) {
+        installationConfirmationAvailable = available;
     }
 
     public void setControllerBatteryInfo(List<ControllerBatteryInfo> info) {
@@ -1112,6 +1124,9 @@ public class OverlayMenuView extends LinearLayout {
             } else if (action == ACTION_DISCORD_DOCK) {
                 actionListener.onDiscordDockToggle();
                 return;
+            } else if (action == ACTION_INSTALLATION_CONFIRMED) {
+                actionListener.onInstallationConfirmed();
+                shouldCloseMenu = true;
             } else if (action == ACTION_CLOSE) {
                 closeMenu();
                 return;

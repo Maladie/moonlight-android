@@ -489,6 +489,13 @@
     <string name="console_resume_session">Wznów sesję</string>
     <string name="console_quick_resume_app">Wznów sesję (%1$s)</string>
     <string name="console_quick_resume_description">Wznów aktywną sesję: %1$s</string>
+    <string name="console_launch_desktop">Pulpit</string>
+    <string name="console_launch_desktop_description">Uruchom sesję streamingu z pulpitem hosta</string>
+    <string name="console_launch_desktop_unavailable">Host nie udostępnia aplikacji Pulpit do streamingu</string>
+    <string name="playnite_install_confirmation_done">Gotowe — sprawdź instalację</string>
+    <string name="playnite_install_verifying">Sprawdzanie instalacji…</string>
+    <string name="playnite_install_verify_failed">Nie udało się potwierdzić instalacji. Spróbuj ponownie.</string>
+    <string name="playnite_install_still_needs_confirmation">Instalator nadal czeka na potwierdzenie.</string>
     <string name="console_more">⋯</string>
     <string name="console_app_options">Opcje aplikacji %1$s</string>
     <string name="console_app_description">%1$s. %2$s. %3$s</string>

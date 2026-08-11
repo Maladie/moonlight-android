@@ -977,6 +977,18 @@ class BridgeState:
                     game.get("installed") or game.get("isInstalled")):
                 return
             requires_attention = bool(sample.get("requires_attention"))
+            tracked_hwnd = int(session.get("hwnd") or 0)
+            sampled_hwnd = int(sample.get("hwnd") or 0)
+            # Once a concrete launcher dialog has been identified, only that
+            # window can keep the installation blocked. A different Steam/Epic
+            # window must not inherit the attention state from the old baseline.
+            if session.get("requires_attention") and tracked_hwnd > 0 \
+                    and sampled_hwnd != tracked_hwnd:
+                requires_attention = False
+                sample = {
+                    "requires_attention": False, "reason": "prompt_closed",
+                    "hwnd": 0, "process_id": 0, "title": "", "image": "",
+                }
             signature = (str(sample.get("reason") or ""), int(sample.get("hwnd") or 0),
                          int(sample.get("process_id") or 0), str(sample.get("title") or ""))
             stable = int(session.get("stable_samples") or 0) + 1 \
@@ -1035,6 +1047,43 @@ class BridgeState:
         if not details.get("focused"):
             raise RuntimeError("Windows rejected the installation window focus request.")
         return {"accepted": True, "command": "focus-installation", **details}
+
+    def verify_installation(self, game_id: Any) -> dict[str, Any]:
+        normalized = self.game_id(game_id)
+        with self.lock:
+            session = self.installations.get(normalized)
+            probe = self.installation_probe_action
+            baseline = dict((session or {}).get("baseline") or {})
+            game = self.library.get(normalized)
+        if session is None:
+            if game is not None and bool(game.get("installed") or game.get("isInstalled")):
+                return {
+                    "accepted": True, "command": "verify-installation",
+                    "status": "installed", "requires_attention": False,
+                    "installing": False,
+                }
+            raise ValueError("No pending installation was found for this game.")
+        if probe is None:
+            raise RuntimeError("Installation verification is unavailable.")
+
+        # Require the same stable evidence as the background observer. This avoids
+        # treating a launcher window that merely flickered as a confirmed action.
+        for sample_number in range(3):
+            self.apply_installation_probe(normalized, probe(baseline))
+            if sample_number < 2:
+                time.sleep(0.15)
+
+        with self.lock:
+            current = self.installations.get(normalized) or {}
+            attention = bool(current.get("requires_attention"))
+            game = self.library.get(normalized) or {}
+            return {
+                "accepted": True,
+                "command": "verify-installation",
+                "status": "attention_required" if attention else "installing",
+                "requires_attention": attention,
+                "installing": bool(game.get("installing") or game.get("isInstalling")),
+            }
 
     def stop_game(self, game_id: Any = "") -> dict[str, Any]:
         normalized = self.game_id(game_id) if game_id else ""
@@ -1503,6 +1552,8 @@ class PlayniteHandler(BaseHTTPRequestHandler):
                 result = self.state.install_game(body.get("game_id"))
             elif path == "/installation/focus":
                 result = self.state.focus_installation(body.get("game_id"))
+            elif path == "/installation/verify":
+                result = self.state.verify_installation(body.get("game_id"))
             elif path == "/library/refresh":
                 result = self.state.refresh_library()
             elif path == "/game/stop":

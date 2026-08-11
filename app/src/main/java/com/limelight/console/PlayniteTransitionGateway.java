@@ -108,4 +108,8 @@ public final class PlayniteTransitionGateway {
     public void focusInstallation(String gameId) throws IOException {
         client.focusPlayniteInstallation(connection, gameId);
     }
+
+    public boolean verifyInstallation(String gameId) throws IOException {
+        return client.verifyPlayniteInstallation(connection, gameId);
+    }
 }

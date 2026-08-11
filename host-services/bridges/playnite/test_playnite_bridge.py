@@ -261,6 +261,18 @@ class BridgeStateTest(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertEqual([77], self.installation_focus_calls)
 
+        # The launcher main window may still look like an installation candidate,
+        # but it must not replace the concrete confirmation dialog we tracked.
+        self.state.installation_probe_action = lambda baseline: {
+            "requires_attention": True, "reason": "launcher_prompt",
+            "hwnd": 88, "process_id": 123, "title": "Steam", "image": "steam.exe",
+        }
+        verified = self.state.verify_installation(GAME_ID)
+        self.assertFalse(verified["requires_attention"])
+        self.assertEqual("installing", verified["status"])
+        resumed = self.state.library_page("0", 10)["games"][0]
+        self.assertFalse(resumed["installRequiresAttention"])
+
         self.state.handle_message({"type": "status", "status": {
             "name": "gameInstalled", "id": GAME_ID,
         }})

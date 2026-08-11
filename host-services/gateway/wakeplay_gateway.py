@@ -820,6 +820,10 @@ class GatewayState:
             payload = {"game_id": self._playnite_game_id(body.get("game_id"))}
             path = "/installation/focus"
             timeout = 6.0
+        elif action == "game/install/verify":
+            payload = {"game_id": self._playnite_game_id(body.get("game_id"))}
+            path = "/installation/verify"
+            timeout = 8.0
         elif action == "game/stop":
             payload = {"force": False}
             if body.get("game_id"):
