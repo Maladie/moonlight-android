@@ -32,7 +32,7 @@ public class OverlayMenuView extends LinearLayout {
     private static final long ANALOG_NAV_THROTTLE_MS = 200;
 
     public interface MenuActionListener {
-        void onDisconnect();
+        void onHome();
         void onQuitSession();
         void onSuspendSession();
         void onToggleStats();
@@ -73,7 +73,7 @@ public class OverlayMenuView extends LinearLayout {
     private MenuActionListener actionListener;
     private CustomCommandsManager commandsManager;
 
-    private static final int ACTION_DISCONNECT = 0;
+    private static final int ACTION_HOME = 0;
     private static final int ACTION_QUIT = 1;
     private static final int ACTION_TOGGLE_STATS = 2;
     private static final int ACTION_CLOSE = 3;
@@ -259,7 +259,7 @@ public class OverlayMenuView extends LinearLayout {
         addVerticalButton(R.drawable.ic_overlay_power,
             getContext().getString(R.string.overlay_menu_quit_session), ACTION_QUIT, spacing);
         addVerticalButton(R.drawable.ic_overlay_monitor,
-            getContext().getString(R.string.overlay_menu_disconnect), ACTION_DISCONNECT, 0);
+            getContext().getString(R.string.overlay_menu_home), ACTION_HOME, 0);
         // Add spacing between vertical column and horizontal row
         ((LinearLayout.LayoutParams) horizontalScrollView.getLayoutParams()).leftMargin = spacing;
 
@@ -1099,8 +1099,8 @@ public class OverlayMenuView extends LinearLayout {
         boolean shouldCloseMenu = false;
 
         if (actionListener != null) {
-            if (action == ACTION_DISCONNECT) {
-                actionListener.onDisconnect();
+            if (action == ACTION_HOME) {
+                actionListener.onHome();
                 shouldCloseMenu = true;
             } else if (action == ACTION_QUIT) {
                 actionListener.onQuitSession();

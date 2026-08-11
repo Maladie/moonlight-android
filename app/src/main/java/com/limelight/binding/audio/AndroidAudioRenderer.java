@@ -19,6 +19,7 @@ public class AndroidAudioRenderer implements AudioRenderer {
     private final boolean enableAudioFx;
 
     private AudioTrack track;
+    private volatile float volume = 1f;
 
     public AndroidAudioRenderer(Context context, boolean enableAudioFx) {
         this.context = context;
@@ -160,6 +161,7 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
             try {
                 track = createAudioTrack(channelConfig, sampleRate, bufferSize, lowLatency);
+                track.setVolume(volume);
                 track.play();
 
                 // Successfully created working AudioTrack. We're done here.
@@ -183,6 +185,18 @@ public class AndroidAudioRenderer implements AudioRenderer {
         }
 
         return 0;
+    }
+
+    public void setVolume(float volume) {
+        this.volume = Math.max(0f, Math.min(1f, volume));
+        AudioTrack current = track;
+        if (current != null) {
+            try {
+                current.setVolume(this.volume);
+            } catch (IllegalStateException ignored) {
+                // The connection may have released the track while Home was closing.
+            }
+        }
     }
 
     @Override

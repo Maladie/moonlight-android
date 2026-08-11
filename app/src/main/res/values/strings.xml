@@ -353,6 +353,8 @@
 
     <!-- Overlay Menu strings -->
     <string name="overlay_menu_disconnect">Disconnect</string>
+    <string name="overlay_menu_home">Home</string>
+    <string name="console_stream_home_switch_blocked">Return to the current session and end it before starting another game.</string>
     <string name="overlay_menu_quit_session">Quit Session</string>
     <string name="overlay_menu_suspend_session">Suspend game and sleep PC</string>
     <string name="overlay_menu_suspend_confirmation">The game will remain running while the PC sleeps. You can resume it from this host later.</string>

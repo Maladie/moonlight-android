@@ -45,6 +45,8 @@ import com.limelight.ui.overlay.CustomCommand;
 import com.limelight.ui.overlay.OverlayMenuView;
 import com.limelight.console.SuspendedSessionStore;
 import com.limelight.console.ConsoleConfirmDialog;
+import com.limelight.console.ConsoleActivity;
+import com.limelight.console.StreamHomeActivity;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.ServerHelper;
 import com.limelight.utils.SessionResumeManager;
@@ -146,6 +148,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private SharedPreferences tombstonePrefs;
 
     private NvConnection conn;
+    private AndroidAudioRenderer streamAudioRenderer;
     private SpinnerDialog spinner;
     private ConsoleStreamLoadingView consoleLoadingView;
     private LaunchTransitionController transitionController;
@@ -161,6 +164,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean connecting = false;
     private boolean connected = false;
     private boolean userInitiatedDisconnect = false;
+    private boolean streamHomeVisible = false;
     private boolean autoEnterPip = false;
     private boolean surfaceCreated = false;
     private boolean attemptedConnection = false;
@@ -1346,6 +1350,19 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
+    protected void onResume() {
+        super.onResume();
+        if (!streamHomeVisible) return;
+        streamHomeVisible = false;
+        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
+        if (controllerHandler != null) controllerHandler.enableSensors();
+        if (connected) {
+            hideSystemUi(50);
+            streamView.post(streamView::requestFocus);
+        }
+    }
+
+    @Override
     protected void onStop() {
         super.onStop();
 
@@ -1580,6 +1597,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         return handleKeyDown(event) || super.onKeyDown(keyCode, event);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (connected && !streamHomeVisible && !isTransitionInputBlocked()) {
+            openConsoleHome();
+            return;
+        }
+        super.onBackPressed();
     }
 
     @Override
@@ -3480,8 +3506,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         Toast.makeText(Game.this, configMessage, Toast.LENGTH_LONG).show();
 
         decoderRenderer.setRenderTarget(holder);
-        conn.start(new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx),
-                decoderRenderer, Game.this);
+        streamAudioRenderer = new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx);
+        conn.start(streamAudioRenderer, decoderRenderer, Game.this);
     }
 
     @Override
@@ -3690,8 +3716,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Set up menu action listener
         overlayMenuView.setMenuActionListener(new OverlayMenuView.MenuActionListener() {
             @Override
-            public void onDisconnect() {
-                closeStreamWithPrivacy(false);
+            public void onHome() {
+                openConsoleHome();
             }
 
             @Override
@@ -3780,6 +3806,25 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 discordOverlayController.onOverlayClosed();
             }
         });
+    }
+
+    private void openConsoleHome() {
+        if (!connected || streamHomeVisible) return;
+        overlayMenuView.closeMenu();
+        streamHomeVisible = true;
+        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(.12f);
+        if (controllerHandler != null) controllerHandler.disableSensors();
+
+        Intent home = new Intent(this, StreamHomeActivity.class);
+        home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_HOME, true);
+        home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_HOST_ID,
+                getIntent().getStringExtra(EXTRA_PC_UUID));
+        home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_APP_ID,
+                getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID));
+        home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_PLAYNITE_GAME_ID,
+                transitionSpec == null ? "" : transitionSpec.playniteGameId);
+        startActivity(home);
+        overridePendingTransition(android.R.anim.fade_in, 0);
     }
 
     private void showOverlayMenuWithBattery() {
