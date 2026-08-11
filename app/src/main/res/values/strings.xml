@@ -355,6 +355,16 @@
     <string name="overlay_menu_disconnect">Disconnect</string>
     <string name="overlay_menu_home">Home</string>
     <string name="console_stream_home_switch_blocked">Return to the current session and end it before starting another game.</string>
+    <string name="background_stream_channel">Parked game stream</string>
+    <string name="background_stream_title">Game stream ready to resume</string>
+    <string name="background_stream_summary_minutes">MoonWaker will keep the connection for up to %1$d minutes.</string>
+    <string name="background_stream_summary_never">MoonWaker will keep the connection until Android stops it.</string>
+    <string name="console_background_stream_retention">Keep stream after leaving: %1$s</string>
+    <string name="console_background_stream_retention_title">Keep stream after leaving</string>
+    <string name="console_background_stream_retention_details">Keeps the current transport ready for an instant return while you use another app. This continues to use network bandwidth.</string>
+    <string name="console_background_stream_off">Off</string>
+    <string name="console_background_stream_minutes">%1$d minutes</string>
+    <string name="console_background_stream_never">No limit</string>
     <string name="overlay_menu_quit_session">Quit Session</string>
     <string name="overlay_menu_suspend_session">Suspend game and sleep PC</string>
     <string name="overlay_menu_suspend_confirmation">The game will remain running while the PC sleeps. You can resume it from this host later.</string>

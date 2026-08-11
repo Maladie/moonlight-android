@@ -17,6 +17,7 @@ import com.limelight.binding.video.CrashListener;
 import com.limelight.binding.video.MediaCodecDecoderRenderer;
 import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
+import com.limelight.nvstream.av.video.SwitchableVideoDecoderRenderer;
 import com.limelight.console.DiscordOverlayController;
 import com.limelight.console.PlayniteTransitionGateway;
 import com.limelight.console.transition.LaunchTransitionController;
@@ -34,6 +35,7 @@ import com.limelight.nvstream.input.ControllerPacket;
 import com.limelight.nvstream.input.KeyboardPacket;
 import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.nvstream.jni.MoonBridge;
+import com.limelight.nvstream.jni.BackgroundStreamBridge;
 import com.limelight.preferences.AppPreferences;
 import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
@@ -47,6 +49,8 @@ import com.limelight.console.SuspendedSessionStore;
 import com.limelight.console.ConsoleConfirmDialog;
 import com.limelight.console.ConsoleActivity;
 import com.limelight.console.StreamHomeActivity;
+import com.limelight.stream.BackgroundStreamService;
+import com.limelight.stream.BackgroundStreamPreferences;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.ServerHelper;
 import com.limelight.utils.SessionResumeManager;
@@ -149,6 +153,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private NvConnection conn;
     private AndroidAudioRenderer streamAudioRenderer;
+    private SwitchableVideoDecoderRenderer switchableVideoRenderer;
     private SpinnerDialog spinner;
     private ConsoleStreamLoadingView consoleLoadingView;
     private LaunchTransitionController transitionController;
@@ -165,6 +170,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean connected = false;
     private boolean userInitiatedDisconnect = false;
     private boolean streamHomeVisible = false;
+    private boolean backgroundStreamParked = false;
     private boolean autoEnterPip = false;
     private boolean surfaceCreated = false;
     private boolean attemptedConnection = false;
@@ -199,6 +205,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean isAndroidTV = false;
 
     private MediaCodecDecoderRenderer decoderRenderer;
+    private boolean decoderMeteredNetwork;
+    private boolean decoderHdrRequested;
+    private String decoderGlRenderer;
     private boolean reportedCrash;
 
     private WifiManager.WifiLock highPerfWifiLock;
@@ -226,6 +235,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         public void onReceive(Context context, Intent intent) {
             if (ACTION_QUIT_APP.equals(intent.getAction())) {
                 closeStreamWithPrivacy(true);
+            } else if (BackgroundStreamService.ACTION_EXPIRED.equals(intent.getAction())) {
+                endExpiredBackgroundStream();
             }
         }
     };
@@ -548,26 +559,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             performanceOverlayView.setVisibility(View.VISIBLE);
         }
 
-        decoderRenderer = new MediaCodecDecoderRenderer(
-                this,
-                prefConfig,
-                new CrashListener() {
-                    @Override
-                    public void notifyCrash(Exception e) {
-                        // The MediaCodec instance is going down due to a crash
-                        // let's tell the user something when they open the app again
-
-                        // We must use commit because the app will crash when we return from this function
-                        tombstonePrefs.edit().putInt("CrashCount", tombstonePrefs.getInt("CrashCount", 0) + 1).commit();
-                        reportedCrash = true;
-                    }
-                },
-                tombstonePrefs.getInt("CrashCount", 0),
-                connMgr.isActiveNetworkMetered(),
-                willStreamHdr,
-                glPrefs.glRenderer,
-                this,
-                this::onFirstVideoFrameRendered);
+        decoderMeteredNetwork = connMgr.isActiveNetworkMetered();
+        decoderHdrRequested = willStreamHdr;
+        decoderGlRenderer = glPrefs.glRenderer;
+        decoderRenderer = createDecoderRenderer();
+        switchableVideoRenderer = new SwitchableVideoDecoderRenderer(decoderRenderer);
 
         // Don't stream HDR if the decoder can't support it
         if (willStreamHdr && !decoderRenderer.isHevcMain10Hdr10Supported() && !decoderRenderer.isAv1Main10Supported()) {
@@ -734,6 +730,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Register broadcast receiver to allow external control
         android.content.IntentFilter filter = new android.content.IntentFilter(ACTION_QUIT_APP);
+        filter.addAction(BackgroundStreamService.ACTION_EXPIRED);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(quitAppReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
@@ -755,6 +752,26 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         } else {
             streamView.getHolder().addCallback(this);
         }
+    }
+
+    private MediaCodecDecoderRenderer createDecoderRenderer() {
+        return new MediaCodecDecoderRenderer(
+                this,
+                prefConfig,
+                new CrashListener() {
+                    @Override
+                    public void notifyCrash(Exception e) {
+                        tombstonePrefs.edit().putInt("CrashCount",
+                                tombstonePrefs.getInt("CrashCount", 0) + 1).commit();
+                        reportedCrash = true;
+                    }
+                },
+                tombstonePrefs.getInt("CrashCount", 0),
+                decoderMeteredNetwork,
+                decoderHdrRequested,
+                decoderGlRenderer,
+                this,
+                this::onFirstVideoFrameRendered);
     }
 
     private LaunchTransitionSpec readTransitionSpec() {
@@ -1269,6 +1286,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        if (backgroundStreamParked && (connecting || connected)) {
+            backgroundStreamParked = false;
+            stopService(new Intent(this, BackgroundStreamService.class));
+            stopConnection();
+        }
         transitionObservationStopped = true;
         cancelPendingAutomaticReveal();
         if (transitionObservation != null) transitionObservation.cancel(true);
@@ -1352,13 +1374,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onResume() {
         super.onResume();
-        if (!streamHomeVisible) return;
-        streamHomeVisible = false;
-        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
-        if (controllerHandler != null) controllerHandler.enableSensors();
-        if (connected) {
-            hideSystemUi(50);
-            streamView.post(streamView::requestFocus);
+        if (streamHomeVisible) {
+            streamHomeVisible = false;
+            if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
+            if (controllerHandler != null) controllerHandler.enableSensors();
+            if (connected) {
+                hideSystemUi(50);
+                streamView.post(streamView::requestFocus);
+            }
+        }
+        if (backgroundStreamParked && surfaceCreated) {
+            restoreParkedStream(streamView.getHolder());
         }
     }
 
@@ -1372,6 +1398,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (virtualController != null) {
             virtualController.hide();
         }
+
+        if (streamHomeVisible) return;
+        if (canParkBackgroundStream()) {
+            parkBackgroundStream();
+            return;
+        }
+        if (backgroundStreamParked) return;
 
         if (conn != null) {
             int videoFormat = decoderRenderer.getActiveVideoFormat();
@@ -2624,6 +2657,59 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         stopConnection(null);
     }
 
+    private boolean canParkBackgroundStream() {
+        if (BackgroundStreamPreferences.readMinutes(this) == 0 || !connected
+                || userInitiatedDisconnect || isFinishing()
+                || streamHomeVisible || backgroundStreamParked) {
+            return false;
+        }
+        return Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !isInPictureInPictureMode();
+    }
+
+    private void parkBackgroundStream() {
+        if (backgroundStreamParked || switchableVideoRenderer == null) return;
+        backgroundStreamParked = true;
+        switchableVideoRenderer.detach();
+        decoderRenderer = null;
+        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(0f);
+        if (controllerHandler != null) controllerHandler.disableSensors();
+        setInputGrabState(false);
+        int retentionMinutes = BackgroundStreamPreferences.readMinutes(this);
+        BackgroundStreamService.park(this, retentionMinutes);
+        LimeLog.info("Background stream parked; retention minutes=" + retentionMinutes);
+    }
+
+    private void restoreParkedStream(SurfaceHolder holder) {
+        if (!backgroundStreamParked || holder == null || holder.getSurface() == null
+                || !holder.getSurface().isValid()) return;
+        MediaCodecDecoderRenderer replacement = createDecoderRenderer();
+        replacement.setRenderTarget(holder);
+        if (!switchableVideoRenderer.attach(replacement)) {
+            LimeLog.severe("Failed to attach a decoder to the parked stream");
+            endExpiredBackgroundStream();
+            return;
+        }
+        decoderRenderer = replacement;
+        backgroundStreamParked = false;
+        BackgroundStreamService.resumed(this);
+        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
+        if (controllerHandler != null) controllerHandler.enableSensors();
+        setInputGrabState(true);
+        BackgroundStreamBridge.requestIdrFrame();
+        hideSystemUi(50);
+        streamView.post(streamView::requestFocus);
+        LimeLog.info("Background stream decoder restored");
+    }
+
+    private void endExpiredBackgroundStream() {
+        if (!backgroundStreamParked) return;
+        LimeLog.info("Background stream retention expired");
+        backgroundStreamParked = false;
+        userInitiatedDisconnect = true;
+        stopService(new Intent(this, BackgroundStreamService.class));
+        stopConnection(() -> finish());
+    }
+
     private void closeStreamWithPrivacy(boolean quitApplication) {
         userInitiatedDisconnect = true;
         if (transitionController == null || consoleLoadingView == null) {
@@ -3459,7 +3545,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void setHdrMode(boolean enabled, byte[] hdrMetadata) {
         LimeLog.info("Display HDR mode: " + (enabled ? "enabled" : "disabled"));
-        decoderRenderer.setHdrMode(enabled, hdrMetadata);
+        if (switchableVideoRenderer != null) {
+            switchableVideoRenderer.setHdrMode(enabled, hdrMetadata);
+        }
     }
 
     @Override
@@ -3507,7 +3595,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         decoderRenderer.setRenderTarget(holder);
         streamAudioRenderer = new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx);
-        conn.start(streamAudioRenderer, decoderRenderer, Game.this);
+        conn.start(streamAudioRenderer, switchableVideoRenderer, Game.this);
     }
 
     @Override
@@ -3547,6 +3635,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             holder.getSurface().setFrameRate(desiredFrameRate,
                     Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
         }
+        if (backgroundStreamParked) restoreParkedStream(holder);
     }
 
     @Override
@@ -3555,11 +3644,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             throw new IllegalStateException("Surface destroyed before creation!");
         }
 
-        if (attemptedConnection) {
-            // Let the decoder know immediately that the surface is gone
-            decoderRenderer.prepareForStop();
-
-            if (connected) {
+        surfaceCreated = false;
+        if (attemptedConnection && connected) {
+            if (canParkBackgroundStream()) {
+                parkBackgroundStream();
+            } else if (!backgroundStreamParked) {
+                decoderRenderer.prepareForStop();
                 stopConnection();
             }
         }

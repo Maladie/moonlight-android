@@ -325,6 +325,16 @@
     <string name="overlay_menu_disconnect">Rozłącz</string>
     <string name="overlay_menu_home">Home</string>
     <string name="console_stream_home_switch_blocked">Wróć do bieżącej sesji i zakończ ją przed uruchomieniem innej gry.</string>
+    <string name="background_stream_channel">Zaparkowany stream gry</string>
+    <string name="background_stream_title">Stream gry jest gotowy do wznowienia</string>
+    <string name="background_stream_summary_minutes">MoonWaker utrzyma połączenie przez maksymalnie %1$d min.</string>
+    <string name="background_stream_summary_never">MoonWaker utrzyma połączenie, dopóki Android go nie zatrzyma.</string>
+    <string name="console_background_stream_retention">Utrzymuj stream po wyjściu: %1$s</string>
+    <string name="console_background_stream_retention_title">Utrzymuj stream po wyjściu</string>
+    <string name="console_background_stream_retention_details">Pozostawia bieżący transport gotowy do natychmiastowego powrotu podczas korzystania z innej aplikacji. Nadal zużywa transfer sieciowy.</string>
+    <string name="console_background_stream_off">Wyłączone</string>
+    <string name="console_background_stream_minutes">%1$d min</string>
+    <string name="console_background_stream_never">Bez limitu</string>
     <string name="overlay_menu_quit_session">Zakończ sesję</string>
     <string name="overlay_menu_suspend_session">Wstrzymaj grę i uśpij komputer</string>
     <string name="overlay_menu_suspend_confirmation">Gra pozostanie uruchomiona podczas uśpienia komputera. Później wznowisz ją z tego hosta.</string>
