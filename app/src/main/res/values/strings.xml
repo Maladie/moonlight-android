@@ -359,6 +359,9 @@
     <string name="background_stream_title">Game stream ready to resume</string>
     <string name="background_stream_summary_minutes">MoonWaker will keep the connection for up to %1$d minutes.</string>
     <string name="background_stream_summary_never">MoonWaker will keep the connection until Android stops it.</string>
+    <string name="background_stream_reconnect_summary">The instant connection was released. Resume with a normal reconnect.</string>
+    <string name="background_stream_resume">Resume</string>
+    <string name="background_stream_end">End</string>
     <string name="console_background_stream_retention">Keep stream after leaving: %1$s</string>
     <string name="console_background_stream_retention_title">Keep stream after leaving</string>
     <string name="console_background_stream_retention_details">Keeps the current transport ready for an instant return while you use another app. This continues to use network bandwidth.</string>

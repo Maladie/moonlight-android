@@ -237,6 +237,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 closeStreamWithPrivacy(true);
             } else if (BackgroundStreamService.ACTION_EXPIRED.equals(intent.getAction())) {
                 endExpiredBackgroundStream();
+            } else if (BackgroundStreamService.ACTION_END_REQUESTED.equals(intent.getAction())) {
+                endExpiredBackgroundStream();
             }
         }
     };
@@ -731,6 +733,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Register broadcast receiver to allow external control
         android.content.IntentFilter filter = new android.content.IntentFilter(ACTION_QUIT_APP);
         filter.addAction(BackgroundStreamService.ACTION_EXPIRED);
+        filter.addAction(BackgroundStreamService.ACTION_END_REQUESTED);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(quitAppReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
@@ -1288,7 +1291,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     protected void onDestroy() {
         if (backgroundStreamParked && (connecting || connected)) {
             backgroundStreamParked = false;
-            stopService(new Intent(this, BackgroundStreamService.class));
+            SessionResumeManager.save(this, getIntent());
+            BackgroundStreamService.transportLost(this);
             stopConnection();
         }
         transitionObservationStopped = true;
@@ -2675,6 +2679,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (controllerHandler != null) controllerHandler.disableSensors();
         setInputGrabState(false);
         int retentionMinutes = BackgroundStreamPreferences.readMinutes(this);
+        SessionResumeManager.save(this, getIntent());
         BackgroundStreamService.park(this, retentionMinutes);
         LimeLog.info("Background stream parked; retention minutes=" + retentionMinutes);
     }
@@ -2691,6 +2696,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         decoderRenderer = replacement;
         backgroundStreamParked = false;
+        SessionResumeManager.clear(this);
         BackgroundStreamService.resumed(this);
         if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
         if (controllerHandler != null) controllerHandler.enableSensors();
@@ -2706,6 +2712,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         LimeLog.info("Background stream retention expired");
         backgroundStreamParked = false;
         userInitiatedDisconnect = true;
+        SessionResumeManager.clear(this);
         stopService(new Intent(this, BackgroundStreamService.class));
         stopConnection(() -> finish());
     }
@@ -2986,6 +2993,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 connected = true;
                 connecting = false;
+                if (SessionResumeManager.hasPendingSession(Game.this)) {
+                    SessionResumeManager.clear(Game.this);
+                    BackgroundStreamService.resumed(Game.this);
+                }
                 updatePipAutoEnter();
 
                 // Hide the mouse cursor now after a short delay.
