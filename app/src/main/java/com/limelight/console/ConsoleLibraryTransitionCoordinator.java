@@ -4,8 +4,8 @@ import android.os.Handler;
 
 /** Coordinates library presentation so stale delayed stages cannot update a newer selection. */
 final class ConsoleLibraryTransitionCoordinator {
-    private static final long METADATA_DELAY_MS = 90L;
-    private static final long DESCRIPTION_DELAY_MS = 155L;
+    private static final long METADATA_DELAY_MS = 120L;
+    private static final long DESCRIPTION_DELAY_MS = 230L;
 
     interface Scheduler {
         void postDelayed(Runnable action, long delayMs);
