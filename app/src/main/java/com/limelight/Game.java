@@ -3584,8 +3584,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (event == null) return false;
         return ("game-installed".equals(event.name)
                 || "game-installation-cancelled".equals(event.name)
-                || "game-installation-failed".equals(event.name)
-                || "game-installation-attention-required".equals(event.name))
+                || "game-installation-failed".equals(event.name))
                 && isPendingInstallation(hostId, event.gameId);
     }
 

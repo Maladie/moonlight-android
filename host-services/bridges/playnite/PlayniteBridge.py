@@ -963,6 +963,16 @@ class BridgeState:
                 })
             raise
 
+    def uninstall_game(self, game_id: Any) -> dict[str, Any]:
+        normalized = self.game_id(game_id)
+        with self.lock:
+            game = self.library.get(normalized)
+            if game is None:
+                raise FileNotFoundError("Playnite game was not found.")
+            if not bool(game.get("installed") or game.get("isInstalled")):
+                raise ValueError("Playnite game is not installed.")
+        return self.send_command("uninstall", id=normalized)
+
     def installation_probes(self) -> list[tuple[str, dict[str, Any]]]:
         with self.lock:
             return [(game_id, dict(session.get("baseline") or {}))
@@ -991,6 +1001,12 @@ class BridgeState:
                 }
             signature = (str(sample.get("reason") or ""), int(sample.get("hwnd") or 0),
                          int(sample.get("process_id") or 0), str(sample.get("title") or ""))
+            if requires_attention and signature == session.get("acknowledged_signature"):
+                requires_attention = False
+                sample = {
+                    "requires_attention": False, "reason": "prompt_acknowledged",
+                    "hwnd": 0, "process_id": 0, "title": "", "image": "",
+                }
             stable = int(session.get("stable_samples") or 0) + 1 \
                 if signature == session.get("candidate_signature") else 1
             session["candidate_signature"] = signature
@@ -1077,6 +1093,22 @@ class BridgeState:
             current = self.installations.get(normalized) or {}
             attention = bool(current.get("requires_attention"))
             game = self.library.get(normalized) or {}
+            if attention and current.get("reason") != "secure_desktop":
+                current["acknowledged_signature"] = (
+                    str(current.get("reason") or ""), int(current.get("hwnd") or 0),
+                    int(current.get("process_id") or 0),
+                    str(current.get("window_title") or ""),
+                )
+                current.update({
+                    "requires_attention": False, "reason": "", "hwnd": 0,
+                    "window_title": "", "image": "", "stable_samples": 0,
+                })
+                self._apply_installation_fields_locked(normalized, game)
+                self._save_library_cache_locked()
+                self._publish_locked("game-installation-resumed", {
+                    "id": normalized, "name": str(game.get("name") or ""),
+                })
+                attention = False
             return {
                 "accepted": True,
                 "command": "verify-installation",
@@ -1550,6 +1582,8 @@ class PlayniteHandler(BaseHTTPRequestHandler):
                 result = self.state.start_game(body.get("game_id"))
             elif path == "/game/install":
                 result = self.state.install_game(body.get("game_id"))
+            elif path == "/game/uninstall":
+                result = self.state.uninstall_game(body.get("game_id"))
             elif path == "/installation/focus":
                 result = self.state.focus_installation(body.get("game_id"))
             elif path == "/installation/verify":

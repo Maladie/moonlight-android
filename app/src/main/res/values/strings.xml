@@ -554,6 +554,10 @@
     <string name="console_launch_desktop_description">Start a streaming session with the host desktop</string>
     <string name="console_launch_desktop_unavailable">The host does not provide a Desktop streaming app</string>
     <string name="playnite_install_confirmation_done">Done — verify installation</string>
+    <string name="playnite_uninstall">Uninstall</string>
+    <string name="playnite_uninstall_confirmation">Uninstall %1$s? The launcher may ask for additional confirmation.</string>
+    <string name="playnite_uninstall_starting">Starting uninstallation of %1$s…</string>
+    <string name="playnite_uninstall_failed">Could not uninstall %1$s.</string>
     <string name="playnite_install_verifying">Checking installation…</string>
     <string name="playnite_install_verify_failed">Could not verify the installation. Try again.</string>
     <string name="playnite_install_still_needs_confirmation">The installer is still waiting for confirmation.</string>

@@ -17,7 +17,8 @@ PATCH_MARKER_V6 = "# WAKEPLAY-CONSOLE-BRIDGE-V6"
 PATCH_MARKER_V7 = "# WAKEPLAY-CONSOLE-BRIDGE-V7"
 PATCH_MARKER_V8 = "# WAKEPLAY-CONSOLE-BRIDGE-V8"
 PATCH_MARKER_V9 = "# WAKEPLAY-CONSOLE-BRIDGE-V9"
-PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V10"
+PATCH_MARKER_V10 = "# WAKEPLAY-CONSOLE-BRIDGE-V10"
+PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V11"
 
 LAUNCH_PREP_ANCHOR = """          Register-SunshineLaunchedGame -Id $obj.id
           [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)"""
@@ -262,27 +263,76 @@ def add_latest_metadata(source: str) -> str:
     return add_genre_support(add_source_support(source))
 
 
+def add_uninstall_support(source: str) -> str:
+    ui_anchor = """    public static void InstallGameByGuidStringOnUIThread(string guidStr)
+    {
+        var d = Dispatcher;
+        if (d != null) { d.BeginInvoke(new Action(() => InstallGameByGuidString(guidStr))); }
+        else { InstallGameByGuidString(guidStr); }
+    }
+}"""
+    ui_replacement = """    public static void InstallGameByGuidStringOnUIThread(string guidStr)
+    {
+        var d = Dispatcher;
+        if (d != null) { d.BeginInvoke(new Action(() => InstallGameByGuidString(guidStr))); }
+        else { InstallGameByGuidString(guidStr); }
+    }
+
+    public static void UninstallGameByGuidString(string guidStr)
+    {
+        if (string.IsNullOrWhiteSpace(guidStr)) return;
+        Guid gid; if (!Guid.TryParse(guidStr, out gid)) return;
+        var api = Api; if (api == null) return;
+        var method = api.GetType().GetMethod("UninstallGame", new Type[] { typeof(Guid) });
+        if (method != null) method.Invoke(api, new object[] { gid });
+    }
+
+    public static void UninstallGameByGuidStringOnUIThread(string guidStr)
+    {
+        var d = Dispatcher;
+        if (d != null) { d.BeginInvoke(new Action(() => UninstallGameByGuidString(guidStr))); }
+        else { UninstallGameByGuidString(guidStr); }
+    }
+}"""
+    reader_anchor = """        elseif ($obj.type -eq 'command' -and $obj.command -eq 'snapshot') {"""
+    reader_replacement = """        elseif ($obj.type -eq 'command' -and $obj.command -eq 'uninstall' -and $obj.id) {
+          [UIBridge]::UninstallGameByGuidStringOnUIThread([string]$obj.id)
+          Write-Log "LauncherConn[$Guid]: uninstall dispatched for $($obj.id)"
+        }
+        elseif ($obj.type -eq 'command' -and $obj.command -eq 'snapshot') {"""
+    if ui_anchor not in source or reader_anchor not in source:
+        raise ValueError("Unsupported V10 connector; uninstall anchors are missing")
+    patched = source.replace(ui_anchor, ui_replacement, 1)
+    patched = patched.replace(reader_anchor, reader_replacement, 1)
+    return patched.replace(PATCH_MARKER_V10, PATCH_MARKER, 1)
+
+
 def patch_text(source: str) -> tuple[str, bool]:
     if PATCH_MARKER in source:
         return source, False
+    if PATCH_MARKER_V10 in source:
+        return add_uninstall_support(source), True
     if PATCH_MARKER_V9 in source:
-        return add_genre_support(source), True
+        return add_uninstall_support(add_genre_support(source)), True
     if PATCH_MARKER_V8 in source:
-        return add_latest_metadata(source), True
+        return add_uninstall_support(add_latest_metadata(source)), True
     if PATCH_MARKER_V7 in source:
-        return add_latest_metadata(add_install_support(source)), True
+        return add_uninstall_support(
+            add_latest_metadata(add_install_support(source))), True
     if PATCH_MARKER_V6 in source:
         if PLAY_COUNT_PAYLOAD_ANCHOR not in source:
             raise ValueError("Unsupported Sunshine Playnite Connector; V6 game payload is incomplete")
         patched = source.replace(
             PLAY_COUNT_PAYLOAD_ANCHOR, PLAY_COUNT_PAYLOAD_REPLACEMENT, 1)
-        return add_latest_metadata(add_install_support(patched)), True
+        return add_uninstall_support(
+            add_latest_metadata(add_install_support(patched))), True
     if PATCH_MARKER_V5 in source:
         if DESCRIPTION_PAYLOAD_ANCHOR not in source:
             raise ValueError("Unsupported Sunshine Playnite Connector; V5 game payload is incomplete")
         patched = source.replace(
             DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1)
-        return add_latest_metadata(add_install_support(patched)), True
+        return add_uninstall_support(
+            add_latest_metadata(add_install_support(patched))), True
     if PATCH_MARKER_V4 in source:
         if LAUNCH_PREP_REPLACEMENT not in source:
             raise ValueError("Unsupported Sunshine Playnite Connector; V4 launch block is incomplete")
@@ -291,7 +341,8 @@ def patch_text(source: str) -> tuple[str, bool]:
             raise ValueError("Unsupported Sunshine Playnite Connector; V4 game payload is incomplete")
         patched = patched.replace(
             DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1)
-        return add_latest_metadata(add_install_support(patched)), True
+        return add_uninstall_support(
+            add_latest_metadata(add_install_support(patched))), True
     anchors = [
         ("launch display preparation", LAUNCH_PREP_ANCHOR),
     ]
@@ -335,7 +386,8 @@ def patch_text(source: str) -> tuple[str, bool]:
     if DESCRIPTION_PAYLOAD_ANCHOR in patched:
         patched = patched.replace(
             DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1)
-    return add_latest_metadata(add_install_support(patched)), True
+    return add_uninstall_support(
+        add_latest_metadata(add_install_support(patched))), True
 
 
 def patch_file(path: Path, apply: bool) -> str:

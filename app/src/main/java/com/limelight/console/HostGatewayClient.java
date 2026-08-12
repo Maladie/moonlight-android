@@ -858,6 +858,25 @@ final class HostGatewayClient {
         }
     }
 
+    void uninstallPlayniteGame(Connection connection, String gameId) throws IOException {
+        if (!isPlayniteId(gameId)) {
+            throw new IllegalArgumentException("Invalid Playnite game ID");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("game_id", gameId.toLowerCase(Locale.ROOT));
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection.endpoint,
+                "/api/v1/playnite/game/uninstall", "POST", body, connection,
+                pinnedTrust(connection), 15_000);
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error",
+                    "The game could not be uninstalled."), 0);
+        }
+    }
+
     void focusPlayniteInstallation(Connection connection, String gameId) throws IOException {
         if (!isPlayniteId(gameId)) {
             throw new IllegalArgumentException("Invalid Playnite game ID");
