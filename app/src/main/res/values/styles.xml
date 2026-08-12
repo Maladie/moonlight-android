@@ -43,4 +43,11 @@
         <item name="android:windowNoTitle">true</item>
     </style>
 
+    <style name="MoonWakerSettingsTheme" parent="AppTheme">
+        <item name="android:windowBackground">@drawable/moonwaker_settings_background</item>
+        <item name="android:colorAccent">#67D9FF</item>
+        <item name="android:windowNoTitle">true</item>
+        <item name="android:fontFamily">sans</item>
+    </style>
+
 </resources>

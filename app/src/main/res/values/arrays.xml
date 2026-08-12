@@ -161,6 +161,20 @@
         <item>2500</item>
         <item>3000</item>
     </string-array>
+    <string-array name="home_trigger_button_names">
+        <item>@string/overlay_trigger_none</item>
+        <item>@string/overlay_trigger_select</item>
+        <item>@string/overlay_trigger_start</item>
+        <item>@string/overlay_trigger_guide</item>
+        <item>@string/overlay_trigger_lb_rb</item>
+    </string-array>
+    <string-array name="home_trigger_button_values" translatable="false">
+        <item>none</item>
+        <item>select</item>
+        <item>start</item>
+        <item>guide</item>
+        <item>lb_rb</item>
+    </string-array>
 
     <string-array name="discord_shortcut_names">
         <item>@string/discord_shortcut_none</item>

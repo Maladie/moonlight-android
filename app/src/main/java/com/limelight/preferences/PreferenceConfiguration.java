@@ -72,6 +72,7 @@ public class PreferenceConfiguration {
     private static final String GAMEPAD_MOTION_FALLBACK_PREF_STRING = "checkbox_gamepad_motion_fallback";
     private static final String GAMEPAD_BATTERY_WARNING_PREF_STRING = "list_gamepad_battery_warning";
     private static final String OVERLAY_TRIGGER_BUTTON_PREF_STRING = "overlay_trigger_button";
+    private static final String HOME_TRIGGER_BUTTON_PREF_STRING = "home_trigger_button";
     private static final String OVERLAY_HOLD_DURATION_PREF_STRING = "overlay_hold_duration";
     private static final String DISCORD_MUTE_SHORTCUT_PREF_STRING = "discord_mute_shortcut";
     private static final String DISCORD_LEAVE_SHORTCUT_PREF_STRING = "discord_leave_shortcut";
@@ -121,6 +122,7 @@ public class PreferenceConfiguration {
     private static final boolean DEFAULT_GAMEPAD_MOTION_FALLBACK = false;
     private static final String DEFAULT_GAMEPAD_BATTERY_WARNING = "20";
     private static final String DEFAULT_OVERLAY_TRIGGER_BUTTON = "select";
+    private static final String DEFAULT_HOME_TRIGGER_BUTTON = "none";
     private static final String DEFAULT_OVERLAY_HOLD_DURATION = "1500";
     private static final String DEFAULT_DISCORD_MUTE_SHORTCUT = "x";
     private static final String DEFAULT_DISCORD_LEAVE_SHORTCUT = "y";
@@ -177,6 +179,7 @@ public class PreferenceConfiguration {
     public boolean gamepadMotionSensorsFallbackToDevice;
     public int gamepadBatteryWarningThreshold;
     public String overlayTriggerButton;
+    public String homeTriggerButton;
     public int overlayHoldDurationMs;
     public String discordMuteShortcut;
     public String discordLeaveShortcut;
@@ -632,6 +635,7 @@ public class PreferenceConfiguration {
         config.gamepadMotionSensorsFallbackToDevice = prefs.getBoolean(GAMEPAD_MOTION_FALLBACK_PREF_STRING, DEFAULT_GAMEPAD_MOTION_FALLBACK);
         config.gamepadBatteryWarningThreshold = Integer.parseInt(prefs.getString(GAMEPAD_BATTERY_WARNING_PREF_STRING, DEFAULT_GAMEPAD_BATTERY_WARNING));
         config.overlayTriggerButton = prefs.getString(OVERLAY_TRIGGER_BUTTON_PREF_STRING, DEFAULT_OVERLAY_TRIGGER_BUTTON);
+        config.homeTriggerButton = prefs.getString(HOME_TRIGGER_BUTTON_PREF_STRING, DEFAULT_HOME_TRIGGER_BUTTON);
         config.overlayHoldDurationMs = Integer.parseInt(prefs.getString(OVERLAY_HOLD_DURATION_PREF_STRING, DEFAULT_OVERLAY_HOLD_DURATION));
         config.discordMuteShortcut = prefs.getString(DISCORD_MUTE_SHORTCUT_PREF_STRING,
                 DEFAULT_DISCORD_MUTE_SHORTCUT);
