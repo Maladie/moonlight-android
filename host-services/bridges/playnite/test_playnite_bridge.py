@@ -6,7 +6,8 @@ from unittest import mock
 
 from PatchPlayniteConnector import (
     ARTWORK_LOOKUP_ANCHOR, ARTWORK_PAYLOAD_ANCHOR, PATCH_MARKER, PATCH_MARKER_V8,
-    INSTALL_EVENT_ANCHOR, INSTALL_UI_ANCHOR, INSTALLING_PAYLOAD_ANCHOR,
+    INSTALL_EVENT_ANCHOR, INSTALL_READER_REPLACEMENT, INSTALL_UI_ANCHOR,
+    INSTALL_UI_REPLACEMENT, INSTALLING_PAYLOAD_ANCHOR,
     READER_ANCHOR, SEND_BUILD_ANCHOR, SEND_PARAM_ANCHOR, STARTED_ANCHOR,
     SOURCE_PAYLOAD_ANCHOR, STATUS_OBJECT_ANCHOR, STATUS_PARAM_ANCHOR, patch_text,
 )
@@ -261,17 +262,24 @@ class BridgeStateTest(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertEqual([77], self.installation_focus_calls)
 
-        # The launcher main window may still look like an installation candidate,
-        # but it must not replace the concrete confirmation dialog we tracked.
+        # "Done" is an explicit acknowledgement. Some launchers (notably Epic)
+        # keep the same top-level HWND after their embedded prompt is confirmed.
         self.state.installation_probe_action = lambda baseline: {
             "requires_attention": True, "reason": "launcher_prompt",
-            "hwnd": 88, "process_id": 123, "title": "Steam", "image": "steam.exe",
+            "hwnd": 77, "process_id": 123, "title": "Choose install location",
+            "image": "futurelauncher.exe",
         }
         verified = self.state.verify_installation(GAME_ID)
         self.assertFalse(verified["requires_attention"])
         self.assertEqual("installing", verified["status"])
         resumed = self.state.library_page("0", 10)["games"][0]
         self.assertFalse(resumed["installRequiresAttention"])
+
+        for _ in range(3):
+            self.state.apply_installation_probe(
+                GAME_ID, self.state.installation_probe_action({}))
+        self.assertFalse(self.state.library_page(
+            "0", 10)["games"][0]["installRequiresAttention"])
 
         self.state.handle_message({"type": "status", "status": {
             "name": "gameInstalled", "id": GAME_ID,
@@ -343,6 +351,19 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual("game-installed", self.state.events[-1]["event"])
         self.assertEqual("Baba Is You", self.state.events[-1]["payload"]["name"])
 
+    def test_uninstall_dispatches_only_for_installed_game(self):
+        self.state.handle_message({
+            "type": "games",
+            "payload": [{"id": GAME_ID, "name": "Baba Is You", "installed": True}],
+        })
+
+        result = self.state.uninstall_game(GAME_ID)
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual({
+            "type": "command", "command": "uninstall", "id": GAME_ID,
+        }, self.commands[-1])
+
     def test_install_rejects_unknown_or_already_installed_game(self):
         with self.assertRaises(FileNotFoundError):
             self.state.install_game(GAME_ID)
@@ -400,6 +421,8 @@ class BridgeStateTest(unittest.TestCase):
         self.assertIn("$PlayniteApi.Database.Sources.Get($g.SourceId).Name", patched)
         self.assertIn("source          =", patched)
         self.assertIn("InstallGameByGuidStringOnUIThread", patched)
+        self.assertIn("UninstallGameByGuidStringOnUIThread", patched)
+        self.assertIn("$obj.command -eq 'uninstall'", patched)
         self.assertIn("gameInstallationCancelled", patched)
         self.assertIn("installing      = [bool]$g.IsInstalling", patched)
         self.assertNotIn("/game/prepare", patched)
@@ -408,7 +431,10 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual(patched, second)
 
     def test_connector_v8_is_upgraded_with_library_source(self):
-        patched, changed = patch_text(PATCH_MARKER_V8 + "\n" + SOURCE_PAYLOAD_ANCHOR)
+        patched, changed = patch_text(PATCH_MARKER_V8 + "\n"
+                                      + INSTALL_UI_REPLACEMENT + "\n"
+                                      + INSTALL_READER_REPLACEMENT + "\n"
+                                      + SOURCE_PAYLOAD_ANCHOR)
         self.assertTrue(changed)
         self.assertIn(PATCH_MARKER, patched)
         self.assertIn("source          =", patched)

@@ -6624,6 +6624,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 activatePlayniteItem(host.uuid, item);
             });
             actions.add(launch);
+            TextView uninstall = panelAction(getString(R.string.playnite_uninstall));
+            uninstall.setTextColor(0xFFFF9B92);
+            uninstall.setOnClickListener(view -> confirmPlayniteUninstall(host, item));
+            actions.add(uninstall);
             if (item.stableId().equals(resumePlayniteGameId)
                     && host.runningGameId != 0) {
                 TextView terminate = panelAction(
@@ -6901,6 +6905,47 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     ConsoleUiFeedback.makeText(this, getString(R.string.playnite_install_failed,
                             item.game.name), Toast.LENGTH_LONG).show();
                 });
+            }
+        });
+    }
+
+    private void confirmPlayniteUninstall(ComputerDetails host,
+                                          PlayniteDashboardItem item) {
+        TextView cancel = panelAction(getString(R.string.console_cancel));
+        TextView uninstall = panelAction(getString(R.string.playnite_uninstall));
+        uninstall.setTextColor(0xFFFF8A80);
+        cancel.setOnClickListener(view -> handlePanelBack());
+        uninstall.setOnClickListener(view -> {
+            hideSidePanel();
+            uninstallPlayniteGame(host, item);
+        });
+        showSidePanel(getString(R.string.playnite_game_options), item.game.name,
+                getString(R.string.playnite_uninstall_confirmation, item.game.name),
+                cancel, uninstall);
+    }
+
+    private void uninstallPlayniteGame(ComputerDetails host,
+                                       PlayniteDashboardItem item) {
+        String address = host.activeAddress != null ? host.activeAddress.address : null;
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(host.uuid, address);
+        if (connection == null) {
+            ConsoleUiFeedback.makeText(this, R.string.playnite_gateway_not_configured,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        ConsoleUiFeedback.makeText(this, getString(R.string.playnite_uninstall_starting,
+                item.game.name), Toast.LENGTH_LONG).show();
+        executor.execute(() -> {
+            try {
+                hostGatewayClient.uninstallPlayniteGame(
+                        connection, item.game.playniteGameId);
+                mainHandler.post(() -> requestPlayniteRefresh(
+                        currentHost(host.uuid), false));
+            } catch (IOException | RuntimeException error) {
+                mainHandler.post(() -> ConsoleUiFeedback.makeText(this,
+                        getString(R.string.playnite_uninstall_failed, item.game.name),
+                        Toast.LENGTH_LONG).show());
             }
         });
     }
@@ -8624,7 +8669,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         TextView close = panelAction(getString(R.string.console_close_game_and_moonwaker));
         close.setTextColor(0xFFFF8A80);
         leave.setOnClickListener(view -> {
-            hideSidePanel();
+            hideSidePanelImmediately();
             leaveMoonWakerKeepingStream();
         });
         returnToGame.setOnClickListener(view -> {
@@ -8835,28 +8880,35 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void hideSidePanel() {
-        Runnable finish = () -> {
-            if (discordPanelController != null) discordPanelController.closePanel();
-            if (sideDialog != null) sideDialog.dismiss();
-            sidePanelScroll.setTranslationX(0);
-            sidePanelScroll.setAlpha(1f);
-            sidePanelScroll.setScaleX(1f);
-            sidePanelScroll.setScaleY(1f);
-            panelHistory.clear();
-            currentPanelKey = null;
-            sidePanelBusyBanner = null;
-            sidePanelTransient = false;
-            homeLayer.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
-            homeLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
-            if (hostSelectionLayer != null) {
-                hostSelectionLayer.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
-                hostSelectionLayer.setImportantForAccessibility(
-                        View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
-            }
-            restoreContentFocus();
-        };
+        Runnable finish = this::completeSidePanelDismissal;
         if (reducedMotion) finish.run();
         else sidePanelScroll.animate().translationX(dp(510)).setDuration(150).withEndAction(finish).start();
+    }
+
+    private void hideSidePanelImmediately() {
+        sidePanelScroll.animate().cancel();
+        completeSidePanelDismissal();
+    }
+
+    private void completeSidePanelDismissal() {
+        if (discordPanelController != null) discordPanelController.closePanel();
+        if (sideDialog != null) sideDialog.dismiss();
+        sidePanelScroll.setTranslationX(0);
+        sidePanelScroll.setAlpha(1f);
+        sidePanelScroll.setScaleX(1f);
+        sidePanelScroll.setScaleY(1f);
+        panelHistory.clear();
+        currentPanelKey = null;
+        sidePanelBusyBanner = null;
+        sidePanelTransient = false;
+        homeLayer.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+        homeLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+        if (hostSelectionLayer != null) {
+            hostSelectionLayer.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
+            hostSelectionLayer.setImportantForAccessibility(
+                    View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
+        }
+        restoreContentFocus();
     }
 
     private PanelSnapshot capturePanelSnapshot() {
