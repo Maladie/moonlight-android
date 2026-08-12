@@ -26,6 +26,7 @@ import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.WindowInsets;
+import android.widget.Toast;
 
 import com.limelight.LimeLog;
 import com.limelight.PcView;
@@ -276,6 +277,24 @@ public class StreamSettings extends Activity {
 
             addPreferencesFromResource(R.xml.preferences);
             PreferenceScreen screen = getPreferenceScreen();
+
+            Preference.OnPreferenceChangeListener shortcutConflictGuard =
+                    (preference, newValue) -> {
+                        String otherKey = "overlay_trigger_button".equals(preference.getKey())
+                                ? "home_trigger_button" : "overlay_trigger_button";
+                        ListPreference other = (ListPreference) findPreference(otherKey);
+                        String selected = String.valueOf(newValue);
+                        if (!"none".equals(selected) && selected.equals(other.getValue())) {
+                            Toast.makeText(getActivity(), R.string.shortcut_button_conflict,
+                                    Toast.LENGTH_LONG).show();
+                            return false;
+                        }
+                        return true;
+                    };
+            findPreference("overlay_trigger_button").setOnPreferenceChangeListener(
+                    shortcutConflictGuard);
+            findPreference("home_trigger_button").setOnPreferenceChangeListener(
+                    shortcutConflictGuard);
 
             // hide on-screen controls category on non touch screen devices
             if (!getActivity().getPackageManager().hasSystemFeature(PackageManager.FEATURE_TOUCHSCREEN)) {

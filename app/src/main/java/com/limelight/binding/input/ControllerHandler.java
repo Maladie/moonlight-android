@@ -79,6 +79,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
          */
         void onOverlayMenuOpen();
 
+        void onHomeShortcut();
+
         /**
          * Called when select button is released before 3 seconds (cancel).
          */
@@ -186,7 +188,10 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     private long selectDownTime = 0;
     private Runnable overlayMenuOpenRunnable = null;
     private int overlayTriggerButtonFlag = ControllerPacket.BACK_FLAG;
+    private int homeTriggerButtonFlag;
     private boolean overlayTriggeredByRemoteBack = false;
+    private enum HoldAction { OVERLAY, HOME }
+    private HoldAction pendingHoldAction = HoldAction.OVERLAY;
 
     public ControllerHandler(Activity activityContext, NvConnection conn, GameGestures gestures, PreferenceConfiguration prefConfig) {
         this.activityContext = activityContext;
@@ -194,24 +199,9 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         this.gestures = gestures;
         this.prefConfig = prefConfig;
 
-        // Parse overlay trigger button preference to flag(s)
-        switch (prefConfig.overlayTriggerButton) {
-            case "select":
-                this.overlayTriggerButtonFlag = ControllerPacket.BACK_FLAG;
-                break;
-            case "start":
-                this.overlayTriggerButtonFlag = ControllerPacket.PLAY_FLAG;
-                break;
-            case "guide":
-                this.overlayTriggerButtonFlag = ControllerPacket.SPECIAL_BUTTON_FLAG;
-                break;
-            case "lb_rb":
-                this.overlayTriggerButtonFlag = ControllerPacket.LB_FLAG | ControllerPacket.RB_FLAG;
-                break;
-            default:
-                this.overlayTriggerButtonFlag = ControllerPacket.BACK_FLAG;
-                break;
-        }
+        overlayTriggerButtonFlag = triggerFlag(prefConfig.overlayTriggerButton);
+        homeTriggerButtonFlag = triggerFlag(prefConfig.homeTriggerButton);
+        if (homeTriggerButtonFlag == overlayTriggerButtonFlag) homeTriggerButtonFlag = 0;
 
         this.overlayMenuOpenMs = prefConfig.overlayHoldDurationMs;
         this.deviceVibrator = (Vibrator) activityContext.getSystemService(Context.VIBRATOR_SERVICE);
@@ -2592,12 +2582,25 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     /**
      * Start the overlay menu hold detection timers.
      */
-    private void startOverlayMenuHoldDetection(long downTime) {
+    private static int triggerFlag(String trigger) {
+        if ("start".equals(trigger)) return ControllerPacket.PLAY_FLAG;
+        if ("guide".equals(trigger)) return ControllerPacket.SPECIAL_BUTTON_FLAG;
+        if ("lb_rb".equals(trigger)) return ControllerPacket.LB_FLAG | ControllerPacket.RB_FLAG;
+        if ("select".equals(trigger)) return ControllerPacket.BACK_FLAG;
+        return 0;
+    }
+
+    private boolean isLocalTrigger(int flag) {
+        return (overlayTriggerButtonFlag & flag) != 0 || (homeTriggerButtonFlag & flag) != 0;
+    }
+
+    private void startOverlayMenuHoldDetection(long downTime, HoldAction action) {
         if (overlayMenuListener == null) {
             return;
         }
 
         selectDownTime = downTime;
+        pendingHoldAction = action;
 
         // Schedule menu open callback at OVERLAY_MENU_OPEN_MS interval
         overlayMenuOpenRunnable = new Runnable() {
@@ -2635,7 +2638,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                     defaultContext.rightStickY = 0;
                     sendControllerInputPacket(defaultContext);
 
-                    overlayMenuListener.onOverlayMenuOpen();
+                    if (pendingHoldAction == HoldAction.HOME) overlayMenuListener.onHomeShortcut();
+                    else overlayMenuListener.onOverlayMenuOpen();
                 }
             }
         };
@@ -2680,13 +2684,15 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
      * @param isRemoteBack True if triggered by remote control back button
      */
     private void checkOverlayTrigger(InputDeviceContext context, int buttonFlag, long eventTime, boolean isRemoteBack) {
-        // Check if this button is part of the trigger, or if it's the back button on a remote
-        if ((buttonFlag & overlayTriggerButtonFlag) != 0 || (isRemoteBack && buttonFlag == ControllerPacket.BACK_FLAG)) {
-            // Check if ALL required trigger buttons are now pressed, or if it's the back button on a remote
-            if ((context.inputMap & overlayTriggerButtonFlag) == overlayTriggerButtonFlag || isRemoteBack) {
-                overlayTriggeredByRemoteBack = isRemoteBack;
-                startOverlayMenuHoldDetection(eventTime);
-            }
+        if (isRemoteBack && buttonFlag == ControllerPacket.BACK_FLAG) {
+            overlayTriggeredByRemoteBack = true;
+            startOverlayMenuHoldDetection(eventTime, HoldAction.OVERLAY);
+        } else if ((buttonFlag & overlayTriggerButtonFlag) != 0
+                && (context.inputMap & overlayTriggerButtonFlag) == overlayTriggerButtonFlag) {
+            startOverlayMenuHoldDetection(eventTime, HoldAction.OVERLAY);
+        } else if ((buttonFlag & homeTriggerButtonFlag) != 0
+                && (context.inputMap & homeTriggerButtonFlag) == homeTriggerButtonFlag) {
+            startOverlayMenuHoldDetection(eventTime, HoldAction.HOME);
         }
     }
 
@@ -2695,7 +2701,8 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
      * Uses bitwise operations to check if the button is part of the configured trigger.
      */
     private void checkOverlayTriggerRelease(int buttonFlag) {
-        if ((buttonFlag & overlayTriggerButtonFlag) != 0 || (overlayTriggeredByRemoteBack && buttonFlag == ControllerPacket.BACK_FLAG)) {
+        if (isLocalTrigger(buttonFlag)
+                || (overlayTriggeredByRemoteBack && buttonFlag == ControllerPacket.BACK_FLAG)) {
             cancelOverlayMenuHoldDetection();
         }
     }
@@ -2995,7 +3002,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         switch (keyCode) {
         case KeyEvent.KEYCODE_BUTTON_MODE:
             context.hasMode = true;
-            if (overlayTriggerButtonFlag == ControllerPacket.SPECIAL_BUTTON_FLAG) {
+            if (isLocalTrigger(ControllerPacket.SPECIAL_BUTTON_FLAG)) {
                 isPendingTriggerButton = true;
                 // Guide is the overlay trigger - delay sending to host until the outcome is known
                 if (event.getRepeatCount() == 0) {
@@ -3016,7 +3023,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             break;
         case KeyEvent.KEYCODE_BUTTON_START:
         case KeyEvent.KEYCODE_MENU:
-            if (overlayTriggerButtonFlag == ControllerPacket.PLAY_FLAG) {
+            if (isLocalTrigger(ControllerPacket.PLAY_FLAG)) {
                 isPendingTriggerButton = true;
                 if (event.getRepeatCount() == 0) {
                     context.startDownTime = event.getEventTime();
@@ -3035,7 +3042,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
             break;
         case KeyEvent.KEYCODE_BUTTON_SELECT:
             context.hasSelect = true;
-            if (overlayTriggerButtonFlag == ControllerPacket.BACK_FLAG) {
+            if (isLocalTrigger(ControllerPacket.BACK_FLAG)) {
                 isPendingTriggerButton = true;
                 if (event.getRepeatCount() == 0) {
                     context.inputMap |= ControllerPacket.BACK_FLAG;
@@ -3063,7 +3070,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                 }
             } else {
                 // Gamepad - send to host and check overlay trigger
-                if (overlayTriggerButtonFlag == ControllerPacket.BACK_FLAG) {
+                if (isLocalTrigger(ControllerPacket.BACK_FLAG)) {
                     isPendingTriggerButton = true;
                     if (event.getRepeatCount() == 0) {
                         context.inputMap |= ControllerPacket.BACK_FLAG;

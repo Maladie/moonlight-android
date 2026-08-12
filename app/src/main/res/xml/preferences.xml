@@ -148,6 +148,13 @@
             android:entryValues="@array/overlay_trigger_button_values"
             android:defaultValue="select" />
         <ListPreference
+            android:key="home_trigger_button"
+            android:title="@string/title_home_trigger_button"
+            android:summary="@string/summary_home_trigger_button"
+            android:entries="@array/home_trigger_button_names"
+            android:entryValues="@array/home_trigger_button_values"
+            android:defaultValue="none" />
+        <ListPreference
             android:key="overlay_hold_duration"
             android:title="@string/title_overlay_hold_duration"
             android:summary="@string/summary_overlay_hold_duration"
