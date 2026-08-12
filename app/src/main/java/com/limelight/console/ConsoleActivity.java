@@ -173,6 +173,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final long EXPANDED_WINDOW_WARMUP_DELAY_MS = 150L;
     private static final long ARTWORK_FOCUS_SETTLE_MS = 260L;
     private static final long ARTWORK_CROSSFADE_MS = 480L;
+    private static final String PREF_SCREEN_SAVER_SECONDS = "screen_saver_seconds";
+    private static final String PREF_SCREEN_SAVER_MINUTES_LEGACY = "screen_saver_minutes";
+    private static final int SCREEN_SAVER_NEVER = 0;
+    private static final int SCREEN_SAVER_DEFAULT_SECONDS = 5 * 60;
+    private static final long SCREEN_SAVER_SLIDE_MS = 30_000L;
     private static final long EXPANDED_NAVIGATION_INTERVAL_MS = 105L;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final ExecutorService executor = Executors.newFixedThreadPool(3);
@@ -219,6 +224,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private int menuMusicVolume;
     private int effectsVolume;
     private int backgroundStreamRetentionMinutes;
+    private int screenSaverSeconds;
     private boolean showCarouselGameDescription;
     private boolean refreshHostsOnResume;
     private boolean initialHostsLoaded;
@@ -229,6 +235,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String autoLoginHostUuid;
 
     private FrameLayout root;
+    private FrameLayout screenSaverLayer;
+    private ImageView screenSaverArtwork;
+    private ImageView screenSaverArtworkNext;
+    private TextView screenSaverCaption;
+    private boolean screenSaverVisible;
+    private int screenSaverGeneration;
+    private int screenSaverDismissKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+    private long screenSaverMotionBlockUntil;
+    private List<PlayniteDashboardItem> screenSaverItems = Collections.emptyList();
+    private int screenSaverItemIndex;
+    private final Runnable screenSaverTimeout = this::showScreenSaver;
+    private final Runnable screenSaverSlide = this::showNextScreenSaverArtwork;
     private FrameLayout homeLayer;
     private FrameLayout hostSelectionLayer;
     private HorizontalScrollView hostSelectionScroll;
@@ -364,6 +382,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final Set<String> vibepolloEnsureInFlight =
             Collections.synchronizedSet(new HashSet<>());
     private final Map<String, String> playniteInstallRequests = new LinkedHashMap<>();
+    private final Map<String, String> playniteUninstallRequests = new LinkedHashMap<>();
     private final Set<String> playniteInstallObserved = new HashSet<>();
     private final Set<String> completedPlayniteInstallAnimations = new HashSet<>();
     private List<NvApp> currentSunshineApps = Collections.emptyList();
@@ -478,6 +497,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         menuMusicVolume = preferences.getInt("menu_music_volume", 16);
         effectsVolume = preferences.getInt("effects_volume", 40);
         backgroundStreamRetentionMinutes = BackgroundStreamPreferences.readMinutes(this);
+        screenSaverSeconds = preferences.contains(PREF_SCREEN_SAVER_SECONDS)
+                ? preferences.getInt(PREF_SCREEN_SAVER_SECONDS, SCREEN_SAVER_DEFAULT_SECONDS)
+                : preferences.contains(PREF_SCREEN_SAVER_MINUTES_LEGACY)
+                ? preferences.getInt(PREF_SCREEN_SAVER_MINUTES_LEGACY, 0) * 60
+                : SCREEN_SAVER_DEFAULT_SECONDS;
         showCarouselGameDescription = preferences.getBoolean(
                 "show_carousel_game_description", true);
         selectedHostUuid = preferences.getString("selected_host", null);
@@ -591,10 +615,28 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             hostSelectionLayer.setVisibility(hostSelectionVisible ? View.VISIBLE : View.GONE);
         }
         hideSystemUi();
+        resetScreenSaverTimer();
+        updateScreenSaverWakePolicy();
     }
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        if (event != null) {
+            if (screenSaverVisible) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                    screenSaverDismissKeyCode = event.getKeyCode();
+                    hideScreenSaver();
+                }
+                return true;
+            }
+            if (screenSaverDismissKeyCode == event.getKeyCode()) {
+                if (event.getAction() == KeyEvent.ACTION_UP) {
+                    screenSaverDismissKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+                }
+                return true;
+            }
+            if (event.getAction() == KeyEvent.ACTION_DOWN) resetScreenSaverTimer();
+        }
         if (libraryTransitionRunning && event != null
                 && (isDirectionalNavigationKey(event.getKeyCode())
                 || event.getKeyCode() == KeyEvent.KEYCODE_ENTER
@@ -683,6 +725,32 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (handleVolumeAdjustment(event)) return true;
         if (handleManualFocusNavigation(event)) return true;
         return super.dispatchKeyEvent(event);
+    }
+
+    @Override
+    public boolean dispatchTouchEvent(MotionEvent event) {
+        if (event != null && screenSaverVisible) {
+            hideScreenSaver();
+            return true;
+        }
+        if (event != null && event.getActionMasked() == MotionEvent.ACTION_DOWN) {
+            resetScreenSaverTimer();
+        }
+        return super.dispatchTouchEvent(event);
+    }
+
+    @Override
+    public boolean dispatchGenericMotionEvent(MotionEvent event) {
+        if (isMeaningfulMotion(event)) {
+            if (screenSaverVisible) {
+                screenSaverMotionBlockUntil = SystemClock.uptimeMillis() + 350L;
+                hideScreenSaver();
+                return true;
+            }
+            if (SystemClock.uptimeMillis() < screenSaverMotionBlockUntil) return true;
+            resetScreenSaverTimer();
+        }
+        return super.dispatchGenericMotionEvent(event);
     }
 
     /**
@@ -872,6 +940,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     @Override
     protected void onPause() {
         active = false;
+        screenSaverDismissKeyCode = KeyEvent.KEYCODE_UNKNOWN;
+        screenSaverMotionBlockUntil = 0L;
+        hideScreenSaver();
+        mainHandler.removeCallbacks(screenSaverTimeout);
+        getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (consoleAudioEngine != null) consoleAudioEngine.pause();
         launchGeneration.incrementAndGet();
         artworkGeneration.incrementAndGet();
@@ -1314,7 +1387,47 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         buildHostSelectionLayer(container);
         buildSidePanel();
         buildLoadingLayer(container);
+        buildScreenSaverLayer(container);
         return container;
+    }
+
+    private void buildScreenSaverLayer(FrameLayout container) {
+        screenSaverLayer = new FrameLayout(this);
+        screenSaverLayer.setVisibility(View.GONE);
+        screenSaverLayer.setBackgroundColor(Color.BLACK);
+        screenSaverLayer.setFocusable(true);
+        screenSaverLayer.setClickable(true);
+
+        screenSaverArtwork = screenSaverImage();
+        screenSaverArtworkNext = screenSaverImage();
+        screenSaverLayer.addView(screenSaverArtwork, match());
+        screenSaverLayer.addView(screenSaverArtworkNext, match());
+
+        View captionScrim = new View(this);
+        captionScrim.setBackground(new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{0x00000000, 0xC0000000}));
+        FrameLayout.LayoutParams scrimParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(190), Gravity.BOTTOM);
+        screenSaverLayer.addView(captionScrim, scrimParams);
+
+        screenSaverCaption = text("", 13, Color.WHITE, false);
+        screenSaverCaption.setGravity(Gravity.END);
+        screenSaverCaption.setShadowLayer(dp(3), 0, dp(1), 0xFF000000);
+        FrameLayout.LayoutParams captionParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT,
+                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
+        captionParams.rightMargin = dp(42);
+        captionParams.bottomMargin = dp(32);
+        screenSaverLayer.addView(screenSaverCaption, captionParams);
+        container.addView(screenSaverLayer, match());
+    }
+
+    private ImageView screenSaverImage() {
+        ImageView image = new ImageView(this);
+        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        image.setAlpha(0f);
+        return image;
     }
 
     private void buildHostSelectionLayer(FrameLayout container) {
@@ -3574,7 +3687,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private boolean hasActivePlayniteInstallation() {
-        if (!playniteInstallRequests.isEmpty()) return true;
+        if (!playniteInstallRequests.isEmpty() || !playniteUninstallRequests.isEmpty()) return true;
         for (PlayniteLibraryGame game : currentPlayniteGames) {
             if (game.installing) return true;
         }
@@ -3584,7 +3697,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void reconcilePlayniteInstallations(ComputerDetails host,
                                                 List<PlayniteLibraryGame> previous,
                                                 List<PlayniteLibraryGame> current) {
-        if (host == null || playniteInstallRequests.isEmpty()) return;
+        if (host == null || playniteInstallRequests.isEmpty()
+                && playniteUninstallRequests.isEmpty()) return;
         Map<String, PlayniteLibraryGame> currentById = new LinkedHashMap<>();
         for (PlayniteLibraryGame game : current) {
             currentById.put(game.playniteGameId, game);
@@ -3601,6 +3715,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 continue;
             }
             if (game.installed) {
+                ensureVibepolloAfterInstall(host, game);
                 boolean alreadyShownInStream = preferences.getLong(
                         playniteInstallNotificationKey(host.uuid, gameId), 0L) > 0L;
                 if (!alreadyShownInStream) {
@@ -3628,6 +3743,49 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             playniteInstallRequests.remove(key);
             playniteInstallObserved.remove(key);
         }
+        List<String> uninstalled = new ArrayList<>();
+        for (Map.Entry<String, String> request : playniteUninstallRequests.entrySet()) {
+            String prefix = host.uuid + ":";
+            if (!request.getKey().startsWith(prefix)) continue;
+            PlayniteLibraryGame game = currentById.get(
+                    request.getKey().substring(prefix.length()));
+            if (game != null && !game.installed) {
+                ConsoleUiFeedback.makeText(this, getString(
+                        R.string.playnite_uninstall_complete, request.getValue()),
+                        Toast.LENGTH_LONG).show();
+                uninstalled.add(request.getKey());
+            }
+        }
+        for (String key : uninstalled) playniteUninstallRequests.remove(key);
+    }
+
+    private void ensureVibepolloAfterInstall(ComputerDetails host,
+                                             PlayniteLibraryGame game) {
+        String address = host.activeAddress != null ? host.activeAddress.address : null;
+        HostGatewayClient.Connection connection =
+                hostGatewayStore.loadClientConnection(host.uuid, address);
+        if (connection == null) return;
+        String key = host.uuid + ":" + game.playniteGameId;
+        if (!vibepolloEnsureInFlight.add(key)) return;
+        executor.execute(() -> {
+            JSONObject result = null;
+            try {
+                result = hostGatewayClient.ensureVibepolloPlayniteApp(
+                        connection, game.playniteGameId, game.name);
+            } catch (IOException | RuntimeException ignored) { }
+            JSONObject ensured = result;
+            mainHandler.post(() -> {
+                vibepolloEnsureInFlight.remove(key);
+                if (ensured != null) {
+                    Integer appId = HostGatewayClient.parseVibepolloAppId(ensured);
+                    if (appId != null) {
+                        playniteLaunchTargetStore.setGameTarget(
+                                host.uuid, game.playniteGameId, appId);
+                    }
+                    if (appListPoller != null) appListPoller.pollNow();
+                }
+            });
+        });
     }
 
     private static String playniteInstallNotificationKey(String hostUuid, String gameId) {
@@ -6091,6 +6249,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private String playniteState(String hostUuid, PlayniteDashboardItem item) {
+        if (isPlayniteUninstalling(hostUuid, item)) {
+            return getString(R.string.playnite_uninstalling);
+        }
         if (item.game.installRequiresAttention) {
             return getString(R.string.playnite_install_attention);
         }
@@ -6113,6 +6274,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String playniteStateGlyph(String hostUuid, PlayniteDashboardItem item,
                                       boolean resumeSession) {
         if (resumeSession) return "▶  ";
+        if (isPlayniteUninstalling(hostUuid, item)) return "↓  ";
         if (item.game.installRequiresAttention) return "!  ";
         if (isPlayniteInstalling(hostUuid, item)) return "↓  ";
         if (!item.game.installed) return "+  ";
@@ -6127,6 +6289,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String playniteStateChipLabel(String hostUuid, PlayniteDashboardItem item,
                                           boolean resumeSession) {
         if (resumeSession) return getString(R.string.console_resume);
+        if (isPlayniteUninstalling(hostUuid, item)) {
+            return getString(R.string.playnite_uninstalling);
+        }
         if (item.game.installRequiresAttention) {
             return getString(R.string.playnite_install_attention_short);
         }
@@ -6147,7 +6312,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void stylePlayniteStateChip(TextView state, String hostUuid,
                                         PlayniteDashboardItem item,
                                         boolean resumeSession) {
-        boolean installing = isPlayniteInstalling(hostUuid, item);
+        boolean installing = isPlayniteInstalling(hostUuid, item)
+                || isPlayniteUninstalling(hostUuid, item);
         boolean unavailable = item.game.installed
                 && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED
                 && item.mappingState != PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE
@@ -6201,6 +6367,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private boolean isPlayniteInstalling(String hostUuid, PlayniteLibraryGame game) {
         return game.installing || playniteInstallRequests.containsKey(
                 playniteInstallKey(hostUuid, game.playniteGameId));
+    }
+
+    private boolean isPlayniteUninstalling(String hostUuid, PlayniteDashboardItem item) {
+        return playniteUninstallRequests.containsKey(playniteInstallKey(hostUuid, item));
     }
 
     private void resetPlaynitePoster(ImageView poster, PlayniteDashboardItem item) {
@@ -6934,6 +7104,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     Toast.LENGTH_LONG).show();
             return;
         }
+        String requestKey = playniteInstallKey(host.uuid, item);
+        playniteUninstallRequests.put(requestKey, item.game.name);
+        renderPlayniteLibrary(currentHost(host.uuid), currentSunshineApps);
         ConsoleUiFeedback.makeText(this, getString(R.string.playnite_uninstall_starting,
                 item.game.name), Toast.LENGTH_LONG).show();
         executor.execute(() -> {
@@ -6943,9 +7116,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 mainHandler.post(() -> requestPlayniteRefresh(
                         currentHost(host.uuid), false));
             } catch (IOException | RuntimeException error) {
-                mainHandler.post(() -> ConsoleUiFeedback.makeText(this,
-                        getString(R.string.playnite_uninstall_failed, item.game.name),
-                        Toast.LENGTH_LONG).show());
+                mainHandler.post(() -> {
+                    playniteUninstallRequests.remove(requestKey);
+                    renderPlayniteLibrary(currentHost(host.uuid), currentSunshineApps);
+                    ConsoleUiFeedback.makeText(this,
+                            getString(R.string.playnite_uninstall_failed, item.game.name),
+                            Toast.LENGTH_LONG).show();
+                });
             }
         });
     }
@@ -8464,6 +8641,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 R.string.console_background_stream_retention,
                 backgroundStreamRetentionLabel()));
         backgroundStream.setTag("options.background_stream_retention");
+        TextView screenSaver = panelAction(getString(
+                R.string.console_screen_saver_timeout, screenSaverTimeoutLabel()));
+        screenSaver.setTag("options.screen_saver_timeout");
         TextView settings = panelAction(getString(R.string.console_streaming_settings));
         TextView overrides = panelAction(getString(R.string.console_options_overrides));
         TextView integrations = panelAction(getString(R.string.console_host_integrations));
@@ -8505,6 +8685,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
         autoLogin.setOnClickListener(v -> showAutoLoginHostPanel());
         backgroundStream.setOnClickListener(v -> showBackgroundStreamRetentionPanel());
+        screenSaver.setOnClickListener(v -> showScreenSaverTimeoutPanel());
         hiddenApps.setOnClickListener(v -> {
             toggleHiddenApps();
             updateSettingsToggle(hiddenApps, showHiddenApps);
@@ -8533,7 +8714,170 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 autoLogin, integrations,
                 settingsSectionHeader(R.string.console_options_section_streaming),
                 backgroundStream, settings, overrides,
+                settingsSectionHeader(R.string.console_options_section_tv), screenSaver,
                 settingsSectionHeader(R.string.console_options_section_help), readme);
+    }
+
+    private void resetScreenSaverTimer() {
+        mainHandler.removeCallbacks(screenSaverTimeout);
+        if (!active || screenSaverSeconds == SCREEN_SAVER_NEVER || screenSaverVisible) return;
+        mainHandler.postDelayed(screenSaverTimeout, screenSaverSeconds * 1_000L);
+    }
+
+    private void updateScreenSaverWakePolicy() {
+        if (active && screenSaverSeconds != SCREEN_SAVER_NEVER) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        } else {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
+        }
+    }
+
+    private void showScreenSaver() {
+        if (!active || screenSaverSeconds == SCREEN_SAVER_NEVER
+                || loadingLayer != null && loadingLayer.getVisibility() == View.VISIBLE
+                || sideDialog != null && sideDialog.isShowing()
+                || libraryTransitionRunning) {
+            resetScreenSaverTimer();
+            return;
+        }
+        List<PlayniteDashboardItem> eligible = new ArrayList<>();
+        for (PlayniteDashboardItem item : allPlayniteItems) {
+            if (item != null && item.game != null && !item.game.backgroundKey.isEmpty()) {
+                eligible.add(item);
+            }
+        }
+        if (eligible.isEmpty() || selectedHostUuid == null || selectedHostUuid.isEmpty()) {
+            resetScreenSaverTimer();
+            return;
+        }
+        Collections.shuffle(eligible);
+        screenSaverItems = eligible;
+        screenSaverItemIndex = 0;
+        screenSaverGeneration++;
+        showNextScreenSaverArtwork();
+    }
+
+    private void showNextScreenSaverArtwork() {
+        mainHandler.removeCallbacks(screenSaverSlide);
+        if (!active || screenSaverItems.isEmpty()) return;
+        int generation = screenSaverGeneration;
+        PlayniteDashboardItem item = screenSaverItems.get(
+                screenSaverItemIndex++ % screenSaverItems.size());
+        String hostUuid = selectedHostUuid;
+        ComputerDetails host = hosts.get(hostUuid);
+        executor.execute(() -> {
+            ArtworkResult result = cachedPlayniteArtwork(hostUuid, item,
+                    PlayniteArtworkSpec.forBackdrop(item.game));
+            if (result == null && host != null) {
+                String address = host.activeAddress != null ? host.activeAddress.address : null;
+                HostGatewayClient.Connection connection =
+                        hostGatewayStore.loadClientConnection(hostUuid, address);
+                if (connection != null) {
+                    try {
+                        result = fetchPlayniteArtwork(connection, hostUuid, item,
+                                PlayniteArtworkSpec.forBackdrop(item.game));
+                    } catch (IOException ignored) { }
+                }
+            }
+            Bitmap bitmap = result == null ? null : decodeArtwork(result.file, 1920);
+            mainHandler.post(() -> applyScreenSaverArtwork(
+                    generation, item.game.name, bitmap));
+        });
+    }
+
+    private void applyScreenSaverArtwork(int generation, String title, Bitmap bitmap) {
+        if (!active || generation != screenSaverGeneration) return;
+        if (bitmap == null) {
+            if (screenSaverItemIndex < screenSaverItems.size()) {
+                showNextScreenSaverArtwork();
+            } else {
+                resetScreenSaverTimer();
+            }
+            return;
+        }
+        screenSaverVisible = true;
+        screenSaverLayer.setVisibility(View.VISIBLE);
+        screenSaverLayer.bringToFront();
+        screenSaverCaption.setText(getString(R.string.console_screen_saver_caption, title));
+        ImageView incoming = screenSaverArtworkNext;
+        ImageView outgoing = screenSaverArtwork;
+        incoming.animate().cancel();
+        outgoing.animate().cancel();
+        incoming.setImageBitmap(bitmap);
+        incoming.setAlpha(reducedMotion ? 1f : 0f);
+        if (reducedMotion) {
+            outgoing.setImageDrawable(null);
+        } else {
+            incoming.animate().alpha(1f).setDuration(850L).start();
+            outgoing.animate().alpha(0f).setDuration(850L).withEndAction(
+                    () -> outgoing.setImageDrawable(null)).start();
+        }
+        screenSaverArtwork = incoming;
+        screenSaverArtworkNext = outgoing;
+        mainHandler.postDelayed(screenSaverSlide, SCREEN_SAVER_SLIDE_MS);
+    }
+
+    private void hideScreenSaver() {
+        mainHandler.removeCallbacks(screenSaverSlide);
+        screenSaverGeneration++;
+        screenSaverItems = Collections.emptyList();
+        if (screenSaverLayer != null) screenSaverLayer.setVisibility(View.GONE);
+        if (screenSaverArtwork != null) screenSaverArtwork.setImageDrawable(null);
+        if (screenSaverArtworkNext != null) screenSaverArtworkNext.setImageDrawable(null);
+        screenSaverVisible = false;
+        resetScreenSaverTimer();
+    }
+
+    private static boolean isMeaningfulMotion(MotionEvent event) {
+        if (event == null) return false;
+        if ((event.getSource() & InputDevice.SOURCE_JOYSTICK) != 0) {
+            return Math.abs(event.getAxisValue(MotionEvent.AXIS_X)) > .25f
+                    || Math.abs(event.getAxisValue(MotionEvent.AXIS_Y)) > .25f
+                    || Math.abs(event.getAxisValue(MotionEvent.AXIS_HAT_X)) > .25f
+                    || Math.abs(event.getAxisValue(MotionEvent.AXIS_HAT_Y)) > .25f
+                    || Math.abs(event.getAxisValue(MotionEvent.AXIS_Z)) > .25f
+                    || Math.abs(event.getAxisValue(MotionEvent.AXIS_RZ)) > .25f;
+        }
+        return (event.getSource() & InputDevice.SOURCE_CLASS_POINTER) != 0;
+    }
+
+    private String screenSaverTimeoutLabel() {
+        if (screenSaverSeconds == SCREEN_SAVER_NEVER) {
+            return getString(R.string.console_screen_saver_never);
+        }
+        return screenSaverSeconds < 60
+                ? getString(R.string.console_screen_saver_seconds, screenSaverSeconds)
+                : getString(R.string.console_screen_saver_minutes, screenSaverSeconds / 60);
+    }
+
+    private void showScreenSaverTimeoutPanel() {
+        int[] values = {SCREEN_SAVER_NEVER, 30, 5 * 60, 10 * 60, 30 * 60, 60 * 60};
+        List<View> actions = new ArrayList<>();
+        for (int value : values) {
+            String label = value == SCREEN_SAVER_NEVER
+                    ? getString(R.string.console_screen_saver_never)
+                    : value < 60
+                    ? getString(R.string.console_screen_saver_seconds, value)
+                    : getString(R.string.console_screen_saver_minutes, value / 60);
+            if (value == screenSaverSeconds) label += getString(R.string.console_selected_suffix);
+            TextView choice = panelAction(label);
+            choice.setTag("screen_saver_timeout:" + value);
+            choice.setOnClickListener(view -> setScreenSaverMinutes(value));
+            actions.add(choice);
+        }
+        showSidePanel(getString(R.string.console_title),
+                getString(R.string.console_screen_saver_timeout_title),
+                getString(R.string.console_screen_saver_timeout_details),
+                actions.toArray(new View[0]));
+    }
+
+    private void setScreenSaverMinutes(int seconds) {
+        screenSaverSeconds = seconds;
+        preferences.edit().putInt(PREF_SCREEN_SAVER_SECONDS, seconds)
+                .remove(PREF_SCREEN_SAVER_MINUTES_LEGACY).apply();
+        updateScreenSaverWakePolicy();
+        resetScreenSaverTimer();
+        showOptionsPanel();
     }
 
     private String autoLoginHostLabel() {

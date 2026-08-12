@@ -288,6 +288,9 @@
     <string name="category_overlay_menu">Menu nakładki</string>
     <string name="title_overlay_trigger_button">Przycisk otwierający menu</string>
     <string name="summary_overlay_trigger_button">Wybierz przycisk, którego przytrzymanie otwiera menu nakładki</string>
+    <string name="title_home_trigger_button">Przycisk Home MoonWakera</string>
+    <string name="summary_home_trigger_button">Wybierz przycisk, którego przytrzymanie wraca do ekranu Home MoonWakera</string>
+    <string name="shortcut_button_conflict">Overlay i Home nie mogą używać tego samego przycisku.</string>
     <string name="title_overlay_hold_duration">Czas przytrzymania przycisku</string>
     <string name="summary_overlay_hold_duration">Określ, jak długo trzeba przytrzymać przycisk, aby otworzyć menu</string>
     <string name="title_show_guide_button">Pokaż przycisk Guide</string>
@@ -295,6 +298,7 @@
     <string name="overlay_trigger_select">Select</string>
     <string name="overlay_trigger_start">Start</string>
     <string name="overlay_trigger_guide">Guide</string>
+    <string name="overlay_trigger_none">Wyłączony</string>
     <string name="overlay_trigger_lb_rb">LB + RB</string>
     <string name="overlay_duration_500">0,5 sekundy</string>
     <string name="overlay_duration_1000">1 sekunda</string>
@@ -525,6 +529,8 @@
     <string name="playnite_uninstall">Odinstaluj</string>
     <string name="playnite_uninstall_confirmation">Odinstalować %1$s? Launcher może poprosić o dodatkowe potwierdzenie.</string>
     <string name="playnite_uninstall_starting">Rozpoczynanie odinstalowywania %1$s…</string>
+    <string name="playnite_uninstalling">Odinstalowywanie</string>
+    <string name="playnite_uninstall_complete">Odinstalowano grę %1$s.</string>
     <string name="playnite_uninstall_failed">Nie udało się odinstalować %1$s.</string>
     <string name="playnite_install_verifying">Sprawdzanie instalacji…</string>
     <string name="playnite_install_verify_failed">Nie udało się potwierdzić instalacji. Spróbuj ponownie.</string>
@@ -772,7 +778,15 @@
     <string name="console_options_section_interface">Interfejs</string>
     <string name="console_options_section_host">Host</string>
     <string name="console_options_section_streaming">Streaming</string>
+    <string name="console_options_section_tv">TV</string>
     <string name="console_options_section_help">Pomoc</string>
+    <string name="console_screen_saver_timeout">Uruchom wygaszacz ekranu po: %1$s</string>
+    <string name="console_screen_saver_timeout_title">Wygaszacz ekranu</string>
+    <string name="console_screen_saver_timeout_details">Wyświetla pełnoekranowe artworki z biblioteki gier, gdy MoonWaker pozostaje bezczynny.</string>
+    <string name="console_screen_saver_never">Nigdy</string>
+    <string name="console_screen_saver_seconds">%1$d s</string>
+    <string name="console_screen_saver_minutes">%1$d min</string>
+    <string name="console_screen_saver_caption">MoonWaker\n%1$s</string>
     <string name="console_auto_login_host">Automatycznie loguj na hosta · %1$s</string>
     <string name="console_auto_login_none">Brak — zawsze pokazuj wybór hosta</string>
     <string name="console_auto_login_title">Automatyczne logowanie na hosta</string>

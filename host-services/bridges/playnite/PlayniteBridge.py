@@ -326,9 +326,12 @@ class WindowProbe:
         previous = previous_windows.get(str(candidate.get("hwnd") or 0))
         image = str(candidate.get("image") or "").casefold()
         title = str(candidate.get("title") or "").casefold()
-        known_launcher = image in INSTALLER_IMAGES or any(token in image or token in title
-            for token in ("launcher", "install", "setup", "steam", "epic", "ubisoft",
-                          "gog galaxy", "ea app", "microsoft store"))
+        launcher_tokens = ("launcher", "installer", "setup", "steam", "epic",
+                           "ubisoft", "gog galaxy", "galaxyclient", "ea app",
+                           "eadesktop", "microsoft store", "gamingservices")
+        known_launcher = image in INSTALLER_IMAGES or any(
+            token in image for token in launcher_tokens) or any(
+            token in title for token in launcher_tokens)
         new_window = previous is None
         changed_title = previous is not None and str(previous.get("title") or "") != \
             str(candidate.get("title") or "")
@@ -341,11 +344,17 @@ class WindowProbe:
         score = (3 if known_launcher else 0) + (4 if new_window else 0) + \
             (3 if changed_title else 0) + (2 if foreground else 0) + \
             (2 if changed_foreground else 0) + (1 if dialog_sized else 0)
-        if not (known_launcher or new_window or changed_title):
+        # A newly focused application is not evidence of an installation prompt.
+        # Without launcher affinity this used to classify unrelated IntelliJ and
+        # browser windows as Steam/Epic confirmation dialogs.
+        if not known_launcher:
             return 0
         return score
 
     def installation_prompt(self, baseline: dict[str, Any]) -> dict[str, Any]:
+        completed = self.external_installation_completion(baseline.get("game") or {})
+        if completed:
+            return {"requires_attention": False, "installed": True, **completed}
         if not self.user32:
             return {"requires_attention": False, "reason": "window_probe_unavailable"}
         if self.is_session_locked():
@@ -363,6 +372,32 @@ class WindowProbe:
             int(value[1].get("hwnd") or 0)))
         return {"requires_attention": True, "reason": "launcher_prompt",
                 **selected}
+
+    @staticmethod
+    def external_installation_completion(game: dict[str, Any]) -> dict[str, Any] | None:
+        """Confirm Epic installs when its Playnite plugin does not refresh itself."""
+        provider = str(game.get("pluginName") or game.get("source") or "").casefold()
+        if "epic" not in provider:
+            return None
+        plugin_id = str(game.get("pluginId") or "").casefold()
+        name = str(game.get("name") or "").casefold()
+        manifests = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / \
+            "Epic" / "EpicGamesLauncher" / "Data" / "Manifests"
+        try:
+            for path in manifests.glob("*.item"):
+                value = json.loads(path.read_text(encoding="utf-8-sig"))
+                app_name = str(value.get("AppName") or "").casefold()
+                display_name = str(value.get("DisplayName") or "").casefold()
+                directory = str(value.get("InstallLocation") or "").strip()
+                executable = str(value.get("LaunchExecutable") or "").strip()
+                complete = not bool(value.get("bIsIncompleteInstall", False))
+                executable_exists = not executable or (Path(directory) / executable).is_file()
+                if complete and executable_exists and directory and Path(directory).is_dir() and (
+                        plugin_id and app_name == plugin_id or name and display_name == name):
+                    return {"install_directory": directory, "provider": "epic"}
+        except (OSError, ValueError, TypeError):
+            return None
+        return None
 
     def focus_installation_window(self, hwnd: int) -> dict[str, Any]:
         if not self.user32 or hwnd <= 0 or not self.user32.IsWindow(hwnd):
@@ -827,6 +862,7 @@ class BridgeState:
                     if connector_installing and game_id not in self.installations:
                         baseline = self.installation_baseline_action() \
                             if self.installation_baseline_action else {}
+                        baseline["game"] = normalized
                         self.installations[game_id] = {
                             "baseline": baseline, "requested_at": time.time(),
                             "requires_attention": False, "stable_samples": 0,
@@ -934,6 +970,7 @@ class BridgeState:
                 raise ValueError("Playnite game is already installed.")
             if bool(game.get("installing") or game.get("isInstalling")):
                 return {"accepted": True, "command": "install", "already_installing": True}
+            baseline["game"] = dict(game)
             self.installations[normalized] = {
                 "baseline": baseline, "requested_at": time.time(),
                 "requires_attention": False, "stable_samples": 0,
@@ -980,6 +1017,29 @@ class BridgeState:
                     if time.time() - float(session.get("requested_at") or 0) >= 1.5]
 
     def apply_installation_probe(self, game_id: str, sample: dict[str, Any]) -> None:
+        if sample.get("installed"):
+            install_directory = str(sample.get("install_directory") or "")
+            sender = None
+            with self.lock:
+                session = self.installations.pop(game_id, None)
+                game = self.library.get(game_id)
+                if session is None or game is None:
+                    return
+                game["installed"] = True
+                game["installing"] = False
+                if install_directory:
+                    game["installDir"] = install_directory
+                self._apply_installation_fields_locked(game_id, game)
+                self._save_library_cache_locked()
+                self._publish_locked("game-installed", {
+                    "id": game_id, "name": str(game.get("name") or ""),
+                    "source": str(sample.get("provider") or "external"),
+                })
+                sender = self.command_sender
+            if sender is not None:
+                sender({"type": "command", "command": "mark-installed",
+                        "id": game_id, "install_directory": install_directory})
+            return
         with self.lock:
             session = self.installations.get(game_id)
             game = self.library.get(game_id)
