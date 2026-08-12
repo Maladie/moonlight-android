@@ -27,8 +27,9 @@ final class ConsoleUpdateChannels {
                 || !Objects.equals(previous.name, current.name)
                 || previous.state != current.state
                 || previous.pairState != current.pairState;
-        boolean sessionChanged = previous != null
-                && previous.runningGameId != current.runningGameId;
+        boolean sessionChanged = previous == null
+                ? current.runningGameId != 0
+                : previous.runningGameId != current.runningGameId;
         boolean addressChanged = previous == null
                 || !Objects.equals(previous.activeAddress, current.activeAddress);
         boolean stableAppList = current.rawAppList != null && !current.rawAppList.isEmpty();

@@ -8,6 +8,14 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ConsoleUpdateChannelsTest {
+    @Test public void initialActiveSessionInvalidatesSessionPresentation() {
+        ComputerDetails active = host("selected");
+        active.runningGameId = 42;
+
+        int channels = ConsoleUpdateChannels.diff(null, active, "selected");
+
+        assertTrue(ConsoleUpdateChannels.has(channels, ConsoleUpdateChannels.SESSION));
+    }
     @Test public void unrelatedHostStatusOnlyUpdatesHostSelection() {
         ComputerDetails before = host("other");
         ComputerDetails after = new ComputerDetails(before);

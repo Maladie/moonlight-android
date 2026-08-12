@@ -835,6 +835,12 @@
     <string name="console_streaming_settings">Streaming settings  ›</string>
     <string name="console_classic_ui">Classic MoonWaker UI  ›</string>
     <string name="console_exit">Exit MoonWaker</string>
+    <string name="console_leave_keep_stream">Leave and keep stream</string>
+    <string name="console_return_to_game">Return to game</string>
+    <string name="console_close_game_and_moonwaker">Close game and MoonWaker</string>
+    <string name="console_closing_game_and_moonwaker">Closing the game and ending the retained stream…</string>
+    <string name="console_leave_with_stream_title">Leave MoonWaker?</string>
+    <string name="console_leave_with_stream_details">The game stream will remain ready in the background for the configured time. You can return to it by opening MoonWaker again.</string>
     <string name="console_close_title">Close MoonWaker?</string>
     <string name="console_close_details">The active host session will not be stopped.</string>
     <string name="console_select_host_first">Select a host first.</string>
