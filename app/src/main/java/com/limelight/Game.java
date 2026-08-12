@@ -3520,6 +3520,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             if (!isPendingInstallation(hostId, event.gameId)) return;
             String gameName = event.gameName == null || event.gameName.isEmpty()
                     ? pendingInstallationName(hostId, event.gameId) : event.gameName;
+            try {
+                PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
+                        this, hostId, getIntent().getStringExtra(EXTRA_HOST));
+                if (gateway != null) gateway.ensureInstalledGameTarget(event.gameId, gameName);
+            } catch (IOException | RuntimeException ignored) { }
             getSharedPreferences("console_dashboard", MODE_PRIVATE).edit()
                     .putLong(playniteInstallNotificationKey(hostId, event.gameId),
                             System.currentTimeMillis())
@@ -3941,6 +3946,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             @Override
             public void onOverlayMenuOpen() {
                 runOnUiThread(Game.this::showOverlayMenuWithBattery);
+            }
+
+            @Override
+            public void onHomeShortcut() {
+                runOnUiThread(Game.this::openConsoleHome);
             }
 
             @Override

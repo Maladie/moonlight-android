@@ -1,6 +1,8 @@
 import unittest
 import tempfile
 import ctypes
+import json
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -55,7 +57,7 @@ class WindowProbeTest(unittest.TestCase):
             r"D:\Tools\unrelated.exe", install))
         self.assertFalse(WindowProbe.belongs_to_install_directory("", install))
 
-    def test_install_prompt_scoring_accepts_launchers_and_new_generic_dialogs(self):
+    def test_install_prompt_scoring_requires_launcher_affinity(self):
         baseline = {
             "foreground_hwnd": 10,
             "windows": {
@@ -70,6 +72,10 @@ class WindowProbeTest(unittest.TestCase):
         generic = {"hwnd": 30, "image": "futurelauncher.exe", "title": "Choose folder",
                    "foreground": False, "bounds": [200, 160, 1000, 760],
                    "monitor_bounds": [0, 0, 1920, 1080]}
+        unrelated = {"hwnd": 50, "image": "idea64.exe",
+                     "title": "FieldDisplayNameOverrides.java [Default Changelist]",
+                     "foreground": True, "bounds": [100, 100, 1500, 900],
+                     "monitor_bounds": [0, 0, 1920, 1080]}
         unchanged = {"hwnd": 40, "image": "unrelated.exe", "title": "Unrelated",
                      "foreground": False, "bounds": [0, 0, 1920, 1080],
                      "monitor_bounds": [0, 0, 1920, 1080]}
@@ -77,7 +83,26 @@ class WindowProbeTest(unittest.TestCase):
         self.assertLess(WindowProbe.installation_candidate_score(
             baseline, background_launcher), 5)
         self.assertGreaterEqual(WindowProbe.installation_candidate_score(baseline, generic), 5)
+        self.assertEqual(0, WindowProbe.installation_candidate_score(baseline, unrelated))
         self.assertEqual(0, WindowProbe.installation_candidate_score(baseline, unchanged))
+
+    def test_epic_manifest_confirms_completed_install(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            manifests = Path(temporary) / "Epic" / "EpicGamesLauncher" / "Data" / "Manifests"
+            install = Path(temporary) / "Games" / "IntoTheBreach"
+            manifests.mkdir(parents=True)
+            install.mkdir(parents=True)
+            (manifests / "game.item").write_text(json.dumps({
+                "DisplayName": "Into The Breach", "AppName": "Blobfish",
+                "InstallLocation": str(install),
+            }), encoding="utf-8")
+            with mock.patch.dict(os.environ, {"PROGRAMDATA": temporary}):
+                result = WindowProbe.external_installation_completion({
+                    "pluginName": "Epic", "pluginId": "Blobfish",
+                    "name": "Into The Breach",
+                })
+            self.assertEqual(str(install), result["install_directory"])
+            self.assertEqual("epic", result["provider"])
 
     def test_large_playnite_messages_keep_windows_more_data_chunk(self):
         payload = b"x" * 8
@@ -287,6 +312,25 @@ class BridgeStateTest(unittest.TestCase):
         completed = self.state.library_page("0", 10)["games"][0]
         self.assertTrue(completed["installed"])
         self.assertFalse(completed["installRequiresAttention"])
+
+    def test_external_completion_finishes_session_and_syncs_connector(self):
+        self.state.handle_message({"type": "games", "payload": [{
+            "id": GAME_ID, "name": "Into The Breach", "installed": False,
+            "pluginName": "Epic", "pluginId": "Blobfish",
+        }]})
+        self.state.install_game(GAME_ID)
+        self.state.apply_installation_probe(GAME_ID, {
+            "installed": True, "requires_attention": False,
+            "provider": "epic", "install_directory": r"E:\Games\IntoTheBreach",
+        })
+        game = self.state.library_page("0", 10)["games"][0]
+        self.assertTrue(game["installed"])
+        self.assertFalse(game["installing"])
+        self.assertEqual("game-installed", self.state.events[-1]["event"])
+        self.assertEqual({
+            "type": "command", "command": "mark-installed", "id": GAME_ID,
+            "install_directory": r"E:\Games\IntoTheBreach",
+        }, self.commands[-1])
 
     def test_malformed_library_cache_is_ignored(self):
         with tempfile.TemporaryDirectory() as temporary:

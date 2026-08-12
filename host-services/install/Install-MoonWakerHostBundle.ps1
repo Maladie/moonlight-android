@@ -407,6 +407,8 @@ try {
     $runtimePath = Join-Path $gatewayDirectory "gateway-runtime.json"
     $versionPath = Join-Path $hostRoot "version.json"
     $expectedVersion = (Get-Content -LiteralPath $versionPath -Raw | ConvertFrom-Json)
+    $expectedGatewayHash = (Get-FileHash -LiteralPath (Join-Path $gatewayDirectory "wakeplay_gateway.py") `
+        -Algorithm SHA256).Hash.ToLowerInvariant()
     # Starting the supervisor is asynchronous. On machines that have just
     # replaced the Gateway process Windows can take longer than 15 seconds to
     # release the port and start Python, even though the update has succeeded.
@@ -418,14 +420,16 @@ try {
         try {
             $runtime = Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json
             if ([string]$runtime.version -eq [string]$expectedVersion.version -and
-                [string]$runtime.build -eq [string]$expectedVersion.build) { break }
+                [string]$runtime.build -eq [string]$expectedVersion.build -and
+                [string]$runtime.source_sha256 -eq $expectedGatewayHash) { break }
         } catch {}
         Start-Sleep -Milliseconds 250
     }
     if ($null -eq $runtime -or [string]$runtime.version -ne [string]$expectedVersion.version -or
-        [string]$runtime.build -ne [string]$expectedVersion.build) {
+        [string]$runtime.build -ne [string]$expectedVersion.build -or
+        [string]$runtime.source_sha256 -ne $expectedGatewayHash) {
         $reportedVersion = if ($null -eq $runtime) { "no runtime report" } else {
-            "version $([string]$runtime.version), build $([string]$runtime.build)"
+            "version $([string]$runtime.version), build $([string]$runtime.build), source $([string]$runtime.source_sha256)"
         }
         throw "Gateway update verification failed after 45 seconds. Expected version $([string]$expectedVersion.version), build $([string]$expectedVersion.build); last report: $reportedVersion."
     }
