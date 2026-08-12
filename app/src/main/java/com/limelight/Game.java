@@ -51,6 +51,7 @@ import com.limelight.console.ConsoleActivity;
 import com.limelight.console.StreamHomeActivity;
 import com.limelight.stream.BackgroundStreamService;
 import com.limelight.stream.BackgroundStreamPreferences;
+import com.limelight.stream.RetainedStreamSessionCoordinator;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.ServerHelper;
 import com.limelight.utils.SessionResumeManager;
@@ -117,6 +118,7 @@ import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Locale;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
@@ -125,7 +127,8 @@ import java.util.concurrent.Future;
 public class Game extends Activity implements SurfaceHolder.Callback,
         OnGenericMotionListener, OnTouchListener, NvConnectionListener, EvdevListener,
         OnSystemUiVisibilityChangeListener, GameGestures, StreamView.InputCallbacks,
-        PerfOverlayListener, UsbDriverService.UsbDriverStateListener, View.OnKeyListener {
+        PerfOverlayListener, UsbDriverService.UsbDriverStateListener, View.OnKeyListener,
+        RetainedStreamSessionCoordinator.Controller {
     private int lastButtonState = 0;
 
     // Only 2 touches are supported
@@ -170,6 +173,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean connected = false;
     private boolean userInitiatedDisconnect = false;
     private boolean streamHomeVisible = false;
+    private boolean retainedRestoreAwaitingFrame;
+    private Runnable retainedRestoreWatchdog;
     private boolean backgroundStreamParked = false;
     private boolean autoEnterPip = false;
     private boolean surfaceCreated = false;
@@ -1289,9 +1294,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
-        if (backgroundStreamParked && (connecting || connected)) {
+        if (RetainedStreamSessionCoordinator.hasRetainedSession()
+                && (connecting || connected)) {
             backgroundStreamParked = false;
             SessionResumeManager.save(this, getIntent());
+            RetainedStreamSessionCoordinator.markReconnectRequired();
             BackgroundStreamService.transportLost(this);
             stopConnection();
         }
@@ -1378,6 +1385,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onResume() {
         super.onResume();
+        boolean returningFromStreamHome = streamHomeVisible;
         if (streamHomeVisible) {
             streamHomeVisible = false;
             if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
@@ -1668,6 +1676,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
         }
 
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK
+                && (overlayMenuView == null
+                || overlayMenuView.getVisibility() != View.VISIBLE)) {
+            return true;
+        }
+
         // Pass-through virtual navigation keys
         if ((event.getFlags() & KeyEvent.FLAG_VIRTUAL_HARD_KEY) != 0) {
             return false;
@@ -1779,6 +1793,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 case KeyEvent.KEYCODE_BUTTON_B:
                     return false;
             }
+        }
+
+        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK
+                && (overlayMenuView == null
+                || overlayMenuView.getVisibility() != View.VISIBLE)) {
+            openConsoleHome();
+            return true;
         }
 
         // Pass-through virtual navigation keys
@@ -2680,8 +2701,62 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         setInputGrabState(false);
         int retentionMinutes = BackgroundStreamPreferences.readMinutes(this);
         SessionResumeManager.save(this, getIntent());
+        RetainedStreamSessionCoordinator.markParked();
         BackgroundStreamService.park(this, retentionMinutes);
         LimeLog.info("Background stream parked; retention minutes=" + retentionMinutes);
+    }
+
+    @Override
+    public boolean parkRetainedTransport() {
+        if (backgroundStreamParked) return true;
+        if (!connected || userInitiatedDisconnect
+                || BackgroundStreamPreferences.readMinutes(this) == 0) {
+            return false;
+        }
+        parkBackgroundStream();
+        return backgroundStreamParked;
+    }
+
+    @Override
+    public void terminateRetainedSession(Runnable completion) {
+        userInitiatedDisconnect = true;
+        backgroundStreamParked = false;
+        SessionResumeManager.clear(this);
+        stopService(new Intent(this, BackgroundStreamService.class));
+        if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
+        stopConnection(() -> quitRetainedApplication(() -> {
+            runOnUiThread(() -> {
+                finish();
+                if (completion != null) completion.run();
+            });
+        }));
+    }
+
+    private void quitRetainedApplication(Runnable completion) {
+        String host = getIntent().getStringExtra(EXTRA_HOST);
+        int port = getIntent().getIntExtra(EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT);
+        int httpsPort = getIntent().getIntExtra(EXTRA_HTTPS_PORT, 0);
+        String uniqueId = getIntent().getStringExtra(EXTRA_UNIQUEID);
+        byte[] derCertData = getIntent().getByteArrayExtra(EXTRA_SERVER_CERT);
+        X509Certificate serverCert = null;
+        try {
+            if (derCertData != null) {
+                serverCert = (X509Certificate) CertificateFactory.getInstance("X.509")
+                        .generateCertificate(new ByteArrayInputStream(derCertData));
+            }
+        } catch (CertificateException error) {
+            LimeLog.warning("Unable to decode retained session certificate: " + error);
+        }
+        AtomicBoolean completed = new AtomicBoolean();
+        Runnable completeOnce = () -> {
+            if (completed.compareAndSet(false, true) && completion != null) completion.run();
+        };
+        transitionUiHandler.postDelayed(() -> {
+            LimeLog.warning("Timed out waiting for retained host quit response");
+            completeOnce.run();
+        }, 8_000L);
+        ServerHelper.doQuit(this, new ComputerDetails.AddressTuple(host, port), httpsPort,
+                serverCert, appName, uniqueId, completeOnce);
     }
 
     private void restoreParkedStream(SurfaceHolder holder) {
@@ -2691,20 +2766,60 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         replacement.setRenderTarget(holder);
         if (!switchableVideoRenderer.attach(replacement)) {
             LimeLog.severe("Failed to attach a decoder to the parked stream");
-            endExpiredBackgroundStream();
+            reconnectRetainedStream();
             return;
         }
+        retainedRestoreAwaitingFrame = true;
         decoderRenderer = replacement;
         backgroundStreamParked = false;
+        RetainedStreamSessionCoordinator.clear();
         SessionResumeManager.clear(this);
         BackgroundStreamService.resumed(this);
         if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
         if (controllerHandler != null) controllerHandler.enableSensors();
         setInputGrabState(true);
         BackgroundStreamBridge.requestIdrFrame();
+        scheduleRetainedRestoreWatchdog();
         hideSystemUi(50);
         streamView.post(streamView::requestFocus);
         LimeLog.info("Background stream decoder restored");
+    }
+
+    private void scheduleRetainedRestoreWatchdog() {
+        if (retainedRestoreWatchdog != null) {
+            transitionUiHandler.removeCallbacks(retainedRestoreWatchdog);
+        }
+        transitionUiHandler.postDelayed(() -> {
+            if (retainedRestoreAwaitingFrame && connected && !backgroundStreamParked) {
+                LimeLog.warning("Retained stream has no frame yet; requesting another IDR");
+                BackgroundStreamBridge.requestIdrFrame();
+            }
+        }, 1_500L);
+        retainedRestoreWatchdog = () -> {
+            if (retainedRestoreAwaitingFrame && connected && !backgroundStreamParked) {
+                LimeLog.warning("Retained stream restore timed out; reconnecting transport");
+                reconnectRetainedStream();
+            }
+        };
+        transitionUiHandler.postDelayed(retainedRestoreWatchdog, 5_000L);
+    }
+
+    private void reconnectRetainedStream() {
+        retainedRestoreAwaitingFrame = false;
+        if (retainedRestoreWatchdog != null) {
+            transitionUiHandler.removeCallbacks(retainedRestoreWatchdog);
+            retainedRestoreWatchdog = null;
+        }
+        backgroundStreamParked = false;
+        userInitiatedDisconnect = true;
+        SessionResumeManager.save(this, getIntent());
+        RetainedStreamSessionCoordinator.markReconnectRequired();
+        BackgroundStreamService.transportLost(this);
+        Intent resume = SessionResumeManager.buildResumeIntent(this);
+        stopConnection(() -> {
+            finish();
+            transitionUiHandler.postDelayed(() -> startActivity(resume), 100L);
+        });
     }
 
     private void endExpiredBackgroundStream() {
@@ -2712,6 +2827,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         LimeLog.info("Background stream retention expired");
         backgroundStreamParked = false;
         userInitiatedDisconnect = true;
+        RetainedStreamSessionCoordinator.clear();
         SessionResumeManager.clear(this);
         stopService(new Intent(this, BackgroundStreamService.class));
         stopConnection(() -> finish());
@@ -2849,6 +2965,19 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // stopConnection(). Do not let the normal termination path finish this Activity
         // or display a transient connection error while the old transport is stopping.
         if (bitrateReconnectPending) {
+            return;
+        }
+
+        if (RetainedStreamSessionCoordinator.hasRetainedSession()) {
+            runOnUiThread(() -> {
+                LimeLog.warning("Parked stream transport was lost; preserving reconnect state");
+                displayedFailureDialog = true;
+                backgroundStreamParked = false;
+                SessionResumeManager.save(Game.this, getIntent());
+                RetainedStreamSessionCoordinator.markReconnectRequired();
+                BackgroundStreamService.transportLost(Game.this);
+                stopConnection(() -> finish());
+            });
             return;
         }
 
@@ -3101,6 +3230,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void onFirstVideoFrameRendered() {
         runOnUiThread(() -> {
+            retainedRestoreAwaitingFrame = false;
+            if (retainedRestoreWatchdog != null) {
+                transitionUiHandler.removeCallbacks(retainedRestoreWatchdog);
+                retainedRestoreWatchdog = null;
+            }
             if (transitionController != null) {
                 transitionController.videoFrameRendered(transitionSpec.id);
             } else if (consoleLoadingView != null) {
@@ -3657,7 +3791,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         surfaceCreated = false;
         if (attemptedConnection && connected) {
-            if (canParkBackgroundStream()) {
+            if (RetainedStreamSessionCoordinator.hasRetainedSession()) {
+                RetainedStreamSessionCoordinator.parkForBackground();
+            } else if (canParkBackgroundStream()) {
                 parkBackgroundStream();
             } else if (!backgroundStreamParked) {
                 decoderRenderer.prepareForStop();
@@ -3913,6 +4049,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (!connected || streamHomeVisible) return;
         overlayMenuView.closeMenu();
         streamHomeVisible = true;
+        SessionResumeManager.save(this, getIntent());
+        RetainedStreamSessionCoordinator.enterHome(this,
+                getIntent().getStringExtra(EXTRA_PC_UUID),
+                getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID),
+                transitionSpec == null ? "" : transitionSpec.playniteGameId);
         if (streamAudioRenderer != null) streamAudioRenderer.setVolume(.12f);
         if (controllerHandler != null) controllerHandler.disableSensors();
 
