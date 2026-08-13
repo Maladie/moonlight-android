@@ -3217,7 +3217,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                 getString(R.string.playnite_install_still_needs_confirmation)));
                         return;
                     }
-                    runOnUiThread(() -> closeStreamWithPrivacy(false));
+                    // This is a temporary Desktop target opened only for a launcher
+                    // prompt. Once the operation proceeds, close both the client
+                    // transport and the host-side Desktop session.
+                    runOnUiThread(() -> closeStreamWithPrivacy(true));
                 } catch (IOException | RuntimeException error) {
                     runOnUiThread(() -> displayMessage(
                             getString(R.string.playnite_install_verify_failed)));

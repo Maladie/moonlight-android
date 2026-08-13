@@ -146,6 +146,9 @@ final class HostGatewayClient {
         final String installAttentionReason;
         final String installWindowTitle;
         final String installLauncher;
+        final String operationState;
+        final int operationProgress;
+        final boolean uninstalling;
         final long playtimeSeconds;
         /** Compatibility view for older console code. New code uses seconds. */
         final long playtimeMinutes;
@@ -204,6 +207,19 @@ final class HostGatewayClient {
                      String genres, String artworkVersion, long playtimeSeconds,
                      boolean installRequiresAttention, String installAttentionReason,
                      String installWindowTitle, String installLauncher) {
+            this(id, name, installed, installing, hidden, favorite, cover, background,
+                    lastPlayed, description, playCount, source, genres, artworkVersion,
+                    playtimeSeconds, installRequiresAttention, installAttentionReason,
+                    installWindowTitle, installLauncher, "", -1, false);
+        }
+
+        PlayniteGame(String id, String name, boolean installed, boolean installing,
+                     boolean hidden, boolean favorite, String cover, String background,
+                     String lastPlayed, String description, int playCount, String source,
+                     String genres, String artworkVersion, long playtimeSeconds,
+                     boolean installRequiresAttention, String installAttentionReason,
+                     String installWindowTitle, String installLauncher,
+                     String operationState, int operationProgress, boolean uninstalling) {
             this.id = id;
             this.name = name;
             this.installed = installed;
@@ -222,6 +238,9 @@ final class HostGatewayClient {
             this.installAttentionReason = installAttentionReason;
             this.installWindowTitle = installWindowTitle == null ? "" : installWindowTitle;
             this.installLauncher = installLauncher == null ? "" : installLauncher;
+            this.operationState = operationState == null ? "" : operationState;
+            this.operationProgress = operationProgress;
+            this.uninstalling = uninstalling;
             this.playtimeSeconds = Math.max(0L, playtimeSeconds);
             this.playtimeMinutes = this.playtimeSeconds / 60L;
         }
@@ -1003,7 +1022,11 @@ final class HostGatewayClient {
                         firstText(value, "installAttentionReason",
                                 "install_attention_reason"),
                         firstText(value, "installWindowTitle", "install_window_title"),
-                        firstText(value, "installLauncher", "install_launcher")));
+                        firstText(value, "installLauncher", "install_launcher"),
+                        firstText(value, "operationState", "operation_state"),
+                        value.isNull("operationProgress") ? -1
+                                : value.optInt("operationProgress", -1),
+                        value.optBoolean("uninstalling", false)));
             }
         }
         return new PlayniteLibrary(games, safe.optString("next_cursor", ""),

@@ -24,6 +24,8 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Callable
 
+from OperationJournal import ACTIVE_STATES, OperationJournal
+
 
 GAME_ID_PATTERN = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
@@ -37,7 +39,7 @@ PLAYNITE_UI_IMAGES = {
     "playnite.desktopapp.exe",
 }
 INSTALLER_IMAGES = {
-    "steam.exe", "epicgameslauncher.exe", "galaxyclient.exe", "goggalaxy.exe",
+    "steam.exe", "steamwebhelper.exe", "epicgameslauncher.exe", "galaxyclient.exe", "goggalaxy.exe",
     "ubisoftconnect.exe", "upc.exe", "eadesktop.exe", "ealauncher.exe",
     "origin.exe", "xboxpcapp.exe", "gamingservicesui.exe", "msiexec.exe",
 }
@@ -102,6 +104,90 @@ class StreamDisplayResolver:
         return self.cached
 
 
+class SteamLibraryProbe:
+    """Reads Steam's own app manifests; no launcher UI or process control."""
+
+    KEY_VALUE = re.compile(r'^\s*"([^"]+)"\s+"([^"]*)"\s*$')
+
+    def __init__(self, roots: list[Path] | None = None) -> None:
+        self.roots = roots
+
+    @staticmethod
+    def _values(path: Path) -> dict[str, str]:
+        values: dict[str, str] = {}
+        try:
+            for line in path.read_text(encoding="utf-8-sig", errors="replace").splitlines():
+                match = SteamLibraryProbe.KEY_VALUE.match(line)
+                if match:
+                    values[match.group(1).casefold()] = match.group(2)
+        except OSError:
+            pass
+        return values
+
+    @staticmethod
+    def _steam_root() -> Path | None:
+        if os.name != "nt":
+            return None
+        try:
+            import winreg
+            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
+                value, _kind = winreg.QueryValueEx(key, "SteamPath")
+                return Path(str(value))
+        except (ImportError, OSError):
+            return None
+
+    def libraries(self) -> list[Path]:
+        if self.roots is not None:
+            return self.roots
+        root = self._steam_root()
+        if root is None:
+            return []
+        result = [root]
+        try:
+            lines = (root / "steamapps" / "libraryfolders.vdf").read_text(
+                encoding="utf-8-sig", errors="replace").splitlines()
+            for line in lines:
+                match = self.KEY_VALUE.match(line)
+                if match and match.group(1).casefold() == "path":
+                    candidate = Path(match.group(2).replace("\\\\", "\\"))
+                    if candidate not in result:
+                        result.append(candidate)
+        except OSError:
+            pass
+        return result
+
+    def sample(self, game: dict[str, Any], operation: str) -> dict[str, Any] | None:
+        provider = str(game.get("source") or game.get("pluginName") or "").casefold()
+        app_id = str(game.get("providerGameId") or "").strip()
+        if "steam" not in provider or not app_id.isdigit():
+            return None
+        for library in self.libraries():
+            manifest = library / "steamapps" / f"appmanifest_{app_id}.acf"
+            if not manifest.is_file():
+                continue
+            if operation == "uninstall":
+                # While the manifest exists, Steam may still be showing its own
+                # confirmation dialog. Let the normal window fallback inspect it.
+                return None
+            values = self._values(manifest)
+            try:
+                downloaded = max(0, int(values.get("bytesdownloaded", "0")))
+                total = max(0, int(values.get("bytestodownload", "0")))
+                progress = min(100, downloaded * 100 // total) if total else None
+                complete = int(values.get("stateflags", "0")) == 4
+            except ValueError:
+                progress, complete = None, False
+            install_dir = library / "steamapps" / "common" / values.get("installdir", "")
+            if operation == "install" and complete and install_dir.is_dir():
+                return {"installed": True, "provider": "steam",
+                        "install_directory": str(install_dir), "progress": 100}
+            return {"requires_attention": False, "reason": "steam_downloading",
+                    "provider": "steam", "progress": progress}
+        if operation == "uninstall":
+            return {"uninstalled": True, "provider": "steam"}
+        return None
+
+
 class WindowProbe:
     """Collects Win32 evidence; it never treats the desktop as a valid target."""
 
@@ -112,7 +198,9 @@ class WindowProbe:
     WM_CLOSE = 0x0010
     SW_RESTORE = 9
 
-    def __init__(self) -> None:
+    def __init__(self, steam_automation_path: Path | None = None) -> None:
+        self.steam = SteamLibraryProbe()
+        self.steam_automation_path = steam_automation_path
         self.user32 = None
         self.kernel32 = None
         self.dwmapi = None
@@ -352,7 +440,12 @@ class WindowProbe:
         return score
 
     def installation_prompt(self, baseline: dict[str, Any]) -> dict[str, Any]:
-        completed = self.external_installation_completion(baseline.get("game") or {})
+        game = baseline.get("game") or {}
+        operation = str(baseline.get("operation") or "install")
+        steam = self.steam.sample(game, operation)
+        if steam:
+            return steam
+        completed = self.external_installation_completion(game)
         if completed:
             return {"requires_attention": False, "installed": True, **completed}
         if not self.user32:
@@ -424,6 +517,26 @@ class WindowProbe:
             for thread_id in reversed(attached):
                 self.user32.AttachThreadInput(current_thread, thread_id, False)
         return {"focused": focused, "hwnd": hwnd, "title": self._window_title(hwnd)}
+
+    def confirm_steam_operation(self, hwnd: int, operation: str) -> dict[str, Any]:
+        script = self.steam_automation_path
+        if os.name != "nt" or script is None or not script.is_file():
+            return {"clicked": False, "reason": "automation_unavailable"}
+        try:
+            result = subprocess.run([
+                "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+                "-File", str(script), "-WindowHandle", str(int(hwnd)),
+                "-Operation", operation,
+            ], capture_output=True, text=True, timeout=15,
+                creationflags=subprocess.CREATE_NO_WINDOW, check=False)
+            if result.returncode != 0:
+                return {"clicked": False, "reason": "automation_failed"}
+            payload = json.loads(result.stdout.strip().splitlines()[-1])
+            return payload if isinstance(payload, dict) else {
+                "clicked": False, "reason": "invalid_automation_result"}
+        except (OSError, subprocess.SubprocessError, ValueError, IndexError,
+                json.JSONDecodeError):
+            return {"clicked": False, "reason": "automation_failed"}
 
     def focus_game_window(self, process_id: int, install_directory: str,
                           expected_display: str) -> dict[str, Any]:
@@ -622,7 +735,8 @@ def compact_json(value: Any) -> bytes:
 
 class BridgeState:
     def __init__(self, expected_display: str = "", cache_path: Path | None = None,
-                 version_path: Path | None = None) -> None:
+                 version_path: Path | None = None,
+                 operations_path: Path | None = None) -> None:
         self.lock = threading.RLock()
         self.events_changed = threading.Condition(self.lock)
         self.connected = False
@@ -651,7 +765,22 @@ class BridgeState:
         self.installation_baseline_action: Callable[[], dict[str, Any]] | None = None
         self.installation_probe_action: Callable[[dict[str, Any]], dict[str, Any]] | None = None
         self.focus_installation_action: Callable[[int], dict[str, Any]] | None = None
+        self.confirm_installation_action: Callable[[int, str], dict[str, Any]] | None = None
         self.installations: dict[str, dict[str, Any]] = {}
+        self.operation_journal = OperationJournal(operations_path)
+        for operation in self.operation_journal.active():
+            self.installations[str(operation["game_id"])] = {
+                "baseline": {"operation": str(operation["kind"])},
+                "requested_at": float(operation["requested_at"]),
+                "operation": str(operation["kind"]),
+                "requires_attention": operation["state"] == "attention_required",
+                "reason": str(operation["detail"] or ""),
+                "hwnd": int(operation["window_handle"] or 0),
+                "window_title": str(operation["window_title"] or ""),
+                "image": str(operation["launcher"] or ""),
+                "stable_samples": 0,
+                "candidate_signature": None,
+            }
         self.cache_path = cache_path
         self.started_at = int(time.time())
         self.version_info = self._load_version_info(version_path)
@@ -728,13 +857,15 @@ class BridgeState:
                            focus_game: Callable[[int, str, str], dict[str, Any]],
                            installation_baseline: Callable[[], dict[str, Any]] | None = None,
                            installation_probe: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
-                           focus_installation: Callable[[int], dict[str, Any]] | None = None) -> None:
+                           focus_installation: Callable[[int], dict[str, Any]] | None = None,
+                           confirm_installation: Callable[[int, str], dict[str, Any]] | None = None) -> None:
         self.graceful_close = graceful_close
         self.show_fullscreen_action = show_fullscreen
         self.focus_game_action = focus_game
         self.installation_baseline_action = installation_baseline
         self.installation_probe_action = installation_probe
         self.focus_installation_action = focus_installation
+        self.confirm_installation_action = confirm_installation
 
     def set_expected_display(self, display: str) -> None:
         normalized = StreamDisplayResolver._normalize(display)
@@ -778,12 +909,18 @@ class BridgeState:
     def _apply_installation_fields_locked(self, game_id: str,
                                           game: dict[str, Any]) -> None:
         session = self.installations.get(game_id)
+        operation = self.operation_journal.get(game_id)
         attention = bool(session and session.get("requires_attention"))
-        if session:
+        kind = str((operation or {}).get("kind") or (session or {}).get("operation") or "install")
+        active = bool(operation and operation.get("state") in ACTIVE_STATES)
+        if session and kind == "install":
             # The launcher may keep Playnite's IsInstalling false while its own
             # confirmation dialog is open. The Bridge session remains authoritative
             # until Playnite reports completion or cancellation.
             game["installing"] = True
+        game["uninstalling"] = bool(session and kind == "uninstall")
+        game["operationState"] = str(operation.get("state") or "") if active else ""
+        game["operationProgress"] = operation.get("progress") if active else None
         game["installRequiresAttention"] = attention
         game["installAttentionReason"] = str(
             (session or {}).get("reason") or "") if attention else ""
@@ -841,6 +978,17 @@ class BridgeState:
                         by_name.get("source") or
                         by_name.get("sourcename") or
                         by_name.get("source_name") or "").strip()
+                    normalized["providerGameId"] = str(
+                        by_name.get("providergameid") or
+                        by_name.get("provider_game_id") or "").strip()
+                    operation = self.operation_journal.get(game_id)
+                    if operation and operation.get("state") in ACTIVE_STATES:
+                        session = self.installations.setdefault(game_id, {
+                            "baseline": {}, "requested_at": operation["requested_at"],
+                            "operation": operation["kind"], "requires_attention": False,
+                            "stable_samples": 0, "candidate_signature": None,
+                        })
+                        session["baseline"]["game"] = normalized
                     genres = by_name.get("genres") or by_name.get("genre") or []
                     if isinstance(genres, str):
                         genres = [genres]
@@ -920,6 +1068,8 @@ class BridgeState:
                     game = self.library.get(game_id)
                     title = str((game or {}).get("name") or status.get("title") or "")
                     self.installations.pop(game_id, None)
+                    self.operation_journal.update(
+                        game_id, "completed" if name == "gameInstalled" else "cancelled")
                     if game is not None:
                         game["installing"] = False
                         if name == "gameInstalled":
@@ -960,8 +1110,6 @@ class BridgeState:
 
     def install_game(self, game_id: Any) -> dict[str, Any]:
         normalized = self.game_id(game_id)
-        baseline = self.installation_baseline_action() \
-            if self.installation_baseline_action else {}
         with self.lock:
             game = self.library.get(normalized)
             if game is None:
@@ -970,9 +1118,20 @@ class BridgeState:
                 raise ValueError("Playnite game is already installed.")
             if bool(game.get("installing") or game.get("isInstalling")):
                 return {"accepted": True, "command": "install", "already_installing": True}
+            self._require_operation_prompt_idle(normalized)
+            baseline = self.installation_baseline_action() \
+                if self.installation_baseline_action else {}
+            provider = str(game.get("source") or game.get("pluginName") or "playnite").casefold()
+            operation = self.operation_journal.begin(
+                normalized, "install", provider, str(game.get("name") or ""))
+            if operation.get("state") in ACTIVE_STATES and normalized in self.installations:
+                return {"accepted": True, "command": "install", "already_installing": True,
+                        "operation_state": operation["state"]}
             baseline["game"] = dict(game)
+            baseline["operation"] = "install"
             self.installations[normalized] = {
                 "baseline": baseline, "requested_at": time.time(),
+                "operation": "install",
                 "requires_attention": False, "stable_samples": 0,
                 "candidate_signature": None,
             }
@@ -988,6 +1147,7 @@ class BridgeState:
             return self.send_command("install", id=normalized)
         except Exception:
             with self.lock:
+                self.operation_journal.update(normalized, "failed", detail="dispatch_failed")
                 current = self.library.get(normalized)
                 if current is not None:
                     current["installing"] = False
@@ -1008,7 +1168,38 @@ class BridgeState:
                 raise FileNotFoundError("Playnite game was not found.")
             if not bool(game.get("installed") or game.get("isInstalled")):
                 raise ValueError("Playnite game is not installed.")
-        return self.send_command("uninstall", id=normalized)
+            self._require_operation_prompt_idle(normalized)
+            provider = str(game.get("source") or game.get("pluginName") or "playnite").casefold()
+            operation = self.operation_journal.begin(
+                normalized, "uninstall", provider, str(game.get("name") or ""))
+            if operation.get("state") in ACTIVE_STATES and normalized in self.installations:
+                return {"accepted": True, "command": "uninstall", "already_uninstalling": True,
+                        "operation_state": operation["state"]}
+            self.installations[normalized] = {
+                "baseline": {"game": dict(game), "operation": "uninstall"},
+                "requested_at": time.time(),
+                "operation": "uninstall", "requires_attention": False,
+                "stable_samples": 0, "candidate_signature": None,
+            }
+            self._apply_installation_fields_locked(normalized, game)
+            self._save_library_cache_locked()
+        try:
+            return self.send_command("uninstall", id=normalized)
+        except Exception:
+            with self.lock:
+                self.operation_journal.update(normalized, "failed", detail="dispatch_failed")
+                self.installations.pop(normalized, None)
+                self._apply_installation_fields_locked(normalized, game)
+            raise
+
+    def _require_operation_prompt_idle(self, requested_game_id: str) -> None:
+        for game_id, session in self.installations.items():
+            if game_id == requested_game_id:
+                continue
+            operation = self.operation_journal.get(game_id) or {}
+            if operation.get("state") in {"preparing", "attention_required"} \
+                    or session.get("automation_in_progress"):
+                raise RuntimeError("Another installation operation is awaiting confirmation.")
 
     def installation_probes(self) -> list[tuple[str, dict[str, Any]]]:
         with self.lock:
@@ -1016,7 +1207,44 @@ class BridgeState:
                     for game_id, session in self.installations.items()
                     if time.time() - float(session.get("requested_at") or 0) >= 1.5]
 
+    def _auto_confirm_installation(self, game_id: str, hwnd: int, operation: str,
+                                   signature: tuple[Any, ...]) -> None:
+        action = self.confirm_installation_action
+        automated = action(hwnd, operation) if action is not None else {"clicked": False}
+        with self.lock:
+            session = self.installations.get(game_id)
+            game = self.library.get(game_id)
+            if session is None or game is None or session.get("automation_signature") != signature:
+                return
+            session.update({"stable_samples": 0, "candidate_signature": None})
+            session["automation_in_progress"] = False
+            if automated.get("clicked"):
+                self.operation_journal.update(game_id, "preparing")
+                self._publish_locked("game-installation-auto-confirmed", {
+                    "id": game_id, "name": str(game.get("name") or ""),
+                    "operation": operation,
+                })
+            else:
+                session["automation_failure"] = str(
+                    automated.get("reason") or "automation_failed")[:200]
+
     def apply_installation_probe(self, game_id: str, sample: dict[str, Any]) -> None:
+        if sample.get("uninstalled"):
+            with self.lock:
+                session = self.installations.pop(game_id, None)
+                game = self.library.get(game_id)
+                if session is None or game is None or session.get("operation") != "uninstall":
+                    return
+                game.update({"installed": False, "installing": False, "uninstalling": False,
+                             "installDir": ""})
+                self.operation_journal.update(game_id, "completed")
+                self._apply_installation_fields_locked(game_id, game)
+                self._save_library_cache_locked()
+                self._publish_locked("game-uninstalled", {
+                    "id": game_id, "name": str(game.get("name") or ""),
+                    "source": str(sample.get("provider") or "external"),
+                })
+            return
         if sample.get("installed"):
             install_directory = str(sample.get("install_directory") or "")
             sender = None
@@ -1035,6 +1263,7 @@ class BridgeState:
                     "id": game_id, "name": str(game.get("name") or ""),
                     "source": str(sample.get("provider") or "external"),
                 })
+                self.operation_journal.update(game_id, "completed")
                 sender = self.command_sender
             if sender is not None:
                 sender({"type": "command", "command": "mark-installed",
@@ -1043,9 +1272,16 @@ class BridgeState:
         with self.lock:
             session = self.installations.get(game_id)
             game = self.library.get(game_id)
-            if session is None or game is None or bool(
+            if session is None or game is None:
+                return
+            operation = str(session.get("operation") or "install")
+            if operation == "install" and bool(
                     game.get("installed") or game.get("isInstalled")):
                 return
+            if sample.get("progress") is not None:
+                self.operation_journal.update(
+                    game_id, "downloading", progress=int(sample["progress"]))
+                self._apply_installation_fields_locked(game_id, game)
             requires_attention = bool(sample.get("requires_attention"))
             tracked_hwnd = int(session.get("hwnd") or 0)
             sampled_hwnd = int(sample.get("hwnd") or 0)
@@ -1067,6 +1303,8 @@ class BridgeState:
                     "requires_attention": False, "reason": "prompt_acknowledged",
                     "hwnd": 0, "process_id": 0, "title": "", "image": "",
                 }
+            if session.get("automation_in_progress"):
+                return
             stable = int(session.get("stable_samples") or 0) + 1 \
                 if signature == session.get("candidate_signature") else 1
             session["candidate_signature"] = signature
@@ -1079,6 +1317,7 @@ class BridgeState:
                         "requires_attention": False, "reason": "", "hwnd": 0,
                         "window_title": "", "image": "", "stable_samples": 0,
                     })
+                    self.operation_journal.update(game_id, "installing")
                     self._apply_installation_fields_locked(game_id, game)
                     self._save_library_cache_locked()
                     self._publish_locked("game-installation-resumed", {
@@ -1087,6 +1326,16 @@ class BridgeState:
                 return
             required_samples = 2 if sample.get("reason") == "secure_desktop" else 3
             if stable < required_samples:
+                return
+            if str(sample.get("image") or "").casefold() in {"steam.exe", "steamwebhelper.exe"} \
+                    and session.get("automation_signature") != signature \
+                    and self.confirm_installation_action is not None:
+                session["automation_signature"] = signature
+                session["automation_in_progress"] = True
+                threading.Thread(
+                    target=self._auto_confirm_installation,
+                    args=(game_id, sampled_hwnd, operation, signature),
+                    name="SteamOperationConfirmation", daemon=True).start()
                 return
             first_attention = not bool(session.get("requires_attention"))
             session.update({
@@ -1097,6 +1346,13 @@ class BridgeState:
                 "window_title": str(sample.get("title") or "")[:300],
                 "image": str(sample.get("image") or "")[:200],
             })
+            detail = session["reason"]
+            if session.get("automation_failure"):
+                detail += "; automation=" + session["automation_failure"]
+            self.operation_journal.update(
+                game_id, "attention_required", detail=detail,
+                window_handle=session["hwnd"], window_title=session["window_title"],
+                launcher=session["image"])
             self._apply_installation_fields_locked(game_id, game)
             self._save_library_cache_locked()
             if first_attention:
@@ -1163,6 +1419,7 @@ class BridgeState:
                     "requires_attention": False, "reason": "", "hwnd": 0,
                     "window_title": "", "image": "", "stable_samples": 0,
                 })
+                self.operation_journal.update(normalized, "installing")
                 self._apply_installation_fields_locked(normalized, game)
                 self._save_library_cache_locked()
                 self._publish_locked("game-installation-resumed", {
@@ -1712,8 +1969,9 @@ def main() -> None:
         raise ValueError("Playnite Bridge must remain on loopback.")
     expected_display = str(config.get("streamed_display", "")).strip()
     state = BridgeState(expected_display, config_path.with_name("library-cache.json"),
-                        config_path.parent.parent / "moonwaker-version.json")
-    window_probe = WindowProbe()
+                        config_path.parent.parent / "moonwaker-version.json",
+                        config_path.with_name("operations.sqlite3"))
+    window_probe = WindowProbe(Path(__file__).with_name("Confirm-SteamOperation.ps1"))
     ensure_playnite_desktop(str(config.get("playnite_desktop_executable", "")).strip())
     fullscreen_path = str(config.get("playnite_fullscreen_executable", "")).strip()
     display_resolver = StreamDisplayResolver(str(config.get("vibepollo_bridge", "")).strip())
@@ -1723,7 +1981,8 @@ def main() -> None:
         window_probe.focus_game_window,
         window_probe.installation_baseline,
         window_probe.installation_prompt,
-        window_probe.focus_installation_window)
+        window_probe.focus_installation_window,
+        window_probe.confirm_steam_operation)
     threading.Thread(
         target=WindowReadinessWorker(state, window_probe, display_resolver).run,
         name="PlayniteWindowReadiness", daemon=True).start()

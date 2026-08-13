@@ -19,7 +19,8 @@ PATCH_MARKER_V8 = "# WAKEPLAY-CONSOLE-BRIDGE-V8"
 PATCH_MARKER_V9 = "# WAKEPLAY-CONSOLE-BRIDGE-V9"
 PATCH_MARKER_V10 = "# WAKEPLAY-CONSOLE-BRIDGE-V10"
 PATCH_MARKER_V11 = "# WAKEPLAY-CONSOLE-BRIDGE-V11"
-PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V12"
+PATCH_MARKER_V12 = "# WAKEPLAY-CONSOLE-BRIDGE-V12"
+PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V13"
 
 LAUNCH_PREP_ANCHOR = """          Register-SunshineLaunchedGame -Id $obj.id
           [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)"""
@@ -372,11 +373,20 @@ def add_external_install_completion_support(source: str) -> str:
         raise ValueError("Unsupported V11 connector; completion anchors are missing")
     patched = source.replace(ui_anchor, ui_replacement, 1)
     patched = patched.replace(reader_anchor, reader_replacement, 1)
-    return patched.replace(PATCH_MARKER_V11, PATCH_MARKER, 1)
+    return patched.replace(PATCH_MARKER_V11, PATCH_MARKER_V12, 1)
 
 
-def patch_text(source: str) -> tuple[str, bool]:
-    if PATCH_MARKER in source:
+def add_provider_game_id_support(source: str) -> str:
+    anchor = "      iconPath        = $icon"
+    replacement = "      providerGameId  = [string]$g.GameId\n" + anchor
+    if anchor not in source:
+        raise ValueError("Unsupported V12 connector; provider game ID anchor is missing")
+    return source.replace(anchor, replacement, 1).replace(
+        PATCH_MARKER_V12, PATCH_MARKER, 1)
+
+
+def patch_text_v12(source: str) -> tuple[str, bool]:
+    if PATCH_MARKER_V12 in source:
         return source, False
     if PATCH_MARKER_V11 in source:
         return add_external_install_completion_support(source), True
@@ -460,6 +470,15 @@ def patch_text(source: str) -> tuple[str, bool]:
             DESCRIPTION_PAYLOAD_ANCHOR, DESCRIPTION_PAYLOAD_REPLACEMENT, 1)
     return add_external_install_completion_support(add_uninstall_support(
         add_latest_metadata(add_install_support(patched)))), True
+
+
+def patch_text(source: str) -> tuple[str, bool]:
+    if PATCH_MARKER in source:
+        return source, False
+    if PATCH_MARKER_V12 in source:
+        return add_provider_game_id_support(source), True
+    patched, _changed = patch_text_v12(source)
+    return add_provider_game_id_support(patched), True
 
 
 def patch_file(path: Path, apply: bool) -> str:

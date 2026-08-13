@@ -3694,6 +3694,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return false;
     }
 
+    private boolean hasPlayniteOperationAwaitingConfirmation() {
+        Set<String> locallyRequested = new HashSet<>();
+        locallyRequested.addAll(playniteInstallRequests.keySet());
+        locallyRequested.addAll(playniteUninstallRequests.keySet());
+        for (PlayniteLibraryGame game : currentPlayniteGames) {
+            String key = playniteInstallKey(selectedHostUuid, game.playniteGameId);
+            boolean requested = locallyRequested.remove(key);
+            if ("preparing".equals(game.operationState)
+                    || "attention_required".equals(game.operationState)
+                    || requested && game.operationState.isEmpty()) return true;
+        }
+        return !locallyRequested.isEmpty();
+    }
+
     private void reconcilePlayniteInstallations(ComputerDetails host,
                                                 List<PlayniteLibraryGame> previous,
                                                 List<PlayniteLibraryGame> current) {
@@ -3754,6 +3768,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         R.string.playnite_uninstall_complete, request.getValue()),
                         Toast.LENGTH_LONG).show();
                 uninstalled.add(request.getKey());
+                preferences.edit().remove(playniteCarouselInstallActivityKey(
+                        host.uuid, game.playniteGameId)).apply();
             }
         }
         for (String key : uninstalled) playniteUninstallRequests.remove(key);
@@ -3773,6 +3789,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 result = hostGatewayClient.ensureVibepolloPlayniteApp(
                         connection, game.playniteGameId, game.name);
             } catch (IOException | RuntimeException ignored) { }
+            PlayniteArtworkSpec artworkSpec = PlayniteArtworkSpec.forBackdrop(game);
+            if (artworkSpec.available()) {
+                try {
+                    playniteArtworkCache.fetch(hostGatewayClient, connection, host.uuid,
+                            game.playniteGameId, artworkSpec.kind, artworkSpec.version);
+                } catch (IOException ignored) { }
+            }
             JSONObject ensured = result;
             mainHandler.post(() -> {
                 vibepolloEnsureInFlight.remove(key);
@@ -3783,6 +3806,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                 host.uuid, game.playniteGameId, appId);
                     }
                     if (appListPoller != null) appListPoller.pollNow();
+                }
+                ComputerDetails current = currentHost(host.uuid);
+                if (current != null && host.uuid.equals(selectedHostUuid)) {
+                    renderPlayniteLibrary(current, currentSunshineApps);
                 }
             });
         });
@@ -4482,7 +4509,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 }
                 installing.add(item);
             }
-            else if (carouselActivityEpoch(host.uuid, item) > 0L) recent.add(item);
+            else if (item.game.installed
+                    && carouselActivityEpoch(host.uuid, item) > 0L) recent.add(item);
         }
         installing.sort(recentFirst);
         recent.sort(recentFirst);
@@ -5812,6 +5840,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (!old.game.name.equals(item.game.name) || old.game.installed != item.game.installed ||
                 old.game.installing != item.game.installing ||
                 old.game.installRequiresAttention != item.game.installRequiresAttention ||
+                old.game.operationProgress != item.game.operationProgress ||
+                old.game.uninstalling != item.game.uninstalling ||
+                !old.game.operationState.equals(item.game.operationState) ||
                 !old.game.installAttentionReason.equals(item.game.installAttentionReason) ||
                 !old.game.installWindowTitle.equals(item.game.installWindowTitle) ||
                 !old.game.installLauncher.equals(item.game.installLauncher) ||
@@ -6249,17 +6280,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private String playniteState(String hostUuid, PlayniteDashboardItem item) {
-        if (isPlayniteUninstalling(hostUuid, item)) {
-            return getString(R.string.playnite_uninstalling);
-        }
         if (item.game.installRequiresAttention) {
             return getString(R.string.playnite_install_attention);
         }
+        if (isPlayniteUninstalling(hostUuid, item)) {
+            return getString(R.string.playnite_uninstalling);
+        }
         if (isPlayniteInstalling(hostUuid, item)) {
-            return getString(R.string.playnite_installing);
+            String label = getString(R.string.playnite_installing);
+            return item.game.operationProgress >= 0
+                    ? label + " " + item.game.operationProgress + "%" : label;
         }
         if (!item.game.installed) return getString(R.string.playnite_not_installed);
-        if (isVibepolloEnsureInFlight(hostUuid, item)) {
+        if (isVibepolloEnsureInFlight(hostUuid, item)
+                && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED) {
             return getString(R.string.playnite_creating_vibepollo_app);
         }
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
@@ -6274,11 +6308,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String playniteStateGlyph(String hostUuid, PlayniteDashboardItem item,
                                       boolean resumeSession) {
         if (resumeSession) return "▶  ";
-        if (isPlayniteUninstalling(hostUuid, item)) return "↓  ";
         if (item.game.installRequiresAttention) return "!  ";
+        if (isPlayniteUninstalling(hostUuid, item)) return "↓  ";
         if (isPlayniteInstalling(hostUuid, item)) return "↓  ";
         if (!item.game.installed) return "+  ";
-        if (isVibepolloEnsureInFlight(hostUuid, item)) return "…  ";
+        if (isVibepolloEnsureInFlight(hostUuid, item)
+                && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED) return "…  ";
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) return "✓  ";
         if (item.mappingState == PlayniteDashboardItem.MappingState.FALLBACK_PLAYNITE) {
             return "↗  ";
@@ -6289,15 +6324,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String playniteStateChipLabel(String hostUuid, PlayniteDashboardItem item,
                                           boolean resumeSession) {
         if (resumeSession) return getString(R.string.console_resume);
-        if (isPlayniteUninstalling(hostUuid, item)) {
-            return getString(R.string.playnite_uninstalling);
-        }
         if (item.game.installRequiresAttention) {
             return getString(R.string.playnite_install_attention_short);
         }
-        if (isPlayniteInstalling(hostUuid, item)) return getString(R.string.playnite_installing);
+        if (isPlayniteUninstalling(hostUuid, item)) {
+            return getString(R.string.playnite_uninstalling);
+        }
+        if (isPlayniteInstalling(hostUuid, item)) {
+            String label = getString(R.string.playnite_installing);
+            return item.game.operationProgress >= 0
+                    ? label + " " + item.game.operationProgress + "%" : label;
+        }
         if (!item.game.installed) return getString(R.string.playnite_install_action_short);
-        if (isVibepolloEnsureInFlight(hostUuid, item)) {
+        if (isVibepolloEnsureInFlight(hostUuid, item)
+                && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED) {
             return getString(R.string.playnite_preparing_short);
         }
         if (item.mappingState == PlayniteDashboardItem.MappingState.MAPPED) {
@@ -6370,7 +6410,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private boolean isPlayniteUninstalling(String hostUuid, PlayniteDashboardItem item) {
-        return playniteUninstallRequests.containsKey(playniteInstallKey(hostUuid, item));
+        return item.game.uninstalling ||
+                playniteUninstallRequests.containsKey(playniteInstallKey(hostUuid, item));
     }
 
     private void resetPlaynitePoster(ImageView poster, PlayniteDashboardItem item) {
@@ -6564,12 +6605,22 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String cachedLoadingArtworkPath(String hostUuid, String gameId) {
         if (hostUuid == null || gameId == null || gameId.isEmpty()) return null;
         for (PlayniteDashboardItem item : allPlayniteItems) {
-            if (!gameId.equalsIgnoreCase(item.stableId())
-                    || item.game.backgroundKey.isEmpty()) continue;
-            File artwork = playniteArtworkCache.get(hostUuid, item.stableId(),
-                    "background", item.game.backgroundKey);
-            return artwork != null && artwork.isFile() && artwork.length() > 0
-                    ? artwork.getAbsolutePath() : null;
+            if (!gameId.equalsIgnoreCase(item.stableId())) continue;
+            if (!item.game.backgroundKey.isEmpty()) {
+                File background = playniteArtworkCache.get(hostUuid, item.stableId(),
+                        "background", item.game.backgroundKey);
+                if (background != null && background.isFile() && background.length() > 0) {
+                    return background.getAbsolutePath();
+                }
+            }
+            if (!item.game.coverKey.isEmpty()) {
+                File cover = playniteArtworkCache.get(hostUuid, item.stableId(),
+                        "cover", item.game.coverKey);
+                if (cover != null && cover.isFile() && cover.length() > 0) {
+                    return cover.getAbsolutePath();
+                }
+            }
+            return null;
         }
         return null;
     }
@@ -6813,14 +6864,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 TextView finish = panelAction(getString(localOnly
                         ? R.string.playnite_install_confirm_on_pc
                         : R.string.playnite_install_continue));
-                finish.setEnabled(!localOnly);
-                finish.setAlpha(localOnly ? .58f : 1f);
-                if (!localOnly) {
-                    finish.setOnClickListener(view -> {
-                        hideSidePanel();
-                        continuePlayniteInstallation(host, item);
-                    });
-                }
+                finish.setOnClickListener(view -> {
+                    hideSidePanel();
+                    continuePlayniteInstallation(host, item);
+                });
                 actions.add(finish);
             } else {
                 TextView status = panelAction(getString(R.string.playnite_installing));
@@ -6995,7 +7042,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             startPlayniteInstallation(host, item);
             return;
         }
-        if (isVibepolloEnsureInFlight(hostUuid, item)) {
+        if (isVibepolloEnsureInFlight(hostUuid, item)
+                && item.mappingState != PlayniteDashboardItem.MappingState.MAPPED) {
             ConsoleUiFeedback.makeText(this, R.string.playnite_creating_vibepollo_app,
                     Toast.LENGTH_SHORT).show();
             return;
@@ -7030,6 +7078,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void startPlayniteInstallation(ComputerDetails host,
                                            PlayniteDashboardItem item) {
         if (host == null || item == null) return;
+        if (hasPlayniteOperationAwaitingConfirmation()) {
+            ConsoleUiFeedback.makeText(this, R.string.playnite_operation_waiting,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         HostGatewayClient.Connection connection =
                 hostGatewayStore.loadClientConnection(host.uuid, address);
@@ -7096,6 +7149,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void uninstallPlayniteGame(ComputerDetails host,
                                        PlayniteDashboardItem item) {
+        if (hasPlayniteOperationAwaitingConfirmation()) {
+            ConsoleUiFeedback.makeText(this, R.string.playnite_operation_waiting,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         HostGatewayClient.Connection connection =
                 hostGatewayStore.loadClientConnection(host.uuid, address);
@@ -7130,11 +7188,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void continuePlayniteInstallation(ComputerDetails host,
                                               PlayniteDashboardItem item) {
         if (host == null || item == null) return;
-        if ("secure_desktop".equals(item.game.installAttentionReason)) {
-            ConsoleUiFeedback.makeText(this, R.string.playnite_install_confirm_on_pc_details,
-                    Toast.LENGTH_LONG).show();
-            return;
-        }
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         HostGatewayClient.Connection connection =
                 hostGatewayStore.loadClientConnection(host.uuid, address);
@@ -7150,6 +7203,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     Toast.LENGTH_LONG).show();
             return;
         }
+        if ("secure_desktop".equals(item.game.installAttentionReason)) {
+            ConsoleUiFeedback.makeText(this, R.string.playnite_install_confirm_on_pc_details,
+                    Toast.LENGTH_LONG).show();
+            openInstallationDesktop(host, item, streamTarget);
+            return;
+        }
         executor.execute(() -> {
             try {
                 hostGatewayClient.focusPlayniteInstallation(
@@ -7162,11 +7221,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                             LaunchTransitionType.GENERIC, item.game.playniteGameId);
                 });
             } catch (IOException | RuntimeException error) {
-                mainHandler.post(() -> ConsoleUiFeedback.makeText(this,
-                        R.string.playnite_install_window_unavailable,
-                        Toast.LENGTH_LONG).show());
+                mainHandler.post(() -> {
+                    ConsoleUiFeedback.makeText(this,
+                            R.string.playnite_install_window_unavailable,
+                            Toast.LENGTH_LONG).show();
+                    openInstallationDesktop(host, item, streamTarget);
+                });
             }
         });
+    }
+
+    private void openInstallationDesktop(ComputerDetails host,
+                                         PlayniteDashboardItem item,
+                                         NvApp streamTarget) {
+        beginLaunch(currentHost(host.uuid), streamTarget, null,
+                LaunchTransitionType.GENERIC, item.game.playniteGameId);
     }
 
     private void ensureVibepolloAppThenLaunch(ComputerDetails host,

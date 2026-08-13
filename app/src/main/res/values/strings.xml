@@ -562,6 +562,7 @@
     <string name="playnite_uninstall_confirmation">Uninstall %1$s? The launcher may ask for additional confirmation.</string>
     <string name="playnite_uninstall_starting">Starting uninstallation of %1$s…</string>
     <string name="playnite_uninstalling">Uninstalling</string>
+    <string name="playnite_operation_waiting">Wait for the previous installation operation to begin.</string>
     <string name="playnite_uninstall_complete">%1$s was uninstalled.</string>
     <string name="playnite_uninstall_failed">Could not uninstall %1$s.</string>
     <string name="playnite_install_verifying">Checking installation…</string>

@@ -529,7 +529,8 @@
     <string name="playnite_uninstall">Odinstaluj</string>
     <string name="playnite_uninstall_confirmation">Odinstalować %1$s? Launcher może poprosić o dodatkowe potwierdzenie.</string>
     <string name="playnite_uninstall_starting">Rozpoczynanie odinstalowywania %1$s…</string>
-    <string name="playnite_uninstalling">Odinstalowywanie</string>
+    <string name="playnite_uninstalling">Deinstalacja</string>
+    <string name="playnite_operation_waiting">Poczekaj, aż poprzednia operacja instalacji rozpocznie się.</string>
     <string name="playnite_uninstall_complete">Odinstalowano grę %1$s.</string>
     <string name="playnite_uninstall_failed">Nie udało się odinstalować %1$s.</string>
     <string name="playnite_install_verifying">Sprawdzanie instalacji…</string>
