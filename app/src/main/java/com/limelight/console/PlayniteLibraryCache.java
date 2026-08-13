@@ -77,7 +77,10 @@ final class PlayniteLibraryCache {
                             value.optBoolean("install_requires_attention", false),
                             value.optString("install_attention_reason", ""),
                             value.optString("install_window_title", ""),
-                            value.optString("install_launcher", "")));
+                            value.optString("install_launcher", ""),
+                            value.optString("operation_state", ""),
+                            value.optInt("operation_progress", -1),
+                            value.optBoolean("uninstalling", false)));
                 }
             }
             return new Entry(games, root.optLong("saved_at", file.lastModified()),
@@ -118,6 +121,9 @@ final class PlayniteLibraryCache {
                 value.put("install_attention_reason", game.installAttentionReason);
                 value.put("install_window_title", game.installWindowTitle);
                 value.put("install_launcher", game.installLauncher);
+                value.put("operation_state", game.operationState);
+                value.put("operation_progress", game.operationProgress);
+                value.put("uninstalling", game.uninstalling);
                 values.put(value);
             }
             root.put("games", values);

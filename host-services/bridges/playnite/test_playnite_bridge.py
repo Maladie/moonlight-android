@@ -3,6 +3,8 @@ import tempfile
 import ctypes
 import json
 import os
+import threading
+import time
 from pathlib import Path
 from unittest import mock
 
@@ -14,8 +16,8 @@ from PatchPlayniteConnector import (
     SOURCE_PAYLOAD_ANCHOR, STATUS_OBJECT_ANCHOR, STATUS_PARAM_ANCHOR, patch_text,
 )
 from PlayniteBridge import (
-    BridgeState, REQUIRED_GAME_STABLE_SAMPLES, StreamDisplayResolver, WindowProbe,
-    WindowsPipeClient,
+    BridgeState, REQUIRED_GAME_STABLE_SAMPLES, SteamLibraryProbe,
+    StreamDisplayResolver, WindowProbe, WindowsPipeClient,
 )
 
 
@@ -23,6 +25,32 @@ GAME_ID = "840317c9-b9a4-4f72-be8e-807414e36a9b"
 
 
 class WindowProbeTest(unittest.TestCase):
+    def test_steam_manifest_reports_progress_completion_and_uninstall(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            library = Path(temporary)
+            steamapps = library / "steamapps"
+            steamapps.mkdir()
+            manifest = steamapps / "appmanifest_224760.acf"
+            manifest.write_text('''"AppState"
+{
+    "appid" "224760"
+    "StateFlags" "1026"
+    "installdir" "FEZ"
+    "BytesDownloaded" "50"
+    "BytesToDownload" "100"
+}''', encoding="utf-8")
+            probe = SteamLibraryProbe([library])
+            game = {"source": "Steam", "providerGameId": "224760"}
+            self.assertEqual(50, probe.sample(game, "install")["progress"])
+
+            (steamapps / "common" / "FEZ").mkdir(parents=True)
+            manifest.write_text(manifest.read_text(encoding="utf-8").replace(
+                '"1026"', '"4"').replace('"50"', '"100"'), encoding="utf-8")
+            self.assertTrue(probe.sample(game, "install")["installed"])
+
+            manifest.unlink()
+            self.assertTrue(probe.sample(game, "uninstall")["uninstalled"])
+
     def test_accepts_fullscreen_ui_owned_by_either_playnite_process(self):
         self.assertTrue(WindowProbe.is_playnite_ui_image("Playnite.FullscreenApp.exe"))
         self.assertTrue(WindowProbe.is_playnite_ui_image("PLAYNITE.DESKTOPAPP.EXE"))
@@ -85,6 +113,14 @@ class WindowProbeTest(unittest.TestCase):
         self.assertGreaterEqual(WindowProbe.installation_candidate_score(baseline, generic), 5)
         self.assertEqual(0, WindowProbe.installation_candidate_score(baseline, unrelated))
         self.assertEqual(0, WindowProbe.installation_candidate_score(baseline, unchanged))
+
+    def test_steam_web_helper_modal_is_a_known_launcher(self):
+        baseline = {"foreground_hwnd": 1, "windows": {}}
+        modal = {"hwnd": 2, "image": "steamwebhelper.exe", "title": "Odinstaluj",
+                 "foreground": False, "bounds": [100, 100, 700, 400],
+                 "monitor_bounds": [0, 0, 1920, 1080]}
+        self.assertGreaterEqual(
+            WindowProbe.installation_candidate_score(baseline, modal), 5)
 
     def test_epic_manifest_confirms_completed_install(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -231,6 +267,22 @@ class BridgeStateTest(unittest.TestCase):
             self.assertEqual([{"id": "action"}], page["categories"])
             self.assertEqual([{"id": "steam"}], page["plugins"])
 
+    def test_pending_installation_is_restored_from_operation_journal(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            operation_path = Path(temporary) / "operations.sqlite3"
+            state = BridgeState(operations_path=operation_path)
+            state.set_transport(True, lambda _message: None)
+            game = {"id": GAME_ID, "name": "FEZ", "installed": False,
+                    "source": "Steam", "providerGameId": "224760"}
+            state.handle_message({"type": "games", "payload": [game]})
+            state.install_game(GAME_ID)
+
+            restored = BridgeState(operations_path=operation_path)
+            restored.handle_message({"type": "games", "payload": [game]})
+            current = restored.library_page("0", 10)["games"][0]
+            self.assertTrue(current["installing"])
+            self.assertEqual("preparing", current["operationState"])
+
     def test_bracketed_snapshot_keeps_previous_library_until_complete(self):
         self.state.handle_message({"type": "games", "payload": [{
             "id": GAME_ID, "name": "Old game", "installed": True,
@@ -312,6 +364,77 @@ class BridgeStateTest(unittest.TestCase):
         completed = self.state.library_page("0", 10)["games"][0]
         self.assertTrue(completed["installed"])
         self.assertFalse(completed["installRequiresAttention"])
+
+    def test_known_steam_dialog_is_auto_confirmed_before_attention_fallback(self):
+        confirmations = []
+        self.state.confirm_installation_action = lambda hwnd, operation: (
+            confirmations.append((hwnd, operation)) or {"clicked": True})
+        self.state.handle_message({"type": "games", "payload": [{
+            "id": GAME_ID, "name": "FEZ", "installed": False,
+            "source": "Steam", "providerGameId": "224760",
+        }]})
+        self.state.install_game(GAME_ID)
+        sample = {"requires_attention": True, "reason": "launcher_prompt",
+                  "hwnd": 77, "process_id": 123, "title": "Install - FEZ",
+                  "image": "steam.exe"}
+        for _ in range(3):
+            self.state.apply_installation_probe(GAME_ID, sample)
+        for _ in range(20):
+            if confirmations and self.state.events[-1]["event"] == \
+                    "game-installation-auto-confirmed":
+                break
+            time.sleep(.01)
+        self.assertEqual([(77, "install")], confirmations)
+        self.assertFalse(self.state.library_page(
+            "0", 10)["games"][0]["installRequiresAttention"])
+        self.assertEqual("game-installation-auto-confirmed", self.state.events[-1]["event"])
+
+    def test_steam_attention_is_hidden_while_automation_is_running(self):
+        release = threading.Event()
+        started = threading.Event()
+        def confirm(_hwnd, _operation):
+            started.set()
+            release.wait(1)
+            return {"clicked": True}
+        self.state.confirm_installation_action = confirm
+        self.state.handle_message({"type": "games", "payload": [{
+            "id": GAME_ID, "name": "FTL", "installed": False,
+            "source": "Steam", "providerGameId": "212680",
+        }]})
+        self.state.install_game(GAME_ID)
+        sample = {"requires_attention": True, "reason": "launcher_prompt",
+                  "hwnd": 77, "process_id": 123, "title": "Steam",
+                  "image": "steamwebhelper.exe"}
+        for _ in range(3):
+            self.state.apply_installation_probe(GAME_ID, sample)
+        self.assertTrue(started.wait(1))
+        for _ in range(5):
+            self.state.apply_installation_probe(GAME_ID, sample)
+        self.assertFalse(self.state.library_page(
+            "0", 10)["games"][0]["installRequiresAttention"])
+        release.set()
+
+    def test_installed_steam_game_uninstall_dialog_is_auto_confirmed(self):
+        confirmations = []
+        self.state.confirm_installation_action = lambda hwnd, operation: (
+            confirmations.append((hwnd, operation)) or {"clicked": True})
+        self.state.handle_message({"type": "games", "payload": [{
+            "id": GAME_ID, "name": "FTL", "installed": True,
+            "source": "Steam", "providerGameId": "212680",
+        }]})
+        self.state.uninstall_game(GAME_ID)
+        sample = {"requires_attention": True, "reason": "launcher_prompt",
+                  "hwnd": 88, "process_id": 456, "title": "Odinstaluj",
+                  "image": "steamwebhelper.exe"}
+        for _ in range(3):
+            self.state.apply_installation_probe(GAME_ID, sample)
+        for _ in range(20):
+            if confirmations and self.state.events[-1]["event"] == \
+                    "game-installation-auto-confirmed":
+                break
+            time.sleep(.01)
+        self.assertEqual([(88, "uninstall")], confirmations)
+        self.assertEqual("game-installation-auto-confirmed", self.state.events[-1]["event"])
 
     def test_external_completion_finishes_session_and_syncs_connector(self):
         self.state.handle_message({"type": "games", "payload": [{
@@ -408,6 +531,18 @@ class BridgeStateTest(unittest.TestCase):
             "type": "command", "command": "uninstall", "id": GAME_ID,
         }, self.commands[-1])
 
+    def test_second_operation_waits_until_first_prompt_is_resolved(self):
+        other = "65705ca9-b9c7-4ada-b4b7-f73ffb8ac64f"
+        self.state.handle_message({"type": "games", "payload": [
+            {"id": GAME_ID, "name": "FTL", "installed": False},
+            {"id": other, "name": "FEZ", "installed": True},
+        ]})
+        self.state.install_game(GAME_ID)
+        with self.assertRaisesRegex(RuntimeError, "awaiting confirmation"):
+            self.state.uninstall_game(other)
+        self.state.operation_journal.update(GAME_ID, "installing")
+        self.assertTrue(self.state.uninstall_game(other)["accepted"])
+
     def test_install_rejects_unknown_or_already_installed_game(self):
         with self.assertRaises(FileNotFoundError):
             self.state.install_game(GAME_ID)
@@ -464,6 +599,7 @@ class BridgeStateTest(unittest.TestCase):
         self.assertIn("playCount       = [int]$g.PlayCount", patched)
         self.assertIn("$PlayniteApi.Database.Sources.Get($g.SourceId).Name", patched)
         self.assertIn("source          =", patched)
+        self.assertIn("providerGameId  = [string]$g.GameId", patched)
         self.assertIn("InstallGameByGuidStringOnUIThread", patched)
         self.assertIn("UninstallGameByGuidStringOnUIThread", patched)
         self.assertIn("$obj.command -eq 'uninstall'", patched)
