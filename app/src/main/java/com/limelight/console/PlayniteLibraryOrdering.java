@@ -8,6 +8,7 @@ import java.util.GregorianCalendar;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 import java.util.Set;
 import java.util.TimeZone;
 import java.util.regex.Matcher;
@@ -27,21 +28,27 @@ final class PlayniteLibraryOrdering {
 
     static List<PlayniteLibraryGame> order(List<PlayniteLibraryGame> source,
                                            PlayniteLibraryFilter filter, Locale locale) {
+        return order(source, filter, locale, null);
+    }
+
+    static List<PlayniteLibraryGame> order(List<PlayniteLibraryGame> source,
+                                           PlayniteLibraryFilter filter, Locale locale,
+                                           Map<String, Long> localActivity) {
         PlayniteLibraryFilter safeFilter = filter == null
                 ? PlayniteLibraryFilter.ALL : filter;
         List<PlayniteLibraryGame> visible = new ArrayList<>();
         for (PlayniteLibraryGame game : source) {
-            if (game.hidden || !matches(game, safeFilter)) continue;
+            if (game.hidden || !matches(game, safeFilter, localActivity)) continue;
             visible.add(game);
         }
 
         Comparator<PlayniteLibraryGame> alphabetic = alphabetic(locale);
         if (safeFilter == PlayniteLibraryFilter.RECENTLY_PLAYED) {
-            visible.sort(recentFirst(alphabetic));
+            visible.sort(recentFirst(alphabetic, localActivity));
             return visible;
         }
         if (safeFilter == PlayniteLibraryFilter.MOST_LAUNCHED) {
-            Comparator<PlayniteLibraryGame> recent = recentFirst(alphabetic);
+            Comparator<PlayniteLibraryGame> recent = recentFirst(alphabetic, localActivity);
             visible.sort((left, right) -> {
                 int byCount = Integer.compare(right.playCount, left.playCount);
                 return byCount != 0 ? byCount : recent.compare(left, right);
@@ -54,11 +61,11 @@ final class PlayniteLibraryOrdering {
         }
         List<PlayniteLibraryGame> played = new ArrayList<>();
         for (PlayniteLibraryGame game : visible) {
-            if (activityEpoch(game.lastActivity) != Long.MIN_VALUE) played.add(game);
+            if (activityEpoch(game, localActivity) != Long.MIN_VALUE) played.add(game);
         }
         played.sort((left, right) -> {
-            int byDate = Long.compare(activityEpoch(right.lastActivity),
-                    activityEpoch(left.lastActivity));
+            int byDate = Long.compare(activityEpoch(right, localActivity),
+                    activityEpoch(left, localActivity));
             return byDate != 0 ? byDate : alphabetic.compare(left, right);
         });
 
@@ -78,19 +85,20 @@ final class PlayniteLibraryOrdering {
         return result;
     }
 
-    private static boolean matches(PlayniteLibraryGame game, PlayniteLibraryFilter filter) {
+    private static boolean matches(PlayniteLibraryGame game, PlayniteLibraryFilter filter,
+                                   Map<String, Long> localActivity) {
         switch (filter) {
             case INSTALLED:
                 return game.installed;
             case UNINSTALLED:
                 return !game.installed;
             case RECENTLY_PLAYED:
-                return activityEpoch(game.lastActivity) != Long.MIN_VALUE;
+                return activityEpoch(game, localActivity) != Long.MIN_VALUE;
             case MOST_LAUNCHED:
                 return game.playCount > 0;
             case NEVER_LAUNCHED:
                 return game.playCount == 0 &&
-                        activityEpoch(game.lastActivity) == Long.MIN_VALUE;
+                        activityEpoch(game, localActivity) == Long.MIN_VALUE;
             case ALL:
             default:
                 return true;
@@ -98,12 +106,20 @@ final class PlayniteLibraryOrdering {
     }
 
     private static Comparator<PlayniteLibraryGame> recentFirst(
-            Comparator<PlayniteLibraryGame> alphabetic) {
+            Comparator<PlayniteLibraryGame> alphabetic, Map<String, Long> localActivity) {
         return (left, right) -> {
-            int byDate = Long.compare(activityEpoch(right.lastActivity),
-                    activityEpoch(left.lastActivity));
+            int byDate = Long.compare(activityEpoch(right, localActivity),
+                    activityEpoch(left, localActivity));
             return byDate != 0 ? byDate : alphabetic.compare(left, right);
         };
+    }
+
+    private static long activityEpoch(PlayniteLibraryGame game,
+                                      Map<String, Long> localActivity) {
+        long playnite = activityEpoch(game.lastActivity);
+        if (localActivity == null) return playnite;
+        Long local = localActivity.get(game.playniteGameId);
+        return local == null ? playnite : Math.max(playnite, local);
     }
 
     private static Comparator<PlayniteLibraryGame> alphabetic(Locale locale) {

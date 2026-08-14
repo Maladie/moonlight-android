@@ -41,7 +41,8 @@ per-profile Bridge when its credentials or runtime state differ.
 - `GET /api/v1/capabilities` - reports Gateway, selected profile and Bridges.
 - `GET /api/v1/profiles` - lists safe profile names and Bridge health summaries.
 - `GET /api/v1/vibepollo/repair/status` - Vibepollo health summary.
-- `POST /api/v1/vibepollo/apps/ensure` - idempotently create or migrate a Playnite-backed Vibepollo app.
+- `POST /api/v1/vibepollo/apps/ensure` - start idempotent creation or migration of a Playnite-backed Vibepollo app.
+- `GET /api/v1/vibepollo/apps/status?playnite_game_id=...` - read its host-owned preparation state.
 - `POST /api/v1/vibepollo/repair/{restart|reset-display|export-logs}` - repair action.
 - `GET /api/v1/discord/status` - Bridge, RPC and authorization status.
 - `GET /api/v1/discord/home` - favorites, recent channels and servers.

@@ -822,6 +822,50 @@ function Select-CanonicalPlayniteApp {
         @{ Expression = { $_.index }; Descending = $false })[0]
 }
 
+function Remove-DuplicatePlayniteApps {
+    param([object[]]$Matches, $Canonical)
+    if ($Matches.Count -le 1) { return 0 }
+    $canonicalUuid = [string](Get-PropertyValue $Canonical.app @("uuid") "")
+    $canonicalId = [string](Get-PropertyValue $Canonical.app @("id") "")
+    $duplicates = @($Matches | Where-Object {
+        $uuid = [string](Get-PropertyValue $_.app @("uuid") "")
+        $id = [string](Get-PropertyValue $_.app @("id") "")
+        -not (($canonicalUuid -and $uuid -eq $canonicalUuid) -or
+            ($canonicalId -and $id -eq $canonicalId))
+    } | Sort-Object index -Descending)
+    $removed = 0
+    foreach ($duplicate in $duplicates) {
+        try {
+            [void](Invoke-VibepolloApi ("/api/apps/{0}" -f [int]$duplicate.index) DELETE)
+            $removed++
+        }
+        catch {
+            # Older/scoped tokens may not allow DELETE. Keep the canonical app and
+            # report the skipped cleanup instead of making launch preparation fail.
+            Write-BridgeLog "Skipped duplicate Playnite app at index $($duplicate.index): $($_.Exception.Message)" "WARN"
+        }
+    }
+    return $removed
+}
+
+function Get-PlayniteAppStatus {
+    param([string]$GameId)
+    $normalizedId = $GameId.Trim().ToLowerInvariant()
+    if ($normalizedId -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
+        throw "Invalid Playnite game ID"
+    }
+    $matches = @(Find-AppsByPlayniteId @(Get-VibepolloApps) $normalizedId)
+    if ($matches.Count -eq 0) {
+        return [pscustomobject]@{ ok = $true; state = "missing"; playnite_game_id = $normalizedId }
+    }
+    $canonical = Select-CanonicalPlayniteApp $matches
+    $result = New-EnsuredPlayniteAppResult $canonical $false $false 0
+    $result | Add-Member -NotePropertyName state -NotePropertyValue "ready"
+    $result | Add-Member -NotePropertyName duplicates `
+        -NotePropertyValue ([Math]::Max(0, $matches.Count - 1))
+    return $result
+}
+
 function New-EnsuredPlayniteAppResult {
     param($Match, [bool]$Created, [bool]$Updated, [int]$Deduplicated)
     $app = $Match.app
@@ -862,7 +906,10 @@ function Ensure-PlayniteApp {
             # stream detached from the helper; game lifetime remains observable through
             # the Playnite integration itself.
             if ([bool](Get-PropertyValue $canonical.app @("auto-detach") $false)) {
-                return New-EnsuredPlayniteAppResult $canonical $false $false 0
+                $deduplicated = Remove-DuplicatePlayniteApps $existing $canonical
+                $result = New-EnsuredPlayniteAppResult $canonical $false $false $deduplicated
+                $result | Add-Member -NotePropertyName state -NotePropertyValue "ready"
+                return $result
             }
             $payload = ConvertTo-RemoteJsonSafe $canonical.app
             $payload["index"] = [int]$canonical.index
@@ -936,7 +983,17 @@ function Ensure-PlayniteApp {
         }
     } while ((Get-Date) -lt $deadline)
     if ($null -eq $canonical) { throw "Vibepollo did not return the ensured application" }
-    return New-EnsuredPlayniteAppResult $canonical $created (-not $created) 0
+    $matches = @(Find-AppsByPlayniteId @(Get-VibepolloApps) $normalizedId)
+    $canonical = Select-CanonicalPlayniteApp $matches
+    $deduplicated = Remove-DuplicatePlayniteApps $matches $canonical
+    if ($deduplicated -gt 0) {
+        $script:CacheTime.Clear(); $script:SnapshotCache = $null
+        $canonical = Select-CanonicalPlayniteApp @(
+            Find-AppsByPlayniteId @(Get-VibepolloApps) $normalizedId)
+    }
+    $result = New-EnsuredPlayniteAppResult $canonical $created (-not $created) $deduplicated
+    $result | Add-Member -NotePropertyName state -NotePropertyValue "ready"
+    return $result
 }
 
 function Invoke-Action {
@@ -1026,6 +1083,10 @@ try {
                     } else { $request.Body | ConvertFrom-Json }
                     $result = Ensure-PlayniteApp ([string]$body.playnite_game_id) ([string]$body.name)
                     Send-JsonResponse $request.Stream $result $(if ($result.created) { 201 } else { 200 })
+                }
+                '^/apps/status$' {
+                    $gameId = [uri]::UnescapeDataString([string]$request.Query["playnite_game_id"])
+                    Send-JsonResponse $request.Stream (Get-PlayniteAppStatus $gameId)
                 }
                 '^/clients$' { Send-JsonResponse $request.Stream ([pscustomobject]@{ clients = (Get-Snapshot).clients }) }
                 '^/pair$' {

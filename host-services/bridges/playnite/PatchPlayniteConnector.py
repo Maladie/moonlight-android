@@ -20,7 +20,10 @@ PATCH_MARKER_V9 = "# WAKEPLAY-CONSOLE-BRIDGE-V9"
 PATCH_MARKER_V10 = "# WAKEPLAY-CONSOLE-BRIDGE-V10"
 PATCH_MARKER_V11 = "# WAKEPLAY-CONSOLE-BRIDGE-V11"
 PATCH_MARKER_V12 = "# WAKEPLAY-CONSOLE-BRIDGE-V12"
-PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V13"
+PATCH_MARKER_V13 = "# WAKEPLAY-CONSOLE-BRIDGE-V13"
+PATCH_MARKER_V14 = "# WAKEPLAY-CONSOLE-BRIDGE-V14"
+PATCH_MARKER_V15 = "# WAKEPLAY-CONSOLE-BRIDGE-V15"
+PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V16"
 
 LAUNCH_PREP_ANCHOR = """          Register-SunshineLaunchedGame -Id $obj.id
           [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)"""
@@ -66,6 +69,8 @@ function Send-WakePlaySnapshotToLauncher {
   param([Parameter(Mandatory)][string]$Target)
   try {
     $targets = @($Target)
+    $payload = @{ type = 'snapshotStart'; payload = @{} } | ConvertTo-Json -Depth 2 -Compress
+    Send-PayloadToLauncherConnections -Payload $payload -Targets $targets -Context 'WakePlay snapshot start' | Out-Null
     $plugins = @(Get-PlaynitePlugins)
     $payload = @{ type = 'plugins'; payload = $plugins } | ConvertTo-Json -Depth 6 -Compress
     Send-PayloadToLauncherConnections -Payload $payload -Targets $targets -Context 'WakePlay plugins snapshot' | Out-Null
@@ -356,7 +361,7 @@ def add_external_install_completion_support(source: str) -> str:
     public static void MarkGameInstalledOnUIThread(string guidStr, string installDirectory)
     {
         var d = Dispatcher;
-        if (d != null) d.BeginInvoke(new Action(() => MarkGameInstalled(guidStr, installDirectory)));
+        if (d != null) d.Invoke(new Action(() => MarkGameInstalled(guidStr, installDirectory)));
         else MarkGameInstalled(guidStr, installDirectory);
     }
 }"""
@@ -382,7 +387,112 @@ def add_provider_game_id_support(source: str) -> str:
     if anchor not in source:
         raise ValueError("Unsupported V12 connector; provider game ID anchor is missing")
     return source.replace(anchor, replacement, 1).replace(
-        PATCH_MARKER_V12, PATCH_MARKER, 1)
+        PATCH_MARKER_V12, PATCH_MARKER_V13, 1)
+
+
+def add_external_uninstall_completion_support(source: str) -> str:
+    ui_anchor_async = """    public static void MarkGameInstalledOnUIThread(string guidStr, string installDirectory)
+    {
+        var d = Dispatcher;
+        if (d != null) d.BeginInvoke(new Action(() => MarkGameInstalled(guidStr, installDirectory)));
+        else MarkGameInstalled(guidStr, installDirectory);
+    }
+}"""
+    ui_anchor_sync = ui_anchor_async.replace("d.BeginInvoke(", "d.Invoke(")
+    ui_replacement = """    public static void MarkGameInstalledOnUIThread(string guidStr, string installDirectory)
+    {
+        var d = Dispatcher;
+        if (d != null) d.Invoke(new Action(() => MarkGameInstalled(guidStr, installDirectory)));
+        else MarkGameInstalled(guidStr, installDirectory);
+    }
+
+    public static void MarkGameUninstalled(string guidStr)
+    {
+        if (string.IsNullOrWhiteSpace(guidStr)) return;
+        Guid gid; if (!Guid.TryParse(guidStr, out gid)) return;
+        var api = Api; if (api == null) return;
+        var databaseProperty = api.GetType().GetProperty("Database");
+        var database = databaseProperty != null ? databaseProperty.GetValue(api) : null;
+        if (database == null) throw new MissingMemberException("Playnite database is unavailable");
+        var gamesProperty = database.GetType().GetProperty("Games");
+        var games = gamesProperty != null ? gamesProperty.GetValue(database) : null;
+        if (games == null) throw new MissingMemberException("Playnite games database is unavailable");
+        var get = games.GetType().GetMethod("Get", new Type[] { typeof(Guid) });
+        var game = get != null ? get.Invoke(games, new object[] { gid }) : null;
+        if (game == null) return;
+        var installed = game.GetType().GetProperty("IsInstalled");
+        if (installed == null || !installed.CanWrite)
+            throw new MissingMemberException("Playnite installed state is unavailable");
+        installed.SetValue(game, false);
+        var directory = game.GetType().GetProperty("InstallDirectory");
+        if (directory != null && directory.CanWrite) directory.SetValue(game, "");
+        System.Reflection.MethodInfo update = null;
+        foreach (var method in games.GetType().GetMethods()) {
+            var parameters = method.GetParameters();
+            if (method.Name == "Update" && parameters.Length == 1 &&
+                parameters[0].ParameterType.IsAssignableFrom(game.GetType())) {
+                update = method; break;
+            }
+        }
+        if (update == null) throw new MissingMethodException("Playnite game update method unavailable");
+        update.Invoke(games, new object[] { game });
+    }
+
+    public static void MarkGameUninstalledOnUIThread(string guidStr)
+    {
+        var d = Dispatcher;
+        if (d != null) d.Invoke(new Action(() => MarkGameUninstalled(guidStr)));
+        else MarkGameUninstalled(guidStr);
+    }
+}"""
+    reader_anchor = """        elseif ($obj.type -eq 'command' -and $obj.command -eq 'mark-installed' -and $obj.id) {
+          [UIBridge]::MarkGameInstalledOnUIThread([string]$obj.id, [string]$obj.install_directory)
+          Write-Log "LauncherConn[$Guid]: installed state synchronized for $($obj.id)"
+        }"""
+    reader_replacement = reader_anchor + """
+        elseif ($obj.type -eq 'command' -and $obj.command -eq 'mark-uninstalled' -and $obj.id) {
+          [UIBridge]::MarkGameUninstalledOnUIThread([string]$obj.id)
+          Write-Log "LauncherConn[$Guid]: uninstalled state synchronized for $($obj.id)"
+        }"""
+    ui_anchor = ui_anchor_sync if ui_anchor_sync in source else ui_anchor_async
+    if ui_anchor not in source or reader_anchor not in source:
+        raise ValueError("Unsupported V13 connector; external uninstall anchors are missing")
+    return source.replace(ui_anchor, ui_replacement, 1).replace(
+        reader_anchor, reader_replacement, 1).replace(PATCH_MARKER_V13, PATCH_MARKER_V14, 1)
+
+
+def add_installing_state_cleanup(source: str) -> str:
+    installed_anchor = \
+        "if (installed != null && installed.CanWrite) installed.SetValue(game, true);"
+    installed_replacement = installed_anchor + """
+        var installing = game.GetType().GetProperty("IsInstalling");
+        if (installing != null && installing.CanWrite) installing.SetValue(game, false);"""
+    uninstalled_anchor = "installed.SetValue(game, false);"
+    uninstalled_replacement = uninstalled_anchor + """
+        var installing = game.GetType().GetProperty("IsInstalling");
+        if (installing != null && installing.CanWrite) installing.SetValue(game, false);"""
+    if installed_anchor not in source or uninstalled_anchor not in source:
+        raise ValueError("Unsupported V14 connector; installing-state anchors are missing")
+    return source.replace(installed_anchor, installed_replacement, 1).replace(
+        uninstalled_anchor, uninstalled_replacement, 1).replace(
+        PATCH_MARKER_V14, PATCH_MARKER_V15, 1)
+
+
+def add_snapshot_start(source: str) -> str:
+    anchor = """  try {
+    $targets = @($Target)
+    $plugins = @(Get-PlaynitePlugins)"""
+    replacement = """  try {
+    $targets = @($Target)
+    $payload = @{ type = 'snapshotStart'; payload = @{} } | ConvertTo-Json -Depth 2 -Compress
+    Send-PayloadToLauncherConnections -Payload $payload -Targets $targets -Context 'WakePlay snapshot start' | Out-Null
+    $plugins = @(Get-PlaynitePlugins)"""
+    if anchor not in source:
+        if "type = 'snapshotStart'" in source and PATCH_MARKER_V15 in source:
+            return source.replace(PATCH_MARKER_V15, PATCH_MARKER, 1)
+        raise ValueError("Unsupported V15 connector; snapshot function is incomplete")
+    return source.replace(anchor, replacement, 1).replace(
+        PATCH_MARKER_V15, PATCH_MARKER, 1)
 
 
 def patch_text_v12(source: str) -> tuple[str, bool]:
@@ -475,10 +585,21 @@ def patch_text_v12(source: str) -> tuple[str, bool]:
 def patch_text(source: str) -> tuple[str, bool]:
     if PATCH_MARKER in source:
         return source, False
+    if PATCH_MARKER_V15 in source:
+        return add_snapshot_start(source), True
+    if PATCH_MARKER_V14 in source:
+        return add_snapshot_start(add_installing_state_cleanup(source)), True
+    if PATCH_MARKER_V13 in source:
+        return add_snapshot_start(add_installing_state_cleanup(
+            add_external_uninstall_completion_support(source))), True
     if PATCH_MARKER_V12 in source:
-        return add_provider_game_id_support(source), True
+        return add_snapshot_start(add_installing_state_cleanup(
+            add_external_uninstall_completion_support(
+                add_provider_game_id_support(source)))), True
     patched, _changed = patch_text_v12(source)
-    return add_provider_game_id_support(patched), True
+    return add_snapshot_start(add_installing_state_cleanup(
+        add_external_uninstall_completion_support(
+            add_provider_game_id_support(patched)))), True
 
 
 def patch_file(path: Path, apply: bool) -> str:

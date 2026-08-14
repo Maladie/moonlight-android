@@ -12,11 +12,15 @@ API token, then use `Start-VibepolloBridge.ps1` and
 `Test-VibepolloBridge.ps1`. The token is stored with Windows DPAPI and is not
 portable to another Windows profile.
 
-The token must allow both `GET` and `POST` on `/api/apps`. The bundled installer
+The token must allow `GET` and `POST` on `/api/apps` and `DELETE` on
+`/api/apps/*`. The bundled installer
 uses `moonwaker-token-scopes.example.json` when it creates or renews the token.
 Existing apps are matched by Playnite GUID first; legacy exact-name entries are
 migrated by sending their complete record so custom commands, images and hooks
-are preserved.
+are preserved. Records sharing the same non-empty Playnite GUID are migrated
+conservatively: the richest record is retained and only the remaining records
+with that exact GUID are removed. Apps without a Playnite GUID are never
+considered duplicates.
 
 `POST /pair` is the loopback-only half of MoonWaker's unified host pairing flow.
 It submits the pending Moonlight PIN to Vibepollo, identifies the newly paired

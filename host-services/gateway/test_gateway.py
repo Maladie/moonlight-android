@@ -1,5 +1,6 @@
 import json
 import os
+import time
 import unittest
 import urllib.parse
 from pathlib import Path
@@ -241,8 +242,13 @@ class GatewayStateTest(unittest.TestCase):
             "ignored": "must not cross the loopback boundary",
         })
 
-        self.assertEqual(201, status)
+        self.assertEqual(202, status)
         self.assertTrue(result["ok"])
+        self.assertEqual("preparing", result["state"])
+        for _ in range(50):
+            if calls:
+                break
+            time.sleep(0.01)
         self.assertEqual(1, len(calls))
         self.assertEqual("vibepollo", calls[0][0])
         self.assertEqual("/apps/ensure", calls[0][1])
@@ -260,6 +266,22 @@ class GatewayStateTest(unittest.TestCase):
                 "playnite_game_id": "11223344-5566-7788-99aa-bbccddeeff00",
                 "name": "bad\nname",
             })
+
+    def test_library_exposes_gateway_owned_vibepollo_preparation(self):
+        state = GatewayState(self.config_path, None)
+        game_id = "11223344-5566-7788-99aa-bbccddeeff00"
+        state.vibepollo_app_operations["default:" + game_id] = {
+            "state": "preparing", "playnite_game_id": game_id,
+        }
+        state.proxy = lambda name, path, timeout=2.5: (True, {
+            "games": [{"id": game_id, "name": "Game"}],
+        })
+
+        status, result = state.playnite_library("", 50)
+
+        self.assertEqual(200, status)
+        self.assertEqual("preparing",
+                         result["library"]["games"][0]["vibepollo_state"])
 
     def test_capabilities_advertise_vibepollo_app_management(self):
         state = GatewayState(self.config_path, None)

@@ -5,6 +5,7 @@ import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.Typeface;
 import android.util.AttributeSet;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -24,6 +25,7 @@ public class OverlayMenuButton extends LinearLayout {
 
     private ImageView iconView;
     private TextView labelView;
+    private TextView shortcutView;
     private GradientDrawable background;
     private boolean isSelected = false;
     private int strokeWidth;
@@ -86,6 +88,13 @@ public class OverlayMenuButton extends LinearLayout {
         labelView.setTextColor(Color.WHITE);
         labelView.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         addView(labelView);
+
+        shortcutView = new TextView(context);
+        LinearLayout.LayoutParams shortcutParams = new LinearLayout.LayoutParams(iconSize, iconSize);
+        shortcutParams.leftMargin = (int) (8 * density);
+        shortcutView.setLayoutParams(shortcutParams);
+        shortcutView.setVisibility(GONE);
+        addView(shortcutView);
     }
 
     /**
@@ -109,6 +118,15 @@ public class OverlayMenuButton extends LinearLayout {
     public void setLabel(String text) {
         labelView.setText(text);
         labelView.setVisibility(text != null && !text.isEmpty() ? VISIBLE : GONE);
+    }
+
+    public void setShortcut(Typeface typeface, String glyph) {
+        shortcutView.setTypeface(typeface);
+        shortcutView.setText(glyph);
+        shortcutView.setTextSize(TypedValue.COMPLEX_UNIT_SP, 22);
+        shortcutView.setTextColor(Color.WHITE);
+        shortcutView.setGravity(Gravity.CENTER);
+        shortcutView.setVisibility(VISIBLE);
     }
 
     /**
@@ -137,12 +155,14 @@ public class OverlayMenuButton extends LinearLayout {
             background.setColor(0xC0FFFFFF); // Semi-transparent white
             background.setStroke(strokeWidth, 0xFFFFFFFF); // White border
             iconView.setImageTintList(ColorStateList.valueOf(0xFF000000)); // Black icon
+            shortcutView.setTextColor(Color.BLACK);
             labelView.setTextColor(Color.BLACK);
         } else {
             // Normal state
             background.setColor(0xD9000000); // Semi-transparent black
             background.setStroke(0, 0); // No border
             iconView.setImageTintList(ColorStateList.valueOf(0xFFFFFFFF)); // White icon
+            shortcutView.setTextColor(Color.WHITE);
             labelView.setTextColor(Color.WHITE);
         }
     }
@@ -164,4 +184,5 @@ public class OverlayMenuButton extends LinearLayout {
         button.setLabel(label);
         return button;
     }
+
 }
