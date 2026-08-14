@@ -181,10 +181,99 @@ class SteamLibraryProbe:
             if operation == "install" and complete and install_dir.is_dir():
                 return {"installed": True, "provider": "steam",
                         "install_directory": str(install_dir), "progress": 100}
+            # Steam creates the appmanifest before its confirmation modal is
+            # accepted. Zero downloaded bytes are not evidence that installation
+            # started; keep looking for the launcher prompt instead.
+            if operation == "install" and downloaded == 0:
+                return None
             return {"requires_attention": False, "reason": "steam_downloading",
                     "provider": "steam", "progress": progress}
         if operation == "uninstall":
             return {"uninstalled": True, "provider": "steam"}
+        return None
+
+
+class EpicLibraryProbe:
+    """Reads Epic's authoritative installed manifests."""
+
+    def __init__(self, manifests: Path | None = None) -> None:
+        self.manifests = manifests
+
+    def directory(self) -> Path:
+        return self.manifests or Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / \
+            "Epic" / "EpicGamesLauncher" / "Data" / "Manifests"
+
+    def scan(self) -> dict[str, Any]:
+        directory = self.directory()
+        if not directory.is_dir():
+            return {"available": False, "complete": False, "by_id": {}, "by_name": {}}
+        by_id: dict[str, dict[str, Any]] = {}
+        by_name: dict[str, list[dict[str, Any]]] = {}
+        complete = True
+        try:
+            paths = list(directory.glob("*.item"))
+        except OSError:
+            return {"available": False, "complete": False, "by_id": {}, "by_name": {}}
+        for path in paths:
+            try:
+                value = json.loads(path.read_text(encoding="utf-8-sig"))
+            except (OSError, ValueError, TypeError, json.JSONDecodeError):
+                complete = False
+                continue
+            app_name = str(value.get("AppName") or "").strip().casefold()
+            display_name = str(value.get("DisplayName") or "").strip().casefold()
+            install_directory = str(value.get("InstallLocation") or "").strip()
+            executable = str(value.get("LaunchExecutable") or "").strip()
+            installed = not bool(value.get("bIsIncompleteInstall", False)) and \
+                bool(install_directory) and Path(install_directory).is_dir() and \
+                (not executable or (Path(install_directory) / executable).is_file())
+            item = {"installed": installed, "install_directory": install_directory,
+                    "provider": "epic"}
+            if app_name:
+                by_id[app_name] = item
+            if display_name:
+                by_name.setdefault(display_name, []).append(item)
+        return {"available": True, "complete": complete,
+                "by_id": by_id, "by_name": by_name}
+
+    @staticmethod
+    def installed_from_snapshot(game: dict[str, Any],
+                                snapshot: dict[str, Any]) -> dict[str, Any] | None:
+        provider = str(game.get("pluginName") or game.get("source") or "").casefold()
+        if "epic" not in provider or not snapshot.get("available"):
+            return None
+        provider_id = str(game.get("providerGameId") or "").strip().casefold()
+        name = str(game.get("name") or "").strip().casefold()
+        item = (snapshot.get("by_id") or {}).get(provider_id) if provider_id else None
+        if item is not None:
+            return item if item.get("installed") else None
+        matches = (snapshot.get("by_name") or {}).get(name, []) if name else []
+        installed = [value for value in matches if value.get("installed")]
+        return installed[0] if len(installed) == 1 else None
+
+    def installed(self, game: dict[str, Any]) -> dict[str, Any] | None:
+        return self.installed_from_snapshot(game, self.scan())
+
+    def sample(self, game: dict[str, Any], operation: str) -> dict[str, Any] | None:
+        provider = str(game.get("pluginName") or game.get("source") or "").casefold()
+        if "epic" not in provider:
+            return None
+        snapshot = self.scan()
+        installed = self.installed_from_snapshot(game, snapshot)
+        if installed:
+            return None if operation == "uninstall" else {
+                "installed": True, "progress": 100, **installed}
+        # Absence is authoritative for uninstall only with Epic's stable AppName.
+        provider_id = str(game.get("providerGameId") or "").strip().casefold()
+        if operation == "uninstall" and snapshot.get("available") \
+                and snapshot.get("complete") and provider_id \
+                and provider_id not in (snapshot.get("by_id") or {}):
+            return {"uninstalled": True, "provider": "epic"}
+        if operation == "install" and snapshot.get("available") \
+                and snapshot.get("complete") and provider_id \
+                and provider_id not in (snapshot.get("by_id") or {}):
+            return {"manifest_absent": True, "provider": "epic",
+                    "requires_attention": False, "reason": "epic_manifest_absent"}
         return None
 
 
@@ -200,6 +289,7 @@ class WindowProbe:
 
     def __init__(self, steam_automation_path: Path | None = None) -> None:
         self.steam = SteamLibraryProbe()
+        self.epic = EpicLibraryProbe()
         self.steam_automation_path = steam_automation_path
         self.user32 = None
         self.kernel32 = None
@@ -304,6 +394,19 @@ class WindowProbe:
             return not bool(self.user32.SwitchDesktop(desktop))
         finally:
             self.user32.CloseDesktop(desktop)
+
+    @staticmethod
+    def uac_consent_pending() -> bool:
+        if os.name != "nt":
+            return False
+        try:
+            result = subprocess.run([
+                "tasklist.exe", "/FI", "IMAGENAME eq consent.exe", "/NH", "/FO", "CSV",
+            ], capture_output=True, text=True, timeout=2,
+                creationflags=subprocess.CREATE_NO_WINDOW, check=False)
+            return result.returncode == 0 and '"consent.exe"' in result.stdout.casefold()
+        except (OSError, subprocess.SubprocessError):
+            return False
 
     @staticmethod
     def is_playnite_ui_image(image_name: str) -> bool:
@@ -414,12 +517,14 @@ class WindowProbe:
         previous = previous_windows.get(str(candidate.get("hwnd") or 0))
         image = str(candidate.get("image") or "").casefold()
         title = str(candidate.get("title") or "").casefold()
-        launcher_tokens = ("launcher", "installer", "setup", "steam", "epic",
-                           "ubisoft", "gog galaxy", "galaxyclient", "ea app",
-                           "eadesktop", "microsoft store", "gamingservices")
-        known_launcher = image in INSTALLER_IMAGES or any(
-            token in image for token in launcher_tokens) or any(
-            token in title for token in launcher_tokens)
+        # Only windows owned by supported launchers can confirm an operation.
+        # Matching generic words such as "installer" attributed MoonWaker's own
+        # installer (and unrelated setup windows) to a pending game operation.
+        provider = str((baseline.get("game") or {}).get("source") or
+                       (baseline.get("game") or {}).get("pluginName") or "").casefold()
+        expected_images = {"steam.exe", "steamwebhelper.exe"} \
+            if "steam" in provider else set()
+        known_launcher = image in expected_images
         new_window = previous is None
         changed_title = previous is not None and str(previous.get("title") or "") != \
             str(candidate.get("title") or "")
@@ -429,6 +534,8 @@ class WindowProbe:
         bounds = list(candidate.get("bounds") or [])
         monitor = list(candidate.get("monitor_bounds") or [])
         dialog_sized = not WindowProbe.fills_monitor(bounds, monitor, .92)
+        if not (new_window or changed_title or changed_foreground):
+            return 0
         score = (3 if known_launcher else 0) + (4 if new_window else 0) + \
             (3 if changed_title else 0) + (2 if foreground else 0) + \
             (2 if changed_foreground else 0) + (1 if dialog_sized else 0)
@@ -442,17 +549,34 @@ class WindowProbe:
     def installation_prompt(self, baseline: dict[str, Any]) -> dict[str, Any]:
         game = baseline.get("game") or {}
         operation = str(baseline.get("operation") or "install")
+        provider = str(game.get("source") or game.get("pluginName") or "").casefold()
+        if "epic" in provider:
+            return {"requires_attention": False, "reason": "epic_manual"}
+        # UAC switches Windows to the secure desktop. A pre-existing Epic manifest
+        # must not complete the operation while consent is still waiting.
+        if self.is_session_locked() or self.uac_consent_pending():
+            return {"requires_attention": True, "reason": "secure_desktop",
+                    "hwnd": 0, "title": "", "image": ""}
         steam = self.steam.sample(game, operation)
         if steam:
             return steam
-        completed = self.external_installation_completion(game)
-        if completed:
-            return {"requires_attention": False, "installed": True, **completed}
+        epic = self.epic.sample(game, operation)
+        if epic:
+            return {"requires_attention": False, **epic}
         if not self.user32:
             return {"requires_attention": False, "reason": "window_probe_unavailable"}
-        if self.is_session_locked():
-            return {"requires_attention": True, "reason": "secure_desktop",
-                    "hwnd": 0, "title": "", "image": ""}
+        if "steam" in provider:
+            steam_windows = [window for window in self.interactive_windows()
+                             if str(window.get("image") or "").casefold() in {
+                                 "steam.exe", "steamwebhelper.exe"}]
+            steam_windows.sort(key=lambda window: bool(window.get("foreground")), reverse=True)
+            for window in steam_windows:
+                recognized = self.confirm_steam_operation(
+                    int(window.get("hwnd") or 0), operation,
+                    str(game.get("name") or ""), probe_only=True)
+                if recognized.get("recognized"):
+                    return {"requires_attention": True, "reason": "launcher_prompt",
+                            "visual_confirmation_safe": False, **window}
         candidates = []
         for candidate in self.interactive_windows():
             score = self.installation_candidate_score(baseline, candidate)
@@ -463,34 +587,25 @@ class WindowProbe:
         _score, selected = max(candidates, key=lambda value: (
             value[0], bool(value[1].get("foreground")),
             int(value[1].get("hwnd") or 0)))
+        previous = (baseline.get("windows") or {}).get(
+            str(selected.get("hwnd") or 0))
+        image = str(selected.get("image") or "").casefold()
+        bounds = list(selected.get("bounds") or [])
+        width = bounds[2] - bounds[0] if len(bounds) == 4 else 0
+        height = bounds[3] - bounds[1] if len(bounds) == 4 else 0
+        # Epic embeds its prompt inside the existing full launcher window. The
+        # confirmation script locates the modal panel and its primary action.
+        visual_confirmation_safe = image == "epicgameslauncher.exe" and \
+            400 <= width <= 2500 and 250 <= height <= 1600 and \
+            (previous is None or bool(selected.get("foreground")))
         return {"requires_attention": True, "reason": "launcher_prompt",
+                "visual_confirmation_safe": visual_confirmation_safe,
                 **selected}
 
     @staticmethod
     def external_installation_completion(game: dict[str, Any]) -> dict[str, Any] | None:
         """Confirm Epic installs when its Playnite plugin does not refresh itself."""
-        provider = str(game.get("pluginName") or game.get("source") or "").casefold()
-        if "epic" not in provider:
-            return None
-        plugin_id = str(game.get("pluginId") or "").casefold()
-        name = str(game.get("name") or "").casefold()
-        manifests = Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / \
-            "Epic" / "EpicGamesLauncher" / "Data" / "Manifests"
-        try:
-            for path in manifests.glob("*.item"):
-                value = json.loads(path.read_text(encoding="utf-8-sig"))
-                app_name = str(value.get("AppName") or "").casefold()
-                display_name = str(value.get("DisplayName") or "").casefold()
-                directory = str(value.get("InstallLocation") or "").strip()
-                executable = str(value.get("LaunchExecutable") or "").strip()
-                complete = not bool(value.get("bIsIncompleteInstall", False))
-                executable_exists = not executable or (Path(directory) / executable).is_file()
-                if complete and executable_exists and directory and Path(directory).is_dir() and (
-                        plugin_id and app_name == plugin_id or name and display_name == name):
-                    return {"install_directory": directory, "provider": "epic"}
-        except (OSError, ValueError, TypeError):
-            return None
-        return None
+        return EpicLibraryProbe().installed(game)
 
     def focus_installation_window(self, hwnd: int) -> dict[str, Any]:
         if not self.user32 or hwnd <= 0 or not self.user32.IsWindow(hwnd):
@@ -518,7 +633,10 @@ class WindowProbe:
                 self.user32.AttachThreadInput(current_thread, thread_id, False)
         return {"focused": focused, "hwnd": hwnd, "title": self._window_title(hwnd)}
 
-    def confirm_steam_operation(self, hwnd: int, operation: str) -> dict[str, Any]:
+    def confirm_steam_operation(self, hwnd: int, operation: str,
+                                game_name: str = "",
+                                allow_visual_fallback: bool = False,
+                                probe_only: bool = False) -> dict[str, Any]:
         script = self.steam_automation_path
         if os.name != "nt" or script is None or not script.is_file():
             return {"clicked": False, "reason": "automation_unavailable"}
@@ -526,7 +644,9 @@ class WindowProbe:
             result = subprocess.run([
                 "powershell.exe", "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
                 "-File", str(script), "-WindowHandle", str(int(hwnd)),
-                "-Operation", operation,
+                "-Operation", operation, "-GameName", game_name,
+                *( ["-AllowVisualFallback"] if allow_visual_fallback else []),
+                *( ["-ProbeOnly"] if probe_only else []),
             ], capture_output=True, text=True, timeout=15,
                 creationflags=subprocess.CREATE_NO_WINDOW, check=False)
             if result.returncode != 0:
@@ -765,10 +885,33 @@ class BridgeState:
         self.installation_baseline_action: Callable[[], dict[str, Any]] | None = None
         self.installation_probe_action: Callable[[dict[str, Any]], dict[str, Any]] | None = None
         self.focus_installation_action: Callable[[int], dict[str, Any]] | None = None
-        self.confirm_installation_action: Callable[[int, str], dict[str, Any]] | None = None
+        self.confirm_installation_action: Callable[[int, str, str, bool], dict[str, Any]] | None = None
+        self.external_manifest_snapshot_action: Callable[[], dict[str, Any]] | None = None
+        self.external_reconciliation_inflight = False
+        # Epic manifests are authoritative when the Playnite Epic plugin keeps
+        # returning a stale IsInstalled/IsInstalling pair.  Keep the correction
+        # in the Bridge instead of requesting another full snapshot (which used
+        # to create an endless snapshot -> repair -> snapshot loop).
+        self.external_installed_overrides: dict[str, str] = {}
+        self.external_uninstalled_overrides: set[str] = set()
+        self.epic_install_action: Callable[[dict[str, Any]], dict[str, Any]] | None = None
         self.installations: dict[str, dict[str, Any]] = {}
         self.operation_journal = OperationJournal(operations_path)
         for operation in self.operation_journal.active():
+            if "epic" in str(operation.get("provider") or "").casefold():
+                self.operation_journal.update(
+                    str(operation["game_id"]), "attention_required",
+                    detail="epic_manual", launcher="epicgameslauncher.exe")
+                operation = self.operation_journal.get(str(operation["game_id"])) or operation
+            # HWND values are process-local and cannot be trusted after a Bridge
+            # restart. Replaying attention_required creates an unclickable
+            # "Confirm" card even though its dialog no longer exists.
+            if operation["state"] == "attention_required" \
+                    and str(operation.get("detail") or "") != "epic_manual":
+                self.operation_journal.update(
+                    str(operation["game_id"]), "failed",
+                    detail="confirmation_window_expired")
+                continue
             self.installations[str(operation["game_id"])] = {
                 "baseline": {"operation": str(operation["kind"])},
                 "requested_at": float(operation["requested_at"]),
@@ -780,6 +923,7 @@ class BridgeState:
                 "image": str(operation["launcher"] or ""),
                 "stable_samples": 0,
                 "candidate_signature": None,
+                "restored": True,
             }
         self.cache_path = cache_path
         self.started_at = int(time.time())
@@ -858,7 +1002,9 @@ class BridgeState:
                            installation_baseline: Callable[[], dict[str, Any]] | None = None,
                            installation_probe: Callable[[dict[str, Any]], dict[str, Any]] | None = None,
                            focus_installation: Callable[[int], dict[str, Any]] | None = None,
-                           confirm_installation: Callable[[int, str], dict[str, Any]] | None = None) -> None:
+                           confirm_installation: Callable[[int, str, str, bool], dict[str, Any]] | None = None,
+                           external_manifest_snapshot: Callable[[], dict[str, Any]] | None = None,
+                           epic_install: Callable[[dict[str, Any]], dict[str, Any]] | None = None) -> None:
         self.graceful_close = graceful_close
         self.show_fullscreen_action = show_fullscreen
         self.focus_game_action = focus_game
@@ -866,6 +1012,78 @@ class BridgeState:
         self.installation_probe_action = installation_probe
         self.focus_installation_action = focus_installation
         self.confirm_installation_action = confirm_installation
+        self.external_manifest_snapshot_action = external_manifest_snapshot
+        self.epic_install_action = epic_install
+        if installation_baseline is not None:
+            with self.lock:
+                for game_id, session in self.installations.items():
+                    if not session.pop("restored", False):
+                        continue
+                    baseline = installation_baseline()
+                    baseline["operation"] = str(session.get("operation") or "install")
+                    game = self.library.get(game_id)
+                    if game is not None:
+                        baseline["game"] = dict(game)
+                    session["baseline"] = baseline
+
+    def _schedule_external_reconciliation_locked(self) -> None:
+        if self.external_manifest_snapshot_action is None \
+                or self.external_reconciliation_inflight:
+            return
+        self.external_reconciliation_inflight = True
+        threading.Thread(target=self._reconcile_external_installs,
+                         name="EpicLibraryReconciliation", daemon=True).start()
+
+    def _reconcile_external_installs(self) -> None:
+        action = self.external_manifest_snapshot_action
+        try:
+            snapshot = action() if action is not None else {"available": False}
+        except Exception:
+            snapshot = {"available": False}
+        commands: list[dict[str, Any]] = []
+        with self.lock:
+            try:
+                if not snapshot.get("available"):
+                    return
+                next_overrides: dict[str, str] = {} if snapshot.get("complete") else \
+                    dict(self.external_installed_overrides)
+                for game_id, game in self.library.items():
+                    installed = EpicLibraryProbe.installed_from_snapshot(game, snapshot)
+                    if not installed:
+                        continue
+                    directory = str(installed.get("install_directory") or "")
+                    next_overrides[game_id] = directory
+                    self.external_uninstalled_overrides.discard(game_id)
+                    already_reconciled = game_id in self.external_installed_overrides
+                    connector_installed = bool(
+                        game.get("installed") or game.get("isInstalled"))
+                    connector_directory = str(game.get("installDir") or "")
+                    path_mismatch = bool(directory) and ntpath.normcase(
+                        ntpath.normpath(connector_directory)) != ntpath.normcase(
+                            ntpath.normpath(directory))
+                    game.update({"installed": True, "installing": False,
+                                 "isInstalled": True, "isInstalling": False,
+                                 "installDir": directory})
+                    if already_reconciled or (connector_installed and not path_mismatch):
+                        continue
+                    self.installations.pop(game_id, None)
+                    self.operation_journal.update(game_id, "completed")
+                    self._apply_installation_fields_locked(game_id, game)
+                    self._publish_locked("game-installed", {
+                        "id": game_id, "name": str(game.get("name") or ""),
+                        "source": "epic",
+                    })
+                    commands.append(
+                        {"type": "command", "command": "mark-installed", "id": game_id,
+                         "install_directory": directory})
+                self.external_installed_overrides = next_overrides
+                self._save_library_cache_locked()
+                sender = self.command_sender
+            finally:
+                self.external_reconciliation_inflight = False
+        if sender is not None:
+            for command in commands:
+                sender(command)
 
     def set_expected_display(self, display: str) -> None:
         normalized = StreamDisplayResolver._normalize(display)
@@ -905,6 +1123,13 @@ class BridgeState:
         self.next_sequence += 1
         self.events.append(event)
         self.events_changed.notify_all()
+
+    def _advance_library_revision_locked(self) -> None:
+        try:
+            previous = int(self.library_revision or 0)
+        except ValueError:
+            previous = 0
+        self.library_revision = str(max(time.time_ns(), previous + 1))
 
     def _apply_installation_fields_locked(self, game_id: str,
                                           game: dict[str, Any]) -> None:
@@ -951,6 +1176,18 @@ class BridgeState:
                         continue
                     normalized = dict(game)
                     normalized["id"] = game_id
+                    if game_id in self.external_installed_overrides:
+                        normalized.update({
+                            "installed": True, "isInstalled": True,
+                            "installing": False, "isInstalling": False,
+                            "installDir": self.external_installed_overrides[game_id],
+                        })
+                    elif game_id in self.external_uninstalled_overrides:
+                        normalized.update({
+                            "installed": False, "isInstalled": False,
+                            "installing": False, "isInstalling": False,
+                            "uninstalling": False, "installDir": "",
+                        })
                     by_name = {str(key).casefold(): value for key, value in game.items()}
                     last_played = (by_name.get("lastplayed") or
                                    by_name.get("last_activity") or
@@ -1006,7 +1243,7 @@ class BridgeState:
                     except (TypeError, ValueError):
                         normalized["playtimeMinutes"] = 0
                     connector_installing = bool(
-                        by_name.get("installing") or by_name.get("isinstalling"))
+                        normalized.get("installing") or normalized.get("isInstalling"))
                     if connector_installing and game_id not in self.installations:
                         baseline = self.installation_baseline_action() \
                             if self.installation_baseline_action else {}
@@ -1023,12 +1260,13 @@ class BridgeState:
                 # connectors until snapshotComplete arrives.
                 if not self.snapshot_in_progress:
                     self.library = dict(self.library_staging)
-                    self.library_revision = str(time.time_ns())
+                    self._advance_library_revision_locked()
                     self._publish_locked("library-updated", {"count": len(self.library)})
             elif kind == "snapshotComplete":
                 self.library = dict(self.library_staging)
-                self.library_revision = str(time.time_ns())
+                self._advance_library_revision_locked()
                 self.snapshot_in_progress = False
+                self._schedule_external_reconciliation_locked()
                 self._save_library_cache_locked()
                 self._publish_locked("library-updated", {
                     "count": len(self.library), "revision": self.library_revision})
@@ -1136,6 +1374,7 @@ class BridgeState:
                 "candidate_signature": None,
             }
             game["installing"] = True
+            self.external_uninstalled_overrides.discard(normalized)
             self._apply_installation_fields_locked(normalized, game)
             title = str(game.get("name") or "")
             self._save_library_cache_locked()
@@ -1144,6 +1383,11 @@ class BridgeState:
                 "name": title,
             })
         try:
+            if "epic" in provider and self.epic_install_action is not None:
+                result = self.epic_install_action(dict(game))
+                self._mark_epic_manual_confirmation(normalized)
+                return {**result, "requires_attention": True,
+                        "attention_reason": "epic_manual"}
             return self.send_command("install", id=normalized)
         except Exception:
             with self.lock:
@@ -1184,7 +1428,12 @@ class BridgeState:
             self._apply_installation_fields_locked(normalized, game)
             self._save_library_cache_locked()
         try:
-            return self.send_command("uninstall", id=normalized)
+            result = self.send_command("uninstall", id=normalized)
+            if "epic" in provider:
+                self._mark_epic_manual_confirmation(normalized)
+                return {**result, "requires_attention": True,
+                        "attention_reason": "epic_manual"}
+            return result
         except Exception:
             with self.lock:
                 self.operation_journal.update(normalized, "failed", detail="dispatch_failed")
@@ -1201,6 +1450,27 @@ class BridgeState:
                     or session.get("automation_in_progress"):
                 raise RuntimeError("Another installation operation is awaiting confirmation.")
 
+    def _mark_epic_manual_confirmation(self, game_id: str) -> None:
+        with self.lock:
+            session = self.installations.get(game_id)
+            game = self.library.get(game_id)
+            if session is None or game is None:
+                return
+            session.update({
+                "requires_attention": True, "reason": "epic_manual",
+                "hwnd": 0, "window_title": "", "image": "epicgameslauncher.exe",
+                "stable_samples": 0, "candidate_signature": None,
+            })
+            self.operation_journal.update(
+                game_id, "attention_required", detail="epic_manual",
+                launcher="epicgameslauncher.exe")
+            self._apply_installation_fields_locked(game_id, game)
+            self._save_library_cache_locked()
+            self._publish_locked("game-installation-attention-required", {
+                "id": game_id, "name": str(game.get("name") or ""),
+                "reason": "epic_manual", "launcher": "epicgameslauncher.exe",
+            })
+
     def installation_probes(self) -> list[tuple[str, dict[str, Any]]]:
         with self.lock:
             return [(game_id, dict(session.get("baseline") or {}))
@@ -1208,9 +1478,12 @@ class BridgeState:
                     if time.time() - float(session.get("requested_at") or 0) >= 1.5]
 
     def _auto_confirm_installation(self, game_id: str, hwnd: int, operation: str,
-                                   signature: tuple[Any, ...]) -> None:
+                                   game_name: str,
+                                   signature: tuple[Any, ...],
+                                   allow_visual_fallback: bool) -> None:
         action = self.confirm_installation_action
-        automated = action(hwnd, operation) if action is not None else {"clicked": False}
+        automated = action(hwnd, operation, game_name, allow_visual_fallback) \
+            if action is not None else {"clicked": False}
         with self.lock:
             session = self.installations.get(game_id)
             game = self.library.get(game_id)
@@ -1220,6 +1493,7 @@ class BridgeState:
             session["automation_in_progress"] = False
             if automated.get("clicked"):
                 self.operation_journal.update(game_id, "preparing")
+                session["prompt_confirmed_at"] = time.time()
                 self._publish_locked("game-installation-auto-confirmed", {
                     "id": game_id, "name": str(game.get("name") or ""),
                     "operation": operation,
@@ -1229,14 +1503,47 @@ class BridgeState:
                     automated.get("reason") or "automation_failed")[:200]
 
     def apply_installation_probe(self, game_id: str, sample: dict[str, Any]) -> None:
-        if sample.get("uninstalled"):
+        if sample.get("manifest_absent"):
             with self.lock:
-                session = self.installations.pop(game_id, None)
+                session = self.installations.get(game_id)
+                game = self.library.get(game_id)
+                operation = self.operation_journal.get(game_id) or {}
+                if session is not None and game is not None \
+                        and operation.get("kind") == "install" \
+                        and operation.get("state") == "installing":
+                    absent = int(session.get("manifest_absent_samples") or 0) + 1
+                    session["manifest_absent_samples"] = absent
+                    since = float(session.get("installing_since") or
+                                  session.get("prompt_confirmed_at") or
+                                  session.get("requested_at") or 0)
+                    if absent >= 3 and time.time() - since >= 60:
+                        self.installations.pop(game_id, None)
+                        self.operation_journal.update(
+                            game_id, "failed", detail="epic_install_not_started")
+                        game["installing"] = False
+                        self._apply_installation_fields_locked(game_id, game)
+                        self._save_library_cache_locked()
+                        self._publish_locked("game-installation-failed", {
+                            "id": game_id, "name": str(game.get("name") or ""),
+                        })
+                        return
+        if sample.get("uninstalled"):
+            sender = None
+            with self.lock:
+                session = self.installations.get(game_id)
                 game = self.library.get(game_id)
                 if session is None or game is None or session.get("operation") != "uninstall":
                     return
+                if str(sample.get("provider") or "").casefold() == "epic":
+                    absent_samples = int(session.get("uninstall_absent_samples") or 0) + 1
+                    session["uninstall_absent_samples"] = absent_samples
+                    if absent_samples < REQUIRED_STABLE_SAMPLES:
+                        return
+                self.installations.pop(game_id, None)
                 game.update({"installed": False, "installing": False, "uninstalling": False,
                              "installDir": ""})
+                self.external_installed_overrides.pop(game_id, None)
+                self.external_uninstalled_overrides.add(game_id)
                 self.operation_journal.update(game_id, "completed")
                 self._apply_installation_fields_locked(game_id, game)
                 self._save_library_cache_locked()
@@ -1244,6 +1551,10 @@ class BridgeState:
                     "id": game_id, "name": str(game.get("name") or ""),
                     "source": str(sample.get("provider") or "external"),
                 })
+                sender = self.command_sender
+            if sender is not None:
+                sender({"type": "command", "command": "mark-uninstalled",
+                        "id": game_id})
             return
         if sample.get("installed"):
             install_directory = str(sample.get("install_directory") or "")
@@ -1255,15 +1566,17 @@ class BridgeState:
                     return
                 game["installed"] = True
                 game["installing"] = False
+                self.external_uninstalled_overrides.discard(game_id)
+                self.external_installed_overrides[game_id] = install_directory
                 if install_directory:
                     game["installDir"] = install_directory
+                self.operation_journal.update(game_id, "completed")
                 self._apply_installation_fields_locked(game_id, game)
                 self._save_library_cache_locked()
                 self._publish_locked("game-installed", {
                     "id": game_id, "name": str(game.get("name") or ""),
                     "source": str(sample.get("provider") or "external"),
                 })
-                self.operation_journal.update(game_id, "completed")
                 sender = self.command_sender
             if sender is not None:
                 sender({"type": "command", "command": "mark-installed",
@@ -1274,6 +1587,7 @@ class BridgeState:
             game = self.library.get(game_id)
             if session is None or game is None:
                 return
+            session.pop("uninstall_absent_samples", None)
             operation = str(session.get("operation") or "install")
             if operation == "install" and bool(
                     game.get("installed") or game.get("isInstalled")):
@@ -1317,6 +1631,7 @@ class BridgeState:
                         "requires_attention": False, "reason": "", "hwnd": 0,
                         "window_title": "", "image": "", "stable_samples": 0,
                     })
+                    session["installing_since"] = time.time()
                     self.operation_journal.update(game_id, "installing")
                     self._apply_installation_fields_locked(game_id, game)
                     self._save_library_cache_locked()
@@ -1327,15 +1642,18 @@ class BridgeState:
             required_samples = 2 if sample.get("reason") == "secure_desktop" else 3
             if stable < required_samples:
                 return
-            if str(sample.get("image") or "").casefold() in {"steam.exe", "steamwebhelper.exe"} \
+            if str(sample.get("image") or "").casefold() in {
+                    "steam.exe", "steamwebhelper.exe"} \
                     and session.get("automation_signature") != signature \
                     and self.confirm_installation_action is not None:
                 session["automation_signature"] = signature
                 session["automation_in_progress"] = True
                 threading.Thread(
                     target=self._auto_confirm_installation,
-                    args=(game_id, sampled_hwnd, operation, signature),
-                    name="SteamOperationConfirmation", daemon=True).start()
+                    args=(game_id, sampled_hwnd, operation,
+                          str(game.get("name") or ""), signature,
+                          bool(sample.get("visual_confirmation_safe"))),
+                    name="LauncherOperationConfirmation", daemon=True).start()
                 return
             first_attention = not bool(session.get("requires_attention"))
             session.update({
@@ -1370,7 +1688,7 @@ class BridgeState:
             action = self.focus_installation_action
         if not session or not session.get("requires_attention"):
             raise ValueError("This installation does not require confirmation.")
-        if session.get("reason") == "secure_desktop":
+        if session.get("reason") in {"secure_desktop", "epic_manual"}:
             raise PermissionError("The installation requires confirmation on the PC.")
         hwnd = int(session.get("hwnd") or 0)
         if not action or not hwnd:
@@ -1958,6 +2276,18 @@ def ensure_playnite_desktop(desktop_executable: str) -> None:
         creationflags=subprocess.CREATE_NO_WINDOW)
 
 
+def start_epic_install(game: dict[str, Any]) -> dict[str, Any]:
+    app_name = str(game.get("providerGameId") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", app_name):
+        raise ValueError("Epic game identifier is unavailable.")
+    uri = "com.epicgames.launcher://apps/" + urllib.parse.quote(
+        app_name, safe="") + "?action=install"
+    if os.name != "nt":
+        raise OSError("Epic installation requires Windows.")
+    os.startfile(uri)  # type: ignore[attr-defined]
+    return {"accepted": True, "command": "install", "provider": "epic"}
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="config.json")
@@ -1982,7 +2312,9 @@ def main() -> None:
         window_probe.installation_baseline,
         window_probe.installation_prompt,
         window_probe.focus_installation_window,
-        window_probe.confirm_steam_operation)
+        window_probe.confirm_steam_operation,
+        window_probe.epic.scan,
+        start_epic_install)
     threading.Thread(
         target=WindowReadinessWorker(state, window_probe, display_resolver).run,
         name="PlayniteWindowReadiness", daemon=True).start()

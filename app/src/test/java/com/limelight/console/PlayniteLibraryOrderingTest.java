@@ -6,10 +6,25 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
 import java.util.Locale;
+import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
 
 public class PlayniteLibraryOrderingTest {
+    @Test
+    public void localLaunchWinsOverStalePlayniteActivity() {
+        PlayniteLibraryGame older = game(1, "Cuphead", true,
+                "2026-01-01T10:00:00Z");
+        PlayniteLibraryGame newer = game(2, "Other", true,
+                "2026-08-01T10:00:00Z");
+
+        List<PlayniteLibraryGame> ordered = PlayniteLibraryOrdering.order(
+                Arrays.asList(newer, older), PlayniteLibraryFilter.RECENTLY_PLAYED,
+                Locale.ENGLISH, Collections.singletonMap(older.playniteGameId,
+                        1_800_000_000_000L));
+
+        assertEquals("Cuphead", ordered.get(0).name);
+    }
     @Test public void putsOnlyFiveNewestAtFrontWithoutDuplicates() {
         List<PlayniteLibraryGame> source = new ArrayList<>();
         for (int day = 1; day <= 7; day++) {

@@ -72,6 +72,7 @@ public class HostGatewayClientTest {
                 "\"installAttentionReason\":\"launcher_prompt\"," +
                 "\"installWindowTitle\":\"Choose install location\"," +
                 "\"installLauncher\":\"steam.exe\"," +
+                "\"vibepollo_state\":\"preparing\"," +
                 "\"cover\":\"hash\"}]}" );
 
         HostGatewayClient.PlayniteLibrary parsed =
@@ -88,6 +89,7 @@ public class HostGatewayClientTest {
         assertEquals("launcher_prompt", parsed.games.get(0).installAttentionReason);
         assertEquals("Choose install location", parsed.games.get(0).installWindowTitle);
         assertEquals("steam.exe", parsed.games.get(0).installLauncher);
+        assertEquals("preparing", parsed.games.get(0).vibepolloState);
         assertEquals("42", parsed.revision);
     }
 }

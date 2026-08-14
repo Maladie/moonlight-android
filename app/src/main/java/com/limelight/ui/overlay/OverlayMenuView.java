@@ -19,6 +19,7 @@ import android.widget.TextView;
 
 import com.limelight.R;
 import com.limelight.binding.input.ControllerHandler.ControllerBatteryInfo;
+import com.limelight.ui.ControllerGlyphs;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -115,6 +116,7 @@ public class OverlayMenuView extends LinearLayout {
     private String discordRejoinChannel = "";
     private boolean discordDocked;
     private boolean installationConfirmationAvailable;
+    private boolean playStationButtons;
 
     public OverlayMenuView(Context context) {
         super(context);
@@ -222,6 +224,7 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     public void buildMenu() {
+        playStationButtons = ControllerGlyphs.hasPlayStationController();
         activeRegion = Region.VERTICAL;
         verticalIndex = 0;
         horizontalIndex = 0;
@@ -240,14 +243,14 @@ public class OverlayMenuView extends LinearLayout {
         int spacing = (int) (BUTTON_SPACING_DP * density);
 
         // Vertical column: top → bottom
-        addVerticalButton(R.drawable.ic_overlay_guide,
-            getContext().getString(R.string.overlay_menu_guide), ACTION_SEND_GUIDE, spacing);
-        addVerticalButton(R.drawable.ic_overlay_mouse,
-                getContext().getString(R.string.overlay_menu_mouse_emulation), ACTION_TOGGLE_MOUSE_EMULATION, spacing);
-        addVerticalButton(R.drawable.ic_overlay_keyboard_toggle,
-            getContext().getString(R.string.overlay_menu_keyboard), ACTION_SHOW_KEYBOARD, spacing);
-        addVerticalButton(R.drawable.ic_overlay_perf,
-                getContext().getString(R.string.overlay_menu_toggle_stats), ACTION_TOGGLE_STATS, spacing);
+        addVerticalShortcut(R.drawable.ic_overlay_guide, R.string.overlay_menu_guide,
+                ACTION_SEND_GUIDE, spacing, ControllerGlyphs.Button.MENU);
+        addVerticalShortcut(R.drawable.ic_overlay_mouse, R.string.overlay_menu_mouse_emulation,
+                ACTION_TOGGLE_MOUSE_EMULATION, spacing, ControllerGlyphs.Button.WEST);
+        addVerticalShortcut(R.drawable.ic_overlay_keyboard_toggle, R.string.overlay_menu_keyboard,
+                ACTION_SHOW_KEYBOARD, spacing, ControllerGlyphs.Button.NORTH);
+        addVerticalShortcut(R.drawable.ic_overlay_perf, R.string.overlay_menu_toggle_stats,
+                ACTION_TOGGLE_STATS, spacing, ControllerGlyphs.Button.RIGHT_BUMPER);
         if (installationConfirmationAvailable) {
             addVerticalButton(R.drawable.ic_overlay_play,
                     getContext().getString(R.string.playnite_install_confirmation_done),
@@ -289,8 +292,10 @@ public class OverlayMenuView extends LinearLayout {
             addHorizontalButton(command.getIconResId(), command.getName(),
                 ACTION_CUSTOM_BASE + commandIndex, spacing);
         }
-        addHorizontalButton(0,
-            getContext().getString(R.string.overlay_menu_close), ACTION_CLOSE, 0);
+        OverlayMenuButton closeButton = addHorizontalButton(0,
+                getContext().getString(R.string.overlay_menu_close), ACTION_CLOSE, 0);
+        closeButton.setShortcut(ControllerGlyphs.typeface(getContext()), ControllerGlyphs.text(
+                playStationButtons, ControllerGlyphs.Button.CANCEL));
 
         renderDiscordCard();
 
@@ -324,6 +329,14 @@ public class OverlayMenuView extends LinearLayout {
                 button.setSelected(false);
             }
         });
+    }
+
+    private void addVerticalShortcut(int iconResId, int labelRes, int action,
+                                     int bottomMarginPx, ControllerGlyphs.Button shortcut) {
+        addVerticalButton(iconResId, getContext().getString(labelRes), action, bottomMarginPx);
+        verticalButtons.get(verticalButtons.size() - 1).setShortcut(
+                ControllerGlyphs.typeface(getContext()),
+                ControllerGlyphs.text(playStationButtons, shortcut));
     }
 
     private OverlayMenuButton addHorizontalButton(int iconResId, String label, int action, int rightMarginPx) {
@@ -938,8 +951,14 @@ public class OverlayMenuView extends LinearLayout {
             activeRegion = Region.VERTICAL;
             setVerticalIndex(0);
         } else if (!discordButtons.isEmpty()) {
-            setDiscordIndex(discordIndex + 2 < discordButtons.size() ?
-                    discordIndex + 2 : discordIndex % 2);
+            if (discordIndex + 2 < discordButtons.size()) {
+                setDiscordIndex(discordIndex + 2);
+            } else if (!horizontalButtons.isEmpty()) {
+                clearDiscordSelection();
+                activeRegion = Region.HORIZONTAL;
+                int bitrateIndex = horizontalActions.indexOf(ACTION_BITRATE_APPLY);
+                setHorizontalIndex(bitrateIndex >= 0 ? bitrateIndex : 0);
+            }
         }
     }
 

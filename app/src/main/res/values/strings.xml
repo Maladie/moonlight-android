@@ -387,11 +387,11 @@
     <string name="console_waking_suspended_session">Waking the PC and restoring the suspended game…</string>
     <string name="console_suspended_resume_timeout">The PC did not become ready. The suspended game remains available.</string>
     <string name="console_game">Game</string>
-    <string name="overlay_menu_toggle_stats">Stats (RB)</string>
-    <string name="overlay_menu_mouse_emulation">Mouse (X)</string>
-    <string name="overlay_menu_keyboard">Keyboard (Y)</string>
-    <string name="overlay_menu_guide">Guide (▶)</string>
-    <string name="overlay_menu_close">Close (B)</string>
+    <string name="overlay_menu_toggle_stats">Stats</string>
+    <string name="overlay_menu_mouse_emulation">Mouse</string>
+    <string name="overlay_menu_keyboard">Keyboard</string>
+    <string name="overlay_menu_guide">Guide</string>
+    <string name="overlay_menu_close">Close</string>
     <string name="overlay_bitrate_decrease">−5 Mbps</string>
     <string name="overlay_bitrate_increase">+5 Mbps</string>
     <string name="overlay_bitrate_current">%1$d Mbps</string>

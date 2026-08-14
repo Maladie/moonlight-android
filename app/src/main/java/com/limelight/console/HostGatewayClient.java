@@ -149,6 +149,7 @@ final class HostGatewayClient {
         final String operationState;
         final int operationProgress;
         final boolean uninstalling;
+        final String vibepolloState;
         final long playtimeSeconds;
         /** Compatibility view for older console code. New code uses seconds. */
         final long playtimeMinutes;
@@ -220,6 +221,21 @@ final class HostGatewayClient {
                      boolean installRequiresAttention, String installAttentionReason,
                      String installWindowTitle, String installLauncher,
                      String operationState, int operationProgress, boolean uninstalling) {
+            this(id, name, installed, installing, hidden, favorite, cover, background,
+                    lastPlayed, description, playCount, source, genres, artworkVersion,
+                    playtimeSeconds, installRequiresAttention, installAttentionReason,
+                    installWindowTitle, installLauncher, operationState, operationProgress,
+                    uninstalling, "");
+        }
+
+        PlayniteGame(String id, String name, boolean installed, boolean installing,
+                     boolean hidden, boolean favorite, String cover, String background,
+                     String lastPlayed, String description, int playCount, String source,
+                     String genres, String artworkVersion, long playtimeSeconds,
+                     boolean installRequiresAttention, String installAttentionReason,
+                     String installWindowTitle, String installLauncher,
+                     String operationState, int operationProgress, boolean uninstalling,
+                     String vibepolloState) {
             this.id = id;
             this.name = name;
             this.installed = installed;
@@ -241,6 +257,7 @@ final class HostGatewayClient {
             this.operationState = operationState == null ? "" : operationState;
             this.operationProgress = operationProgress;
             this.uninstalling = uninstalling;
+            this.vibepolloState = vibepolloState == null ? "" : vibepolloState;
             this.playtimeSeconds = Math.max(0L, playtimeSeconds);
             this.playtimeMinutes = this.playtimeSeconds / 60L;
         }
@@ -1026,7 +1043,8 @@ final class HostGatewayClient {
                         firstText(value, "operationState", "operation_state"),
                         value.isNull("operationProgress") ? -1
                                 : value.optInt("operationProgress", -1),
-                        value.optBoolean("uninstalling", false)));
+                        value.optBoolean("uninstalling", false),
+                        firstText(value, "vibepollo_state", "vibepolloState")));
             }
         }
         return new PlayniteLibrary(games, safe.optString("next_cursor", ""),

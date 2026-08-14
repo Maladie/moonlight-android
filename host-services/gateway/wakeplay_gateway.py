@@ -67,6 +67,7 @@ class GatewayState:
         self.failed_pair_attempts: dict[str, list[float]] = {}
         self.stream_pair_tickets: dict[str, dict[str, Any]] = {}
         self.idempotent_results: dict[str, tuple[float, int, Any]] = {}
+        self.vibepollo_app_operations: dict[str, dict[str, Any]] = {}
         self.lock = threading.RLock()
         self.request_context = threading.local()
         self.runtime_status_path = self.config_path.with_name("runtime-status.json")
@@ -740,21 +741,53 @@ class GatewayState:
         name = str(body.get("name") or "").strip()
         if not name or len(name) > 200 or re.search(r"[\x00-\x1f\x7f]", name):
             raise ValueError("Invalid application name.")
-        ok, result = self.proxy_json("vibepollo", "/apps/ensure", {
-            "playnite_game_id": game_id,
-            "name": name,
-        }, timeout=12.0)
-        if not ok:
-            return HTTPStatus.BAD_GATEWAY, {
-                "ok": False,
-                "error": self.upstream_error(
-                    result, "Unable to create the Vibepollo application."),
-            }
-        app = result if isinstance(result, dict) else {}
-        return (HTTPStatus.CREATED if app.get("created") else HTTPStatus.OK), {
-            "ok": True,
-            "app": app,
-        }
+        profile_id = self.profile_id
+        key = f"{profile_id}:{game_id}"
+        with self.lock:
+            current = self.vibepollo_app_operations.get(key, {})
+            if current.get("state") == "preparing":
+                return HTTPStatus.ACCEPTED, {"ok": True, **current}
+            if current.get("state") == "ready":
+                return HTTPStatus.OK, {"ok": True, "state": "ready",
+                                      "app": current.get("app", {})}
+            operation = {"state": "preparing", "playnite_game_id": game_id,
+                         "name": name, "updated_at": int(time.time())}
+            self.vibepollo_app_operations[key] = operation
+
+        def ensure() -> None:
+            self.select_profile(profile_id)
+            ok, result = self.proxy_json("vibepollo", "/apps/ensure", {
+                "playnite_game_id": game_id, "name": name,
+            }, timeout=12.0)
+            with self.lock:
+                if ok:
+                    self.vibepollo_app_operations[key] = {
+                        "state": "ready", "playnite_game_id": game_id,
+                        "name": name, "app": result if isinstance(result, dict) else {},
+                        "updated_at": int(time.time())}
+                else:
+                    self.vibepollo_app_operations[key] = {
+                        "state": "error", "playnite_game_id": game_id, "name": name,
+                        "error": self.upstream_error(
+                            result, "Unable to create the Vibepollo application."),
+                        "updated_at": int(time.time())}
+
+        threading.Thread(target=ensure, name="vibepollo-app-ensure", daemon=True).start()
+        return HTTPStatus.ACCEPTED, {"ok": True, **operation}
+
+    def vibepollo_app_status(self, game_id: Any) -> tuple[int, Any]:
+        normalized = self._playnite_game_id(game_id)
+        key = f"{self.profile_id}:{normalized}"
+        with self.lock:
+            operation = dict(self.vibepollo_app_operations.get(key, {}))
+        if operation:
+            return HTTPStatus.OK, {"ok": operation.get("state") != "error", **operation}
+        path = "/apps/status?" + urllib.parse.urlencode({"playnite_game_id": normalized})
+        ok, result = self.proxy("vibepollo", path, timeout=3.0)
+        return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), (
+            result if ok and isinstance(result, dict) else {
+                "ok": False, "state": "error",
+                "error": self.upstream_error(result, "Unable to read Vibepollo application state.")})
 
     @staticmethod
     def _playnite_game_id(value: Any) -> str:
@@ -784,6 +817,16 @@ class GatewayState:
             "limit": page_size,
         })
         ok, result = self.proxy("playnite", path, timeout=8.0)
+        if ok and isinstance(result, dict):
+            with self.lock:
+                operations = {key.split(":", 1)[1]: value.get("state", "")
+                              for key, value in self.vibepollo_app_operations.items()
+                              if key.startswith(self.profile_id + ":")}
+            for game in result.get("games", []):
+                if isinstance(game, dict):
+                    state = operations.get(str(game.get("id", "")).lower(), "")
+                    if state:
+                        game["vibepollo_state"] = state
         return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), {
             "ok": ok,
             "library": result if ok and isinstance(result, dict) else {},
@@ -988,6 +1031,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
         elif path == f"{API_PREFIX}/vibepollo/repair/status":
             status, result = self.state.vibepollo_status()
             self.send_json(status, result)
+        elif path == f"{API_PREFIX}/vibepollo/apps/status":
+            status, result = self.state.vibepollo_app_status(
+                query.get("playnite_game_id", [""])[0])
+            self.send_json(status, result)
         elif path == f"{API_PREFIX}/discord/status":
             self.send_json(HTTPStatus.OK, self.state.discord_status())
         elif path == f"{API_PREFIX}/discord/home":
@@ -1088,9 +1135,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         "error": "A valid X-Request-Id header is required."})
                     return
                 body = self.read_json()
-                status, result = self.state.idempotent(
-                    f"{profile_id}:vibepollo-app:{request_id}",
-                    lambda: self.state.vibepollo_ensure_app(body))
+                status, result = self.state.vibepollo_ensure_app(body)
                 self.send_json(status, result)
                 return
             prefix = f"{API_PREFIX}/vibepollo/repair/"

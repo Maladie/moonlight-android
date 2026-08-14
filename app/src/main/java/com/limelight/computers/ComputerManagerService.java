@@ -291,16 +291,20 @@ public class ComputerManagerService extends Service {
         }
 
         public void invalidateStateForComputer(String uuid) {
+            PollingTuple selected = null;
             synchronized (pollingTuples) {
                 for (PollingTuple tuple : pollingTuples) {
                     if (uuid.equals(tuple.computer.uuid)) {
-                        // We need the network lock to prevent a concurrent poll
-                        // from wiping this change out
-                        synchronized (tuple.networkLock) {
-                            tuple.computer.state = ComputerDetails.State.UNKNOWN;
-                        }
+                        selected = tuple;
+                        break;
                     }
                 }
+            }
+            if (selected == null) return;
+            // Never hold the global tuple list while waiting for network I/O.
+            // UI reads only need pollingTuples and must remain non-blocking.
+            synchronized (selected.networkLock) {
+                selected.computer.state = ComputerDetails.State.UNKNOWN;
             }
         }
     }

@@ -9,6 +9,7 @@
     { "path": "/api/history/sessions/active", "methods": ["GET"] },
     { "path": "/api/history/sessions", "methods": ["GET"] },
     { "path": "/api/apps", "methods": ["GET", "POST"] },
+    { "path": "/api/apps/*", "methods": ["DELETE"] },
     { "path": "/api/clients/list", "methods": ["GET"] },
     { "path": "/api/clients/update", "methods": ["POST"] },
     { "path": "/api/pin", "methods": ["POST"] },
