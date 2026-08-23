@@ -1,6 +1,9 @@
 package com.limelight.console;
 
-/** Resolves the action shown by a Playnite tile from one consistent session snapshot. */
+import java.util.ArrayList;
+import java.util.List;
+
+/** Pure game-tile projection over one resolved session snapshot. */
 final class PlayniteSessionPresentation {
     enum State {
         READY,
@@ -8,30 +11,81 @@ final class PlayniteSessionPresentation {
         RESUME_SUSPENDED
     }
 
-    static State resolve(boolean consoleUi, boolean recentlyEnded,
-                         String itemGameId, Integer itemSunshineAppId,
-                         String storedGameId, int storedSunshineAppId,
-                         long storedResumedAt, int runningGameId,
-                         String liveGameId) {
-        if (!consoleUi || recentlyEnded) return State.READY;
+    static final class Projection {
+        final String resumeGameId;
+        final String suspendedGameId;
+        private final SessionSnapshot snapshot;
+        private final String selectedGameId;
 
-        boolean hasStoredGameId = storedGameId != null && !storedGameId.isEmpty();
-        boolean storedMatches = hasStoredGameId
-                ? storedGameId.equalsIgnoreCase(itemGameId)
-                : storedSunshineAppId != 0 && itemSunshineAppId != null
-                && itemSunshineAppId == storedSunshineAppId;
-        if (storedMatches && storedResumedAt == 0L) {
-            return State.RESUME_SUSPENDED;
+        private Projection(SessionSnapshot snapshot, String selectedGameId) {
+            this.snapshot = snapshot;
+            this.selectedGameId = selectedGameId;
+            this.resumeGameId = snapshot.state == SessionSnapshot.State.ACTIVE
+                    || snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
+                    ? selectedGameId : "";
+            this.suspendedGameId = snapshot.state == SessionSnapshot.State.SUSPENDED
+                    ? selectedGameId : "";
         }
-        if (storedMatches && storedResumedAt > 0L && runningGameId != 0
-                && runningGameId == storedSunshineAppId) {
-            return State.RESUME_ACTIVE;
+
+        State stateFor(String gameId) {
+            if (selectedGameId.isEmpty()
+                    || !selectedGameId.equals(SessionSnapshot.normalize(gameId))) {
+                return State.READY;
+            }
+            if (snapshot.state == SessionSnapshot.State.SUSPENDED) {
+                return State.RESUME_SUSPENDED;
+            }
+            if (snapshot.state == SessionSnapshot.State.ACTIVE
+                    || snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED) {
+                return State.RESUME_ACTIVE;
+            }
+            return State.READY;
         }
-        if (runningGameId != 0 && liveGameId != null
-                && liveGameId.equalsIgnoreCase(itemGameId)) {
-            return State.RESUME_ACTIVE;
+
+        String signature() {
+            return snapshot.signature() + "|" + resumeGameId + "|" + suspendedGameId;
         }
-        return State.READY;
+    }
+
+    static Projection project(SessionSnapshot snapshot,
+                              List<PlayniteDashboardItem> items,
+                              String previouslySelectedGameId) {
+        if (!snapshot.isResumeAvailable()) return new Projection(snapshot, "");
+        String selected = exactPlayniteMatch(snapshot, items);
+        if (!snapshot.playniteGameId.isEmpty()) {
+            return new Projection(snapshot, selected);
+        }
+        List<PlayniteDashboardItem> appMatches = new ArrayList<>();
+        for (PlayniteDashboardItem item : items) {
+            if (snapshot.hostGameAppId != 0 && item.sunshineAppId != null
+                    && item.sunshineAppId == snapshot.hostGameAppId) {
+                appMatches.add(item);
+            }
+        }
+        if (appMatches.size() == 1) {
+            selected = SessionSnapshot.normalize(appMatches.get(0).stableId());
+        } else if (appMatches.size() > 1) {
+            String previous = SessionSnapshot.normalize(previouslySelectedGameId);
+            for (PlayniteDashboardItem item : appMatches) {
+                if (previous.equals(SessionSnapshot.normalize(item.stableId()))) {
+                    selected = previous;
+                    break;
+                }
+            }
+        }
+        return new Projection(snapshot, selected);
+    }
+
+    private static String exactPlayniteMatch(SessionSnapshot snapshot,
+                                             List<PlayniteDashboardItem> items) {
+        if (snapshot.playniteGameId.isEmpty()) return "";
+        for (PlayniteDashboardItem item : items) {
+            if (snapshot.playniteGameId.equals(
+                    SessionSnapshot.normalize(item.stableId()))) {
+                return SessionSnapshot.normalize(item.stableId());
+            }
+        }
+        return "";
     }
 
     private PlayniteSessionPresentation() { }
