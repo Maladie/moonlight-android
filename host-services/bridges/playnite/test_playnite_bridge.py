@@ -18,6 +18,7 @@ from GameOperations import GameOperationsService, SteamProvider
 from OperationJournal import OperationJournal
 from PlayniteBridge import (
     BridgeState, REQUIRED_GAME_STABLE_SAMPLES, REQUIRED_STABLE_SAMPLES,
+    STEAM_CANCELLATION_EVIDENCE_TIMEOUT,
     STEAM_FALLBACK_START_TIMEOUT, STEAM_PRIMARY_START_TIMEOUT,
     StreamDisplayResolver, WindowProbe, WindowsPipeClient,
     append_operation_audit,
@@ -25,6 +26,7 @@ from PlayniteBridge import (
 
 
 GAME_ID = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+SECOND_GAME_ID = "65705ca9-b9c7-4ada-b4b7-f73ffb8ac64f"
 
 
 class WindowProbeTest(unittest.TestCase):
@@ -338,14 +340,17 @@ class BridgeStateTest(unittest.TestCase):
             "id": GAME_ID, "name": "FEZ", "installed": installed,
             "source": "Steam", "providerGameId": "224760",
         }]})
+        return self._dispatch_direct_steam(GAME_ID, operation)
+
+    def _dispatch_direct_steam(self, game_id, operation):
         with mock.patch.object(
                 self.state.game_operations.steam, "_direct_dispatch",
                 return_value={
                     "accepted": True, "command": operation,
                     "provider": "steam", "dispatch": "direct",
                 }):
-            return self.state.install_game(GAME_ID) if operation == "install" \
-                else self.state.uninstall_game(GAME_ID)
+            return self.state.install_game(game_id) if operation == "install" \
+                else self.state.uninstall_game(game_id)
 
     def test_supplied_game_operations_service_owns_the_single_journal(self):
         service = GameOperationsService(OperationJournal(None))
@@ -937,6 +942,243 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual("uninstalling", self.state.operation_journal.get(GAME_ID)["state"])
         self.assertNotIn("steam_authoritative_completion",
                          [event for event, _payload in self.audit])
+
+    def test_delayed_game_installed_cannot_reverse_authoritative_steam_uninstall(self):
+        self._start_direct_steam(installed=True, operation="uninstall")
+        token = self.state.installations[GAME_ID]["token"]
+        absent = {
+            "uninstalled": True, "provider": "steam",
+            "scan_available": True, "scan_complete": True,
+        }
+        for _ in range(REQUIRED_STABLE_SAMPLES):
+            self.state.apply_installation_probe(GAME_ID, absent, token)
+
+        self.state.handle_message({
+            "type": "status",
+            "status": {"name": "gameInstalled", "id": GAME_ID},
+        })
+
+        self.assertFalse(self.state.library[GAME_ID]["installed"])
+        operation = self.state.operation_journal.get(GAME_ID)
+        self.assertEqual("uninstall", operation["kind"])
+        self.assertEqual("completed", operation["state"])
+
+    def test_delayed_cancellation_cannot_reverse_authoritative_steam_install(self):
+        self._start_direct_steam()
+        token = self.state.installations[GAME_ID]["token"]
+        self.state.apply_installation_probe(GAME_ID, {
+            "installed": True, "provider": "steam", "phase": "completed_install",
+            "install_directory": r"E:\Games\FEZ",
+        }, token)
+
+        self.state.handle_message({
+            "type": "status",
+            "status": {"name": "gameInstallationCancelled", "id": GAME_ID},
+        })
+
+        self.assertTrue(self.state.library[GAME_ID]["installed"])
+        operation = self.state.operation_journal.get(GAME_ID)
+        self.assertEqual("install", operation["kind"])
+        self.assertEqual("completed", operation["state"])
+
+    def test_delayed_old_playnite_event_cannot_mutate_newer_steam_generation(self):
+        self._start_direct_steam()
+        old_token = self.state.installations[GAME_ID]["token"]
+        self.state.apply_installation_probe(GAME_ID, {
+            "installed": True, "provider": "steam", "phase": "completed_install",
+            "install_directory": r"E:\Games\FEZ",
+        }, old_token)
+        self._dispatch_direct_steam(GAME_ID, "uninstall")
+        new_token = self.state.installations[GAME_ID]["token"]
+        self.assertNotEqual(old_token, new_token)
+
+        self.state.handle_message({
+            "type": "status",
+            "status": {"name": "gameInstalled", "id": GAME_ID},
+        })
+        self.state.handle_message({
+            "type": "status",
+            "status": {"name": "gameInstallationCancelled", "id": GAME_ID},
+        })
+
+        operation = self.state.operation_journal.get(GAME_ID)
+        self.assertEqual("uninstall", operation["kind"])
+        self.assertEqual(new_token, self.state.installations[GAME_ID]["token"])
+        self.assertNotIn("cancellation_token", self.state.installations[GAME_ID])
+
+    def test_non_steam_installed_events_keep_connector_behavior(self):
+        self.state.handle_message({"type": "games", "payload": [
+            {"id": GAME_ID, "name": "Baba Is You", "installed": False},
+            {"id": SECOND_GAME_ID, "name": "Celeste", "installed": False,
+             "source": "Epic", "providerGameId": "celeste-app"},
+        ]})
+
+        for game_id in (GAME_ID, SECOND_GAME_ID):
+            with self.subTest(game_id=game_id):
+                self.state.handle_message({
+                    "type": "status",
+                    "status": {"name": "gameInstalled", "id": game_id},
+                })
+                self.assertTrue(self.state.library[game_id]["installed"])
+
+    def test_prestart_steam_uninstall_blocks_another_launcher_operation(self):
+        self.state.handle_message({"type": "games", "payload": [
+            {"id": GAME_ID, "name": "FEZ", "installed": True,
+             "source": "Steam", "providerGameId": "224760"},
+            {"id": SECOND_GAME_ID, "name": "FTL", "installed": False,
+             "source": "Steam", "providerGameId": "212680"},
+        ]})
+        self._dispatch_direct_steam(GAME_ID, "uninstall")
+
+        with self.assertRaisesRegex(RuntimeError, "awaiting confirmation"):
+            self._dispatch_direct_steam(SECOND_GAME_ID, "install")
+
+    def test_started_steam_operation_allows_another_launcher_operation(self):
+        self.state.handle_message({"type": "games", "payload": [
+            {"id": GAME_ID, "name": "FEZ", "installed": True,
+             "source": "Steam", "providerGameId": "224760"},
+            {"id": SECOND_GAME_ID, "name": "FTL", "installed": False,
+             "source": "Steam", "providerGameId": "212680"},
+        ]})
+        self._dispatch_direct_steam(GAME_ID, "uninstall")
+        token = self.state.installations[GAME_ID]["token"]
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "started": True, "phase": "active_uninstall",
+            "scan_available": True, "scan_complete": True,
+            "requires_attention": False,
+        }, token)
+
+        result = self._dispatch_direct_steam(SECOND_GAME_ID, "install")
+
+        self.assertEqual("direct", result["dispatch"])
+
+    def test_started_steam_install_cancels_after_stable_healthy_inactivity(self):
+        self._start_direct_steam()
+        token = self.state.installations[GAME_ID]["token"]
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "started": True, "phase": "active_install",
+            "scan_available": True, "scan_complete": True,
+            "requires_attention": False, "progress": 25,
+        }, token)
+        self.state.handle_message({
+            "type": "status",
+            "status": {"name": "gameInstallationCancelled", "id": GAME_ID},
+        })
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "started": True, "phase": "active_install",
+            "scan_available": True, "scan_complete": True,
+            "requires_attention": False, "progress": 25,
+        }, token)
+        inactive = {
+            "provider": "steam", "started": False, "phase": "not_started",
+            "scan_available": True, "scan_complete": True,
+            "manifest_present": False, "requires_attention": False,
+        }
+        for _ in range(REQUIRED_STABLE_SAMPLES):
+            self.state.apply_installation_probe(GAME_ID, inactive, token)
+
+        self.assertEqual("cancelled", self.state.operation_journal.get(GAME_ID)["state"])
+        self.assertNotIn(GAME_ID, self.state.installations)
+        self.assertFalse(self.state.library[GAME_ID]["installing"])
+
+    def test_started_steam_uninstall_cancels_when_game_remains_installed(self):
+        self._start_direct_steam(installed=True, operation="uninstall")
+        token = self.state.installations[GAME_ID]["token"]
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "started": True, "phase": "active_uninstall",
+            "scan_available": True, "scan_complete": True,
+            "manifest_present": True, "requires_attention": False,
+        }, token)
+        self.state.handle_message({
+            "type": "status",
+            "status": {"name": "gameInstallationCancelled", "id": GAME_ID},
+        })
+        inactive = {
+            "provider": "steam", "started": False, "phase": "not_started",
+            "scan_available": True, "scan_complete": True,
+            "manifest_present": True, "requires_attention": False,
+        }
+        for _ in range(REQUIRED_STABLE_SAMPLES):
+            self.state.apply_installation_probe(GAME_ID, inactive, token)
+
+        self.assertEqual("cancelled", self.state.operation_journal.get(GAME_ID)["state"])
+        self.assertTrue(self.state.library[GAME_ID]["installed"])
+        self.assertFalse(self.state.library[GAME_ID]["uninstalling"])
+
+    def test_steam_cancellation_racing_authoritative_completion_completes(self):
+        self._start_direct_steam()
+        token = self.state.installations[GAME_ID]["token"]
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "started": True, "phase": "active_install",
+            "scan_available": True, "scan_complete": True,
+            "requires_attention": False, "progress": 90,
+        }, token)
+        self.state.handle_message({
+            "type": "status",
+            "status": {"name": "gameInstallationCancelled", "id": GAME_ID},
+        })
+
+        self.state.apply_installation_probe(GAME_ID, {
+            "installed": True, "provider": "steam", "phase": "completed_install",
+            "install_directory": r"E:\Games\FEZ",
+        }, token)
+
+        self.assertEqual("completed", self.state.operation_journal.get(GAME_ID)["state"])
+        self.assertTrue(self.state.library[GAME_ID]["installed"])
+
+    def test_stale_steam_cancellation_evidence_is_ignored_for_newer_token(self):
+        self._start_direct_steam()
+        old_token = self.state.installations[GAME_ID]["token"]
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "started": True, "phase": "active_install",
+            "scan_available": True, "scan_complete": True,
+            "requires_attention": False, "progress": 25,
+        }, old_token)
+        self.state.handle_message({
+            "type": "status",
+            "status": {"name": "gameInstallationCancelled", "id": GAME_ID},
+        })
+        self.state.operation_journal.update(GAME_ID, "completed")
+        newer = self.state.operation_journal.begin(GAME_ID, "install", "steam", "FEZ")
+        new_token = self.state.operation_token(newer)
+        self.state.installations[GAME_ID]["token"] = new_token
+
+        for _ in range(REQUIRED_STABLE_SAMPLES):
+            self.state.apply_installation_probe(GAME_ID, {
+                "provider": "steam", "started": False, "phase": "not_started",
+                "scan_available": True, "scan_complete": True,
+                "requires_attention": False,
+            }, old_token)
+
+        self.assertEqual("preparing", self.state.operation_journal.get(GAME_ID)["state"])
+        self.assertEqual(new_token, self.state.installations[GAME_ID]["token"])
+
+    def test_inconclusive_cancelled_steam_scan_reaches_bounded_attention(self):
+        self._start_direct_steam()
+        token = self.state.installations[GAME_ID]["token"]
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "started": True, "phase": "active_install",
+            "scan_available": True, "scan_complete": True,
+            "requires_attention": False, "progress": 25,
+        }, token)
+        self.state.handle_message({
+            "type": "status",
+            "status": {"name": "gameInstallationCancelled", "id": GAME_ID},
+        })
+        inconclusive = {
+            "provider": "steam", "started": False, "phase": "scan_incomplete",
+            "scan_available": True, "scan_complete": False,
+            "requires_attention": False,
+        }
+        self.state.apply_installation_probe(GAME_ID, inconclusive, token)
+        self.assertEqual("downloading", self.state.operation_journal.get(GAME_ID)["state"])
+        self.now += STEAM_CANCELLATION_EVIDENCE_TIMEOUT + 1
+
+        self.state.apply_installation_probe(GAME_ID, inconclusive, token)
+
+        operation = self.state.operation_journal.get(GAME_ID)
+        self.assertEqual("attention_required", operation["state"])
+        self.assertEqual("steam_cancellation_inconclusive", operation["detail"])
 
     def test_epic_dialog_is_never_auto_confirmed(self):
         confirmations = []

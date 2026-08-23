@@ -137,7 +137,7 @@ class GameOperationsTest(unittest.TestCase):
             manifest = steamapps / "appmanifest_224760.acf"
             provider = SteamProvider(roots=[library])
             game = {"source": "Steam", "providerGameId": "224760"}
-            manifest.write_text(self._steam_manifest(0, 100, 1026), encoding="utf-8")
+            manifest.write_text(self._steam_manifest(0, 100, 0), encoding="utf-8")
             baseline = {"steam_baseline": provider.operation_baseline(game)}
             self.assertEqual("not_started", provider.sample(
                 game, "install", baseline)["phase"])
@@ -146,14 +146,77 @@ class GameOperationsTest(unittest.TestCase):
             (steamapps / "common" / "FEZ").mkdir(parents=True)
             manifest.write_text(self._steam_manifest(100, 100, 4), encoding="utf-8")
             self.assertTrue(provider.sample(game, "install", baseline)["installed"])
-            manifest.write_text(self._steam_manifest(0, 100, 1026), encoding="utf-8")
+            manifest.write_text(self._steam_manifest(50, 100, 1026), encoding="utf-8")
             unchanged = {"steam_baseline": provider.operation_baseline(game)}
-            self.assertFalse(provider.sample(game, "install", unchanged)["started"])
+            self.assertTrue(provider.sample(game, "install", unchanged)["started"])
             manifest.write_bytes(b"")
             unchanged = {"steam_baseline": provider.operation_baseline(game)}
             self.assertFalse(provider.sample(game, "install", unchanged)["started"])
             manifest.unlink()
             self.assertTrue(provider.sample(game, "uninstall")["uninstalled"])
+
+    def test_empty_manifest_created_after_healthy_absent_baseline_is_not_started(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            steamapps = root / "steamapps"
+            steamapps.mkdir()
+            provider = SteamProvider(roots=[root])
+            game = {"source": "Steam", "providerGameId": "224760"}
+            baseline = {"steam_baseline": provider.operation_baseline(game)}
+            (steamapps / "appmanifest_224760.acf").write_bytes(b"")
+
+            sample = provider.sample(game, "install", baseline)
+
+            self.assertFalse(sample["started"])
+            self.assertEqual("not_started", sample["phase"])
+
+    def test_zero_state_placeholder_manifest_is_not_started(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            steamapps = root / "steamapps"
+            steamapps.mkdir()
+            provider = SteamProvider(roots=[root])
+            game = {"source": "Steam", "providerGameId": "224760"}
+            baseline = {"steam_baseline": provider.operation_baseline(game)}
+            (steamapps / "appmanifest_224760.acf").write_text(
+                self._steam_manifest(0, 0, 0), encoding="utf-8")
+
+            sample = provider.sample(game, "install", baseline)
+
+            self.assertFalse(sample["started"])
+            self.assertEqual("not_started", sample["phase"])
+
+    def test_unhealthy_baseline_accepts_strong_current_steam_activity(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            steamapps = root / "steamapps"
+            steamapps.mkdir()
+            (steamapps / "appmanifest_224760.acf").write_text(
+                self._steam_manifest(50, 100, 1026), encoding="utf-8")
+            provider = SteamProvider(roots=[root])
+            game = {"source": "Steam", "providerGameId": "224760"}
+            baseline = {"steam_baseline": {
+                "scan_available": False, "scan_complete": False,
+                "manifest_present": False,
+            }}
+
+            sample = provider.sample(game, "install", baseline)
+
+            self.assertTrue(sample["started"])
+            self.assertEqual(50, sample["progress"])
+
+    def test_manifest_signature_only_change_is_not_started(self):
+        baseline = {
+            "scan_available": True, "scan_complete": True,
+            "manifest_present": True, "manifest_readable": True,
+            "manifest_signature": ("manifest", 1, 20, 0, 0, 0, ""),
+            "download_present": False, "bytes_downloaded": 0,
+            "bytes_total": 0, "state_flags": 0,
+        }
+        snapshot = {**baseline,
+                    "manifest_signature": ("manifest", 2, 20, 0, 0, 0, "")}
+
+        self.assertFalse(SteamProvider._started(snapshot, baseline, False))
 
     def test_incomplete_steam_scan_cannot_report_uninstalled(self):
         with tempfile.TemporaryDirectory() as temporary:
