@@ -87,4 +87,15 @@ public class HostGatewayClientTest {
         assertEquals("preparing", parsed.games.get(0).vibepolloState);
         assertEquals("42", parsed.revision);
     }
+
+    @Test public void profileProjectionPreservesPlayniteConnectorState() throws Exception {
+        HostGatewayClient.IntegrationProfiles profiles =
+                HostGatewayClient.parseIntegrationProfiles(new JSONObject()
+                        .put("profiles", new org.json.JSONArray().put(new JSONObject()
+                                .put("id", "default")
+                                .put("playnite_bridge_online", true)
+                                .put("playnite_connector_connected", true))));
+
+        assertTrue(profiles.find("default").playniteConnectorConnected);
+    }
 }

@@ -26,7 +26,9 @@ final class PlayIntent {
         this.playniteGameId = SessionSnapshot.normalize(playniteGameId);
         this.quickLaunchId = quickLaunchId == null ? "" : quickLaunchId.trim();
         this.loadingArtworkGameId = SessionSnapshot.normalize(loadingArtworkGameId);
-        if (this.hostId.isEmpty() || sunshineAppId <= 0 || this.appName.isEmpty()) {
+        boolean targetMayBePrepared = kind == Kind.PLAYNITE_GAME && sunshineAppId == 0;
+        if (this.hostId.isEmpty() || (sunshineAppId <= 0 && !targetMayBePrepared)
+                || this.appName.isEmpty()) {
             throw new IllegalArgumentException("Host, Sunshine app ID, and app name are required");
         }
         if (kind == Kind.PLAYNITE_GAME && this.playniteGameId.isEmpty()) {

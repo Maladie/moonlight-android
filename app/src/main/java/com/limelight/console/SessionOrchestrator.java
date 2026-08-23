@@ -1,6 +1,7 @@
 package com.limelight.console;
 
 import com.limelight.console.transition.LaunchTransitionType;
+import com.limelight.nvstream.http.NvApp;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -48,12 +49,16 @@ final class SessionOrchestrator implements AutoCloseable {
         void reject(Rejection reason);
         void confirmReplacement(Runnable accepted);
         void showLoading(PlayIntent intent, LaunchTransitionType type, Runnable opaqueFrameReady);
-        boolean awaitReadiness(PlayIntent intent, BooleanSupplier cancelled);
+        HostLaunchPreflight.Result preflight(PlayIntent intent,
+                                             HostLaunchPreflight.Action action,
+                                             BooleanSupplier cancelled);
         void focusSuspendedGame(PlayIntent intent) throws Exception;
-        boolean closePreviousSession(PlayIntent intent, BooleanSupplier cancelled)
+        boolean closePreviousSession(PlayIntent intent, NvApp target,
+                                     BooleanSupplier cancelled)
                 throws Exception;
-        void launch(PlayIntent intent, LaunchTransitionType type);
-        void readinessFailed();
+        void launch(PlayIntent intent, NvApp target, LaunchTransitionType type);
+        void preflightFailed(HostLaunchPreflight.Failure failure);
+        void orchestrationFailed();
         void previousSessionCloseFailed();
     }
 
@@ -80,7 +85,7 @@ final class SessionOrchestrator implements AutoCloseable {
             effects.reject(Rejection.UNPAIRED);
             return;
         }
-        evaluate(request, intent, false, false, false, 0);
+        evaluate(request, intent, false, false, null, 0);
     }
 
     void cancel() {
@@ -93,10 +98,10 @@ final class SessionOrchestrator implements AutoCloseable {
     }
 
     private void evaluate(long request, PlayIntent intent, boolean replacementAuthorized,
-                          boolean opaqueReady, boolean readinessReady, int pass) {
+                          boolean opaqueReady, NvApp preparedTarget, int pass) {
         if (!current(request)) return;
         if (pass > 8) {
-            effects.readinessFailed();
+            effects.orchestrationFailed();
             return;
         }
         RetainedTransport retained = effects.retainedTransport();
@@ -120,31 +125,40 @@ final class SessionOrchestrator implements AutoCloseable {
         boolean matches = intent.matches(snapshot);
         if (snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED && matches
                 && effects.hasSavedReconnect(intent)) {
-            effects.reconnectSavedSession();
+            if (!opaqueReady) {
+                awaitOpaque(request, intent, LaunchTransitionType.GENERIC,
+                        replacementAuthorized, preparedTarget, pass);
+            } else if (preparedTarget == null) {
+                awaitPreflight(request, intent, replacementAuthorized, pass,
+                        HostLaunchPreflight.Action.RECONNECT);
+            } else {
+                effects.reconnectSavedSession();
+            }
             return;
         }
         if (snapshot.state == SessionSnapshot.State.ACTIVE && matches) {
-            connect(request, intent, opaqueReady, readinessReady, false, pass);
+            connect(request, intent, opaqueReady, preparedTarget, false, pass);
             return;
         }
         if (snapshot.state == SessionSnapshot.State.SUSPENDED && matches) {
-            connect(request, intent, opaqueReady, readinessReady, true, pass);
+            connect(request, intent, opaqueReady, preparedTarget, true, pass);
             return;
         }
         if (snapshot.state == SessionSnapshot.State.NONE) {
             if (!opaqueReady) {
                 awaitOpaque(request, intent, freshType(intent), replacementAuthorized,
-                        readinessReady, pass);
-            } else if (!readinessReady) {
-                awaitReadiness(request, intent, replacementAuthorized, pass);
+                        preparedTarget, pass);
+            } else if (preparedTarget == null) {
+                awaitPreflight(request, intent, replacementAuthorized, pass,
+                        HostLaunchPreflight.Action.LAUNCH);
             } else {
                 SessionSnapshot finalSnapshot = effects.resolve(intent.hostId);
                 if (!current(request)) return;
                 if (finalSnapshot.state == SessionSnapshot.State.NONE) {
-                    effects.launch(intent, freshType(intent));
+                    effects.launch(intent, preparedTarget, freshType(intent));
                 } else {
                     evaluate(request, intent, replacementAuthorized,
-                            true, true, pass + 1);
+                            true, preparedTarget, pass + 1);
                 }
             }
             return;
@@ -153,68 +167,66 @@ final class SessionOrchestrator implements AutoCloseable {
         if (!replacementAuthorized) {
             effects.confirmReplacement(() -> {
                 if (current(request)) {
-                    evaluate(request, intent, true, false, false, pass + 1);
+                    evaluate(request, intent, true, false, null, pass + 1);
                 }
             });
         } else if (!opaqueReady) {
-            awaitOpaque(request, intent, freshType(intent), true, readinessReady, pass);
-        } else if (!readinessReady) {
-            awaitReadiness(request, intent, true, pass);
+            awaitOpaque(request, intent, freshType(intent), true, preparedTarget, pass);
+        } else if (preparedTarget == null) {
+            awaitPreflight(request, intent, true, pass,
+                    HostLaunchPreflight.Action.LAUNCH);
         } else {
-            closeCompetingSession(request, intent, pass);
+            closeCompetingSession(request, intent, preparedTarget, pass);
         }
     }
 
     private void connect(long request, PlayIntent intent, boolean opaqueReady,
-                         boolean readinessReady, boolean suspended, int pass) {
+                         NvApp preparedTarget, boolean suspended, int pass) {
         if (!opaqueReady) {
             awaitOpaque(request, intent, LaunchTransitionType.GENERIC,
-                    false, false, pass);
+                    false, preparedTarget, pass);
             return;
         }
-        if (suspended) {
-            if (readinessReady) focusAndConnect(request, intent, pass);
-            else awaitReadinessForSuspended(request, intent, pass);
+        if (preparedTarget == null) {
+            awaitPreflight(request, intent, false, pass,
+                    HostLaunchPreflight.Action.LAUNCH);
+        } else if (suspended) {
+            focusAndConnect(request, intent, preparedTarget, pass);
         } else if (current(request)) {
-            effects.launch(intent, LaunchTransitionType.GENERIC);
+            effects.launch(intent, preparedTarget, LaunchTransitionType.GENERIC);
         }
     }
 
     private void awaitOpaque(long request, PlayIntent intent, LaunchTransitionType type,
-                             boolean replacementAuthorized, boolean readinessReady, int pass) {
+                             boolean replacementAuthorized, NvApp preparedTarget, int pass) {
         effects.showLoading(intent, type, () -> {
             if (current(request)) {
                 evaluate(request, intent, replacementAuthorized,
-                        true, readinessReady, pass + 1);
+                        true, preparedTarget, pass + 1);
             }
         });
     }
 
-    private void awaitReadiness(long request, PlayIntent intent,
-                                boolean replacementAuthorized, int pass) {
+    private void awaitPreflight(long request, PlayIntent intent,
+                                boolean replacementAuthorized, int pass,
+                                HostLaunchPreflight.Action action) {
         execute(request, () -> {
-            boolean ready = effects.awaitReadiness(intent, () -> !current(request));
+            HostLaunchPreflight.Result result = effects.preflight(
+                    intent, action, () -> !current(request));
             dispatcher.post(() -> {
                 if (!current(request)) return;
-                if (!ready) effects.readinessFailed();
-                else evaluate(request, intent, replacementAuthorized,
-                        true, true, pass + 1);
+                if (result.status == HostLaunchPreflight.Status.FAILED) {
+                    effects.preflightFailed(result.failure);
+                } else if (result.status == HostLaunchPreflight.Status.READY) {
+                    evaluate(request, intent, replacementAuthorized,
+                            true, result.target, pass + 1);
+                }
             });
         });
     }
 
-    private void awaitReadinessForSuspended(long request, PlayIntent intent, int pass) {
-        execute(request, () -> {
-            boolean ready = effects.awaitReadiness(intent, () -> !current(request));
-            dispatcher.post(() -> {
-                if (!current(request)) return;
-                if (!ready) effects.readinessFailed();
-                else evaluate(request, intent, false, true, true, pass + 1);
-            });
-        });
-    }
-
-    private void focusAndConnect(long request, PlayIntent intent, int pass) {
+    private void focusAndConnect(long request, PlayIntent intent,
+                                 NvApp preparedTarget, int pass) {
         execute(request, () -> {
             try {
                 effects.focusSuspendedGame(intent);
@@ -226,26 +238,27 @@ final class SessionOrchestrator implements AutoCloseable {
                 SessionSnapshot latest = effects.resolve(intent.hostId);
                 if (latest.state == SessionSnapshot.State.SUSPENDED
                         && intent.matches(latest)) {
-                    effects.launch(intent, LaunchTransitionType.GENERIC);
+                    effects.launch(intent, preparedTarget, LaunchTransitionType.GENERIC);
                 } else {
-                    evaluate(request, intent, false, true, true, pass + 1);
+                    evaluate(request, intent, false, true, preparedTarget, pass + 1);
                 }
             });
         });
     }
 
-    private void closeCompetingSession(long request, PlayIntent intent, int pass) {
+    private void closeCompetingSession(long request, PlayIntent intent,
+                                       NvApp preparedTarget, int pass) {
         SessionSnapshot beforeClose = effects.resolve(intent.hostId);
         if (!current(request)) return;
         if (beforeClose.state == SessionSnapshot.State.NONE || intent.matches(beforeClose)) {
-            evaluate(request, intent, true, true, true, pass + 1);
+            evaluate(request, intent, true, true, preparedTarget, pass + 1);
             return;
         }
         execute(request, () -> {
             boolean closedPrevious;
             try {
                 closedPrevious = effects.closePreviousSession(
-                        intent, () -> !current(request));
+                        intent, preparedTarget, () -> !current(request));
             } catch (Exception error) {
                 closedPrevious = false;
             }
@@ -259,9 +272,9 @@ final class SessionOrchestrator implements AutoCloseable {
                 SessionSnapshot afterClose = effects.resolve(intent.hostId);
                 if (!current(request)) return;
                 if (afterClose.state == SessionSnapshot.State.NONE) {
-                    effects.launch(intent, freshType(intent));
+                    effects.launch(intent, preparedTarget, freshType(intent));
                 } else if (intent.matches(afterClose)) {
-                    evaluate(request, intent, true, true, true, pass + 1);
+                    evaluate(request, intent, true, true, preparedTarget, pass + 1);
                 } else {
                     effects.previousSessionCloseFailed();
                 }
@@ -275,7 +288,7 @@ final class SessionOrchestrator implements AutoCloseable {
                 if (current(request)) action.run();
             });
         } catch (RuntimeException ignored) {
-            if (current(request)) effects.readinessFailed();
+            if (current(request)) effects.orchestrationFailed();
         }
     }
 

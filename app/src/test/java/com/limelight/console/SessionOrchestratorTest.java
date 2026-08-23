@@ -1,9 +1,12 @@
 package com.limelight.console;
 
 import com.limelight.console.transition.LaunchTransitionType;
+import com.limelight.nvstream.http.NvApp;
 
 import org.junit.Test;
 
+import java.util.ArrayDeque;
+import java.util.Queue;
 import java.util.concurrent.Executor;
 import java.util.function.BooleanSupplier;
 
@@ -46,7 +49,7 @@ public class SessionOrchestratorTest {
         orchestrator(effects).play(game());
 
         assertEquals(1, effects.reconnects);
-        assertEquals(0, effects.readiness);
+        assertEquals(1, effects.readiness);
         assertEquals(0, effects.launches);
     }
 
@@ -62,13 +65,13 @@ public class SessionOrchestratorTest {
         assertEquals(LaunchTransitionType.GENERIC, effects.launchType);
     }
 
-    @Test public void activeTargetConnectsWithoutQuitOrReadiness() {
+    @Test public void activeTargetConnectsAfterPreflightWithoutQuit() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE, 42, "game");
 
         orchestrator(effects).play(game());
 
-        assertEquals(0, effects.readiness);
+        assertEquals(1, effects.readiness);
         assertEquals(0, effects.closes);
         assertEquals(LaunchTransitionType.GENERIC, effects.launchType);
     }
@@ -231,6 +234,21 @@ public class SessionOrchestratorTest {
         assertEquals(0, effects.launches);
     }
 
+    @Test public void stalePreflightCompletionCannotLaunchOlderIntent() {
+        Fake effects = new Fake();
+        Queue<Runnable> callbacks = new ArrayDeque<>();
+        SessionOrchestrator orchestrator = new SessionOrchestrator(
+                effects, Runnable::run, callbacks::add);
+
+        orchestrator.play(PlayIntent.sunshineApp("host", 42, "Old", false, ""));
+        orchestrator.play(PlayIntent.sunshineApp("host", 77, "New", false, ""));
+        callbacks.remove().run();
+        callbacks.remove().run();
+
+        assertEquals(1, effects.launches);
+        assertEquals(77, effects.launchedTarget.getAppId());
+    }
+
     private static void assertFreshType(PlayIntent intent, LaunchTransitionType type) {
         Fake effects = new Fake();
         orchestrator(effects).play(intent);
@@ -277,6 +295,7 @@ public class SessionOrchestratorTest {
         int closes;
         int launches;
         LaunchTransitionType launchType;
+        NvApp launchedTarget;
 
         @Override public boolean isAvailable() { return true; }
         @Override public boolean isPaired(String hostId) { return paired; }
@@ -299,28 +318,37 @@ public class SessionOrchestratorTest {
                                           Runnable opaqueFrameReady) {
             opaqueFrameReady.run();
         }
-        @Override public boolean awaitReadiness(PlayIntent intent,
-                                                BooleanSupplier cancelled) {
+        @Override public HostLaunchPreflight.Result preflight(
+                PlayIntent intent, HostLaunchPreflight.Action action,
+                BooleanSupplier cancelled) {
             readiness++;
             if (onReadiness != null) onReadiness.run();
-            return true;
+            return cancelled.getAsBoolean() ? HostLaunchPreflight.Result.cancelled()
+                    : HostLaunchPreflight.Result.ready(
+                    new NvApp(intent.appName,
+                            intent.sunshineAppId > 0 ? intent.sunshineAppId : 77,
+                            intent.hdrSupported),
+                    HostLaunchPreflight.TargetResolution.EXISTING);
         }
         @Override public void focusSuspendedGame(PlayIntent intent) throws Exception {
             focuses++;
             if (failFocus) throw new Exception("unavailable");
         }
         @Override public boolean closePreviousSession(
-                PlayIntent intent, BooleanSupplier cancelled) {
+                PlayIntent intent, NvApp target, BooleanSupplier cancelled) {
             closes++;
             if (onClose != null) onClose.run();
             snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
             return true;
         }
-        @Override public void launch(PlayIntent intent, LaunchTransitionType type) {
+        @Override public void launch(PlayIntent intent, NvApp target,
+                                     LaunchTransitionType type) {
             launches++;
             launchType = type;
+            launchedTarget = target;
         }
-        @Override public void readinessFailed() { }
+        @Override public void preflightFailed(HostLaunchPreflight.Failure failure) { }
+        @Override public void orchestrationFailed() { }
         @Override public void previousSessionCloseFailed() { }
     }
 }

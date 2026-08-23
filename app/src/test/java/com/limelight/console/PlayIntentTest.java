@@ -35,6 +35,13 @@ public class PlayIntentTest {
         assertFalse(intent.matches(snapshot("other", 42, "game-a")));
     }
 
+    @Test public void playniteGameMayDeferMissingSunshineTargetToPreflight() {
+        PlayIntent intent = PlayIntent.playniteGame(
+                "host", 0, "Game", false, "game", "game");
+
+        assertTrue(intent.sunshineAppId == 0);
+    }
+
     @Test public void directSunshineTargetMatchesDespitePlayniteIdentity() {
         PlayIntent intent = PlayIntent.sunshineApp("host", 42, "App", false, "");
 

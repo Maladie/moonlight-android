@@ -157,10 +157,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final long DUPLICATE_NAVIGATION_WINDOW_MS = 70L;
     private static final long PLAYNITE_REFRESH_MS = 60_000L;
     private static final long PLAYNITE_INSTALL_REFRESH_MS = 3_000L;
-    private static final long VIBEPOLLO_APP_WAIT_MS = 5 * 60_000L;
-    private static final long VIBEPOLLO_ENSURE_RETRY_MS = 3_000L;
-    private static final long VIBEPOLLO_APP_STABLE_MS = 30_000L;
-    private static final int VIBEPOLLO_APP_STABLE_POLLS = 5;
     private static final long PREVIOUS_SESSION_CLOSE_TIMEOUT_MS = 20_000L;
     private static final long LIBRARY_ENTER_TRANSITION_MS = 280L;
     private static final long LIBRARY_EXIT_TRANSITION_MS = 200L;
@@ -192,7 +188,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final AtomicInteger discordStatusGeneration = new AtomicInteger();
     private final AtomicInteger playniteGeneration = new AtomicInteger();
     private final AtomicInteger playniteArtworkGeneration = new AtomicInteger();
-    private final AtomicInteger sunshineAppsGeneration = new AtomicInteger();
     private final SessionStateResolver sessionStateResolver = new SessionStateResolver();
     private final Map<String, ComputerDetails> hosts = new LinkedHashMap<>();
     private final Set<String> newlyDiscoveredHosts = new LinkedHashSet<>();
@@ -207,6 +202,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private DiscordPanelController discordPanelController;
     private HostGatewayClient hostGatewayClient;
     private GameOperationsController gameOperationsController;
+    private HostLaunchPreflight hostLaunchPreflight;
     private SessionOrchestrator sessionOrchestrator;
     private HostGatewayStore hostGatewayStore;
     private PlayniteLibraryRepository playniteLibraryRepository;
@@ -560,6 +556,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         root = buildUi();
         setContentView(root);
         consoleFeedback = new ConsoleUiFeedback(this, root, consoleAudioEngine, reducedMotion);
+        hostLaunchPreflight = createHostLaunchPreflight();
         sessionOrchestrator = createSessionOrchestrator();
         root.getViewTreeObserver().addOnGlobalFocusChangeListener(consoleFocusSoundListener);
         discordPanelController = new DiscordPanelController(this, mainHandler, executor,
@@ -3670,7 +3667,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ComputerDetails latestHost = currentHost(uuid);
                 if (latestHost == null) return;
                 currentSunshineApps = Collections.unmodifiableList(new ArrayList<>(apps));
-                sunshineAppsGeneration.incrementAndGet();
                 updateLaunchPlayniteButton(latestHost, apps);
                 boolean playniteAvailable = !currentPlayniteGames.isEmpty() ||
                         hostGatewayStore.loadForHost(latestHost.uuid,
@@ -6376,10 +6372,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         state.setBackground(background);
     }
 
-    private String vibepolloEnsureKey(String hostUuid, PlayniteDashboardItem item) {
-        return hostUuid + ":" + item.game.playniteGameId;
-    }
-
     private boolean isVibepolloEnsureInFlight(String hostUuid, PlayniteDashboardItem item) {
         // The Set above prevents duplicate requests only. The visible state comes
         // from the Gateway-enriched library so it survives an Android process restart.
@@ -7059,10 +7051,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return;
             }
         }
-        NvApp fallback = PlayniteTargetResolver.resolvePlayniteFullscreen(
-                host.uuid, apps, playniteLaunchTargetStore);
-        if (fallback != null) {
-            ensureVibepolloAppThenLaunch(host, item, fallback);
+        if (item.mappingState == PlayniteDashboardItem.MappingState.MISSING) {
+            sessionOrchestrator.play(PlayIntent.playniteGame(
+                    host.uuid, 0, item.game.name, false,
+                    item.game.playniteGameId, item.game.playniteGameId));
             return;
         }
         showPlayniteTargetPicker(host, item, apps);
@@ -7231,185 +7223,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                          NvApp streamTarget) {
         beginInstallationSupportStream(
                 currentHost(host.uuid), streamTarget, item.game.playniteGameId);
-    }
-
-    private void ensureVibepolloAppThenLaunch(ComputerDetails host,
-                                               PlayniteDashboardItem item,
-                                               NvApp fallback) {
-        ComputerDetails latestHost = currentHost(host.uuid);
-        // The Gateway and Vibepollo live on the host.  When the machine is
-        // asleep, wake it first instead of treating an unavailable Gateway as
-        // a reason to launch the Playnite fallback.
-        if (!ConsoleActionCatalog.isOnline(latestHost)) {
-            prepareHostThenEnsureVibepolloApp(host, item, fallback);
-            return;
-        }
-        String address = latestHost != null && latestHost.activeAddress != null
-                ? latestHost.activeAddress.address : null;
-        GatewayConnection connection =
-                hostGatewayStore.loadForHost(host.uuid, address);
-        if (connection == null) {
-            launchPlayniteFallback(host.uuid, item, fallback);
-            return;
-        }
-        String ensureKey = vibepolloEnsureKey(host.uuid, item);
-        if (!vibepolloEnsureInFlight.add(ensureKey)) {
-            ConsoleUiFeedback.makeText(this, R.string.playnite_creating_vibepollo_app,
-                    Toast.LENGTH_SHORT).show();
-            return;
-        }
-        // The first activation only prepares the Sunshine entry. Do not launch
-        // an app whose creation is still propagating: that was the source of
-        // the initial 404. The card becomes launchable after stable polling.
-        renderPlayniteLibrary(host, currentSunshineApps);
-        ensureVibepolloApp(host.uuid, item, fallback, connection, ensureKey,
-                SystemClock.uptimeMillis() + VIBEPOLLO_APP_WAIT_MS);
-    }
-
-    private void ensureVibepolloApp(String hostUuid, PlayniteDashboardItem item,
-                                    NvApp fallback, GatewayConnection connection,
-                                    String ensureKey, long deadline) {
-        executor.execute(() -> {
-            JSONObject ensuredApp = null;
-            try {
-                ensuredApp = hostGatewayClient.ensureVibepolloPlayniteApp(connection,
-                        item.game.playniteGameId, item.game.name);
-            } catch (IOException | IllegalArgumentException ignored) { }
-            JSONObject result = ensuredApp;
-            mainHandler.post(() -> {
-                if (!active || !vibepolloEnsureInFlight.contains(ensureKey)) return;
-                if (result != null) {
-                    if (appListPoller != null) appListPoller.pollNow();
-                    awaitVibepolloTarget(hostUuid, item, fallback,
-                            HostGatewayClient.parseVibepolloAppId(result),
-                            HostGatewayClient.parseVibepolloAppUuid(result), ensureKey, deadline,
-                            null, -1, 0, 0L);
-                } else if (SystemClock.uptimeMillis() >= deadline) {
-                    vibepolloEnsureInFlight.remove(ensureKey);
-                    launchPlayniteFallback(hostUuid, item, fallback);
-                } else {
-                    mainHandler.postDelayed(() -> ensureVibepolloApp(hostUuid, item, fallback,
-                            connection, ensureKey, deadline), VIBEPOLLO_ENSURE_RETRY_MS);
-                }
-            });
-        });
-    }
-
-    private void prepareHostThenEnsureVibepolloApp(ComputerDetails host,
-                                                    PlayniteDashboardItem item,
-                                                    NvApp fallback) {
-        if (managerBinder == null) {
-            ConsoleUiFeedback.makeText(this, R.string.console_initializing, Toast.LENGTH_SHORT).show();
-            return;
-        }
-        int token = hostPreparationGeneration.incrementAndGet();
-        showLoading(host.name, item.game.name, LaunchTransitionType.GAME);
-        Runnable prepareAfterOverlayFrame = () -> executor.execute(() -> {
-            ComputerDetails ready = HostReadiness.await(
-                    () -> managerBinder != null ? managerBinder.getComputer(host.uuid) : null,
-                    host,
-                    () -> token != hostPreparationGeneration.get() || !active,
-                    message -> setLoadingStatus(token, message),
-                    getString(R.string.console_wol_status, host.name),
-                    getString(R.string.console_waiting_stream_ports));
-            mainHandler.post(() -> {
-                if (token != hostPreparationGeneration.get() || !active) return;
-                if (ready == null) {
-                    if (streamLoadingView != null) {
-                        streamLoadingView.showError(getString(R.string.console_host_not_ready),
-                                getString(R.string.console_host_timeout));
-                    }
-                    return;
-                }
-                // This path only wakes the host so Vibepollo can prepare the
-                // entry. It is not a stream launch yet, so return to the tile.
-                showHome();
-                ensureVibepolloAppThenLaunch(ready, item, fallback);
-            });
-        });
-        if (streamLoadingView != null) {
-            streamLoadingView.doAfterNextFrame(prepareAfterOverlayFrame);
-        } else {
-            prepareAfterOverlayFrame.run();
-        }
-    }
-
-    private void awaitVibepolloTarget(String hostUuid, PlayniteDashboardItem item,
-                                      NvApp fallback, Integer expectedAppId,
-                                      String expectedAppUuid, String ensureKey, long deadline,
-                                      Integer stableAppId, int stableGeneration,
-                                      int stablePolls, long stableSince) {
-        // The Bridge response identifies the exact record Vibepollo created.
-        // Prefer that identity over a similarly named stale Sunshine app;
-        // launching the stale record is what produced the first-launch 404.
-        NvApp synchronizedTarget = null;
-        if (!expectedAppUuid.isEmpty()) {
-            synchronizedTarget = PlayniteTargetResolver.findByUuid(
-                    currentSunshineApps, expectedAppUuid);
-        }
-        if (synchronizedTarget == null && expectedAppId != null) {
-            synchronizedTarget = PlayniteTargetResolver.findById(
-                    currentSunshineApps, expectedAppId);
-        }
-        if (synchronizedTarget == null) {
-            synchronizedTarget = PlayniteTargetResolver.findPlayableExactName(
-                    currentSunshineApps, item.game.name);
-        }
-        long now = SystemClock.uptimeMillis();
-        int generation = sunshineAppsGeneration.get();
-        Integer nextStableAppId = stableAppId;
-        int nextStableGeneration = stableGeneration;
-        int nextStablePolls = stablePolls;
-        long nextStableSince = stableSince;
-        if (synchronizedTarget != null) {
-            int candidateId = synchronizedTarget.getAppId();
-            if (!Objects.equals(stableAppId, candidateId)) {
-                nextStableAppId = candidateId;
-                nextStableGeneration = generation;
-                nextStablePolls = 1;
-                nextStableSince = now;
-            } else {
-                nextStableGeneration = generation;
-                nextStablePolls++;
-            }
-        } else {
-            nextStableAppId = null;
-            nextStableGeneration = -1;
-            nextStablePolls = 0;
-            nextStableSince = 0L;
-        }
-        if (synchronizedTarget != null &&
-                nextStablePolls >= VIBEPOLLO_APP_STABLE_POLLS &&
-                now - nextStableSince >= VIBEPOLLO_APP_STABLE_MS) {
-            vibepolloEnsureInFlight.remove(ensureKey);
-            playniteLaunchTargetStore.setGameTarget(hostUuid, item.stableId(),
-                    synchronizedTarget.getAppId());
-            renderPlayniteLibrary(currentHost(hostUuid), currentSunshineApps);
-            playPlayniteGame(currentHost(hostUuid), synchronizedTarget,
-                    item.game.playniteGameId);
-            return;
-        }
-        if (now >= deadline) {
-            vibepolloEnsureInFlight.remove(ensureKey);
-            launchPlayniteFallback(hostUuid, item, fallback);
-            return;
-        }
-        if (appListPoller != null) appListPoller.pollNow();
-        Integer pendingAppId = nextStableAppId;
-        int pendingGeneration = nextStableGeneration;
-        int pendingPolls = nextStablePolls;
-        long pendingSince = nextStableSince;
-        mainHandler.postDelayed(() -> awaitVibepolloTarget(
-                hostUuid, item, fallback, expectedAppId, expectedAppUuid, ensureKey, deadline,
-                pendingAppId, pendingGeneration, pendingPolls, pendingSince), 1_000L);
-    }
-
-    private void launchPlayniteFallback(String hostUuid, PlayniteDashboardItem item,
-                                        NvApp fallback) {
-        playniteLaunchTargetStore.setGameTarget(hostUuid, item.stableId(),
-                fallback.getAppId());
-        renderPlayniteLibrary(currentHost(hostUuid), currentSunshineApps);
-        playPlayniteGame(currentHost(hostUuid), fallback, item.game.playniteGameId);
     }
 
     private void showPlayniteTargetPicker(ComputerDetails host, PlayniteDashboardItem item,
@@ -8114,6 +7927,117 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 (int) (green / count), (int) (blue / count));
     }
 
+    private HostLaunchPreflight createHostLaunchPreflight() {
+        HostLaunchPreflight.Network network = (hostId, cancelled) -> {
+            ComputerDetails target = currentHost(hostId);
+            if (target == null) return false;
+            return HostReadiness.await(
+                    () -> managerBinder == null ? null : managerBinder.getComputer(hostId),
+                    target, cancelled, ignored -> { }, "", "") != null;
+        };
+        HostLaunchPreflight.Gateway gateway = new HostLaunchPreflight.Gateway() {
+            @Override public HostLaunchPreflight.Profile selectedProfile(String hostId)
+                    throws IOException {
+                ComputerDetails host = currentHost(hostId);
+                String address = host != null && host.activeAddress != null
+                        ? host.activeAddress.address : null;
+                GatewayConnection connection = hostGatewayStore.loadForHost(hostId, address);
+                if (connection == null) return null;
+                HostGatewayClient.IntegrationProfile profile = hostGatewayClient
+                        .getIntegrationProfiles(connection).find(connection.profileId());
+                if (profile == null) {
+                    return new HostLaunchPreflight.Profile(false, false,
+                            false, false);
+                }
+                return new HostLaunchPreflight.Profile(true,
+                        profile.playniteBridgeOnline,
+                        profile.playniteConnectorConnected,
+                        profile.vibepolloBridgeOnline);
+            }
+
+            @Override public HostLaunchPreflight.EnsuredTarget ensureTarget(
+                    String hostId, String gameId, String name) throws IOException {
+                ComputerDetails host = currentHost(hostId);
+                String address = host != null && host.activeAddress != null
+                        ? host.activeAddress.address : null;
+                GatewayConnection connection = hostGatewayStore.loadForHost(hostId, address);
+                if (connection == null) throw new IOException("Gateway unavailable");
+                JSONObject ensured = hostGatewayClient.ensureVibepolloPlayniteApp(
+                        connection, gameId, name);
+                return new HostLaunchPreflight.EnsuredTarget(
+                        HostGatewayClient.parseVibepolloAppId(ensured),
+                        HostGatewayClient.parseVibepolloAppUuid(ensured));
+            }
+        };
+        HostLaunchPreflight.Sunshine sunshine = hostId -> {
+            ComputerDetails host = currentHost(hostId);
+            if (host == null || managerBinder == null) {
+                throw new IOException("Sunshine host unavailable");
+            }
+            NvHTTP connection = new NvHTTP(
+                    ServerHelper.getCurrentAddressFromComputer(host), host.httpsPort,
+                    managerBinder.getUniqueId(), host.serverCert,
+                    PlatformBinding.getCryptoProvider(ConsoleActivity.this));
+            try {
+                return connection.getAppList();
+            } catch (XmlPullParserException invalidResponse) {
+                throw new IOException("Invalid Sunshine app list", invalidResponse);
+            }
+        };
+        HostLaunchPreflight.Waiter waiter = (millis, cancelled) -> {
+            if (cancelled.getAsBoolean()) return false;
+            try {
+                Thread.sleep(millis);
+                return !cancelled.getAsBoolean();
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                return false;
+            }
+        };
+        return new HostLaunchPreflight(network, gateway, sunshine,
+                SystemClock::uptimeMillis, waiter);
+    }
+
+    private String preflightStageMessage(HostLaunchPreflight.Stage stage,
+                                         PlayIntent intent) {
+        switch (stage) {
+            case NETWORK_READY:
+                ComputerDetails host = currentHost(intent.hostId);
+                return getString(R.string.console_wol_status,
+                        host == null ? intent.hostId : host.name);
+            case GATEWAY_READY:
+            case PROFILE_READY:
+                return getString(R.string.transition_waiting_gateway);
+            case PLAYNITE_READY:
+                return getString(R.string.transition_starting_playnite);
+            case VIBEPOLLO_READY:
+                return getString(R.string.playnite_creating_vibepollo_app);
+            default:
+                return getString(R.string.transition_verifying_readiness);
+        }
+    }
+
+    private String preflightFailureMessage(HostLaunchPreflight.FailureReason reason) {
+        switch (reason) {
+            case NETWORK_UNAVAILABLE:
+                return getString(R.string.console_host_timeout);
+            case GATEWAY_UNAVAILABLE:
+                return getString(R.string.transition_gateway_unavailable);
+            case SELECTED_PROFILE_UNAVAILABLE:
+                return getString(R.string.preflight_profile_unavailable);
+            case PLAYNITE_BRIDGE_OFFLINE:
+                return getString(R.string.preflight_playnite_offline);
+            case PLAYNITE_CONNECTOR_DISCONNECTED:
+                return getString(R.string.preflight_playnite_connector_disconnected);
+            case VIBEPOLLO_UNAVAILABLE:
+                return getString(R.string.preflight_vibepollo_unavailable);
+            case TARGET_PROPAGATION_TIMEOUT:
+                return getString(R.string.preflight_target_timeout);
+            default:
+                return getString(R.string.playnite_launch_unavailable);
+        }
+    }
+
     private SessionOrchestrator createSessionOrchestrator() {
         return new SessionOrchestrator(new SessionOrchestrator.Effects() {
             @Override public boolean isAvailable() {
@@ -8198,22 +8122,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 }
             }
 
-            @Override public boolean awaitReadiness(PlayIntent intent,
-                                                    BooleanSupplier cancelled) {
-                ComputerDetails target = currentHost(intent.hostId);
-                if (target == null) return false;
-                ComputerDetails ready = HostReadiness.await(
-                        () -> managerBinder == null ? null
-                                : managerBinder.getComputer(intent.hostId),
-                        target, cancelled,
-                        message -> mainHandler.post(() -> {
+            @Override public HostLaunchPreflight.Result preflight(
+                    PlayIntent intent, HostLaunchPreflight.Action action,
+                    BooleanSupplier cancelled) {
+                return hostLaunchPreflight.run(
+                        HostLaunchPreflight.Request.from(intent, action), cancelled,
+                        stage -> mainHandler.post(() -> {
                             if (!cancelled.getAsBoolean() && streamLoadingView != null) {
-                                streamLoadingView.setStep(1, message);
+                                streamLoadingView.setStep(1,
+                                        preflightStageMessage(stage, intent));
                             }
-                        }),
-                        getString(R.string.console_wol_status, target.name),
-                        getString(R.string.console_waiting_stream_ports));
-                return ready != null;
+                        }));
             }
 
             @Override public void focusSuspendedGame(PlayIntent intent) throws IOException {
@@ -8226,12 +8145,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
 
             @Override public boolean closePreviousSession(
-                    PlayIntent intent, BooleanSupplier cancelled)
+                    PlayIntent intent, NvApp target, BooleanSupplier cancelled)
                     throws IOException, XmlPullParserException {
                 ComputerDetails host = currentHost(intent.hostId);
                 if (host == null) return false;
                 return ConsoleActivity.this.closePreviousSession(
-                        host, intent.sunshineAppId, true, cancelled,
+                        host, target.getAppId(), true, cancelled,
                         message -> mainHandler.post(() -> {
                             if (!cancelled.getAsBoolean() && streamLoadingView != null) {
                                 streamLoadingView.setStep(1, message);
@@ -8239,14 +8158,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         }));
             }
 
-            @Override public void launch(PlayIntent intent, LaunchTransitionType type) {
+            @Override public void launch(PlayIntent intent, NvApp app,
+                                         LaunchTransitionType type) {
                 ComputerDetails host = currentHost(intent.hostId);
                 if (host == null) {
-                    readinessFailed();
+                    preflightFailed(new HostLaunchPreflight.Failure(
+                            HostLaunchPreflight.Stage.NETWORK_READY,
+                            HostLaunchPreflight.FailureReason.NETWORK_UNAVAILABLE));
                     return;
                 }
-                NvApp app = new NvApp(intent.appName, intent.sunshineAppId,
-                        intent.hdrSupported);
+                if (intent.kind == PlayIntent.Kind.PLAYNITE_GAME) {
+                    playniteLaunchTargetStore.setGameTarget(intent.hostId,
+                            intent.playniteGameId, app.getAppId());
+                }
                 String transitionGameId = type == LaunchTransitionType.GENERIC
                         ? "" : intent.playniteGameId;
                 LaunchTransitionSpec transition = LaunchTransitionSpec.create(
@@ -8258,7 +8182,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                 intent.hostId, intent.loadingArtworkGameId));
             }
 
-            @Override public void readinessFailed() {
+            @Override public void preflightFailed(HostLaunchPreflight.Failure failure) {
+                if (streamLoadingView != null) {
+                    streamLoadingView.showError(
+                            getString(failure.stage == HostLaunchPreflight.Stage.NETWORK_READY
+                                    ? R.string.console_host_not_ready
+                                    : R.string.playnite_launch_unavailable),
+                            preflightFailureMessage(failure.reason));
+                }
+            }
+
+            @Override public void orchestrationFailed() {
                 if (streamLoadingView != null) {
                     streamLoadingView.showError(getString(R.string.console_host_not_ready),
                             getString(R.string.console_host_timeout));
