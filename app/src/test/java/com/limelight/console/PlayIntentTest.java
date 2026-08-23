@@ -1,0 +1,56 @@
+package com.limelight.console;
+
+import org.junit.Test;
+
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertThrows;
+import static org.junit.Assert.assertTrue;
+
+public class PlayIntentTest {
+    @Test public void normalizesHostAndGameIdentity() {
+        PlayIntent intent = PlayIntent.playniteGame(
+                " HOST ", 42, "Game", false, " GAME-ID ", " ART ");
+
+        assertTrue(intent.matches(snapshot("host", 7, "game-id")));
+        assertTrue("host".equals(intent.hostId));
+        assertTrue("game-id".equals(intent.playniteGameId));
+        assertTrue("art".equals(intent.loadingArtworkGameId));
+    }
+
+    @Test public void rejectsInvalidTargets() {
+        assertThrows(IllegalArgumentException.class,
+                () -> PlayIntent.sunshineApp("", 42, "App", false, ""));
+        assertThrows(IllegalArgumentException.class,
+                () -> PlayIntent.playniteGame("host", 42, "App", false, " ", ""));
+        assertThrows(IllegalArgumentException.class,
+                () -> PlayIntent.playniteFullscreen("host", 0, "App", false));
+    }
+
+    @Test public void playniteGameRequiresExactGameNotSharedSunshineTarget() {
+        PlayIntent intent = PlayIntent.playniteGame(
+                "host", 42, "Game A", false, "game-a", "");
+
+        assertTrue(intent.matches(snapshot("host", 42, "game-a")));
+        assertFalse(intent.matches(snapshot("host", 42, "game-b")));
+        assertFalse(intent.matches(snapshot("other", 42, "game-a")));
+    }
+
+    @Test public void directSunshineTargetMatchesDespitePlayniteIdentity() {
+        PlayIntent intent = PlayIntent.sunshineApp("host", 42, "App", false, "");
+
+        assertTrue(intent.matches(snapshot("host", 42, "game-b")));
+        assertFalse(intent.matches(snapshot("host", 7, "game-b")));
+    }
+
+    @Test public void fullscreenDoesNotMatchIdentifiedPlayniteGame() {
+        PlayIntent intent = PlayIntent.playniteFullscreen("host", 42, "Playnite", false);
+
+        assertTrue(intent.matches(snapshot("host", 42, "")));
+        assertFalse(intent.matches(snapshot("host", 42, "game-b")));
+    }
+
+    private static SessionSnapshot snapshot(String host, int appId, String gameId) {
+        return new SessionSnapshot(host, SessionSnapshot.State.ACTIVE, appId, gameId,
+                false, false, false, false, false);
+    }
+}
