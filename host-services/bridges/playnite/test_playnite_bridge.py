@@ -1,6 +1,7 @@
 ﻿import unittest
 import tempfile
 import ctypes
+import json
 import threading
 import time
 from pathlib import Path
@@ -13,11 +14,13 @@ from PatchPlayniteConnector import (
     READER_ANCHOR, SEND_BUILD_ANCHOR, SEND_PARAM_ANCHOR, SNAPSHOT_FUNCTION, STARTED_ANCHOR,
     SOURCE_PAYLOAD_ANCHOR, STATUS_OBJECT_ANCHOR, STATUS_PARAM_ANCHOR, patch_text,
 )
-from GameOperations import GameOperationsService
+from GameOperations import GameOperationsService, SteamProvider
 from OperationJournal import OperationJournal
 from PlayniteBridge import (
     BridgeState, REQUIRED_GAME_STABLE_SAMPLES, REQUIRED_STABLE_SAMPLES,
+    STEAM_FALLBACK_START_TIMEOUT, STEAM_PRIMARY_START_TIMEOUT,
     StreamDisplayResolver, WindowProbe, WindowsPipeClient,
+    append_operation_audit,
 )
 
 
@@ -25,6 +28,25 @@ GAME_ID = "840317c9-b9a4-4f72-be8e-807414e36a9b"
 
 
 class WindowProbeTest(unittest.TestCase):
+    def test_operation_audit_appends_json_lines(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "operation-audit.jsonl"
+            append_operation_audit(path, "steam_direct_dispatched", {
+                "game_id": GAME_ID, "requested_at": 12.5,
+            })
+            append_operation_audit(path, "steam_activity_observed", {
+                "game_id": GAME_ID, "requested_at": 12.5,
+            })
+
+            records = [json.loads(line) for line in path.read_text(
+                encoding="utf-8").splitlines()]
+
+        self.assertEqual([
+            "steam_direct_dispatched", "steam_activity_observed",
+        ], [record["event"] for record in records])
+        self.assertTrue(all(record["game_id"] == GAME_ID for record in records))
+        self.assertTrue(all("timestamp" in record for record in records))
+
     def test_existing_steam_window_embedded_prompt_is_recognized(self):
         service = mock.Mock()
         probe = WindowProbe(service)
@@ -283,7 +305,15 @@ class WindowProbeTest(unittest.TestCase):
 
 class BridgeStateTest(unittest.TestCase):
     def setUp(self):
-        self.state = BridgeState()
+        self.now = time.time()
+        self.audit = []
+        service = GameOperationsService(
+            OperationJournal(None),
+            steam=SteamProvider(root_resolver=lambda: None,
+                                command_runner=mock.Mock()))
+        self.state = BridgeState(
+            game_operations=service, clock=lambda: self.now,
+            operation_audit=lambda event, payload: self.audit.append((event, payload)))
         self.commands = []
         self.closed_processes = []
         self.fullscreen_calls = []
@@ -302,6 +332,20 @@ class BridgeStateTest(unittest.TestCase):
             lambda hwnd: self.installation_focus_calls.append(hwnd) or {
                 "focused": True, "hwnd": hwnd,
             })
+
+    def _start_direct_steam(self, installed=False, operation="install"):
+        self.state.handle_message({"type": "games", "payload": [{
+            "id": GAME_ID, "name": "FEZ", "installed": installed,
+            "source": "Steam", "providerGameId": "224760",
+        }]})
+        with mock.patch.object(
+                self.state.game_operations.steam, "_direct_dispatch",
+                return_value={
+                    "accepted": True, "command": operation,
+                    "provider": "steam", "dispatch": "direct",
+                }):
+            return self.state.install_game(GAME_ID) if operation == "install" \
+                else self.state.uninstall_game(GAME_ID)
 
     def test_supplied_game_operations_service_owns_the_single_journal(self):
         service = GameOperationsService(OperationJournal(None))
@@ -437,6 +481,91 @@ class BridgeStateTest(unittest.TestCase):
             self.assertTrue(current["installing"])
             self.assertEqual("preparing", current["operationState"])
 
+    def test_restored_steam_download_resumes_from_manifest_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            steamapps = root / "steamapps"
+            steamapps.mkdir()
+            (steamapps / "appmanifest_224760.acf").write_text('''"AppState"
+{
+    "StateFlags" "1026"
+    "installdir" "FEZ"
+    "BytesDownloaded" "50"
+    "BytesToDownload" "100"
+}''', encoding="utf-8")
+            operation_path = root / "operations.sqlite3"
+            journal = OperationJournal(operation_path)
+            journal.begin(GAME_ID, "install", "steam", "FEZ")
+            journal.update(
+                GAME_ID, "attention_required", detail="launcher_prompt",
+                window_handle=987, window_title="Install", launcher="steam.exe")
+            runner = mock.Mock()
+            service = GameOperationsService(
+                OperationJournal(operation_path),
+                steam=SteamProvider(
+                    roots=[root], root_resolver=lambda: root,
+                    command_runner=runner))
+            restored = BridgeState(
+                game_operations=service, clock=lambda: self.now)
+            commands = []
+            restored.set_transport(True, commands.append)
+            restored.handle_message({"type": "games", "payload": [{
+                "id": GAME_ID, "name": "FEZ", "installed": False,
+                "source": "Steam", "providerGameId": "224760",
+            }]})
+            session = restored.installations[GAME_ID]
+            token = session["token"]
+
+            restored.apply_installation_probe(
+                GAME_ID, service.sample(session["baseline"]), token)
+
+            operation = restored.operation_journal.get(GAME_ID)
+            self.assertEqual("downloading", operation["state"])
+            self.assertEqual(50, operation["progress"])
+            self.assertEqual(0, operation["window_handle"])
+            self.assertNotEqual("confirmation_window_expired", operation["detail"])
+            self.assertFalse(restored.library[GAME_ID]["installRequiresAttention"])
+            runner.assert_not_called()
+            self.assertEqual([], commands)
+
+    def test_restored_inactive_steam_reissues_direct_command_once(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "steam.exe"
+            executable.touch()
+            (root / "steamapps").mkdir()
+            operation_path = root / "operations.sqlite3"
+            journal = OperationJournal(operation_path)
+            journal.begin(GAME_ID, "install", "steam", "FEZ")
+            runner = mock.Mock()
+            service = GameOperationsService(
+                OperationJournal(operation_path),
+                steam=SteamProvider(
+                    roots=[root], root_resolver=lambda: root,
+                    command_runner=runner))
+            restored = BridgeState(
+                game_operations=service, clock=lambda: self.now)
+            commands = []
+            restored.set_transport(True, commands.append)
+            restored.handle_message({"type": "games", "payload": [{
+                "id": GAME_ID, "name": "FEZ", "installed": False,
+                "source": "Steam", "providerGameId": "224760",
+            }]})
+            session = restored.installations[GAME_ID]
+            token = session["token"]
+
+            restored.apply_installation_probe(
+                GAME_ID, service.sample(session["baseline"]), token)
+            current = restored.installations[GAME_ID]
+            restored.apply_installation_probe(
+                GAME_ID, service.sample(current["baseline"]), token)
+
+            runner.assert_called_once()
+            self.assertEqual([
+                str(executable.resolve()), "-silent", "+app_install", "224760",
+            ], runner.call_args.args[0])
+            self.assertEqual([], commands)
+
     def test_confirmation_window_is_not_restored_after_bridge_restart(self):
         with tempfile.TemporaryDirectory() as temporary:
             operation_path = Path(temporary) / "operations.sqlite3"
@@ -564,6 +693,165 @@ class BridgeStateTest(unittest.TestCase):
         self.assertFalse(self.state.library_page(
             "0", 10)["games"][0]["installRequiresAttention"])
         self.assertEqual("game-installation-auto-confirmed", self.state.events[-1]["event"])
+        self.assertIn("steam_automation_succeeded",
+                      [event for event, _payload in self.audit])
+        fallback = [payload for event, payload in self.audit
+                    if event == "steam_playnite_fallback_dispatched"]
+        self.assertEqual("direct_unavailable", fallback[0]["trigger"])
+
+    def test_steam_activity_prevents_primary_timeout_fallback(self):
+        self._start_direct_steam()
+        token = self.state.installations[GAME_ID]["token"]
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "started": True, "phase": "active_install",
+            "requires_attention": False, "progress": 10,
+        }, token)
+        self.now += STEAM_PRIMARY_START_TIMEOUT + 1
+
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "started": False, "phase": "not_started",
+            "requires_attention": False,
+        }, token)
+
+        self.assertEqual("downloading", self.state.operation_journal.get(GAME_ID)["state"])
+        self.assertFalse(any(command.get("command") == "install"
+                             for command in self.commands))
+
+    def test_steam_audit_proves_direct_activity_and_authoritative_completion(self):
+        self._start_direct_steam()
+        token = self.state.installations[GAME_ID]["token"]
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "started": True, "phase": "active_install",
+            "requires_attention": False, "progress": 15,
+            "manifest_present": True, "scan_complete": True,
+        }, token)
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "installed": True,
+            "phase": "completed_install", "progress": 100,
+            "install_directory": r"E:\Games\FEZ",
+        }, token)
+
+        self.assertEqual([
+            "steam_direct_dispatched",
+            "steam_activity_observed",
+            "steam_authoritative_completion",
+        ], [event for event, _payload in self.audit])
+        self.assertEqual("direct", self.audit[1][1]["dispatch_path"])
+        self.assertEqual("installed", self.audit[2][1]["outcome"])
+        self.assertTrue(all(payload["requested_at"] == token[2]
+                            for _event, payload in self.audit))
+
+    def test_primary_timeout_dispatches_fresh_playnite_fallback_once(self):
+        baselines = mock.Mock(side_effect=[
+            {"capture": "primary"}, {"capture": "fallback"},
+        ])
+        self.state.installation_baseline_action = baselines
+        self._start_direct_steam()
+        token = self.state.installations[GAME_ID]["token"]
+        no_evidence = {
+            "provider": "steam", "started": False, "phase": "not_started",
+            "requires_attention": False,
+        }
+        self.now += STEAM_PRIMARY_START_TIMEOUT + 1
+
+        self.state.apply_installation_probe(GAME_ID, no_evidence, token)
+        self.state.apply_installation_probe(GAME_ID, no_evidence, token)
+
+        fallbacks = [command for command in self.commands
+                     if command.get("command") == "install"]
+        self.assertEqual(1, len(fallbacks))
+        self.assertEqual("fallback",
+                         self.state.installations[GAME_ID]["baseline"]["capture"])
+        self.assertEqual(2, baselines.call_count)
+        fallback_audits = [payload for event, payload in self.audit
+                           if event == "steam_playnite_fallback_dispatched"]
+        self.assertEqual(1, len(fallback_audits))
+        self.assertEqual("primary_no_activity_timeout",
+                         fallback_audits[0]["trigger"])
+
+        self.now += STEAM_FALLBACK_START_TIMEOUT + 1
+        self.state.apply_installation_probe(GAME_ID, no_evidence, token)
+        current = self.state.library_page("0", 10)["games"][0]
+        self.assertTrue(current["installRequiresAttention"])
+        self.assertEqual("steam_fallback_not_started",
+                         current["installAttentionReason"])
+        self.assertEqual("steam.exe", current["installLauncher"])
+
+    def test_failed_steam_automation_exposes_manual_fallback(self):
+        self.state.game_operations.confirm_operation = mock.Mock(return_value={
+            "clicked": False, "reason": "automation_failed",
+        })
+        self.state.handle_message({"type": "games", "payload": [{
+            "id": GAME_ID, "name": "FEZ", "installed": False,
+            "source": "Steam", "providerGameId": "224760",
+        }]})
+        self.state.install_game(GAME_ID)
+        sample = {
+            "requires_attention": True, "reason": "launcher_prompt",
+            "hwnd": 77, "process_id": 123, "title": "Install",
+            "image": "steam.exe",
+        }
+        for _ in range(3):
+            self.state.apply_installation_probe(GAME_ID, sample)
+        for _ in range(100):
+            if self.state.installations[GAME_ID].get("automation_failure"):
+                break
+            time.sleep(.005)
+        for _ in range(3):
+            self.state.apply_installation_probe(GAME_ID, sample)
+
+        operation = self.state.operation_journal.get(GAME_ID)
+        self.assertEqual("attention_required", operation["state"])
+        self.assertIn("automation=automation_failed", operation["detail"])
+        self.assertEqual("steam.exe", operation["launcher"])
+        self.assertIn("steam_automation_failed",
+                      [event for event, _payload in self.audit])
+        self.assertIn("steam_attention_required",
+                      [event for event, _payload in self.audit])
+
+    def test_stale_steam_auto_confirmation_result_is_ignored(self):
+        release = threading.Event()
+        started = threading.Event()
+
+        def confirm(_game, _hwnd, _operation, _name, _visual):
+            started.set()
+            release.wait(1)
+            return {"clicked": True}
+
+        self.state.game_operations.confirm_operation = confirm
+        self.state.handle_message({"type": "games", "payload": [{
+            "id": GAME_ID, "name": "FEZ", "installed": False,
+            "source": "Steam", "providerGameId": "224760",
+        }]})
+        self.state.install_game(GAME_ID)
+        sample = {
+            "requires_attention": True, "reason": "launcher_prompt",
+            "hwnd": 77, "process_id": 123, "title": "Install",
+            "image": "steam.exe",
+        }
+        for _ in range(3):
+            self.state.apply_installation_probe(GAME_ID, sample)
+        self.assertTrue(started.wait(1))
+        old_token = self.state.installations[GAME_ID]["token"]
+        self.state.operation_journal.update(GAME_ID, "completed")
+        time.sleep(.002)
+        newer = self.state.operation_journal.begin(
+            GAME_ID, "install", "steam", "FEZ")
+        new_token = self.state.operation_token(newer)
+        self.assertNotEqual(old_token, new_token)
+        self.state.installations[GAME_ID]["token"] = new_token
+        release.set()
+        for _ in range(100):
+            if not any(thread.name == "LauncherOperationConfirmation"
+                       for thread in threading.enumerate()):
+                break
+            time.sleep(.005)
+
+        self.assertEqual("preparing", self.state.operation_journal.get(GAME_ID)["state"])
+        self.assertFalse(any(event["event"] == "game-installation-auto-confirmed"
+                             for event in self.state.events))
+        self.assertNotIn("steam_automation_succeeded",
+                         [event for event, _payload in self.audit])
 
     def test_steam_attention_is_hidden_while_automation_is_running(self):
         release = threading.Event()
@@ -612,6 +900,43 @@ class BridgeStateTest(unittest.TestCase):
             time.sleep(.01)
         self.assertEqual([(88, "uninstall", "FTL")], confirmations)
         self.assertEqual("game-installation-auto-confirmed", self.state.events[-1]["event"])
+
+    def test_steam_uninstall_requires_stable_healthy_manifest_absence(self):
+        self._start_direct_steam(installed=True, operation="uninstall")
+        token = self.state.installations[GAME_ID]["token"]
+        absent = {
+            "uninstalled": True, "provider": "steam",
+            "scan_available": True, "scan_complete": True,
+        }
+        for _ in range(REQUIRED_STABLE_SAMPLES - 1):
+            self.state.apply_installation_probe(GAME_ID, absent, token)
+        self.assertTrue(self.state.library[GAME_ID]["installed"])
+
+        self.state.apply_installation_probe(GAME_ID, absent, token)
+
+        self.assertFalse(self.state.library[GAME_ID]["installed"])
+        self.assertEqual("completed", self.state.operation_journal.get(GAME_ID)["state"])
+        completions = [payload for event, payload in self.audit
+                       if event == "steam_authoritative_completion"]
+        self.assertEqual(1, len(completions))
+        self.assertEqual("uninstalled", completions[0]["outcome"])
+        self.assertEqual(REQUIRED_STABLE_SAMPLES,
+                         completions[0]["stable_absence_samples"])
+
+    def test_incomplete_steam_scan_does_not_complete_uninstall(self):
+        self._start_direct_steam(installed=True, operation="uninstall")
+        token = self.state.installations[GAME_ID]["token"]
+
+        self.state.apply_installation_probe(GAME_ID, {
+            "provider": "steam", "started": False, "phase": "scan_incomplete",
+            "scan_available": True, "scan_complete": False,
+            "requires_attention": False,
+        }, token)
+
+        self.assertTrue(self.state.library[GAME_ID]["installed"])
+        self.assertEqual("uninstalling", self.state.operation_journal.get(GAME_ID)["state"])
+        self.assertNotIn("steam_authoritative_completion",
+                         [event for event, _payload in self.audit])
 
     def test_epic_dialog_is_never_auto_confirmed(self):
         confirmations = []

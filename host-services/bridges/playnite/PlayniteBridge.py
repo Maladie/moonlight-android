@@ -36,6 +36,9 @@ MAX_BODY_BYTES = 16 * 1024
 MAX_ARTWORK_BYTES = 8 * 1024 * 1024
 REQUIRED_STABLE_SAMPLES = 3
 REQUIRED_GAME_STABLE_SAMPLES = 4
+STEAM_PRIMARY_START_TIMEOUT = 30.0
+STEAM_FALLBACK_START_TIMEOUT = 20.0
+OPERATION_AUDIT_LOCK = threading.Lock()
 DISPLAY_NAME_PATTERN = re.compile(r"^(?:\\\\\.\\)?DISPLAY[0-9]+$", re.IGNORECASE)
 PLAYNITE_UI_IMAGES = {
     "playnite.fullscreenapp.exe",
@@ -383,10 +386,12 @@ class WindowProbe:
             return {"requires_attention": True, "reason": "secure_desktop",
                     "hwnd": 0, "title": "", "image": ""}
         provider_sample = self.game_operations.sample(baseline)
-        if provider_sample:
+        if provider_sample and any(provider_sample.get(key) for key in (
+                "installed", "uninstalled", "started")):
             return provider_sample
         if not self.user32:
-            return {"requires_attention": False, "reason": "window_probe_unavailable"}
+            return provider_sample or {
+                "requires_attention": False, "reason": "window_probe_unavailable"}
         expected_images = self.game_operations.expected_launcher_images(game)
         if expected_images:
             provider_windows = [window for window in self.interactive_windows()
@@ -409,7 +414,8 @@ class WindowProbe:
             if score >= 5:
                 candidates.append((score, candidate))
         if not candidates:
-            return {"requires_attention": False, "reason": "no_prompt"}
+            return provider_sample or {
+                "requires_attention": False, "reason": "no_prompt"}
         _score, selected = max(candidates, key=lambda value: (
             value[0], bool(value[1].get("foreground")),
             int(value[1].get("hwnd") or 0)))
@@ -638,12 +644,27 @@ def compact_json(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
 
 
+def append_operation_audit(path: Path, event: str, payload: dict[str, Any]) -> None:
+    record = {"timestamp": time.time(), "event": event, **payload}
+    encoded = json.dumps(
+        record, ensure_ascii=False, separators=(",", ":")) + "\n"
+    # ponytail: operation volume is tiny; add rotation only if this audit grows
+    # enough to matter in real installations.
+    with OPERATION_AUDIT_LOCK:
+        with path.open("a", encoding="utf-8") as output:
+            output.write(encoded)
+
+
 class BridgeState:
     def __init__(self, expected_display: str = "", cache_path: Path | None = None,
                  version_path: Path | None = None,
                  operations_path: Path | None = None,
-                 game_operations: GameOperationsService | None = None) -> None:
+                 game_operations: GameOperationsService | None = None,
+                 clock: Callable[[], float] | None = None,
+                 operation_audit: Callable[[str, dict[str, Any]], None] | None = None) -> None:
         self.lock = threading.RLock()
+        self.clock = clock or time.time
+        self.operation_audit = operation_audit
         self.events_changed = threading.Condition(self.lock)
         self.connected = False
         self.last_error = "Playnite connector is not connected."
@@ -685,25 +706,37 @@ class BridgeState:
         for operation in self.operation_journal.active():
             provider = self.game_operations.provider_for_label(
                 str(operation.get("provider") or ""))
+            is_steam = provider is self.game_operations.steam
             manual = provider.manual_attention({}, str(operation.get("kind") or "install"))
             if manual:
                 self.operation_journal.update(
                     str(operation["game_id"]), "attention_required",
                     detail=str(manual["reason"]), launcher=str(manual["launcher"]))
                 operation = self.operation_journal.get(str(operation["game_id"])) or operation
+            if is_steam:
+                restored_state = str(operation["state"])
+                if restored_state == "attention_required":
+                    restored_state = "uninstalling" \
+                        if str(operation["kind"]) == "uninstall" else "preparing"
+                self.operation_journal.update(
+                    str(operation["game_id"]), restored_state,
+                    detail="", progress=operation.get("progress"))
+                operation = self.operation_journal.get(
+                    str(operation["game_id"])) or operation
             # HWND values are process-local and cannot be trusted after a Bridge
-            # restart. Replaying attention_required creates an unclickable
-            # "Confirm" card even though its dialog no longer exists.
-            if operation["state"] == "attention_required" \
+            # restart. Preserve the existing non-Steam expiry behavior.
+            elif operation["state"] == "attention_required" \
                     and str(operation.get("detail") or "") != "epic_manual":
                 self.operation_journal.update(
                     str(operation["game_id"]), "failed",
                     detail="confirmation_window_expired")
                 continue
+            token = self.operation_token(operation)
             self.installations[str(operation["game_id"])] = {
-                "baseline": {"operation": str(operation["kind"])},
+                "baseline": {"operation": str(operation["kind"]), "restored": True},
                 "requested_at": float(operation["requested_at"]),
                 "operation": str(operation["kind"]),
+                "token": token,
                 "requires_attention": operation["state"] == "attention_required",
                 "reason": str(operation["detail"] or ""),
                 "hwnd": int(operation["window_handle"] or 0),
@@ -712,11 +745,64 @@ class BridgeState:
                 "stable_samples": 0,
                 "candidate_signature": None,
                 "restored": True,
+                "recovery_pending": is_steam,
+                "recovery_started_at": self.clock(),
+                "primary_attempted": False,
+                "primary_started": False,
+                "fallback_dispatched": False,
             }
         self.cache_path = cache_path
         self.started_at = int(time.time())
         self.version_info = self._load_version_info(version_path)
         self._load_library_cache()
+
+    @staticmethod
+    def operation_token(operation: dict[str, Any]) -> tuple[str, str, float]:
+        return (
+            str(operation.get("game_id") or ""),
+            str(operation.get("kind") or ""),
+            float(operation.get("requested_at") or 0),
+        )
+
+    def _operation_active_locked(self, game_id: str,
+                                 token: tuple[str, str, float]) -> bool:
+        session = self.installations.get(game_id)
+        operation = self.operation_journal.get(game_id)
+        return bool(session and operation and session.get("token") == token
+                    and self.operation_token(operation) == token
+                    and operation.get("state") in ACTIVE_STATES)
+
+    def _operation_result_current_locked(
+            self, game_id: str,
+            token: tuple[str, str, float] | None) -> bool:
+        session = self.installations.get(game_id)
+        if not session or session.get("token") != token:
+            return False
+        return token is None or self._operation_active_locked(game_id, token)
+
+    def _audit_steam(self, event: str, game_id: str,
+                     token: tuple[str, str, float], game: dict[str, Any],
+                     **details: Any) -> None:
+        audit = self.operation_audit
+        if audit is None:
+            return
+        payload = {
+            "game_id": game_id,
+            "kind": token[1],
+            "requested_at": token[2],
+            "app_id": str(game.get("providerGameId") or ""),
+            **details,
+        }
+        try:
+            audit(event, payload)
+        except Exception as error:
+            print(json.dumps({
+                "event": "steam_operation_audit_failed",
+                "game_id": game_id,
+                "kind": token[1],
+                "requested_at": token[2],
+                "error": type(error).__name__,
+            }, separators=(",", ":")), flush=True)
 
     @staticmethod
     def _load_version_info(version_path: Path | None) -> dict[str, Any]:
@@ -803,6 +889,7 @@ class BridgeState:
                         continue
                     baseline = installation_baseline()
                     baseline["operation"] = str(session.get("operation") or "install")
+                    baseline["restored"] = True
                     game = self.library.get(game_id)
                     if game is not None:
                         baseline["game"] = dict(game)
@@ -1004,6 +1091,7 @@ class BridgeState:
                         session = self.installations.setdefault(game_id, {
                             "baseline": {}, "requested_at": operation["requested_at"],
                             "operation": operation["kind"], "requires_attention": False,
+                            "token": self.operation_token(operation),
                             "stable_samples": 0, "candidate_signature": None,
                         })
                         session["baseline"]["game"] = normalized
@@ -1086,21 +1174,31 @@ class BridgeState:
                 elif name in {"gameInstalled", "gameInstallationCancelled"}:
                     game = self.library.get(game_id)
                     title = str((game or {}).get("name") or status.get("title") or "")
-                    self.installations.pop(game_id, None)
-                    self.operation_journal.update(
-                        game_id, "completed" if name == "gameInstalled" else "cancelled")
-                    if game is not None:
-                        game["installing"] = False
-                        if name == "gameInstalled":
-                            game["installed"] = True
-                        self._apply_installation_fields_locked(game_id, game)
-                        self._save_library_cache_locked()
-                    event_name = "game-installed" if name == "gameInstalled" \
-                        else "game-installation-cancelled"
-                    self._publish_locked(event_name, {
-                        "id": game_id,
-                        "name": title,
-                    })
+                    operation = self.operation_journal.get(game_id) or {}
+                    provider = self.game_operations.provider_for_label(
+                        str(operation.get("provider") or ""))
+                    if game_id in self.installations \
+                            and provider is self.game_operations.steam:
+                        # Steam manifests remain authoritative; connector events
+                        # carry no operation-generation identity and cannot finish
+                        # or cancel a newer Steam request for the same game.
+                        self._publish_locked("playnite-status", {"name": name, **status})
+                    else:
+                        self.installations.pop(game_id, None)
+                        self.operation_journal.update(
+                            game_id, "completed" if name == "gameInstalled" else "cancelled")
+                        if game is not None:
+                            game["installing"] = False
+                            if name == "gameInstalled":
+                                game["installed"] = True
+                            self._apply_installation_fields_locked(game_id, game)
+                            self._save_library_cache_locked()
+                        event_name = "game-installed" if name == "gameInstalled" \
+                            else "game-installation-cancelled"
+                        self._publish_locked(event_name, {
+                            "id": game_id,
+                            "name": title,
+                        })
                 else:
                     self._publish_locked(name or "playnite-status", status)
 
@@ -1112,6 +1210,137 @@ class BridgeState:
             message = {"type": "command", "command": command, **values}
             sender(message)
             return {"accepted": True, "command": command}
+
+    def _operation_baseline_locked(self, game: dict[str, Any], operation: str,
+                                   restored: bool = False) -> dict[str, Any]:
+        baseline = self.installation_baseline_action() \
+            if self.installation_baseline_action else {}
+        baseline.update({
+            "game": dict(game), "operation": operation, "restored": restored,
+        })
+        provider_baseline = self.game_operations.operation_baseline(game)
+        if provider_baseline is not None:
+            baseline["steam_baseline"] = provider_baseline
+        return baseline
+
+    def _send_steam_playnite(self, game_id: str,
+                             token: tuple[str, str, float],
+                             game: dict[str, Any], operation: str,
+                             command: str, values: dict[str, Any],
+                             trigger: str) -> dict[str, Any]:
+        if command != operation or str(values.get("id") or "") != game_id:
+            raise ValueError("Invalid Steam Playnite fallback command.")
+        with self.lock:
+            if not self._operation_active_locked(game_id, token):
+                return {"accepted": False, "command": command, "stale": True}
+            session = self.installations[game_id]
+            if session.get("fallback_dispatched"):
+                return {"accepted": True, "command": command, "already_dispatched": True}
+            old_baseline = dict(session.get("baseline") or {})
+            baseline = self.installation_baseline_action() \
+                if self.installation_baseline_action else {}
+            baseline.update({
+                "game": dict(game), "operation": operation,
+                "restored": bool(old_baseline.get("restored")),
+            })
+            if "steam_baseline" in old_baseline:
+                baseline["steam_baseline"] = old_baseline["steam_baseline"]
+            session.update({
+                "baseline": baseline,
+                "fallback_dispatched": True,
+                "fallback_dispatched_at": self.clock(),
+                "recovery_pending": False,
+            })
+        try:
+            result = self.send_command(command, **values)
+            self._audit_steam(
+                "steam_playnite_fallback_dispatched", game_id, token, game,
+                trigger=trigger)
+            return result
+        except Exception as error:
+            self._audit_steam(
+                "steam_playnite_fallback_failed", game_id, token, game,
+                trigger=trigger, error=type(error).__name__)
+            self._mark_manual_confirmation(game_id, {
+                "reason": "steam_playnite_dispatch_failed", "launcher": "steam.exe",
+            }, token)
+            return {"accepted": True, "command": command, "playnite_unavailable": True}
+
+    def _dispatch_operation(self, game_id: str,
+                            token: tuple[str, str, float],
+                            game: dict[str, Any], operation: str) -> dict[str, Any]:
+        is_steam = self.game_operations.provider_for(game) is self.game_operations.steam
+        sender: Callable[..., dict[str, Any]] = self.send_command
+        if is_steam:
+            with self.lock:
+                if not self._operation_active_locked(game_id, token):
+                    return {"accepted": False, "command": operation, "stale": True}
+                session = self.installations[game_id]
+                if session.get("primary_attempted"):
+                    return {"accepted": True, "command": operation,
+                            "already_dispatched": True}
+                session["baseline"] = self._operation_baseline_locked(
+                    game, operation, False)
+                session.update({
+                    "primary_attempted": True,
+                    "primary_dispatched_at": self.clock(),
+                    "recovery_pending": False,
+                })
+                self.operation_journal.update(
+                    game_id, "uninstalling" if operation == "uninstall" else "preparing")
+                current = self.library.get(game_id)
+                if current is not None:
+                    self._apply_installation_fields_locked(game_id, current)
+
+            def steam_sender(command: str, **values: Any) -> dict[str, Any]:
+                return self._send_steam_playnite(
+                    game_id, token, game, operation, command, values,
+                    "direct_unavailable")
+
+            sender = steam_sender
+        dispatch = self.game_operations.dispatch_install \
+            if operation == "install" else self.game_operations.dispatch_uninstall
+        result = dispatch(dict(game), sender)
+        if is_steam:
+            direct_dispatched = False
+            with self.lock:
+                if self._operation_active_locked(game_id, token):
+                    session = self.installations[game_id]
+                    session["primary_dispatched"] = result.get("dispatch") == "direct"
+                    direct_dispatched = bool(session["primary_dispatched"])
+                    journal = self.operation_journal.get(game_id) or {}
+                    if operation == "uninstall" \
+                            and journal.get("state") != "attention_required":
+                        self.operation_journal.update(game_id, "uninstalling")
+                        current = self.library.get(game_id)
+                        if current is not None:
+                            self._apply_installation_fields_locked(game_id, current)
+            if direct_dispatched:
+                self._audit_steam(
+                    "steam_direct_dispatched", game_id, token, game)
+        return result
+
+    def _dispatch_steam_fallback(self, game_id: str,
+                                 token: tuple[str, str, float],
+                                 game: dict[str, Any], operation: str,
+                                 trigger: str) -> dict[str, Any]:
+        with self.lock:
+            if not self._operation_active_locked(game_id, token):
+                return {"accepted": False, "command": operation, "stale": True}
+            baseline = dict(self.installations[game_id].get("baseline") or {})
+        current = self.game_operations.sample(baseline)
+        if current and any(current.get(key) for key in (
+                "installed", "uninstalled", "started")):
+            self.apply_installation_probe(game_id, current, token)
+            return {"accepted": True, "command": operation,
+                    "activity_observed": True}
+
+        def sender(command: str, **values: Any) -> dict[str, Any]:
+            return self._send_steam_playnite(
+                game_id, token, game, operation, command, values, trigger)
+
+        return self.game_operations.dispatch_steam_fallback(
+            dict(game), operation, sender)
 
     def start_game(self, game_id: Any) -> dict[str, Any]:
         normalized = self.game_id(game_id)
@@ -1138,21 +1367,22 @@ class BridgeState:
             if bool(game.get("installing") or game.get("isInstalling")):
                 return {"accepted": True, "command": "install", "already_installing": True}
             self._require_operation_prompt_idle(normalized)
-            baseline = self.installation_baseline_action() \
-                if self.installation_baseline_action else {}
             provider = self.game_operations.provider_label(game)
             operation = self.operation_journal.begin(
                 normalized, "install", provider, str(game.get("name") or ""))
             if operation.get("state") in ACTIVE_STATES and normalized in self.installations:
                 return {"accepted": True, "command": "install", "already_installing": True,
                         "operation_state": operation["state"]}
-            baseline["game"] = dict(game)
-            baseline["operation"] = "install"
+            token = self.operation_token(operation)
             self.installations[normalized] = {
-                "baseline": baseline, "requested_at": time.time(),
+                "baseline": {"game": dict(game), "operation": "install"},
+                "requested_at": float(operation["requested_at"]),
                 "operation": "install",
+                "token": token,
                 "requires_attention": False, "stable_samples": 0,
                 "candidate_signature": None,
+                "primary_attempted": False, "primary_started": False,
+                "fallback_dispatched": False, "recovery_pending": False,
             }
             game["installing"] = True
             self.external_uninstalled_overrides.discard(normalized)
@@ -1164,15 +1394,18 @@ class BridgeState:
                 "name": title,
             })
         try:
-            result = self.game_operations.dispatch_install(dict(game), self.send_command)
+            result = self._dispatch_operation(
+                normalized, token, dict(game), "install")
             manual = self.game_operations.manual_attention(game, "install")
             if manual:
-                self._mark_manual_confirmation(normalized, manual)
+                self._mark_manual_confirmation(normalized, manual, token)
                 return {**result, "requires_attention": True,
                         "attention_reason": str(manual["reason"])}
             return result
         except Exception:
             with self.lock:
+                if not self._operation_active_locked(normalized, token):
+                    raise
                 self.operation_journal.update(normalized, "failed", detail="dispatch_failed")
                 current = self.library.get(normalized)
                 if current is not None:
@@ -1201,24 +1434,31 @@ class BridgeState:
             if operation.get("state") in ACTIVE_STATES and normalized in self.installations:
                 return {"accepted": True, "command": "uninstall", "already_uninstalling": True,
                         "operation_state": operation["state"]}
+            token = self.operation_token(operation)
             self.installations[normalized] = {
                 "baseline": {"game": dict(game), "operation": "uninstall"},
-                "requested_at": time.time(),
+                "requested_at": float(operation["requested_at"]),
                 "operation": "uninstall", "requires_attention": False,
+                "token": token,
                 "stable_samples": 0, "candidate_signature": None,
+                "primary_attempted": False, "primary_started": False,
+                "fallback_dispatched": False, "recovery_pending": False,
             }
             self._apply_installation_fields_locked(normalized, game)
             self._save_library_cache_locked()
         try:
-            result = self.game_operations.dispatch_uninstall(dict(game), self.send_command)
+            result = self._dispatch_operation(
+                normalized, token, dict(game), "uninstall")
             manual = self.game_operations.manual_attention(game, "uninstall")
             if manual:
-                self._mark_manual_confirmation(normalized, manual)
+                self._mark_manual_confirmation(normalized, manual, token)
                 return {**result, "requires_attention": True,
                         "attention_reason": str(manual["reason"])}
             return result
         except Exception:
             with self.lock:
+                if not self._operation_active_locked(normalized, token):
+                    raise
                 self.operation_journal.update(normalized, "failed", detail="dispatch_failed")
                 self.installations.pop(normalized, None)
                 self._apply_installation_fields_locked(normalized, game)
@@ -1233,11 +1473,14 @@ class BridgeState:
                     or session.get("automation_in_progress"):
                 raise RuntimeError("Another installation operation is awaiting confirmation.")
 
-    def _mark_manual_confirmation(self, game_id: str, policy: dict[str, Any]) -> None:
+    def _mark_manual_confirmation(self, game_id: str, policy: dict[str, Any],
+                                  token: tuple[str, str, float] | None = None) -> None:
         with self.lock:
             session = self.installations.get(game_id)
             game = self.library.get(game_id)
-            if session is None or game is None:
+            current_token = (session or {}).get("token")
+            if session is None or game is None or (token is not None and (
+                    current_token != token or not self._operation_active_locked(game_id, token))):
                 return
             reason = str(policy["reason"])
             launcher = str(policy["launcher"])
@@ -1248,6 +1491,11 @@ class BridgeState:
             })
             self.operation_journal.update(
                 game_id, "attention_required", detail=reason, launcher=launcher)
+            if self.game_operations.provider_for(game) is self.game_operations.steam \
+                    and isinstance(current_token, tuple):
+                self._audit_steam(
+                    "steam_attention_required", game_id, current_token, game,
+                    reason=reason, launcher=launcher)
             self._apply_installation_fields_locked(game_id, game)
             self._save_library_cache_locked()
             self._publish_locked("game-installation-attention-required", {
@@ -1255,30 +1503,45 @@ class BridgeState:
                 "reason": reason, "launcher": launcher,
             })
 
-    def installation_probes(self) -> list[tuple[str, dict[str, Any]]]:
+    def installation_probes(self) -> list[
+            tuple[str, dict[str, Any], tuple[str, str, float] | None]]:
         with self.lock:
-            return [(game_id, dict(session.get("baseline") or {}))
+            return [(game_id, dict(session.get("baseline") or {}), session.get("token"))
                     for game_id, session in self.installations.items()
-                    if time.time() - float(session.get("requested_at") or 0) >= 1.5]
+                    if (session.get("baseline") or {}).get("game")
+                    and self.clock() - float(session.get("requested_at") or 0) >= 1.5]
 
     def _auto_confirm_installation(self, game_id: str, hwnd: int, operation: str,
                                    game_name: str,
                                    signature: tuple[Any, ...],
-                                   allow_visual_fallback: bool) -> None:
+                                   allow_visual_fallback: bool,
+                                   token: tuple[str, str, float] | None) -> None:
         with self.lock:
+            if not self._operation_result_current_locked(game_id, token):
+                return
             game = dict(self.library.get(game_id) or {})
         automated = self.game_operations.confirm_operation(
             game, hwnd, operation, game_name, allow_visual_fallback)
         with self.lock:
             session = self.installations.get(game_id)
             game = self.library.get(game_id)
-            if session is None or game is None or session.get("automation_signature") != signature:
+            if session is None or game is None \
+                    or not self._operation_result_current_locked(game_id, token) \
+                    or session.get("automation_signature") != signature:
                 return
             session.update({"stable_samples": 0, "candidate_signature": None})
             session["automation_in_progress"] = False
             if automated.get("clicked"):
-                self.operation_journal.update(game_id, "preparing")
-                session["prompt_confirmed_at"] = time.time()
+                if token is not None \
+                        and self.game_operations.provider_for(game) \
+                        is self.game_operations.steam:
+                    self._audit_steam(
+                        "steam_automation_succeeded", game_id, token, game,
+                        method=str(automated.get("method") or "unknown"),
+                        window_handle=hwnd)
+                self.operation_journal.update(
+                    game_id, "uninstalling" if operation == "uninstall" else "preparing")
+                session["prompt_confirmed_at"] = self.clock()
                 self._publish_locked("game-installation-auto-confirmed", {
                     "id": game_id, "name": str(game.get("name") or ""),
                     "operation": operation,
@@ -1286,14 +1549,141 @@ class BridgeState:
             else:
                 session["automation_failure"] = str(
                     automated.get("reason") or "automation_failed")[:200]
+                if token is not None \
+                        and self.game_operations.provider_for(game) \
+                        is self.game_operations.steam:
+                    self._audit_steam(
+                        "steam_automation_failed", game_id, token, game,
+                        method=str(automated.get("method") or "unknown"),
+                        reason=session["automation_failure"], window_handle=hwnd)
 
-    def apply_installation_probe(self, game_id: str, sample: dict[str, Any]) -> None:
+    def _handle_steam_probe(self, game_id: str, sample: dict[str, Any],
+                            token: tuple[str, str, float] | None) -> bool:
+        if token is None:
+            return False
+        action = ""
+        fallback_trigger = ""
+        game_copy: dict[str, Any] = {}
+        operation = "install"
+        with self.lock:
+            if not self._operation_active_locked(game_id, token):
+                return True
+            session = self.installations[game_id]
+            game = self.library.get(game_id)
+            if game is None or self.game_operations.provider_for(game) \
+                    is not self.game_operations.steam:
+                return False
+            session.pop("uninstall_absent_samples", None)
+            operation = str(session.get("operation") or "install")
+            game_copy = dict(game)
+            if sample.get("started"):
+                first_activity = not bool(session.get("primary_started"))
+                dispatch_path = "playnite_fallback" \
+                    if session.get("fallback_dispatched") else "direct" \
+                    if session.get("primary_dispatched") else "restart_observation"
+                was_attention = bool(session.get("requires_attention"))
+                session.update({
+                    "primary_started": True, "recovery_pending": False,
+                    "requires_attention": False, "reason": "", "hwnd": 0,
+                    "window_title": "", "image": "", "stable_samples": 0,
+                })
+                phase = str(sample.get("phase") or "")
+                if operation == "uninstall":
+                    state = "uninstalling"
+                elif phase == "verifying":
+                    state = "verifying"
+                elif sample.get("progress") is not None:
+                    state = "downloading"
+                else:
+                    state = "installing"
+                progress = int(sample["progress"]) \
+                    if sample.get("progress") is not None else None
+                self.operation_journal.update(game_id, state, progress=progress)
+                if first_activity:
+                    self._audit_steam(
+                        "steam_activity_observed", game_id, token, game,
+                        dispatch_path=dispatch_path, phase=phase,
+                        progress=progress,
+                        manifest_present=bool(sample.get("manifest_present")),
+                        scan_complete=bool(sample.get("scan_complete")))
+                self._apply_installation_fields_locked(game_id, game)
+                self._save_library_cache_locked()
+                if was_attention:
+                    self._publish_locked("game-installation-resumed", {
+                        "id": game_id, "name": str(game.get("name") or ""),
+                    })
+                return True
+            if session.get("primary_started"):
+                return True
+            if session.get("requires_attention") and not session.get("hwnd") \
+                    and str(session.get("reason") or "").startswith("steam_"):
+                return True
+            if sample.get("requires_attention"):
+                if session.get("recovery_pending"):
+                    session.update({
+                        "recovery_pending": False,
+                        "primary_attempted": True,
+                        "fallback_dispatched": True,
+                        "fallback_dispatched_at": self.clock(),
+                    })
+                return False
+            now = self.clock()
+            phase = str(sample.get("phase") or "")
+            if session.get("recovery_pending"):
+                if phase in {"not_started", "scan_unavailable"}:
+                    action = "primary"
+                elif now - float(session.get("recovery_started_at") or now) >= \
+                        STEAM_PRIMARY_START_TIMEOUT:
+                    action = "fallback"
+                    fallback_trigger = "restart_observation_timeout"
+                else:
+                    return True
+            elif not session.get("fallback_dispatched") and \
+                    now - float(session.get("primary_dispatched_at") or now) >= \
+                    STEAM_PRIMARY_START_TIMEOUT:
+                action = "fallback"
+                fallback_trigger = "primary_no_activity_timeout"
+            elif session.get("fallback_dispatched") and \
+                    now - float(session.get("fallback_dispatched_at") or now) >= \
+                    STEAM_FALLBACK_START_TIMEOUT:
+                action = "attention"
+            else:
+                return True
+        if action == "primary":
+            try:
+                self._dispatch_operation(game_id, token, game_copy, operation)
+            except Exception:
+                self._mark_manual_confirmation(game_id, {
+                    "reason": "steam_direct_dispatch_failed", "launcher": "steam.exe",
+                }, token)
+        elif action == "fallback":
+            self._dispatch_steam_fallback(
+                game_id, token, game_copy, operation, fallback_trigger)
+        elif action == "attention":
+            self._mark_manual_confirmation(game_id, {
+                "reason": "steam_fallback_not_started", "launcher": "steam.exe",
+            }, token)
+        return True
+
+    def apply_installation_probe(self, game_id: str, sample: dict[str, Any],
+                                 token: tuple[str, str, float] | None = None) -> None:
+        with self.lock:
+            session = self.installations.get(game_id)
+            if session is None:
+                return
+            current_token = session.get("token")
+            if token is None:
+                token = current_token
+            if token != current_token \
+                    or not self._operation_result_current_locked(game_id, token):
+                return
         if sample.get("manifest_absent"):
             with self.lock:
                 session = self.installations.get(game_id)
                 game = self.library.get(game_id)
                 operation = self.operation_journal.get(game_id) or {}
                 if session is not None and game is not None \
+                        and self._operation_result_current_locked(game_id, token) \
                         and operation.get("kind") == "install" \
                         and operation.get("state") == "installing":
                     absent = int(session.get("manifest_absent_samples") or 0) + 1
@@ -1317,14 +1707,24 @@ class BridgeState:
             with self.lock:
                 session = self.installations.get(game_id)
                 game = self.library.get(game_id)
-                if session is None or game is None or session.get("operation") != "uninstall":
+                if session is None or game is None \
+                        or not self._operation_result_current_locked(game_id, token) \
+                        or session.get("operation") != "uninstall":
                     return
-                if self.game_operations.provider_for_label(
-                        str(sample.get("provider") or "")) is self.game_operations.epic:
+                sampled_provider = self.game_operations.provider_for_label(
+                    str(sample.get("provider") or ""))
+                if sampled_provider in {
+                        self.game_operations.epic, self.game_operations.steam}:
                     absent_samples = int(session.get("uninstall_absent_samples") or 0) + 1
                     session["uninstall_absent_samples"] = absent_samples
                     if absent_samples < REQUIRED_STABLE_SAMPLES:
                         return
+                if sampled_provider is self.game_operations.steam and token is not None:
+                    self._audit_steam(
+                        "steam_authoritative_completion", game_id, token, game,
+                        outcome="uninstalled",
+                        stable_absence_samples=int(
+                            session.get("uninstall_absent_samples") or 1))
                 self.installations.pop(game_id, None)
                 game.update({"installed": False, "installing": False, "uninstalling": False,
                              "installDir": ""})
@@ -1339,17 +1739,30 @@ class BridgeState:
                 })
                 sender = self.command_sender
             if sender is not None:
-                sender({"type": "command", "command": "mark-uninstalled",
-                        "id": game_id})
+                with self.lock:
+                    current = self.operation_journal.get(game_id)
+                    correlated = token is None or (
+                        current is not None and self.operation_token(current) == token)
+                    if correlated:
+                        sender({"type": "command", "command": "mark-uninstalled",
+                                "id": game_id})
             return
         if sample.get("installed"):
             install_directory = str(sample.get("install_directory") or "")
             sender = None
             with self.lock:
-                session = self.installations.pop(game_id, None)
+                session = self.installations.get(game_id)
                 game = self.library.get(game_id)
-                if session is None or game is None:
+                if session is None or game is None \
+                        or not self._operation_result_current_locked(game_id, token):
                     return
+                if self.game_operations.provider_for(game) \
+                        is self.game_operations.steam and token is not None:
+                    self._audit_steam(
+                        "steam_authoritative_completion", game_id, token, game,
+                        outcome="installed", phase=str(sample.get("phase") or ""),
+                        install_directory=install_directory)
+                self.installations.pop(game_id, None)
                 game["installed"] = True
                 game["installing"] = False
                 self.external_uninstalled_overrides.discard(game_id)
@@ -1365,13 +1778,21 @@ class BridgeState:
                 })
                 sender = self.command_sender
             if sender is not None:
-                sender({"type": "command", "command": "mark-installed",
-                        "id": game_id, "install_directory": install_directory})
+                with self.lock:
+                    current = self.operation_journal.get(game_id)
+                    correlated = token is None or (
+                        current is not None and self.operation_token(current) == token)
+                    if correlated:
+                        sender({"type": "command", "command": "mark-installed",
+                                "id": game_id, "install_directory": install_directory})
+            return
+        if self._handle_steam_probe(game_id, sample, token):
             return
         with self.lock:
             session = self.installations.get(game_id)
             game = self.library.get(game_id)
-            if session is None or game is None:
+            if session is None or game is None \
+                    or not self._operation_result_current_locked(game_id, token):
                 return
             session.pop("uninstall_absent_samples", None)
             operation = str(session.get("operation") or "install")
@@ -1437,7 +1858,7 @@ class BridgeState:
                     target=self._auto_confirm_installation,
                     args=(game_id, sampled_hwnd, operation,
                           str(game.get("name") or ""), signature,
-                          bool(sample.get("visual_confirmation_safe"))),
+                          bool(sample.get("visual_confirmation_safe")), token),
                     name="LauncherOperationConfirmation", daemon=True).start()
                 return
             first_attention = not bool(session.get("requires_attention"))
@@ -1459,6 +1880,11 @@ class BridgeState:
             self._apply_installation_fields_locked(game_id, game)
             self._save_library_cache_locked()
             if first_attention:
+                if self.game_operations.provider_for(game) \
+                        is self.game_operations.steam and token is not None:
+                    self._audit_steam(
+                        "steam_attention_required", game_id, token, game,
+                        reason=session["reason"], launcher=session["image"])
                 self._publish_locked("game-installation-attention-required", {
                     "id": game_id, "name": str(game.get("name") or ""),
                     "reason": session["reason"],
@@ -1490,6 +1916,7 @@ class BridgeState:
             probe = self.installation_probe_action
             baseline = dict((session or {}).get("baseline") or {})
             game = self.library.get(normalized)
+            token = (session or {}).get("token")
         if session is None:
             if game is not None and bool(game.get("installed") or game.get("isInstalled")):
                 return {
@@ -1504,12 +1931,18 @@ class BridgeState:
         # Require the same stable evidence as the background observer. This avoids
         # treating a launcher window that merely flickered as a confirmed action.
         for sample_number in range(3):
-            self.apply_installation_probe(normalized, probe(baseline))
+            self.apply_installation_probe(normalized, probe(baseline), token)
             if sample_number < 2:
                 time.sleep(0.15)
 
         with self.lock:
             current = self.installations.get(normalized) or {}
+            if current.get("token") != token:
+                return {
+                    "accepted": True, "command": "verify-installation",
+                    "status": "stale", "requires_attention": False,
+                    "installing": bool((self.library.get(normalized) or {}).get("installing")),
+                }
             attention = bool(current.get("requires_attention"))
             game = self.library.get(normalized) or {}
             if attention and current.get("reason") != "secure_desktop":
@@ -1727,11 +2160,12 @@ class WindowReadinessWorker:
                 self.state.apply_window_sample(
                     self.probe.sample(
                         target_kind, process_id, expected_display, install_directory))
-            for game_id, baseline in self.state.installation_probes():
+            for game_id, baseline, token in self.state.installation_probes():
                 probe = self.state.installation_probe_action
                 if probe:
                     try:
-                        self.state.apply_installation_probe(game_id, probe(baseline))
+                        self.state.apply_installation_probe(
+                            game_id, probe(baseline), token)
                     except Exception:
                         # Window inspection is advisory. A transient Win32 failure must
                         # never stop readiness or installation lifecycle monitoring.
@@ -2077,9 +2511,12 @@ def main() -> None:
         GenericPlayniteProvider(),
         SteamProvider(Path(__file__).with_name("Confirm-SteamOperation.ps1")),
         EpicProvider())
+    audit_path = config_path.with_name("playnite-operation-audit.jsonl")
     state = BridgeState(expected_display, config_path.with_name("library-cache.json"),
                         config_path.parent.parent / "moonwaker-version.json",
-                        game_operations=game_operations)
+                        game_operations=game_operations,
+                        operation_audit=lambda event, payload: append_operation_audit(
+                            audit_path, event, payload))
     window_probe = WindowProbe(game_operations)
     ensure_playnite_desktop(str(config.get("playnite_desktop_executable", "")).strip())
     fullscreen_path = str(config.get("playnite_fullscreen_executable", "")).strip()
