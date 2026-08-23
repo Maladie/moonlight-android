@@ -191,6 +191,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final AtomicInteger playniteGeneration = new AtomicInteger();
     private final AtomicInteger playniteArtworkGeneration = new AtomicInteger();
     private final AtomicInteger sunshineAppsGeneration = new AtomicInteger();
+    private final SessionStateResolver sessionStateResolver = new SessionStateResolver();
     private final Map<String, ComputerDetails> hosts = new LinkedHashMap<>();
     private final Set<String> newlyDiscoveredHosts = new LinkedHashSet<>();
 
@@ -386,6 +387,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private List<PlayniteDashboardItem> unfilteredPlayniteItems = Collections.emptyList();
     private String resumePlayniteGameId = "";
     private String suspendedPlayniteGameId = "";
+    private PlayniteSessionPresentation.Projection playniteSessionProjection;
     private String renderedCarouselSessionSignature = "";
     private String renderedExpandedSessionSignature = "";
     private final Map<String, String> activePlayniteGameIds = new LinkedHashMap<>();
@@ -1757,8 +1759,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void updateHostSelectionTile(ComputerDetails host) {
         HostSelectionTile tile = hostSelectionTiles.get(host.uuid);
         if (tile == null) return;
-        ConsoleHostPresentation.State state = consoleHostState(host);
-        String status = hostStatus(host);
+        SessionSnapshot snapshot = resolveSessionSnapshot(host);
+        ConsoleHostPresentation.State state = consoleHostState(host, snapshot);
+        String status = hostStatus(host, snapshot);
         tile.status.setText(status);
         GradientDrawable lamp = new GradientDrawable();
         lamp.setShape(GradientDrawable.OVAL);
@@ -2265,20 +2268,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private String compactHostStatus(ComputerDetails host) {
-        SuspendedSessionStore.Session suspended = SuspendedSessionStore.load(this, host.uuid);
-        if (suspended != null && suspended.resumedAt == 0L) {
-            String title = suspended.title.isEmpty()
+        SessionSnapshot snapshot = resolveSessionSnapshot(host);
+        if (snapshot.isSuspended()) {
+            SuspendedSessionStore.Session suspended =
+                    SuspendedSessionStore.load(this, host.uuid);
+            String title = suspended == null || suspended.title.isEmpty()
                     ? getString(R.string.console_game) : suspended.title;
             if (host.state != ComputerDetails.State.ONLINE) {
-                SuspendedSessionStore.markSleepObserved(this, suspended);
                 return getString(R.string.console_status_suspended_short, title);
             }
-            return suspended.sleepObservedAt == 0L
+            return !snapshot.suspensionSleepObserved
                     && !hostStateController.isWaking(host.uuid)
                     ? getString(R.string.console_status_suspending_short)
                     : getString(R.string.console_status_suspended_short, title);
         }
-        return hostStatus(host);
+        return hostStatus(host, snapshot);
     }
 
     private void toggleCurrentHostPower() {
@@ -2293,10 +2297,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void updateQuickResumeButton(ComputerDetails host) {
         if (quickResumeButton == null) return;
+        SessionSnapshot snapshot = resolveSessionSnapshot(host);
         boolean activeSession = host != null && ConsoleActionCatalog.isOnline(host)
-                && ConsoleActionCatalog.isPaired(host) && host.runningGameId != 0;
+                && ConsoleActionCatalog.isPaired(host) && snapshot.hasActiveSession();
         boolean visible = activeSession && !CONSOLE_UI_V2;
-        if (CONSOLE_UI_V2) resolveActivePlayniteGame(host, activeSession);
+        if (CONSOLE_UI_V2 && host != null) {
+            if (snapshot.state == SessionSnapshot.State.NONE
+                    || snapshot.state == SessionSnapshot.State.TERMINATING) {
+                resolveActivePlayniteGame(host, false);
+            } else if (host.runningGameId != 0 && ConsoleActionCatalog.isOnline(host)
+                    && ConsoleActionCatalog.isPaired(host)) {
+                resolveActivePlayniteGame(host, true);
+            }
+        }
         boolean restoreFocus = quickResumeButton.hasFocus() && !visible;
         quickResumeButton.setVisibility(visible ? View.VISIBLE : View.GONE);
         quickResumeButton.setEnabled(visible);
@@ -2304,7 +2317,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             launchPlayniteButton.setVisibility(visible ? View.GONE : View.VISIBLE);
         }
         if (visible) {
-            String appName = findAppName(host, host.runningGameId);
+            String appName = findAppName(host, snapshot.hostGameAppId);
             quickResumeButton.setText(appName == null
                     ? getString(R.string.console_quick_resume)
                     : getString(R.string.console_quick_resume_app, appName));
@@ -2410,41 +2423,83 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         resumeSession(host);
     }
 
-    private String hostStatus(ComputerDetails host) {
-        SuspendedSessionStore.Session suspended = SuspendedSessionStore.load(this, host.uuid);
+    private SessionSnapshot resolveSessionSnapshot(ComputerDetails host) {
+        if (host == null) {
+            return new SessionSnapshot("", SessionSnapshot.State.NONE, 0, "",
+                    false, false, false, false, false);
+        }
+        RetainedStreamSessionCoordinator.Snapshot retained =
+                RetainedStreamSessionCoordinator.snapshot();
+        SuspendedSessionStore.Session suspended =
+                SuspendedSessionStore.load(this, host.uuid);
         if (suspended != null && suspended.resumedAt > 0L
                 && host.state == ComputerDetails.State.ONLINE && host.runningGameId == 0) {
             SuspendedSessionStore.clear(this, host.uuid);
             suspended = null;
+        } else if (suspended != null && suspended.resumedAt == 0L
+                && host.state != ComputerDetails.State.ONLINE
+                && suspended.sleepObservedAt == 0L) {
+            suspended = SuspendedSessionStore.markSleepObserved(this, suspended);
         }
-        if (suspended != null && suspended.resumedAt == 0L) {
-            String title = suspended.title.isEmpty()
+        HostSleepStateStore.State sleep = HostSleepStateStore.load(this, host.uuid);
+        if (sleep != null && host.state != ComputerDetails.State.ONLINE
+                && sleep.sleepObservedAt == 0L) {
+            sleep = HostSleepStateStore.markObserved(this, host.uuid, sleep);
+        } else if (sleep != null && host.state == ComputerDetails.State.ONLINE
+                && sleep.sleepObservedAt > 0L) {
+            HostSleepStateStore.clear(this, host.uuid);
+            sleep = null;
+        }
+        boolean recentlyEnded = SuspendedSessionStore.recentlyEnded(this, host.uuid);
+        String resolvedGameId = activePlayniteGameIds.getOrDefault(host.uuid, "");
+        SessionSnapshot snapshot = sessionStateResolver.resolve(
+                new SessionStateResolver.Observations(
+                        host.uuid, host.runningGameId, resolvedGameId, retained,
+                        suspended, recentlyEnded,
+                        SessionResumeManager.hasPendingSession(this),
+                        SessionResumeManager.getPendingPcUuid(this),
+                        SessionResumeManager.getPendingAppId(this), host.uuid, sleep));
+        if (recentlyEnded && snapshot.hasActiveSession()
+                && (!resolvedGameId.isEmpty()
+                || host.uuid.equalsIgnoreCase(retained.hostId)
+                && (retained.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
+                || retained.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE))) {
+            SuspendedSessionStore.clearEnded(this, host.uuid);
+        }
+        return snapshot;
+    }
+
+    private String hostStatus(ComputerDetails host) {
+        return hostStatus(host, resolveSessionSnapshot(host));
+    }
+
+    private String hostStatus(ComputerDetails host, SessionSnapshot snapshot) {
+        if (snapshot.isSuspended()) {
+            SuspendedSessionStore.Session suspended =
+                    SuspendedSessionStore.load(this, host.uuid);
+            String title = suspended == null || suspended.title.isEmpty()
                     ? getString(R.string.console_game) : suspended.title;
             if (host.state != ComputerDetails.State.ONLINE) {
-                SuspendedSessionStore.markSleepObserved(this, suspended);
                 return getString(R.string.console_status_sleeping_suspended_game, title);
             }
-            if (suspended.sleepObservedAt == 0L
+            if (!snapshot.suspensionSleepObserved
                     && !hostStateController.isWaking(host.uuid)) {
                 return getString(R.string.console_status_suspending_game, title);
             }
             return getString(R.string.console_status_suspended_game, title);
         }
-        HostSleepStateStore.State sleepState = HostSleepStateStore.load(this, host.uuid);
-        if (sleepState != null) {
+        if (snapshot.hostSleepRequested) {
             if (host.state != ComputerDetails.State.ONLINE) {
-                HostSleepStateStore.markObserved(this, host.uuid, sleepState);
                 return getString(R.string.console_status_asleep);
             }
-            if (sleepState.sleepObservedAt == 0L) {
+            if (!snapshot.hostSleepObserved) {
                 return getString(R.string.console_status_suspending_short);
             }
-            HostSleepStateStore.clear(this, host.uuid);
         }
-        ConsoleHostPresentation.State state = consoleHostState(host);
+        ConsoleHostPresentation.State state = consoleHostState(host, snapshot);
         switch (state) {
             case ACTIVE_SESSION:
-                String appName = findAppName(host, host.runningGameId);
+                String appName = findAppName(host, snapshot.hostGameAppId);
                 return appName == null ? getString(R.string.console_status_active_session)
                         : getString(R.string.console_status_active_app, appName);
             case WAKING:
@@ -2465,22 +2520,30 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private ConsoleHostPresentation.State consoleHostState(ComputerDetails host) {
-        SuspendedSessionStore.Session suspended = SuspendedSessionStore.load(this, host.uuid);
-        if (suspended != null && suspended.resumedAt == 0L) {
+        return consoleHostState(host, resolveSessionSnapshot(host));
+    }
+
+    private ConsoleHostPresentation.State consoleHostState(
+            ComputerDetails host, SessionSnapshot snapshot) {
+        if (snapshot.hasActiveSession()) {
+            return ConsoleHostPresentation.State.ACTIVE_SESSION;
+        }
+        if (snapshot.isSuspended()) {
             if (host.state != ComputerDetails.State.ONLINE) {
                 return ConsoleHostPresentation.State.ASLEEP;
             }
-            return suspended.sleepObservedAt == 0L
+            return !snapshot.suspensionSleepObserved
                     ? ConsoleHostPresentation.State.CONNECTING
                     : ConsoleHostPresentation.State.WAKING;
         }
-        HostSleepStateStore.State sleep = HostSleepStateStore.load(this, host.uuid);
-        if (sleep != null) {
+        if (snapshot.hostSleepRequested) {
             return host.state == ComputerDetails.State.ONLINE
                     ? ConsoleHostPresentation.State.CONNECTING
                     : ConsoleHostPresentation.State.ASLEEP;
         }
-        return hostStateController.state(host);
+        ConsoleHostPresentation.State state = hostStateController.state(host);
+        return state == ConsoleHostPresentation.State.ACTIVE_SESSION
+                ? ConsoleHostPresentation.State.ONLINE : state;
     }
 
     private String findAppName(ComputerDetails host, int appId) {
@@ -4415,6 +4478,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             resolvedById.put(item.stableId(), item);
             localActivity.put(item.stableId(), playActivityEpoch(host.uuid, item));
         }
+        SessionSnapshot sessionSnapshot = resolveSessionSnapshot(host);
+        playniteSessionProjection = PlayniteSessionPresentation.project(
+                sessionSnapshot, unfilteredItems, preferences.getString(
+                        "selected_playnite." + host.uuid, ""));
+        resumePlayniteGameId = playniteSessionProjection.resumeGameId;
+        suspendedPlayniteGameId = playniteSessionProjection.suspendedGameId;
         List<PlayniteLibraryGame> ordered = PlayniteLibraryOrdering.order(
                 sourceFiltered, hostGatewayStore.playniteLibraryFilter(host.uuid),
                 getResources().getConfiguration().getLocales().get(0), localActivity);
@@ -4426,18 +4495,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         if (CONSOLE_UI_V2) {
             items = putInstallingItemsFirst(host, items);
-            items = putActiveSessionFirst(host, items);
+            items = putSelectedSessionFirst(items);
         } else {
             resumePlayniteGameId = "";
+            suspendedPlayniteGameId = "";
         }
         allPlayniteItems = Collections.unmodifiableList(new ArrayList<>(items));
         unfilteredPlayniteItems = Collections.unmodifiableList(
                 new ArrayList<>(unfilteredItems));
         List<PlayniteDashboardItem> carouselSource = CONSOLE_UI_V2
-                ? putActiveSessionFirst(host, unfilteredItems) : unfilteredItems;
+                ? putSelectedSessionFirst(unfilteredItems) : unfilteredItems;
         List<PlayniteDashboardItem> dashboardItems = carouselPlayniteItems(
                 host, carouselSource, maxCarouselGameCount());
-        String sessionSignature = playniteSessionSignature(host);
+        String sessionSignature = playniteSessionProjection.signature();
         boolean libraryTileFocused = getCurrentFocus() != null
                 && "playnite:__library__".equals(getCurrentFocus().getTag());
         installedFilterButton.setVisibility(View.GONE);
@@ -5017,7 +5087,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void renderExpandedLibrary(ComputerDetails host) {
         if (!expandedLibraryMode || expandedGrid == null || host == null) return;
-        String sessionSignature = playniteSessionSignature(host);
+        String sessionSignature = playniteSessionProjection == null
+                ? "" : playniteSessionProjection.signature();
         boolean sessionPresentationChanged =
                 !renderedExpandedSessionSignature.equals(sessionSignature);
         List<PlayniteDashboardItem> expandedItems = expandedLibraryItems(host);
@@ -5645,103 +5716,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
     }
 
-    private List<PlayniteDashboardItem> putActiveSessionFirst(
-            ComputerDetails host, List<PlayniteDashboardItem> items) {
-        resumePlayniteGameId = "";
-        suspendedPlayniteGameId = "";
-        if (host == null || items.isEmpty()) return items;
-        ActiveSessionSnapshot activeSession = activeSessionSnapshot(host);
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
-        boolean retainedForHost = retained.state != RetainedStreamSessionCoordinator.State.NONE
-                && retained.state != RetainedStreamSessionCoordinator.State.TERMINATING
-                && host.uuid.equalsIgnoreCase(retained.hostId);
-        if (SuspendedSessionStore.recentlyEnded(this, host.uuid)) {
-            if (host.runningGameId == 0) SuspendedSessionStore.clearEnded(this, host.uuid);
-            else if (retainedForHost || activePlayniteGameIds.containsKey(host.uuid)) {
-                SuspendedSessionStore.clearEnded(this, host.uuid);
-            } else {
-                return items;
-            }
-        }
-        if (activeSession.isActive()) {
-            for (PlayniteDashboardItem item : items) {
-                if (activeSession.matches(item.stableId(), item.sunshineAppId)) {
-                    resumePlayniteGameId = item.stableId();
-                    if (items.get(0) == item) return items;
-                    List<PlayniteDashboardItem> reordered = new ArrayList<>(items);
-                    reordered.remove(item);
-                    reordered.add(0, item);
-                    return reordered;
-                }
-            }
-        }
-        SuspendedSessionStore.Session suspended = SuspendedSessionStore.load(this, host.uuid);
-        if (suspended != null && suspended.resumedAt == 0L
-                && !suspended.playniteGameId.isEmpty()) {
-            for (PlayniteDashboardItem item : items) {
-                if (suspended.playniteGameId.equalsIgnoreCase(item.stableId())) {
-                    suspendedPlayniteGameId = item.stableId();
-                    if (items.get(0) == item) return items;
-                    List<PlayniteDashboardItem> reordered = new ArrayList<>(items);
-                    reordered.remove(item);
-                    reordered.add(0, item);
-                    return reordered;
-                }
-            }
-        }
-        if (host.runningGameId == 0) return items;
-        if (suspended != null && suspended.resumedAt > 0L
-                && suspended.sunshineAppId == host.runningGameId
-                && !suspended.playniteGameId.isEmpty()) {
-            for (PlayniteDashboardItem item : items) {
-                if (suspended.playniteGameId.equalsIgnoreCase(item.stableId())) {
-                    resumePlayniteGameId = item.stableId();
-                    if (items.get(0) == item) return items;
-                    List<PlayniteDashboardItem> reordered = new ArrayList<>(items);
-                    reordered.remove(item);
-                    reordered.add(0, item);
-                    return reordered;
-                }
-            }
-        }
-        String bridgeGameId = activePlayniteGameIds.get(host.uuid);
-        if (HostGatewayClient.isPlayniteId(bridgeGameId)) {
-            for (PlayniteDashboardItem item : items) {
-                if (bridgeGameId.equalsIgnoreCase(item.stableId())) {
-                    resumePlayniteGameId = item.stableId();
-                    if (items.get(0) == item) return items;
-                    List<PlayniteDashboardItem> reordered = new ArrayList<>(items);
-                    reordered.remove(item);
-                    reordered.add(0, item);
-                    return reordered;
-                }
-            }
-        }
-        List<PlayniteDashboardItem> matches = new ArrayList<>();
+    private List<PlayniteDashboardItem> putSelectedSessionFirst(
+            List<PlayniteDashboardItem> items) {
+        String selectedGameId = !resumePlayniteGameId.isEmpty()
+                ? resumePlayniteGameId : suspendedPlayniteGameId;
+        if (selectedGameId.isEmpty() || items.isEmpty()) return items;
         for (PlayniteDashboardItem item : items) {
-            if (item.sunshineAppId != null && item.sunshineAppId == host.runningGameId) {
-                matches.add(item);
-            }
+            if (!selectedGameId.equalsIgnoreCase(item.stableId())) continue;
+            if (items.get(0) == item) return items;
+            List<PlayniteDashboardItem> reordered = new ArrayList<>(items);
+            reordered.remove(item);
+            reordered.add(0, item);
+            return reordered;
         }
-        PlayniteDashboardItem active = matches.size() == 1 ? matches.get(0) : null;
-        if (active == null && !matches.isEmpty()) {
-            String selectedId = preferences.getString(
-                    "selected_playnite." + host.uuid, "");
-            for (PlayniteDashboardItem item : matches) {
-                if (item.stableId().equals(selectedId)) {
-                    active = item;
-                    break;
-                }
-            }
-        }
-        if (active == null) return items;
-        resumePlayniteGameId = active.stableId();
-        if (items.get(0) == active) return items;
-        List<PlayniteDashboardItem> reordered = new ArrayList<>(items);
-        reordered.remove(active);
-        reordered.add(0, active);
-        return reordered;
+        return items;
     }
 
     private List<PlayniteLibraryGame> promoteInstallingGames(
@@ -6002,54 +5990,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return params;
     }
 
-    private String playniteSessionSignature(ComputerDetails host) {
-        if (host == null) return "";
-        SuspendedSessionStore.Session stored = SuspendedSessionStore.load(this, host.uuid);
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
-        return host.runningGameId + "|"
-                + activePlayniteGameIds.getOrDefault(host.uuid, "") + "|"
-                + retained.state + "|" + retained.hostId + "|" + retained.appId + "|"
-                + retained.playniteGameId + "|"
-                + SuspendedSessionStore.recentlyEnded(this, host.uuid) + "|"
-                + (stored == null ? "" : stored.playniteGameId + "|"
-                + stored.sunshineAppId + "|" + stored.resumedAt + "|"
-                + stored.suspendedAt);
-    }
-
     private PlayniteSessionPresentation.State playniteSessionState(
-            ComputerDetails host, PlayniteDashboardItem item) {
-        ActiveSessionSnapshot active = activeSessionSnapshot(host);
-        if (active.matches(item.stableId(), item.sunshineAppId)) {
-            return PlayniteSessionPresentation.State.RESUME_ACTIVE;
-        }
-        SuspendedSessionStore.Session stored = host == null ? null
-                : SuspendedSessionStore.load(this, host.uuid);
-        return PlayniteSessionPresentation.resolve(CONSOLE_UI_V2,
-                host != null && SuspendedSessionStore.recentlyEnded(this, host.uuid),
-                item.stableId(), item.sunshineAppId,
-                stored == null ? "" : stored.playniteGameId,
-                stored == null ? 0 : stored.sunshineAppId,
-                stored == null ? -1L : stored.resumedAt,
-                host == null ? 0 : host.runningGameId,
-                resumePlayniteGameId);
-    }
-
-    private ActiveSessionSnapshot activeSessionSnapshot(ComputerDetails host) {
-        if (host == null) return new ActiveSessionSnapshot("", 0, "", false);
-        String gameId = activePlayniteGameIds.getOrDefault(host.uuid, "");
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
-        boolean retainedForHost = retained.state != RetainedStreamSessionCoordinator.State.NONE
-                && retained.state != RetainedStreamSessionCoordinator.State.TERMINATING
-                && host.uuid.equalsIgnoreCase(retained.hostId);
-        if (gameId.isEmpty() && retainedForHost) {
-            gameId = retained.playniteGameId;
-        }
-        int runningAppId = retainedForHost && retained.appId != 0
-                ? retained.appId : host.runningGameId;
-        return new ActiveSessionSnapshot(host.uuid, runningAppId, gameId,
-                retainedForHost);
+            PlayniteDashboardItem item) {
+        return playniteSessionProjection == null
+                ? PlayniteSessionPresentation.State.READY
+                : playniteSessionProjection.stateFor(item.stableId());
     }
 
     private void bindPlayniteCard(View card, ComputerDetails host,
@@ -6061,7 +6006,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         TextView state = (TextView) findTaggedChild((ViewGroup) card, "playnite.state");
         ImageView poster = (ImageView) findTaggedChild((ViewGroup) card, "playnite.poster");
         String playtimeText = formatPlayniteTime(item.game.playtimeSeconds);
-        PlayniteSessionPresentation.State sessionState = playniteSessionState(host, item);
+        PlayniteSessionPresentation.State sessionState = playniteSessionState(item);
         boolean resumeSession = sessionState
                 == PlayniteSessionPresentation.State.RESUME_ACTIVE;
         boolean suspendedSession = sessionState
