@@ -3,6 +3,8 @@ package com.limelight.console;
 import android.content.Context;
 import android.content.SharedPreferences;
 
+import com.limelight.gateway.GatewayConnection;
+
 import java.net.URI;
 import java.net.URISyntaxException;
 import java.util.HashSet;
@@ -55,22 +57,22 @@ final class HostGatewayStore {
     HostGatewayClient.Connection loadClientConnection(String hostUuid) {
         GatewayConnection connection = load(hostUuid);
         return connection == null ? null : new HostGatewayClient.Connection(
-                connection.endpoint, connection.token, connection.certificateSha256,
-                connection.profileId);
+                connection.endpoint(), connection.token(), connection.certificateSha256(),
+                connection.profileId());
     }
 
     HostGatewayClient.Connection loadClientConnection(String hostUuid, String activeHost) {
         GatewayConnection connection = loadForHost(hostUuid, activeHost);
         return connection == null ? null : new HostGatewayClient.Connection(
-                connection.endpoint, connection.token, connection.certificateSha256,
-                connection.profileId);
+                connection.endpoint(), connection.token(), connection.certificateSha256(),
+                connection.profileId());
     }
 
     GatewayConnection loadForHost(String hostUuid, String activeHost) {
         GatewayConnection stored = load(hostUuid);
         if (stored == null || activeHost == null || activeHost.trim().isEmpty()) return stored;
         try {
-            URI endpoint = new URI(stored.endpoint);
+            URI endpoint = new URI(stored.endpoint());
             String host = activeHost.trim();
             if (host.startsWith("[") && host.endsWith("]")) {
                 host = host.substring(1, host.length() - 1);
@@ -78,8 +80,8 @@ final class HostGatewayStore {
             URI rebound = new URI(endpoint.getScheme(), endpoint.getUserInfo(), host,
                     endpoint.getPort(), endpoint.getPath(), endpoint.getQuery(),
                     endpoint.getFragment());
-            return new GatewayConnection(rebound.toString(), stored.token,
-                    stored.certificateSha256, stored.profileId);
+            return new GatewayConnection(rebound.toString(), stored.token(),
+                    stored.certificateSha256(), stored.profileId());
         }
         catch (URISyntaxException | IllegalArgumentException invalidActiveAddress) {
             return stored;
@@ -90,10 +92,10 @@ final class HostGatewayStore {
         if (hostUuid == null || hostUuid.isEmpty() || connection == null) return;
         preferences.edit()
                 .putBoolean(key(hostUuid, "paired"), true)
-                .putString(key(hostUuid, "endpoint"), connection.endpoint)
-                .putString(key(hostUuid, "token"), connection.token)
-                .putString(key(hostUuid, "certificate"), connection.certificateSha256)
-                .putString(key(hostUuid, "integration_profile"), connection.profileId)
+                .putString(key(hostUuid, "endpoint"), connection.endpoint())
+                .putString(key(hostUuid, "token"), connection.token())
+                .putString(key(hostUuid, "certificate"), connection.certificateSha256())
+                .putString(key(hostUuid, "integration_profile"), connection.profileId())
                 .apply();
     }
 
