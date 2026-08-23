@@ -18,6 +18,7 @@ import com.limelight.binding.video.MediaCodecDecoderRenderer;
 import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.av.video.SwitchableVideoDecoderRenderer;
+import com.limelight.console.ConsoleStreamTransitionCoordinator;
 import com.limelight.console.DiscordOverlayController;
 import com.limelight.console.PlayniteTransitionGateway;
 import com.limelight.console.transition.LaunchTransitionController;
@@ -85,7 +86,6 @@ import android.os.Bundle;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
-import android.os.SystemClock;
 import android.text.Html;
 import android.util.Rational;
 import android.view.Display;
@@ -111,7 +111,6 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.ByteArrayInputStream;
-import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.cert.CertificateException;
@@ -119,9 +118,6 @@ import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Locale;
 import java.util.concurrent.atomic.AtomicBoolean;
-import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
-import java.util.concurrent.Future;
 
 
 public class Game extends Activity implements SurfaceHolder.Callback,
@@ -161,9 +157,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private ConsoleStreamLoadingView consoleLoadingView;
     private LaunchTransitionController transitionController;
     private LaunchTransitionSpec transitionSpec;
-    private final ExecutorService transitionExecutor = Executors.newSingleThreadExecutor();
-    private Future<?> transitionObservation;
-    private volatile boolean transitionObservationStopped;
+    private ConsoleStreamTransitionCoordinator transitionCoordinator;
     private boolean lastTransitionOverlayVisible = true;
     private final Handler transitionUiHandler = new Handler(Looper.getMainLooper());
     private Runnable pendingAutomaticReveal;
@@ -355,6 +349,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 transitionController = new LaunchTransitionController(
                         this::onTransitionChanged);
                 transitionController.begin(transitionSpec);
+                transitionCoordinator = createTransitionCoordinator();
                 consoleLoadingView.setActions(new ConsoleStreamLoadingView.Actions() {
                     @Override public void onCancel() {
                         cancelTransition();
@@ -460,7 +455,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         overlayMenuView = findViewById(R.id.overlayMenuView);
         overlayMenuView.setFlipFaceButtons(prefConfig.flipFaceButtons);
         overlayMenuView.setBitrateControlEnabled(prefConfig.runtimeBitrateControl);
-        overlayMenuView.setInstallationConfirmationAvailable(isInstallationConfirmationStream());
+        overlayMenuView.setInstallationConfirmationAvailable(
+                transitionCoordinator != null
+                        && transitionCoordinator.isInstallationConfirmationStream());
         discordOverlayController = new DiscordOverlayController(this, overlayMenuView,
                 (LinearLayout) findViewById(R.id.discordDockView), prefConfig,
                 getIntent().getStringExtra(EXTRA_PC_UUID),
@@ -755,7 +752,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 if (isFinishing() || isDestroyed()) return;
                 transitionController.overlayRendered(transitionSpec.id);
                 startConnectionIfReady(streamView.getHolder());
-                startTransitionObservation();
+                transitionCoordinator.start();
             });
         } else {
             streamView.getHolder().addCallback(this);
@@ -1302,10 +1299,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             BackgroundStreamService.transportLost(this);
             stopConnection();
         }
-        transitionObservationStopped = true;
+        if (transitionCoordinator != null) {
+            transitionCoordinator.close();
+            transitionCoordinator = null;
+        }
         cancelPendingAutomaticReveal();
-        if (transitionObservation != null) transitionObservation.cancel(true);
-        transitionExecutor.shutdownNow();
         if (discordOverlayController != null) {
             discordOverlayController.destroy();
             discordOverlayController = null;
@@ -3152,7 +3150,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 // Show overlay menu hint toast
                 showOverlayMenuHint();
 
-                refocusPendingInstallationAfterStreamStarted();
+                if (transitionCoordinator != null) transitionCoordinator.onStreamConnected();
             }
         });
 
@@ -3168,67 +3166,98 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
     }
 
-    private void refocusPendingInstallationAfterStreamStarted() {
-        if (transitionSpec == null || transitionSpec.type != LaunchTransitionType.GENERIC
-                || transitionSpec.playniteGameId == null
-                || transitionSpec.playniteGameId.isEmpty()) return;
+    private ConsoleStreamTransitionCoordinator createTransitionCoordinator() {
         PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
                 this, transitionSpec.hostId, getIntent().getStringExtra(EXTRA_HOST));
-        if (gateway == null) return;
-        long[] delays = {0L, 1_500L, 4_000L};
-        for (long delay : delays) {
-            transitionUiHandler.postDelayed(() -> {
-                if (isFinishing() || isDestroyed() || transitionExecutor.isShutdown()) return;
-                try {
-                    transitionExecutor.execute(() -> {
-                        try {
-                            gateway.focusInstallation(transitionSpec.playniteGameId);
-                        } catch (IOException | RuntimeException ignored) {
-                            // Confirmation may close the prompt between bounded retries.
-                        }
-                    });
-                } catch (RuntimeException ignored) {
-                    // The Activity may be destroyed while a delayed retry is pending.
-                }
-            }, delay);
-        }
-    }
-
-    private boolean isInstallationConfirmationStream() {
-        return transitionSpec != null && transitionSpec.type == LaunchTransitionType.GENERIC
-                && transitionSpec.playniteGameId != null
-                && !transitionSpec.playniteGameId.isEmpty();
-    }
-
-    private void confirmPendingInstallation() {
-        if (!isInstallationConfirmationStream()) return;
-        displayMessage(getString(R.string.playnite_install_verifying));
-        PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                this, transitionSpec.hostId, getIntent().getStringExtra(EXTRA_HOST));
-        if (gateway == null) {
-            displayMessage(getString(R.string.playnite_install_verify_failed));
-            return;
-        }
-        try {
-            transitionExecutor.execute(() -> {
-                try {
-                    if (!gateway.verifyInstallation(transitionSpec.playniteGameId)) {
-                        runOnUiThread(() -> displayMessage(
-                                getString(R.string.playnite_install_still_needs_confirmation)));
-                        return;
+        return new ConsoleStreamTransitionCoordinator(
+                transitionSpec,
+                transitionController,
+                gateway,
+                (action, delayMs) -> transitionUiHandler.postDelayed(action, delayMs),
+                new ConsoleStreamTransitionCoordinator.Callbacks() {
+                    @Override public String gatewayUnavailableMessage() {
+                        return getString(R.string.transition_gateway_unavailable);
                     }
-                    // This is a temporary Desktop target opened only for a launcher
-                    // prompt. Once the operation proceeds, close both the client
-                    // transport and the host-side Desktop session.
-                    runOnUiThread(() -> closeStreamWithPrivacy(true));
-                } catch (IOException | RuntimeException error) {
-                    runOnUiThread(() -> displayMessage(
-                            getString(R.string.playnite_install_verify_failed)));
-                }
-            });
-        } catch (RuntimeException error) {
-            displayMessage(getString(R.string.playnite_install_verify_failed));
-        }
+
+                    @Override public String hostSessionLockedMessage() {
+                        return getString(R.string.transition_host_session_locked);
+                    }
+
+                    @Override public String streamDisplayNotConfiguredMessage() {
+                        return getString(R.string.transition_stream_display_not_configured);
+                    }
+
+                    @Override public String readinessUnconfirmedMessage() {
+                        return getString(R.string.transition_readiness_unconfirmed);
+                    }
+
+                    @Override public String windowStabilizingMessage() {
+                        return getString(R.string.transition_window_stabilizing);
+                    }
+
+                    @Override public boolean isPendingInstallation(String hostId, String gameId) {
+                        return Game.this.isPendingInstallation(hostId, gameId);
+                    }
+
+                    @Override public String pendingInstallationName(String hostId, String gameId) {
+                        return Game.this.pendingInstallationName(hostId, gameId);
+                    }
+
+                    @Override public void onInstallationCompleted(
+                            String hostId, String gameId, String gameName) {
+                        runOnUiThread(() -> {
+                            getSharedPreferences("console_dashboard", MODE_PRIVATE).edit()
+                                    .putLong(playniteInstallNotificationKey(hostId, gameId),
+                                            System.currentTimeMillis())
+                                    .remove(playniteInstallPendingKey(hostId, gameId))
+                                    .apply();
+                            displayMessage(getString(
+                                    R.string.playnite_install_complete, gameName));
+                        });
+                    }
+
+                    @Override public void onInstallationCancelled(
+                            String hostId, String gameId, String gameName) {
+                        completeInstallationFailure(hostId, gameId, gameName,
+                                R.string.playnite_install_cancelled);
+                    }
+
+                    @Override public void onInstallationFailed(
+                            String hostId, String gameId, String gameName) {
+                        completeInstallationFailure(hostId, gameId, gameName,
+                                R.string.playnite_install_failed);
+                    }
+
+                    @Override public void onInstallationAttentionRequired(
+                            String hostId, String gameId, String gameName) {
+                        runOnUiThread(() -> displayMessage(getString(
+                                R.string.playnite_install_attention_overlay, gameName)));
+                    }
+
+                    @Override public void onInstallationVerified() {
+                        // This Desktop target exists only for the launcher prompt.
+                        runOnUiThread(() -> closeStreamWithPrivacy(true));
+                    }
+
+                    @Override public void onInstallationStillNeedsConfirmation() {
+                        runOnUiThread(() -> displayMessage(getString(
+                                R.string.playnite_install_still_needs_confirmation)));
+                    }
+
+                    @Override public void onInstallationVerificationFailed() {
+                        runOnUiThread(() -> displayMessage(getString(
+                                R.string.playnite_install_verify_failed)));
+                    }
+                });
+    }
+
+    private void completeInstallationFailure(
+            String hostId, String gameId, String gameName, int messageId) {
+        runOnUiThread(() -> {
+            getSharedPreferences("console_dashboard", MODE_PRIVATE).edit()
+                    .remove(playniteInstallPendingKey(hostId, gameId)).apply();
+            displayMessage(getString(messageId, gameName));
+        });
     }
 
     private void onFirstVideoFrameRendered() {
@@ -3368,205 +3397,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
     }
 
-    private void startTransitionObservation() {
-        if (transitionSpec == null || transitionSpec.type == LaunchTransitionType.GENERIC) {
-            return;
-        }
-        PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                this, transitionSpec.hostId, getIntent().getStringExtra(EXTRA_HOST));
-        if (gateway == null) {
-            transitionController.timedOut(transitionSpec.id,
-                    getString(R.string.transition_gateway_unavailable));
-            return;
-        }
-        transitionObservationStopped = false;
-        transitionObservation = transitionExecutor.submit(() ->
-                observeTransition(gateway, transitionSpec.id, transitionSpec.hostId));
-    }
-
-    private void observeTransition(PlayniteTransitionGateway gateway,
-                                   String transitionId, String hostId) {
-        long sequence = 0L;
-        int failures = 0;
-        boolean baselineEstablished = false;
-        boolean gameWasRunning = false;
-        boolean fullscreenRequested = false;
-        int gameFocusAttempts = 0;
-        long lastGameFocusAttempt = 0L;
-        String lastReadinessReason = "";
-        LaunchTransitionState observedState = null;
-        long stateSince = SystemClock.uptimeMillis();
-        while (!transitionObservationStopped && !Thread.currentThread().isInterrupted()) {
-            try {
-                PlayniteTransitionGateway.Snapshot gatewaySnapshot = gateway.snapshot();
-                lastReadinessReason = gatewaySnapshot.reason;
-                applyGatewaySnapshot(transitionId, hostId, gatewaySnapshot);
-                if (!fullscreenRequested
-                        && transitionSpec.type == LaunchTransitionType.PLAYNITE
-                        && !gatewaySnapshot.windowReady) {
-                    gateway.showFullscreen();
-                    fullscreenRequested = true;
-                }
-                long now = SystemClock.uptimeMillis();
-                if ("game".equalsIgnoreCase(gatewaySnapshot.targetKind)
-                        && !gatewaySnapshot.windowReady
-                        && "target_not_foreground".equals(gatewaySnapshot.reason)
-                        && gameFocusAttempts < 3
-                        && now - lastGameFocusAttempt >= 3_000L) {
-                    lastGameFocusAttempt = now;
-                    gameFocusAttempts++;
-                    try {
-                        gateway.focusGame();
-                    } catch (IOException ignored) {
-                        // Readiness remains closed and a later bounded attempt may succeed.
-                    }
-                }
-                if ("running".equalsIgnoreCase(gatewaySnapshot.gameState)
-                        && gatewaySnapshot.processId > 0) gameWasRunning = true;
-                if (gameWasRunning && "idle".equalsIgnoreCase(gatewaySnapshot.gameState)
-                        && "playnite".equalsIgnoreCase(gatewaySnapshot.targetKind)) {
-                    transitionController.gameStopping(transitionId, hostId,
-                            transitionSpec.playniteGameId);
-                    transitionController.playniteReturning(transitionId, hostId);
-                    gameWasRunning = false;
-                }
-                PlayniteTransitionGateway.Events events =
-                        gateway.awaitEvents(sequence, transitionId);
-                sequence = events.latestSequence;
-                if (baselineEstablished) {
-                    for (PlayniteTransitionGateway.Event event : events.values) {
-                        applyGatewayEvent(transitionId, hostId, event);
-                    }
-                } else {
-                    // Transition events from before this stream are stale, but an install
-                    // can finish while the stream Activity is still starting. Preserve only
-                    // lifecycle events for installs explicitly requested by this client.
-                    for (PlayniteTransitionGateway.Event event : events.values) {
-                        if (isPendingInstallationEvent(hostId, event)) {
-                            applyGatewayEvent(transitionId, hostId, event);
-                        }
-                    }
-                    baselineEstablished = true;
-                }
-                failures = 0;
-
-                LaunchTransitionSnapshot current = transitionController.snapshot();
-                if (current.state != observedState) {
-                    observedState = current.state;
-                    stateSince = SystemClock.uptimeMillis();
-                }
-                long timeout = timeoutFor(current.state);
-                if (timeout > 0L && SystemClock.uptimeMillis() - stateSince >= timeout) {
-                    transitionController.timedOut(transitionId,
-                            readinessFailureMessage(lastReadinessReason));
-                }
-            } catch (IOException | RuntimeException error) {
-                failures++;
-                if (failures >= 3) {
-                    transitionController.error(transitionId,
-                            getString(R.string.transition_gateway_unavailable));
-                }
-                if (transitionObservationStopped) return;
-                try {
-                    Thread.sleep(Math.min(4_000L, failures * 1_000L));
-                } catch (InterruptedException interrupted) {
-                    Thread.currentThread().interrupt();
-                    return;
-                }
-            }
-        }
-    }
-
-    private String readinessFailureMessage(String reason) {
-        if ("host_session_locked".equals(reason)) {
-            return getString(R.string.transition_host_session_locked);
-        }
-        if ("stream_display_not_configured".equals(reason)) {
-            return getString(R.string.transition_stream_display_not_configured);
-        }
-        return getString(R.string.transition_readiness_unconfirmed);
-    }
-
-    private void applyGatewaySnapshot(String transitionId, String hostId,
-                                      PlayniteTransitionGateway.Snapshot snapshot) {
-        if (!snapshot.gatewayReady || !snapshot.connectorReady) return;
-        transitionController.gatewayConnected(transitionId, hostId);
-        if ("host_session_locked".equals(snapshot.reason)) {
-            transitionController.error(transitionId,
-                    getString(R.string.transition_host_session_locked));
-            return;
-        }
-        LaunchTransitionType kind = "game".equalsIgnoreCase(snapshot.targetKind)
-                ? LaunchTransitionType.GAME : LaunchTransitionType.PLAYNITE;
-        String gameId = snapshot.gameId == null || snapshot.gameId.isEmpty()
-                ? transitionSpec.playniteGameId : snapshot.gameId;
-        if (snapshot.processId > 0) {
-            transitionController.targetProcessRunning(transitionId, hostId, kind, gameId);
-        }
-        if (snapshot.windowReady) {
-            transitionController.targetWindowReady(transitionId, hostId, kind, gameId);
-        } else if (kind == LaunchTransitionType.GAME
-                && transitionController.snapshot().state == LaunchTransitionState.GAME_RUNNING) {
-            transitionController.targetWindowLost(transitionId, hostId, kind, gameId,
-                    getString(R.string.transition_window_stabilizing));
-        } else if (snapshot.stableSamples > 0
-                || "stabilizing_target_window".equals(snapshot.reason)) {
-            transitionController.targetWindowStabilizing(transitionId, hostId, kind,
-                    gameId, getString(R.string.transition_window_stabilizing));
-        }
-    }
-
-    private void applyGatewayEvent(String transitionId, String hostId,
-                                   PlayniteTransitionGateway.Event event) {
-        String name = event.name == null ? "" : event.name;
-        if ("game-installed".equals(name)) {
-            if (!isPendingInstallation(hostId, event.gameId)) return;
-            String gameName = event.gameName == null || event.gameName.isEmpty()
-                    ? pendingInstallationName(hostId, event.gameId) : event.gameName;
-            try {
-                PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                        this, hostId, getIntent().getStringExtra(EXTRA_HOST));
-                if (gateway != null) gateway.ensureInstalledGameTarget(event.gameId, gameName);
-            } catch (IOException | RuntimeException ignored) { }
-            getSharedPreferences("console_dashboard", MODE_PRIVATE).edit()
-                    .putLong(playniteInstallNotificationKey(hostId, event.gameId),
-                            System.currentTimeMillis())
-                    .remove(playniteInstallPendingKey(hostId, event.gameId))
-                    .apply();
-            displayMessage(getString(R.string.playnite_install_complete, gameName));
-        } else if ("game-installation-cancelled".equals(name)
-                || "game-installation-failed".equals(name)) {
-            if (!isPendingInstallation(hostId, event.gameId)) return;
-            String gameName = event.gameName == null || event.gameName.isEmpty()
-                    ? pendingInstallationName(hostId, event.gameId) : event.gameName;
-            getSharedPreferences("console_dashboard", MODE_PRIVATE).edit()
-                    .remove(playniteInstallPendingKey(hostId, event.gameId)).apply();
-            displayMessage(getString("game-installation-cancelled".equals(name)
-                    ? R.string.playnite_install_cancelled
-                    : R.string.playnite_install_failed, gameName));
-        } else if ("game-installation-attention-required".equals(name)) {
-            if (!isPendingInstallation(hostId, event.gameId)) return;
-            String gameName = event.gameName == null || event.gameName.isEmpty()
-                    ? pendingInstallationName(hostId, event.gameId) : event.gameName;
-            displayMessage(getString(R.string.playnite_install_attention_overlay, gameName));
-        } else if ("game-starting".equals(name)) {
-            transitionController.targetStarting(transitionId, hostId,
-                    LaunchTransitionType.GAME, event.gameId);
-        } else if ("game-running".equals(name)) {
-            transitionController.targetProcessRunning(transitionId, hostId,
-                    LaunchTransitionType.GAME, event.gameId);
-        } else if ("game-stopping".equals(name) || "game-stopped".equals(name)) {
-            transitionController.gameStopping(transitionId, hostId, event.gameId);
-            transitionController.playniteReturning(transitionId, hostId);
-        } else if ("privacy-gate-closed".equals(name)) {
-            transitionController.targetWindowLost(transitionId, hostId,
-                    LaunchTransitionType.GAME, transitionSpec.playniteGameId,
-                    getString(R.string.transition_window_stabilizing));
-        } else if ("bridge-disconnected".equals(name)) {
-            transitionController.playniteStopping(transitionId, hostId);
-        }
-    }
-
     private static String playniteInstallNotificationKey(String hostId, String gameId) {
         return "playnite_install_notified." + hostId + ":" + gameId;
     }
@@ -3587,49 +3417,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 getString(R.string.playnite_game_fallback_name));
     }
 
-    private boolean isPendingInstallationEvent(String hostId,
-                                                PlayniteTransitionGateway.Event event) {
-        if (event == null) return false;
-        return ("game-installed".equals(event.name)
-                || "game-installation-cancelled".equals(event.name)
-                || "game-installation-failed".equals(event.name))
-                && isPendingInstallation(hostId, event.gameId);
-    }
-
-    private static long timeoutFor(LaunchTransitionState state) {
-        switch (state) {
-            case PREPARING_SESSION:
-                return 90_000L;
-            case CONNECTING_STREAM:
-                return 30_000L;
-            case WAITING_FOR_VIDEO_SURFACE:
-                return 15_000L;
-            case PLAYNITE_STARTING:
-            case PLAYNITE_PROCESS_RUNNING:
-                return 45_000L;
-            case PLAYNITE_FULLSCREEN_STARTING:
-                return 30_000L;
-            case GAME_START_REQUESTED:
-            case GAME_STARTING:
-            case GAME_PROCESS_RUNNING:
-                return 120_000L;
-            case GAME_WINDOW_STABILIZING:
-                return 30_000L;
-            case PLAYNITE_RETURNING:
-                return 45_000L;
-            case PLAYNITE_STOPPING:
-            case CLOSING_STREAM:
-                return 15_000L;
-            default:
-                return 0L;
-        }
-    }
-
     private void cancelTransition() {
         if (transitionController == null) return;
         transitionController.cancel(transitionSpec.id);
-        transitionObservationStopped = true;
-        if (transitionObservation != null) transitionObservation.cancel(true);
+        if (transitionCoordinator != null) transitionCoordinator.stop();
         consoleLoadingView.doAfterNextFrame(() -> {
             userInitiatedDisconnect = true;
             stopConnection();
@@ -3639,8 +3430,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void retryTransition() {
         if (transitionSpec == null) return;
-        transitionObservationStopped = true;
-        if (transitionObservation != null) transitionObservation.cancel(true);
+        if (transitionCoordinator != null) transitionCoordinator.stop();
         Intent retry = new Intent(getIntent());
         LaunchTransitionSpec next = LaunchTransitionSpec.create(
                 transitionSpec.hostId, transitionSpec.type, transitionSpec.sunshineAppId,
@@ -4047,7 +3837,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
             @Override
             public void onInstallationConfirmed() {
-                confirmPendingInstallation();
+                if (transitionCoordinator == null
+                        || !transitionCoordinator.isInstallationConfirmationStream()) return;
+                displayMessage(getString(R.string.playnite_install_verifying));
+                transitionCoordinator.verifyInstallation();
             }
 
             @Override
