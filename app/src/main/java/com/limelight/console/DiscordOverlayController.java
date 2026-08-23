@@ -13,6 +13,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.limelight.R;
+import com.limelight.gateway.GatewayConnection;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.ui.overlay.DiscordGatewayClient;
 import com.limelight.ui.overlay.OverlayMenuView;
@@ -56,10 +57,11 @@ public final class DiscordOverlayController {
         store = new HostGatewayStore(activity);
         GatewayConnection stored = store.loadForHost(hostUuid, activeHost);
         boolean enabled = stored != null
-                && store.isDiscordEnabled(this.hostUuid, stored.profileId);
+                && store.isDiscordEnabled(this.hostUuid, stored.profileId());
         try {
             connection = !enabled ? null : new DiscordGatewayClient.Connection(
-                    stored.endpoint, stored.token, stored.certificateSha256, stored.profileId);
+                    stored.endpoint(), stored.token(), stored.certificateSha256(),
+                    stored.profileId());
         } catch (IllegalArgumentException invalidConnection) {
             connection = null;
         }
@@ -174,16 +176,17 @@ public final class DiscordOverlayController {
 
     private String currentProfile() {
         GatewayConnection stored = store.load(hostUuid);
-        return stored == null ? GatewayConnection.DEFAULT_PROFILE_ID : stored.profileId;
+        return stored == null ? GatewayConnection.DEFAULT_PROFILE_ID : stored.profileId();
     }
 
     private void prepareDiscord(GatewayConnection stored) {
         if (stored == null) return;
-        boolean autoConnect = store.isDiscordAutoConnectEnabled(hostUuid, stored.profileId);
-        boolean autoJoin = store.isDiscordAutoJoinLastEnabled(hostUuid, stored.profileId);
+        boolean autoConnect = store.isDiscordAutoConnectEnabled(hostUuid, stored.profileId());
+        boolean autoJoin = store.isDiscordAutoJoinLastEnabled(hostUuid, stored.profileId());
         if (!autoConnect && !autoJoin) return;
         HostGatewayClient.Connection gatewayConnection = new HostGatewayClient.Connection(
-                stored.endpoint, stored.token, stored.certificateSha256, stored.profileId);
+                stored.endpoint(), stored.token(), stored.certificateSha256(),
+                stored.profileId());
         executor.execute(() -> {
             if (autoConnect) {
                 try { gatewayClient.startDiscord(gatewayConnection); } catch (Exception ignored) { }
@@ -191,7 +194,7 @@ public final class DiscordOverlayController {
             }
             if (autoJoin) {
                 HostGatewayStore.DiscordChannelSelection saved =
-                        store.loadLastDiscordChannel(hostUuid, stored.profileId);
+                        store.loadLastDiscordChannel(hostUuid, stored.profileId());
                 if (saved != null) {
                     try {
                         DiscordGatewayClient.VoiceState current = client.getVoice(connection, true);

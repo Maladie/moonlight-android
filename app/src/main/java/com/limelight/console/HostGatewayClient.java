@@ -4,42 +4,29 @@ import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
 
-import java.io.ByteArrayOutputStream;
+import com.limelight.gateway.GatewayConnection;
+import com.limelight.gateway.GatewayTransport;
+
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.net.HttpURLConnection;
 import java.net.URLEncoder;
-import java.net.URL;
 import java.nio.charset.StandardCharsets;
-import java.security.GeneralSecurityException;
-import java.security.MessageDigest;
-import java.security.cert.CertificateException;
-import java.security.cert.X509Certificate;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
-import java.util.UUID;
-
-import javax.net.ssl.HostnameVerifier;
-import javax.net.ssl.HttpsURLConnection;
-import javax.net.ssl.SSLContext;
-import javax.net.ssl.SSLSession;
-import javax.net.ssl.TrustManager;
-import javax.net.ssl.X509TrustManager;
 
 final class HostGatewayClient {
     static final int DEFAULT_PORT = 8785;
     static final int REQUIRED_GAMEPLAY_PERMISSIONS = 0x07001F00;
-    private static final int CONNECT_TIMEOUT_MS = 2_500;
     private static final int READ_TIMEOUT_MS = 5_000;
+    private final GatewayTransport transport = new GatewayTransport();
 
     static final class Connection {
         final String endpoint;
         final String token;
         final String certificateSha256;
         final String profileId;
+        final GatewayConnection gatewayConnection;
 
         Connection(String endpoint, String token, String certificateSha256) {
             this(endpoint, token, certificateSha256, "default");
@@ -47,15 +34,12 @@ final class HostGatewayClient {
 
         Connection(String endpoint, String token, String certificateSha256,
                    String profileId) {
-            this.endpoint = trimSlash(endpoint);
-            this.token = token;
-            this.certificateSha256 = normalizeFingerprint(certificateSha256);
-            String normalizedProfile = profileId == null || profileId.trim().isEmpty() ?
-                    "default" : profileId.trim();
-            if (!normalizedProfile.matches("[A-Za-z0-9._-]{1,64}")) {
-                throw new IllegalArgumentException("Invalid integration profile ID");
-            }
-            this.profileId = normalizedProfile;
+            gatewayConnection = new GatewayConnection(
+                    endpoint, token, certificateSha256, profileId);
+            this.endpoint = gatewayConnection.endpoint();
+            this.token = gatewayConnection.token();
+            this.certificateSha256 = gatewayConnection.certificateSha256();
+            this.profileId = gatewayConnection.profileId();
         }
 
         Connection withProfile(String profileId) {
@@ -598,17 +582,6 @@ final class HostGatewayClient {
         }
     }
 
-    private static final HostnameVerifier PINNED_HOSTNAME_VERIFIER =
-            new HostnameVerifier() {
-                @Override
-                public boolean verify(String hostname, SSLSession session) {
-                    // Identity is verified by the pinned leaf certificate. The
-                    // generated host certificate intentionally does not depend on
-                    // a DHCP address that may change later.
-                    return true;
-                }
-            };
-
     static String endpointForHost(String address) {
         String host = address == null ? "" : address.trim();
         if (host.startsWith("[")) {
@@ -624,7 +597,6 @@ final class HostGatewayClient {
         if (code == null || !code.matches("[0-9]{6}")) {
             throw new GatewayException("The pairing code must contain six digits.", 0);
         }
-        PairingTrustManager trustManager = new PairingTrustManager(null, true);
         JSONObject request = new JSONObject();
         try {
             request.put("code", code);
@@ -632,12 +604,15 @@ final class HostGatewayClient {
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
-        JSONObject response = request(trimSlash(endpoint), "/api/v1/pair", "POST",
-                request, null, trustManager, READ_TIMEOUT_MS);
-        String fingerprint = trustManager.seenFingerprint;
-        if (fingerprint == null || fingerprint.isEmpty()) {
-            throw new GatewayException("The gateway did not present a certificate.", 0);
+        GatewayTransport.PairingResponse pairing;
+        try {
+            pairing = transport.postPairingJson(
+                    endpoint, "/api/v1/pair", request, READ_TIMEOUT_MS);
+        } catch (GatewayTransport.GatewayException error) {
+            throw mapException(error);
         }
+        JSONObject response = pairing.response();
+        String fingerprint = pairing.certificateSha256();
         String token = response.optString("token", "");
         if (token.isEmpty()) throw new GatewayException("The gateway returned no client token.", 0);
         return new Pairing(new Connection(endpoint, token, fingerprint),
@@ -646,9 +621,9 @@ final class HostGatewayClient {
     }
 
     String requestVibepolloPairingTicket(Connection connection) throws IOException {
-        JSONObject response = request(connection.endpoint,
+        JSONObject response = request(connection,
                 "/api/v1/vibepollo/pair/ticket", "POST", new JSONObject(),
-                connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+                READ_TIMEOUT_MS);
         String ticket = response.optString("stream_pair_ticket", "");
         if (ticket.isEmpty()) {
             throw new GatewayException("The gateway returned no stream pairing ticket.", 0);
@@ -677,9 +652,8 @@ final class HostGatewayClient {
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
-        JSONObject response = request(connection.endpoint,
-                "/api/v1/vibepollo/pair", "POST", body, connection,
-                pinnedTrust(connection), 16_000);
+        JSONObject response = request(connection,
+                "/api/v1/vibepollo/pair", "POST", body, 16_000);
         if (!response.optBoolean("ok", false)) {
             throw new GatewayException(response.optString("error",
                     "The Moonlight client could not be paired."), 0);
@@ -688,8 +662,8 @@ final class HostGatewayClient {
     }
 
     Capabilities getCapabilities(Connection connection) throws IOException {
-        JSONObject response = request(connection.endpoint, "/api/v1/capabilities", "GET",
-                null, connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+        JSONObject response = request(connection, "/api/v1/capabilities", "GET",
+                null, READ_TIMEOUT_MS);
         JSONObject capabilities = response.optJSONObject("capabilities");
         return new Capabilities(available(capabilities, "vibepollo_fix"),
                 available(capabilities, "discord"),
@@ -698,8 +672,8 @@ final class HostGatewayClient {
     }
 
     IntegrationProfiles getIntegrationProfiles(Connection connection) throws IOException {
-        JSONObject response = request(connection.endpoint, "/api/v1/profiles", "GET",
-                null, connection, pinnedTrust(connection), 15_000);
+        JSONObject response = request(connection, "/api/v1/profiles", "GET",
+                null, 15_000);
         JSONArray values = response.optJSONArray("profiles");
         List<IntegrationProfile> profiles = new ArrayList<>();
         if (values != null) {
@@ -724,8 +698,8 @@ final class HostGatewayClient {
     }
 
     RepairStatus getVibepolloRepairStatus(Connection connection) throws IOException {
-        JSONObject response = request(connection.endpoint, "/api/v1/vibepollo/repair/status", "GET",
-                null, connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+        JSONObject response = request(connection, "/api/v1/vibepollo/repair/status", "GET",
+                null, READ_TIMEOUT_MS);
         JSONObject host = response.optJSONObject("host");
         JSONObject bridge = response.optJSONObject("bridge");
         return new RepairStatus(response.optBoolean("ok", false) &&
@@ -739,8 +713,8 @@ final class HostGatewayClient {
                 !"export-logs".equals(action)) {
             throw new IllegalArgumentException("Unknown repair action");
         }
-        return request(connection.endpoint, "/api/v1/vibepollo/repair/" + action, "POST",
-                new JSONObject(), connection, pinnedTrust(connection),
+        return request(connection, "/api/v1/vibepollo/repair/" + action, "POST",
+                new JSONObject(),
                 "export-logs".equals(action) ? 25_000 : 8_000);
     }
 
@@ -761,9 +735,8 @@ final class HostGatewayClient {
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
-        JSONObject response = request(connection.endpoint,
-                "/api/v1/vibepollo/apps/ensure", "POST", body, connection,
-                pinnedTrust(connection), 15_000);
+        JSONObject response = request(connection,
+                "/api/v1/vibepollo/apps/ensure", "POST", body, 15_000);
         if (!response.optBoolean("ok", false)) {
             throw new GatewayException(response.optString("error",
                     "Vibepollo application was not created."), 0);
@@ -786,13 +759,13 @@ final class HostGatewayClient {
     }
 
     JSONObject sleepHost(Connection connection) throws IOException {
-        return request(connection.endpoint, "/api/v1/system/sleep", "POST",
-                new JSONObject(), connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+        return request(connection, "/api/v1/system/sleep", "POST",
+                new JSONObject(), READ_TIMEOUT_MS);
     }
 
     JSONObject suspendSession(Connection connection, JSONObject session) throws IOException {
-        return request(connection.endpoint, "/api/v1/system/suspend-session", "POST",
-                session, connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+        return request(connection, "/api/v1/system/suspend-session", "POST",
+                session, READ_TIMEOUT_MS);
     }
 
     PlayniteLibrary getPlayniteLibrary(Connection connection, String cursor, int limit)
@@ -800,16 +773,16 @@ final class HostGatewayClient {
         if (limit < 1 || limit > 100) throw new IllegalArgumentException("Invalid page size");
         String safeCursor = cursor == null ? "" : cursor;
         String encoded = URLEncoder.encode(safeCursor, StandardCharsets.UTF_8.name());
-        JSONObject response = request(connection.endpoint,
+        JSONObject response = request(connection,
                 "/api/v1/playnite/library/list?cursor=" + encoded + "&limit=" + limit,
-                "GET", null, connection, pinnedTrust(connection), 12_000);
+                "GET", null, 12_000);
         return parsePlayniteLibrary(response.optJSONObject("library"));
     }
 
     String refreshPlayniteLibrary(Connection connection) throws IOException {
-        JSONObject response = request(connection.endpoint,
+        JSONObject response = request(connection,
                 "/api/v1/playnite/library/refresh", "POST", new JSONObject(),
-                connection, pinnedTrust(connection), 8_000);
+                8_000);
         if (!response.optBoolean("ok", false)) {
             throw new GatewayException(response.optString("error",
                     "The Playnite library refresh could not be started."), 0);
@@ -824,14 +797,20 @@ final class HostGatewayClient {
         if (!"cover".equals(kind) && !"background".equals(kind) && !"icon".equals(kind)) {
             throw new IllegalArgumentException("Invalid Playnite artwork kind");
         }
-        return requestBytes(connection.endpoint,
-                "/api/v1/playnite/artwork?game_id=" + gameId + "&kind=" + kind,
-                connection, pinnedTrust(connection), 12_000);
+        try {
+            return transport.getBinary(connection.gatewayConnection,
+                    "/api/v1/playnite/artwork?game_id=" + gameId + "&kind=" + kind,
+                    "image/*", 12_000);
+        } catch (GatewayTransport.GatewayException error) {
+            throw new GatewayException("Playnite artwork is unavailable.", error.statusCode());
+        } catch (GatewayTransport.ResponseTooLargeException error) {
+            throw new IOException("Playnite artwork is too large.");
+        }
     }
 
     PlayniteCurrentGame getPlayniteCurrentGame(Connection connection) throws IOException {
-        JSONObject response = request(connection.endpoint, "/api/v1/playnite/game/current",
-                "GET", null, connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+        JSONObject response = request(connection, "/api/v1/playnite/game/current",
+                "GET", null, READ_TIMEOUT_MS);
         JSONObject current = response.optJSONObject("current");
         if (current == null) current = new JSONObject();
         return new PlayniteCurrentGame(current.optString("state", "idle"),
@@ -840,8 +819,8 @@ final class HostGatewayClient {
     }
 
     PlayniteHealth getPlayniteHealth(Connection connection) throws IOException {
-        JSONObject response = request(connection.endpoint, "/api/v1/playnite/health",
-                "GET", null, connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+        JSONObject response = request(connection, "/api/v1/playnite/health",
+                "GET", null, READ_TIMEOUT_MS);
         JSONObject bridge = response.optJSONObject("bridge");
         if (bridge == null) bridge = new JSONObject();
         return new PlayniteHealth(bridge.optBoolean("connector_connected", false),
@@ -849,16 +828,15 @@ final class HostGatewayClient {
     }
 
     PlayniteReadiness getPlayniteReadiness(Connection connection) throws IOException {
-        JSONObject response = request(connection.endpoint,
-                "/api/v1/playnite/window/readiness", "GET", null, connection,
-                pinnedTrust(connection), READ_TIMEOUT_MS);
+        JSONObject response = request(connection,
+                "/api/v1/playnite/window/readiness", "GET", null, READ_TIMEOUT_MS);
         return parsePlayniteReadiness(response.optJSONObject("readiness"));
     }
 
     void showPlayniteFullscreen(Connection connection) throws IOException {
-        JSONObject response = request(connection.endpoint,
+        JSONObject response = request(connection,
                 "/api/v1/playnite/show-fullscreen", "POST", new JSONObject(),
-                connection, pinnedTrust(connection), 10_000);
+                10_000);
         if (!response.optBoolean("ok", false)) {
             throw new GatewayException(response.optString("error",
                     "Playnite Fullscreen could not be restored."), 0);
@@ -866,9 +844,9 @@ final class HostGatewayClient {
     }
 
     void focusPlayniteGame(Connection connection) throws IOException {
-        JSONObject response = request(connection.endpoint,
+        JSONObject response = request(connection,
                 "/api/v1/playnite/game/focus", "POST", new JSONObject(),
-                connection, pinnedTrust(connection), 8_000);
+                8_000);
         if (!response.optBoolean("ok", false)) {
             throw new GatewayException(response.optString("error",
                     "The game window could not be focused."), 0);
@@ -885,9 +863,8 @@ final class HostGatewayClient {
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
-        JSONObject response = request(connection.endpoint,
-                "/api/v1/playnite/game/install", "POST", body, connection,
-                pinnedTrust(connection), 15_000);
+        JSONObject response = request(connection,
+                "/api/v1/playnite/game/install", "POST", body, 15_000);
         if (!response.optBoolean("ok", false)) {
             throw new GatewayException(response.optString("error",
                     "The game installation could not be started."), 0);
@@ -904,9 +881,8 @@ final class HostGatewayClient {
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
-        JSONObject response = request(connection.endpoint,
-                "/api/v1/playnite/game/uninstall", "POST", body, connection,
-                pinnedTrust(connection), 15_000);
+        JSONObject response = request(connection,
+                "/api/v1/playnite/game/uninstall", "POST", body, 15_000);
         if (!response.optBoolean("ok", false)) {
             throw new GatewayException(response.optString("error",
                     "The game could not be uninstalled."), 0);
@@ -923,9 +899,8 @@ final class HostGatewayClient {
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
-        JSONObject response = request(connection.endpoint,
-                "/api/v1/playnite/game/install/focus", "POST", body, connection,
-                pinnedTrust(connection), 8_000);
+        JSONObject response = request(connection,
+                "/api/v1/playnite/game/install/focus", "POST", body, 8_000);
         if (!response.optBoolean("ok", false)) {
             throw new GatewayException(response.optString("error",
                     "The installation window could not be opened."), 0);
@@ -942,9 +917,8 @@ final class HostGatewayClient {
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
-        JSONObject response = request(connection.endpoint,
-                "/api/v1/playnite/game/install/verify", "POST", body, connection,
-                pinnedTrust(connection), 10_000);
+        JSONObject response = request(connection,
+                "/api/v1/playnite/game/install/verify", "POST", body, 10_000);
         if (!response.optBoolean("ok", false)) {
             throw new GatewayException(response.optString("error",
                     "The installation could not be verified."), 0);
@@ -965,11 +939,10 @@ final class HostGatewayClient {
                 || !correlation.matches("[A-Za-z0-9._:-]*")) {
             throw new IllegalArgumentException("Invalid transition ID");
         }
-        JSONObject response = request(connection.endpoint,
+        JSONObject response = request(connection,
                 "/api/v1/playnite/events?after=" + after + "&transition_id=" +
                         URLEncoder.encode(correlation, StandardCharsets.UTF_8.name()),
-                "GET", null, connection,
-                pinnedTrust(connection), 25_000);
+                "GET", null, 25_000);
         String echoedCorrelation = response.optString("transition_id", "");
         if (!echoedCorrelation.isEmpty() && !correlation.equals(echoedCorrelation)) {
             throw new GatewayException("Mismatched transition response.", 409);
@@ -1096,8 +1069,8 @@ final class HostGatewayClient {
     }
 
     DiscordStatus getDiscordStatus(Connection connection) throws IOException {
-        JSONObject response = request(connection.endpoint, "/api/v1/discord/status", "GET",
-                null, connection, pinnedTrust(connection), READ_TIMEOUT_MS);
+        JSONObject response = request(connection, "/api/v1/discord/status", "GET",
+                null, READ_TIMEOUT_MS);
         return new DiscordStatus(
                 response.optBoolean("bridge_online", false),
                 response.optBoolean("rpc_connected", false),
@@ -1106,9 +1079,9 @@ final class HostGatewayClient {
     }
 
     DiscordHome getDiscordHome(Connection connection, boolean force) throws IOException {
-        JSONObject response = request(connection.endpoint,
+        JSONObject response = request(connection,
                 "/api/v1/discord/home" + (force ? "?force=true" : ""), "GET",
-                null, connection, pinnedTrust(connection), 12_000);
+                null, 12_000);
         JSONObject home = response.optJSONObject("home");
         return new DiscordHome(
                 parseSavedChannels(home != null ? home.optJSONArray("favorites") : null, true),
@@ -1119,9 +1092,9 @@ final class HostGatewayClient {
     List<DiscordChannel> getDiscordChannels(Connection connection, DiscordGuild guild,
                                             boolean force) throws IOException {
         if (!isDiscordId(guild.id)) throw new IllegalArgumentException("Invalid Discord guild ID");
-        JSONObject response = request(connection.endpoint,
+        JSONObject response = request(connection,
                 "/api/v1/discord/channels?guild_id=" + guild.id + (force ? "&force=true" : ""), "GET",
-                null, connection, pinnedTrust(connection), 15_000);
+                null, 15_000);
         JSONObject value = response.optJSONObject("channels");
         JSONArray channels = value != null ? value.optJSONArray("channels") : null;
         List<DiscordChannel> result = new ArrayList<>();
@@ -1139,9 +1112,9 @@ final class HostGatewayClient {
     }
 
     DiscordVoice getDiscordVoice(Connection connection, boolean force) throws IOException {
-        JSONObject response = request(connection.endpoint,
+        JSONObject response = request(connection,
                 "/api/v1/discord/voice" + (force ? "?force=true" : ""), "GET",
-                null, connection, pinnedTrust(connection), 12_000);
+                null, 12_000);
         JSONObject voice = response.optJSONObject("voice");
         if (voice == null) voice = new JSONObject();
         JSONObject channel = voice.optJSONObject("channel");
@@ -1277,9 +1250,9 @@ final class HostGatewayClient {
     }
 
     VirtualHereState getVirtualHereState(Connection connection, boolean force) throws IOException {
-        JSONObject response = request(connection.endpoint,
+        JSONObject response = request(connection,
                 "/api/v1/virtualhere/state" + (force ? "?force=true" : ""), "GET",
-                null, connection, pinnedTrust(connection), 12_000);
+                null, 12_000);
         JSONObject state = response.optJSONObject("virtualhere");
         if (state == null) state = new JSONObject();
         List<VirtualHereServer> servers = new ArrayList<>();
@@ -1332,14 +1305,14 @@ final class HostGatewayClient {
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
-        return request(connection.endpoint, "/api/v1/virtualhere/" + action, "POST",
-                body, connection, pinnedTrust(connection),
+        return request(connection, "/api/v1/virtualhere/" + action, "POST",
+                body,
                 "restart".equals(action) ? 15_000 : 12_000);
     }
 
     DiscordAudioState getDiscordAudioState(Connection connection) throws IOException {
-        JSONObject response = request(connection.endpoint, "/api/v1/discord/audio", "GET",
-                null, connection, pinnedTrust(connection), 15_000);
+        JSONObject response = request(connection, "/api/v1/discord/audio", "GET",
+                null, 15_000);
         JSONObject audio = response.optJSONObject("audio");
         if (audio == null) audio = new JSONObject();
         return new DiscordAudioState(audio.optBoolean("system_available", false),
@@ -1387,8 +1360,8 @@ final class HostGatewayClient {
 
     private JSONObject discordAction(Connection connection, String action, JSONObject body,
                                      int timeoutMs) throws IOException {
-        return request(connection.endpoint, "/api/v1/discord/" + action, "POST",
-                body, connection, pinnedTrust(connection), timeoutMs);
+        return request(connection, "/api/v1/discord/" + action, "POST",
+                body, timeoutMs);
     }
 
     private static List<DiscordGuild> parseGuilds(JSONArray values) {
@@ -1446,172 +1419,22 @@ final class HostGatewayClient {
         return capability != null && capability.optBoolean("available", false);
     }
 
-    private static PairingTrustManager pinnedTrust(Connection connection) {
-        if (connection.certificateSha256.isEmpty()) {
-            throw new IllegalArgumentException("Missing gateway certificate pin");
-        }
-        return new PairingTrustManager(connection.certificateSha256, false);
-    }
-
-    private static JSONObject request(String endpoint, String path, String method,
-                                      JSONObject body, Connection connection,
-                                      PairingTrustManager trustManager,
-                                      int readTimeoutMs) throws IOException {
-        HttpsURLConnection http = null;
-        try {
-            SSLContext context = SSLContext.getInstance("TLS");
-            context.init(null, new TrustManager[]{trustManager}, null);
-            http = (HttpsURLConnection) new URL(trimSlash(endpoint) + path).openConnection();
-            http.setSSLSocketFactory(context.getSocketFactory());
-            http.setHostnameVerifier(PINNED_HOSTNAME_VERIFIER);
-            http.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            http.setReadTimeout(readTimeoutMs);
-            http.setRequestMethod(method);
-            http.setRequestProperty("Accept", "application/json");
-            http.setRequestProperty("Connection", "close");
-            if (connection != null) {
-                http.setRequestProperty("Authorization", "Bearer " + connection.token);
-                http.setRequestProperty("X-WakePlay-Profile", connection.profileId);
-            }
-            if ("POST".equals(method)) {
-                byte[] payload = (body != null ? body : new JSONObject()).toString()
-                        .getBytes(StandardCharsets.UTF_8);
-                http.setDoOutput(true);
-                http.setFixedLengthStreamingMode(payload.length);
-                http.setRequestProperty("Content-Type", "application/json; charset=utf-8");
-                http.setRequestProperty("X-Request-Id", UUID.randomUUID().toString());
-                try (OutputStream output = http.getOutputStream()) {
-                    output.write(payload);
-                }
-            }
-
-            int status = http.getResponseCode();
-            InputStream input = status >= 400 ? http.getErrorStream() : http.getInputStream();
-            String raw = input != null ? readUtf8(input) : "";
-            JSONObject response;
-            try {
-                response = raw.isEmpty() ? new JSONObject() : new JSONObject(raw);
-            } catch (JSONException error) {
-                throw new GatewayException("Invalid response from host gateway.", status);
-            }
-            if (status < HttpURLConnection.HTTP_OK || status >= 300) {
-                throw new GatewayException(response.optString("error", "Host gateway request failed."), status);
-            }
-            return response;
-        } catch (GeneralSecurityException error) {
-            throw new IOException("Unable to initialize gateway TLS.", error);
-        } finally {
-            if (http != null) http.disconnect();
-        }
-    }
-
-    private static byte[] requestBytes(String endpoint, String path, Connection connection,
-                                       PairingTrustManager trustManager, int readTimeoutMs)
-            throws IOException {
-        HttpsURLConnection http = null;
-        try {
-            SSLContext context = SSLContext.getInstance("TLS");
-            context.init(null, new TrustManager[]{trustManager}, null);
-            http = (HttpsURLConnection) new URL(trimSlash(endpoint) + path).openConnection();
-            http.setSSLSocketFactory(context.getSocketFactory());
-            http.setHostnameVerifier(PINNED_HOSTNAME_VERIFIER);
-            http.setConnectTimeout(CONNECT_TIMEOUT_MS);
-            http.setReadTimeout(readTimeoutMs);
-            http.setRequestMethod("GET");
-            http.setRequestProperty("Accept", "image/*");
-            http.setRequestProperty("Connection", "close");
-            http.setRequestProperty("Authorization", "Bearer " + connection.token);
-            http.setRequestProperty("X-WakePlay-Profile", connection.profileId);
-            int status = http.getResponseCode();
-            if (status < HttpURLConnection.HTTP_OK || status >= 300) {
-                throw new GatewayException("Playnite artwork is unavailable.", status);
-            }
-            try (InputStream input = http.getInputStream();
-                 ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-                byte[] buffer = new byte[8192];
-                int read;
-                int total = 0;
-                while ((read = input.read(buffer)) >= 0) {
-                    total += read;
-                    if (total > 8 * 1024 * 1024) {
-                        throw new IOException("Playnite artwork is too large.");
-                    }
-                    output.write(buffer, 0, read);
-                }
-                return output.toByteArray();
-            }
-        } catch (GeneralSecurityException error) {
-            throw new IOException("Unable to initialize gateway TLS.", error);
-        } finally {
-            if (http != null) http.disconnect();
-        }
-    }
-
-    private static String readUtf8(InputStream input) throws IOException {
-        try (InputStream stream = input; ByteArrayOutputStream output = new ByteArrayOutputStream()) {
-            byte[] buffer = new byte[4096];
-            int read;
-            int total = 0;
-            while ((read = stream.read(buffer)) >= 0) {
-                total += read;
-                if (total > 1024 * 1024) throw new IOException("Gateway response is too large.");
-                output.write(buffer, 0, read);
-            }
-            return output.toString(StandardCharsets.UTF_8.name());
-        }
-    }
-
-    private static String fingerprint(X509Certificate certificate) throws CertificateException {
-        try {
-            byte[] digest = MessageDigest.getInstance("SHA-256").digest(certificate.getEncoded());
-            StringBuilder value = new StringBuilder(digest.length * 2);
-            for (byte item : digest) value.append(String.format(Locale.US, "%02x", item & 0xff));
-            return value.toString();
-        } catch (GeneralSecurityException error) {
-            throw new CertificateException(error);
-        }
-    }
-
     static String normalizeFingerprint(String value) {
-        return value == null ? "" : value.replace(":", "").trim().toLowerCase(Locale.US);
+        return GatewayConnection.normalizeFingerprint(value);
     }
 
-    private static String trimSlash(String value) {
-        String result = value == null ? "" : value.trim();
-        while (result.endsWith("/")) result = result.substring(0, result.length() - 1);
-        return result;
+    private JSONObject request(Connection connection, String path, String method,
+                               JSONObject body, int readTimeoutMs) throws IOException {
+        try {
+            return "POST".equals(method)
+                    ? transport.postJson(connection.gatewayConnection, path, body, readTimeoutMs)
+                    : transport.getJson(connection.gatewayConnection, path, readTimeoutMs);
+        } catch (GatewayTransport.GatewayException error) {
+            throw mapException(error);
+        }
     }
 
-    private static final class PairingTrustManager implements X509TrustManager {
-        private final String expectedFingerprint;
-        private final boolean trustOnFirstUse;
-        volatile String seenFingerprint;
-
-        PairingTrustManager(String expectedFingerprint, boolean trustOnFirstUse) {
-            this.expectedFingerprint = normalizeFingerprint(expectedFingerprint);
-            this.trustOnFirstUse = trustOnFirstUse;
-        }
-
-        @Override
-        public void checkClientTrusted(X509Certificate[] chain, String authType) throws CertificateException {
-            throw new CertificateException("Client certificates are not supported.");
-        }
-
-        @Override
-        public void checkServerTrusted(X509Certificate[] chain, String authType) throws CertificateException {
-            if (chain == null || chain.length == 0) throw new CertificateException("Missing server certificate.");
-            String actual = fingerprint(chain[0]);
-            seenFingerprint = actual;
-            if (!trustOnFirstUse && !MessageDigest.isEqual(
-                    actual.getBytes(StandardCharsets.US_ASCII),
-                    expectedFingerprint.getBytes(StandardCharsets.US_ASCII))) {
-                throw new CertificateException("Host gateway certificate changed. Pair the host again.");
-            }
-        }
-
-        @Override
-        public X509Certificate[] getAcceptedIssuers() {
-            return new X509Certificate[0];
-        }
+    private static GatewayException mapException(GatewayTransport.GatewayException error) {
+        return new GatewayException(error.getMessage(), error.statusCode());
     }
 }

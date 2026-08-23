@@ -1,5 +1,7 @@
 package com.limelight.console;
 
+import com.limelight.gateway.GatewayConnection;
+
 import org.junit.Test;
 
 import static org.junit.Assert.assertEquals;
@@ -11,15 +13,15 @@ public class GatewayConnectionTest {
     @Test public void normalizesWakeCompatibleConnectionData() {
         GatewayConnection connection = new GatewayConnection(
                 " https://192.0.2.10:8785/ ", "secret", colonized(FINGERPRINT), " profile-1 ");
-        assertEquals("https://192.0.2.10:8785", connection.endpoint);
-        assertEquals(FINGERPRINT, connection.certificateSha256);
-        assertEquals("profile-1", connection.profileId);
+        assertEquals("https://192.0.2.10:8785", connection.endpoint());
+        assertEquals(FINGERPRINT, connection.certificateSha256());
+        assertEquals("profile-1", connection.profileId());
     }
 
     @Test public void emptyProfileUsesDefault() {
         GatewayConnection connection = new GatewayConnection(
                 "https://host:8785", "secret", FINGERPRINT, "");
-        assertEquals("default", connection.profileId);
+        assertEquals("default", connection.profileId());
     }
 
     @Test(expected = IllegalArgumentException.class)
@@ -30,6 +32,11 @@ public class GatewayConnectionTest {
     @Test(expected = IllegalArgumentException.class)
     public void rejectsPlainHttpEndpoint() {
         new GatewayConnection("http://host:8785", "secret", FINGERPRINT, "default");
+    }
+
+    @Test(expected = IllegalArgumentException.class)
+    public void rejectsEmptyToken() {
+        new GatewayConnection("https://host:8785", "", FINGERPRINT, "default");
     }
 
     @Test(expected = IllegalArgumentException.class)
