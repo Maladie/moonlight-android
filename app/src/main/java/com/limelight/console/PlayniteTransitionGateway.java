@@ -2,6 +2,8 @@ package com.limelight.console;
 
 import android.content.Context;
 
+import com.limelight.gateway.GatewayConnection;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -65,16 +67,16 @@ public final class PlayniteTransitionGateway {
     }
 
     private final HostGatewayClient client = new HostGatewayClient();
-    private final HostGatewayClient.Connection connection;
+    private final GatewayConnection connection;
 
-    private PlayniteTransitionGateway(HostGatewayClient.Connection connection) {
+    private PlayniteTransitionGateway(GatewayConnection connection) {
         this.connection = connection;
     }
 
     public static PlayniteTransitionGateway connect(Context context, String hostId,
                                                     String activeHost) {
-        HostGatewayClient.Connection connection = new HostGatewayStore(context)
-                .loadClientConnection(hostId, activeHost);
+        GatewayConnection connection = new HostGatewayStore(context)
+                .loadForHost(hostId, activeHost);
         return connection == null ? null : new PlayniteTransitionGateway(connection);
     }
 

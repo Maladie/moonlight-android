@@ -1,5 +1,7 @@
 package com.limelight.console;
 
+import com.limelight.gateway.GatewayConnection;
+
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
@@ -38,12 +40,12 @@ final class PlayniteLibraryRepository {
 
     PlayniteLibraryCache.Entry cached(String hostUuid) { return cache.read(hostUuid); }
 
-    Result refresh(String hostUuid, HostGatewayClient.Connection connection,
+    Result refresh(String hostUuid, GatewayConnection connection,
                    Cancellation cancellation) {
         return refresh(hostUuid, connection, cancellation, false);
     }
 
-    Result refresh(String hostUuid, HostGatewayClient.Connection connection,
+    Result refresh(String hostUuid, GatewayConnection connection,
                    Cancellation cancellation, boolean refreshSource) {
         if (connection == null) return Result.failure(ErrorKind.AUTHENTICATION);
         IOException last = null;
@@ -86,7 +88,7 @@ final class PlayniteLibraryRepository {
                 ? ErrorKind.TIMEOUT : serverFailure ? ErrorKind.SERVER : ErrorKind.OFFLINE);
     }
 
-    private boolean waitForFreshSnapshot(HostGatewayClient.Connection connection,
+    private boolean waitForFreshSnapshot(GatewayConnection connection,
                                          String previousRevision,
                                          Cancellation cancellation) throws IOException {
         long now = System.currentTimeMillis();
@@ -107,7 +109,7 @@ final class PlayniteLibraryRepository {
         return false;
     }
 
-    private PlayniteLibraryCache.Entry fetchAll(HostGatewayClient.Connection connection,
+    private PlayniteLibraryCache.Entry fetchAll(GatewayConnection connection,
                                                  Cancellation cancellation) throws IOException {
         PlayniteLibraryPaginator.Result pages = PlayniteLibraryPaginator.fetchAll(
                 (cursor, limit) -> client.getPlayniteLibrary(connection, cursor, limit),

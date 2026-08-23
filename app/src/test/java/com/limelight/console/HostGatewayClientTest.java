@@ -30,11 +30,6 @@ public class HostGatewayClientTest {
     }
 
     @Test
-    public void certificateFingerprintIsNormalized() {
-        assertEquals("aabbcc", HostGatewayClient.normalizeFingerprint("AA:BB:CC"));
-    }
-
-    @Test
     public void discordIdsAcceptOnlySnowflakeDigits() {
         assertTrue(HostGatewayClient.isDiscordId("123456789012345678"));
         assertFalse(HostGatewayClient.isDiscordId("../../shutdown"));

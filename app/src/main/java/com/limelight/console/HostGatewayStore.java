@@ -54,20 +54,6 @@ final class HostGatewayStore {
         }
     }
 
-    HostGatewayClient.Connection loadClientConnection(String hostUuid) {
-        GatewayConnection connection = load(hostUuid);
-        return connection == null ? null : new HostGatewayClient.Connection(
-                connection.endpoint(), connection.token(), connection.certificateSha256(),
-                connection.profileId());
-    }
-
-    HostGatewayClient.Connection loadClientConnection(String hostUuid, String activeHost) {
-        GatewayConnection connection = loadForHost(hostUuid, activeHost);
-        return connection == null ? null : new HostGatewayClient.Connection(
-                connection.endpoint(), connection.token(), connection.certificateSha256(),
-                connection.profileId());
-    }
-
     GatewayConnection loadForHost(String hostUuid, String activeHost) {
         GatewayConnection stored = load(hostUuid);
         if (stored == null || activeHost == null || activeHost.trim().isEmpty()) return stored;
@@ -97,12 +83,6 @@ final class HostGatewayStore {
                 .putString(key(hostUuid, "certificate"), connection.certificateSha256())
                 .putString(key(hostUuid, "integration_profile"), connection.profileId())
                 .apply();
-    }
-
-    void save(String hostUuid, HostGatewayClient.Connection connection) {
-        if (connection == null) return;
-        save(hostUuid, new GatewayConnection(connection.endpoint, connection.token,
-                connection.certificateSha256, connection.profileId));
     }
 
     void remove(String hostUuid) {

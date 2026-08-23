@@ -79,6 +79,7 @@ import com.limelight.computers.ComputerManagerService;
 import com.limelight.grid.assets.CachedAppAssetLoader;
 import com.limelight.grid.assets.DiskAssetLoader;
 import com.limelight.grid.assets.NetworkAssetLoader;
+import com.limelight.gateway.GatewayConnection;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.NvHTTP;
@@ -2341,8 +2342,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (now - lastResolved < 5_000L
                 || !activePlayniteGameResolutionInFlight.add(host.uuid)) return;
         String address = host.activeAddress != null ? host.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(host.uuid, address);
         if (connection == null) {
             activePlayniteGameResolutionInFlight.remove(host.uuid);
             return;
@@ -2548,7 +2549,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean paired = host.pairState == PairingManager.PairState.PAIRED;
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         boolean canSleep = online
-                && hostGatewayStore.loadClientConnection(host.uuid, address) != null;
+                && hostGatewayStore.loadForHost(host.uuid, address) != null;
 
         TextView wake = hostSelectionMenuAction(getString(R.string.console_wake_host),
                 ConsoleHostPresentation.canWake(host)
@@ -2956,14 +2957,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         String address = host.activeAddress != null ? host.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(host.uuid, address);
         if (connection == null) {
             applyDiscordIndicator(button, 0xFF7D8498,
                     getString(R.string.console_discord_unconfigured));
             return;
         }
-        if (!hostGatewayStore.isDiscordEnabled(host.uuid, connection.profileId)) {
+        if (!hostGatewayStore.isDiscordEnabled(host.uuid, connection.profileId())) {
             applyDiscordIndicator(button, 0xFF697083,
                     getString(R.string.console_discord_disabled));
             return;
@@ -3036,8 +3037,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
 
         String address = host.activeAddress != null ? host.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(host.uuid, address);
         if (connection == null) {
             beginLaunch(host, running);
             return;
@@ -3091,8 +3092,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         String address = host.activeAddress.address;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(host.uuid, address);
         if (connection != null) {
             beginAutomaticHostPairing(host, connection, null);
             return;
@@ -3131,7 +3132,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void beginAutomaticHostPairing(ComputerDetails host,
-                                           HostGatewayClient.Connection connection,
+                                           GatewayConnection connection,
                                            String initialTicket) {
         mainHandler.post(() -> ConsoleUiFeedback.makeText(this, R.string.console_pair_host_stream,
                 Toast.LENGTH_SHORT).show());
@@ -3331,8 +3332,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void confirmSleepHost(ComputerDetails host) {
         String activeAddress = host.activeAddress != null ? host.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid, activeAddress);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(host.uuid, activeAddress);
         if (connection == null) {
             ConsoleUiFeedback.makeText(this, R.string.console_gateway_pair_required,
                     Toast.LENGTH_LONG).show();
@@ -3353,7 +3354,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void requestHostSleep(ComputerDetails host,
-                                  HostGatewayClient.Connection connection) {
+                                  GatewayConnection connection) {
         if (host.runningGameId != 0) {
             String gameId = uniquePlayniteGameIdForRunningApp(host, host.runningGameId);
             if (gameId.isEmpty()) {
@@ -3631,7 +3632,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 sunshineAppsGeneration.incrementAndGet();
                 updateLaunchPlayniteButton(latestHost, apps);
                 boolean playniteAvailable = !currentPlayniteGames.isEmpty() ||
-                        hostGatewayStore.loadClientConnection(latestHost.uuid,
+                        hostGatewayStore.loadForHost(latestHost.uuid,
                                 latestHost.activeAddress != null ? latestHost.activeAddress.address : null) != null;
                 if (playniteAvailable) {
                     renderPlayniteLibrary(latestHost, apps);
@@ -3708,8 +3709,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void requestPlayniteRefresh(ComputerDetails host, boolean manual) {
         if (!active || host == null || !host.uuid.equals(selectedHostUuid)) return;
         String address = host.activeAddress != null ? host.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(host.uuid, address);
         mainHandler.removeCallbacks(playniteRefreshCycle);
         if (connection == null) {
             playniteInitialLoadPending = false;
@@ -3856,8 +3857,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void ensureVibepolloAfterInstall(ComputerDetails host,
                                              PlayniteLibraryGame game) {
         String address = host.activeAddress != null ? host.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(host.uuid, address);
         if (connection == null) return;
         String key = host.uuid + ":" + game.playniteGameId;
         if (!vibepolloEnsureInFlight.add(key)) return;
@@ -3913,7 +3914,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String address = host != null && host.activeAddress != null
                 ? host.activeAddress.address : null;
         boolean gatewayConfigured = host != null
-                && hostGatewayStore.loadClientConnection(host.uuid, address) != null;
+                && hostGatewayStore.loadForHost(host.uuid, address) != null;
         ConsoleLibraryStatus.State libraryStatus = ConsoleLibraryStatus.resolve(
                 playniteLibraryRefreshing, !currentPlayniteGames.isEmpty(),
                 playniteLibraryCached, playniteLibraryError, gatewayConfigured);
@@ -6555,8 +6556,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (!allowNetwork) return;
         String address = latestHost.activeAddress != null
                 ? latestHost.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(latestHost.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(latestHost.uuid, address);
         if (connection == null) return;
         executor.execute(() -> {
             try {
@@ -6613,8 +6614,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (latestHost == null) return;
         String address = latestHost.activeAddress != null
                 ? latestHost.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(latestHost.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(latestHost.uuid, address);
         if (connection == null) return;
         int token = playniteArtworkGeneration.incrementAndGet();
         List<PlayniteDashboardItem> snapshot = new ArrayList<>(items);
@@ -6634,7 +6635,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
-    private void prefetchPlayniteArtwork(HostGatewayClient.Connection connection,
+    private void prefetchPlayniteArtwork(GatewayConnection connection,
                                          ComputerDetails host,
                                          PlayniteDashboardItem item,
                                          boolean includeBackdrops, int token) {
@@ -6726,7 +6727,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return null;
     }
 
-    private ArtworkResult fetchPlayniteArtwork(HostGatewayClient.Connection connection,
+    private ArtworkResult fetchPlayniteArtwork(GatewayConnection connection,
                                                 String hostUuid,
                                                 PlayniteDashboardItem item,
                                                 PlayniteArtworkSpec spec) throws IOException {
@@ -6794,8 +6795,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         if (!allowNetwork) return;
         String address = host.activeAddress != null ? host.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(host.uuid, address);
         if (connection == null) return;
         String expectedTag = playniteArtworkTag(item);
         executor.execute(() -> {
@@ -7185,8 +7186,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         String address = host.activeAddress != null ? host.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(host.uuid, address);
         if (connection == null) {
             ConsoleUiFeedback.makeText(this, R.string.playnite_gateway_not_configured,
                     Toast.LENGTH_LONG).show();
@@ -7260,8 +7261,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         String address = host.activeAddress != null ? host.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(host.uuid, address);
         if (connection == null) {
             ConsoleUiFeedback.makeText(this, R.string.playnite_gateway_not_configured,
                     Toast.LENGTH_LONG).show();
@@ -7296,8 +7297,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                               PlayniteDashboardItem item) {
         if (host == null || item == null) return;
         String address = host.activeAddress != null ? host.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(host.uuid, address);
         if (connection == null) {
             ConsoleUiFeedback.makeText(this, R.string.playnite_gateway_not_configured,
                     Toast.LENGTH_LONG).show();
@@ -7377,8 +7378,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         String address = latestHost != null && latestHost.activeAddress != null
                 ? latestHost.activeAddress.address : null;
-        HostGatewayClient.Connection connection =
-                hostGatewayStore.loadClientConnection(host.uuid, address);
+        GatewayConnection connection =
+                hostGatewayStore.loadForHost(host.uuid, address);
         if (connection == null) {
             launchPlayniteFallback(host.uuid, item, fallback);
             return;
@@ -7398,7 +7399,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void ensureVibepolloApp(String hostUuid, PlayniteDashboardItem item,
-                                    NvApp fallback, HostGatewayClient.Connection connection,
+                                    NvApp fallback, GatewayConnection connection,
                                     String ensureKey, long deadline) {
         executor.execute(() -> {
             JSONObject ensuredApp = null;
@@ -9007,8 +9008,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     PlayniteArtworkSpec.forBackdrop(item.game));
             if (result == null && host != null) {
                 String address = host.activeAddress != null ? host.activeAddress.address : null;
-                HostGatewayClient.Connection connection =
-                        hostGatewayStore.loadClientConnection(hostUuid, address);
+                GatewayConnection connection =
+                        hostGatewayStore.loadForHost(hostUuid, address);
                 if (connection != null) {
                     try {
                         result = fetchPlayniteArtwork(connection, hostUuid, item,

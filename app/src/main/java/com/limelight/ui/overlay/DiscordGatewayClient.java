@@ -17,28 +17,6 @@ public final class DiscordGatewayClient {
     private static final int READ_TIMEOUT_MS = 12000;
     private final GatewayTransport transport = new GatewayTransport();
 
-    public static final class Connection {
-        final String endpoint;
-        final String token;
-        final String certificateSha256;
-        final String profileId;
-        final GatewayConnection gatewayConnection;
-
-        public Connection(String endpoint, String token, String certificateSha256) {
-            this(endpoint, token, certificateSha256, "default");
-        }
-
-        public Connection(String endpoint, String token, String certificateSha256,
-                          String profileId) {
-            gatewayConnection = new GatewayConnection(
-                    endpoint, token, certificateSha256, profileId);
-            this.endpoint = gatewayConnection.endpoint();
-            this.token = gatewayConnection.token();
-            this.certificateSha256 = gatewayConnection.certificateSha256();
-            this.profileId = gatewayConnection.profileId();
-        }
-    }
-
     public static final class Participant {
         public final String id;
         public final String name;
@@ -140,7 +118,7 @@ public final class DiscordGatewayClient {
         }
     }
 
-    public VoiceState getVoice(Connection connection, boolean force) throws IOException {
+    public VoiceState getVoice(GatewayConnection connection, boolean force) throws IOException {
         JSONObject response = request(connection,
                 "/api/v1/discord/voice" + (force ? "?force=true" : ""), "GET", null);
         JSONObject voice = response.optJSONObject("voice");
@@ -173,7 +151,7 @@ public final class DiscordGatewayClient {
                 participants);
     }
 
-    public ChannelTarget getRecentChannel(Connection connection) throws IOException {
+    public ChannelTarget getRecentChannel(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection, "/api/v1/discord/home", "GET", null);
         JSONObject home = response.optJSONObject("home");
         JSONArray recent = home != null ? home.optJSONArray("recent") : null;
@@ -193,7 +171,7 @@ public final class DiscordGatewayClient {
         return null;
     }
 
-    public IntegrationProfiles getIntegrationProfiles(Connection connection) throws IOException {
+    public IntegrationProfiles getIntegrationProfiles(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection, "/api/v1/profiles", "GET", null);
         JSONArray values = response.optJSONArray("profiles");
         List<IntegrationProfile> profiles = new ArrayList<>();
@@ -217,7 +195,7 @@ public final class DiscordGatewayClient {
                 response.optString("suggested_profile_id", ""));
     }
 
-    public void joinChannel(Connection connection, ChannelTarget target) throws IOException {
+    public void joinChannel(GatewayConnection connection, ChannelTarget target) throws IOException {
         if (target == null || !target.channelId.matches("[0-9]{5,32}") ||
                 !target.guildId.matches("[0-9]{5,32}")) {
             throw new IOException("No recent Discord channel is available.");
@@ -234,7 +212,7 @@ public final class DiscordGatewayClient {
         request(connection, "/api/v1/discord/join", "POST", body);
     }
 
-    public void toggleMute(Connection connection) throws IOException {
+    public void toggleMute(GatewayConnection connection) throws IOException {
         JSONObject body = new JSONObject();
         try {
             body.put("value", "toggle");
@@ -244,14 +222,14 @@ public final class DiscordGatewayClient {
         request(connection, "/api/v1/discord/mute", "POST", body);
     }
 
-    public void leaveVoice(Connection connection) throws IOException {
+    public void leaveVoice(GatewayConnection connection) throws IOException {
         request(connection, "/api/v1/discord/leave", "POST", new JSONObject());
     }
 
-    private JSONObject request(Connection connection, String path, String method,
+    private JSONObject request(GatewayConnection connection, String path, String method,
                                JSONObject body) throws IOException {
         return "POST".equals(method)
-                ? transport.postJson(connection.gatewayConnection, path, body, READ_TIMEOUT_MS)
-                : transport.getJson(connection.gatewayConnection, path, READ_TIMEOUT_MS);
+                ? transport.postJson(connection, path, body, READ_TIMEOUT_MS)
+                : transport.getJson(connection, path, READ_TIMEOUT_MS);
     }
 }
