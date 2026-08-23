@@ -42,6 +42,70 @@ class GameOperationsTest(unittest.TestCase):
             ("install", {"id": "game-id"}), ("uninstall", {"id": "game-id"}),
         ], calls)
 
+    def test_steam_install_dispatches_exact_direct_command_without_playnite(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "steam.exe"
+            executable.touch()
+            runner = mock.Mock()
+            sender = mock.Mock()
+            provider = SteamProvider(
+                root_resolver=lambda: root, command_runner=runner)
+
+            result = provider.dispatch_install({
+                "id": "playnite-id", "providerGameId": "224760",
+            }, sender)
+
+            self.assertEqual("direct", result["dispatch"])
+            self.assertEqual([
+                str(executable.resolve()), "-silent", "+app_install", "224760",
+            ], runner.call_args.args[0])
+            self.assertFalse(runner.call_args.kwargs["shell"])
+            sender.assert_not_called()
+
+    def test_steam_uninstall_dispatches_exact_direct_command_without_playnite(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "steam.exe"
+            executable.touch()
+            runner = mock.Mock()
+            sender = mock.Mock()
+            provider = SteamProvider(
+                root_resolver=lambda: root, command_runner=runner)
+
+            result = provider.dispatch_uninstall({
+                "id": "playnite-id", "providerGameId": "212680",
+            }, sender)
+
+            self.assertEqual("direct", result["dispatch"])
+            self.assertEqual([
+                str(executable.resolve()), "-silent", "+app_uninstall", "212680",
+            ], runner.call_args.args[0])
+            self.assertFalse(runner.call_args.kwargs["shell"])
+            sender.assert_not_called()
+
+    def test_invalid_app_id_or_missing_executable_uses_playnite_without_runner(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            runner = mock.Mock()
+            sender = mock.Mock(return_value={"accepted": True, "command": "install"})
+            provider = SteamProvider(
+                root_resolver=lambda: root, command_runner=runner)
+            games = [
+                {"id": "first", "providerGameId": "+quit"},
+                {"id": "second", "providerGameId": "224760"},
+            ]
+
+            for game in games:
+                self.assertEqual(
+                    "playnite", provider.dispatch_install(game, sender)["dispatch"])
+
+            runner.assert_not_called()
+            self.assertEqual([
+                mock.call("install", id="first"),
+                mock.call("install", id="second"),
+            ], sender.call_args_list)
+
     def test_epic_install_uri_uninstall_and_manual_policy(self):
         game = {"id": "game-id", "source": "Epic", "providerGameId": "App_Name-1"}
         with mock.patch("GameOperations.os.name", "nt"), \
@@ -71,19 +135,38 @@ class GameOperationsTest(unittest.TestCase):
             steamapps = library / "steamapps"
             steamapps.mkdir()
             manifest = steamapps / "appmanifest_224760.acf"
-            manifest.write_text(self._steam_manifest(50, 100, 1026), encoding="utf-8")
             provider = SteamProvider(roots=[library])
             game = {"source": "Steam", "providerGameId": "224760"}
-            self.assertEqual(50, provider.sample(game, "install")["progress"])
+            manifest.write_text(self._steam_manifest(0, 100, 1026), encoding="utf-8")
+            baseline = {"steam_baseline": provider.operation_baseline(game)}
+            self.assertEqual("not_started", provider.sample(
+                game, "install", baseline)["phase"])
+            manifest.write_text(self._steam_manifest(50, 100, 1026), encoding="utf-8")
+            self.assertEqual(50, provider.sample(game, "install", baseline)["progress"])
             (steamapps / "common" / "FEZ").mkdir(parents=True)
             manifest.write_text(self._steam_manifest(100, 100, 4), encoding="utf-8")
-            self.assertTrue(provider.sample(game, "install")["installed"])
+            self.assertTrue(provider.sample(game, "install", baseline)["installed"])
             manifest.write_text(self._steam_manifest(0, 100, 1026), encoding="utf-8")
-            self.assertIsNone(provider.sample(game, "install"))
+            unchanged = {"steam_baseline": provider.operation_baseline(game)}
+            self.assertFalse(provider.sample(game, "install", unchanged)["started"])
             manifest.write_bytes(b"")
-            self.assertIsNone(provider.sample(game, "install"))
+            unchanged = {"steam_baseline": provider.operation_baseline(game)}
+            self.assertFalse(provider.sample(game, "install", unchanged)["started"])
             manifest.unlink()
             self.assertTrue(provider.sample(game, "uninstall")["uninstalled"])
+
+    def test_incomplete_steam_scan_cannot_report_uninstalled(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "steamapps").mkdir()
+            inaccessible = root / "missing-secondary-library"
+            provider = SteamProvider(roots=[root, inaccessible])
+
+            sample = provider.sample({"providerGameId": "224760"}, "uninstall")
+
+            self.assertFalse(sample["scan_complete"])
+            self.assertFalse(sample.get("uninstalled", False))
+            self.assertEqual("scan_incomplete", sample["phase"])
 
     @staticmethod
     def _steam_manifest(downloaded, total, state):
