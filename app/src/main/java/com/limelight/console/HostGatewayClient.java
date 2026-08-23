@@ -60,19 +60,30 @@ final class HostGatewayClient {
         final boolean discordAuthenticated;
         final boolean vibepolloBridgeOnline;
         final boolean playniteBridgeOnline;
+        final boolean playniteConnectorConnected;
         final boolean virtualHereAvailable;
 
         IntegrationProfile(String id, String name, boolean discordBridgeOnline,
                            boolean discordRpcConnected, boolean discordAuthenticated,
                            boolean vibepolloBridgeOnline, boolean virtualHereAvailable) {
             this(id, name, discordBridgeOnline, discordRpcConnected,
-                    discordAuthenticated, vibepolloBridgeOnline, false,
+                    discordAuthenticated, vibepolloBridgeOnline, false, false,
                     virtualHereAvailable);
         }
 
         IntegrationProfile(String id, String name, boolean discordBridgeOnline,
                            boolean discordRpcConnected, boolean discordAuthenticated,
                            boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
+                           boolean virtualHereAvailable) {
+            this(id, name, discordBridgeOnline, discordRpcConnected,
+                    discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
+                    false, virtualHereAvailable);
+        }
+
+        IntegrationProfile(String id, String name, boolean discordBridgeOnline,
+                           boolean discordRpcConnected, boolean discordAuthenticated,
+                           boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
+                           boolean playniteConnectorConnected,
                            boolean virtualHereAvailable) {
             this.id = id;
             this.name = name;
@@ -81,6 +92,7 @@ final class HostGatewayClient {
             this.discordAuthenticated = discordAuthenticated;
             this.vibepolloBridgeOnline = vibepolloBridgeOnline;
             this.playniteBridgeOnline = playniteBridgeOnline;
+            this.playniteConnectorConnected = playniteConnectorConnected;
             this.virtualHereAvailable = virtualHereAvailable;
         }
     }
@@ -649,6 +661,10 @@ final class HostGatewayClient {
     IntegrationProfiles getIntegrationProfiles(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection, "/api/v1/profiles", "GET",
                 null, 15_000);
+        return parseIntegrationProfiles(response);
+    }
+
+    static IntegrationProfiles parseIntegrationProfiles(JSONObject response) {
         JSONArray values = response.optJSONArray("profiles");
         List<IntegrationProfile> profiles = new ArrayList<>();
         if (values != null) {
@@ -665,6 +681,7 @@ final class HostGatewayClient {
                         value.optBoolean("discord_authenticated", false),
                         value.optBoolean("vibepollo_bridge_online", false),
                         value.optBoolean("playnite_bridge_online", false),
+                        value.optBoolean("playnite_connector_connected", false),
                         value.optBoolean("virtualhere_available", false)));
             }
         }
