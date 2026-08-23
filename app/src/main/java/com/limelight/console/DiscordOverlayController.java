@@ -41,7 +41,7 @@ public final class DiscordOverlayController {
     private final String hostUuid;
     private final Runnable scheduledRefresh = () -> refresh(false);
 
-    private DiscordGatewayClient.Connection connection;
+    private GatewayConnection connection;
     private DiscordGatewayClient.VoiceState voice;
     private DiscordGatewayClient.ChannelTarget recentChannel;
     private boolean dockEnabled;
@@ -58,13 +58,7 @@ public final class DiscordOverlayController {
         GatewayConnection stored = store.loadForHost(hostUuid, activeHost);
         boolean enabled = stored != null
                 && store.isDiscordEnabled(this.hostUuid, stored.profileId());
-        try {
-            connection = !enabled ? null : new DiscordGatewayClient.Connection(
-                    stored.endpoint(), stored.token(), stored.certificateSha256(),
-                    stored.profileId());
-        } catch (IllegalArgumentException invalidConnection) {
-            connection = null;
-        }
+        connection = enabled ? stored : null;
         SharedPreferences state = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         dockEnabled = state.getBoolean(DOCK_KEY_PREFIX + this.hostUuid, false);
         overlay.setDiscordConfigured(connection != null);
@@ -131,7 +125,7 @@ public final class DiscordOverlayController {
         handler.removeCallbacks(scheduledRefresh);
         if (destroyed || connection == null || !refreshInFlight.compareAndSet(false, true)) return;
         overlay.setDiscordState(voice, null, true);
-        DiscordGatewayClient.Connection current = connection;
+        GatewayConnection current = connection;
         executor.execute(() -> {
             DiscordGatewayClient.VoiceState result = null;
             DiscordGatewayClient.ChannelTarget recent = recentChannel;
@@ -184,13 +178,10 @@ public final class DiscordOverlayController {
         boolean autoConnect = store.isDiscordAutoConnectEnabled(hostUuid, stored.profileId());
         boolean autoJoin = store.isDiscordAutoJoinLastEnabled(hostUuid, stored.profileId());
         if (!autoConnect && !autoJoin) return;
-        HostGatewayClient.Connection gatewayConnection = new HostGatewayClient.Connection(
-                stored.endpoint(), stored.token(), stored.certificateSha256(),
-                stored.profileId());
         executor.execute(() -> {
             if (autoConnect) {
-                try { gatewayClient.startDiscord(gatewayConnection); } catch (Exception ignored) { }
-                try { gatewayClient.connectDiscord(gatewayConnection, false); } catch (Exception ignored) { }
+                try { gatewayClient.startDiscord(stored); } catch (Exception ignored) { }
+                try { gatewayClient.connectDiscord(stored, false); } catch (Exception ignored) { }
             }
             if (autoJoin) {
                 HostGatewayStore.DiscordChannelSelection saved =

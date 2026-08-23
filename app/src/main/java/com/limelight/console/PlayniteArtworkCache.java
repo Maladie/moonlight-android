@@ -1,5 +1,7 @@
 package com.limelight.console;
 
+import com.limelight.gateway.GatewayConnection;
+
 import android.content.Context;
 
 import java.io.BufferedOutputStream;
@@ -26,7 +28,7 @@ final class PlayniteArtworkCache {
         return new File(host, gameId + "_" + kind + "_" + digest(version) + ".img");
     }
 
-    File fetch(HostGatewayClient client, HostGatewayClient.Connection connection,
+    File fetch(HostGatewayClient client, GatewayConnection connection,
                String hostUuid, String gameId, String kind, String version) throws IOException {
         File target = get(hostUuid, gameId, kind, version);
         if (target == null) throw new IOException("Invalid artwork cache key");

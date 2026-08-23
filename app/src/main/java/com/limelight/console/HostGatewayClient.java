@@ -21,38 +21,12 @@ final class HostGatewayClient {
     private static final int READ_TIMEOUT_MS = 5_000;
     private final GatewayTransport transport = new GatewayTransport();
 
-    static final class Connection {
-        final String endpoint;
-        final String token;
-        final String certificateSha256;
-        final String profileId;
-        final GatewayConnection gatewayConnection;
-
-        Connection(String endpoint, String token, String certificateSha256) {
-            this(endpoint, token, certificateSha256, "default");
-        }
-
-        Connection(String endpoint, String token, String certificateSha256,
-                   String profileId) {
-            gatewayConnection = new GatewayConnection(
-                    endpoint, token, certificateSha256, profileId);
-            this.endpoint = gatewayConnection.endpoint();
-            this.token = gatewayConnection.token();
-            this.certificateSha256 = gatewayConnection.certificateSha256();
-            this.profileId = gatewayConnection.profileId();
-        }
-
-        Connection withProfile(String profileId) {
-            return new Connection(endpoint, token, certificateSha256, profileId);
-        }
-    }
-
     static final class Pairing {
-        final Connection connection;
+        final GatewayConnection connection;
         final String clientId;
         final String streamPairTicket;
 
-        Pairing(Connection connection, String clientId, String streamPairTicket) {
+        Pairing(GatewayConnection connection, String clientId, String streamPairTicket) {
             this.connection = connection;
             this.clientId = clientId;
             this.streamPairTicket = streamPairTicket == null ? "" : streamPairTicket;
@@ -615,12 +589,13 @@ final class HostGatewayClient {
         String fingerprint = pairing.certificateSha256();
         String token = response.optString("token", "");
         if (token.isEmpty()) throw new GatewayException("The gateway returned no client token.", 0);
-        return new Pairing(new Connection(endpoint, token, fingerprint),
+        return new Pairing(new GatewayConnection(endpoint, token, fingerprint,
+                GatewayConnection.DEFAULT_PROFILE_ID),
                 response.optString("client_id", ""),
                 response.optString("stream_pair_ticket", ""));
     }
 
-    String requestVibepolloPairingTicket(Connection connection) throws IOException {
+    String requestVibepolloPairingTicket(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection,
                 "/api/v1/vibepollo/pair/ticket", "POST", new JSONObject(),
                 READ_TIMEOUT_MS);
@@ -631,7 +606,7 @@ final class HostGatewayClient {
         return ticket;
     }
 
-    JSONObject pairVibepolloClient(Connection connection, String ticket,
+    JSONObject pairVibepolloClient(GatewayConnection connection, String ticket,
                                    String pin, String name) throws IOException {
         if (ticket == null || ticket.trim().isEmpty()) {
             throw new IllegalArgumentException("Missing stream pairing ticket");
@@ -661,7 +636,7 @@ final class HostGatewayClient {
         return response;
     }
 
-    Capabilities getCapabilities(Connection connection) throws IOException {
+    Capabilities getCapabilities(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection, "/api/v1/capabilities", "GET",
                 null, READ_TIMEOUT_MS);
         JSONObject capabilities = response.optJSONObject("capabilities");
@@ -671,7 +646,7 @@ final class HostGatewayClient {
                 available(capabilities, "playnite"));
     }
 
-    IntegrationProfiles getIntegrationProfiles(Connection connection) throws IOException {
+    IntegrationProfiles getIntegrationProfiles(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection, "/api/v1/profiles", "GET",
                 null, 15_000);
         JSONArray values = response.optJSONArray("profiles");
@@ -697,7 +672,7 @@ final class HostGatewayClient {
                 response.optString("suggested_profile_id", ""));
     }
 
-    RepairStatus getVibepolloRepairStatus(Connection connection) throws IOException {
+    RepairStatus getVibepolloRepairStatus(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection, "/api/v1/vibepollo/repair/status", "GET",
                 null, READ_TIMEOUT_MS);
         JSONObject host = response.optJSONObject("host");
@@ -708,7 +683,7 @@ final class HostGatewayClient {
                 bridge != null ? bridge.optString("api_error", "") : "");
     }
 
-    JSONObject runVibepolloRepair(Connection connection, String action) throws IOException {
+    JSONObject runVibepolloRepair(GatewayConnection connection, String action) throws IOException {
         if (!"restart".equals(action) && !"reset-display".equals(action) &&
                 !"export-logs".equals(action)) {
             throw new IllegalArgumentException("Unknown repair action");
@@ -718,7 +693,7 @@ final class HostGatewayClient {
                 "export-logs".equals(action) ? 25_000 : 8_000);
     }
 
-    JSONObject ensureVibepolloPlayniteApp(Connection connection, String gameId, String name)
+    JSONObject ensureVibepolloPlayniteApp(GatewayConnection connection, String gameId, String name)
             throws IOException {
         if (!isPlayniteId(gameId)) {
             throw new IllegalArgumentException("Invalid Playnite game ID");
@@ -758,17 +733,17 @@ final class HostGatewayClient {
                 ? value.toLowerCase(Locale.ROOT) : "";
     }
 
-    JSONObject sleepHost(Connection connection) throws IOException {
+    JSONObject sleepHost(GatewayConnection connection) throws IOException {
         return request(connection, "/api/v1/system/sleep", "POST",
                 new JSONObject(), READ_TIMEOUT_MS);
     }
 
-    JSONObject suspendSession(Connection connection, JSONObject session) throws IOException {
+    JSONObject suspendSession(GatewayConnection connection, JSONObject session) throws IOException {
         return request(connection, "/api/v1/system/suspend-session", "POST",
                 session, READ_TIMEOUT_MS);
     }
 
-    PlayniteLibrary getPlayniteLibrary(Connection connection, String cursor, int limit)
+    PlayniteLibrary getPlayniteLibrary(GatewayConnection connection, String cursor, int limit)
             throws IOException {
         if (limit < 1 || limit > 100) throw new IllegalArgumentException("Invalid page size");
         String safeCursor = cursor == null ? "" : cursor;
@@ -779,7 +754,7 @@ final class HostGatewayClient {
         return parsePlayniteLibrary(response.optJSONObject("library"));
     }
 
-    String refreshPlayniteLibrary(Connection connection) throws IOException {
+    String refreshPlayniteLibrary(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection,
                 "/api/v1/playnite/library/refresh", "POST", new JSONObject(),
                 8_000);
@@ -791,14 +766,14 @@ final class HostGatewayClient {
         return result == null ? "" : result.optString("previous_revision", "");
     }
 
-    byte[] getPlayniteArtwork(Connection connection, String gameId, String kind)
+    byte[] getPlayniteArtwork(GatewayConnection connection, String gameId, String kind)
             throws IOException {
         if (!isPlayniteId(gameId)) throw new IllegalArgumentException("Invalid Playnite game ID");
         if (!"cover".equals(kind) && !"background".equals(kind) && !"icon".equals(kind)) {
             throw new IllegalArgumentException("Invalid Playnite artwork kind");
         }
         try {
-            return transport.getBinary(connection.gatewayConnection,
+            return transport.getBinary(connection,
                     "/api/v1/playnite/artwork?game_id=" + gameId + "&kind=" + kind,
                     "image/*", 12_000);
         } catch (GatewayTransport.GatewayException error) {
@@ -808,7 +783,7 @@ final class HostGatewayClient {
         }
     }
 
-    PlayniteCurrentGame getPlayniteCurrentGame(Connection connection) throws IOException {
+    PlayniteCurrentGame getPlayniteCurrentGame(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection, "/api/v1/playnite/game/current",
                 "GET", null, READ_TIMEOUT_MS);
         JSONObject current = response.optJSONObject("current");
@@ -818,7 +793,7 @@ final class HostGatewayClient {
                 current.optInt("processId", current.optInt("process_id", 0)));
     }
 
-    PlayniteHealth getPlayniteHealth(Connection connection) throws IOException {
+    PlayniteHealth getPlayniteHealth(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection, "/api/v1/playnite/health",
                 "GET", null, READ_TIMEOUT_MS);
         JSONObject bridge = response.optJSONObject("bridge");
@@ -827,13 +802,13 @@ final class HostGatewayClient {
                 bridge.optInt("connector_generation", 0));
     }
 
-    PlayniteReadiness getPlayniteReadiness(Connection connection) throws IOException {
+    PlayniteReadiness getPlayniteReadiness(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection,
                 "/api/v1/playnite/window/readiness", "GET", null, READ_TIMEOUT_MS);
         return parsePlayniteReadiness(response.optJSONObject("readiness"));
     }
 
-    void showPlayniteFullscreen(Connection connection) throws IOException {
+    void showPlayniteFullscreen(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection,
                 "/api/v1/playnite/show-fullscreen", "POST", new JSONObject(),
                 10_000);
@@ -843,7 +818,7 @@ final class HostGatewayClient {
         }
     }
 
-    void focusPlayniteGame(Connection connection) throws IOException {
+    void focusPlayniteGame(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection,
                 "/api/v1/playnite/game/focus", "POST", new JSONObject(),
                 8_000);
@@ -853,7 +828,7 @@ final class HostGatewayClient {
         }
     }
 
-    void installPlayniteGame(Connection connection, String gameId) throws IOException {
+    void installPlayniteGame(GatewayConnection connection, String gameId) throws IOException {
         if (!isPlayniteId(gameId)) {
             throw new IllegalArgumentException("Invalid Playnite game ID");
         }
@@ -871,7 +846,7 @@ final class HostGatewayClient {
         }
     }
 
-    void uninstallPlayniteGame(Connection connection, String gameId) throws IOException {
+    void uninstallPlayniteGame(GatewayConnection connection, String gameId) throws IOException {
         if (!isPlayniteId(gameId)) {
             throw new IllegalArgumentException("Invalid Playnite game ID");
         }
@@ -889,7 +864,7 @@ final class HostGatewayClient {
         }
     }
 
-    void focusPlayniteInstallation(Connection connection, String gameId) throws IOException {
+    void focusPlayniteInstallation(GatewayConnection connection, String gameId) throws IOException {
         if (!isPlayniteId(gameId)) {
             throw new IllegalArgumentException("Invalid Playnite game ID");
         }
@@ -907,7 +882,7 @@ final class HostGatewayClient {
         }
     }
 
-    boolean verifyPlayniteInstallation(Connection connection, String gameId) throws IOException {
+    boolean verifyPlayniteInstallation(GatewayConnection connection, String gameId) throws IOException {
         if (!isPlayniteId(gameId)) {
             throw new IllegalArgumentException("Invalid Playnite game ID");
         }
@@ -927,11 +902,11 @@ final class HostGatewayClient {
         return result != null && !result.optBoolean("requires_attention", true);
     }
 
-    PlayniteEvents getPlayniteEvents(Connection connection, long after) throws IOException {
+    PlayniteEvents getPlayniteEvents(GatewayConnection connection, long after) throws IOException {
         return getPlayniteEvents(connection, after, "");
     }
 
-    PlayniteEvents getPlayniteEvents(Connection connection, long after,
+    PlayniteEvents getPlayniteEvents(GatewayConnection connection, long after,
                                      String transitionId) throws IOException {
         if (after < 0) throw new IllegalArgumentException("Invalid Playnite event sequence");
         String correlation = transitionId == null ? "" : transitionId.trim();
@@ -1068,7 +1043,7 @@ final class HostGatewayClient {
                 "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
     }
 
-    DiscordStatus getDiscordStatus(Connection connection) throws IOException {
+    DiscordStatus getDiscordStatus(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection, "/api/v1/discord/status", "GET",
                 null, READ_TIMEOUT_MS);
         return new DiscordStatus(
@@ -1078,7 +1053,7 @@ final class HostGatewayClient {
                 response.optString("error", ""));
     }
 
-    DiscordHome getDiscordHome(Connection connection, boolean force) throws IOException {
+    DiscordHome getDiscordHome(GatewayConnection connection, boolean force) throws IOException {
         JSONObject response = request(connection,
                 "/api/v1/discord/home" + (force ? "?force=true" : ""), "GET",
                 null, 12_000);
@@ -1089,7 +1064,7 @@ final class HostGatewayClient {
                 parseGuilds(home != null ? home.optJSONArray("guilds") : null));
     }
 
-    List<DiscordChannel> getDiscordChannels(Connection connection, DiscordGuild guild,
+    List<DiscordChannel> getDiscordChannels(GatewayConnection connection, DiscordGuild guild,
                                             boolean force) throws IOException {
         if (!isDiscordId(guild.id)) throw new IllegalArgumentException("Invalid Discord guild ID");
         JSONObject response = request(connection,
@@ -1111,7 +1086,7 @@ final class HostGatewayClient {
         return result;
     }
 
-    DiscordVoice getDiscordVoice(Connection connection, boolean force) throws IOException {
+    DiscordVoice getDiscordVoice(GatewayConnection connection, boolean force) throws IOException {
         JSONObject response = request(connection,
                 "/api/v1/discord/voice" + (force ? "?force=true" : ""), "GET",
                 null, 12_000);
@@ -1149,7 +1124,7 @@ final class HostGatewayClient {
                 participantList.size(), participantList);
     }
 
-    JSONObject connectDiscord(Connection connection, boolean force) throws IOException {
+    JSONObject connectDiscord(GatewayConnection connection, boolean force) throws IOException {
         JSONObject body = new JSONObject();
         try {
             body.put("force", force);
@@ -1159,16 +1134,16 @@ final class HostGatewayClient {
         return discordAction(connection, "connect", body, 25_000);
     }
 
-    JSONObject startDiscord(Connection connection) throws IOException {
+    JSONObject startDiscord(GatewayConnection connection) throws IOException {
         return discordAction(connection, "start", new JSONObject(), 12_000);
     }
 
-    JSONObject joinDiscordChannel(Connection connection, DiscordChannel channel) throws IOException {
+    JSONObject joinDiscordChannel(GatewayConnection connection, DiscordChannel channel) throws IOException {
         return joinDiscordChannel(connection, channel.id, channel.guildId,
                 channel.guildName, channel.name);
     }
 
-    JSONObject joinDiscordChannel(Connection connection, String channelId, String guildId,
+    JSONObject joinDiscordChannel(GatewayConnection connection, String channelId, String guildId,
                                   String guildName, String channelName) throws IOException {
         if (!isDiscordId(channelId) || !isDiscordId(guildId)) {
             throw new IllegalArgumentException("Invalid Discord channel");
@@ -1185,11 +1160,11 @@ final class HostGatewayClient {
         return discordAction(connection, "join", body, 25_000);
     }
 
-    JSONObject leaveDiscordChannel(Connection connection) throws IOException {
+    JSONObject leaveDiscordChannel(GatewayConnection connection) throws IOException {
         return discordAction(connection, "leave", new JSONObject(), 15_000);
     }
 
-    JSONObject setDiscordVoiceFlag(Connection connection, String action, String value) throws IOException {
+    JSONObject setDiscordVoiceFlag(GatewayConnection connection, String action, String value) throws IOException {
         if (!"mute".equals(action) && !"deafen".equals(action)) {
             throw new IllegalArgumentException("Unknown Discord voice action");
         }
@@ -1202,7 +1177,7 @@ final class HostGatewayClient {
         return discordAction(connection, action, body, 12_000);
     }
 
-    JSONObject changeDiscordParticipantVolume(Connection connection, String userId,
+    JSONObject changeDiscordParticipantVolume(GatewayConnection connection, String userId,
                                                int delta) throws IOException {
         if (!isDiscordId(userId) || (delta != -10 && delta != 10)) {
             throw new IllegalArgumentException("Invalid Discord participant volume change");
@@ -1217,7 +1192,7 @@ final class HostGatewayClient {
         return discordAction(connection, "user-volume", body, 12_000);
     }
 
-    JSONObject setDiscordParticipantVolume(Connection connection, String userId,
+    JSONObject setDiscordParticipantVolume(GatewayConnection connection, String userId,
                                             int volume) throws IOException {
         if (!isDiscordId(userId)
                 || volume < DiscordFeatureContract.MIN_PARTICIPANT_VOLUME
@@ -1235,7 +1210,7 @@ final class HostGatewayClient {
         return discordAction(connection, "user-volume", body, 12_000);
     }
 
-    JSONObject toggleDiscordParticipantMute(Connection connection, String userId)
+    JSONObject toggleDiscordParticipantMute(GatewayConnection connection, String userId)
             throws IOException {
         if (!isDiscordId(userId)) {
             throw new IllegalArgumentException("Invalid Discord participant");
@@ -1249,7 +1224,7 @@ final class HostGatewayClient {
         return discordAction(connection, "user-mute", body, 12_000);
     }
 
-    VirtualHereState getVirtualHereState(Connection connection, boolean force) throws IOException {
+    VirtualHereState getVirtualHereState(GatewayConnection connection, boolean force) throws IOException {
         JSONObject response = request(connection,
                 "/api/v1/virtualhere/state" + (force ? "?force=true" : ""), "GET",
                 null, 12_000);
@@ -1288,7 +1263,7 @@ final class HostGatewayClient {
                 state.optString("error", ""));
     }
 
-    JSONObject runVirtualHereAction(Connection connection, String action,
+    JSONObject runVirtualHereAction(GatewayConnection connection, String action,
                                     String address) throws IOException {
         if (!"use".equals(action) && !"stop".equals(action) &&
                 !"auto".equals(action) && !"restart".equals(action)) {
@@ -1310,7 +1285,7 @@ final class HostGatewayClient {
                 "restart".equals(action) ? 15_000 : 12_000);
     }
 
-    DiscordAudioState getDiscordAudioState(Connection connection) throws IOException {
+    DiscordAudioState getDiscordAudioState(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection, "/api/v1/discord/audio", "GET",
                 null, 15_000);
         JSONObject audio = response.optJSONObject("audio");
@@ -1323,7 +1298,7 @@ final class HostGatewayClient {
                 audio.optString("system_error", ""));
     }
 
-    JSONObject selectAudioDevice(Connection connection, AudioDevice device)
+    JSONObject selectAudioDevice(GatewayConnection connection, AudioDevice device)
             throws IOException {
         if (device == null || device.id == null ||
                 !device.id.matches("[A-Za-z0-9._:{}-]{1,220}") ||
@@ -1341,7 +1316,7 @@ final class HostGatewayClient {
         return discordAction(connection, "audio/select", body, 15_000);
     }
 
-    JSONObject changeSystemVolume(Connection connection, int delta) throws IOException {
+    JSONObject changeSystemVolume(GatewayConnection connection, int delta) throws IOException {
         if (delta != -5 && delta != 5) {
             throw new IllegalArgumentException("Invalid system volume change");
         }
@@ -1354,11 +1329,11 @@ final class HostGatewayClient {
         return discordAction(connection, "audio/volume", body, 12_000);
     }
 
-    JSONObject toggleSystemMute(Connection connection) throws IOException {
+    JSONObject toggleSystemMute(GatewayConnection connection) throws IOException {
         return discordAction(connection, "audio/mute", new JSONObject(), 12_000);
     }
 
-    private JSONObject discordAction(Connection connection, String action, JSONObject body,
+    private JSONObject discordAction(GatewayConnection connection, String action, JSONObject body,
                                      int timeoutMs) throws IOException {
         return request(connection, "/api/v1/discord/" + action, "POST",
                 body, timeoutMs);
@@ -1419,16 +1394,12 @@ final class HostGatewayClient {
         return capability != null && capability.optBoolean("available", false);
     }
 
-    static String normalizeFingerprint(String value) {
-        return GatewayConnection.normalizeFingerprint(value);
-    }
-
-    private JSONObject request(Connection connection, String path, String method,
+    private JSONObject request(GatewayConnection connection, String path, String method,
                                JSONObject body, int readTimeoutMs) throws IOException {
         try {
             return "POST".equals(method)
-                    ? transport.postJson(connection.gatewayConnection, path, body, readTimeoutMs)
-                    : transport.getJson(connection.gatewayConnection, path, readTimeoutMs);
+                    ? transport.postJson(connection, path, body, readTimeoutMs)
+                    : transport.getJson(connection, path, readTimeoutMs);
         } catch (GatewayTransport.GatewayException error) {
             throw mapException(error);
         }

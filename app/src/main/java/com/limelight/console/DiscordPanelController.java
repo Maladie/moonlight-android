@@ -13,6 +13,7 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 
 import com.limelight.R;
+import com.limelight.gateway.GatewayConnection;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -69,7 +70,7 @@ final class DiscordPanelController {
         hostAddress = address;
         hostName = name == null || name.isEmpty()
                 ? context.getString(R.string.discord_selected_host) : name;
-        HostGatewayClient.Connection connection = connection();
+        GatewayConnection connection = connection();
         if (connection == null) {
             TextView pair = ui.action(context.getString(R.string.gateway_pair_action));
             pair.setOnClickListener(view -> showPairingDialog(false));
@@ -79,26 +80,26 @@ final class DiscordPanelController {
         }
 
         TextView profiles = ui.action(context.getString(
-                R.string.gateway_integration_profile, connection.profileId));
+                R.string.gateway_integration_profile, connection.profileId()));
         TextView refresh = ui.action(context.getString(R.string.gateway_refresh_status));
         TextView forget = ui.action(context.getString(R.string.gateway_forget));
         profiles.setOnClickListener(view -> showProfiles(connection));
         refresh.setOnClickListener(view -> showHostIntegrationStatus(connection));
         forget.setOnClickListener(view -> confirmForget());
         ui.show(context.getString(R.string.host_integrations_title), hostName,
-                context.getString(R.string.gateway_paired_details, connection.endpoint),
+                context.getString(R.string.gateway_paired_details, connection.endpoint()),
                 profiles, refresh, forget);
     }
 
-    private void showHostIntegrationStatus(HostGatewayClient.Connection connection) {
+    private void showHostIntegrationStatus(GatewayConnection connection) {
         TextView loading = ui.label(context.getString(R.string.gateway_checking_status));
         TextView profiles = ui.action(context.getString(
-                R.string.gateway_integration_profile, connection.profileId));
+                R.string.gateway_integration_profile, connection.profileId()));
         TextView forget = ui.action(context.getString(R.string.gateway_forget));
         profiles.setOnClickListener(view -> showProfiles(connection));
         forget.setOnClickListener(view -> confirmForget());
         ui.show(context.getString(R.string.host_integrations_title), hostName,
-                connection.endpoint, loading, profiles, forget);
+                connection.endpoint(), loading, profiles, forget);
         load(context.getString(R.string.gateway_status_error),
                 () -> client.getCapabilities(connection), capabilities -> {
             loading.setText(context.getString(R.string.gateway_status_result,
@@ -164,14 +165,14 @@ final class DiscordPanelController {
                 }).show();
     }
 
-    private void showProfiles(HostGatewayClient.Connection connection) {
+    private void showProfiles(GatewayConnection connection) {
         showGatewayBusy(context.getString(R.string.gateway_profiles_title),
                 context.getString(R.string.gateway_profiles_loading));
         load(context.getString(R.string.gateway_profiles_error),
                 () -> client.getIntegrationProfiles(connection), profiles -> {
             List<View> actions = new ArrayList<>();
             for (HostGatewayClient.IntegrationProfile profile : profiles.profiles) {
-                String suffix = profile.id.equals(connection.profileId)
+                String suffix = profile.id.equals(connection.profileId())
                         ? context.getString(R.string.discord_selected_suffix) : "";
                 TextView action = ui.action(profile.name + suffix);
                 action.setOnClickListener(view -> {
@@ -191,15 +192,15 @@ final class DiscordPanelController {
 
     void showDiscordServers(boolean force) {
         currentPanelTitle = R.string.discord_panel_title;
-        HostGatewayClient.Connection connection = connection();
+        GatewayConnection connection = connection();
         if (connection == null) {
             showDiscordGatewayRequired();
             return;
         }
-        if (!store.isDiscordEnabled(hostUuid, connection.profileId)) {
+        if (!store.isDiscordEnabled(hostUuid, connection.profileId())) {
             TextView enable = ui.action(context.getString(R.string.discord_enable_integration));
             enable.setOnClickListener(view -> {
-                store.setDiscordEnabled(hostUuid, connection.profileId, true);
+                store.setDiscordEnabled(hostUuid, connection.profileId(), true);
                 showDiscordServers(true);
             });
             TextView back = ui.back(context.getString(R.string.discord_back_action));
@@ -220,7 +221,7 @@ final class DiscordPanelController {
                     home.recent, connection);
             if (!home.guilds.isEmpty()) actions.add(ui.label(
                     context.getString(R.string.discord_servers)));
-            String selectedGuild = store.loadLastDiscordGuildId(hostUuid, connection.profileId);
+            String selectedGuild = store.loadLastDiscordGuildId(hostUuid, connection.profileId());
             if (home.guilds.isEmpty()) actions.add(ui.label(
                     context.getString(R.string.discord_no_servers)));
             for (HostGatewayClient.DiscordGuild guild : home.guilds) {
@@ -228,7 +229,7 @@ final class DiscordPanelController {
                         ? context.getString(R.string.discord_selected_suffix) : "";
                 TextView action = ui.action(guild.name + suffix + "  ›");
                 action.setOnClickListener(view -> {
-                    store.saveLastDiscordGuild(hostUuid, connection.profileId,
+                    store.saveLastDiscordGuild(hostUuid, connection.profileId(),
                             guild.id, guild.name);
                     showDiscordChannels(connection, guild, false);
                 });
@@ -258,7 +259,7 @@ final class DiscordPanelController {
     }
 
     private HostGatewayClient.DiscordHome loadDiscordHome(
-            HostGatewayClient.Connection connection, boolean force) throws Exception {
+            GatewayConnection connection, boolean force) throws Exception {
         try {
             return client.getDiscordHome(connection, force);
         } catch (Exception firstFailure) {
@@ -275,7 +276,7 @@ final class DiscordPanelController {
 
     private void addChannelGroup(List<View> actions, String title,
                                  List<HostGatewayClient.DiscordChannel> channels,
-                                 HostGatewayClient.Connection connection) {
+                                 GatewayConnection connection) {
         if (channels.isEmpty()) return;
         actions.add(ui.label(title));
         for (HostGatewayClient.DiscordChannel channel : channels) {
@@ -285,7 +286,7 @@ final class DiscordPanelController {
         }
     }
 
-    private void showDiscordChannels(HostGatewayClient.Connection connection,
+    private void showDiscordChannels(GatewayConnection connection,
                                      HostGatewayClient.DiscordGuild guild, boolean force) {
         showDiscordBusy(context.getString(R.string.discord_loading_title),
                 context.getString(R.string.discord_loading_named, guild.name));
@@ -310,7 +311,7 @@ final class DiscordPanelController {
         }, () -> showDiscordChannels(connection, guild, true));
     }
 
-    private void showDiscordChannel(HostGatewayClient.Connection connection,
+    private void showDiscordChannel(GatewayConnection connection,
                                     HostGatewayClient.DiscordChannel channel, boolean force) {
         showDiscordBusy(context.getString(R.string.discord_loading_title),
                 context.getString(R.string.discord_loading_channel, channel.name));
@@ -346,7 +347,7 @@ final class DiscordPanelController {
                 join.setOnClickListener(view -> operation(
                         context.getString(R.string.discord_joining_channel),
                         () -> client.joinDiscordChannel(connection, channel), () -> {
-                            store.saveLastDiscordChannel(hostUuid, connection.profileId,
+                            store.saveLastDiscordChannel(hostUuid, connection.profileId(),
                                     channel.id, channel.guildId, channel.guildName, channel.name);
                             showDiscordChannel(connection, channel, true);
                         }));
@@ -361,7 +362,7 @@ final class DiscordPanelController {
         }, () -> showDiscordChannel(connection, channel, true));
     }
 
-    private void showParticipants(HostGatewayClient.Connection connection,
+    private void showParticipants(GatewayConnection connection,
                                   HostGatewayClient.DiscordChannel channel) {
         showDiscordBusy(context.getString(R.string.discord_people_title),
                 context.getString(R.string.discord_loading_people));
@@ -399,7 +400,7 @@ final class DiscordPanelController {
         }, () -> showParticipants(connection, channel));
     }
 
-    private View participantControls(HostGatewayClient.Connection connection,
+    private View participantControls(GatewayConnection connection,
                                      HostGatewayClient.DiscordChannel channel,
                                      HostGatewayClient.DiscordParticipant participant) {
         SeekBar volume = new SeekBar(context);
@@ -518,7 +519,7 @@ final class DiscordPanelController {
         apply.run();
     }
 
-    private void updateParticipantVolume(HostGatewayClient.Connection connection,
+    private void updateParticipantVolume(GatewayConnection connection,
                                          HostGatewayClient.DiscordParticipant participant,
                                          int volume) {
         executor.execute(() -> {
@@ -532,10 +533,10 @@ final class DiscordPanelController {
         });
     }
 
-    private void showDiscordSettings(HostGatewayClient.Connection connection) {
-        boolean enabled = store.isDiscordEnabled(hostUuid, connection.profileId);
-        boolean autoConnect = store.isDiscordAutoConnectEnabled(hostUuid, connection.profileId);
-        boolean autoJoin = store.isDiscordAutoJoinLastEnabled(hostUuid, connection.profileId);
+    private void showDiscordSettings(GatewayConnection connection) {
+        boolean enabled = store.isDiscordEnabled(hostUuid, connection.profileId());
+        boolean autoConnect = store.isDiscordAutoConnectEnabled(hostUuid, connection.profileId());
+        boolean autoJoin = store.isDiscordAutoJoinLastEnabled(hostUuid, connection.profileId());
         TextView enabledSetting = ui.action(context.getString(
                 R.string.discord_integration_setting,
                 context.getString(enabled ? R.string.discord_state_on
@@ -554,15 +555,15 @@ final class DiscordPanelController {
         TextView status = ui.action(context.getString(R.string.discord_refresh_status));
         TextView back = ui.back(context.getString(R.string.discord_back_action));
         enabledSetting.setOnClickListener(view -> {
-            store.setDiscordEnabled(hostUuid, connection.profileId, !enabled);
+            store.setDiscordEnabled(hostUuid, connection.profileId(), !enabled);
             showDiscordSettings(connection);
         });
         connectSetting.setOnClickListener(view -> {
-            store.setDiscordAutoConnectEnabled(hostUuid, connection.profileId, !autoConnect);
+            store.setDiscordAutoConnectEnabled(hostUuid, connection.profileId(), !autoConnect);
             showDiscordSettings(connection);
         });
         joinSetting.setOnClickListener(view -> {
-            store.setDiscordAutoJoinLastEnabled(hostUuid, connection.profileId, !autoJoin);
+            store.setDiscordAutoJoinLastEnabled(hostUuid, connection.profileId(), !autoJoin);
             showDiscordSettings(connection);
         });
         start.setOnClickListener(view -> operation(
@@ -575,11 +576,11 @@ final class DiscordPanelController {
         status.setOnClickListener(view -> showDiscordStatus(connection));
         ui.show(context.getString(R.string.discord_panel_title),
                 context.getString(R.string.discord_settings_title),
-                context.getString(R.string.discord_profile_details, connection.profileId),
+                context.getString(R.string.discord_profile_details, connection.profileId()),
                 enabledSetting, connectSetting, joinSetting, start, reconnect, audio, status, back);
     }
 
-    private void showDiscordStatus(HostGatewayClient.Connection connection) {
+    private void showDiscordStatus(GatewayConnection connection) {
         showDiscordBusy(context.getString(R.string.discord_status_title),
                 context.getString(R.string.discord_checking_bridge));
         load(context.getString(R.string.discord_status_error),
@@ -602,7 +603,7 @@ final class DiscordPanelController {
         }, () -> showDiscordStatus(connection));
     }
 
-    private void showAudio(HostGatewayClient.Connection connection) {
+    private void showAudio(GatewayConnection connection) {
         showDiscordBusy(context.getString(R.string.discord_audio_title),
                 context.getString(R.string.discord_loading_audio));
         load(context.getString(R.string.discord_audio_error),
@@ -645,7 +646,7 @@ final class DiscordPanelController {
         }, () -> showAudio(connection));
     }
 
-    private void addAudioDevices(List<View> actions, HostGatewayClient.Connection connection,
+    private void addAudioDevices(List<View> actions, GatewayConnection connection,
                                  String title, List<HostGatewayClient.AudioDevice> devices) {
         if (devices.isEmpty()) return;
         actions.add(ui.label(title));
@@ -659,8 +660,8 @@ final class DiscordPanelController {
         }
     }
 
-    private HostGatewayClient.Connection connection() {
-        return hostUuid == null ? null : store.loadClientConnection(hostUuid, hostAddress);
+    private GatewayConnection connection() {
+        return hostUuid == null ? null : store.loadForHost(hostUuid, hostAddress);
     }
 
     private void showGatewayBusy(String title, String message) {
