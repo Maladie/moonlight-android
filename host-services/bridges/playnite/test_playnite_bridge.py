@@ -1,8 +1,6 @@
 ﻿import unittest
 import tempfile
 import ctypes
-import json
-import os
 import threading
 import time
 from pathlib import Path
@@ -15,9 +13,10 @@ from PatchPlayniteConnector import (
     READER_ANCHOR, SEND_BUILD_ANCHOR, SEND_PARAM_ANCHOR, SNAPSHOT_FUNCTION, STARTED_ANCHOR,
     SOURCE_PAYLOAD_ANCHOR, STATUS_OBJECT_ANCHOR, STATUS_PARAM_ANCHOR, patch_text,
 )
+from GameOperations import GameOperationsService
+from OperationJournal import OperationJournal
 from PlayniteBridge import (
-    BridgeState, EpicLibraryProbe, REQUIRED_GAME_STABLE_SAMPLES,
-    REQUIRED_STABLE_SAMPLES, SteamLibraryProbe,
+    BridgeState, REQUIRED_GAME_STABLE_SAMPLES, REQUIRED_STABLE_SAMPLES,
     StreamDisplayResolver, WindowProbe, WindowsPipeClient,
 )
 
@@ -26,62 +25,22 @@ GAME_ID = "840317c9-b9a4-4f72-be8e-807414e36a9b"
 
 
 class WindowProbeTest(unittest.TestCase):
-    def test_steam_manifest_reports_progress_completion_and_uninstall(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            library = Path(temporary)
-            steamapps = library / "steamapps"
-            steamapps.mkdir()
-            manifest = steamapps / "appmanifest_224760.acf"
-            manifest.write_text('''"AppState"
-{
-    "appid" "224760"
-    "StateFlags" "1026"
-    "installdir" "FEZ"
-    "BytesDownloaded" "50"
-    "BytesToDownload" "100"
-}''', encoding="utf-8")
-            probe = SteamLibraryProbe([library])
-            game = {"source": "Steam", "providerGameId": "224760"}
-            self.assertEqual(50, probe.sample(game, "install")["progress"])
-
-            (steamapps / "common" / "FEZ").mkdir(parents=True)
-            manifest.write_text(manifest.read_text(encoding="utf-8").replace(
-                '"1026"', '"4"').replace('"50"', '"100"'), encoding="utf-8")
-            self.assertTrue(probe.sample(game, "install")["installed"])
-
-            manifest.unlink()
-            self.assertTrue(probe.sample(game, "uninstall")["uninstalled"])
-
-    def test_zero_byte_steam_manifest_does_not_hide_confirmation_prompt(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            library = Path(temporary)
-            steamapps = library / "steamapps"
-            steamapps.mkdir()
-            (steamapps / "appmanifest_224760.acf").write_text('''"AppState"
-{
-    "appid" "224760"
-    "StateFlags" "1026"
-    "installdir" "FEZ"
-    "BytesDownloaded" "0"
-    "BytesToDownload" "100"
-}''', encoding="utf-8")
-            probe = SteamLibraryProbe([library])
-            game = {"source": "Steam", "providerGameId": "224760"}
-            self.assertIsNone(probe.sample(game, "install"))
-
     def test_existing_steam_window_embedded_prompt_is_recognized(self):
-        probe = WindowProbe()
+        service = mock.Mock()
+        probe = WindowProbe(service)
         probe.user32 = object()
         probe.is_session_locked = lambda: False
         probe.uac_consent_pending = lambda: False
-        probe.steam.sample = lambda _game, _operation: None
-        probe.epic.sample = lambda _game, _operation: None
+        service.manual_attention.return_value = None
+        service.sample.return_value = None
+        service.expected_launcher_images.return_value = {
+            "steam.exe", "steamwebhelper.exe"}
         window = {"hwnd": 77, "process_id": 123, "title": "Steam",
                   "image": "steamwebhelper.exe", "foreground": True,
                   "bounds": [0, 0, 1000, 700],
                   "monitor_bounds": [0, 0, 1920, 1080]}
         probe.interactive_windows = lambda: [window]
-        probe.confirm_steam_operation = lambda *_args, **_kwargs: {
+        service.confirm_operation.return_value = {
             "clicked": False, "recognized": True, "method": "uia"}
 
         sample = probe.installation_prompt({
@@ -152,12 +111,17 @@ class WindowProbeTest(unittest.TestCase):
         unchanged = {"hwnd": 40, "image": "unrelated.exe", "title": "Unrelated",
                      "foreground": False, "bounds": [0, 0, 1920, 1080],
                      "monitor_bounds": [0, 0, 1920, 1080]}
-        self.assertGreaterEqual(WindowProbe.installation_candidate_score(baseline, known), 5)
+        expected = {"steam.exe", "steamwebhelper.exe"}
+        self.assertGreaterEqual(WindowProbe.installation_candidate_score(
+            baseline, known, expected), 5)
         self.assertLess(WindowProbe.installation_candidate_score(
-            baseline, background_launcher), 5)
-        self.assertEqual(0, WindowProbe.installation_candidate_score(baseline, generic))
-        self.assertEqual(0, WindowProbe.installation_candidate_score(baseline, unrelated))
-        self.assertEqual(0, WindowProbe.installation_candidate_score(baseline, unchanged))
+            baseline, background_launcher, expected), 5)
+        self.assertEqual(0, WindowProbe.installation_candidate_score(
+            baseline, generic, expected))
+        self.assertEqual(0, WindowProbe.installation_candidate_score(
+            baseline, unrelated, expected))
+        self.assertEqual(0, WindowProbe.installation_candidate_score(
+            baseline, unchanged, expected))
 
     def test_steam_web_helper_modal_is_a_known_launcher(self):
         baseline = {"foreground_hwnd": 1, "windows": {},
@@ -166,7 +130,8 @@ class WindowProbeTest(unittest.TestCase):
                  "foreground": False, "bounds": [100, 100, 700, 400],
                  "monitor_bounds": [0, 0, 1920, 1080]}
         self.assertGreaterEqual(
-            WindowProbe.installation_candidate_score(baseline, modal), 5)
+            WindowProbe.installation_candidate_score(
+                baseline, modal, {"steam.exe", "steamwebhelper.exe"}), 5)
 
     def test_existing_epic_main_window_is_not_a_confirmation_dialog(self):
         baseline = {
@@ -182,13 +147,14 @@ class WindowProbeTest(unittest.TestCase):
             "monitor_bounds": [0, 0, 1920, 1080],
         }
         self.assertLess(
-            WindowProbe.installation_candidate_score(baseline, main_window), 5)
+            WindowProbe.installation_candidate_score(baseline, main_window, set()), 5)
 
     def test_embedded_light_epic_prompt_is_probed_when_window_does_not_change(self):
         probe = object.__new__(WindowProbe)
         probe.user32 = True
-        probe.steam = mock.Mock(sample=mock.Mock(return_value=None))
-        probe.epic = mock.Mock(sample=mock.Mock(return_value=None))
+        probe.game_operations = mock.Mock()
+        probe.game_operations.manual_attention.return_value = {
+            "reason": "epic_manual", "launcher": "epicgameslauncher.exe"}
         probe.is_session_locked = mock.Mock(return_value=False)
         probe.uac_consent_pending = mock.Mock(return_value=False)
         probe.interactive_windows = mock.Mock(return_value=[{
@@ -197,8 +163,6 @@ class WindowProbeTest(unittest.TestCase):
             "bounds": [100, 100, 1700, 950],
             "monitor_bounds": [0, 0, 1920, 1080],
         }])
-        probe.confirm_steam_operation = mock.Mock(return_value={
-            "recognized": True, "method": "visual", "variant": "light"})
         baseline = {
             "operation": "install", "game": {"source": "Epic", "name": "Carcassonne"},
             "foreground_hwnd": 2,
@@ -210,34 +174,36 @@ class WindowProbeTest(unittest.TestCase):
 
         self.assertFalse(result["requires_attention"])
         self.assertEqual("epic_manual", result["reason"])
-        probe.confirm_steam_operation.assert_not_called()
+        probe.game_operations.confirm_operation.assert_not_called()
 
     def test_secure_desktop_wins_over_completed_epic_manifest(self):
         probe = object.__new__(WindowProbe)
         probe.user32 = True
         probe.is_session_locked = mock.Mock(return_value=True)
-        probe.steam = mock.Mock()
-        probe.epic = mock.Mock()
+        probe.game_operations = mock.Mock()
+        probe.game_operations.manual_attention.return_value = {
+            "reason": "epic_manual", "launcher": "epicgameslauncher.exe"}
 
         result = probe.installation_prompt({
             "operation": "install", "game": {"source": "Epic"}})
 
         self.assertEqual("epic_manual", result["reason"])
-        probe.epic.sample.assert_not_called()
+        probe.game_operations.sample.assert_not_called()
 
     def test_visible_uac_consent_is_reported_as_attention_required(self):
         probe = object.__new__(WindowProbe)
         probe.user32 = True
         probe.is_session_locked = mock.Mock(return_value=False)
         probe.uac_consent_pending = mock.Mock(return_value=True)
-        probe.steam = mock.Mock()
-        probe.epic = mock.Mock()
+        probe.game_operations = mock.Mock()
+        probe.game_operations.manual_attention.return_value = {
+            "reason": "epic_manual", "launcher": "epicgameslauncher.exe"}
 
         result = probe.installation_prompt({
             "operation": "install", "game": {"source": "Epic"}})
 
         self.assertEqual("epic_manual", result["reason"])
-        probe.epic.sample.assert_not_called()
+        probe.game_operations.sample.assert_not_called()
 
     def test_epic_operation_rejects_steam_windows(self):
         baseline = {"foreground_hwnd": 1, "windows": {},
@@ -245,7 +211,8 @@ class WindowProbeTest(unittest.TestCase):
         steam = {"hwnd": 2, "image": "steamwebhelper.exe", "title": "Steam",
                  "foreground": True, "bounds": [100, 100, 700, 400],
                  "monitor_bounds": [0, 0, 1920, 1080]}
-        self.assertEqual(0, WindowProbe.installation_candidate_score(baseline, steam))
+        self.assertEqual(0, WindowProbe.installation_candidate_score(
+            baseline, steam, set()))
 
     def test_existing_epic_dialog_is_not_an_automation_candidate(self):
         baseline = {"foreground_hwnd": 1,
@@ -256,7 +223,8 @@ class WindowProbeTest(unittest.TestCase):
                   "title": "Epic Games Launcher", "foreground": True,
                   "bounds": [100, 100, 900, 600],
                   "monitor_bounds": [0, 0, 1920, 1080]}
-        self.assertEqual(0, WindowProbe.installation_candidate_score(baseline, dialog))
+        self.assertEqual(0, WindowProbe.installation_candidate_score(
+            baseline, dialog, set()))
 
     def test_fullscreen_epic_modal_is_not_an_automation_candidate(self):
         baseline = {"foreground_hwnd": 1, "game": {"source": "Epic"},
@@ -266,82 +234,8 @@ class WindowProbeTest(unittest.TestCase):
                   "title": "Epic Games Launcher", "foreground": True,
                   "bounds": [0, 0, 1920, 1080],
                   "monitor_bounds": [0, 0, 1920, 1080]}
-        self.assertEqual(0, WindowProbe.installation_candidate_score(baseline, window))
-
-    def test_epic_manifest_confirms_completed_install(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            manifests = Path(temporary) / "Epic" / "EpicGamesLauncher" / "Data" / "Manifests"
-            install = Path(temporary) / "Games" / "IntoTheBreach"
-            manifests.mkdir(parents=True)
-            install.mkdir(parents=True)
-            (manifests / "game.item").write_text(json.dumps({
-                "DisplayName": "Into The Breach", "AppName": "Blobfish",
-                "InstallLocation": str(install),
-            }), encoding="utf-8")
-            with mock.patch.dict(os.environ, {"PROGRAMDATA": temporary}):
-                result = WindowProbe.external_installation_completion({
-                    "pluginName": "Epic", "providerGameId": "Blobfish",
-                    "name": "Into The Breach",
-                })
-            self.assertEqual(str(install), result["install_directory"])
-            self.assertEqual("epic", result["provider"])
-
-    def test_epic_manifest_is_authoritative_for_install_and_uninstall(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            manifests = Path(temporary) / "Manifests"
-            install = Path(temporary) / "DefenseGrid"
-            manifests.mkdir()
-            install.mkdir()
-            executable = install / "DefenseGrid.exe"
-            executable.touch()
-            manifest = manifests / "game.item"
-            manifest.write_text(json.dumps({
-                "DisplayName": "Defense Grid: The Awakening",
-                "AppName": "a434dcb20f0d439b93aaa31dac9e3210",
-                "InstallLocation": str(install),
-                "LaunchExecutable": executable.name,
-                "bIsIncompleteInstall": False,
-            }), encoding="utf-8")
-            probe = EpicLibraryProbe(manifests)
-            game = {"source": "Epic", "providerGameId":
-                    "a434dcb20f0d439b93aaa31dac9e3210", "name": "Wrong localized name"}
-            self.assertTrue(probe.sample(game, "install")["installed"])
-            self.assertIsNone(probe.sample(game, "uninstall"))
-            manifest.unlink()
-            self.assertTrue(probe.sample(game, "uninstall")["uninstalled"])
-
-    def test_epic_does_not_infer_uninstall_from_unavailable_or_incomplete_scan(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            manifests = Path(temporary) / "Manifests"
-            game = {"source": "Epic", "providerGameId": "expected-app",
-                    "name": "Expected"}
-            probe = EpicLibraryProbe(manifests)
-            self.assertIsNone(probe.sample(game, "uninstall"))
-            manifests.mkdir()
-            (manifests / "broken.item").write_text("{broken", encoding="utf-8")
-            self.assertIsNone(probe.sample(game, "uninstall"))
-            (manifests / "broken.item").write_text(json.dumps({
-                "AppName": "expected-app", "DisplayName": "Expected",
-                "InstallLocation": str(Path(temporary) / "Expected"),
-                "bIsIncompleteInstall": True,
-            }), encoding="utf-8")
-            self.assertIsNone(probe.sample(game, "uninstall"))
-
-    def test_bad_epic_manifest_does_not_hide_valid_install(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            manifests = Path(temporary) / "Manifests"
-            install = Path(temporary) / "Valid"
-            manifests.mkdir()
-            install.mkdir()
-            (manifests / "bad.item").write_text("{bad", encoding="utf-8")
-            (manifests / "valid.item").write_text(json.dumps({
-                "AppName": "valid-app", "DisplayName": "Valid",
-                "InstallLocation": str(install),
-            }), encoding="utf-8")
-            result = EpicLibraryProbe(manifests).sample({
-                "source": "Epic", "providerGameId": "valid-app",
-                "name": "Valid"}, "install")
-            self.assertTrue(result["installed"])
+        self.assertEqual(0, WindowProbe.installation_candidate_score(
+            baseline, window, set()))
 
     def test_incomplete_epic_snapshot_preserves_previous_installs(self):
         state = BridgeState()
@@ -350,7 +244,7 @@ class WindowProbeTest(unittest.TestCase):
             "providerGameId": "carcassonne-app", "installed": False,
         }
         state.external_installed_overrides[GAME_ID] = r"E:\Games\Carcassonne"
-        state.external_manifest_snapshot_action = lambda: {
+        state.game_operations.external_snapshot = lambda: {
             "available": True, "complete": False, "by_id": {}, "by_name": {},
         }
 
@@ -371,7 +265,8 @@ class WindowProbeTest(unittest.TestCase):
 
         client = WindowsPipeClient.__new__(WindowsPipeClient)
         client._kernel32 = lambda: PartialRead()
-        with mock.patch("PlayniteBridge.ctypes.get_last_error", return_value=234):
+        with mock.patch("PlayniteBridge.ctypes.get_last_error", return_value=234,
+                        create=True):
             self.assertEqual(payload, client._read(123, len(payload)))
 
     def test_pipe_availability_is_peeked_without_starting_a_read(self):
@@ -407,6 +302,12 @@ class BridgeStateTest(unittest.TestCase):
             lambda hwnd: self.installation_focus_calls.append(hwnd) or {
                 "focused": True, "hwnd": hwnd,
             })
+
+    def test_supplied_game_operations_service_owns_the_single_journal(self):
+        service = GameOperationsService(OperationJournal(None))
+        state = BridgeState(game_operations=service)
+        self.assertIs(service, state.game_operations)
+        self.assertIs(service.journal, state.operation_journal)
 
     def test_start_is_allowlisted_and_closes_privacy_gate(self):
         result = self.state.start_game(GAME_ID.upper())
@@ -641,7 +542,8 @@ class BridgeStateTest(unittest.TestCase):
 
     def test_known_steam_dialog_is_auto_confirmed_before_attention_fallback(self):
         confirmations = []
-        self.state.confirm_installation_action = lambda hwnd, operation, name, _visual: (
+        self.state.game_operations.confirm_operation = \
+            lambda _game, hwnd, operation, name, _visual: (
             confirmations.append((hwnd, operation, name)) or {"clicked": True})
         self.state.handle_message({"type": "games", "payload": [{
             "id": GAME_ID, "name": "FEZ", "installed": False,
@@ -666,11 +568,11 @@ class BridgeStateTest(unittest.TestCase):
     def test_steam_attention_is_hidden_while_automation_is_running(self):
         release = threading.Event()
         started = threading.Event()
-        def confirm(_hwnd, _operation, _name, _visual):
+        def confirm(_game, _hwnd, _operation, _name, _visual):
             started.set()
             release.wait(1)
             return {"clicked": True}
-        self.state.confirm_installation_action = confirm
+        self.state.game_operations.confirm_operation = confirm
         self.state.handle_message({"type": "games", "payload": [{
             "id": GAME_ID, "name": "FTL", "installed": False,
             "source": "Steam", "providerGameId": "212680",
@@ -690,7 +592,8 @@ class BridgeStateTest(unittest.TestCase):
 
     def test_installed_steam_game_uninstall_dialog_is_auto_confirmed(self):
         confirmations = []
-        self.state.confirm_installation_action = lambda hwnd, operation, name, _visual: (
+        self.state.game_operations.confirm_operation = \
+            lambda _game, hwnd, operation, name, _visual: (
             confirmations.append((hwnd, operation, name)) or {"clicked": True})
         self.state.handle_message({"type": "games", "payload": [{
             "id": GAME_ID, "name": "FTL", "installed": True,
@@ -712,7 +615,8 @@ class BridgeStateTest(unittest.TestCase):
 
     def test_epic_dialog_is_never_auto_confirmed(self):
         confirmations = []
-        self.state.confirm_installation_action = lambda hwnd, operation, name, _visual: (
+        self.state.game_operations.confirm_operation = \
+            lambda _game, hwnd, operation, name, _visual: (
             confirmations.append((hwnd, operation, name)) or {"clicked": True})
         self.state.handle_message({"type": "games", "payload": [{
             "id": GAME_ID, "name": "Defense Grid", "installed": False,
@@ -731,9 +635,11 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual([], confirmations)
 
     def test_external_completion_finishes_session_and_syncs_connector(self):
+        self.state.game_operations.dispatch_install = lambda _game, _sender: {
+            "accepted": True, "command": "install", "provider": "epic"}
         self.state.handle_message({"type": "games", "payload": [{
             "id": GAME_ID, "name": "Into The Breach", "installed": False,
-            "pluginName": "Epic", "pluginId": "Blobfish",
+            "pluginName": "Epic", "providerGameId": "Blobfish",
         }]})
         self.state.install_game(GAME_ID)
         self.state.apply_installation_probe(GAME_ID, {
@@ -849,7 +755,7 @@ class BridgeStateTest(unittest.TestCase):
 
     def test_epic_install_bypasses_playnite_intermediate_prompt(self):
         launched = []
-        self.state.epic_install_action = lambda game: (
+        self.state.game_operations.dispatch_install = lambda game, _sender: (
             launched.append(game["providerGameId"]) or {
                 "accepted": True, "command": "install", "provider": "epic"})
         self.state.handle_message({"type": "games", "payload": [{
@@ -870,7 +776,7 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual("epic_manual", current["installAttentionReason"])
 
     def test_snapshot_repairs_stale_epic_installed_state(self):
-        self.state.external_manifest_snapshot_action = lambda: {
+        self.state.game_operations.external_snapshot = lambda: {
             "available": True, "complete": True,
             "by_id": {"epic-app": {"installed": True, "provider": "epic",
                                       "install_directory": r"E:\Games\DefenseGrid"}},
@@ -908,7 +814,7 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual(command_count, len(self.commands))
 
     def test_snapshot_repairs_stale_epic_install_directory(self):
-        self.state.external_manifest_snapshot_action = lambda: {
+        self.state.game_operations.external_snapshot = lambda: {
             "available": True, "complete": True,
             "by_id": {"salt": {"installed": True, "provider": "epic",
                                  "install_directory": r"D:\Games\Celeste"}},
