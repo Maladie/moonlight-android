@@ -2302,12 +2302,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && ConsoleActionCatalog.isPaired(host) && snapshot.hasActiveSession();
         boolean visible = activeSession && !CONSOLE_UI_V2;
         if (CONSOLE_UI_V2 && host != null) {
-            if (snapshot.state == SessionSnapshot.State.NONE
-                    || snapshot.state == SessionSnapshot.State.TERMINATING) {
-                resolveActivePlayniteGame(host, false);
-            } else if (host.runningGameId != 0 && ConsoleActionCatalog.isOnline(host)
-                    && ConsoleActionCatalog.isPaired(host)) {
+            PlayniteIdentityResolutionPolicy.Action resolutionAction =
+                    PlayniteIdentityResolutionPolicy.decide(
+                            ConsoleActionCatalog.isOnline(host),
+                            ConsoleActionCatalog.isPaired(host),
+                            host.runningGameId, snapshot.state);
+            if (resolutionAction == PlayniteIdentityResolutionPolicy.Action.REQUEST) {
                 resolveActivePlayniteGame(host, true);
+            } else if (resolutionAction == PlayniteIdentityResolutionPolicy.Action.CLEAR) {
+                resolveActivePlayniteGame(host, false);
             }
         }
         boolean restoreFocus = quickResumeButton.hasFocus() && !visible;

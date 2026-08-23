@@ -4,6 +4,8 @@ import com.limelight.stream.RetainedStreamSessionCoordinator;
 
 import org.junit.Test;
 
+import java.util.Collections;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -151,6 +153,32 @@ public class SessionStateResolverTest {
         correlated.resolvedGame = "game";
         assertEquals(SessionSnapshot.State.ACTIVE,
                 resolver.resolve(correlated.build()).state);
+    }
+
+    @Test public void tombstoneSuppressesRawHostUntilPlayniteIdentityCorroboratesIt() {
+        Facts facts = new Facts();
+        facts.recentlyEnded = true;
+        facts.runningApp = 42;
+
+        SessionSnapshot suppressed = resolver.resolve(facts.build());
+        assertEquals(SessionSnapshot.State.NONE, suppressed.state);
+        assertEquals(PlayniteIdentityResolutionPolicy.Action.REQUEST,
+                PlayniteIdentityResolutionPolicy.decide(
+                        true, true, facts.runningApp, suppressed.state));
+
+        facts.resolvedGame = "game-b";
+        SessionSnapshot corroborated = resolver.resolve(facts.build());
+        PlayniteLibraryGame game = new PlayniteLibraryGame("game-b", "Game B", true,
+                false, 0L, "", "", "", "Steam");
+        PlayniteDashboardItem item = new PlayniteDashboardItem(game, 42, "MoonWaker",
+                PlayniteDashboardItem.MappingState.MAPPED);
+        PlayniteSessionPresentation.Projection projection =
+                PlayniteSessionPresentation.project(corroborated,
+                        Collections.singletonList(item), "");
+
+        assertEquals(SessionSnapshot.State.ACTIVE, corroborated.state);
+        assertEquals(PlayniteSessionPresentation.State.RESUME_ACTIVE,
+                projection.stateFor("game-b"));
     }
 
     @Test public void hostSleepMarkerAloneNeverCreatesGameSession() {
