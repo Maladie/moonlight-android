@@ -38,6 +38,7 @@ REQUIRED_STABLE_SAMPLES = 3
 REQUIRED_GAME_STABLE_SAMPLES = 4
 STEAM_PRIMARY_START_TIMEOUT = 30.0
 STEAM_FALLBACK_START_TIMEOUT = 20.0
+STEAM_CANCELLATION_EVIDENCE_TIMEOUT = 20.0
 OPERATION_AUDIT_LOCK = threading.Lock()
 DISPLAY_NAME_PATTERN = re.compile(r"^(?:\\\\\.\\)?DISPLAY[0-9]+$", re.IGNORECASE)
 PLAYNITE_UI_IMAGES = {
@@ -1175,14 +1176,35 @@ class BridgeState:
                     game = self.library.get(game_id)
                     title = str((game or {}).get("name") or status.get("title") or "")
                     operation = self.operation_journal.get(game_id) or {}
-                    provider = self.game_operations.provider_for_label(
+                    journal_provider = self.game_operations.provider_for_label(
                         str(operation.get("provider") or ""))
-                    if game_id in self.installations \
-                            and provider is self.game_operations.steam:
+                    library_provider = self.game_operations.provider_for(game) \
+                        if game is not None else self.game_operations.generic
+                    if self.game_operations.steam in {
+                            journal_provider, library_provider}:
                         # Steam manifests remain authoritative; connector events
                         # carry no operation-generation identity and cannot finish
                         # or cancel a newer Steam request for the same game.
+                        session = self.installations.get(game_id)
+                        token = (session or {}).get("token")
+                        if name == "gameInstallationCancelled" \
+                                and session is not None \
+                                and session.get("primary_started") \
+                                and isinstance(token, tuple) \
+                                and self._operation_active_locked(game_id, token) \
+                                and session.get("cancellation_token") != token:
+                            session.update({
+                                "cancellation_token": token,
+                                "cancellation_observed_at": self.clock(),
+                                "cancellation_inactive_samples": 0,
+                            })
                         self._publish_locked("playnite-status", {"name": name, **status})
+                        sender = self.command_sender
+                        if sender is not None:
+                            try:
+                                sender({"type": "command", "command": "snapshot"})
+                            except Exception as error:
+                                self.last_error = str(error)[:500]
                     else:
                         self.installations.pop(game_id, None)
                         self.operation_journal.update(
@@ -1469,8 +1491,16 @@ class BridgeState:
             if game_id == requested_game_id:
                 continue
             operation = self.operation_journal.get(game_id) or {}
-            if operation.get("state") in {"preparing", "attention_required"} \
-                    or session.get("automation_in_progress"):
+            game = self.library.get(game_id)
+            is_steam = self.game_operations.provider_for_label(
+                str(operation.get("provider") or "")) is self.game_operations.steam \
+                or (game is not None and self.game_operations.provider_for(game)
+                    is self.game_operations.steam)
+            active = operation.get("state") in ACTIVE_STATES
+            if active and ((is_steam and not session.get("primary_started"))
+                           or operation.get("state") in {
+                               "preparing", "attention_required"}
+                           or session.get("automation_in_progress")):
                 raise RuntimeError("Another installation operation is awaiting confirmation.")
 
     def _mark_manual_confirmation(self, game_id: str, policy: dict[str, Any],
@@ -1577,6 +1607,9 @@ class BridgeState:
             operation = str(session.get("operation") or "install")
             game_copy = dict(game)
             if sample.get("started"):
+                if session.get("cancellation_token") == token:
+                    session["cancellation_observed_at"] = self.clock()
+                    session["cancellation_inactive_samples"] = 0
                 first_activity = not bool(session.get("primary_started"))
                 dispatch_path = "playnite_fallback" \
                     if session.get("fallback_dispatched") else "direct" \
@@ -1613,12 +1646,46 @@ class BridgeState:
                         "id": game_id, "name": str(game.get("name") or ""),
                     })
                 return True
-            if session.get("primary_started"):
+            cancellation_token = session.get("cancellation_token")
+            if cancellation_token == token:
+                if sample.get("requires_attention"):
+                    return False
+                now = self.clock()
+                healthy_inactivity = bool(
+                    sample.get("scan_available") and sample.get("scan_complete")
+                    and sample.get("phase") == "not_started")
+                if healthy_inactivity:
+                    inactive_samples = int(
+                        session.get("cancellation_inactive_samples") or 0) + 1
+                    session["cancellation_inactive_samples"] = inactive_samples
+                    if inactive_samples < REQUIRED_STABLE_SAMPLES:
+                        return True
+                    self.installations.pop(game_id, None)
+                    self.operation_journal.update(game_id, "cancelled")
+                    game["installing"] = False
+                    game["uninstalling"] = False
+                    self._apply_installation_fields_locked(game_id, game)
+                    self._save_library_cache_locked()
+                    self._publish_locked("game-installation-cancelled", {
+                        "id": game_id, "name": str(game.get("name") or ""),
+                        "operation": operation,
+                    })
+                    return True
+                session["cancellation_inactive_samples"] = 0
+                observed_at = session.get("cancellation_observed_at")
+                if observed_at is not None and now - float(observed_at) >= \
+                        STEAM_CANCELLATION_EVIDENCE_TIMEOUT:
+                    action = "cancellation_attention"
+                else:
+                    return True
+            if action == "cancellation_attention":
+                pass
+            elif session.get("primary_started"):
                 return True
-            if session.get("requires_attention") and not session.get("hwnd") \
+            elif session.get("requires_attention") and not session.get("hwnd") \
                     and str(session.get("reason") or "").startswith("steam_"):
                 return True
-            if sample.get("requires_attention"):
+            elif sample.get("requires_attention"):
                 if session.get("recovery_pending"):
                     session.update({
                         "recovery_pending": False,
@@ -1627,29 +1694,35 @@ class BridgeState:
                         "fallback_dispatched_at": self.clock(),
                     })
                 return False
-            now = self.clock()
-            phase = str(sample.get("phase") or "")
-            if session.get("recovery_pending"):
-                if phase in {"not_started", "scan_unavailable"}:
-                    action = "primary"
-                elif now - float(session.get("recovery_started_at") or now) >= \
+            else:
+                now = self.clock()
+                phase = str(sample.get("phase") or "")
+                if session.get("recovery_pending"):
+                    if phase in {"not_started", "scan_unavailable"}:
+                        action = "primary"
+                    elif now - float(session.get("recovery_started_at") or now) >= \
+                            STEAM_PRIMARY_START_TIMEOUT:
+                        action = "fallback"
+                        fallback_trigger = "restart_observation_timeout"
+                    else:
+                        return True
+                elif not session.get("fallback_dispatched") and \
+                        now - float(session.get("primary_dispatched_at") or now) >= \
                         STEAM_PRIMARY_START_TIMEOUT:
                     action = "fallback"
-                    fallback_trigger = "restart_observation_timeout"
+                    fallback_trigger = "primary_no_activity_timeout"
+                elif session.get("fallback_dispatched") and \
+                        now - float(session.get("fallback_dispatched_at") or now) >= \
+                        STEAM_FALLBACK_START_TIMEOUT:
+                    action = "attention"
                 else:
                     return True
-            elif not session.get("fallback_dispatched") and \
-                    now - float(session.get("primary_dispatched_at") or now) >= \
-                    STEAM_PRIMARY_START_TIMEOUT:
-                action = "fallback"
-                fallback_trigger = "primary_no_activity_timeout"
-            elif session.get("fallback_dispatched") and \
-                    now - float(session.get("fallback_dispatched_at") or now) >= \
-                    STEAM_FALLBACK_START_TIMEOUT:
-                action = "attention"
-            else:
-                return True
-        if action == "primary":
+        if action == "cancellation_attention":
+            self._mark_manual_confirmation(game_id, {
+                "reason": "steam_cancellation_inconclusive",
+                "launcher": "steam.exe",
+            }, token)
+        elif action == "primary":
             try:
                 self._dispatch_operation(game_id, token, game_copy, operation)
             except Exception:

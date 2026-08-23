@@ -257,28 +257,20 @@ class SteamProvider(GenericPlayniteProvider):
         return self.scan(game)
 
     @staticmethod
-    def _started(snapshot: dict[str, Any], baseline: dict[str, Any],
-                 restored: bool) -> bool:
-        baseline_healthy = bool(
-            baseline.get("scan_available") and baseline.get("scan_complete"))
-        if snapshot.get("download_present") and (
-                restored or (baseline_healthy and not baseline.get("download_present"))):
+    def _started(snapshot: dict[str, Any], _baseline: dict[str, Any],
+                 _restored: bool) -> bool:
+        if snapshot.get("download_present"):
             return True
         if not snapshot.get("manifest_readable"):
             return False
-        if not baseline.get("manifest_present"):
-            if not restored:
-                return baseline_healthy
-            return int(snapshot.get("bytes_downloaded") or 0) > 0 \
-                or int(snapshot.get("state_flags") or 0) not in {0, 4}
-        if snapshot.get("manifest_signature") != baseline.get("manifest_signature"):
+        downloaded = int(snapshot.get("bytes_downloaded") or 0)
+        total = int(snapshot.get("bytes_total") or 0)
+        flags = int(snapshot.get("state_flags") or 0)
+        if flags not in {0, 4}:
             return True
-        if int(snapshot.get("bytes_downloaded") or 0) > \
-                int(baseline.get("bytes_downloaded") or 0):
+        if total > 0 and 0 < downloaded <= total:
             return True
-        return restored and (
-            int(snapshot.get("bytes_downloaded") or 0) > 0
-            or int(snapshot.get("state_flags") or 0) not in {0, 4})
+        return False
 
     def sample(self, game: dict[str, Any], operation: str,
                baseline: dict[str, Any] | None = None) -> dict[str, Any]:
