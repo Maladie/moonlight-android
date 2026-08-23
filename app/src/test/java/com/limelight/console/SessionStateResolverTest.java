@@ -37,6 +37,28 @@ public class SessionStateResolverTest {
         assertEquals(SessionSnapshot.State.NONE, resolver.resolve(facts.build()).state);
     }
 
+    @Test public void staleRetainedTargetDoesNotSuppressCurrentSunshineEvidence() {
+        Facts facts = new Facts();
+        facts.runningApp = 99;
+        facts.resolvedGame = "current";
+        facts.retainedState = RetainedStreamSessionCoordinator.State.HOME_LIVE;
+        facts.retainedHost = "host";
+        facts.retainedApp = 42;
+        facts.retainedGame = "stale";
+
+        SessionSnapshot snapshot = resolver.resolve(facts.build());
+
+        assertEquals(SessionSnapshot.State.ACTIVE, snapshot.state);
+        assertEquals(99, snapshot.hostGameAppId);
+        assertEquals("current", snapshot.playniteGameId);
+        assertFalse(snapshot.retainedTransport);
+
+        facts.retainedApp = 99;
+        snapshot = resolver.resolve(facts.build());
+        assertEquals("current", snapshot.playniteGameId);
+        assertFalse(snapshot.retainedTransport);
+    }
+
     @Test public void matchingTerminatingBlocksEveryResumeSource() {
         Facts facts = new Facts();
         facts.runningApp = 42;

@@ -80,7 +80,13 @@ final class SessionStateResolver {
     }
 
     SessionSnapshot resolve(Observations facts) {
-        boolean retainedMatches = facts.hostId.equals(facts.retainedHostId);
+        boolean retainedMatches = facts.hostId.equals(facts.retainedHostId)
+                && (facts.runningGameAppId == 0
+                || facts.retainedAppId == 0
+                || facts.runningGameAppId == facts.retainedAppId)
+                && (facts.resolvedPlayniteGameId.isEmpty()
+                || facts.retainedPlayniteGameId.isEmpty()
+                || facts.resolvedPlayniteGameId.equals(facts.retainedPlayniteGameId));
         boolean suspendedMatches = facts.hostId.equals(facts.suspendedHostId);
         boolean pendingMatches = facts.pendingResume
                 && facts.hostId.equals(facts.pendingResumeHostId);
