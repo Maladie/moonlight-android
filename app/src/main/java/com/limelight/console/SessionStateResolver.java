@@ -136,11 +136,6 @@ final class SessionStateResolver {
                     false, false, sleepRequested, sleepObserved);
         }
 
-        if (explicitSuspension && facts.hostOnline && facts.runningGameAppId == 0) {
-            return snapshot(facts, SessionSnapshot.State.SUSPENDED_UNVERIFIED,
-                    facts.suspendedAppId, facts.suspendedPlayniteGameId, false,
-                    true, suspensionSleepObserved, sleepRequested, sleepObserved);
-        }
 
         if (explicitSuspension) {
             return snapshot(facts, SessionSnapshot.State.SUSPENDED,

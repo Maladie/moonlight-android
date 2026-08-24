@@ -472,15 +472,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && sleep.sleepObservedAt > 0L) {
             HostSleepStateStore.clearIfMatches(this, host.uuid, sleep.requestedAt);
         }
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
-        boolean retainedLive = host.uuid.equalsIgnoreCase(retained.hostId)
-                && (retained.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
-                || retained.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE);
-        if (SuspendedSessionStore.recentlyEnded(this, host.uuid)
-                && (host.runningGameId != 0 || retainedLive)) {
-            SuspendedSessionStore.clearEnded(this, host.uuid);
-        }
+
     }
 
     private void reconcileAuthoritativeSession(ComputerDetails host) {
@@ -8142,9 +8134,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     case INITIALIZING:
                         message = R.string.console_initializing;
                         break;
-                    case SUSPENDED_UNVERIFIED:
-                        message = R.string.console_suspended_resume_timeout;
-                        break;
+
                     case TERMINATING:
                         message = R.string.console_terminate_session_request;
                         break;

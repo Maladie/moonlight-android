@@ -9,7 +9,6 @@ final class SessionSnapshot {
         NONE,
         ACTIVE,
         SUSPENDED,
-        SUSPENDED_UNVERIFIED,
         RECONNECT_REQUIRED,
         TERMINATING
     }
@@ -49,7 +48,6 @@ final class SessionSnapshot {
         this.explicitSuspension = explicitSuspension;
         this.reconnectRequired = state == State.RECONNECT_REQUIRED;
         this.resumeAvailable = state == State.ACTIVE || state == State.SUSPENDED
-                || state == State.SUSPENDED_UNVERIFIED
                 || state == State.RECONNECT_REQUIRED;
         this.suspensionSleepObserved = suspensionSleepObserved;
         this.hostSleepRequested = hostSleepRequested;
@@ -63,8 +61,7 @@ final class SessionSnapshot {
         if (!playniteGameId.isEmpty()) return playniteGameId.equals(normalize(gameId));
         return hostGameAppId != 0 && appId != null && appId == hostGameAppId;
     }
-    boolean isSuspended() { return state == State.SUSPENDED
-                || state == State.SUSPENDED_UNVERIFIED; }
+    boolean isSuspended() { return state == State.SUSPENDED; }
     boolean isReconnectRequired() { return reconnectRequired; }
     boolean isResumeAvailable() { return resumeAvailable; }
 

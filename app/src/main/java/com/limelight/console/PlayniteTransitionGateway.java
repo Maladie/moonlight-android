@@ -85,8 +85,13 @@ public final class PlayniteTransitionGateway {
                                String expectedGameId) {
             String gameId = expectedGameId == null ? ""
                     : expectedGameId.trim().toLowerCase(java.util.Locale.ROOT);
-            return accepted && suspendId.equals(expectedSuspendId)
-                    && sunshineAppId == expectedAppId && playniteGameId.equals(gameId);
+            if (!accepted) return false;
+            // Older Gateway versions acknowledge suspend but do not echo correlation fields.
+            if (suspendId.isEmpty() && sunshineAppId == 0 && playniteGameId.isEmpty()) {
+                return true;
+            }
+            return suspendId.equals(expectedSuspendId) && sunshineAppId == expectedAppId
+                    && playniteGameId.equals(gameId);
         }
     }
 

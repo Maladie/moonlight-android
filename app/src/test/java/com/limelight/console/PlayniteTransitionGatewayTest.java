@@ -24,4 +24,18 @@ public class PlayniteTransitionGatewayTest {
 
         assertFalse(acceptance.matches("suspend-a", 42, "game"));
     }
+
+    @Test public void acceptedLegacySuspendWithoutCorrelationMatches() {
+        PlayniteTransitionGateway.SuspendAcceptance acceptance =
+                new PlayniteTransitionGateway.SuspendAcceptance(true, "", 0, "");
+
+        assertTrue(acceptance.matches("suspend-a", 42, "game"));
+    }
+
+    @Test public void partialCorrelationIsNotTreatedAsLegacy() {
+        PlayniteTransitionGateway.SuspendAcceptance acceptance =
+                new PlayniteTransitionGateway.SuspendAcceptance(true, "suspend-a", 0, "");
+
+        assertFalse(acceptance.matches("suspend-a", 42, "game"));
+    }
 }

@@ -221,14 +221,14 @@ public class SessionStateResolverTest {
         assertFalse(snapshot.hostSleepRequested);
     }
 
-    @Test public void onlineZeroPollKeepsExplicitSuspensionUnverifiedAndCorrelated() {
+    @Test public void onlineZeroPollKeepsExplicitSuspensionResumableAndCorrelated() {
         Facts facts = suspendedFacts();
         facts.hostOnline = true;
         facts.suspendedId = "suspend-a";
 
         SessionSnapshot snapshot = resolver.resolve(facts.build());
 
-        assertEquals(SessionSnapshot.State.SUSPENDED_UNVERIFIED, snapshot.state);
+        assertEquals(SessionSnapshot.State.SUSPENDED, snapshot.state);
         assertEquals("suspend-a", snapshot.suspendId);
         assertTrue(snapshot.isSuspended());
         assertTrue(snapshot.isResumeAvailable());

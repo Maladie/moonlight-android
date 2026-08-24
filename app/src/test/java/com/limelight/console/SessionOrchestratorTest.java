@@ -81,13 +81,14 @@ public class SessionOrchestratorTest {
         assertEquals("suspend-a", effects.launchedSourceSuspendId);
     }
 
-    @Test public void unverifiedSuspensionRejectsEveryTargetWithoutSideEffects() {
+    @Test public void suspendedTargetConnectsDuringOnlineZeroPoll() {
         Fake effects = new Fake();
-        effects.snapshot = snapshot(SessionSnapshot.State.SUSPENDED_UNVERIFIED, 42, "game");
-        orchestrator(effects).play(PlayIntent.playniteGame(
-                "host", 77, "Other", false, "other", "other"));
-        assertEquals(SessionOrchestrator.Rejection.SUSPENDED_UNVERIFIED, effects.rejection);
-        assertEquals(0, effects.readiness); assertEquals(0, effects.launches); assertEquals(0, effects.closes);
+        effects.snapshot = snapshot(SessionSnapshot.State.SUSPENDED, 42, "game");
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.readiness);
+        assertEquals(1, effects.launches);
     }
 
     @Test public void noneDerivesFreshTransitionTypeFromTarget() {
@@ -274,7 +275,7 @@ public class SessionOrchestratorTest {
     private static SessionSnapshot snapshot(SessionSnapshot.State state,
                                             int appId, String gameId) {
         return new SessionSnapshot("host", state, appId, gameId,
-                false, state == SessionSnapshot.State.SUSPENDED || state == SessionSnapshot.State.SUSPENDED_UNVERIFIED,
+                false, state == SessionSnapshot.State.SUSPENDED,
                 false, false, false);
     }
 
