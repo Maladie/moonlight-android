@@ -1085,7 +1085,7 @@
     <string name="preflight_target_timeout">The Sunshine target did not finish propagating in time.</string>
     <string name="transition_stream_disconnected">Stream disconnected</string>
     <string name="transition_readiness_unconfirmed">Readiness could not be confirmed</string>
-    <string name="transition_host_session_locked">The Windows session is locked. Unlock the PC and try again.</string>
+    <string name="transition_host_session_locked">The Windows session is locked. Choose Reveal now, then enter the Windows password.</string>
     <string name="transition_stream_display_not_configured">The streamed display is not configured on the host</string>
     <string name="transition_step_pending">○  %1$s — pending</string>
     <string name="transition_step_active">●  %1$s — active</string>

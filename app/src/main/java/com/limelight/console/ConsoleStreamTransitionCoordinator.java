@@ -198,12 +198,21 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 PlayniteTransitionGateway.Snapshot snapshot = gateway.snapshot();
                 if (!isCurrent(runEpoch)) return;
                 context.lastReadinessReason = snapshot.reason;
-                applySnapshot(runEpoch, snapshot);
+                if ("host_session_locked".equals(snapshot.reason)) {
+                    if (!context.lockScreenPresented) {
+                        context.lockScreenPresented = true;
+                        applySnapshot(runEpoch, snapshot);
+                    }
+                } else {
+                    context.lockScreenPresented = false;
+                    applySnapshot(runEpoch, snapshot);
+                }
                 if (!isCurrent(runEpoch)) return;
 
                 if (!context.fullscreenRequested
                         && transitionSpec.type == LaunchTransitionType.PLAYNITE
-                        && !snapshot.windowReady) {
+                        && !snapshot.windowReady
+                        && !"host_session_locked".equals(snapshot.reason)) {
                     gateway.showFullscreen();
                     if (!isCurrent(runEpoch)) return;
                     context.fullscreenRequested = true;
@@ -258,6 +267,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 }
                 long timeout = timeoutFor(current.state);
                 if (timeout > 0L && clock.now() - context.stateSince >= timeout
+                        && !"host_session_locked".equals(context.lastReadinessReason)
                         && isCurrent(runEpoch)) {
                     transitionController.timedOut(transitionSpec.id,
                             readinessFailureMessage(context.lastReadinessReason));
@@ -282,15 +292,15 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private void applySnapshot(long runEpoch, PlayniteTransitionGateway.Snapshot snapshot) {
         if (!snapshot.gatewayReady || !snapshot.connectorReady || !isCurrent(runEpoch)) return;
         transitionController.gatewayConnected(transitionSpec.id, transitionSpec.hostId);
-        if ("host_session_locked".equals(snapshot.reason)) {
-            transitionController.error(
-                    transitionSpec.id, callbacks.hostSessionLockedMessage());
-            return;
-        }
         LaunchTransitionType kind = "game".equalsIgnoreCase(snapshot.targetKind)
                 ? LaunchTransitionType.GAME : LaunchTransitionType.PLAYNITE;
         String gameId = snapshot.gameId == null || snapshot.gameId.isEmpty()
                 ? transitionSpec.playniteGameId : snapshot.gameId;
+        if ("host_session_locked".equals(snapshot.reason)) {
+            transitionController.targetWindowLost(transitionSpec.id, transitionSpec.hostId,
+                    kind, gameId, callbacks.hostSessionLockedMessage());
+            return;
+        }
         if (snapshot.processId > 0) {
             transitionController.targetProcessRunning(
                     transitionSpec.id, transitionSpec.hostId, kind, gameId);
@@ -462,6 +472,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         boolean baselineEstablished;
         boolean gameWasRunning;
         boolean fullscreenRequested;
+        boolean lockScreenPresented;
         int gameFocusAttempts;
         long lastGameFocusAttempt;
         String lastReadinessReason = "";

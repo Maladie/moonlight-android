@@ -61,15 +61,54 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
-    public void lockedSessionMapsToExistingError() {
-        FakeGateway gateway = gatewayWith(snapshot(true, true, "idle", "", 0,
-                false, "playnite", 0, "host_session_locked"));
-        Harness harness = new Harness(LaunchTransitionType.PLAYNITE, gateway);
+    public void lockedSessionUsesOneManualPrivacyGateUntilUnlocked() {
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "host_session_locked");
+        PlayniteTransitionGateway.Snapshot unlocked = snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "target_not_foreground");
+        FakeGateway gateway = gatewayWith(locked, locked, unlocked, locked);
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        makeTransportReady(harness.controller);
+        gateway.snapshotActions.add(() -> { });
+        gateway.snapshotActions.add(() -> {
+            assertTrue(harness.controller.snapshot().manualRevealAvailable);
+            harness.controller.showStreamAnyway("transition-1");
+            harness.controller.revealCompleted("transition-1");
+        });
+        gateway.snapshotActions.add(() -> {
+            assertEquals(LaunchTransitionState.GAME_RUNNING, harness.controller.snapshot().state);
+            assertFalse(harness.controller.snapshot().overlayVisible);
+            assertFalse(harness.controller.snapshot().inputBlocked);
+        });
 
         harness.runObservation();
 
-        assertEquals(LaunchTransitionState.ERROR, harness.controller.snapshot().state);
+        assertFalse(harness.states.contains(LaunchTransitionState.ERROR));
+        assertFalse(harness.states.contains(LaunchTransitionState.TIMED_OUT));
+        assertTrue(harness.states.contains(LaunchTransitionState.GAME_RUNNING));
+        assertTrue(harness.controller.snapshot().overlayVisible);
+        assertTrue(harness.controller.snapshot().inputBlocked);
         assertEquals("host locked", harness.controller.snapshot().detail);
+    }
+
+    @Test
+    public void lockedSessionSkipsPlayniteFullscreenAndReadinessTimeout() {
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "idle", "", 0,
+                false, "playnite", 0, "host_session_locked");
+        FakeGateway gateway = gatewayWith(locked, locked);
+        FakeClock clock = new FakeClock();
+        gateway.snapshotActions.add(() -> clock.value = 0L);
+        gateway.snapshotActions.add(() -> clock.value = 31_000L);
+        Harness harness = new Harness(LaunchTransitionType.PLAYNITE, gateway, clock,
+                new InterruptingSleeper());
+
+        harness.runObservation();
+
+        assertEquals(0, gateway.fullscreenCalls);
+        assertFalse(harness.states.contains(LaunchTransitionState.TIMED_OUT));
+        assertFalse(harness.states.contains(LaunchTransitionState.ERROR));
+        assertTrue(harness.controller.snapshot().overlayVisible);
+        assertTrue(harness.controller.snapshot().inputBlocked);
     }
 
     @Test
@@ -376,6 +415,13 @@ public class ConsoleStreamTransitionCoordinatorTest {
         controller.videoFrameRendered("transition-1");
         controller.revealCompleted("transition-1");
         assertEquals(LaunchTransitionState.GAME_RUNNING, controller.snapshot().state);
+    }
+
+    private static void makeTransportReady(LaunchTransitionController controller) {
+        controller.surfaceReady("transition-1");
+        controller.inputPipelineReady("transition-1");
+        controller.streamConnected("transition-1");
+        controller.videoFrameRendered("transition-1");
     }
 
     private static PlayniteTransitionGateway.Snapshot snapshotReadyPlaynite() {

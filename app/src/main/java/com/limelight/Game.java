@@ -2846,6 +2846,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void closeStreamWithPrivacy(boolean quitApplication) {
         userInitiatedDisconnect = true;
+        if (quitApplication) {
+            clearResumedSuspendedSession();
+            RetainedStreamSessionCoordinator.clearIfMatches(streamSessionId);
+            SessionResumeManager.clearIfMatches(this, streamSessionId);
+            BackgroundStreamService.resumed(this, streamSessionId);
+        }
         if (transitionController == null || consoleLoadingView == null) {
             if (controllerHandler != null) {
                 controllerHandler.pendingApplicationQuit = quitApplication;
@@ -3391,13 +3397,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             case PLAYNITE_PROCESS_RUNNING:
                 return getString(R.string.transition_starting_playnite);
             case PLAYNITE_FULLSCREEN_STARTING:
-                return getString(R.string.transition_waiting_fullscreen);
+                return snapshot.detail.isEmpty()
+                        ? getString(R.string.transition_waiting_fullscreen) : snapshot.detail;
             case GAME_START_REQUESTED:
             case GAME_STARTING:
             case GAME_PROCESS_RUNNING:
                 return getString(R.string.transition_starting_game);
             case GAME_WINDOW_STABILIZING:
-                return getString(R.string.transition_window_stabilizing);
+                return snapshot.detail.isEmpty()
+                        ? getString(R.string.transition_window_stabilizing) : snapshot.detail;
             case GAME_STOPPING:
             case PLAYNITE_RETURNING:
                 return getString(R.string.transition_waiting_playnite_return);
@@ -3780,7 +3788,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
             @Override
             public void onQuitSession() {
-                clearResumedSuspendedSession();
                 closeStreamWithPrivacy(true);
             }
 

@@ -1048,7 +1048,7 @@
     <string name="transition_gateway_unavailable">Gateway jest niedostępny</string>
     <string name="transition_stream_disconnected">Stream został rozłączony</string>
     <string name="transition_readiness_unconfirmed">Nie udało się potwierdzić gotowości</string>
-    <string name="transition_host_session_locked">Sesja Windows jest zablokowana. Odblokuj komputer i spróbuj ponownie.</string>
+    <string name="transition_host_session_locked">Sesja Windows jest zablokowana. Wybierz Odsłoń teraz, a następnie wpisz hasło systemu Windows.</string>
     <string name="transition_stream_display_not_configured">Wyświetlacz streamowany przez host nie jest skonfigurowany</string>
     <string name="transition_step_pending">○  %1$s — oczekuje</string>
     <string name="transition_step_active">●  %1$s — aktywny</string>

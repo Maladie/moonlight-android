@@ -113,10 +113,20 @@ final class SessionStateResolver {
         boolean retainedLive = retainedMatches && (facts.retainedState
                 == RetainedStreamSessionCoordinator.State.HOME_LIVE
                 || facts.retainedState == RetainedStreamSessionCoordinator.State.PARKED_LIVE);
-        boolean correlatedLive = facts.runningGameAppId != 0
-                && !facts.resolvedPlayniteGameId.isEmpty();
-        boolean hostLive = facts.runningGameAppId != 0
-                && (!facts.recentlyEnded || correlatedLive);
+        if (facts.recentlyEnded && !retainedLive) {
+            return snapshot(facts, SessionSnapshot.State.NONE, 0, "", false,
+                    false, false, sleepRequested, sleepObserved);
+        }
+
+        if (explicitSuspension && !retainedLive
+                && (facts.runningGameAppId == 0
+                || facts.runningGameAppId == facts.suspendedAppId)) {
+            return snapshot(facts, SessionSnapshot.State.SUSPENDED,
+                    facts.suspendedAppId, facts.suspendedPlayniteGameId, false,
+                    true, suspensionSleepObserved, sleepRequested, sleepObserved);
+        }
+
+        boolean hostLive = facts.hostOnline && facts.runningGameAppId != 0;
         if (retainedLive || hostLive) {
             int appId = retainedLive && facts.retainedAppId != 0
                     ? facts.retainedAppId : facts.runningGameAppId;
@@ -129,11 +139,6 @@ final class SessionStateResolver {
             return snapshot(facts, SessionSnapshot.State.ACTIVE, appId, gameId,
                     retainedLive, explicitSuspension, suspensionSleepObserved,
                     sleepRequested, sleepObserved);
-        }
-
-        if (facts.recentlyEnded) {
-            return snapshot(facts, SessionSnapshot.State.NONE, 0, "", false,
-                    false, false, sleepRequested, sleepObserved);
         }
 
 
