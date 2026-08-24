@@ -18,7 +18,7 @@ final class PlayIntent {
     private PlayIntent(String hostId, Kind kind, int sunshineAppId, String appName,
                        boolean hdrSupported, String playniteGameId,
                        String quickLaunchId, String loadingArtworkGameId) {
-        this.hostId = SessionSnapshot.normalize(hostId);
+        this.hostId = hostId == null ? "" : hostId.trim();
         this.kind = Objects.requireNonNull(kind, "kind");
         this.sunshineAppId = sunshineAppId;
         this.appName = appName == null ? "" : appName.trim();
@@ -65,7 +65,8 @@ final class PlayIntent {
     }
 
     boolean matches(String currentHostId, int currentAppId, String currentGameId) {
-        if (!hostId.equals(SessionSnapshot.normalize(currentHostId))) return false;
+        if (!SessionSnapshot.normalize(hostId).equals(
+                SessionSnapshot.normalize(currentHostId))) return false;
         switch (kind) {
             case PLAYNITE_GAME:
                 return playniteGameId.equals(SessionSnapshot.normalize(currentGameId));
