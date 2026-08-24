@@ -7,12 +7,12 @@ import static org.junit.Assert.assertThrows;
 import static org.junit.Assert.assertTrue;
 
 public class PlayIntentTest {
-    @Test public void normalizesHostAndGameIdentity() {
+    @Test public void preservesRoutableHostIdentityAndNormalizesComparisons() {
         PlayIntent intent = PlayIntent.playniteGame(
                 " HOST ", 42, "Game", false, " GAME-ID ", " ART ");
 
         assertTrue(intent.matches(snapshot("host", 7, "game-id")));
-        assertTrue("host".equals(intent.hostId));
+        assertTrue("HOST".equals(intent.hostId));
         assertTrue("game-id".equals(intent.playniteGameId));
         assertTrue("art".equals(intent.loadingArtworkGameId));
     }
