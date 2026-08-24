@@ -144,7 +144,7 @@ public final class SuspendedSessionStore {
     public static synchronized boolean markSessionEndedIfMatches(
             Context context, String hostId, String suspendId) {
         Session current = load(context, hostId);
-        if (!matches(current, suspendId) || current.resumedAt <= 0L) return false;
+        if (!matches(current, suspendId)) return false;
         SharedPreferences.Editor editor = prefs(context).edit();
         editor.remove(current.hostId);
         editor.putLong("ended_at." + current.hostId, System.currentTimeMillis());

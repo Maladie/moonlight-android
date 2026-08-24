@@ -15,6 +15,7 @@ final class SessionStateResolver {
         final String suspendedHostId;
         final int suspendedAppId;
         final String suspendedPlayniteGameId;
+        String suspendedId;
         final long suspendedResumedAt;
         final long suspendedSleepObservedAt;
         final boolean recentlyEnded;
@@ -24,13 +25,14 @@ final class SessionStateResolver {
         final String hostSleepHostId;
         final boolean hostSleepRequested;
         final boolean hostSleepObserved;
+        boolean hostOnline;
 
         Observations(String hostId, int runningGameAppId, String resolvedPlayniteGameId,
                      RetainedStreamSessionCoordinator.Snapshot retained,
                      SuspendedSessionStore.Session suspended, boolean recentlyEnded,
                      boolean pendingResume, String pendingResumeHostId,
                      int pendingResumeAppId, String hostSleepHostId,
-                     HostSleepStateStore.State hostSleep) {
+                     HostSleepStateStore.State hostSleep, boolean hostOnline) {
             this(hostId, runningGameAppId, resolvedPlayniteGameId,
                     retained.state, retained.hostId, retained.appId,
                     retained.playniteGameId,
@@ -42,6 +44,8 @@ final class SessionStateResolver {
                     recentlyEnded, pendingResume, pendingResumeHostId,
                     pendingResumeAppId, hostSleepHostId, hostSleep != null,
                     hostSleep != null && hostSleep.sleepObservedAt > 0L);
+            this.hostOnline = hostOnline;
+            this.suspendedId = suspended == null ? "" : suspended.suspendId;
         }
 
         Observations(String hostId, int runningGameAppId, String resolvedPlayniteGameId,
@@ -76,6 +80,7 @@ final class SessionStateResolver {
             this.hostSleepHostId = SessionSnapshot.normalize(hostSleepHostId);
             this.hostSleepRequested = hostSleepRequested;
             this.hostSleepObserved = hostSleepObserved;
+            this.hostOnline = false;
         }
     }
 
@@ -131,6 +136,12 @@ final class SessionStateResolver {
                     false, false, sleepRequested, sleepObserved);
         }
 
+        if (explicitSuspension && facts.hostOnline && facts.runningGameAppId == 0) {
+            return snapshot(facts, SessionSnapshot.State.SUSPENDED_UNVERIFIED,
+                    facts.suspendedAppId, facts.suspendedPlayniteGameId, false,
+                    true, suspensionSleepObserved, sleepRequested, sleepObserved);
+        }
+
         if (explicitSuspension) {
             return snapshot(facts, SessionSnapshot.State.SUSPENDED,
                     facts.suspendedAppId, facts.suspendedPlayniteGameId, false,
@@ -164,6 +175,7 @@ final class SessionStateResolver {
                                             boolean hostSleepObserved) {
         return new SessionSnapshot(facts.hostId, state, appId, gameId,
                 retainedTransport, explicitSuspension, suspensionSleepObserved,
-                hostSleepRequested, hostSleepObserved);
+                hostSleepRequested, hostSleepObserved,
+                explicitSuspension ? facts.suspendedId : "");
     }
 }

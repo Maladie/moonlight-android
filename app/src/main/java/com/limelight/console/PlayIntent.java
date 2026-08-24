@@ -14,12 +14,10 @@ final class PlayIntent {
     final String playniteGameId;
     final String quickLaunchId;
     final String loadingArtworkGameId;
-    final String sourceSuspendId;
 
     private PlayIntent(String hostId, Kind kind, int sunshineAppId, String appName,
                        boolean hdrSupported, String playniteGameId,
-                       String quickLaunchId, String loadingArtworkGameId,
-                       String sourceSuspendId) {
+                       String quickLaunchId, String loadingArtworkGameId) {
         this.hostId = SessionSnapshot.normalize(hostId);
         this.kind = Objects.requireNonNull(kind, "kind");
         this.sunshineAppId = sunshineAppId;
@@ -28,7 +26,6 @@ final class PlayIntent {
         this.playniteGameId = SessionSnapshot.normalize(playniteGameId);
         this.quickLaunchId = quickLaunchId == null ? "" : quickLaunchId.trim();
         this.loadingArtworkGameId = SessionSnapshot.normalize(loadingArtworkGameId);
-        this.sourceSuspendId = sourceSuspendId == null ? "" : sourceSuspendId.trim();
         boolean targetMayBePrepared = kind == Kind.PLAYNITE_GAME && sunshineAppId == 0;
         if (this.hostId.isEmpty() || (sunshineAppId <= 0 && !targetMayBePrepared)
                 || this.appName.isEmpty()) {
@@ -45,26 +42,22 @@ final class PlayIntent {
     static PlayIntent sunshineApp(String hostId, int appId, String appName,
                                   boolean hdrSupported, String quickLaunchId) {
         return new PlayIntent(hostId, Kind.SUNSHINE_APP, appId, appName,
-                hdrSupported, "", quickLaunchId, "", "");
+                hdrSupported, "", quickLaunchId, "");
     }
 
     static PlayIntent playniteGame(String hostId, int appId, String appName,
                                    boolean hdrSupported, String gameId,
                                    String loadingArtworkGameId) {
         return new PlayIntent(hostId, Kind.PLAYNITE_GAME, appId, appName,
-                hdrSupported, gameId, "", loadingArtworkGameId, "");
+                hdrSupported, gameId, "", loadingArtworkGameId);
     }
 
     static PlayIntent playniteFullscreen(String hostId, int appId, String appName,
                                          boolean hdrSupported) {
         return new PlayIntent(hostId, Kind.PLAYNITE_FULLSCREEN, appId, appName,
-                hdrSupported, "", "", "", "");
+                hdrSupported, "", "", "" );
     }
 
-    PlayIntent fromSuspendedSession(String suspendId) {
-        return new PlayIntent(hostId, kind, sunshineAppId, appName, hdrSupported,
-                playniteGameId, quickLaunchId, loadingArtworkGameId, suspendId);
-    }
 
     boolean matches(SessionSnapshot snapshot) {
         return snapshot != null && matches(snapshot.hostId, snapshot.hostGameAppId,
