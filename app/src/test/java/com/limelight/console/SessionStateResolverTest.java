@@ -4,8 +4,6 @@ import com.limelight.stream.RetainedStreamSessionCoordinator;
 
 import org.junit.Test;
 
-import java.util.Collections;
-
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
@@ -93,14 +91,29 @@ public class SessionStateResolverTest {
         assertTrue(snapshot.matches("game-b", 42));
     }
 
-    @Test public void explicitSuspensionOnlyWinsWithoutLiveEvidence() {
+    @Test public void explicitSuspensionWinsMatchingHostAppButNotDifferentApp() {
         Facts suspended = suspendedFacts();
         assertEquals(SessionSnapshot.State.SUSPENDED,
                 resolver.resolve(suspended.build()).state);
 
         suspended.runningApp = 42;
+        assertEquals(SessionSnapshot.State.SUSPENDED,
+                resolver.resolve(suspended.build()).state);
+
+        suspended.runningApp = 99;
         assertEquals(SessionSnapshot.State.ACTIVE,
                 resolver.resolve(suspended.build()).state);
+    }
+
+    @Test public void offlineStaleRunningAppDoesNotOverrideSuspension() {
+        Facts facts = suspendedFacts();
+        facts.runningApp = 42;
+        facts.hostOnline = false;
+
+        SessionSnapshot snapshot = resolver.resolve(facts.build());
+
+        assertEquals(SessionSnapshot.State.SUSPENDED, snapshot.state);
+        assertEquals("game", snapshot.playniteGameId);
     }
 
     @Test public void pendingResumeAloneIsReconnectRequiredNeverActive() {
@@ -160,7 +173,7 @@ public class SessionStateResolverTest {
         assertEquals(SessionSnapshot.State.NONE, resolver.resolve(pending.build()).state);
     }
 
-    @Test public void corroboratedRetainedOrPlayniteEvidenceRestoresActive() {
+    @Test public void retainedTransportRestoresActiveDespiteRecentEndMarker() {
         Facts retained = new Facts();
         retained.recentlyEnded = true;
         retained.retainedState = RetainedStreamSessionCoordinator.State.HOME_LIVE;
@@ -168,39 +181,19 @@ public class SessionStateResolverTest {
         retained.retainedApp = 42;
         assertEquals(SessionSnapshot.State.ACTIVE,
                 resolver.resolve(retained.build()).state);
-
-        Facts correlated = new Facts();
-        correlated.recentlyEnded = true;
-        correlated.runningApp = 42;
-        correlated.resolvedGame = "game";
-        assertEquals(SessionSnapshot.State.ACTIVE,
-                resolver.resolve(correlated.build()).state);
     }
 
-    @Test public void tombstoneSuppressesRawHostUntilPlayniteIdentityCorroboratesIt() {
+    @Test public void recentEndMarkerSuppressesCorrelatedStaleHostState() {
         Facts facts = new Facts();
         facts.recentlyEnded = true;
         facts.runningApp = 42;
+        facts.resolvedGame = "game-b";
 
-        SessionSnapshot suppressed = resolver.resolve(facts.build());
-        assertEquals(SessionSnapshot.State.NONE, suppressed.state);
+        SessionSnapshot snapshot = resolver.resolve(facts.build());
+        assertEquals(SessionSnapshot.State.NONE, snapshot.state);
         assertEquals(PlayniteIdentityResolutionPolicy.Action.REQUEST,
                 PlayniteIdentityResolutionPolicy.decide(
-                        true, true, facts.runningApp, suppressed.state));
-
-        facts.resolvedGame = "game-b";
-        SessionSnapshot corroborated = resolver.resolve(facts.build());
-        PlayniteLibraryGame game = new PlayniteLibraryGame("game-b", "Game B", true,
-                false, 0L, "", "", "", "Steam");
-        PlayniteDashboardItem item = new PlayniteDashboardItem(game, 42, "MoonWaker",
-                PlayniteDashboardItem.MappingState.MAPPED);
-        PlayniteSessionPresentation.Projection projection =
-                PlayniteSessionPresentation.project(corroborated,
-                        Collections.singletonList(item), "");
-
-        assertEquals(SessionSnapshot.State.ACTIVE, corroborated.state);
-        assertEquals(PlayniteSessionPresentation.State.RESUME_ACTIVE,
-                projection.stateFor("game-b"));
+                        true, true, facts.runningApp, snapshot.state));
     }
 
     @Test public void hostSleepMarkerAloneNeverCreatesGameSession() {
@@ -275,7 +268,7 @@ public class SessionStateResolverTest {
         String sleepHost = "";
         boolean sleepRequested;
         boolean sleepObserved;
-        boolean hostOnline;
+        boolean hostOnline = true;
         String suspendedId = "";
 
         SessionStateResolver.Observations build() {
