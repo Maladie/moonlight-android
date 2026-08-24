@@ -571,6 +571,50 @@ class BridgeStateTest(unittest.TestCase):
             ], runner.call_args.args[0])
             self.assertEqual([], commands)
 
+    def test_restored_complete_steam_install_reissues_uninstall(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "steam.exe"
+            executable.touch()
+            steamapps = root / "steamapps"
+            (steamapps / "common" / "FEZ").mkdir(parents=True)
+            (steamapps / "appmanifest_224760.acf").write_text('''"AppState"
+{
+    "StateFlags" "4"
+    "installdir" "FEZ"
+    "BytesDownloaded" "100"
+    "BytesToDownload" "100"
+}''', encoding="utf-8")
+            operation_path = root / "operations.sqlite3"
+            journal = OperationJournal(operation_path)
+            journal.begin(GAME_ID, "uninstall", "steam", "FEZ")
+            journal.update(GAME_ID, "uninstalling")
+            runner = mock.Mock()
+            service = GameOperationsService(
+                OperationJournal(operation_path),
+                steam=SteamProvider(
+                    roots=[root], root_resolver=lambda: root,
+                    command_runner=runner))
+            restored = BridgeState(
+                game_operations=service, clock=lambda: self.now)
+            restored.set_transport(True, mock.Mock())
+            restored.handle_message({"type": "games", "payload": [{
+                "id": GAME_ID, "name": "FEZ", "installed": True,
+                "source": "Steam", "providerGameId": "224760",
+            }]})
+            session = restored.installations[GAME_ID]
+            token = session["token"]
+
+            sample = service.sample(session["baseline"])
+            restored.apply_installation_probe(GAME_ID, sample, token)
+
+            self.assertFalse(sample["started"])
+            self.assertFalse(restored.installations[GAME_ID]["primary_started"])
+            runner.assert_called_once()
+            self.assertEqual([
+                str(executable.resolve()), "-silent", "+app_uninstall", "224760",
+            ], runner.call_args.args[0])
+
     def test_confirmation_window_is_not_restored_after_bridge_restart(self):
         with tempfile.TemporaryDirectory() as temporary:
             operation_path = Path(temporary) / "operations.sqlite3"
