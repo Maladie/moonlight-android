@@ -258,7 +258,7 @@ class SteamProvider(GenericPlayniteProvider):
 
     @staticmethod
     def _started(snapshot: dict[str, Any], _baseline: dict[str, Any],
-                 _restored: bool) -> bool:
+                 _restored: bool, operation: str) -> bool:
         if snapshot.get("download_present"):
             return True
         if not snapshot.get("manifest_readable"):
@@ -268,7 +268,7 @@ class SteamProvider(GenericPlayniteProvider):
         flags = int(snapshot.get("state_flags") or 0)
         if flags not in {0, 4}:
             return True
-        if total > 0 and 0 < downloaded <= total:
+        if operation == "install" and total > 0 and 0 < downloaded <= total:
             return True
         return False
 
@@ -294,7 +294,8 @@ class SteamProvider(GenericPlayniteProvider):
             return {**common, "uninstalled": True, "phase": "completed_uninstall"}
         operation_baseline = (baseline or {}).get("steam_baseline") or {}
         started = self._started(
-            snapshot, operation_baseline, bool((baseline or {}).get("restored")))
+            snapshot, operation_baseline, bool((baseline or {}).get("restored")),
+            operation)
         if started and operation == "uninstall":
             return {
                 **common, "started": True, "phase": "active_uninstall",

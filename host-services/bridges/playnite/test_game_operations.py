@@ -205,6 +205,22 @@ class GameOperationsTest(unittest.TestCase):
             self.assertTrue(sample["started"])
             self.assertEqual(50, sample["progress"])
 
+    def test_complete_installed_manifest_is_not_active_uninstall(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            steamapps = root / "steamapps"
+            (steamapps / "common" / "FEZ").mkdir(parents=True)
+            (steamapps / "appmanifest_224760.acf").write_text(
+                self._steam_manifest(100, 100, 4), encoding="utf-8")
+            provider = SteamProvider(roots=[root])
+            game = {"source": "Steam", "providerGameId": "224760"}
+            baseline = {"steam_baseline": provider.operation_baseline(game)}
+
+            sample = provider.sample(game, "uninstall", baseline)
+
+            self.assertFalse(sample["started"])
+            self.assertEqual("not_started", sample["phase"])
+
     def test_manifest_signature_only_change_is_not_started(self):
         baseline = {
             "scan_available": True, "scan_complete": True,
@@ -216,7 +232,8 @@ class GameOperationsTest(unittest.TestCase):
         snapshot = {**baseline,
                     "manifest_signature": ("manifest", 2, 20, 0, 0, 0, "")}
 
-        self.assertFalse(SteamProvider._started(snapshot, baseline, False))
+        self.assertFalse(SteamProvider._started(
+            snapshot, baseline, False, "install"))
 
     def test_incomplete_steam_scan_cannot_report_uninstalled(self):
         with tempfile.TemporaryDirectory() as temporary:
