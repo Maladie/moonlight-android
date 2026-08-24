@@ -221,6 +221,19 @@ public class SessionStateResolverTest {
         assertFalse(snapshot.hostSleepRequested);
     }
 
+    @Test public void onlineZeroPollKeepsExplicitSuspensionUnverifiedAndCorrelated() {
+        Facts facts = suspendedFacts();
+        facts.hostOnline = true;
+        facts.suspendedId = "suspend-a";
+
+        SessionSnapshot snapshot = resolver.resolve(facts.build());
+
+        assertEquals(SessionSnapshot.State.SUSPENDED_UNVERIFIED, snapshot.state);
+        assertEquals("suspend-a", snapshot.suspendId);
+        assertTrue(snapshot.isSuspended());
+        assertTrue(snapshot.isResumeAvailable());
+    }
+
     @Test public void resolvingSameObservationsIsPureAndRepeatable() {
         Facts facts = suspendedFacts();
         SessionStateResolver.Observations observations = facts.build();
@@ -262,13 +275,19 @@ public class SessionStateResolverTest {
         String sleepHost = "";
         boolean sleepRequested;
         boolean sleepObserved;
+        boolean hostOnline;
+        String suspendedId = "";
 
         SessionStateResolver.Observations build() {
-            return new SessionStateResolver.Observations(host, runningApp, resolvedGame,
+            SessionStateResolver.Observations observations =
+                    new SessionStateResolver.Observations(host, runningApp, resolvedGame,
                     retainedState, retainedHost, retainedApp, retainedGame,
                     suspendedHost, suspendedApp, suspendedGame, suspendedResumedAt,
                     suspendedSleepObservedAt, recentlyEnded, pending, pendingHost,
                     pendingApp, sleepHost, sleepRequested, sleepObserved);
+            observations.hostOnline = hostOnline;
+            observations.suspendedId = suspendedId;
+            return observations;
         }
     }
 }

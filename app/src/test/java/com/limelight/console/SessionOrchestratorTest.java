@@ -17,34 +17,30 @@ import static org.junit.Assert.assertNull;
 public class SessionOrchestratorTest {
     @Test public void matchingRetainedTargetReturnsWithoutReadinessOrLaunch() {
         Fake effects = new Fake();
-        effects.retained = new SessionOrchestrator.RetainedTransport(
-                true, true, "host", 42, "game");
-        SessionOrchestrator orchestrator = orchestrator(effects);
+        effects.snapshot = new SessionSnapshot("host", SessionSnapshot.State.ACTIVE, 42,
+                "game", true, false, false, false, false);
 
-        orchestrator.play(game());
+        orchestrator(effects).play(game());
 
         assertEquals(1, effects.returned);
         assertEquals(0, effects.readiness);
         assertEquals(0, effects.launches);
     }
 
-    @Test public void differentRetainedTargetIsBlocked() {
+    @Test public void differentRetainedTargetUsesSafeReplacementPath() {
         Fake effects = new Fake();
-        effects.retained = new SessionOrchestrator.RetainedTransport(
-                true, true, "host", 42, "other");
+        effects.snapshot = new SessionSnapshot("host", SessionSnapshot.State.ACTIVE, 42,
+                "other", true, false, false, false, false);
 
         orchestrator(effects).play(game());
 
-        assertEquals(SessionOrchestrator.Rejection.RETAINED_SWITCH_BLOCKED,
-                effects.rejection);
-        assertEquals(0, effects.launches);
+        assertNotNull(effects.confirmation);
         assertEquals(0, effects.closes);
     }
 
     @Test public void matchingReconnectUsesSavedIntentOnly() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED, 42, "game");
-        effects.savedReconnect = true;
 
         orchestrator(effects).play(game());
 
@@ -53,14 +49,13 @@ public class SessionOrchestratorTest {
         assertEquals(0, effects.launches);
     }
 
-    @Test public void suspendedTargetReadiesRefocusesAndConnectsGenerically() {
+    @Test public void suspendedTargetReadiesAndConnectsGenerically() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.SUSPENDED, 42, "game");
 
         orchestrator(effects).play(game());
 
         assertEquals(1, effects.readiness);
-        assertEquals(1, effects.focuses);
         assertEquals(0, effects.closes);
         assertEquals(LaunchTransitionType.GENERIC, effects.launchType);
     }
@@ -76,23 +71,31 @@ public class SessionOrchestratorTest {
         assertEquals(LaunchTransitionType.GENERIC, effects.launchType);
     }
 
-    @Test public void suspendedFocusFailureStillConnects() {
+    @Test public void suspendedTargetCarriesCanonicalSuspendCorrelation() {
         Fake effects = new Fake();
-        effects.snapshot = snapshot(SessionSnapshot.State.SUSPENDED, 42, "game");
-        effects.failFocus = true;
+        effects.snapshot = new SessionSnapshot("host", SessionSnapshot.State.SUSPENDED,
+                42, "game", false, true, false, false, false, "suspend-a");
 
         orchestrator(effects).play(game());
-
-        assertEquals(1, effects.focuses);
         assertEquals(LaunchTransitionType.GENERIC, effects.launchType);
+        assertEquals("suspend-a", effects.launchedSourceSuspendId);
+    }
+
+    @Test public void unverifiedSuspensionRejectsEveryTargetWithoutSideEffects() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.SUSPENDED_UNVERIFIED, 42, "game");
+        orchestrator(effects).play(PlayIntent.playniteGame(
+                "host", 77, "Other", false, "other", "other"));
+        assertEquals(SessionOrchestrator.Rejection.SUSPENDED_UNVERIFIED, effects.rejection);
+        assertEquals(0, effects.readiness); assertEquals(0, effects.launches); assertEquals(0, effects.closes);
     }
 
     @Test public void noneDerivesFreshTransitionTypeFromTarget() {
-        assertFreshType(game(), LaunchTransitionType.GAME);
+        assertFreshType(game(), LaunchTransitionType.GAME, "");
         assertFreshType(PlayIntent.playniteFullscreen(
-                "host", 42, "Playnite", false), LaunchTransitionType.PLAYNITE);
+                "host", 42, "Playnite", false), LaunchTransitionType.PLAYNITE, "");
         assertFreshType(PlayIntent.sunshineApp(
-                "host", 42, "App", false, "quick"), LaunchTransitionType.GENERIC);
+                "host", 42, "App", false, "quick"), LaunchTransitionType.GENERIC, "");
     }
 
     @Test public void competingTargetWaitsForConfirmationBeforeClose() {
@@ -205,14 +208,11 @@ public class SessionOrchestratorTest {
                 snapshot(SessionSnapshot.State.SUSPENDED, 42, "game");
 
         orchestrator(effects).play(game());
-
-        assertEquals(1, effects.focuses);
         assertEquals(LaunchTransitionType.GENERIC, effects.launchType);
     }
 
     @Test public void newlyMatchingReconnectAfterReadinessUsesSavedIntent() {
         Fake effects = new Fake();
-        effects.savedReconnect = true;
         effects.onReadiness = () -> effects.snapshot =
                 snapshot(SessionSnapshot.State.RECONNECT_REQUIRED, 42, "game");
 
@@ -249,10 +249,11 @@ public class SessionOrchestratorTest {
         assertEquals(77, effects.launchedTarget.getAppId());
     }
 
-    private static void assertFreshType(PlayIntent intent, LaunchTransitionType type) {
+    private static void assertFreshType(PlayIntent intent, LaunchTransitionType type, String sourceSuspendId) {
         Fake effects = new Fake();
         orchestrator(effects).play(intent);
         assertEquals(type, effects.launchType);
+        assertEquals(sourceSuspendId, effects.launchedSourceSuspendId);
     }
 
     private static Fake competing() {
@@ -273,39 +274,31 @@ public class SessionOrchestratorTest {
     private static SessionSnapshot snapshot(SessionSnapshot.State state,
                                             int appId, String gameId) {
         return new SessionSnapshot("host", state, appId, gameId,
-                false, state == SessionSnapshot.State.SUSPENDED,
+                false, state == SessionSnapshot.State.SUSPENDED || state == SessionSnapshot.State.SUSPENDED_UNVERIFIED,
                 false, false, false);
     }
 
     private static final class Fake implements SessionOrchestrator.Effects {
         boolean paired = true;
-        boolean savedReconnect;
         SessionSnapshot snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
-        SessionOrchestrator.RetainedTransport retained =
-                SessionOrchestrator.RetainedTransport.NONE;
         SessionOrchestrator.Rejection rejection;
         Runnable confirmation;
         Runnable onReadiness;
         Runnable onClose;
-        boolean failFocus;
+
         int returned;
         int reconnects;
         int readiness;
-        int focuses;
+
         int closes;
         int launches;
         LaunchTransitionType launchType;
         NvApp launchedTarget;
+        String launchedSourceSuspendId;
 
         @Override public boolean isAvailable() { return true; }
         @Override public boolean isPaired(String hostId) { return paired; }
         @Override public SessionSnapshot resolve(String hostId) { return snapshot; }
-        @Override public SessionOrchestrator.RetainedTransport retainedTransport() {
-            return retained;
-        }
-        @Override public boolean hasSavedReconnect(PlayIntent intent) {
-            return savedReconnect;
-        }
         @Override public void returnToRetainedStream() { returned++; }
         @Override public void reconnectSavedSession() { reconnects++; }
         @Override public void reject(SessionOrchestrator.Rejection reason) {
@@ -330,10 +323,6 @@ public class SessionOrchestratorTest {
                             intent.hdrSupported),
                     HostLaunchPreflight.TargetResolution.EXISTING);
         }
-        @Override public void focusSuspendedGame(PlayIntent intent) throws Exception {
-            focuses++;
-            if (failFocus) throw new Exception("unavailable");
-        }
         @Override public boolean closePreviousSession(
                 PlayIntent intent, NvApp target, BooleanSupplier cancelled) {
             closes++;
@@ -342,10 +331,11 @@ public class SessionOrchestratorTest {
             return true;
         }
         @Override public void launch(PlayIntent intent, NvApp target,
-                                     LaunchTransitionType type) {
+                                     LaunchTransitionType type, String sourceSuspendId) {
             launches++;
             launchType = type;
             launchedTarget = target;
+            launchedSourceSuspendId = sourceSuspendId;
         }
         @Override public void preflightFailed(HostLaunchPreflight.Failure failure) { }
         @Override public void orchestrationFailed() { }

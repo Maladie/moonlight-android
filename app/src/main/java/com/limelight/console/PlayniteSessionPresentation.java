@@ -23,7 +23,7 @@ final class PlayniteSessionPresentation {
             this.resumeGameId = snapshot.state == SessionSnapshot.State.ACTIVE
                     || snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
                     ? selectedGameId : "";
-            this.suspendedGameId = snapshot.state == SessionSnapshot.State.SUSPENDED
+            this.suspendedGameId = snapshot.isSuspended()
                     ? selectedGameId : "";
         }
 
@@ -32,7 +32,7 @@ final class PlayniteSessionPresentation {
                     || !selectedGameId.equals(SessionSnapshot.normalize(gameId))) {
                 return State.READY;
             }
-            if (snapshot.state == SessionSnapshot.State.SUSPENDED) {
+            if (snapshot.isSuspended()) {
                 return State.RESUME_SUSPENDED;
             }
             if (snapshot.state == SessionSnapshot.State.ACTIVE
