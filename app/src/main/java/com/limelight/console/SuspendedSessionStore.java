@@ -6,13 +6,16 @@ import android.content.SharedPreferences;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import java.nio.charset.StandardCharsets;
 import java.util.Locale;
+import java.util.UUID;
 
 /** Persistent, per-host marker for a stream intentionally suspended on the PC. */
 public final class SuspendedSessionStore {
     private static final String PREFS = "moonwaker_suspended_sessions";
 
     public static final class Session {
+        public final String suspendId;
         public final String hostId;
         public final int sunshineAppId;
         public final String playniteGameId;
@@ -20,16 +23,23 @@ public final class SuspendedSessionStore {
         public final String artwork;
         public final long suspendedAt;
         public final long resumedAt;
+        public final String resumedStreamSessionId;
         public final long sleepObservedAt;
+        public final boolean legacy;
 
-        public Session(String hostId, int sunshineAppId, String playniteGameId,
-                       String title, String artwork, long suspendedAt) {
-            this(hostId, sunshineAppId, playniteGameId, title, artwork, suspendedAt, 0L, 0L);
+        public Session(String suspendId, String hostId, int sunshineAppId,
+                       String playniteGameId, String title, String artwork,
+                       long suspendedAt) {
+            this(suspendId, hostId, sunshineAppId, playniteGameId, title, artwork,
+                    suspendedAt, 0L, "", 0L, false);
         }
 
-        private Session(String hostId, int sunshineAppId, String playniteGameId,
-                        String title, String artwork, long suspendedAt, long resumedAt,
-                        long sleepObservedAt) {
+        private Session(String suspendId, String hostId, int sunshineAppId,
+                        String playniteGameId, String title, String artwork,
+                        long suspendedAt, long resumedAt,
+                        String resumedStreamSessionId, long sleepObservedAt,
+                        boolean legacy) {
+            this.suspendId = normalizeValue(suspendId);
             this.hostId = normalize(hostId);
             this.sunshineAppId = sunshineAppId;
             this.playniteGameId = normalize(playniteGameId);
@@ -37,16 +47,19 @@ public final class SuspendedSessionStore {
             this.artwork = artwork == null ? "" : artwork.trim();
             this.suspendedAt = suspendedAt;
             this.resumedAt = resumedAt;
+            this.resumedStreamSessionId = normalizeValue(resumedStreamSessionId);
             this.sleepObservedAt = sleepObservedAt;
+            this.legacy = legacy;
         }
     }
 
-    private SuspendedSessionStore() {}
+    private SuspendedSessionStore() { }
 
-    public static void save(Context context, Session session) {
-        if (session.hostId.isEmpty()) return;
+    public static synchronized void save(Context context, Session session) {
+        if (session.hostId.isEmpty() || session.suspendId.isEmpty()) return;
         JSONObject value = new JSONObject();
         try {
+            value.put("suspend_id", session.suspendId);
             value.put("host_id", session.hostId);
             value.put("sunshine_app_id", session.sunshineAppId);
             value.put("playnite_game_id", session.playniteGameId);
@@ -54,73 +67,94 @@ public final class SuspendedSessionStore {
             value.put("artwork", session.artwork);
             value.put("suspended_at", session.suspendedAt);
             value.put("resumed_at", session.resumedAt);
+            value.put("resumed_stream_session_id", session.resumedStreamSessionId);
             value.put("sleep_observed_at", session.sleepObservedAt);
         } catch (JSONException impossible) {
             throw new IllegalStateException(impossible);
         }
-        // A newly suspended session supersedes the short-lived tombstone left by
-        // an earlier, explicitly terminated session on the same host.
         prefs(context).edit()
                 .putString(session.hostId, value.toString())
                 .remove("ended_at." + session.hostId)
+                .remove("ended_id." + session.hostId)
                 .apply();
     }
 
-    public static Session load(Context context, String hostId) {
+    public static synchronized Session load(Context context, String hostId) {
         String key = normalize(hostId);
         String raw = prefs(context).getString(key, "");
         if (raw == null || raw.isEmpty()) return null;
         try {
             JSONObject value = new JSONObject(raw);
+            long suspendedAt = value.optLong("suspended_at", 0L);
+            int appId = value.optInt("sunshine_app_id", 0);
+            String storedSuspendId = normalizeValue(value.optString("suspend_id", ""));
+            boolean legacy = storedSuspendId.isEmpty();
+            String suspendId = legacy ? legacySuspendId(key, appId, suspendedAt)
+                    : storedSuspendId;
             String playniteGameId = value.optString("playnite_game_id", "");
             if (playniteGameId.isEmpty()) {
                 playniteGameId = context.getSharedPreferences(
                         "console_dashboard", Context.MODE_PRIVATE)
                         .getString("selected_playnite." + key, "");
             }
-            Session session = new Session(key, value.optInt("sunshine_app_id", 0),
-                    playniteGameId,
+            return new Session(suspendId, key, appId, playniteGameId,
                     value.optString("title", ""), value.optString("artwork", ""),
-                    value.optLong("suspended_at", 0L), value.optLong("resumed_at", 0L),
-                    value.optLong("sleep_observed_at", 0L));
-            if (!playniteGameId.equals(value.optString("playnite_game_id", ""))) {
-                save(context, session);
-            }
-            return session;
+                    suspendedAt, value.optLong("resumed_at", 0L),
+                    value.optString("resumed_stream_session_id", ""),
+                    value.optLong("sleep_observed_at", 0L), legacy);
         } catch (JSONException malformed) {
-            prefs(context).edit().remove(key).apply();
             return null;
         }
     }
 
-    public static void clear(Context context, String hostId) {
-        prefs(context).edit().remove(normalize(hostId)).apply();
+    public static synchronized boolean clearIfMatches(Context context, String hostId,
+                                                       String suspendId) {
+        Session current = load(context, hostId);
+        if (!matches(current, suspendId)) return false;
+        prefs(context).edit().remove(current.hostId).apply();
+        return true;
     }
 
-    public static void markResumed(Context context, Session session) {
-        if (session == null) return;
-        save(context, new Session(session.hostId, session.sunshineAppId,
-                session.playniteGameId, session.title, session.artwork,
-                session.suspendedAt, System.currentTimeMillis(), session.sleepObservedAt));
+    public static synchronized boolean markResumedIfMatches(
+            Context context, String suspendId, String hostId, int sunshineAppId,
+            String playniteGameId, String streamSessionId) {
+        Session current = load(context, hostId);
+        if (!canCompleteResume(current, suspendId, hostId, sunshineAppId,
+                playniteGameId)) return false;
+        save(context, new Session(current.suspendId, current.hostId,
+                current.sunshineAppId, current.playniteGameId, current.title,
+                current.artwork, current.suspendedAt, System.currentTimeMillis(),
+                streamSessionId, current.sleepObservedAt, false));
+        return true;
     }
 
-    public static Session markSleepObserved(Context context, Session session) {
-        if (session == null || session.sleepObservedAt > 0L) return session;
-        Session updated = new Session(session.hostId, session.sunshineAppId,
-                session.playniteGameId, session.title, session.artwork,
-                session.suspendedAt, session.resumedAt, System.currentTimeMillis());
+    public static synchronized Session markSleepObservedIfMatches(
+            Context context, Session expected) {
+        if (expected == null || expected.sleepObservedAt > 0L) return expected;
+        Session current = load(context, expected.hostId);
+        if (!matches(current, expected.suspendId)) return current;
+        Session updated = new Session(current.suspendId, current.hostId,
+                current.sunshineAppId, current.playniteGameId, current.title,
+                current.artwork, current.suspendedAt, current.resumedAt,
+                current.resumedStreamSessionId, System.currentTimeMillis(), false);
         save(context, updated);
         return updated;
     }
 
-    public static void requestHostSelection(Context context, String hostId) {
-        prefs(context).edit().putString("return_to_host_selection", normalize(hostId)).apply();
+    public static synchronized boolean markSessionEndedIfMatches(
+            Context context, String hostId, String suspendId) {
+        Session current = load(context, hostId);
+        if (!matches(current, suspendId) || current.resumedAt <= 0L) return false;
+        SharedPreferences.Editor editor = prefs(context).edit();
+        editor.remove(current.hostId);
+        editor.putLong("ended_at." + current.hostId, System.currentTimeMillis());
+        editor.putString("ended_id." + current.hostId, current.suspendId);
+        editor.apply();
+        return true;
     }
 
-    public static void markSessionEnded(Context context, String hostId) {
-        String key = normalize(hostId);
-        clear(context, key);
-        prefs(context).edit().putLong("ended_at." + key, System.currentTimeMillis()).apply();
+    public static void requestHostSelection(Context context, String hostId) {
+        prefs(context).edit().putString("return_to_host_selection", normalize(hostId)).apply();
     }
 
     public static boolean recentlyEnded(Context context, String hostId) {
@@ -129,7 +163,8 @@ public final class SuspendedSessionStore {
     }
 
     public static void clearEnded(Context context, String hostId) {
-        prefs(context).edit().remove("ended_at." + normalize(hostId)).apply();
+        String key = normalize(hostId);
+        prefs(context).edit().remove("ended_at." + key).remove("ended_id." + key).apply();
     }
 
     public static String consumeHostSelectionRequest(Context context) {
@@ -139,11 +174,35 @@ public final class SuspendedSessionStore {
         return hostId;
     }
 
+    static String legacySuspendId(String hostId, int appId, long suspendedAt) {
+        String material = normalize(hostId) + '|' + appId + '|' + suspendedAt;
+        return UUID.nameUUIDFromBytes(material.getBytes(StandardCharsets.UTF_8)).toString();
+    }
+
+    static boolean canCompleteResume(Session session, String suspendId, String hostId,
+                                     int sunshineAppId, String playniteGameId) {
+        if (!matches(session, suspendId)
+                || !session.hostId.equals(normalize(hostId))
+                || session.sunshineAppId != sunshineAppId) return false;
+        String expectedGameId = normalize(playniteGameId);
+        return (expectedGameId.isEmpty() && session.playniteGameId.isEmpty())
+                || expectedGameId.equals(session.playniteGameId);
+    }
+
+    static boolean matches(Session session, String suspendId) {
+        return session != null && !session.suspendId.isEmpty()
+                && session.suspendId.equals(normalizeValue(suspendId));
+    }
+
     private static SharedPreferences prefs(Context context) {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
     private static String normalize(String value) {
-        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+        return normalizeValue(value).toLowerCase(Locale.ROOT);
+    }
+
+    private static String normalizeValue(String value) {
+        return value == null ? "" : value.trim();
     }
 }

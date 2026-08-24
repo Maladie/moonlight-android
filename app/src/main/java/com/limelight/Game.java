@@ -111,12 +111,14 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.Locale;
+import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 
@@ -157,6 +159,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private ConsoleStreamLoadingView consoleLoadingView;
     private LaunchTransitionController transitionController;
     private LaunchTransitionSpec transitionSpec;
+    private String streamSessionId;
+    private String sourceSuspendId;
+    private String sourceSuspendPlayniteGameId;
     private ConsoleStreamTransitionCoordinator transitionCoordinator;
     private boolean lastTransitionOverlayVisible = true;
     private final Handler transitionUiHandler = new Handler(Looper.getMainLooper());
@@ -234,9 +239,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         public void onReceive(Context context, Intent intent) {
             if (ACTION_QUIT_APP.equals(intent.getAction())) {
                 closeStreamWithPrivacy(true);
-            } else if (BackgroundStreamService.ACTION_EXPIRED.equals(intent.getAction())) {
-                endExpiredBackgroundStream();
-            } else if (BackgroundStreamService.ACTION_END_REQUESTED.equals(intent.getAction())) {
+            } else if ((BackgroundStreamService.ACTION_EXPIRED.equals(intent.getAction())
+                    || BackgroundStreamService.ACTION_END_REQUESTED.equals(intent.getAction()))
+                    && streamSessionId.equals(intent.getStringExtra(
+                    BackgroundStreamService.EXTRA_STREAM_SESSION_ID))) {
                 endExpiredBackgroundStream();
             }
         }
@@ -255,6 +261,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_QUICK_LAUNCH_APP_KEY = "QuickLaunchAppKey";
     public static final String EXTRA_APPLY_PREFERENCE_OVERRIDES = "ApplyPreferenceOverrides";
     public static final String EXTRA_RUNTIME_BITRATE_KBPS = "RuntimeBitrateKbps";
+    public static final String EXTRA_STREAM_SESSION_ID = "StreamSessionId";
+    public static final String EXTRA_SOURCE_SUSPEND_ID = "SourceSuspendId";
+    public static final String EXTRA_SOURCE_SUSPEND_PLAYNITE_GAME_ID =
+            "SourceSuspendPlayniteGameId";
     public static final String EXTRA_CONSOLE_LOADING = "ConsoleLoading";
     public static final String EXTRA_CONSOLE_LOADING_MESSAGE = "ConsoleLoadingMessage";
     public static final String EXTRA_CONSOLE_LOADING_EPOCH = "ConsoleLoadingEpoch";
@@ -273,6 +283,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        streamSessionId = normalizeOpaqueId(
+                getIntent().getStringExtra(EXTRA_STREAM_SESSION_ID));
+        if (streamSessionId.isEmpty()) streamSessionId = UUID.randomUUID().toString();
+        getIntent().putExtra(EXTRA_STREAM_SESSION_ID, streamSessionId);
+        sourceSuspendId = normalizeOpaqueId(
+                getIntent().getStringExtra(EXTRA_SOURCE_SUSPEND_ID));
+        sourceSuspendPlayniteGameId = normalizeGameId(
+                getIntent().getStringExtra(EXTRA_SOURCE_SUSPEND_PLAYNITE_GAME_ID));
 
         UiHelper.setLocale(this);
 
@@ -323,14 +341,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         if (getIntent().getBooleanExtra(EXTRA_CONSOLE_LOADING, false)) {
             transitionSpec = readTransitionSpec();
-            if (transitionSpec != null) {
-                SuspendedSessionStore.Session suspended = SuspendedSessionStore.load(
-                        this, transitionSpec.hostId);
-                if (suspended != null
-                        && suspended.sunshineAppId == transitionSpec.sunshineAppId) {
-                    SuspendedSessionStore.markResumed(this, suspended);
-                }
-            }
             consoleLoadingView = new ConsoleStreamLoadingView(
                     this,
                     getIntent().getStringExtra(EXTRA_APP_NAME),
@@ -1291,12 +1301,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
-        if (RetainedStreamSessionCoordinator.hasRetainedSession()
+        if (hasOwnRetainedSession()
                 && (connecting || connected)) {
             backgroundStreamParked = false;
-            SessionResumeManager.save(this, getIntent());
-            RetainedStreamSessionCoordinator.markReconnectRequired();
-            BackgroundStreamService.transportLost(this);
+            SessionResumeManager.save(this, getIntent(), streamSessionId);
+            RetainedStreamSessionCoordinator.markReconnectRequired(streamSessionId);
+            BackgroundStreamService.transportLost(this, streamSessionId);
             stopConnection();
         }
         if (transitionCoordinator != null) {
@@ -1358,7 +1368,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (!pm.isInteractive() && connected && !userInitiatedDisconnect) {
             if (PreferenceConfiguration.readPreferences(this).autoResumeStream) {
                 android.util.Log.d("SessionResume", "onPause: screen going off, saving session");
-                SessionResumeManager.save(this, getIntent());
+                SessionResumeManager.save(this, getIntent(), streamSessionId);
             } else {
                 android.util.Log.d("SessionResume", "onPause: auto-resume disabled by preference");
             }
@@ -2698,9 +2708,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (controllerHandler != null) controllerHandler.disableSensors();
         setInputGrabState(false);
         int retentionMinutes = BackgroundStreamPreferences.readMinutes(this);
-        SessionResumeManager.save(this, getIntent());
-        RetainedStreamSessionCoordinator.markParked();
-        BackgroundStreamService.park(this, retentionMinutes);
+        SessionResumeManager.save(this, getIntent(), streamSessionId);
+        RetainedStreamSessionCoordinator.markParked(streamSessionId);
+        BackgroundStreamService.park(this, streamSessionId, retentionMinutes);
         LimeLog.info("Background stream parked; retention minutes=" + retentionMinutes);
     }
 
@@ -2719,8 +2729,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void terminateRetainedSession(Runnable completion) {
         userInitiatedDisconnect = true;
         backgroundStreamParked = false;
-        SessionResumeManager.clear(this);
-        stopService(new Intent(this, BackgroundStreamService.class));
+        SessionResumeManager.clearIfMatches(this, streamSessionId);
+        BackgroundStreamService.resumed(this, streamSessionId);
         if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
         stopConnection(() -> quitRetainedApplication(() -> {
             runOnUiThread(() -> {
@@ -2770,9 +2780,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         retainedRestoreAwaitingFrame = true;
         decoderRenderer = replacement;
         backgroundStreamParked = false;
-        RetainedStreamSessionCoordinator.clear();
-        SessionResumeManager.clear(this);
-        BackgroundStreamService.resumed(this);
+        RetainedStreamSessionCoordinator.clearIfMatches(streamSessionId);
+        SessionResumeManager.clearIfMatches(this, streamSessionId);
+        BackgroundStreamService.resumed(this, streamSessionId);
         if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
         if (controllerHandler != null) controllerHandler.enableSensors();
         setInputGrabState(true);
@@ -2810,13 +2820,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         backgroundStreamParked = false;
         userInitiatedDisconnect = true;
-        SessionResumeManager.save(this, getIntent());
-        RetainedStreamSessionCoordinator.markReconnectRequired();
-        BackgroundStreamService.transportLost(this);
-        Intent resume = SessionResumeManager.buildResumeIntent(this);
+        SessionResumeManager.save(this, getIntent(), streamSessionId);
+        RetainedStreamSessionCoordinator.markReconnectRequired(streamSessionId);
+        BackgroundStreamService.transportLost(this, streamSessionId);
+        SessionResumeManager.PendingSession pending = SessionResumeManager.pendingSession(this);
+        Intent resume = SessionResumeManager.buildResumeIntent(this, pending);
         stopConnection(() -> {
             finish();
-            transitionUiHandler.postDelayed(() -> startActivity(resume), 100L);
+            if (resume != null) {
+                transitionUiHandler.postDelayed(() -> startActivity(resume), 100L);
+            }
         });
     }
 
@@ -2825,9 +2838,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         LimeLog.info("Background stream retention expired");
         backgroundStreamParked = false;
         userInitiatedDisconnect = true;
-        RetainedStreamSessionCoordinator.clear();
-        SessionResumeManager.clear(this);
-        stopService(new Intent(this, BackgroundStreamService.class));
+        RetainedStreamSessionCoordinator.clearIfMatches(streamSessionId);
+        SessionResumeManager.clearIfMatches(this, streamSessionId);
+        BackgroundStreamService.resumed(this, streamSessionId);
         stopConnection(() -> finish());
     }
 
@@ -2966,14 +2979,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
 
-        if (RetainedStreamSessionCoordinator.hasRetainedSession()) {
+        if (hasOwnRetainedSession()) {
             runOnUiThread(() -> {
                 LimeLog.warning("Parked stream transport was lost; preserving reconnect state");
                 displayedFailureDialog = true;
                 backgroundStreamParked = false;
-                SessionResumeManager.save(Game.this, getIntent());
-                RetainedStreamSessionCoordinator.markReconnectRequired();
-                BackgroundStreamService.transportLost(Game.this);
+                SessionResumeManager.save(Game.this, getIntent(), streamSessionId);
+                RetainedStreamSessionCoordinator.markReconnectRequired(streamSessionId);
+                BackgroundStreamService.transportLost(Game.this, streamSessionId);
                 stopConnection(() -> finish());
             });
             return;
@@ -3120,9 +3133,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 connected = true;
                 connecting = false;
-                if (SessionResumeManager.hasPendingSession(Game.this)) {
-                    SessionResumeManager.clear(Game.this);
-                    BackgroundStreamService.resumed(Game.this);
+                if (SessionResumeManager.clearIfMatches(Game.this, streamSessionId)) {
+                    BackgroundStreamService.resumed(Game.this, streamSessionId);
+                }
+                if (!sourceSuspendId.isEmpty()) {
+                    SuspendedSessionStore.markResumedIfMatches(Game.this,
+                            sourceSuspendId,
+                            getIntent().getStringExtra(EXTRA_PC_UUID),
+                            getIntent().getIntExtra(EXTRA_APP_ID, 0),
+                            sourceSuspendPlayniteGameId, streamSessionId);
                 }
                 updatePipAutoEnter();
 
@@ -3588,8 +3607,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         surfaceCreated = false;
         if (attemptedConnection && connected) {
-            if (RetainedStreamSessionCoordinator.hasRetainedSession()) {
-                RetainedStreamSessionCoordinator.parkForBackground();
+            if (hasOwnRetainedSession()) {
+                RetainedStreamSessionCoordinator.parkForBackground(streamSessionId);
             } else if (canParkBackgroundStream()) {
                 parkBackgroundStream();
             } else if (!backgroundStreamParked) {
@@ -3854,8 +3873,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (!connected || streamHomeVisible) return;
         overlayMenuView.closeMenu();
         streamHomeVisible = true;
-        SessionResumeManager.save(this, getIntent());
-        RetainedStreamSessionCoordinator.enterHome(this,
+        SessionResumeManager.save(this, getIntent(), streamSessionId);
+        RetainedStreamSessionCoordinator.enterHome(this, streamSessionId,
                 getIntent().getStringExtra(EXTRA_PC_UUID),
                 getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID),
                 transitionSpec == null ? "" : transitionSpec.playniteGameId);
@@ -3864,6 +3883,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         Intent home = new Intent(this, StreamHomeActivity.class);
         home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_HOME, true);
+        home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_SESSION_ID, streamSessionId);
         home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_HOST_ID,
                 getIntent().getStringExtra(EXTRA_PC_UUID));
         home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_APP_ID,
@@ -3896,15 +3916,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void clearResumedSuspendedSession() {
-        if (transitionSpec == null) return;
-        SuspendedSessionStore.Session suspended = SuspendedSessionStore.load(
-                this, transitionSpec.hostId);
-        if (suspended != null && suspended.resumedAt > 0L
-                && suspended.sunshineAppId == transitionSpec.sunshineAppId) {
-            SuspendedSessionStore.markSessionEnded(this, transitionSpec.hostId);
-        }
+        if (sourceSuspendId.isEmpty()) return;
+        SuspendedSessionStore.markSessionEndedIfMatches(this,
+                getIntent().getStringExtra(EXTRA_PC_UUID), sourceSuspendId);
     }
-
     private void suspendSessionAndSleep() {
         if (transitionSpec == null) {
             displayTransientMessage(getString(R.string.overlay_menu_suspend_unavailable));
@@ -3914,6 +3929,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         consoleLoadingView.showOpaque();
         final String host = getIntent().getStringExtra(EXTRA_HOST);
         final String artwork = getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_ARTWORK);
+        final String suspendId = UUID.randomUUID().toString();
         new Thread(() -> {
             PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
                     Game.this, transitionSpec.hostId, host);
@@ -3931,13 +3947,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     playniteGameId = getSharedPreferences("console_dashboard", MODE_PRIVATE)
                             .getString("selected_playnite." + transitionSpec.hostId, "");
                 }
-                gateway.suspendSession(transitionSpec.sunshineAppId,
-                        playniteGameId, appName);
+                PlayniteTransitionGateway.SuspendAcceptance acceptance =
+                        gateway.suspendSession(suspendId, transitionSpec.sunshineAppId,
+                                playniteGameId, appName);
+                if (!acceptance.matches(suspendId, transitionSpec.sunshineAppId,
+                        playniteGameId)) {
+                    throw new IOException("Host rejected the correlated suspend request.");
+                }
                 SuspendedSessionStore.save(Game.this,
-                        new SuspendedSessionStore.Session(transitionSpec.hostId,
-                                transitionSpec.sunshineAppId,
-                                playniteGameId, appName, artwork,
-                                System.currentTimeMillis()));
+                        new SuspendedSessionStore.Session(suspendId, transitionSpec.hostId,
+                                transitionSpec.sunshineAppId, playniteGameId, appName,
+                                artwork, System.currentTimeMillis()));
                 SuspendedSessionStore.requestHostSelection(Game.this, transitionSpec.hostId);
                 runOnUiThread(() -> closeStreamWithPrivacy(false));
             } catch (Exception error) {
@@ -3949,7 +3969,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
         }, "MoonWaker-SuspendSession").start();
     }
-
     private void applyBitrateAndReconnect(int bitrateKbps) {
         if (!prefConfig.runtimeBitrateControl) {
             return;
@@ -4156,5 +4175,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 (byte) 0   // rightTrigger
             );
         }, 100);
+    }
+    private boolean hasOwnRetainedSession() {
+        RetainedStreamSessionCoordinator.Snapshot retained =
+                RetainedStreamSessionCoordinator.snapshot();
+        return streamSessionId.equals(retained.streamSessionId)
+                && retained.state != RetainedStreamSessionCoordinator.State.NONE
+                && retained.state != RetainedStreamSessionCoordinator.State.TERMINATING;
+    }
+
+    private static String normalizeOpaqueId(String value) {
+        String normalized = value == null ? "" : value.trim();
+        return normalized.length() <= 128 ? normalized : "";
+    }
+
+    private static String normalizeGameId(String value) {
+        return value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
     }
 }

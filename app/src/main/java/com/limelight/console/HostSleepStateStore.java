@@ -21,9 +21,11 @@ final class HostSleepStateStore {
 
     private HostSleepStateStore() {}
 
-    static void request(Context context, String hostId) {
+    static State request(Context context, String hostId) {
+        State state = new State(System.currentTimeMillis(), 0L);
         prefs(context).edit().putString(key(hostId),
-                System.currentTimeMillis() + ":0").apply();
+                state.requestedAt + ":0").apply();
+        return state;
     }
 
     static State load(Context context, String hostId) {
@@ -34,17 +36,25 @@ final class HostSleepStateStore {
             return new State(Long.parseLong(parts[0]),
                     parts.length > 1 ? Long.parseLong(parts[1]) : 0L);
         } catch (NumberFormatException malformed) {
-            clear(context, hostId);
             return null;
         }
     }
 
     static State markObserved(Context context, String hostId, State state) {
         if (state == null || state.sleepObservedAt > 0L) return state;
+        State current = load(context, hostId);
+        if (current == null || current.requestedAt != state.requestedAt) return current;
         State updated = new State(state.requestedAt, System.currentTimeMillis());
         prefs(context).edit().putString(key(hostId),
                 updated.requestedAt + ":" + updated.sleepObservedAt).apply();
         return updated;
+    }
+
+    static boolean clearIfMatches(Context context, String hostId, long requestedAt) {
+        State current = load(context, hostId);
+        if (current == null || current.requestedAt != requestedAt) return false;
+        clear(context, hostId);
+        return true;
     }
 
     static void clear(Context context, String hostId) {

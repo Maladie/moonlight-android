@@ -6,14 +6,16 @@ import com.limelight.stream.RetainedStreamSessionCoordinator;
 public final class StreamHomeActivity extends ConsoleActivity {
     @Override
     public void onUserLeaveHint() {
-        RetainedStreamSessionCoordinator.parkForBackground();
+        RetainedStreamSessionCoordinator.parkForBackground(
+                RetainedStreamSessionCoordinator.snapshot().streamSessionId);
         super.onUserLeaveHint();
     }
 
     @Override
     protected void onStop() {
         if (!isFinishing() && !isChangingConfigurations()) {
-            RetainedStreamSessionCoordinator.parkForBackground();
+            RetainedStreamSessionCoordinator.parkForBackground(
+                RetainedStreamSessionCoordinator.snapshot().streamSessionId);
         }
         super.onStop();
     }

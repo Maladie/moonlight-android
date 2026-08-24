@@ -851,40 +851,29 @@ public class PcView extends Activity implements AdapterFragmentCallbacks, QuickL
         // Check for a session to resume after device sleep — only when PcView is fully visible
         // and the update reflects a real network poll, not the initial stale cache dispatch.
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
-        if (isFreshPoll && pm.isInteractive() && inForeground && SessionResumeManager.hasPendingSession(this)) {
-            String pendingUuid = SessionResumeManager.getPendingPcUuid(this);
-            int pendingAppId = SessionResumeManager.getPendingAppId(this);
-            android.util.Log.d("SessionResume", "updateComputer: pending uuid=" + pendingUuid
-                    + " appId=" + pendingAppId
-                    + " | computer uuid=" + details.uuid
-                    + " runningGameId=" + details.runningGameId
+        SessionResumeManager.PendingSession pending =
+                SessionResumeManager.pendingSession(this);
+        if (isFreshPoll && pm.isInteractive() && inForeground && pending != null) {
+            android.util.Log.d("SessionResume", "updateComputer: pending appId="
+                    + pending.appId + " | runningGameId=" + details.runningGameId
                     + " state=" + details.state);
-            if (details.uuid.equals(pendingUuid)) {
-                if (details.runningGameId == pendingAppId) {
+            if (details.uuid.equals(pending.hostUuid)) {
+                if (details.runningGameId == pending.appId) {
                     autoResumeNoGamePollCount = 0;
-                    android.util.Log.d("SessionResume", "Match — launching resume");
-                    startActivity(SessionResumeManager.buildResumeIntent(this));
-                    SessionResumeManager.clear(this);
+                    Intent resume = SessionResumeManager.buildResumeIntent(this, pending);
+                    if (resume != null) startActivity(resume);
                 } else if (details.runningGameId != 0) {
                     autoResumeNoGamePollCount = 0;
-                    android.util.Log.d("SessionResume", "Different app running — discarding");
-                    SessionResumeManager.clear(this);
+                    SessionResumeManager.clearIfMatches(this, pending.streamSessionId);
                 } else if (details.state != ComputerDetails.State.OFFLINE) {
                     autoResumeNoGamePollCount++;
-                    android.util.Log.d("SessionResume", "runningGameId=0, online — waiting (poll " + autoResumeNoGamePollCount + "/3)");
                     if (autoResumeNoGamePollCount >= 3) {
                         autoResumeNoGamePollCount = 0;
-                        android.util.Log.d("SessionResume", "No game after 3 polls — discarding");
-                        SessionResumeManager.clear(this);
+                        SessionResumeManager.clearIfMatches(this, pending.streamSessionId);
                     }
-                } else {
-                    android.util.Log.d("SessionResume", "Computer offline — waiting for next poll");
                 }
-            } else {
-                android.util.Log.d("SessionResume", "UUID mismatch — not this computer");
             }
-        }
-    }
+        }    }
 
     @Override
     public int getAdapterFragmentLayoutId() {

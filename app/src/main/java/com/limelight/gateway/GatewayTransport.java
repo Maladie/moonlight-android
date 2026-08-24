@@ -54,14 +54,26 @@ public final class GatewayTransport {
     public JSONObject getJson(GatewayConnection connection, String path, int readTimeoutMs)
             throws IOException {
         return requestJson(connection.endpoint(), path, null, readTimeoutMs,
-                connection, new GatewayTrustManager(connection.certificateSha256(), false));
+                connection, new GatewayTrustManager(connection.certificateSha256(), false), null);
     }
 
     public JSONObject postJson(GatewayConnection connection, String path, JSONObject body,
                                int readTimeoutMs) throws IOException {
         return requestJson(connection.endpoint(), path, body != null ? body : new JSONObject(),
                 readTimeoutMs, connection,
-                new GatewayTrustManager(connection.certificateSha256(), false));
+                new GatewayTrustManager(connection.certificateSha256(), false), null);
+    }
+
+    public JSONObject postJson(GatewayConnection connection, String path, JSONObject body,
+                               String requestId, int readTimeoutMs) throws IOException {
+        if (!"/api/v1/system/suspend-session".equals(path)) {
+            throw new IllegalArgumentException(
+                    "Caller request IDs are only supported for session suspend");
+        }
+        return requestJson(connection.endpoint(), path, body != null ? body : new JSONObject(),
+                readTimeoutMs, connection,
+                new GatewayTrustManager(connection.certificateSha256(), false),
+                requireRequestId(requestId));
     }
 
     public byte[] getBinary(GatewayConnection connection, String path, String accept,
@@ -95,7 +107,7 @@ public final class GatewayTransport {
         }
         GatewayTrustManager trustManager = new GatewayTrustManager("", true);
         JSONObject response = requestJson(endpoint, path, body != null ? body : new JSONObject(),
-                readTimeoutMs, null, trustManager);
+                readTimeoutMs, null, trustManager, null);
         String fingerprint = trustManager.seenFingerprint;
         if (fingerprint == null || fingerprint.isEmpty()) {
             throw new GatewayException("The gateway did not present a certificate.", 0);
@@ -105,6 +117,11 @@ public final class GatewayTransport {
 
     Map<String, String> buildRequestHeaders(GatewayConnection connection, boolean post,
                                             boolean pairing) {
+        return buildRequestHeaders(connection, post, pairing, null);
+    }
+
+    Map<String, String> buildRequestHeaders(GatewayConnection connection, boolean post,
+                                            boolean pairing, String requestId) {
         Map<String, String> headers = new LinkedHashMap<>();
         headers.put("Accept", "application/json");
         headers.put("Connection", "close");
@@ -114,7 +131,8 @@ public final class GatewayTransport {
         }
         if (post) {
             headers.put("Content-Type", "application/json; charset=utf-8");
-            headers.put("X-Request-Id", requestIds.get());
+            headers.put("X-Request-Id", requestId == null
+                    ? requestIds.get() : requireRequestId(requestId));
         }
         return headers;
     }
@@ -171,13 +189,15 @@ public final class GatewayTransport {
 
     private JSONObject requestJson(String endpoint, String path, JSONObject body,
                                    int readTimeoutMs, GatewayConnection connection,
-                                   GatewayTrustManager trustManager) throws IOException {
+                                   GatewayTrustManager trustManager, String requestId)
+            throws IOException {
         HttpsURLConnection http = null;
         try {
             http = open(endpoint, path, trustManager, readTimeoutMs);
             boolean post = body != null;
             http.setRequestMethod(post ? "POST" : "GET");
-            applyHeaders(http, buildRequestHeaders(connection, post, connection == null));
+            applyHeaders(http, buildRequestHeaders(
+                    connection, post, connection == null, requestId));
             if (post) {
                 byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
                 http.setDoOutput(true);
@@ -195,6 +215,14 @@ public final class GatewayTransport {
         } finally {
             if (http != null) http.disconnect();
         }
+    }
+
+    static String requireRequestId(String requestId) {
+        String value = requestId == null ? "" : requestId.trim();
+        if (!value.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) {
+            throw new IllegalArgumentException("Invalid gateway request ID");
+        }
+        return value;
     }
 
     private static HttpsURLConnection open(String endpoint, String path,
