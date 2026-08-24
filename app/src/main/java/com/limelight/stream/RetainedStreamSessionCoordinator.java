@@ -24,12 +24,15 @@ public final class RetainedStreamSessionCoordinator {
 
     public static final class Snapshot {
         public final State state;
+        public final String streamSessionId;
         public final String hostId;
         public final int appId;
         public final String playniteGameId;
 
-        private Snapshot(State state, String hostId, int appId, String playniteGameId) {
+        private Snapshot(State state, String streamSessionId, String hostId, int appId,
+                         String playniteGameId) {
             this.state = state;
+            this.streamSessionId = streamSessionId;
             this.hostId = hostId;
             this.appId = appId;
             this.playniteGameId = playniteGameId;
@@ -38,15 +41,20 @@ public final class RetainedStreamSessionCoordinator {
 
     private static State state = State.NONE;
     private static WeakReference<Controller> controller = new WeakReference<>(null);
+    private static String streamSessionId = "";
     private static String hostId = "";
     private static int appId;
     private static String playniteGameId = "";
 
     private RetainedStreamSessionCoordinator() { }
 
-    public static synchronized void enterHome(Controller owner, String retainedHostId,
-                                              int retainedAppId, String retainedPlayniteGameId) {
+    public static synchronized void enterHome(Controller owner, String retainedStreamSessionId,
+                                              String retainedHostId, int retainedAppId,
+                                              String retainedPlayniteGameId) {
+        String sessionId = normalize(retainedStreamSessionId);
+        if (sessionId.isEmpty()) throw new IllegalArgumentException("Stream session ID is required");
         controller = new WeakReference<>(owner);
+        streamSessionId = sessionId;
         hostId = retainedHostId == null ? "" : retainedHostId;
         appId = retainedAppId;
         playniteGameId = retainedPlayniteGameId == null ? "" : retainedPlayniteGameId;
@@ -54,7 +62,7 @@ public final class RetainedStreamSessionCoordinator {
     }
 
     public static synchronized Snapshot snapshot() {
-        return new Snapshot(state, hostId, appId, playniteGameId);
+        return new Snapshot(state, streamSessionId, hostId, appId, playniteGameId);
     }
 
     public static synchronized State state() {
@@ -65,11 +73,14 @@ public final class RetainedStreamSessionCoordinator {
         return state != State.NONE && state != State.TERMINATING;
     }
 
-    public static boolean parkForBackground() {
+    public static boolean parkForBackground(String expectedStreamSessionId) {
         Controller owner;
+        String capturedId;
         synchronized (RetainedStreamSessionCoordinator.class) {
+            if (!matches(expectedStreamSessionId)) return false;
             if (state == State.PARKED_LIVE) return true;
             if (state != State.HOME_LIVE) return false;
+            capturedId = streamSessionId;
             owner = controller.get();
             if (owner == null) {
                 state = State.RECONNECT_REQUIRED;
@@ -78,18 +89,22 @@ public final class RetainedStreamSessionCoordinator {
         }
         boolean parked = owner.parkRetainedTransport();
         synchronized (RetainedStreamSessionCoordinator.class) {
+            if (!matches(capturedId) || state != State.HOME_LIVE) return false;
             state = parked ? State.PARKED_LIVE : State.RECONNECT_REQUIRED;
+            if (!parked) controller.clear();
         }
         return parked;
     }
 
-    public static synchronized void markParked() {
+    public static synchronized void markParked(String expectedStreamSessionId) {
+        if (!matches(expectedStreamSessionId)) return;
         if (state == State.HOME_LIVE || state == State.PARKED_LIVE) {
             state = State.PARKED_LIVE;
         }
     }
 
-    public static synchronized void markReconnectRequired() {
+    public static synchronized void markReconnectRequired(String expectedStreamSessionId) {
+        if (!matches(expectedStreamSessionId)) return;
         if (state != State.TERMINATING) state = State.RECONNECT_REQUIRED;
         controller.clear();
     }
@@ -99,27 +114,53 @@ public final class RetainedStreamSessionCoordinator {
                 && controller.get() != null;
     }
 
-    public static TerminationResult terminate(Runnable completion) {
+    public static TerminationResult terminate(String expectedStreamSessionId,
+                                              Runnable completion) {
         Controller owner;
+        String capturedId;
         synchronized (RetainedStreamSessionCoordinator.class) {
+            if (!matches(expectedStreamSessionId)) return TerminationResult.NO_CONTROLLER;
             if (state == State.TERMINATING) return TerminationResult.IN_PROGRESS;
+            capturedId = streamSessionId;
             state = State.TERMINATING;
             owner = controller.get();
             controller.clear();
+            if (owner == null) {
+                state = State.RECONNECT_REQUIRED;
+                return TerminationResult.NO_CONTROLLER;
+            }
         }
-        if (owner == null) return TerminationResult.NO_CONTROLLER;
         owner.terminateRetainedSession(() -> {
-            clear();
-            if (completion != null) completion.run();
+            if (clearIfMatches(capturedId) && completion != null) completion.run();
         });
         return TerminationResult.STARTED;
     }
 
-    public static synchronized void clear() {
+    public static synchronized boolean clearIfMatches(String expectedStreamSessionId) {
+        if (!matches(expectedStreamSessionId)) return false;
+        clearLocked();
+        return true;
+    }
+
+    static synchronized void clear() {
+        clearLocked();
+    }
+
+    private static void clearLocked() {
         state = State.NONE;
         controller.clear();
+        streamSessionId = "";
         hostId = "";
         appId = 0;
         playniteGameId = "";
+    }
+
+    private static boolean matches(String expectedStreamSessionId) {
+        String expected = normalize(expectedStreamSessionId);
+        return !expected.isEmpty() && expected.equals(streamSessionId);
+    }
+
+    private static String normalize(String value) {
+        return value == null ? "" : value.trim();
     }
 }

@@ -8,7 +8,9 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class RetainedStreamSessionCoordinatorTest {
-    private static final class FakeController
+    private static final String SESSION_A = "session-a";
+
+    private static class FakeController
             implements RetainedStreamSessionCoordinator.Controller {
         boolean parkResult = true;
         boolean terminated;
@@ -23,81 +25,123 @@ public class RetainedStreamSessionCoordinatorTest {
         }
     }
 
-    @After
-    public void reset() {
+    @After public void reset() {
         RetainedStreamSessionCoordinator.clear();
     }
 
-    @Test
-    public void homeParksAndRemainsInstantlyResumable() {
+    @Test public void homeParksAndRemainsInstantlyResumable() {
         FakeController controller = new FakeController();
-        RetainedStreamSessionCoordinator.enterHome(controller, "host", 7, "game");
+        RetainedStreamSessionCoordinator.enterHome(controller, SESSION_A, "host", 7, "game");
 
-        assertTrue(RetainedStreamSessionCoordinator.parkForBackground());
+        assertTrue(RetainedStreamSessionCoordinator.parkForBackground(SESSION_A));
         assertEquals(RetainedStreamSessionCoordinator.State.PARKED_LIVE,
                 RetainedStreamSessionCoordinator.state());
         assertTrue(RetainedStreamSessionCoordinator.canResumeInstantly());
     }
 
-    @Test
-    public void failedParkRequiresReconnect() {
+    @Test public void failedParkRequiresReconnect() {
         FakeController controller = new FakeController();
         controller.parkResult = false;
-        RetainedStreamSessionCoordinator.enterHome(controller, "host", 7, "game");
+        RetainedStreamSessionCoordinator.enterHome(controller, SESSION_A, "host", 7, "game");
 
-        assertFalse(RetainedStreamSessionCoordinator.parkForBackground());
+        assertFalse(RetainedStreamSessionCoordinator.parkForBackground(SESSION_A));
         assertEquals(RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
                 RetainedStreamSessionCoordinator.state());
         assertFalse(RetainedStreamSessionCoordinator.canResumeInstantly());
     }
 
-    @Test
-    public void terminateInvokesOwnerAndRemovesResumeState() {
+    @Test public void terminateInvokesOwnerAndRemovesResumeState() {
         FakeController controller = new FakeController();
-        RetainedStreamSessionCoordinator.enterHome(controller, "host", 7, "game");
+        RetainedStreamSessionCoordinator.enterHome(controller, SESSION_A, "host", 7, "game");
 
         assertEquals(RetainedStreamSessionCoordinator.TerminationResult.STARTED,
-                RetainedStreamSessionCoordinator.terminate(null));
+                RetainedStreamSessionCoordinator.terminate(SESSION_A, null));
         assertTrue(controller.terminated);
         assertFalse(RetainedStreamSessionCoordinator.hasRetainedSession());
         assertFalse(RetainedStreamSessionCoordinator.canResumeInstantly());
     }
 
-    @Test
-    public void lostOwnerFallsBackToReconnect() {
-        RetainedStreamSessionCoordinator.enterHome(new FakeController(), "host", 7, "game");
-        RetainedStreamSessionCoordinator.markReconnectRequired();
+    @Test public void lostOwnerFallsBackToReconnect() {
+        RetainedStreamSessionCoordinator.enterHome(
+                new FakeController(), SESSION_A, "host", 7, "game");
+        RetainedStreamSessionCoordinator.markReconnectRequired(SESSION_A);
 
         assertEquals(RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
                 RetainedStreamSessionCoordinator.state());
         assertFalse(RetainedStreamSessionCoordinator.canResumeInstantly());
     }
 
-    @Test
-    public void snapshotKeepsRetainedGameIdentity() {
-        RetainedStreamSessionCoordinator.enterHome(new FakeController(), "host", 7, "game");
+    @Test public void snapshotKeepsRetainedGameIdentity() {
+        RetainedStreamSessionCoordinator.enterHome(
+                new FakeController(), SESSION_A, "host", 7, "game");
         RetainedStreamSessionCoordinator.Snapshot snapshot =
                 RetainedStreamSessionCoordinator.snapshot();
+        assertEquals(SESSION_A, snapshot.streamSessionId);
         assertEquals("host", snapshot.hostId);
         assertEquals(7, snapshot.appId);
         assertEquals("game", snapshot.playniteGameId);
     }
 
-    @Test
-    public void repeatedTerminationDoesNotStartASecondRequest() {
+    @Test public void repeatedTerminationDoesNotStartASecondRequest() {
         FakeController controller = new FakeController();
         controller.completeTermination = false;
-        RetainedStreamSessionCoordinator.enterHome(controller, "host", 7, "game");
+        RetainedStreamSessionCoordinator.enterHome(controller, SESSION_A, "host", 7, "game");
 
         assertEquals(RetainedStreamSessionCoordinator.TerminationResult.STARTED,
-                RetainedStreamSessionCoordinator.terminate(null));
+                RetainedStreamSessionCoordinator.terminate(SESSION_A, null));
         assertEquals(RetainedStreamSessionCoordinator.TerminationResult.IN_PROGRESS,
-                RetainedStreamSessionCoordinator.terminate(null));
+                RetainedStreamSessionCoordinator.terminate(SESSION_A, null));
         assertEquals(RetainedStreamSessionCoordinator.State.TERMINATING,
                 RetainedStreamSessionCoordinator.state());
 
         controller.terminationCompletion.run();
         assertEquals(RetainedStreamSessionCoordinator.State.NONE,
                 RetainedStreamSessionCoordinator.state());
+    }
+
+    @Test public void staleParkResultCannotOverwriteNewSession() {
+        FakeController old = new FakeController() {
+            @Override public boolean parkRetainedTransport() {
+                RetainedStreamSessionCoordinator.enterHome(
+                        new FakeController(), "session-b", "host", 8, "other");
+                return true;
+            }
+        };
+        RetainedStreamSessionCoordinator.enterHome(old, SESSION_A, "host", 7, "game");
+
+        assertFalse(RetainedStreamSessionCoordinator.parkForBackground(SESSION_A));
+        RetainedStreamSessionCoordinator.Snapshot snapshot =
+                RetainedStreamSessionCoordinator.snapshot();
+        assertEquals("session-b", snapshot.streamSessionId);
+        assertEquals(RetainedStreamSessionCoordinator.State.HOME_LIVE, snapshot.state);
+    }
+
+    @Test public void staleTerminationCompletionCannotClearNewSession() {
+        FakeController old = new FakeController();
+        old.completeTermination = false;
+        RetainedStreamSessionCoordinator.enterHome(old, SESSION_A, "host", 7, "game");
+        assertEquals(RetainedStreamSessionCoordinator.TerminationResult.STARTED,
+                RetainedStreamSessionCoordinator.terminate(SESSION_A, null));
+        RetainedStreamSessionCoordinator.enterHome(
+                new FakeController(), "session-b", "host", 8, "other");
+
+        old.terminationCompletion.run();
+
+        assertEquals("session-b", RetainedStreamSessionCoordinator.snapshot().streamSessionId);
+        assertEquals(RetainedStreamSessionCoordinator.State.HOME_LIVE,
+                RetainedStreamSessionCoordinator.state());
+    }
+
+    @Test public void terminationWithoutControllerDoesNotRemainWedged() {
+        RetainedStreamSessionCoordinator.enterHome(
+                new FakeController(), SESSION_A, "host", 7, "game");
+        RetainedStreamSessionCoordinator.markReconnectRequired(SESSION_A);
+
+        assertEquals(RetainedStreamSessionCoordinator.TerminationResult.NO_CONTROLLER,
+                RetainedStreamSessionCoordinator.terminate(SESSION_A, null));
+        assertEquals(RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
+                RetainedStreamSessionCoordinator.state());
+        assertEquals(RetainedStreamSessionCoordinator.TerminationResult.NO_CONTROLLER,
+                RetainedStreamSessionCoordinator.terminate(SESSION_A, null));
     }
 }

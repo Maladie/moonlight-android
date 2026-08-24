@@ -122,16 +122,19 @@ class GatewayStateTest(unittest.TestCase):
         state = GatewayState(self.config_path, None)
         scheduled = []
         state._schedule_system_sleep = lambda delay=0.75, force=False: scheduled.append((delay, force))
+        suspend_id = "4f31dce8-8743-4a18-aed4-0abf09e589d1"
 
         status, result = state.suspend_session({
+            "suspend_id": suspend_id,
             "sunshine_app_id": 42,
             "playnite_game_id": "ABC-123",
             "title": "Hollow Knight",
-        })
+        }, suspend_id)
 
         if os.name == "nt":
             self.assertEqual(202, status)
             self.assertTrue(result["accepted"])
+            self.assertEqual(suspend_id, result["suspend_id"])
             self.assertEqual("abc-123", result["session"]["playnite_game_id"])
             self.assertEqual([(2.5, True)], scheduled)
         else:
@@ -143,12 +146,36 @@ class GatewayStateTest(unittest.TestCase):
         if os.name != "nt":
             self.skipTest("Windows-only validation path")
         state._schedule_system_sleep = lambda delay=0.75, force=False: self.fail("must not sleep")
+        suspend_id = "4f31dce8-8743-4a18-aed4-0abf09e589d1"
 
-        status, result = state.suspend_session({"playnite_game_id": "abc"})
+        status, result = state.suspend_session({
+            "suspend_id": suspend_id, "playnite_game_id": "abc"
+        }, suspend_id)
 
         self.assertEqual(400, status)
         self.assertFalse(result["ok"])
 
+    def test_suspend_session_rejects_mismatched_suspend_id(self):
+        state = GatewayState(self.config_path, None)
+        status, result = state.suspend_session({
+            "suspend_id": "request-a", "sunshine_app_id": 42
+        }, "request-b")
+
+        self.assertEqual(400, status)
+        self.assertFalse(result["ok"])
+
+    def test_suspend_idempotency_reuses_typed_acceptance(self):
+        state = GatewayState(self.config_path, None)
+        calls = []
+        operation = lambda: (calls.append(True) or (202, {
+            "accepted": True, "suspend_id": "request-a"
+        }))
+
+        first = state.idempotent("session-suspend:request-a", operation)
+        second = state.idempotent("session-suspend:request-a", operation)
+
+        self.assertEqual(first, second)
+        self.assertEqual([True], calls)
     def test_profile_selects_its_own_loopback_bridges(self):
         state = GatewayState(self.config_path, None)
         state.config["profiles"]["basia"] = {

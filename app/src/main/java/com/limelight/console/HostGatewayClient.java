@@ -755,9 +755,14 @@ final class HostGatewayClient {
                 new JSONObject(), READ_TIMEOUT_MS);
     }
 
-    JSONObject suspendSession(GatewayConnection connection, JSONObject session) throws IOException {
-        return request(connection, "/api/v1/system/suspend-session", "POST",
-                session, READ_TIMEOUT_MS);
+    JSONObject suspendSession(GatewayConnection connection, JSONObject session,
+                              String suspendId) throws IOException {
+        try {
+            return transport.postJson(connection, "/api/v1/system/suspend-session",
+                    session, suspendId, READ_TIMEOUT_MS);
+        } catch (GatewayTransport.GatewayException error) {
+            throw mapException(error);
+        }
     }
 
     PlayniteLibrary getPlayniteLibrary(GatewayConnection connection, String cursor, int limit)

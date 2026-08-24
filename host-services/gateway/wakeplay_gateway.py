@@ -31,6 +31,7 @@ DISCORD_ID_PATTERN = re.compile(r"^[0-9]{5,32}$")
 VIRTUALHERE_ADDRESS_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 AUDIO_DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:{}-]{1,220}$")
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 PLAYNITE_GAME_ID_PATTERN = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
 PLAYNITE_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{0,128}$")
@@ -414,7 +415,13 @@ class GatewayState:
         self._schedule_system_sleep()
         return HTTPStatus.ACCEPTED, {"ok": True, "accepted": True}
 
-    def suspend_session(self, body: dict[str, Any]) -> tuple[int, Any]:
+    def suspend_session(self, body: dict[str, Any], request_id: str) -> tuple[int, Any]:
+        suspend_id = str(body.get("suspend_id") or "").strip()
+        if not REQUEST_ID_PATTERN.fullmatch(request_id) or suspend_id != request_id:
+            return HTTPStatus.BAD_REQUEST, {
+                "ok": False,
+                "error": "A matching valid suspend_id is required.",
+            }
         if os.name != "nt":
             return HTTPStatus.NOT_IMPLEMENTED, {
                 "ok": False,
@@ -434,6 +441,7 @@ class GatewayState:
         return HTTPStatus.ACCEPTED, {
             "ok": True,
             "accepted": True,
+            "suspend_id": suspend_id,
             "session": {
                 "sunshine_app_id": sunshine_app_id,
                 "playnite_game_id": playnite_game_id,
@@ -1125,7 +1133,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 body = self.read_json()
                 status, result = self.state.idempotent(
                     f"session-suspend:{request_id}",
-                    lambda: self.state.suspend_session(body))
+                    lambda: self.state.suspend_session(body, request_id))
                 self.send_json(status, result)
                 return
             if path == f"{API_PREFIX}/vibepollo/apps/ensure":

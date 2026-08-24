@@ -66,6 +66,30 @@ public final class PlayniteTransitionGateway {
         }
     }
 
+    public static final class SuspendAcceptance {
+        public final boolean accepted;
+        public final String suspendId;
+        public final int sunshineAppId;
+        public final String playniteGameId;
+
+        SuspendAcceptance(boolean accepted, String suspendId, int sunshineAppId,
+                          String playniteGameId) {
+            this.accepted = accepted;
+            this.suspendId = suspendId == null ? "" : suspendId.trim();
+            this.sunshineAppId = sunshineAppId;
+            this.playniteGameId = playniteGameId == null ? ""
+                    : playniteGameId.trim().toLowerCase(java.util.Locale.ROOT);
+        }
+
+        public boolean matches(String expectedSuspendId, int expectedAppId,
+                               String expectedGameId) {
+            String gameId = expectedGameId == null ? ""
+                    : expectedGameId.trim().toLowerCase(java.util.Locale.ROOT);
+            return accepted && suspendId.equals(expectedSuspendId)
+                    && sunshineAppId == expectedAppId && playniteGameId.equals(gameId);
+        }
+    }
+
     private final HostGatewayClient client = new HostGatewayClient();
     private final GatewayConnection connection;
 
@@ -121,16 +145,23 @@ public final class PlayniteTransitionGateway {
         client.ensureVibepolloPlayniteApp(connection, gameId, name);
     }
 
-    public void suspendSession(int sunshineAppId, String playniteGameId,
-                               String title) throws IOException {
+    public SuspendAcceptance suspendSession(String suspendId, int sunshineAppId,
+                                             String playniteGameId, String title)
+            throws IOException {
         JSONObject body = new JSONObject();
         try {
+            body.put("suspend_id", suspendId);
             body.put("sunshine_app_id", sunshineAppId);
             body.put("playnite_game_id", playniteGameId == null ? "" : playniteGameId);
             body.put("title", title == null ? "" : title);
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
-        client.suspendSession(connection, body);
+        JSONObject response = client.suspendSession(connection, body, suspendId);
+        JSONObject session = response.optJSONObject("session");
+        return new SuspendAcceptance(response.optBoolean("accepted", false),
+                response.optString("suspend_id", ""),
+                session == null ? 0 : session.optInt("sunshine_app_id", 0),
+                session == null ? "" : session.optString("playnite_game_id", ""));
     }
 }

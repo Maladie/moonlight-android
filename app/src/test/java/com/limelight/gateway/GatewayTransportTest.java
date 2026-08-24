@@ -54,6 +54,40 @@ public class GatewayTransportTest {
         assertEquals(1, calls.get());
     }
 
+    @Test public void callerSuppliedRequestIdIsUsedWithoutGeneratingAnother() {
+        AtomicInteger calls = new AtomicInteger();
+        GatewayTransport transport = new GatewayTransport(() -> {
+            calls.incrementAndGet();
+            return "generated";
+        });
+
+        Map<String, String> headers = transport.buildRequestHeaders(
+                CONNECTION, true, false, "suspend-123");
+
+        assertEquals("suspend-123", headers.get("X-Request-Id"));
+        assertEquals(0, calls.get());
+    }
+
+    @Test public void callerSuppliedRequestIdIsRestrictedToSuspendEndpoint() throws Exception {
+        GatewayTransport transport = new GatewayTransport(() -> "generated");
+        try {
+            transport.postJson(CONNECTION, "/api/v1/status", new JSONObject(),
+                    "request-1", 1_000);
+            fail("Expected IllegalArgumentException");
+        } catch (IllegalArgumentException expected) {
+            // Expected.
+        }
+    }
+
+    @Test public void callerSuppliedRequestIdIsValidated() {
+        try {
+            GatewayTransport.requireRequestId("bad request id");
+            fail("Expected IllegalArgumentException");
+        } catch (IllegalArgumentException expected) {
+            // Expected.
+        }
+    }
+
     @Test public void pairingHeadersOmitAuthenticationAndProfile() {
         GatewayTransport transport = new GatewayTransport(() -> "pair-request");
 

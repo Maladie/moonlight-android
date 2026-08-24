@@ -221,6 +221,17 @@ public class SessionStateResolverTest {
         assertFalse(snapshot.hostSleepRequested);
     }
 
+    @Test public void resolvingSameObservationsIsPureAndRepeatable() {
+        Facts facts = suspendedFacts();
+        SessionStateResolver.Observations observations = facts.build();
+
+        SessionSnapshot first = resolver.resolve(observations);
+        SessionSnapshot second = resolver.resolve(observations);
+
+        assertEquals(first, second);
+        assertEquals(SessionSnapshot.State.SUSPENDED, first.state);
+    }
+
     private static Facts suspendedFacts() {
         Facts facts = new Facts();
         facts.suspendedHost = "host";
