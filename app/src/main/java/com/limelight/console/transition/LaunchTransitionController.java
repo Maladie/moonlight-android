@@ -186,12 +186,11 @@ public final class LaunchTransitionController {
         manualRevealAvailable = false;
         revealCompleted = false;
         targetWindowReady = false;
-        videoFrameReady = false;
         detail = reason == null ? "" : reason;
         state = kind == LaunchTransitionType.GAME
                 ? LaunchTransitionState.GAME_WINDOW_STABILIZING
                 : LaunchTransitionState.PLAYNITE_FULLSCREEN_STARTING;
-        publish();
+        evaluateReady();
     }
 
     public synchronized void gameStopping(String transitionId, String hostId, String gameId) {

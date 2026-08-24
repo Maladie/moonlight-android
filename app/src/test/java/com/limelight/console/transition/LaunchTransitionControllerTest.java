@@ -241,6 +241,23 @@ public class LaunchTransitionControllerTest {
     }
 
     @Test
+    public void lostWindowKeepsConfirmedFrameAvailableForManualReveal() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        controller.gatewayConnected("transition-1", HOST);
+        controller.targetWindowReady("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME);
+        transportReady(controller);
+
+        controller.targetWindowLost("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME, "Windows sign-in");
+
+        assertFalse(controller.snapshot().revealAuthorized);
+        assertTrue(controller.snapshot().manualRevealAvailable);
+        controller.showStreamAnyway("transition-1");
+        assertTrue(controller.snapshot().revealAuthorized);
+    }
+
+    @Test
     public void gameReturnToPlayniteRequiresFreshFrameAndFullscreenWindow() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         transportReady(controller);

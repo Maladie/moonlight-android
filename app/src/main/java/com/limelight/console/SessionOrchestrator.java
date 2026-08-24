@@ -9,7 +9,7 @@ import java.util.function.BooleanSupplier;
 
 /** Routes a user target from one fresh canonical session snapshot. */
 final class SessionOrchestrator implements AutoCloseable {
-    enum Rejection { INITIALIZING, UNPAIRED, TERMINATING, SUSPENDED_UNVERIFIED }
+    enum Rejection { INITIALIZING, UNPAIRED, TERMINATING }
 
     interface Dispatcher { void post(Runnable action); }
     interface Effects {
@@ -57,10 +57,7 @@ final class SessionOrchestrator implements AutoCloseable {
             effects.reject(Rejection.TERMINATING);
             return;
         }
-        if (snapshot.state == SessionSnapshot.State.SUSPENDED_UNVERIFIED) {
-            effects.reject(Rejection.SUSPENDED_UNVERIFIED);
-            return;
-        }
+
         boolean matches = intent.matches(snapshot);
         if (snapshot.state == SessionSnapshot.State.ACTIVE && matches) {
             if (snapshot.retainedTransport) {
