@@ -11,9 +11,9 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.12.0")]
-[assembly: AssemblyFileVersion("0.7.12.0")]
-[assembly: AssemblyInformationalVersion("0.7.12+2026.08.24")]
+[assembly: AssemblyVersion("0.7.17.0")]
+[assembly: AssemblyFileVersion("0.7.17.0")]
+[assembly: AssemblyInformationalVersion("0.7.17+2026.08.25")]
 
 namespace MoonWaker.HostInstaller
 {
@@ -36,6 +36,7 @@ namespace MoonWaker.HostInstaller
         private readonly CheckBox discord = new CheckBox();
         private readonly CheckBox vibepollo = new CheckBox();
         private readonly CheckBox playnite = new CheckBox();
+        private readonly CheckBox epicLegendary = new CheckBox();
         private readonly TextBox discordId = new TextBox();
         private readonly TextBox discordSecret = new TextBox();
         private readonly TextBox vibepolloUrl = new TextBox();
@@ -98,7 +99,8 @@ namespace MoonWaker.HostInstaller
             ConfigureCheckBox(discord, "Discord Bridge", 30, y); discord.Checked = true;
             ConfigureCheckBox(vibepollo, "Vibepollo Bridge", 270, y); vibepollo.Checked = true;
             ConfigureCheckBox(playnite, "Playnite Bridge", 530, y); playnite.Checked = true; y += 48;
-            content.Controls.Add(discord); content.Controls.Add(vibepollo); content.Controls.Add(playnite);
+            ConfigureCheckBox(epicLegendary, "Automatyczna instalacja gier Epic (bez potwierdzeń)", 30, y); epicLegendary.Checked = true; y += 38;
+            content.Controls.Add(discord); content.Controls.Add(vibepollo); content.Controls.Add(playnite); content.Controls.Add(epicLegendary);
 
             AddLabel(content, "Discord Client ID", 9F, FontStyle.Regular, 30, y, 260, 22);
             AddLabel(content, "Discord Client Secret", 9F, FontStyle.Regular, 330, y, 300, 22); y += 22;
@@ -145,6 +147,11 @@ namespace MoonWaker.HostInstaller
             profileId.TextChanged += delegate { RefreshInstallationStatus(); };
             installMachine.CheckedChanged += delegate { RefreshInstallationStatus(); };
             discord.CheckedChanged += delegate { RefreshInstallationStatus(); };
+            epicLegendary.CheckedChanged += delegate {
+                installMachine.Checked = SharedComponentsNeedUpdate(installPath.Text.Trim());
+                RefreshInstallationStatus();
+            };
+            installMachine.Checked = SharedComponentsNeedUpdate(installPath.Text.Trim());
             UpdateTokenFields();
             RefreshInstallationStatus();
         }
@@ -162,6 +169,10 @@ namespace MoonWaker.HostInstaller
                 log.AppendText(output);
                 MessageBox.Show(this, "Instalacja zakończona. Wszystkie komponenty znajdują się w:\n" +
                     Path.GetFullPath(installPath.Text.Trim()), "MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                if (epicLegendary.Checked && MessageBox.Show(this,
+                    "Czy zalogować Epic Games teraz, aby włączyć automatyczne instalacje?", "Epic: automatyczne instalacje",
+                    MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes)
+                    StartLegendaryAuth();
             }
             catch (Exception error)
             {
@@ -251,6 +262,17 @@ namespace MoonWaker.HostInstaller
             }
         }
 
+        private void StartLegendaryAuth()
+        {
+            string root = Path.GetFullPath(installPath.Text.Trim());
+            string executable = Path.Combine(root, "tools", "legendary", "legendary.exe");
+            if (!File.Exists(executable)) return;
+            ProcessStartInfo info = new ProcessStartInfo(executable, "auth") {
+                UseShellExecute = false, CreateNoWindow = false };
+            info.EnvironmentVariables["LEGENDARY_CONFIG_PATH"] = Path.Combine(root, "profiles", profileId.Text.Trim(), "state", "legendary");
+            Process.Start(info);
+        }
+
         private string RunInstaller()
         {
             string temporary = Path.Combine(Path.GetTempPath(), "moonwaker-host-" + Guid.NewGuid().ToString("N"));
@@ -266,7 +288,8 @@ namespace MoonWaker.HostInstaller
                     string machineWrapper = Path.Combine(temporary, "host-services", "install",
                             "Invoke-MoonWakerMachineInstall.ps1");
                     RunMachineInstall(hostScript, machineWrapper,
-                            Path.GetFullPath(installPath.Text.Trim()), temporary);
+                            Path.GetFullPath(installPath.Text.Trim()), temporary,
+                            !epicLegendary.Checked);
                 }
                 EnsureSharedDiscordAccess(temporary);
                 List<string> args = new List<string>();
@@ -280,6 +303,7 @@ namespace MoonWaker.HostInstaller
                 if (!discord.Checked) args.Add("-SkipDiscord");
                 if (!vibepollo.Checked) args.Add("-SkipVibepollo");
                 if (!playnite.Checked) args.Add("-SkipPlaynite");
+                if (!epicLegendary.Checked) args.Add("-SkipEpicLegendary");
 
                 ProcessStartInfo info = new ProcessStartInfo("powershell.exe", String.Join(" ", args.ToArray()));
                 info.UseShellExecute = false; info.CreateNoWindow = true;
@@ -314,7 +338,7 @@ namespace MoonWaker.HostInstaller
         }
 
         private static void RunMachineInstall(string script, string wrapper, string directory,
-                                              string temporaryDirectory)
+                                              string temporaryDirectory, bool skipEpicLegendary)
         {
             if (!File.Exists(script)) throw new InvalidOperationException("Brak skryptu instalacji komponentów wspólnych.");
             if (!File.Exists(wrapper)) throw new InvalidOperationException("Brak modułu diagnostycznego instalacji komponentów wspólnych.");
@@ -323,6 +347,7 @@ namespace MoonWaker.HostInstaller
                 " -HostInstallScript " + Quote(script) +
                 " -InstallDirectory " + Quote(directory) +
                 " -GatewayDirectory " + Quote(Path.Combine(directory, "gateway")) +
+                (skipEpicLegendary ? " -SkipEpicLegendary" : "") +
                 " -ResultPath " + Quote(resultPath);
             ProcessStartInfo info = new ProcessStartInfo("powershell.exe", arguments);
             info.UseShellExecute = true;
@@ -514,6 +539,8 @@ namespace MoonWaker.HostInstaller
                 string directory = Path.GetFullPath(root);
                 if (!File.Exists(Path.Combine(directory, "gateway", "gateway.json")) ||
                         !File.Exists(Path.Combine(directory, "control", "MoonWakerHostControl.exe"))) return true;
+                if (epicLegendary.Checked && !File.Exists(Path.Combine(
+                        directory, "tools", "legendary", "legendary.exe"))) return true;
                 return !String.Equals(ReadInstalledVersion(directory), payloadVersion,
                     StringComparison.OrdinalIgnoreCase);
             }

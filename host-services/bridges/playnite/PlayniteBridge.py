@@ -394,22 +394,36 @@ class WindowProbe:
             return provider_sample or {
                 "requires_attention": False, "reason": "window_probe_unavailable"}
         expected_images = self.game_operations.expected_launcher_images(game)
+        is_epic = self.game_operations.provider_for(game) is self.game_operations.epic
+        rejected_hwnds: set[int] = set()
         if expected_images:
             provider_windows = [window for window in self.interactive_windows()
                                 if str(window.get("image") or "").casefold()
                                 in expected_images]
             provider_windows.sort(
                 key=lambda window: bool(window.get("foreground")), reverse=True)
+            previous_windows = baseline.get("windows") or {}
             for window in provider_windows:
+                previous = previous_windows.get(str(window.get("hwnd") or 0)) or {}
+                changed = not previous or str(previous.get("title") or "") !=                     str(window.get("title") or "") or int(
+                        previous.get("process_id") or 0) != int(window.get("process_id") or 0)
+                visual_candidate = is_epic and changed and bool(window.get("foreground"))                     and int(window.get("hwnd") or 0) > 0                     and int(window.get("process_id") or 0) > 0                     and bool(str(game.get("name") or "").strip())
                 recognized = self.game_operations.confirm_operation(
                     game,
                     int(window.get("hwnd") or 0), operation,
-                    str(game.get("name") or ""), probe_only=True)
+                    str(game.get("name") or ""),
+                    allow_visual_fallback=visual_candidate, probe_only=True)
                 if recognized.get("recognized"):
+                    visual_safe = visual_candidate and                         recognized.get("method") == "visual" and                         bool(recognized.get("visual_confirmation_safe"))
                     return {"requires_attention": True, "reason": "launcher_prompt",
-                            "visual_confirmation_safe": False, **window}
+                            "visual_confirmation_safe": visual_safe, **window}
+                if is_epic and recognized.get("recognized") is False \
+                        and recognized.get("reason") == "epic_modal_unverified":
+                    rejected_hwnds.add(int(window.get("hwnd") or 0))
         candidates = []
         for candidate in self.interactive_windows():
+            if int(candidate.get("hwnd") or 0) in rejected_hwnds:
+                continue
             score = self.installation_candidate_score(
                 baseline, candidate, expected_images)
             if score >= 5:
@@ -750,7 +764,8 @@ class BridgeState:
                 "recovery_started_at": self.clock(),
                 "primary_attempted": False,
                 "primary_started": False,
-                "fallback_dispatched": False,
+                "fallback_dispatched": "dispatch=egl_auto" in str(
+                    operation.get("detail") or ""),
             }
         self.cache_path = cache_path
         self.started_at = int(time.time())
@@ -933,6 +948,12 @@ class BridgeState:
                     game.update({"installed": True, "installing": False,
                                  "isInstalled": True, "isInstalling": False,
                                  "installDir": directory})
+                    session = self.installations.get(game_id)
+                    if session is not None and session.get("operation") == "uninstall" \
+                            and (self.operation_journal.get(game_id) or {}).get("state") \
+                            in ACTIVE_STATES:
+                        self._apply_installation_fields_locked(game_id, game)
+                        continue
                     if already_reconciled or (connector_installed and not path_mismatch):
                         continue
                     self.installations.pop(game_id, None)
@@ -1323,6 +1344,21 @@ class BridgeState:
         dispatch = self.game_operations.dispatch_install \
             if operation == "install" else self.game_operations.dispatch_uninstall
         result = dispatch(dict(game), sender)
+        if not is_steam and self.game_operations.provider_for(game) is self.game_operations.epic:
+            if result.get("requires_attention") or not result.get("accepted", True):
+                self._mark_manual_confirmation(game_id, {
+                    "reason": str(result.get("reason") or "epic_dispatch_failed"),
+                    "launcher": str(result.get("launcher") or "legendary.exe"),
+                }, token)
+            if self.operation_audit is not None:
+                try:
+                    self.operation_audit("epic_operation_dispatched", {
+                        "game_id": game_id, "kind": operation,
+                        "dispatch": str(result.get("dispatch") or ""),
+                        "fallback_reason": str(result.get("fallback_reason") or ""),
+                    })
+                except Exception:
+                    pass
         if is_steam:
             direct_dispatched = False
             with self.lock:
@@ -1586,6 +1622,79 @@ class BridgeState:
                         "steam_automation_failed", game_id, token, game,
                         method=str(automated.get("method") or "unknown"),
                         reason=session["automation_failure"], window_handle=hwnd)
+
+    def _handle_epic_runtime_fallback(
+            self, game_id: str, sample: dict[str, Any],
+            token: tuple[str, str, float] | None) -> bool:
+        reason = str(sample.get("reason") or "")
+        if reason not in {"legendary_process_failed", "legendary_verification_failed"}:
+            return False
+        with self.lock:
+            session = self.installations.get(game_id)
+            game = self.library.get(game_id)
+            if token is None or session is None or game is None \
+                    or self.game_operations.provider_for(game) is not self.game_operations.epic \
+                    or not self._operation_result_current_locked(game_id, token):
+                return False
+            operation = str(session.get("operation") or "")
+            if operation not in {"install", "uninstall"}:
+                return False
+            if session.get("fallback_dispatched"):
+                return True
+            session.update({
+                "fallback_dispatched": True,
+                "fallback_dispatched_at": self.clock(),
+                "fallback_reason": reason,
+            })
+            if operation == "uninstall":
+                if self.operation_audit is not None:
+                    try:
+                        self.operation_audit("epic_uninstall_runtime_failed", {
+                            "game_id": game_id, "kind": operation, "reason": reason,
+                            "dispatch": "none",
+                            "exit_code": int(sample.get("exit_code") or 0),
+                        })
+                    except Exception:
+                        pass
+                self._mark_manual_confirmation(game_id, {
+                    "reason": reason,
+                    "launcher": str(sample.get("launcher") or "legendary.exe"),
+                }, token)
+                return True
+        try:
+            self.send_command(operation, id=game_id)
+        except Exception as error:
+            if self.operation_audit is not None:
+                try:
+                    self.operation_audit("epic_runtime_fallback_failed", {
+                        "game_id": game_id, "kind": operation, "reason": reason,
+                        "dispatch": "egl_auto", "error": type(error).__name__,
+                    })
+                except Exception:
+                    pass
+            self._mark_manual_confirmation(game_id, {
+                "reason": "epic_runtime_fallback_dispatch_failed",
+                "launcher": "epicgameslauncher.exe",
+            }, token)
+            return True
+        with self.lock:
+            if self._operation_result_current_locked(game_id, token):
+                self.operation_journal.update(
+                    game_id, "uninstalling" if operation == "uninstall" else "preparing",
+                    detail=f"{reason}; dispatch=egl_auto")
+                current = self.library.get(game_id)
+                if current is not None:
+                    self._apply_installation_fields_locked(game_id, current)
+        if self.operation_audit is not None:
+            try:
+                self.operation_audit("epic_runtime_fallback_dispatched", {
+                    "game_id": game_id, "kind": operation, "reason": reason,
+                    "dispatch": "egl_auto",
+                    "exit_code": int(sample.get("exit_code") or 0),
+                })
+            except Exception:
+                pass
+        return True
 
     def _handle_steam_probe(self, game_id: str, sample: dict[str, Any],
                             token: tuple[str, str, float] | None) -> bool:
@@ -1858,6 +1967,8 @@ class BridgeState:
                     if correlated:
                         sender({"type": "command", "command": "mark-installed",
                                 "id": game_id, "install_directory": install_directory})
+            return
+        if self._handle_epic_runtime_fallback(game_id, sample, token):
             return
         if self._handle_steam_probe(game_id, sample, token):
             return
@@ -2579,11 +2690,19 @@ def main() -> None:
         raise ValueError("Playnite Bridge must remain on loopback.")
     expected_display = str(config.get("streamed_display", "")).strip()
     journal = OperationJournal(config_path.with_name("operations.sqlite3"))
+    profile_root = config_path.parent.parent
+    install_root = profile_root.parent.parent
+    legendary_path = str(config.get("legendary_path", "")).strip()
     game_operations = GameOperationsService(
         journal,
         GenericPlayniteProvider(),
         SteamProvider(Path(__file__).with_name("Confirm-SteamOperation.ps1")),
-        EpicProvider())
+        EpicProvider(
+            automation_path=Path(__file__).with_name("Confirm-SteamOperation.ps1"),
+            legendary_path=Path(legendary_path) if legendary_path else install_root / "tools" / "legendary" / "legendary.exe",
+            legendary_state_path=profile_root / "state" / "legendary",
+            epic_install_root=Path(str(config.get("epic_install_root", "")).strip()) if str(config.get("epic_install_root", "")).strip() else None,
+            legendary_enabled=bool(config.get("epic_legendary_enabled", True))))
     audit_path = config_path.with_name("playnite-operation-audit.jsonl")
     state = BridgeState(expected_display, config_path.with_name("library-cache.json"),
                         config_path.parent.parent / "moonwaker-version.json",

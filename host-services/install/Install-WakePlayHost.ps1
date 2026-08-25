@@ -6,6 +6,7 @@ param(
     [int]$GatewayPort = 8785,
     [switch]$SkipFirewall,
     [switch]$SkipScheduledTask,
+    [switch]$SkipEpicLegendary,
     [switch]$SkipStart
 )
 
@@ -24,6 +25,7 @@ $gatewaySource = Join-Path $hostServicesRoot "gateway"
 $bridgeSource = Join-Path $hostServicesRoot "bridges"
 $profileAgentSource = Join-Path $hostServicesRoot "profile-agent"
 $controlSource = Join-Path $hostServicesRoot "control"
+$toolsSource = Join-Path $hostServicesRoot "tools"
 if (-not (Test-Path -LiteralPath $gatewaySource) -or
     -not (Test-Path -LiteralPath $bridgeSource) -or
     -not (Test-Path -LiteralPath $profileAgentSource) -or
@@ -40,6 +42,7 @@ if ([string]::IsNullOrWhiteSpace($GatewayDirectory)) {
 $sourceDirectory = Join-Path $InstallDirectory "bridge-source"
 $profileAgentDirectory = Join-Path $InstallDirectory "profile-agent"
 $controlDirectory = Join-Path $InstallDirectory "control"
+$toolsDirectory = Join-Path $InstallDirectory "tools"
 $installScripts = Join-Path $InstallDirectory "install"
 
 function Stop-ExistingGatewayForUpdate {
@@ -86,7 +89,7 @@ if (Test-Path -LiteralPath (Join-Path $GatewayDirectory "gateway.json")) {
     Stop-ExistingGatewayForUpdate $GatewayDirectory
 }
 New-Item -ItemType Directory -Path $InstallDirectory, $sourceDirectory, $profileAgentDirectory, `
-    $controlDirectory, $installScripts -Force | Out-Null
+    $controlDirectory, $toolsDirectory, $installScripts -Force | Out-Null
 Copy-Item -LiteralPath $versionSource -Destination (Join-Path $InstallDirectory "version.json") -Force
 
 Copy-Item -LiteralPath (Join-Path $bridgeSource "discord") `
@@ -113,6 +116,11 @@ if (Test-Path -LiteralPath $profilesDirectory) {
 Stop-MoonWakerHostControlForUpdate
 Copy-Item -Path (Join-Path $controlSource "*") `
     -Destination $controlDirectory -Recurse -Force
+if (-not $SkipEpicLegendary -and
+        (Test-Path -LiteralPath (Join-Path $toolsSource "legendary\legendary.exe"))) {
+    Copy-Item -LiteralPath (Join-Path $toolsSource "legendary") `
+        -Destination $toolsDirectory -Recurse -Force
+}
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Install-WakePlayProfile.ps1") `
     -Destination $installScripts -Force
 

@@ -3,7 +3,8 @@
 param(
     [Parameter(Mandatory)]
     [ValidateSet("Status", "StartGateway", "StopGateway", "RestartGateway", "PairGateway",
-        "StartProfile", "StopProfile", "RestartProfile", "RecoverAll", "ClearDiscord", "ClearDiscordMachine", "RemoveProfile")]
+        "StartProfile", "StopProfile", "RestartProfile", "RecoverAll", "InstallLegendary",
+        "ClearDiscord", "ClearDiscordMachine", "RemoveProfile")]
     [string]$Action,
     [ValidatePattern('^[A-Za-z0-9._-]{0,64}$')][string]$ProfileId = "",
     [switch]$RemoveMachineDiscordApplication,
@@ -186,6 +187,9 @@ function Get-Status {
     return [ordered]@{
         ok = $true
         version = $version
+        legendary = [ordered]@{
+            installed = Test-Path -LiteralPath (Join-Path (Get-InstallRoot) "tools\legendary\legendary.exe")
+        }
         gateway = [ordered]@{
             installed = Test-Path -LiteralPath $configPath
             running = Test-TcpPort "127.0.0.1" $port
@@ -206,6 +210,18 @@ function Get-Status {
         }
         active_profile = if ($runtime) { [string]$runtime.profile_id } else { "" }
         profiles = $profiles
+    }
+}
+
+function Install-Legendary {
+    $installer = Join-Path $PSScriptRoot "Install-LegendaryPayload.ps1"
+    if (-not (Test-Path -LiteralPath $installer)) {
+        throw "Brak komponentu instalacyjnego Legendary. Zaktualizuj MoonWaker Host."
+    }
+    $target = Join-Path (Get-InstallRoot) "tools\legendary"
+    & $installer -TargetDirectory $target
+    if (-not (Test-Path -LiteralPath (Join-Path $target "legendary.exe"))) {
+        throw "Instalacja Legendary nie utworzyła pliku wykonywalnego."
     }
 }
 
@@ -356,6 +372,7 @@ try {
         "StopProfile" { Invoke-ProfileControl $ProfileId "stop"; [ordered]@{ ok = $true } }
         "RestartProfile" { Invoke-ProfileControl $ProfileId "stop"; Start-Sleep -Milliseconds 500; Invoke-ProfileControl $ProfileId "start"; [ordered]@{ ok = $true } }
         "RecoverAll" { Recover-All; [ordered]@{ ok = $true } }
+        "InstallLegendary" { Install-Legendary; [ordered]@{ ok = $true } }
         "ClearDiscord" { Clear-DiscordData $ProfileId; [ordered]@{ ok = $true } }
         "ClearDiscordMachine" { $RemoveMachineDiscordApplication = $true; Clear-DiscordData $ProfileId; [ordered]@{ ok = $true } }
         "RemoveProfile" { Remove-Profile $ProfileId; [ordered]@{ ok = $true } }

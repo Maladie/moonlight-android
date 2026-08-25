@@ -3879,27 +3879,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void reconcilePlayniteInstallations(ComputerDetails host,
                                                 List<PlayniteLibraryGame> current) {
         if (host == null) return;
+        Set<String> completed = new HashSet<>();
         for (GameOperationsController.Observation observation
                 : gameOperationsController.reconcile(host.uuid, current)) {
             if (observation.type == GameOperationsController.ObservationType
                     .INSTALL_CONFIRMED_BY_SNAPSHOT) {
-                ensureVibepolloAfterInstall(host, observation.game);
-                boolean alreadyShownInStream = preferences.getLong(
-                        playniteInstallNotificationKey(host.uuid, observation.gameId), 0L) > 0L;
-                if (!alreadyShownInStream) {
-                    if (consoleAudioEngine != null) {
-                        consoleAudioEngine.play(ConsoleAudioSynthesis.Cue.SUCCESS);
-                    }
-                    ConsoleUiFeedback.makeText(this, getString(R.string.playnite_install_complete,
-                            observation.gameName), Toast.LENGTH_LONG).show();
-                }
-                preferences.edit().remove(
-                        playniteInstallNotificationKey(host.uuid, observation.gameId))
-                        .remove(playniteInstallPendingKey(host.uuid, observation.gameId)).apply();
-                completedPlayniteInstallAnimations.add(
-                        playniteInstallKey(host.uuid, observation.gameId));
+                completePlayniteInstallation(host, observation.game, observation.gameId,
+                        observation.gameName);
+                completed.add(observation.gameId);
             } else if (observation.type == GameOperationsController.ObservationType
                     .INSTALL_NO_LONGER_ACTIVE_AFTER_OBSERVED_ACTIVITY) {
+                preferences.edit()
+                        .remove(playniteInstallNotificationKey(host.uuid, observation.gameId))
+                        .remove(playniteInstallPendingKey(host.uuid, observation.gameId)).apply();
                 if (consoleAudioEngine != null) {
                     consoleAudioEngine.play(ConsoleAudioSynthesis.Cue.ERROR);
                 }
@@ -3914,6 +3906,35 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         host.uuid, observation.gameId)).apply();
             }
         }
+        for (PlayniteLibraryGame game : current) {
+            String gameId = game.playniteGameId;
+            String pendingKey = playniteInstallPendingKey(host.uuid, gameId);
+            if (!preferences.contains(pendingKey)) continue;
+            if (game.installed && !completed.contains(gameId)) {
+                completePlayniteInstallation(host, game, gameId, game.name);
+            } else if (!game.installing && !game.installRequiresAttention
+                    && game.operationState.trim().isEmpty()) {
+                preferences.edit().remove(playniteInstallNotificationKey(host.uuid, gameId))
+                        .remove(pendingKey).apply();
+            }
+        }
+    }
+
+    private void completePlayniteInstallation(ComputerDetails host, PlayniteLibraryGame game,
+                                               String gameId, String gameName) {
+        ensureVibepolloAfterInstall(host, game);
+        boolean alreadyShownInStream = preferences.getLong(
+                playniteInstallNotificationKey(host.uuid, gameId), 0L) > 0L;
+        if (!alreadyShownInStream) {
+            if (consoleAudioEngine != null) {
+                consoleAudioEngine.play(ConsoleAudioSynthesis.Cue.SUCCESS);
+            }
+            ConsoleUiFeedback.makeText(this, getString(R.string.playnite_install_complete,
+                    gameName), Toast.LENGTH_LONG).show();
+        }
+        preferences.edit().remove(playniteInstallNotificationKey(host.uuid, gameId))
+                .remove(playniteInstallPendingKey(host.uuid, gameId)).apply();
+        completedPlayniteInstallAnimations.add(playniteInstallKey(host.uuid, gameId));
     }
 
     private void ensureVibepolloAfterInstall(ComputerDetails host,
@@ -7147,10 +7168,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         gameOperationsController.requestInstall(host.uuid, item.game, connection, success -> {
             if (success) {
                     if (!active || !host.uuid.equals(selectedHostUuid)) return;
-                    if (isEpicGame(item)) {
-                        openEpicInstallationDesktop(host, item);
-                        return;
-                    }
                     requestPlayniteRefresh(currentHost(host.uuid), false);
             } else {
                     preferences.edit().remove(playniteInstallPendingKey(
@@ -7204,8 +7221,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         gameOperationsController.requestUninstall(host.uuid, item.game, connection, success -> {
             if (success) {
-                if (isEpicGame(item)) openEpicInstallationDesktop(host, item);
-                else requestPlayniteRefresh(currentHost(host.uuid), false);
+                requestPlayniteRefresh(currentHost(host.uuid), false);
             } else {
                 renderPlayniteLibrary(currentHost(host.uuid), currentSunshineApps);
                 ConsoleUiFeedback.makeText(this,
@@ -7260,24 +7276,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     openInstallationDesktop(host, item, streamTarget);
             }
         });
-    }
-
-    private boolean isEpicGame(PlayniteDashboardItem item) {
-        return item != null && "epic".equalsIgnoreCase(item.game.source.trim());
-    }
-
-    private void openEpicInstallationDesktop(ComputerDetails host,
-                                               PlayniteDashboardItem item) {
-        NvApp target = PlayniteTargetResolver.resolveInstallationStream(
-                host.uuid, currentSunshineApps, playniteLaunchTargetStore);
-        if (target == null) {
-            ConsoleUiFeedback.makeText(this, R.string.playnite_no_fullscreen_target,
-                    Toast.LENGTH_LONG).show();
-            requestPlayniteRefresh(currentHost(host.uuid), false);
-            return;
-        }
-        beginInstallationSupportStream(
-                currentHost(host.uuid), target, item.game.playniteGameId);
     }
 
     private void openInstallationDesktop(ComputerDetails host,

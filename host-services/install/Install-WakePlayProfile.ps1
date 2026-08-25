@@ -14,6 +14,7 @@ param(
     [switch]$SkipDiscord,
     [switch]$SkipVibepollo,
     [switch]$SkipPlaynite,
+    [switch]$SkipEpicLegendary,
     [switch]$SkipGatewayRegistration,
     [switch]$NonInteractiveConfiguration,
     [switch]$SkipStart
@@ -344,6 +345,10 @@ if (-not $SkipPlaynite) {
     Set-ConfigPort $playniteConfig "listen_port" $PlaynitePort
     Set-ConfigValue $playniteConfig "vibepollo_bridge" `
         $(if ($SkipVibepollo) { "" } else { "http://127.0.0.1:$VibepolloPort" })
+    Set-ConfigValue $playniteConfig "epic_legendary_enabled" (-not $SkipEpicLegendary)
+    if ($null -eq (Get-Content -LiteralPath $playniteConfig -Raw | ConvertFrom-Json).PSObject.Properties["legendary_path"]) {
+        Set-ConfigValue $playniteConfig "legendary_path" ""
+    }
 }
 
 if (-not $SkipGatewayRegistration) {

@@ -38,10 +38,14 @@ try {
         Copy-Item -LiteralPath (Join-Path $hostServices $directory) `
             -Destination $payloadRoot -Recurse -Force
     }
+    & (Join-Path $hostServices "installer\Install-LegendaryPayload.ps1") `
+        -TargetDirectory (Join-Path $payloadRoot "tools\legendary")
     Copy-Item -LiteralPath (Join-Path $hostServices "version.json") `
         -Destination $payloadRoot -Force
     $controlTarget = Join-Path $payloadRoot "control"
     New-Item -ItemType Directory -Path $controlTarget -Force | Out-Null
+    Copy-Item -LiteralPath (Join-Path $hostServices "installer\Install-LegendaryPayload.ps1") `
+        -Destination $controlTarget -Force
     foreach ($file in @("Build-MoonWakerHostControl.ps1", "Invoke-MoonWakerHostControl.ps1",
         "MoonWakerHostControl.cs", "MoonWakerHostControl.manifest")) {
         Copy-Item -LiteralPath (Join-Path $hostServices "control\$file") `

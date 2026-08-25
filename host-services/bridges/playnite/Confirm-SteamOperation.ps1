@@ -43,14 +43,63 @@ $path = [IO.Path]::GetFullPath($process.Path)
 $validSteam = $process.ProcessName -eq "steam" -or (
     $process.ProcessName -eq "steamwebhelper" -and
     $path -match '(?i)[\\/]Steam[\\/]bin[\\/]cef[\\/]')
-$validEpic = $false
-if (-not $validSteam) {
+$validEpic = $process.ProcessName -eq "EpicGamesLauncher" -and
+    $path -match '(?i)[\\/]Epic Games[\\/]Launcher[\\/]Portal[\\/]Binaries[\\/]'
+if (-not ($validSteam -or $validEpic)) {
     throw "The requested window does not belong to a supported launcher."
 }
 $allowed = if ($Operation -eq "install") {
     @("Install", "Zainstaluj")
 } else {
     @("Uninstall", "Odinstaluj")
+}
+function Normalize-EpicText([string]$Value) {
+    return (($Value -replace '[^\p{L}\p{N}]', '').ToUpperInvariant())
+}
+function Test-EpicModalEvidence([IntPtr]$Handle, [string]$ExpectedGame,
+                                 [string[]]$AllowedText) {
+    $element = [System.Windows.Automation.AutomationElement]::FromHandle($Handle)
+    if ($null -eq $element) { return $false }
+    $normalizedGame = Normalize-EpicText $ExpectedGame
+    if ([string]::IsNullOrWhiteSpace($normalizedGame)) { return $false }
+    $elements = $element.FindAll(
+        [System.Windows.Automation.TreeScope]::Descendants,
+        [System.Windows.Automation.Condition]::TrueCondition)
+    $gameVisible = @($elements | Where-Object {
+        $name = Normalize-EpicText $_.Current.Name
+        $name.IndexOf($normalizedGame, [StringComparison]::Ordinal) -ge 0
+    }).Count -gt 0
+    $operationVisible = @($elements | Where-Object {
+        $AllowedText -contains $_.Current.Name
+    }).Count -gt 0
+    return $gameVisible -and $operationVisible
+}
+function Test-UsableCapture([Drawing.Bitmap]$Bitmap) {
+    $first = $Bitmap.GetPixel(0, 0).ToArgb()
+    $stepX = [Math]::Max(1, [int]($Bitmap.Width / 8))
+    $stepY = [Math]::Max(1, [int]($Bitmap.Height / 8))
+    for ($y = 0; $y -lt $Bitmap.Height; $y += $stepY) {
+        for ($x = 0; $x -lt $Bitmap.Width; $x += $stepX) {
+            if ($Bitmap.GetPixel($x, $y).ToArgb() -ne $first) { return $true }
+        }
+    }
+    return $false
+}
+function Test-BlueButtonGeometry([Drawing.Bitmap]$Bitmap, [int]$Left, [int]$Top,
+                                 [int]$Right, [int]$Bottom) {
+    if ($Left -lt 0 -or $Top -lt 0 -or $Right -ge $Bitmap.Width -or
+            $Bottom -ge $Bitmap.Height -or $Right -le $Left -or $Bottom -le $Top) {
+        return $false
+    }
+    $blue = 0; $samples = 0
+    foreach ($x in @($Left + 4, [int](($Left + $Right) / 2), $Right - 4)) {
+        foreach ($y in @($Top + 2, [int](($Top + $Bottom) / 2), $Bottom - 2)) {
+            $color = $Bitmap.GetPixel($x, $y); $samples++
+            if ($color.B -gt 170 -and $color.G -gt 80 -and $color.G -lt 190 -and
+                    $color.R -lt 110 -and $color.B -gt ($color.R + 70)) { $blue++ }
+        }
+    }
+    return $samples -gt 0 -and ($blue / $samples) -ge 0.8
 }
 $allowedTitles = if ($validEpic) {
     @()
@@ -94,14 +143,18 @@ if ($validEpic) {
         $allowed -contains $_.Current.Name -and
         @($_.GetSupportedPatterns()) -contains [System.Windows.Automation.InvokePattern]::Pattern
     })
-    if ([string]::IsNullOrWhiteSpace($GameName)) {
+    $normalizedGame = Normalize-EpicText $GameName
+    if ([string]::IsNullOrWhiteSpace($normalizedGame)) {
         $matches = @()
     } else {
         $gameVisible = @($all | Where-Object {
-            -not [string]::IsNullOrWhiteSpace($_.Current.Name) -and
-            $_.Current.Name.IndexOf($GameName, [StringComparison]::OrdinalIgnoreCase) -ge 0
+            $name = Normalize-EpicText $_.Current.Name
+            $name.IndexOf($normalizedGame, [StringComparison]::Ordinal) -ge 0
         }).Count -gt 0
-        if (-not $gameVisible) { $matches = @() }
+        $operationVisible = @($all | Where-Object {
+            $allowed -contains $_.Current.Name
+        }).Count -gt 0
+        if (-not ($gameVisible -and $operationVisible)) { $matches = @() }
     }
 }
 if ($matches.Count -eq 1) {
@@ -122,6 +175,11 @@ if ($matches.Count -eq 1) {
 # existing Desktop confirmation fallback instead of guessing coordinates.
 if ($validEpic -and -not $AllowVisualFallback) {
     [pscustomobject]@{ clicked = $false; reason = "uia_button_unavailable" } |
+        ConvertTo-Json -Compress
+    exit 0
+}
+if ($validEpic -and -not (Test-EpicModalEvidence ([IntPtr]$WindowHandle) $GameName $allowed)) {
+    [pscustomobject]@{ clicked = $false; recognized = $false; reason = "epic_modal_unverified" } |
         ConvertTo-Json -Compress
     exit 0
 }
@@ -149,10 +207,10 @@ $focused = [MoonWakerSteamWindow]::SetForegroundWindow([IntPtr]$WindowHandle)
 foreach ($thread in $attached) {
     [MoonWakerSteamWindow]::AttachThreadInput($currentThread, $thread, $false) | Out-Null
 }
-if (-not $focused -and [MoonWakerSteamWindow]::GetForegroundWindow() -ne [IntPtr]$WindowHandle) {
-    throw "Windows rejected focus for the Steam operation window."
-}
 Start-Sleep -Milliseconds 100
+if ([MoonWakerSteamWindow]::GetForegroundWindow() -ne [IntPtr]$WindowHandle) {
+    throw "Windows rejected focus for the operation window."
+}
 $rect = New-Object MoonWakerSteamWindow+RECT
 if (-not [MoonWakerSteamWindow]::GetWindowRect([IntPtr]$WindowHandle, [ref]$rect)) {
     throw "Steam operation bounds are unavailable."
@@ -164,16 +222,14 @@ if ($width -lt 300 -or $height -lt 150 -or $width -gt 2500 -or $height -gt 1600)
 }
 $bitmap = [Drawing.Bitmap]::new($width, $height)
 $graphics = [Drawing.Graphics]::FromImage($bitmap)
-if ($title -eq "Steam") {
+if ($validSteam -or $validEpic) {
     $deviceContext = $graphics.GetHdc()
     $printed = [MoonWakerSteamWindow]::PrintWindow([IntPtr]$WindowHandle, $deviceContext, 2)
     $graphics.ReleaseHdc($deviceContext)
-    if (-not $printed) {
+    if (-not $printed -or -not (Test-UsableCapture $bitmap)) {
         $graphics.Dispose(); $bitmap.Dispose()
-        throw "Steam operation surface could not be captured safely."
+        throw "Operation surface could not be captured safely."
     }
-} else {
-    $graphics.CopyFromScreen($rect.Left, $rect.Top, 0, 0, $bitmap.Size)
 }
 $scanTop = [int]($height / 2)
 $scanBottom = $height - 1
@@ -264,9 +320,30 @@ $clickY = $rect.Top + $bestY
 if ($ProbeOnly) {
     [pscustomobject]@{
         clicked = $false; recognized = $true; method = "visual"
+        visual_confirmation_safe = $true
         variant = $(if ($lightPanel) { "light" } else { "dark" })
     } | ConvertTo-Json -Compress
     exit 0
+}
+if ($validEpic) {
+    $currentProcessId = [uint32]0
+    [MoonWakerSteamWindow]::GetWindowThreadProcessId(
+        [IntPtr]$WindowHandle, [ref]$currentProcessId) | Out-Null
+    $currentProcess = Get-Process -Id $currentProcessId -ErrorAction Stop
+    $currentPath = [IO.Path]::GetFullPath($currentProcess.Path)
+    $currentRect = New-Object MoonWakerSteamWindow+RECT
+    if (-not [MoonWakerSteamWindow]::IsWindow([IntPtr]$WindowHandle) -or
+            $currentProcessId -ne $processId -or
+            -not [string]::Equals($currentPath, $path, [StringComparison]::OrdinalIgnoreCase) -or
+            [MoonWakerSteamWindow]::GetForegroundWindow() -ne [IntPtr]$WindowHandle -or
+            -not [MoonWakerSteamWindow]::GetWindowRect([IntPtr]$WindowHandle, [ref]$currentRect) -or
+            $currentRect.Left -ne $rect.Left -or $currentRect.Top -ne $rect.Top -or
+            $currentRect.Right -ne $rect.Right -or $currentRect.Bottom -ne $rect.Bottom -or
+            -not (Test-EpicModalEvidence ([IntPtr]$WindowHandle) $GameName $allowed)) {
+        [pscustomobject]@{ clicked = $false; recognized = $false; reason = "epic_modal_unverified" } |
+            ConvertTo-Json -Compress
+        exit 0
+    }
 }
 $cursor = New-Object MoonWakerSteamWindow+POINT
 [MoonWakerSteamWindow]::GetCursorPos([ref]$cursor) | Out-Null
@@ -284,21 +361,26 @@ for ($attempt = 0; $attempt -lt 15; $attempt++) {
         $closed = $true
         break
     }
-    if ($title -eq "Steam" -or $validEpic) {
+    if ($validSteam -or $validEpic) {
         $verification = [Drawing.Bitmap]::new($width, $height)
         $verificationGraphics = [Drawing.Graphics]::FromImage($verification)
-        if ($title -eq "Steam") {
-            $verificationContext = $verificationGraphics.GetHdc()
-            $captured = [MoonWakerSteamWindow]::PrintWindow(
-                [IntPtr]$WindowHandle, $verificationContext, 2)
-            $verificationGraphics.ReleaseHdc($verificationContext)
-        } else {
-            $verificationGraphics.CopyFromScreen(
-                $rect.Left, $rect.Top, 0, 0, $verification.Size)
-            $captured = $true
-        }
+        $verificationContext = $verificationGraphics.GetHdc()
+        $captured = [MoonWakerSteamWindow]::PrintWindow(
+            [IntPtr]$WindowHandle, $verificationContext, 2)
+        $verificationGraphics.ReleaseHdc($verificationContext)
+        $usable = $captured -and (Test-UsableCapture $verification)
+        $buttonPresent = Test-BlueButtonGeometry $verification $bestStart $bestTop $bestEnd $bestBottom
         $color = $verification.GetPixel($clickX - $rect.Left, $clickY - $rect.Top)
         $verificationGraphics.Dispose(); $verification.Dispose()
+        if ($validEpic) {
+            if (-not $usable) { break }
+            if (-not (Test-EpicModalEvidence ([IntPtr]$WindowHandle) $GameName $allowed) -or
+                    -not $buttonPresent) {
+                $closed = $true
+                break
+            }
+            continue
+        }
         $stillBlue = $captured -and $color.B -gt 170 -and $color.G -gt 80 -and
             $color.G -lt 190 -and $color.R -lt 110 -and $color.B -gt ($color.R + 70)
         if (-not $stillBlue) {
@@ -308,8 +390,5 @@ for ($attempt = 0; $attempt -lt 15; $attempt++) {
     }
 }
 [pscustomobject]@{ clicked = $closed; action = $title; method = "verified_primary_button";
-    reason = $(if ($closed) { "" } else { "window_remained_open" });
-    click_x = $clickX; click_y = $clickY;
-    button_run = @($bestStart, $bestTop, $bestEnd, $bestBottom);
-    window_bounds = @($rect.Left, $rect.Top, $rect.Right, $rect.Bottom) } |
+    reason = $(if ($closed) { "" } elseif ($validEpic) { "click_unconfirmed" } else { "window_remained_open" }) } |
     ConvertTo-Json -Compress
