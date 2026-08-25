@@ -3,6 +3,9 @@
   "listen_port": 8780,
   "streamed_display": "",
   "vibepollo_bridge": "http://127.0.0.1:8775",
+  "epic_legendary_enabled": true,
+  "legendary_path": "",
+  "epic_install_root": "",
   "playnite_desktop_executable": "",
   "playnite_fullscreen_executable": ""
 }

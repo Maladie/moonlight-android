@@ -10,9 +10,9 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.12.0")]
-[assembly: AssemblyFileVersion("0.7.12.0")]
-[assembly: AssemblyInformationalVersion("0.7.12+2026.08.24")]
+[assembly: AssemblyVersion("0.7.17.0")]
+[assembly: AssemblyFileVersion("0.7.17.0")]
+[assembly: AssemblyInformationalVersion("0.7.17+2026.08.25")]
 
 namespace MoonWaker.HostControl
 {
@@ -37,6 +37,7 @@ namespace MoonWaker.HostControl
         private readonly Label gatewayState = new Label();
         private readonly Label gatewayDetails = new Label();
         private readonly Label activeProfile = new Label();
+        private readonly Button legendaryButton;
         private readonly ListView profiles = new ListView();
         private readonly Label footer = new Label();
         private readonly Timer timer = new Timer();
@@ -90,7 +91,9 @@ namespace MoonWaker.HostControl
             Button pair = AddActionButton(gatewayPanel, "Sparuj TV", 802, 27, delegate { PairGateway(); }, 142);
             pair.BackColor = accent;
             pair.FlatAppearance.BorderSize = 0;
-            AddActionButton(gatewayPanel, "Napraw wszystko", 430, 74, delegate { RunAction("RecoverAll", null); }, 514);
+            AddActionButton(gatewayPanel, "Napraw wszystko", 430, 74, delegate { RunAction("RecoverAll", null); }, 320);
+            legendaryButton = AddActionButton(gatewayPanel, "Zainstaluj Legendary", 758, 74,
+                delegate { RunAction("InstallLegendary", null); }, 186);
             activeProfile.SetBounds(430, 122, 510, 25);
             activeProfile.ForeColor = muted;
             gatewayPanel.Controls.Add(activeProfile);
@@ -263,8 +266,13 @@ namespace MoonWaker.HostControl
                 ? "Wersja: " + installedVersion + " (proces nie zgłosił wersji)"
                 : "Wersja: " + installedVersion + " / działa: " + runtimeVersion;
             if (GetBool(gateway, "version_mismatch")) versionLine += "  ⚠ Różnica wersji";
+            Dictionary<string, object> legendary = AsDictionary(result["legendary"]);
+            bool legendaryInstalled = GetBool(legendary, "installed");
             gatewayDetails.Text = "Port " + GetText(gateway, "port", "—") + "  •  sparowane urządzenia: " +
-                GetText(gateway, "paired_clients", "0") + "\n" + versionLine;
+                GetText(gateway, "paired_clients", "0") + "\n" + versionLine + "\nLegendary: " +
+                (legendaryInstalled ? "zainstalowane" : "niezainstalowane");
+            legendaryButton.Enabled = !legendaryInstalled;
+            legendaryButton.Text = legendaryInstalled ? "Legendary: gotowe" : "Zainstaluj Legendary";
             string active = GetText(result, "active_profile", "");
             activeProfile.Text = String.IsNullOrWhiteSpace(active) ? "Ostatnio używany profil: brak danych" : "Ostatnio używany profil: " + active;
 

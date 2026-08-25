@@ -13,6 +13,7 @@ param(
     [switch]$SkipDiscord,
     [switch]$SkipVibepollo,
     [switch]$SkipPlaynite,
+    [switch]$SkipEpicLegendary,
     [switch]$ProfileOnly,
     [switch]$InitializeMachineData,
     [switch]$SkipFirewall
@@ -382,6 +383,7 @@ try {
         -GatewayConfigPath $gatewayConfig -SkipDiscord:$SkipDiscord `
         -GatewayDirectory $gatewayDirectory -HostControlExecutable (Join-Path $hostRoot "control\MoonWakerHostControl.exe") `
         -SkipVibepollo:$SkipVibepollo -SkipPlaynite:$SkipPlaynite `
+        -SkipEpicLegendary:$SkipEpicLegendary `
         -NonInteractiveConfiguration
 
     if (-not $SkipPlaynite) {

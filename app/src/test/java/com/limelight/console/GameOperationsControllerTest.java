@@ -86,6 +86,12 @@ public class GameOperationsControllerTest {
                 observations.get(0).type);
     }
 
+    @Test public void externalInstalledSnapshotDoesNotClaimLocalCompletion() {
+        Fixture fixture = new Fixture(Runnable::run);
+        assertTrue(fixture.controller.reconcile(HOST_A, Collections.singletonList(
+                game(true, false, false, "completed", 100, false, ""))).isEmpty());
+    }
+
     @Test public void inactiveAfterObservedInstallActivityEmitsPreciseObservation() {
         Fixture fixture = new Fixture(Runnable::run);
         fixture.controller.requestInstall(HOST_A,

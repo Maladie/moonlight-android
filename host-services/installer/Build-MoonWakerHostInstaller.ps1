@@ -46,6 +46,10 @@ try {
         New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
         Copy-Item -LiteralPath $source -Destination $destination -Force
     }
+    & (Join-Path $PSScriptRoot "Install-LegendaryPayload.ps1") `
+        -TargetDirectory (Join-Path $payloadHostServices "tools\legendary")
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Install-LegendaryPayload.ps1") `
+        -Destination (Join-Path $payloadHostServices "control") -Force
 
     & (Join-Path $payloadHostServices "control\Build-MoonWakerHostControl.ps1") `
         -OutputDirectory (Join-Path $payloadHostServices "control")
