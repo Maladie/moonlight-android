@@ -40,6 +40,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         String hostSessionLockedMessage();
         String streamDisplayNotConfiguredMessage();
         String readinessUnconfirmedMessage();
+        String launcherInteractionRequiredMessage();
         String windowStabilizingMessage();
 
         boolean isPendingInstallation(String hostId, String gameId);
@@ -296,6 +297,19 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 ? LaunchTransitionType.GAME : LaunchTransitionType.PLAYNITE;
         String gameId = snapshot.gameId == null || snapshot.gameId.isEmpty()
                 ? transitionSpec.playniteGameId : snapshot.gameId;
+        if (kind == LaunchTransitionType.GAME
+                && "launcher_interaction_required".equals(snapshot.reason)) {
+            transitionController.launcherInteractionRequired(
+                    transitionSpec.id, transitionSpec.hostId, gameId,
+                    callbacks.launcherInteractionRequiredMessage());
+            return;
+        }
+        if (kind == LaunchTransitionType.GAME
+                && "failed".equalsIgnoreCase(snapshot.gameState)) {
+            transitionController.error(transitionSpec.id,
+                    readinessFailureMessage(snapshot.reason));
+            return;
+        }
         if ("host_session_locked".equals(snapshot.reason)) {
             transitionController.targetWindowLost(transitionSpec.id, transitionSpec.hostId,
                     kind, gameId, callbacks.hostSessionLockedMessage());

@@ -1,11 +1,14 @@
 import json
+import subprocess
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
 
 from GameOperations import (
-    EpicProvider, GameOperationsService, GenericPlayniteProvider, SteamProvider,
+    EpicProvider, GameOperationsService, GenericPlayniteProvider,
+    OperationProcessRegistry, SteamProvider, TrackedOperationProcess,
 )
 from OperationJournal import OperationJournal
 
@@ -19,12 +22,38 @@ class GameOperationsTest(unittest.TestCase):
             OperationJournal(None), self.generic, self.steam, self.epic)
 
     def test_provider_resolver_and_source_precedence(self):
+        self.assertIs(self.service.processes, self.epic.process_registry)
         self.assertIs(self.epic, self.service.provider_for({"source": "Epic"}))
         self.assertIs(self.steam, self.service.provider_for({"pluginName": "Steam Library"}))
         self.assertIs(self.generic, self.service.provider_for({"source": "GOG"}))
         game = {"source": "Local Games", "pluginName": "Epic"}
         self.assertEqual("local games", self.service.provider_label(game))
         self.assertIs(self.generic, self.service.provider_for(game))
+
+    def test_epic_scan_requires_finished_egstore_state(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            manifests = root / "Manifests"; manifests.mkdir()
+            install = root / "Game"; install.mkdir()
+            executable = install / "game.exe"; executable.touch()
+            egstore = install / ".egstore"; egstore.mkdir()
+            manifest = manifests / "App.item"
+            manifest.write_text(json.dumps({
+                "AppName": "App", "DisplayName": "Game",
+                "InstallLocation": str(install),
+                "LaunchExecutable": executable.name,
+                "bIsIncompleteInstall": False,
+            }), encoding="utf-8")
+            provider = EpicProvider(manifests=manifests)
+
+            pending = egstore / "Pending"; pending.mkdir()
+            self.assertFalse(provider.scan()["by_id"]["app"]["installed"])
+            pending.rmdir()
+            component = egstore / "App.mancpn"; component.touch()
+            self.assertTrue(provider.scan()["by_id"]["app"]["installed"])
+            component.unlink()
+
+            self.assertTrue(provider.scan()["by_id"]["app"]["installed"])
 
     def test_connector_dispatch_for_generic_and_steam(self):
         calls = []
@@ -106,32 +135,16 @@ class GameOperationsTest(unittest.TestCase):
                 mock.call("install", id="second"),
             ], sender.call_args_list)
 
-    def test_epic_missing_legendary_only_uses_egl_for_install(self):
-        game = {"id": "game-id", "source": "Epic", "providerGameId": "App_Name-1"}
-        with mock.patch("GameOperations.os.name", "nt"), \
-                mock.patch("GameOperations.os.startfile", create=True) as startfile:
-            result = self.service.dispatch_install(game, mock.Mock())
-        startfile.assert_called_once_with(
-            "com.epicgames.launcher://apps/App_Name-1?action=install")
-        self.assertEqual("epic", result["provider"])
-        self.assertEqual("egl_auto", result["dispatch"])
-        self.assertEqual("legendary_unavailable", result["fallback_reason"])
-        sender = mock.Mock()
-        uninstall = self.service.dispatch_uninstall(game, sender)
-        sender.assert_not_called()
-        self.assertFalse(uninstall["accepted"])
-        self.assertEqual("none", uninstall["dispatch"])
-        self.assertTrue(uninstall["requires_attention"])
-        self.assertEqual("legendary_unavailable", uninstall["reason"])
-        self.assertIsNone(self.service.manual_attention(game, "install"))
-        self.assertTrue(self.service.can_auto_confirm(game, {"image": "epicgameslauncher.exe"}))
     def test_epic_legendary_install_uses_exact_argv_env_and_no_playnite(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             executable = root / "legendary.exe"; executable.touch()
             state = root / "state" / "legendary"
             epic_root = root / "Epic Games"
-            command = mock.Mock(return_value=mock.Mock(returncode=0, stdout="{}"))
+            command = mock.Mock(side_effect=[
+                mock.Mock(returncode=0, stdout="{}"),
+                mock.Mock(returncode=0, stdout="[]"),
+            ])
             process = mock.Mock(stdout=None)
             provider = EpicProvider(legendary_path=executable, legendary_state_path=state,
                 epic_install_root=epic_root,
@@ -143,206 +156,70 @@ class GameOperationsTest(unittest.TestCase):
             self.assertFalse(provider.process_runner.call_args.kwargs["shell"])
             self.assertEqual(str(state), provider.process_runner.call_args.kwargs["env"]["LEGENDARY_CONFIG_PATH"])
             sender.assert_not_called()
-    def test_epic_legendary_uninstall_uses_exact_argv(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); executable = root / "legendary.exe"; executable.touch()
-            command = mock.Mock(side_effect=[
-                mock.Mock(returncode=0, stdout="{}"),
-                mock.Mock(returncode=0, stdout='[{"app_name":"App"}]'),
-            ])
-            provider = EpicProvider(legendary_path=executable, legendary_state_path=root / "state",
-                command_runner=command, process_runner=mock.Mock(return_value=mock.Mock(stdout=None)))
-            provider.dispatch_uninstall({"id": "game", "providerGameId": "App"}, mock.Mock())
-            self.assertEqual([str(executable.resolve()), "-y", "uninstall", "App"], provider.process_runner.call_args.args[0])
-            self.assertFalse(provider.process_runner.call_args.kwargs["shell"])
-    def test_epic_uninstall_already_tracked_skips_egl_import(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); executable = root / "legendary.exe"; executable.touch()
-            command = mock.Mock(side_effect=[
-                mock.Mock(returncode=0, stdout="{}"),
-                mock.Mock(returncode=0, stdout='[{"app_name":"App"}]'),
-            ])
-            process_runner = mock.Mock(return_value=mock.Mock(stdout=None))
-            provider = EpicProvider(legendary_path=executable, legendary_state_path=root / "state",
-                command_runner=command, process_runner=process_runner)
 
-            result = provider.dispatch_uninstall({"id": "game", "providerGameId": "App"}, mock.Mock())
-
-            self.assertEqual("legendary", result["dispatch"])
-            self.assertEqual(2, command.call_count)
-            self.assertEqual([str(executable.resolve()), "-y", "uninstall", "App"],
-                             process_runner.call_args.args[0])
-
-    def test_epic_uninstall_sync_failure_imports_trusted_egl_install(self):
+    def test_epic_legendary_install_uses_launcher_default_directory(self):
         with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); executable = root / "legendary.exe"; executable.touch()
-            state = root / "state"
-            manifests = root / "Manifests"; manifests.mkdir()
-            install = root / "Installed"; install.mkdir()
-            (install / "game.bin").touch()
-            (manifests / "App.item").write_text(json.dumps({
-                "AppName": "App", "InstallLocation": str(install),
-            }), encoding="utf-8")
+            root = Path(temporary)
+            executable = root / "legendary.exe"; executable.touch()
+            epic_root = root / "Epic Library"
+            settings = root / "EpicGamesLauncher" / "Saved" / "Config" / \
+                "WindowsEditor" / "GameUserSettings.ini"
+            settings.parent.mkdir(parents=True)
+            settings.write_text(
+                f"[Launcher]\nDefaultAppInstallLocation={epic_root}\n",
+                encoding="utf-8")
             command = mock.Mock(side_effect=[
                 mock.Mock(returncode=0, stdout="{}"),
                 mock.Mock(returncode=0, stdout="[]"),
-                mock.Mock(returncode=1, stdout="sync failed"),
-                mock.Mock(returncode=0, stdout="imported"),
-                mock.Mock(returncode=0, stdout='[{"app_name":"App"}]'),
             ])
             process_runner = mock.Mock(return_value=mock.Mock(stdout=None))
-            provider = EpicProvider(manifests=manifests, legendary_path=executable, legendary_state_path=state,
+            provider = EpicProvider(
+                legendary_path=executable, legendary_state_path=root / "state",
                 command_runner=command, process_runner=process_runner)
 
-            sender = mock.Mock()
-            result = provider.dispatch_uninstall({"id": "game", "providerGameId": "App"}, sender)
+            with mock.patch.dict("GameOperations.os.environ",
+                                 {"LOCALAPPDATA": str(root)}):
+                provider.dispatch_install(
+                    {"id": "game", "providerGameId": "App"}, mock.Mock())
 
-            self.assertEqual("legendary", result["dispatch"])
-            self.assertEqual([
-                str(executable.resolve()), "-y", "egl-sync", "--one-shot", "--import-only",
-            ], command.call_args_list[2].args[0])
-            import_call = command.call_args_list[3]
-            self.assertEqual([
-                str(executable.resolve()), "-y", "import", "App", str(install),
-                "--platform", "Windows", "--skip-dlcs",
-            ], import_call.args[0])
-            self.assertEqual(str(state), import_call.kwargs["env"]["LEGENDARY_CONFIG_PATH"])
-            self.assertEqual(str(executable.resolve().parent), import_call.kwargs["cwd"])
-            self.assertFalse(import_call.kwargs["shell"])
-            self.assertNotIn("--disable-check", import_call.args[0])
-            self.assertEqual([str(executable.resolve()), "-y", "uninstall", "App"],
-                             process_runner.call_args.args[0])
-            sender.assert_not_called()
+            self.assertEqual(str(epic_root),
+                             process_runner.call_args.args[0][-1])
 
-    def test_epic_uninstall_sync_success_but_absent_imports(self):
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+    def test_epic_uninstall_both_authoritative_sources_absent_skips_repair(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary); executable = root / "legendary.exe"; executable.touch()
             manifests = root / "Manifests"; manifests.mkdir()
-            install = root / "Installed"; install.mkdir()
-            (install / "game.bin").touch()
-            (manifests / "App.item").write_text(json.dumps({
-                "AppName": "App", "InstallLocation": str(install),
-            }), encoding="utf-8")
             command = mock.Mock(side_effect=[
-                mock.Mock(returncode=0, stdout="{}"),
-                mock.Mock(returncode=0, stdout="[]"),
-                mock.Mock(returncode=0, stdout="synced"),
-                mock.Mock(returncode=0, stdout="[]"),
-                mock.Mock(returncode=0, stdout="imported"),
-                mock.Mock(returncode=0, stdout='[{"app_name":"App"}]'),
+                mock.Mock(returncode=0, stdout="{}"), mock.Mock(returncode=0, stdout="[]"),
             ])
-            process_runner = mock.Mock(return_value=mock.Mock(stdout=None))
+            process_runner = mock.Mock()
             provider = EpicProvider(manifests=manifests, legendary_path=executable,
                 legendary_state_path=root / "state", command_runner=command,
                 process_runner=process_runner)
+            sender = mock.Mock()
 
-            result = provider.dispatch_uninstall(
-                {"id": "game", "providerGameId": "App"}, mock.Mock())
+            result = provider.dispatch_uninstall({"id": "game", "providerGameId": "App"}, sender)
 
-            self.assertEqual("legendary", result["dispatch"])
-            self.assertEqual("import", command.call_args_list[4].args[0][2])
-            self.assertEqual([str(executable.resolve()), "-y", "uninstall", "App"],
-                             process_runner.call_args.args[0])
+            self.assertEqual("already_absent", result["dispatch"])
+            sender.assert_not_called(); process_runner.assert_not_called()
+            self.assertFalse(any("egl-sync" in call.args[0] or "import" in call.args[0]
+                                 for call in command.call_args_list))
 
-    def test_epic_uninstall_import_problems_never_use_playnite(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); executable = root / "legendary.exe"; executable.touch()
-            manifests = root / "Manifests"; manifests.mkdir()
-            install = root / "Installed"; install.mkdir()
-            (install / "game.bin").touch()
-            (manifests / "App.item").write_text(json.dumps({
-                "AppName": "App", "InstallLocation": str(install),
-            }), encoding="utf-8")
-            cases = [
-                ([mock.Mock(returncode=0, stdout="{}"), mock.Mock(returncode=0, stdout="[]"),
-                  mock.Mock(returncode=1, stdout=""), mock.Mock(returncode=1, stdout="")],
-                 "legendary_import_failed"),
-                ([mock.Mock(returncode=0, stdout="{}"), mock.Mock(returncode=0, stdout="[]"),
-                  mock.Mock(returncode=1, stdout=""), mock.Mock(returncode=0, stdout=""),
-                  mock.Mock(returncode=1, stdout="")], "legendary_post_import_query_failed"),
-                ([mock.Mock(returncode=0, stdout="{}"), mock.Mock(returncode=0, stdout="[]"),
-                  mock.Mock(returncode=1, stdout=""), mock.Mock(returncode=0, stdout=""),
-                  mock.Mock(returncode=0, stdout="[]")], "legendary_post_import_still_absent"),
-            ]
-            for responses, reason in cases:
-                sender = mock.Mock()
-                process_runner = mock.Mock()
-                provider = EpicProvider(manifests=manifests, legendary_path=executable,
-                    legendary_state_path=root / reason, command_runner=mock.Mock(side_effect=responses),
-                    process_runner=process_runner)
 
-                result = provider.dispatch_uninstall(
-                    {"id": "game", "providerGameId": "App"}, sender)
-
-                sender.assert_not_called()
-                process_runner.assert_not_called()
-                self.assertEqual({"accepted": False, "command": "uninstall", "provider": "epic",
-                                  "dispatch": "none", "requires_attention": True,
-                                  "reason": reason}, result)
-
-    def test_epic_uninstall_rejects_missing_or_unsafe_egl_install(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); executable = root / "legendary.exe"; executable.touch()
-            manifests = root / "Manifests"; manifests.mkdir()
-            cases = [None, Path(root.anchor)]
-            for directory in cases:
-                for path in manifests.glob("*.item"):
-                    path.unlink()
-                if directory is not None:
-                    (manifests / "App.item").write_text(json.dumps({
-                        "AppName": "App", "InstallLocation": str(directory),
-                    }), encoding="utf-8")
-                sender = mock.Mock()
-                process_runner = mock.Mock()
-                provider = EpicProvider(manifests=manifests, legendary_path=executable,
-                    legendary_state_path=root / ("state" + str(len(sender.mock_calls))),
-                    command_runner=mock.Mock(side_effect=[
-                        mock.Mock(returncode=0, stdout="{}"), mock.Mock(returncode=0, stdout="[]"),
-                        mock.Mock(returncode=1, stdout="")]), process_runner=process_runner)
-
-                result = provider.dispatch_uninstall(
-                    {"id": "game", "providerGameId": "App"}, sender)
-
-                sender.assert_not_called()
-                process_runner.assert_not_called()
-                self.assertEqual("legendary_egl_install_missing_or_unsafe" if directory is None
-                                 else "epic_manifest_cleanup_unsafe", result["reason"])
-
-    def test_epic_legendary_completion_requires_list_installed_verification(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); executable = root / "legendary.exe"; executable.touch()
-            process = mock.Mock(stdout=None); process.poll.return_value = 0; process.returncode = 0
-            command = mock.Mock(side_effect=[
-                mock.Mock(returncode=0, stdout="{}"),
-                mock.Mock(returncode=0, stdout='[{"app_name":"App","install_path":"D:/Games/App"}]'),
-                mock.Mock(returncode=0, stdout="{}")])
-            provider = EpicProvider(legendary_path=executable, legendary_state_path=root / "state",
-                command_runner=command, process_runner=mock.Mock(return_value=process))
-            game = {"id": "game", "providerGameId": "App"}
-            provider.dispatch_install(game, mock.Mock())
-            sample = provider.sample(game, "install")
-            self.assertEqual("D:/Games/App", sample["install_directory"])
-            self.assertEqual("egl_sync_complete", sample["reconciliation"])
-            self.assertEqual([str(executable.resolve()), "-y", "egl-sync", "--one-shot", "--export-only"],
-                             command.call_args_list[-1].args[0])
-
-    def test_epic_auth_and_unresolved_legendary_fall_back_with_distinct_reasons(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            executable = Path(temporary) / "legendary.exe"; executable.touch()
-            game = {"id": "game", "providerGameId": "App", "name": "Exact Name"}
-            cases = [
-                ([mock.Mock(returncode=1, stdout=""), mock.Mock(returncode=1, stdout="")], "legendary_auth_required"),
-                ([mock.Mock(returncode=1, stdout=""), mock.Mock(returncode=0, stdout="[]")], "legendary_unresolved"),
-            ]
-            for responses, reason in cases:
-                provider = EpicProvider(legendary_path=executable, legendary_state_path=Path(temporary) / reason,
-                    command_runner=mock.Mock(side_effect=responses))
-                with mock.patch("GameOperations.os.name", "nt"), \
-                        mock.patch("GameOperations.os.startfile", create=True) as startfile:
-                    result = provider.dispatch_install(game, mock.Mock())
-                startfile.assert_called_once()
-                self.assertEqual("egl_auto", result["dispatch"])
-                self.assertEqual(reason, result["fallback_reason"])
 
     def test_epic_list_installed_failure_cannot_complete_uninstall(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -357,93 +234,9 @@ class GameOperationsTest(unittest.TestCase):
             self.assertFalse(sample.get("uninstalled", False))
             self.assertEqual("legendary_verification_failed", sample["reason"])
 
-    def test_epic_uninstall_quarantines_imported_orphan_only_after_export(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); executable = root / "legendary.exe"; executable.touch()
-            manifests = root / "Manifests"; manifests.mkdir()
-            install = root / "Installed"; (install / ".egstore").mkdir(parents=True)
-            payload = install / "game.bin"; payload.touch()
-            manifest = manifests / "App.item"
-            content = json.dumps({"AppName": "App", "InstallLocation": str(install)})
-            manifest.write_text(content, encoding="utf-8")
-            process = mock.Mock(stdout=None); process.poll.return_value = 0; process.returncode = 0
-            provider = EpicProvider(manifests=manifests, legendary_path=executable,
-                legendary_state_path=root / "state", command_runner=mock.Mock(side_effect=[
-                    mock.Mock(returncode=0, stdout="{}"),
-                    mock.Mock(returncode=0, stdout="[]"),
-                    mock.Mock(returncode=1, stdout="sync failed"),
-                    mock.Mock(returncode=0, stdout="imported"),
-                    mock.Mock(returncode=0, stdout='[{"app_name":"App"}]'),
-                    mock.Mock(returncode=0, stdout="[]"),
-                    mock.Mock(returncode=0, stdout="{}"),
-                ]), process_runner=mock.Mock(return_value=process))
-            game = {"id": "game", "providerGameId": "App"}
 
-            provider.dispatch_uninstall(game, mock.Mock())
-            payload.unlink()
-            sample = provider.sample(game, "uninstall")
 
-            self.assertTrue(sample["uninstalled"])
-            self.assertFalse(manifest.exists())
-            quarantined = list((root / "state" / "egl-orphaned-manifests").glob("App-*.item"))
-            self.assertEqual(1, len(quarantined))
-            self.assertEqual(content, quarantined[0].read_text(encoding="utf-8"))
 
-    def test_epic_sync_import_tracks_manifest_for_orphan_cleanup(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); executable = root / "legendary.exe"; executable.touch()
-            manifests = root / "Manifests"; manifests.mkdir()
-            install = root / "Installed"; (install / ".egstore").mkdir(parents=True)
-            payload = install / "game.bin"; payload.touch()
-            manifest = manifests / "App.item"
-            manifest.write_text(json.dumps({"AppName": "App", "InstallLocation": str(install)}), encoding="utf-8")
-            process = mock.Mock(stdout=None); process.poll.return_value = 0; process.returncode = 0
-            command = mock.Mock(side_effect=[
-                mock.Mock(returncode=0, stdout="{}"), mock.Mock(returncode=0, stdout="[]"),
-                mock.Mock(returncode=0, stdout="synced"),
-                mock.Mock(returncode=0, stdout='[{"app_name":"App"}]'),
-                mock.Mock(returncode=0, stdout="[]"), mock.Mock(returncode=0, stdout="{}"),
-            ])
-            provider = EpicProvider(manifests=manifests, legendary_path=executable,
-                legendary_state_path=root / "state", command_runner=command,
-                process_runner=mock.Mock(return_value=process))
-            game = {"id": "game", "providerGameId": "App"}
-
-            provider.dispatch_uninstall(game, mock.Mock())
-            payload.unlink()
-            sample = provider.sample(game, "uninstall")
-
-            self.assertTrue(sample["uninstalled"])
-            self.assertFalse(manifest.exists())
-            self.assertEqual([str(executable.resolve()), "-y", "egl-sync", "--one-shot", "--import-only"],
-                             command.call_args_list[2].args[0])
-            self.assertEqual([str(executable.resolve()), "-y", "uninstall", "App"],
-                             provider.process_runner.call_args.args[0])
-            self.assertEqual(1, len(list((root / "state" / "egl-orphaned-manifests").glob("*.item"))))
-
-    def test_epic_uninstall_keeps_manifest_when_payload_remains(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); executable = root / "legendary.exe"; executable.touch()
-            manifests = root / "Manifests"; manifests.mkdir()
-            install = root / "Installed"; install.mkdir(); (install / "game.bin").touch()
-            manifest = manifests / "App.item"
-            manifest.write_text(json.dumps({"AppName": "App", "InstallLocation": str(install)}), encoding="utf-8")
-            process = mock.Mock(stdout=None); process.poll.return_value = 0; process.returncode = 0
-            provider = EpicProvider(manifests=manifests, legendary_path=executable,
-                legendary_state_path=root / "state", command_runner=mock.Mock(side_effect=[
-                    mock.Mock(returncode=0, stdout="{}"),
-                    mock.Mock(returncode=0, stdout='[{"app_name":"App"}]'),
-                    mock.Mock(returncode=0, stdout="[]"),
-                    mock.Mock(returncode=0, stdout="{}"),
-                ]), process_runner=mock.Mock(return_value=process))
-            game = {"id": "game", "providerGameId": "App"}
-
-            provider.dispatch_uninstall(game, mock.Mock())
-            sample = provider.sample(game, "uninstall")
-
-            self.assertEqual("epic_manifest_cleanup_unsafe", sample["reason"])
-            self.assertTrue(manifest.exists())
-            self.assertFalse((root / "state" / "egl-orphaned-manifests").exists())
 
     def test_epic_orphan_cleanup_rejects_untrusted_manifest_paths(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -487,31 +280,6 @@ class GameOperationsTest(unittest.TestCase):
                     game, "App", str(manifest), str(install)))
             self.assertTrue(manifest.exists())
 
-    def test_epic_uninstall_recovers_live_orphan_without_import_or_process(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary); executable = root / "legendary.exe"; executable.touch()
-            manifests = root / "Manifests"; manifests.mkdir()
-            install = root / "Installed"; (install / ".egstore").mkdir(parents=True)
-            manifest = manifests / "App.item"
-            manifest.write_text(json.dumps({"AppName": "App", "InstallLocation": str(install)}), encoding="utf-8")
-            command = mock.Mock(side_effect=[
-                mock.Mock(returncode=0, stdout="{}"), mock.Mock(returncode=0, stdout="[]"),
-            ])
-            process_runner = mock.Mock()
-            provider = EpicProvider(manifests=manifests, legendary_path=executable,
-                legendary_state_path=root / "state", command_runner=command,
-                process_runner=process_runner)
-            game = {"id": "game", "providerGameId": "App"}
-
-            result = provider.dispatch_uninstall(game, mock.Mock())
-
-            self.assertEqual("manifest_cleanup", result["dispatch"])
-            self.assertFalse(manifest.exists())
-            process_runner.assert_not_called()
-            commands = [call.args[0] for call in command.call_args_list]
-            self.assertFalse(any(argv[2] in {"egl-sync", "import", "uninstall"}
-                                 for argv in commands))
-            self.assertTrue(provider.sample(game, "uninstall")["uninstalled"])
 
     def test_epic_orphan_quarantine_is_unique_and_uses_no_global_egl_flags(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -668,33 +436,6 @@ class GameOperationsTest(unittest.TestCase):
     "BytesToDownload" "{total}"
 }}'''
 
-    def test_epic_stable_id_name_fallback_and_incomplete_scan_safeguards(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            manifests = root / "Manifests"
-            install = root / "Installed"
-            manifests.mkdir()
-            install.mkdir()
-            executable = install / "game.exe"
-            executable.touch()
-            (manifests / "broken.item").write_text("{broken", encoding="utf-8")
-            (manifests / "valid.item").write_text(json.dumps({
-                "AppName": "stable-app", "DisplayName": "Localized Name",
-                "InstallLocation": str(install), "LaunchExecutable": executable.name,
-            }), encoding="utf-8")
-            provider = EpicProvider(manifests)
-            snapshot = provider.scan()
-            self.assertTrue(snapshot["available"])
-            self.assertFalse(snapshot["complete"])
-            self.assertTrue(provider.sample({
-                "providerGameId": "stable-app", "name": "Wrong"}, "install")["installed"])
-            self.assertTrue(provider.installed_from_snapshot({
-                "name": "Localized Name"}, snapshot)["installed"])
-            executable.unlink()
-            self.assertIsNone(provider.sample({
-                "providerGameId": "stable-app"}, "install"))
-            self.assertIsNone(provider.sample({
-                "providerGameId": "missing-app", "name": "Missing"}, "uninstall"))
 
 
     def test_epic_legendary_process_failure_returns_safe_excerpt(self):
@@ -711,7 +452,10 @@ class GameOperationsTest(unittest.TestCase):
             process.poll.return_value = 7; process.returncode = 7
             provider = EpicProvider(legendary_path=executable,
                 legendary_state_path=root / "state",
-                command_runner=mock.Mock(return_value=mock.Mock(returncode=0, stdout="{}")),
+                command_runner=mock.Mock(side_effect=[
+                    mock.Mock(returncode=0, stdout="{}"),
+                    mock.Mock(returncode=0, stdout="[]"),
+                ]),
                 process_runner=mock.Mock(return_value=process))
             with mock.patch("GameOperations.threading.Thread", InlineThread):
                 provider.dispatch_install({"id": "game", "providerGameId": "App"}, mock.Mock())
@@ -730,7 +474,7 @@ class GameOperationsTest(unittest.TestCase):
             provider = EpicProvider(legendary_path=executable,
                 legendary_state_path=root / "state", command_runner=mock.Mock(side_effect=[
                     mock.Mock(returncode=0, stdout="{}"),
-                    mock.Mock(returncode=0, stdout="[]"),
+                    mock.Mock(returncode=0, stdout="[]"), mock.Mock(returncode=0, stdout="[]"),
                 ]), process_runner=mock.Mock(return_value=process))
             provider.dispatch_install({"id": "game", "providerGameId": "App"}, mock.Mock())
 
@@ -738,6 +482,436 @@ class GameOperationsTest(unittest.TestCase):
 
             self.assertEqual("legendary_verification_failed", sample["reason"])
             self.assertEqual(0, sample["exit_code"])
+
+    def test_legendary_install_and_uninstall_verify_files_without_epic_side_effects(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legendary = root / "legendary.exe"; legendary.touch()
+            install = root / "Game"; install.mkdir()
+            game_exe = install / "game.exe"; game_exe.touch()
+            installed = json.dumps([{
+                "app_name": "App", "install_path": str(install),
+                "executable": game_exe.name,
+            }])
+            process = mock.Mock(stdout=None, returncode=0)
+            process.poll.return_value = 0
+            command = mock.Mock(side_effect=[
+                mock.Mock(returncode=0, stdout="{}"),
+                mock.Mock(returncode=0, stdout="[]"),
+                mock.Mock(returncode=0, stdout=installed),
+            ])
+            runner = mock.Mock(return_value=process)
+            playnite = mock.Mock()
+            provider = EpicProvider(
+                legendary_path=legendary, legendary_state_path=root / "state",
+                command_runner=command, process_runner=runner)
+            game = {"id": "game", "providerGameId": "App"}
+
+            self.assertTrue(provider.dispatch_install(game, playnite)["accepted"])
+            self.assertTrue(provider.sample(game, "install")["installed"])
+            self.assertEqual([
+                str(legendary.resolve()), "-y", "install", "App", "--platform",
+                "Windows", "--skip-dlcs", "--skip-sdl", "--base-path",
+                str(provider._install_root()),
+            ], runner.call_args.args[0])
+            self.assertFalse(any("egl-sync" in call.args[0] for call in command.call_args_list))
+            playnite.assert_not_called()
+
+            command.reset_mock(); runner.reset_mock()
+            command.side_effect = [
+                mock.Mock(returncode=0, stdout="{}"),
+                mock.Mock(returncode=0, stdout=installed),
+                mock.Mock(returncode=0, stdout="[]"),
+            ]
+            self.assertTrue(provider.dispatch_uninstall(game, playnite)["accepted"])
+            self.assertTrue(provider.sample(game, "uninstall")["uninstalled"])
+            self.assertEqual(
+                [str(legendary.resolve()), "-y", "uninstall", "App"],
+                runner.call_args.args[0])
+            self.assertFalse(any("egl-sync" in call.args[0] for call in command.call_args_list))
+            playnite.assert_not_called()
+
+    def test_legendary_launch_uses_exact_profile_context_and_requires_real_install(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legendary = root / "legendary.exe"; legendary.touch()
+            install = root / "Game"; install.mkdir()
+            game_exe = install / "game.exe"; game_exe.touch()
+            installed = json.dumps([{
+                "app_name": "App", "install_path": str(install),
+                "executable": game_exe.name,
+            }])
+            process = mock.Mock(stdout=None, returncode=0)
+            process.poll.return_value = None
+            runner = mock.Mock(return_value=process)
+            command = mock.Mock(side_effect=[
+                mock.Mock(returncode=0, stdout="{}"),
+                mock.Mock(returncode=0, stdout=installed),
+            ])
+            state = root / "state"
+            provider = EpicProvider(
+                legendary_path=legendary, legendary_state_path=state,
+                command_runner=command, process_runner=runner)
+
+            result = provider.launch({"providerGameId": "App"})
+
+            self.assertTrue(result["accepted"])
+            self.assertEqual(str(game_exe), result["executable"])
+            self.assertEqual([str(legendary.resolve()), "launch", "App"],
+                             runner.call_args.args[0])
+            kwargs = runner.call_args.kwargs
+            self.assertFalse(kwargs["shell"])
+            self.assertEqual(str(legendary.resolve().parent), kwargs["cwd"])
+            self.assertEqual(str(state), kwargs["env"]["LEGENDARY_CONFIG_PATH"])
+
+            process.poll.return_value = 0
+            provider.sample_launch({"providerGameId": "App"}, result["task_id"])
+
+            runner.reset_mock()
+            provider.command_runner = mock.Mock(side_effect=[
+                mock.Mock(returncode=0, stdout="{}"),
+                mock.Mock(returncode=0, stdout="[]"),
+            ])
+            missing = provider.launch({"providerGameId": "App"})
+            self.assertFalse(missing["accepted"])
+            self.assertEqual("legendary_not_installed", missing["reason"])
+            runner.assert_not_called()
+
+            failed_process = mock.Mock(stdout=None, returncode=7)
+            failed_process.poll.return_value = 7
+            provider.process_runner = mock.Mock(return_value=failed_process)
+            provider.command_runner = mock.Mock(side_effect=[
+                mock.Mock(returncode=0, stdout="{}"),
+                mock.Mock(returncode=0, stdout=installed),
+            ])
+            failed = provider.launch({"providerGameId": "App"})
+            self.assertFalse(failed["accepted"])
+            self.assertEqual("legendary_process_failed", failed["reason"])
+
+    def test_legacy_install_imports_in_place_and_never_downloads_duplicate(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legendary = root / "legendary.exe"; legendary.touch()
+            manifests = root / "Manifests"; manifests.mkdir()
+            install = root / "Existing"; install.mkdir()
+            game_exe = install / "game.exe"; game_exe.touch()
+            (manifests / "App.item").write_text(json.dumps({
+                "AppName": "App", "InstallLocation": str(install),
+                "LaunchExecutable": game_exe.name,
+            }), encoding="utf-8")
+            import_process = mock.Mock(stdout=None)
+            import_process.poll.return_value = None
+            repair_process = mock.Mock(stdout=None)
+            repair_process.poll.return_value = None
+            runner = mock.Mock(side_effect=[import_process, repair_process])
+            provider = EpicProvider(
+                manifests=manifests, legendary_path=legendary,
+                legendary_state_path=root / "state",
+                command_runner=mock.Mock(side_effect=[
+                    mock.Mock(returncode=0, stdout="{}"),
+                    mock.Mock(returncode=0, stdout="[]"),
+                ]), process_runner=runner)
+
+            result = provider.dispatch_install(
+                {"id": "game", "providerGameId": "App"}, mock.Mock())
+
+            self.assertTrue(result["accepted"])
+            self.assertEqual("legendary_import", result["dispatch"])
+            runner.assert_called_once_with(
+                [str(legendary), "-y", "import", "App", str(install),
+                 "--platform", "Windows", "--skip-dlcs"],
+                shell=False, env=mock.ANY, cwd=str(legendary.parent),
+                stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, text=True,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+
+            import_process.poll.return_value = 0
+            import_process.returncode = 0
+            verifying = provider.sample(
+                {"id": "game", "providerGameId": "App"}, "install")
+            self.assertEqual("legendary_repair_running", verifying["reason"])
+            self.assertEqual(
+                [str(legendary), "-y", "repair", "App", "--platform", "Windows",
+                 "--skip-dlcs", "--skip-sdl"],
+                runner.call_args_list[1].args[0])
+            self.assertFalse(runner.call_args_list[1].kwargs["shell"])
+            self.assertEqual(str(legendary.parent), runner.call_args_list[1].kwargs["cwd"])
+
+            repair_process.poll.return_value = 0
+            repair_process.returncode = 0
+            provider.command_runner = mock.Mock(return_value=mock.Mock(
+                returncode=0, stdout=json.dumps([{
+                    "app_name": "App", "install_path": str(install),
+                    "executable": game_exe.name, "needs_verification": False,
+                }])))
+            completed = provider.sample(
+                {"id": "game", "providerGameId": "App"}, "install")
+            self.assertTrue(completed["installed"])
+            self.assertEqual(str(install), completed["install_directory"])
+
+            runner.reset_mock()
+            provider.command_runner = mock.Mock(side_effect=[
+                mock.Mock(returncode=0, stdout="{}"),
+                mock.Mock(returncode=0, stdout="[]"),
+            ])
+            launch = provider.launch({"id": "game", "providerGameId": "App"})
+            self.assertFalse(launch["accepted"])
+            self.assertEqual("legendary_import_required", launch["reason"])
+            runner.assert_not_called()
+
+    def test_legacy_install_with_stale_manifest_executable_imports_real_payload(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legendary = root / "legendary.exe"; legendary.touch()
+            manifests = root / "Manifests"; manifests.mkdir()
+            install = root / "Celeste"; install.mkdir()
+            (install / "Celeste.bin").write_bytes(b"payload")
+            (manifests / "App.item").write_text(json.dumps({
+                "AppName": "App", "DisplayName": "Celeste",
+                "InstallLocation": str(install),
+                "LaunchExecutable": "stale\\Celeste.exe",
+                "bIsIncompleteInstall": False,
+            }), encoding="utf-8")
+            process = mock.Mock(stdout=None)
+            process.poll.return_value = None
+            runner = mock.Mock(return_value=process)
+            provider = EpicProvider(
+                manifests=manifests, legendary_path=legendary,
+                legendary_state_path=root / "state",
+                command_runner=mock.Mock(side_effect=[
+                    mock.Mock(returncode=0, stdout="{}"),
+                    mock.Mock(returncode=0, stdout="[]"),
+                ]), process_runner=runner)
+
+            result = provider.dispatch_install(
+                {"id": "game", "name": "Celeste", "providerGameId": "App"},
+                mock.Mock(), "task")
+
+            self.assertEqual("legendary_import", result["dispatch"])
+            self.assertEqual([
+                str(legendary.resolve()), "-y", "import", "App", str(install),
+                "--platform", "Windows", "--skip-dlcs",
+            ], runner.call_args.args[0])
+            self.assertNotIn("--base-path", runner.call_args.args[0])
+
+    def test_legendary_verification_does_not_hold_process_registry_lock(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legendary = root / "legendary.exe"; legendary.touch()
+            install = root / "Game"; install.mkdir()
+            game_exe = install / "game.exe"; game_exe.touch()
+            process = mock.Mock(stdout=None, returncode=0)
+            process.poll.return_value = 0
+            registry = OperationProcessRegistry()
+            tracked = TrackedOperationProcess(
+                task_id="task", game_id="game", provider="epic",
+                operation_type="install", process_type="install",
+                phase="install", process=process, app_name="App",
+                executable=legendary)
+            self.assertTrue(registry.register(tracked))
+            lock_observed = threading.Event()
+            readers = []
+
+            def list_installed(*_args, **_kwargs):
+                reader = threading.Thread(
+                    target=lambda: (registry.get("task"), lock_observed.set()))
+                readers.append(reader)
+                reader.start()
+                self.assertTrue(lock_observed.wait(0.5))
+                return mock.Mock(returncode=0, stdout=json.dumps([{
+                    "app_name": "App", "install_path": str(install),
+                    "executable": game_exe.name,
+                }]))
+
+            provider = EpicProvider(
+                legendary_path=legendary, legendary_state_path=root / "state",
+                command_runner=mock.Mock(side_effect=list_installed),
+                process_registry=registry)
+
+            result = provider.sample(
+                {"id": "game", "providerGameId": "App"}, "install", "task")
+
+            for reader in readers:
+                reader.join(timeout=1)
+            self.assertTrue(result["installed"])
+            self.assertIsNone(registry.get("task"))
+
+    def test_legendary_verification_discards_result_after_task_is_replaced(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legendary = root / "legendary.exe"; legendary.touch()
+            install = root / "Game"; install.mkdir()
+            game_exe = install / "game.exe"; game_exe.touch()
+            completed = mock.Mock(stdout=None, returncode=0)
+            completed.poll.return_value = 0
+            replacement_process = mock.Mock()
+            replacement_process.poll.return_value = None
+            registry = OperationProcessRegistry()
+            tracked = TrackedOperationProcess(
+                task_id="old", game_id="game", provider="epic",
+                operation_type="install", process_type="install",
+                phase="install", process=completed, app_name="App",
+                executable=legendary)
+            self.assertTrue(registry.register(tracked))
+            replacement = TrackedOperationProcess(
+                task_id="new", game_id="game", provider="epic",
+                operation_type="install", process_type="install",
+                phase="install", process=replacement_process, app_name="App",
+                executable=legendary)
+
+            def replace_during_verification(*_args, **_kwargs):
+                registry.remove(tracked)
+                self.assertTrue(registry.register(replacement))
+                return mock.Mock(returncode=0, stdout=json.dumps([{
+                    "app_name": "App", "install_path": str(install),
+                    "executable": game_exe.name,
+                }]))
+
+            provider = EpicProvider(
+                legendary_path=legendary, legendary_state_path=root / "state",
+                command_runner=mock.Mock(side_effect=replace_during_verification),
+                process_registry=registry)
+
+            result = provider.sample(
+                {"id": "game", "providerGameId": "App"}, "install", "old")
+
+            self.assertEqual("legendary_operation_stale", result["reason"])
+            self.assertIs(replacement, registry.get("new"))
+            self.assertIs(replacement, registry.active("game"))
+
+    def test_preinstalled_retry_does_not_download_again(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legendary = root / "legendary.exe"; legendary.touch()
+            install = root / "Game"; install.mkdir()
+            game_exe = install / "game.exe"; game_exe.touch()
+            installed = json.dumps([{
+                "app_name": "App", "install_path": str(install),
+                "executable": game_exe.name,
+            }])
+            runner = mock.Mock()
+            provider = EpicProvider(
+                legendary_path=legendary, legendary_state_path=root / "state",
+                command_runner=mock.Mock(side_effect=[
+                    mock.Mock(returncode=0, stdout="{}"),
+                    mock.Mock(returncode=0, stdout=installed),
+                ]), process_runner=runner)
+
+            result = provider.dispatch_install(
+                {"id": "game", "providerGameId": "App"}, mock.Mock())
+
+            self.assertEqual("legendary_preinstalled", result["dispatch"])
+            runner.assert_not_called()
+
+    def test_unverified_legendary_record_fails_closed_without_duplicate_download(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legendary = root / "legendary.exe"; legendary.touch()
+            install = root / "Game"; install.mkdir()
+            runner = mock.Mock()
+            provider = EpicProvider(
+                legendary_path=legendary, legendary_state_path=root / "state",
+                command_runner=mock.Mock(side_effect=[
+                    mock.Mock(returncode=0, stdout="{}"),
+                    mock.Mock(returncode=0, stdout=json.dumps([{
+                        "app_name": "App", "install_path": str(install),
+                        "executable": "missing.exe",
+                    }])),
+                ]), process_runner=runner)
+
+            result = provider.dispatch_install(
+                {"id": "game", "providerGameId": "App"}, mock.Mock())
+
+            self.assertFalse(result["accepted"])
+            self.assertEqual("legendary_verification_failed", result["reason"])
+            runner.assert_not_called()
+
+    def test_needs_verification_record_fails_closed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legendary = root / "legendary.exe"; legendary.touch()
+            install = root / "Game"; install.mkdir()
+            game_exe = install / "game.exe"; game_exe.touch()
+            runner = mock.Mock()
+            provider = EpicProvider(
+                legendary_path=legendary, legendary_state_path=root / "state",
+                command_runner=mock.Mock(side_effect=[
+                    mock.Mock(returncode=0, stdout="{}"),
+                    mock.Mock(returncode=0, stdout=json.dumps([{
+                        "app_name": "App", "install_path": str(install),
+                        "executable": game_exe.name, "needs_verification": True,
+                    }])),
+                ]), process_runner=runner)
+
+            result = provider.dispatch_install(
+                {"id": "game", "providerGameId": "App"}, mock.Mock())
+
+            self.assertFalse(result["accepted"])
+            self.assertEqual("legendary_verification_failed", result["reason"])
+            runner.assert_not_called()
+
+    def test_typed_registry_replaces_finished_uninstall_but_not_live_task(self):
+        registry = OperationProcessRegistry()
+        finished = mock.Mock(returncode=0)
+        finished.poll.return_value = 0
+        old = TrackedOperationProcess(
+            task_id="old", game_id="game", provider="epic",
+            operation_type="uninstall", process_type="uninstall",
+            phase="uninstall", process=finished)
+        self.assertTrue(registry.register(old))
+
+        running = mock.Mock()
+        running.poll.return_value = None
+        new = TrackedOperationProcess(
+            task_id="new", game_id="game", provider="epic",
+            operation_type="install", process_type="install",
+            phase="install", process=running)
+        self.assertTrue(registry.register(new))
+        self.assertIsNone(registry.get("old"))
+        self.assertIs(new, registry.active("game"))
+
+        another = TrackedOperationProcess(
+            task_id="another", game_id="game", provider="epic",
+            operation_type="launch", process_type="launch",
+            phase="launch", process=mock.Mock())
+        self.assertFalse(registry.register(another))
+        self.assertIs(new, registry.active("game"))
+
+    def test_legendary_launch_reports_late_process_failure_for_exact_task(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            legendary = root / "legendary.exe"; legendary.touch()
+            install = root / "Game"; install.mkdir()
+            game_exe = install / "game.exe"; game_exe.touch()
+            installed = json.dumps([{
+                "app_name": "App", "install_path": str(install),
+                "executable": game_exe.name,
+            }])
+            process = mock.Mock(stdout=None, returncode=None)
+            process.poll.return_value = None
+            provider = EpicProvider(
+                legendary_path=legendary, legendary_state_path=root / "state",
+                command_runner=mock.Mock(side_effect=[
+                    mock.Mock(returncode=0, stdout="{}"),
+                    mock.Mock(returncode=0, stdout=installed),
+                ]), process_runner=mock.Mock(return_value=process))
+            game = {"id": "game", "providerGameId": "App"}
+
+            launched = provider.launch(game, "launch-task")
+            self.assertTrue(launched["accepted"])
+            tracked = provider.process_registry.get("launch-task")
+            self.assertEqual("launch", tracked.operation_type)
+            self.assertEqual("launch", tracked.process_type)
+
+            tracked.error_excerpt = "game executable rejected"
+            process.poll.return_value = 9
+            process.returncode = 9
+            failed = provider.sample_launch(game, "launch-task")
+
+            self.assertEqual("legendary_process_failed", failed["reason"])
+            self.assertEqual(9, failed["exit_code"])
+            self.assertEqual("game executable rejected", failed["error_excerpt"])
+            self.assertIsNone(provider.process_registry.get("launch-task"))
 
 
 if __name__ == "__main__":

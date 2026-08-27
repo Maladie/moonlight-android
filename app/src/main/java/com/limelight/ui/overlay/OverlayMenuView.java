@@ -13,12 +13,17 @@ import android.view.KeyEvent;
 import android.view.MotionEvent;
 import android.view.View;
 import android.widget.HorizontalScrollView;
+import android.widget.FrameLayout;
+import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
+import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.limelight.R;
 import com.limelight.binding.input.ControllerHandler.ControllerBatteryInfo;
+import com.limelight.discord.DiscordSocialClient;
+import com.limelight.console.DiscordCommunityPresentation;
 import com.limelight.ui.ControllerGlyphs;
 
 import java.util.ArrayList;
@@ -29,6 +34,9 @@ public class OverlayMenuView extends LinearLayout {
     private static final int BUTTON_HEIGHT_DP = 48;
     private static final int BUTTON_ICON_SIZE_DP = 24;
     private static final int BUTTON_PADDING_DP = 12;
+    private static final int COMMUNITY_QUICK_WIDTH_DP = 520;
+    private static final int COMMUNITY_QUICK_HEIGHT_DP = 360;
+    private static final int COMMUNITY_RAIL_ICON_COUNT = 3;
     private static final float ANALOG_STICK_THRESHOLD = 0.5f;
     private static final long ANALOG_NAV_THROTTLE_MS = 200;
 
@@ -46,6 +54,7 @@ public class OverlayMenuView extends LinearLayout {
         void onDiscordLeave();
         void onDiscordRejoin();
         void onDiscordDockToggle();
+        void onDiscordSocialFriends();
         void onInstallationConfirmed();
         void onMenuClosed();
     }
@@ -55,8 +64,16 @@ public class OverlayMenuView extends LinearLayout {
     private HorizontalScrollView horizontalScrollView;
     private LinearLayout horizontalContainer;
     private LinearLayout discordContainer;
+    private LinearLayout discordRail;
+    private LinearLayout discordQuickMain;
+    private LinearLayout discordQuickHeader;
+    private TextView discordQuickFooter;
+    private ScrollView discordContentScroll;
     private LinearLayout discordContentContainer;
+    private LinearLayout discordVoiceContentContainer;
+    private LinearLayout discordSocialContentContainer;
     private LinearLayout discordActionsContainer;
+    private View menuSpacer;
 
     private List<OverlayMenuButton> verticalButtons;
     private List<Integer> verticalActions;
@@ -66,6 +83,13 @@ public class OverlayMenuView extends LinearLayout {
     private List<Integer> discordActions;
 
     private enum Region { VERTICAL, HORIZONTAL, DISCORD }
+    enum OverlayMode { MENU, COMMUNITY }
+    private enum CommunityFocus { RAIL, CONTENT, ACTION }
+    static final int COMMUNITY_REGION_RAIL = 0;
+    static final int COMMUNITY_REGION_CONTENT = 1;
+    static final int COMMUNITY_REGION_ACTION = 2;
+    private OverlayMode overlayMode = OverlayMode.MENU;
+    private CommunityFocus communityFocus = CommunityFocus.RAIL;
     private Region activeRegion = Region.VERTICAL;
     private int verticalIndex = 0;
     private int horizontalIndex = 0;
@@ -86,6 +110,7 @@ public class OverlayMenuView extends LinearLayout {
     private static final int ACTION_BITRATE_UP = 9;
     private static final int ACTION_DISCORD_MUTE = 10;
     private static final int ACTION_DISCORD_LEAVE = 11;
+    private static final int ACTION_DISCORD_SOCIAL_FRIENDS = 12;
     private static final int ACTION_DISCORD_REJOIN = 13;
     private static final int ACTION_DISCORD_DOCK = 14;
     private static final int ACTION_INSTALLATION_CONFIRMED = 15;
@@ -115,6 +140,21 @@ public class OverlayMenuView extends LinearLayout {
     private boolean discordCanRejoin;
     private String discordRejoinChannel = "";
     private boolean discordDocked;
+    private boolean discordSocialAvailable;
+    private long discordSocialRevision = Long.MIN_VALUE;
+    private long renderedDiscordSocialRevision = Long.MIN_VALUE;
+    private int renderedDiscordSocialSection = -1;
+    private String renderedDiscordActionSignature = "";
+    private boolean discordSocialConnected;
+    private String discordSocialDisplayName = "";
+    private String discordSocialAvatarUrl = "";
+    private List<DiscordSocialClient.Friend> discordSocialFriends = new ArrayList<>();
+    private boolean discordSocialExpanded;
+    private OverlayMenuButton discordSocialFriendsButton;
+    private List<ImageButton> discordRailIcons = new ArrayList<>();
+    private int discordQuickSection;
+    private int communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
+    private long lastCommunityDirectionalKeyAt;
     private boolean installationConfirmationAvailable;
     private boolean playStationButtons;
 
@@ -149,15 +189,14 @@ public class OverlayMenuView extends LinearLayout {
         verticalContainer.setOrientation(LinearLayout.VERTICAL);
         verticalContainer.setBackgroundDrawable(null);
         discordContainer = new LinearLayout(context);
-        discordContainer.setOrientation(LinearLayout.VERTICAL);
-        discordContainer.setPadding(dp(16), dp(13), dp(16), dp(13));
-        discordContainer.setMinimumWidth(dp(310));
+        discordContainer.setOrientation(LinearLayout.HORIZONTAL);
+        discordContainer.setPadding(0, 0, 0, 0);
+        discordContainer.setMinimumWidth(dp(COMMUNITY_QUICK_WIDTH_DP));
         discordContainer.setVisibility(GONE);
         GradientDrawable discordBackground = new GradientDrawable();
         discordBackground.setShape(GradientDrawable.RECTANGLE);
-        discordBackground.setCornerRadius(dp(10));
-        discordBackground.setColor(0xE6101118);
-        discordBackground.setStroke(dp(1), 0x667C4DFF);
+        discordBackground.setCornerRadius(dp(18));
+        discordBackground.setColor(0xEB10131C);
         discordContainer.setBackground(discordBackground);
         addView(verticalContainer, new LinearLayout.LayoutParams(
             LinearLayout.LayoutParams.WRAP_CONTENT,
@@ -185,12 +224,69 @@ public class OverlayMenuView extends LinearLayout {
             LinearLayout.LayoutParams.WRAP_CONTENT
         ));
 
-        View spacer = new View(context);
-        addView(spacer, new LinearLayout.LayoutParams(0, 0, 1f));
+        menuSpacer = new View(context);
+        addView(menuSpacer, new LinearLayout.LayoutParams(0, 0, 1f));
 
+        discordRail = new LinearLayout(context);
+        discordRail.setOrientation(LinearLayout.VERTICAL);
+        discordRail.setGravity(Gravity.CENTER_HORIZONTAL);
+        discordRail.setPadding(dp(10), dp(16), dp(10), dp(12));
+        GradientDrawable railBackground = new GradientDrawable();
+        railBackground.setColor(0x14000000);
+        railBackground.setStroke(dp(1), 0x18FFFFFF);
+        discordRail.setBackground(railBackground);
+        View dot = new View(context);
+        GradientDrawable dotBackground = new GradientDrawable();
+        dotBackground.setShape(GradientDrawable.OVAL);
+        dotBackground.setColor(0xFF5BE28D);
+        dot.setBackground(dotBackground);
+        LinearLayout.LayoutParams dotParams = new LinearLayout.LayoutParams(dp(8), dp(8));
+        dotParams.bottomMargin = dp(12);
+        discordRail.addView(dot, dotParams);
+        addDiscordRailIcon(context, R.drawable.ic_console_discord, R.string.discord_community_together, 0);
+        addDiscordRailIcon(context, R.drawable.ic_overlay_community_friends, R.string.discord_community_friends, 1);
+        addDiscordRailIcon(context, R.drawable.ic_overlay_community_servers, R.string.discord_community_servers, 2);
+        discordContainer.addView(discordRail, new LinearLayout.LayoutParams(dp(68),
+                LinearLayout.LayoutParams.MATCH_PARENT));
+
+        discordQuickMain = new LinearLayout(context);
+        discordQuickMain.setOrientation(LinearLayout.VERTICAL);
+        discordQuickMain.setPadding(dp(18), dp(16), dp(18), dp(14));
+        discordContainer.addView(discordQuickMain, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.MATCH_PARENT, 1f));
+        discordQuickHeader = new LinearLayout(context);
+        discordQuickHeader.setGravity(Gravity.CENTER_VERTICAL);
+        discordQuickMain.addView(discordQuickHeader, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(38)));
+        discordContentScroll = new ScrollView(context);
+        discordContentScroll.setFillViewport(true);
+        discordContentScroll.setVerticalScrollBarEnabled(false);
+        discordContentScroll.setFocusable(true);
+        discordContentScroll.setFocusableInTouchMode(true);
+        discordContentScroll.setOnFocusChangeListener((ignored, focused) -> {
+            styleDiscordContentScroll(focused);
+            if (focused && overlayMode == OverlayMode.COMMUNITY) {
+                communityFocus = CommunityFocus.CONTENT;
+                activeRegion = Region.DISCORD;
+            }
+        });
+        styleDiscordContentScroll(false);
+        discordQuickMain.addView(discordContentScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                0, 1f));
         discordContentContainer = new LinearLayout(context);
         discordContentContainer.setOrientation(LinearLayout.VERTICAL);
-        discordContainer.addView(discordContentContainer, new LinearLayout.LayoutParams(
+        discordContentScroll.addView(discordContentContainer, new ScrollView.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        discordVoiceContentContainer = new LinearLayout(context);
+        discordVoiceContentContainer.setOrientation(LinearLayout.VERTICAL);
+        discordContentContainer.addView(discordVoiceContentContainer, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        discordSocialContentContainer = new LinearLayout(context);
+        discordSocialContentContainer.setOrientation(LinearLayout.VERTICAL);
+        discordContentContainer.addView(discordSocialContentContainer, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
         discordActionsContainer = new LinearLayout(context);
@@ -199,11 +295,18 @@ public class OverlayMenuView extends LinearLayout {
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         discordActionsParams.topMargin = dp(8);
-        discordContainer.addView(discordActionsContainer, discordActionsParams);
+        discordQuickMain.addView(discordActionsContainer, discordActionsParams);
+        discordQuickFooter = new TextView(context);
+        discordQuickFooter.setText(R.string.discord_community_footer);
+        discordQuickFooter.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        discordQuickFooter.setTextColor(0xFFAEB3C2);
+        discordQuickFooter.setGravity(Gravity.RIGHT);
+        discordQuickMain.addView(discordQuickFooter, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(18)));
         LinearLayout.LayoutParams discordParams = new LinearLayout.LayoutParams(
-                dp(420), LinearLayout.LayoutParams.WRAP_CONTENT);
+                dp(COMMUNITY_QUICK_WIDTH_DP), dp(COMMUNITY_QUICK_HEIGHT_DP));
         discordParams.leftMargin = dp(BUTTON_SPACING_DP);
-        discordParams.gravity = Gravity.TOP;
+        discordParams.gravity = Gravity.BOTTOM | Gravity.LEFT;
         addView(discordContainer, discordParams);
 
         verticalButtons = new ArrayList<>();
@@ -224,6 +327,7 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     public void buildMenu() {
+        overlayMode = OverlayMode.MENU;
         playStationButtons = ControllerGlyphs.hasPlayStationController();
         activeRegion = Region.VERTICAL;
         verticalIndex = 0;
@@ -261,6 +365,11 @@ public class OverlayMenuView extends LinearLayout {
             ACTION_SUSPEND_SESSION, spacing);
         addVerticalButton(R.drawable.ic_overlay_power,
             getContext().getString(R.string.overlay_menu_quit_session), ACTION_QUIT, spacing);
+        if (shouldShowDiscordCard(discordConfigured, discordSocialAvailable)) {
+            addVerticalButton(R.drawable.ic_console_discord,
+                    getContext().getString(R.string.discord_community_title),
+                    ACTION_DISCORD_SOCIAL_FRIENDS, spacing);
+        }
         addVerticalButton(R.drawable.ic_overlay_monitor,
             getContext().getString(R.string.overlay_menu_home), ACTION_HOME, 0);
         // Add spacing between vertical column and horizontal row
@@ -277,7 +386,9 @@ public class OverlayMenuView extends LinearLayout {
         discordLeaveButton = null;
         discordRejoinButton = null;
         discordDockButton = null;
-        buildDiscordActions(spacing);
+        discordSocialFriendsButton = null;
+        renderedDiscordActionSignature = "";
+        ensureDiscordActions();
         if (bitrateControlEnabled) {
             addHorizontalButton(0, getContext().getString(R.string.overlay_bitrate_decrease),
                     ACTION_BITRATE_DOWN, spacing);
@@ -368,29 +479,62 @@ public class OverlayMenuView extends LinearLayout {
 
     private void buildDiscordActions(int spacing) {
         discordActionsContainer.removeAllViews();
-        if (!discordConfigured) return;
+        discordButtons.clear();
+        discordActions.clear();
+        discordMuteButton = null;
+        discordLeaveButton = null;
+        discordRejoinButton = null;
+        discordDockButton = null;
+        discordSocialFriendsButton = null;
+        if (!communityVoiceActionsVisible(discordQuickSection, discordConfigured)) return;
 
-        LinearLayout firstRow = new LinearLayout(getContext());
-        firstRow.setOrientation(LinearLayout.HORIZONTAL);
-        discordActionsContainer.addView(firstRow, new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT));
-        discordMuteButton = addDiscordButton(firstRow, R.drawable.ic_overlay_microphone,
-                discordMuteLabel(), ACTION_DISCORD_MUTE, spacing);
-        discordLeaveButton = addDiscordButton(firstRow, R.drawable.ic_overlay_close,
-                discordLeaveLabel(), ACTION_DISCORD_LEAVE, 0);
+        boolean connected = discordVoice != null && discordVoice.connected;
+        if (connected) {
+            LinearLayout firstRow = new LinearLayout(getContext());
+            firstRow.setOrientation(LinearLayout.HORIZONTAL);
+            discordActionsContainer.addView(firstRow, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            discordMuteButton = addDiscordButton(firstRow, R.drawable.ic_overlay_microphone,
+                    discordMuteLabel(), ACTION_DISCORD_MUTE, spacing);
+            discordLeaveButton = addDiscordButton(firstRow, R.drawable.ic_overlay_close,
+                    discordLeaveLabel(), ACTION_DISCORD_LEAVE, 0);
+            LinearLayout secondRow = new LinearLayout(getContext());
+            secondRow.setOrientation(LinearLayout.HORIZONTAL);
+            LinearLayout.LayoutParams secondRowParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT);
+            secondRowParams.topMargin = spacing;
+            discordActionsContainer.addView(secondRow, secondRowParams);
+            discordDockButton = addDiscordButton(secondRow, R.drawable.ic_overlay_restore,
+                    discordDockLabel(), ACTION_DISCORD_DOCK, spacing);
+        } else {
+            LinearLayout row = new LinearLayout(getContext());
+            row.setOrientation(LinearLayout.HORIZONTAL);
+            discordActionsContainer.addView(row, new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+            if (communityRejoinVisible(connected, discordCanRejoin)) {
+                discordRejoinButton = addDiscordButton(row, R.drawable.ic_overlay_play,
+                        discordRejoinLabel(), ACTION_DISCORD_REJOIN, spacing);
+            }
+            discordDockButton = addDiscordButton(row, R.drawable.ic_overlay_restore,
+                    discordDockLabel(), ACTION_DISCORD_DOCK, 0);
+        }
+    }
 
-        LinearLayout secondRow = new LinearLayout(getContext());
-        secondRow.setOrientation(LinearLayout.HORIZONTAL);
-        LinearLayout.LayoutParams secondRowParams = new LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.MATCH_PARENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT);
-        secondRowParams.topMargin = spacing;
-        discordActionsContainer.addView(secondRow, secondRowParams);
-        discordRejoinButton = addDiscordButton(secondRow, R.drawable.ic_overlay_play,
-                discordRejoinLabel(), ACTION_DISCORD_REJOIN, spacing);
-        discordDockButton = addDiscordButton(secondRow, R.drawable.ic_overlay_restore,
-                discordDockLabel(), ACTION_DISCORD_DOCK, 0);
+    private void ensureDiscordActions() {
+        String signature = discordQuickSection + ":" + discordConfigured + ":"
+                + (discordVoice != null && discordVoice.connected) + ":" + discordCanRejoin;
+        if (signature.equals(renderedDiscordActionSignature)) return;
+        renderedDiscordActionSignature = signature;
+        int previous = discordIndex;
+        buildDiscordActions(dp(BUTTON_SPACING_DP));
+        if (communityFocus == CommunityFocus.ACTION && !discordButtons.isEmpty()) {
+            post(() -> setDiscordIndex(Math.min(previous, discordButtons.size() - 1)));
+        } else if (discordButtons.isEmpty()) {
+            communityFocus = CommunityFocus.RAIL;
+        }
     }
 
     private OverlayMenuButton addDiscordButton(LinearLayout row, int iconResId,
@@ -409,6 +553,7 @@ public class OverlayMenuView extends LinearLayout {
             if (hasFocus) {
                 activeRegion = Region.DISCORD;
                 discordIndex = index;
+                if (overlayMode == OverlayMode.COMMUNITY) communityFocus = CommunityFocus.ACTION;
                 button.setSelected(true);
             } else {
                 button.setSelected(false);
@@ -416,6 +561,178 @@ public class OverlayMenuView extends LinearLayout {
         });
         return button;
     }
+
+    private void addDiscordRailIcon(Context context, int iconResource, int descriptionResource, int section) {
+        ImageButton icon = new ImageButton(context);
+        icon.setImageResource(iconResource);
+        icon.setContentDescription(context.getString(descriptionResource));
+        icon.setScaleType(ImageView.ScaleType.CENTER);
+        icon.setPadding(dp(10), dp(10), dp(10), dp(10));
+        icon.setFocusable(true);
+        icon.setClickable(true);
+        icon.setOnClickListener(ignored -> selectDiscordQuickSection(section));
+        icon.setOnFocusChangeListener((ignored, focused) -> {
+            if (focused) {
+                // Rail navigation changes the section immediately; Center is only an optional
+                // confirmation, never a prerequisite for a visible content update.
+                selectDiscordQuickSection(section);
+                communityFocus = CommunityFocus.RAIL;
+                activeRegion = Region.DISCORD;
+            }
+            else styleDiscordRailIcon(icon, section == discordQuickSection, false);
+        });
+        styleDiscordRailIcon(icon, section == discordQuickSection, false);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(46), dp(46));
+        params.topMargin = dp(8);
+        discordRail.addView(icon, params);
+        discordRailIcons.add(icon);
+    }
+
+    private void selectDiscordQuickSection(int section) {
+        if (section < 0 || section >= discordRailIcons.size()) return;
+        if (discordQuickSection == section) {
+            for (int index = 0; index < discordRailIcons.size(); index++) {
+                styleDiscordRailIcon(discordRailIcons.get(index), index == section,
+                        discordRailIcons.get(index).hasFocus());
+            }
+            return;
+        }
+        discordQuickSection = section;
+        for (int index = 0; index < discordRailIcons.size(); index++) {
+            styleDiscordRailIcon(discordRailIcons.get(index), index == section,
+                    discordRailIcons.get(index).hasFocus());
+        }
+        renderedDiscordSocialRevision = Long.MIN_VALUE;
+        renderedDiscordSocialSection = -1;
+        renderDiscordCard();
+        applyOverlayMode();
+        if (discordContentScroll != null) discordContentScroll.scrollTo(0, 0);
+    }
+
+    private void styleDiscordRailIcon(ImageButton icon, boolean selected, boolean focused) {
+        icon.setColorFilter(selected ? Color.WHITE : 0xFF9398AA);
+        GradientDrawable background = new GradientDrawable();
+        background.setCornerRadius(dp(12));
+        background.setColor(selected || focused ? 0x1FFFFFFF : Color.TRANSPARENT);
+        if (selected || focused) background.setStroke(dp(focused ? 2 : 1), 0xFF7CE4FF);
+        icon.setBackground(background);
+    }
+
+    private void styleDiscordContentScroll(boolean focused) {
+        if (discordContentScroll == null) return;
+        GradientDrawable background = new GradientDrawable();
+        background.setCornerRadius(dp(10));
+        background.setColor(focused ? 0x102D5F78 : Color.TRANSPARENT);
+        background.setStroke(focused ? dp(1) : 0, focused ? 0xFF7CE4FF : Color.TRANSPARENT);
+        discordContentScroll.setBackground(background);
+    }
+
+    private void openCommunity() {
+        if (!shouldShowDiscordCard(discordConfigured, discordSocialAvailable)) return;
+        overlayMode = OverlayMode.COMMUNITY;
+        discordQuickSection = 0;
+        communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
+        communityFocus = CommunityFocus.RAIL;
+        activeRegion = Region.DISCORD;
+        discordIndex = 0;
+        applyOverlayMode();
+        renderDiscordCard();
+        post(() -> {
+            if (!discordRailIcons.isEmpty()) discordRailIcons.get(discordQuickSection).requestFocus();
+        });
+    }
+
+    private void returnToMenu() {
+        overlayMode = OverlayMode.MENU;
+        communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
+        communityFocus = CommunityFocus.RAIL;
+        applyOverlayMode();
+        post(() -> {
+            int index = verticalActions.indexOf(ACTION_DISCORD_SOCIAL_FRIENDS);
+            if (index >= 0) setVerticalIndex(index);
+            else if (!verticalButtons.isEmpty()) setVerticalIndex(verticalButtons.size() - 1);
+        });
+    }
+
+    private void applyOverlayMode() {
+        boolean community = overlayMode == OverlayMode.COMMUNITY;
+        verticalContainer.setVisibility(community ? GONE : VISIBLE);
+        horizontalScrollView.setVisibility(community ? GONE : VISIBLE);
+        batteryContainer.setVisibility(community || batteryContainer.getChildCount() == 0 ? GONE : VISIBLE);
+        menuSpacer.setVisibility(community ? GONE : VISIBLE);
+        discordContainer.setVisibility(community && shouldShowDiscordCard(discordConfigured,
+                discordSocialAvailable) ? VISIBLE : GONE);
+    }
+
+    static OverlayMode backMode(OverlayMode mode) {
+        return mode == OverlayMode.COMMUNITY ? OverlayMode.MENU : OverlayMode.MENU;
+    }
+
+    static boolean communityVisible(OverlayMode mode, boolean available) {
+        return mode == OverlayMode.COMMUNITY && available;
+    }
+
+    static int adjacentCommunitySection(int current, int keyCode, int count) {
+        if (count <= 0) return current;
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_L1 || keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+            return Math.max(0, current - 1);
+        }
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_R1 || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            return Math.min(count - 1, current + 1);
+        }
+        return current;
+    }
+
+    static int nextCommunityRailIndex(int current, int direction, int count) {
+        if (count <= 0) return current;
+        return Math.max(0, Math.min(count - 1, current + direction));
+    }
+
+    static boolean communityVoiceActionsVisible(int section, boolean configured) {
+        return section == 0 && configured;
+    }
+
+    static boolean communityRejoinVisible(boolean connected, boolean canRejoin) {
+        return !connected && canRejoin;
+    }
+
+    static int communityActionTarget(int current, int keyCode, int count) {
+        if (count <= 0) return -1;
+        if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+            return current % 2 == 1 ? current - 1 : -1;
+        }
+        if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            return current % 2 == 0 && current + 1 < count ? current + 1 : current;
+        }
+        if (keyCode == KeyEvent.KEYCODE_DPAD_UP) return current < 2 ? current : current - 2;
+        if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) return Math.min(count - 1, current + 2);
+        return current;
+    }
+
+    static int communityRegionTarget(int currentRegion, int keyCode, boolean hasActions) {
+        if (currentRegion == COMMUNITY_REGION_RAIL && keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            return COMMUNITY_REGION_CONTENT;
+        }
+        if (currentRegion == COMMUNITY_REGION_ACTION && keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+            return COMMUNITY_REGION_CONTENT;
+        }
+        if (currentRegion == COMMUNITY_REGION_CONTENT) {
+            if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) return COMMUNITY_REGION_RAIL;
+            if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT && hasActions) return COMMUNITY_REGION_ACTION;
+        }
+        return currentRegion;
+    }
+
+    static int communityContentScrollTarget(int currentScroll, int maxScroll, int delta) {
+        return Math.max(0, Math.min(Math.max(0, maxScroll), currentScroll + delta));
+    }
+
+    static int communityActionMaxRows() { return 2; }
+    static boolean communityContentUsesSingleScrollOwner() { return true; }
+
+    static int communityQuickWidthDp() { return COMMUNITY_QUICK_WIDTH_DP; }
+    static int communityQuickHeightDp() { return COMMUNITY_QUICK_HEIGHT_DP; }
+    static int communityRailIconCount() { return COMMUNITY_RAIL_ICON_COUNT; }
 
     public void setMenuActionListener(MenuActionListener listener) {
         this.actionListener = listener;
@@ -468,6 +785,34 @@ public class OverlayMenuView extends LinearLayout {
         renderDiscordCard();
     }
 
+    public void setDiscordSocialAvailable(boolean available) {
+        if (discordSocialAvailable == available) return;
+        discordSocialAvailable = available;
+        renderedDiscordSocialRevision = Long.MIN_VALUE;
+        renderedDiscordSocialSection = -1;
+        renderDiscordCard();
+    }
+
+    /** The process-wide client owns this snapshot; the overlay only projects a new revision. */
+    public void setDiscordSocialState(DiscordSocialClient.Snapshot snapshot) {
+        if (snapshot == null || snapshot.revision == discordSocialRevision) return;
+        discordSocialRevision = snapshot.revision;
+        discordSocialConnected = snapshot.connected;
+        discordSocialDisplayName = snapshot.displayName;
+        discordSocialAvatarUrl = snapshot.avatarUrl;
+        discordSocialFriends = snapshot.friendDetails;
+        renderDiscordCard();
+        updateDiscordActionButtons();
+    }
+
+    public void toggleDiscordSocialFriends() {
+        if (!discordSocialConnected) return;
+        discordSocialExpanded = !discordSocialExpanded;
+        renderedDiscordSocialRevision = Long.MIN_VALUE;
+        renderDiscordCard();
+        updateDiscordActionButtons();
+    }
+
     public void setDiscordShortcuts(String muteShortcut, String leaveShortcut) {
         discordMuteShortcut = normalizeDiscordShortcut(muteShortcut);
         discordLeaveShortcut = normalizeDiscordShortcut(leaveShortcut);
@@ -489,26 +834,61 @@ public class OverlayMenuView extends LinearLayout {
 
     private void renderDiscordCard() {
         if (discordContainer == null || discordContentContainer == null) return;
-        discordContentContainer.removeAllViews();
-        discordContainer.setVisibility(discordConfigured ? VISIBLE : GONE);
+        discordContainer.setVisibility(communityVisible(overlayMode,
+                shouldShowDiscordCard(discordConfigured, discordSocialAvailable)) ? VISIBLE : GONE);
+        if (!shouldShowDiscordCard(discordConfigured, discordSocialAvailable)) return;
+
+        renderDiscordQuickHeader();
+        ensureDiscordActions();
+        renderDiscordVoiceCard();
+        renderDiscordSocialCard();
+    }
+
+    private void renderDiscordQuickHeader() {
+        discordQuickHeader.removeAllViews();
+        TextView title = new TextView(getContext());
+        title.setText(getContext().getString(discordQuickSection == 1
+                ? R.string.discord_community_friends : discordQuickSection == 2
+                ? R.string.discord_community_servers : R.string.discord_community_together));
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 20);
+        title.setTextColor(Color.WHITE);
+        discordQuickHeader.addView(title, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        if (discordSocialConnected) {
+            LinearLayout account = new LinearLayout(getContext());
+            account.setGravity(Gravity.CENTER_VERTICAL);
+            account.addView(DiscordCommunityPresentation.avatar(getContext(),
+                    discordSocialDisplayName.isEmpty() ? "Discord" : discordSocialDisplayName,
+                    discordSocialAvatarUrl, 34), new LinearLayout.LayoutParams(dp(34), dp(34)));
+            TextView name = new TextView(getContext());
+            name.setText(discordSocialDisplayName);
+            name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 12);
+            name.setTextColor(0xFFB8BDCC);
+            LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
+                    LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+            nameParams.leftMargin = dp(7);
+            account.addView(name, nameParams);
+            discordQuickHeader.addView(account);
+        }
+    }
+
+    private void renderDiscordVoiceCard() {
+        discordVoiceContentContainer.removeAllViews();
+        if (discordQuickSection == 1) return;
         if (!discordConfigured) return;
 
-        TextView title = discordLine(getContext().getString(R.string.overlay_discord_title),
-                13, 0xFFB69CFF, true);
-        discordContentContainer.addView(title);
-
         if (discordLoading && discordVoice == null) {
-            discordContentContainer.addView(discordLine(
+            discordVoiceContentContainer.addView(discordLine(
                     getContext().getString(R.string.overlay_discord_loading),
                     14, 0xFFC5C8D3, false));
             return;
         }
         if (discordError != null && !discordError.isEmpty()) {
-            discordContentContainer.addView(discordLine(discordError, 13, 0xFFFFB4AB, false));
+            discordVoiceContentContainer.addView(discordLine(discordError, 13, 0xFFFFB4AB, false));
             return;
         }
         if (discordVoice == null || !discordVoice.connected) {
-            discordContentContainer.addView(discordLine(
+            discordVoiceContentContainer.addView(discordLine(
                     getContext().getString(R.string.overlay_discord_disconnected),
                     14, 0xFFC5C8D3, false));
             return;
@@ -516,7 +896,7 @@ public class OverlayMenuView extends LinearLayout {
 
         String channel = discordVoice.channelName == null || discordVoice.channelName.isEmpty() ?
                 "Voice" : discordVoice.channelName;
-        discordContentContainer.addView(discordLine(getContext().getString(
+        discordVoiceContentContainer.addView(discordLine(getContext().getString(
                 R.string.overlay_discord_channel, channel, discordVoice.participants.size()),
                 15, Color.WHITE, true));
 
@@ -535,19 +915,81 @@ public class OverlayMenuView extends LinearLayout {
             } else if (!participant.self && participant.volume != 100) {
                 name += " · " + participant.volume + "%";
             }
-            discordContentContainer.addView(discordLine(name, 14,
+            discordVoiceContentContainer.addView(discordLine(name, 14,
                     participant.speaking ? 0xFF69F0AE : 0xFFE6E1E9, false));
             shown++;
         }
         if (discordVoice.participants.size() <= 1) {
-            discordContentContainer.addView(discordLine(
+            discordVoiceContentContainer.addView(discordLine(
                     getContext().getString(R.string.overlay_discord_empty),
                     12, 0xFF9FA3B2, false));
         } else if (discordVoice.participants.size() > shown) {
-            discordContentContainer.addView(discordLine(
+            discordVoiceContentContainer.addView(discordLine(
                     "+" + (discordVoice.participants.size() - shown),
                     12, 0xFF9FA3B2, false));
         }
+    }
+
+    private void renderDiscordSocialCard() {
+        if (!discordSocialAvailable) {
+            discordSocialContentContainer.removeAllViews();
+            renderedDiscordSocialRevision = Long.MIN_VALUE;
+            renderedDiscordSocialSection = -1;
+            return;
+        }
+        if (renderedDiscordSocialRevision == discordSocialRevision
+                && renderedDiscordSocialSection == discordQuickSection) return;
+        discordSocialContentContainer.removeAllViews();
+        renderedDiscordSocialRevision = discordSocialRevision;
+        renderedDiscordSocialSection = discordQuickSection;
+        if (discordQuickSection == 2) {
+            discordSocialContentContainer.addView(discordLine(getContext().getString(
+                    R.string.discord_community_host_unavailable), 13, 0xFF9FA3B2, false));
+            return;
+        }
+        discordSocialContentContainer.addView(discordLine(getContext().getString(
+                R.string.overlay_community_active), 13, 0xFF69F0AE, true));
+        if (!discordSocialConnected) {
+            discordSocialContentContainer.addView(discordLine(getContext().getString(
+                    R.string.overlay_discord_social_connect_in_menu), 14, 0xFFC5C8D3, false));
+            return;
+        }
+        discordSocialContentContainer.addView(discordLine(getContext().getString(
+                R.string.overlay_discord_social_connected,
+                discordSocialDisplayName.isEmpty() ? "Discord" : discordSocialDisplayName),
+                14, Color.WHITE, false));
+        if (!discordSocialExpanded && discordQuickSection != 1) return;
+        int playing = 0;
+        int online = 0;
+        for (DiscordSocialClient.Friend friend : discordSocialFriends) {
+            if (friend.group == DiscordSocialClient.Friend.Group.PLAYING) playing++;
+            else if (friend.group == DiscordSocialClient.Friend.Group.ONLINE) online++;
+        }
+        if (playing == 0 && online == 0) {
+            discordSocialContentContainer.addView(discordLine(getContext().getString(
+                    R.string.overlay_discord_social_no_friends), 13, 0xFF9FA3B2, false));
+            return;
+        }
+        int shown = addDiscordSocialFriends(DiscordSocialClient.Friend.Group.PLAYING,
+                R.string.overlay_discord_social_playing, 3);
+        addDiscordSocialFriends(DiscordSocialClient.Friend.Group.ONLINE,
+                R.string.overlay_discord_social_online, 3 - shown);
+    }
+
+    private int addDiscordSocialFriends(DiscordSocialClient.Friend.Group group, int title, int max) {
+        boolean headingAdded = false;
+        int shown = 0;
+        for (DiscordSocialClient.Friend friend : discordSocialFriends) {
+            if (friend.group != group || shown >= max) continue;
+            if (!headingAdded) {
+                discordSocialContentContainer.addView(discordLine(getContext().getString(title),
+                        12, 0xFF9FA3B2, true));
+                headingAdded = true;
+            }
+            discordSocialContentContainer.addView(discordSocialFriendRow(friend));
+            shown++;
+        }
+        return shown;
     }
 
     private TextView discordLine(String value, int sizeSp, int color, boolean bold) {
@@ -563,6 +1005,51 @@ public class OverlayMenuView extends LinearLayout {
         params.bottomMargin = dp(4);
         view.setLayoutParams(params);
         return view;
+    }
+
+    private View discordSocialFriendRow(DiscordSocialClient.Friend friend) {
+        LinearLayout row = new LinearLayout(getContext());
+        row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setMinimumHeight(dp(52));
+        row.setContentDescription(friend.activityName.isEmpty() ? friend.displayName
+                : friend.displayName + ". " + friend.activityName);
+        FrameLayout avatar = DiscordCommunityPresentation.avatar(getContext(), friend.displayName,
+                friend.avatarUrl, 40);
+        if (friend.group != DiscordSocialClient.Friend.Group.OFFLINE) {
+            View dot = new View(getContext());
+            GradientDrawable background = new GradientDrawable();
+            background.setShape(GradientDrawable.OVAL);
+            background.setColor(0xFF61E594);
+            dot.setBackground(background);
+            FrameLayout.LayoutParams dotParams = new FrameLayout.LayoutParams(dp(9), dp(9),
+                    Gravity.RIGHT | Gravity.BOTTOM);
+            dotParams.rightMargin = dp(1);
+            dotParams.bottomMargin = dp(1);
+            avatar.addView(dot, dotParams);
+        }
+        row.addView(avatar, new LinearLayout.LayoutParams(dp(40), dp(40)));
+        LinearLayout text = new LinearLayout(getContext());
+        text.setOrientation(LinearLayout.VERTICAL);
+        TextView title = discordLine(friend.displayName, 14, 0xFFE6E1E9, false);
+        title.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        text.addView(title);
+        String status = friend.activityName;
+        if (status.isEmpty()) {
+            status = friend.group == DiscordSocialClient.Friend.Group.PLAYING
+                    ? getContext().getString(R.string.overlay_discord_social_playing)
+                    : getContext().getString(R.string.overlay_discord_social_online);
+        }
+        TextView meta = discordLine(status, 12, 0xFF9FA3B2, false);
+        meta.setLayoutParams(new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        text.addView(meta);
+        LinearLayout.LayoutParams textParams = new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f);
+        textParams.leftMargin = dp(9);
+        textParams.bottomMargin = dp(4);
+        row.addView(text, textParams);
+        return row;
     }
 
     private void updateDiscordActionButtons() {
@@ -583,6 +1070,24 @@ public class OverlayMenuView extends LinearLayout {
             discordDockButton.setLabel(discordDockLabel());
             discordDockButton.setAlpha(connected || discordDocked ? 1f : 0.6f);
         }
+        if (discordSocialFriendsButton != null) {
+            discordSocialFriendsButton.setLabel(discordSocialFriendsLabel());
+            discordSocialFriendsButton.setAlpha(discordSocialConnected ? 1f : 0.45f);
+        }
+    }
+
+    private String discordSocialFriendsLabel() {
+        return getContext().getString(socialActionLabel(discordSocialConnected, discordSocialExpanded));
+    }
+
+    static boolean shouldShowDiscordCard(boolean hostVoiceConfigured, boolean socialAvailable) {
+        return hostVoiceConfigured || socialAvailable;
+    }
+
+    static int socialActionLabel(boolean socialConnected, boolean socialExpanded) {
+        if (!socialConnected) return R.string.overlay_discord_social_connect_in_menu;
+        return socialExpanded ? R.string.overlay_discord_social_hide_friends
+                : R.string.overlay_discord_social_friends;
     }
 
     private String discordMuteLabel() {
@@ -653,16 +1158,6 @@ public class OverlayMenuView extends LinearLayout {
     @Override
     protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         super.onLayout(changed, left, top, right, bottom);
-        if (discordContainer != null && discordContainer.getVisibility() != GONE) {
-            // The bottom command row can be wider than the screen. Position the
-            // Discord card independently so it always stays in the top-right
-            // corner instead of being pushed off-screen by that row.
-            int cardRight = getWidth() - getPaddingRight();
-            int cardLeft = cardRight - discordContainer.getMeasuredWidth();
-            int cardTop = getPaddingTop();
-            discordContainer.layout(cardLeft, cardTop, cardRight,
-                    cardTop + discordContainer.getMeasuredHeight());
-        }
     }
 
     private void adjustBitrate(int deltaKbps) {
@@ -760,7 +1255,7 @@ public class OverlayMenuView extends LinearLayout {
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && event.getAction() == KeyEvent.ACTION_DOWN) {
             if (!isFullGamepadEvent(event) && event.getRepeatCount() == 0) {
-                closeMenu();
+                if (overlayMode == OverlayMode.COMMUNITY) returnToMenu(); else closeMenu();
             }
             return true;
         }
@@ -770,6 +1265,82 @@ public class OverlayMenuView extends LinearLayout {
             if (flipFaceButtons) {
                 keyCode = handleFlipFaceButtons(keyCode);
             }
+
+            if (overlayMode == OverlayMode.COMMUNITY) {
+                if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                        || keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                    lastCommunityDirectionalKeyAt = event.getEventTime();
+                }
+                if (keyCode == KeyEvent.KEYCODE_BUTTON_L1 || keyCode == KeyEvent.KEYCODE_BUTTON_R1) {
+                    CommunityFocus previousFocus = communityFocus;
+                    int next = adjacentCommunitySection(discordQuickSection, keyCode,
+                            discordRailIcons.size());
+                    if (next != discordQuickSection) selectDiscordQuickSection(next);
+                    restoreCommunityFocusAfterSectionChange(previousFocus, next);
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
+                    if (communityFocus == CommunityFocus.ACTION) {
+                        int next = communityActionTarget(discordIndex, keyCode,
+                                discordButtons.size());
+                        if (next >= 0) {
+                            setDiscordIndex(next);
+                            return true;
+                        }
+                        if (communityRegionTarget(COMMUNITY_REGION_ACTION, keyCode,
+                                !discordButtons.isEmpty()) == COMMUNITY_REGION_CONTENT) {
+                            focusCommunityContent();
+                            return true;
+                        }
+                    }
+                    communityFocus = CommunityFocus.RAIL;
+                    activeRegion = Region.DISCORD;
+                    if (!discordRailIcons.isEmpty()) discordRailIcons.get(discordQuickSection).requestFocus();
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                    if (communityFocus == CommunityFocus.ACTION) {
+                        int next = communityActionTarget(discordIndex, keyCode,
+                                discordButtons.size());
+                        if (next >= 0) setDiscordIndex(next);
+                    } else if (communityFocus == CommunityFocus.CONTENT
+                            && communityRegionTarget(COMMUNITY_REGION_CONTENT, keyCode,
+                            !discordButtons.isEmpty()) == COMMUNITY_REGION_ACTION) {
+                        communityFocus = CommunityFocus.ACTION;
+                        setDiscordIndex(0);
+                    } else if (communityFocus == CommunityFocus.RAIL
+                            && communityRegionTarget(COMMUNITY_REGION_RAIL, keyCode,
+                            !discordButtons.isEmpty()) == COMMUNITY_REGION_CONTENT) {
+                        focusCommunityContent();
+                    }
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+                    if (communityFocus == CommunityFocus.RAIL) {
+                        int direction = keyCode == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1;
+                        int next = nextCommunityRailIndex(discordQuickSection, direction,
+                                discordRailIcons.size());
+                        if (next != discordQuickSection) selectDiscordQuickSection(next);
+                        if (!discordRailIcons.isEmpty()) discordRailIcons.get(next).requestFocus();
+                    } else if (communityFocus == CommunityFocus.CONTENT) {
+                        scrollCommunityContent(keyCode == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1);
+                    } else if (!discordButtons.isEmpty()) {
+                        setDiscordIndex(communityActionTarget(discordIndex, keyCode,
+                                discordButtons.size()));
+                    }
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_BUTTON_A || keyCode == KeyEvent.KEYCODE_DPAD_CENTER
+                        || keyCode == KeyEvent.KEYCODE_ENTER) {
+                    if (communityFocus == CommunityFocus.ACTION) activateSelected();
+                    else selectDiscordQuickSection(discordQuickSection);
+                    return true;
+                }
+                if (keyCode == KeyEvent.KEYCODE_BUTTON_B) { returnToMenu(); return true; }
+                return isGamepadEvent(event);
+            }
+
+            if (handleDiscordRailKey(keyCode)) return true;
 
             if (event.getRepeatCount() == 0 && discordVoice != null && discordVoice.connected) {
                 if (keyCode == discordShortcutKeyCode(discordMuteShortcut)) {
@@ -841,11 +1412,84 @@ public class OverlayMenuView extends LinearLayout {
         return super.dispatchKeyEvent(event);
     }
 
+    private boolean handleDiscordRailKey(int keyCode) {
+        View focused = findFocus();
+        if (focused == null || focused.getParent() != discordRail) return false;
+        int current = discordRailIcons.indexOf(focused);
+        if (current < 0) return false;
+        if (keyCode == KeyEvent.KEYCODE_DPAD_UP) {
+            discordRailIcons.get(Math.max(0, current - 1)).requestFocus();
+            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
+            discordRailIcons.get(Math.min(discordRailIcons.size() - 1, current + 1)).requestFocus();
+            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
+            if (!discordButtons.isEmpty()) setDiscordIndex(0);
+            else if (!verticalButtons.isEmpty()) setVerticalIndex(0);
+            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_BUTTON_A) {
+            focused.performClick();
+            return true;
+        }
+        return false;
+    }
+
+    private void focusCommunityContent() {
+        if (discordContentScroll == null) return;
+        communityFocus = CommunityFocus.CONTENT;
+        activeRegion = Region.DISCORD;
+        discordContentScroll.requestFocus();
+    }
+
+    private void restoreCommunityFocusAfterSectionChange(CommunityFocus previous, int section) {
+        if (previous == CommunityFocus.CONTENT) {
+            focusCommunityContent();
+            return;
+        }
+        if (previous == CommunityFocus.ACTION && !discordButtons.isEmpty()) {
+            communityFocus = CommunityFocus.ACTION;
+            setDiscordIndex(Math.min(discordIndex, discordButtons.size() - 1));
+            return;
+        }
+        communityFocus = CommunityFocus.RAIL;
+        activeRegion = Region.DISCORD;
+        if (!discordRailIcons.isEmpty()) discordRailIcons.get(section).requestFocus();
+    }
+
+    private void scrollCommunityContent(int direction) {
+        if (discordContentScroll == null) return;
+        View child = discordContentScroll.getChildCount() == 0 ? null
+                : discordContentScroll.getChildAt(0);
+        int max = child == null ? 0 : child.getHeight() - discordContentScroll.getHeight();
+        int target = communityContentScrollTarget(discordContentScroll.getScrollY(), max,
+                direction * dp(84));
+        if (target != discordContentScroll.getScrollY()) {
+            discordContentScroll.smoothScrollTo(0, target);
+        }
+    }
+
+    /**
+     * The quick Community panel has one content focus lane. Keep its vertical movement local
+     * instead of letting Android search through the hidden overlay menu containers.
+     */
+    private void navigateCommunity(int direction) {
+        if (discordButtons.isEmpty()) return;
+        if (activeRegion != Region.DISCORD) {
+            setDiscordIndex(0);
+            return;
+        }
+        setDiscordIndex(Math.max(0, Math.min(discordButtons.size() - 1,
+                discordIndex + direction)));
+    }
+
     @Override
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             if (!isFullGamepadEvent(event) && event.getRepeatCount() == 0) {
-                closeMenu();
+                if (overlayMode == OverlayMode.COMMUNITY) returnToMenu(); else closeMenu();
             }
             return true;
         }
@@ -859,6 +1503,9 @@ public class OverlayMenuView extends LinearLayout {
 
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
+        if (overlayMode == OverlayMode.COMMUNITY) {
+            return handleCommunityMotion(event) || super.onGenericMotionEvent(event);
+        }
         if (isGamepadMotionEvent(event)) {
             float x = event.getAxisValue(MotionEvent.AXIS_X);
             float y = event.getAxisValue(MotionEvent.AXIS_Y);
@@ -893,6 +1540,37 @@ public class OverlayMenuView extends LinearLayout {
             return true;
         }
         return super.onGenericMotionEvent(event);
+    }
+
+    /** DualSense D-pad is HAT motion on Android TV; send its edges through the Community key reducer. */
+    private boolean handleCommunityMotion(MotionEvent event) {
+        if (!isGamepadMotionEvent(event) || event.getAction() != MotionEvent.ACTION_MOVE) return false;
+        InputDevice device = event.getDevice();
+        boolean hasHat = device != null && (device.getMotionRange(MotionEvent.AXIS_HAT_X) != null
+                || device.getMotionRange(MotionEvent.AXIS_HAT_Y) != null);
+        float horizontal = hasHat ? event.getAxisValue(MotionEvent.AXIS_HAT_X)
+                : event.getAxisValue(MotionEvent.AXIS_X);
+        float vertical = hasHat ? event.getAxisValue(MotionEvent.AXIS_HAT_Y)
+                : event.getAxisValue(MotionEvent.AXIS_Y);
+        int direction = communityMotionDirection(horizontal, vertical, hasHat ? .45f : .85f);
+        if (direction == KeyEvent.KEYCODE_UNKNOWN) {
+            boolean consumed = communityMotionDirection != KeyEvent.KEYCODE_UNKNOWN;
+            communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
+            return consumed;
+        }
+        if (direction == communityMotionDirection) return true;
+        communityMotionDirection = direction;
+        if (Math.abs(event.getEventTime() - lastCommunityDirectionalKeyAt) < 80L) return true;
+        return dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, direction));
+    }
+
+    static int communityMotionDirection(float horizontal, float vertical, float threshold) {
+        float absX = Math.abs(horizontal);
+        float absY = Math.abs(vertical);
+        if (Math.max(absX, absY) < threshold) return KeyEvent.KEYCODE_UNKNOWN;
+        if (absX > absY) return horizontal < 0f ? KeyEvent.KEYCODE_DPAD_LEFT
+                : KeyEvent.KEYCODE_DPAD_RIGHT;
+        return vertical < 0f ? KeyEvent.KEYCODE_DPAD_UP : KeyEvent.KEYCODE_DPAD_DOWN;
     }
 
     private boolean isGamepadEvent(KeyEvent event) {
@@ -1151,6 +1829,10 @@ public class OverlayMenuView extends LinearLayout {
             } else if (action == ACTION_DISCORD_DOCK) {
                 actionListener.onDiscordDockToggle();
                 return;
+            } else if (action == ACTION_DISCORD_SOCIAL_FRIENDS) {
+                if (overlayMode == OverlayMode.MENU) openCommunity();
+                else actionListener.onDiscordSocialFriends();
+                return;
             } else if (action == ACTION_INSTALLATION_CONFIRMED) {
                 actionListener.onInstallationConfirmed();
                 shouldCloseMenu = true;
@@ -1181,6 +1863,9 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     public void closeMenu() {
+        overlayMode = OverlayMode.MENU;
+        communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
+        applyOverlayMode();
         hide(() -> {
             if (actionListener != null) {
                 actionListener.onMenuClosed();

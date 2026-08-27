@@ -1,0 +1,16 @@
+MoonWaker embedded TV keyboard attribution
+===========================================
+
+app/src/main/java/com/limelight/console/EmbeddedTvKeyboardView.java was written for
+MoonWaker. Its controller-navigation and wide-key layout concepts were independently
+implemented with reference to the Android Open Source Project (AOSP) LeanbackIME:
+
+  LeanbackKeyboardView.java
+  blob 45d52e825cf7ca99e1a01522abb1f865eea252ec
+  https://android.googlesource.com/platform/packages/inputmethods/LeanbackIME/+/45d52e825cf7ca99e1a01522abb1f865eea252ec/src/com/android/inputmethod/leanback/LeanbackKeyboardView.java
+
+Copyright (C) 2019 The Android Open Source Project
+Licensed under the Apache License, Version 2.0.
+
+No AOSP source code or resources were copied. If a future change copies or adapts a
+fragment, it must retain the original Apache-2.0 header and its required notices.

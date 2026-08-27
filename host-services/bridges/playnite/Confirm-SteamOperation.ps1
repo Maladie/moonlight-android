@@ -56,6 +56,25 @@ $allowed = if ($Operation -eq "install") {
 function Normalize-EpicText([string]$Value) {
     return (($Value -replace '[^\p{L}\p{N}]', '').ToUpperInvariant())
 }
+function Test-EpicActionEvidence($Action, $Root, [string]$ExpectedGame) {
+    $normalizedGame = Normalize-EpicText $ExpectedGame
+    if ($null -eq $Action -or $null -eq $Root -or
+            [string]::IsNullOrWhiteSpace($normalizedGame)) { return $false }
+    $walker = [System.Windows.Automation.TreeWalker]::RawViewWalker
+    $ancestor = $Action
+    for ($depth = 0; $depth -lt 6; $depth++) {
+        $ancestor = $walker.GetParent($ancestor)
+        if ($null -eq $ancestor -or $ancestor -eq $Root) { break }
+        $nearby = $ancestor.FindAll(
+            [System.Windows.Automation.TreeScope]::Subtree,
+            [System.Windows.Automation.Condition]::TrueCondition)
+        if (@($nearby | Where-Object {
+            (Normalize-EpicText $_.Current.Name).IndexOf(
+                $normalizedGame, [StringComparison]::Ordinal) -ge 0
+        }).Count -gt 0) { return $true }
+    }
+    return $false
+}
 function Test-EpicModalEvidence([IntPtr]$Handle, [string]$ExpectedGame,
                                  [string[]]$AllowedText) {
     $element = [System.Windows.Automation.AutomationElement]::FromHandle($Handle)
@@ -65,14 +84,12 @@ function Test-EpicModalEvidence([IntPtr]$Handle, [string]$ExpectedGame,
     $elements = $element.FindAll(
         [System.Windows.Automation.TreeScope]::Descendants,
         [System.Windows.Automation.Condition]::TrueCondition)
-    $gameVisible = @($elements | Where-Object {
-        $name = Normalize-EpicText $_.Current.Name
-        $name.IndexOf($normalizedGame, [StringComparison]::Ordinal) -ge 0
-    }).Count -gt 0
-    $operationVisible = @($elements | Where-Object {
+    $actions = @($elements | Where-Object {
         $AllowedText -contains $_.Current.Name
+    })
+    return @($actions | Where-Object {
+        Test-EpicActionEvidence $_ $element $ExpectedGame
     }).Count -gt 0
-    return $gameVisible -and $operationVisible
 }
 function Test-UsableCapture([Drawing.Bitmap]$Bitmap) {
     $first = $Bitmap.GetPixel(0, 0).ToArgb()
@@ -141,21 +158,9 @@ if ($validEpic) {
         [System.Windows.Automation.Condition]::TrueCondition)
     $matches = @($all | Where-Object {
         $allowed -contains $_.Current.Name -and
-        @($_.GetSupportedPatterns()) -contains [System.Windows.Automation.InvokePattern]::Pattern
+        @($_.GetSupportedPatterns()) -contains [System.Windows.Automation.InvokePattern]::Pattern -and
+        (Test-EpicActionEvidence $_ $root $GameName)
     })
-    $normalizedGame = Normalize-EpicText $GameName
-    if ([string]::IsNullOrWhiteSpace($normalizedGame)) {
-        $matches = @()
-    } else {
-        $gameVisible = @($all | Where-Object {
-            $name = Normalize-EpicText $_.Current.Name
-            $name.IndexOf($normalizedGame, [StringComparison]::Ordinal) -ge 0
-        }).Count -gt 0
-        $operationVisible = @($all | Where-Object {
-            $allowed -contains $_.Current.Name
-        }).Count -gt 0
-        if (-not ($gameVisible -and $operationVisible)) { $matches = @() }
-    }
 }
 if ($matches.Count -eq 1) {
     if ($ProbeOnly) {
@@ -174,7 +179,7 @@ if ($matches.Count -eq 1) {
 # confirmation button is not exposed by UI Automation, leave it for the
 # existing Desktop confirmation fallback instead of guessing coordinates.
 if ($validEpic -and -not $AllowVisualFallback) {
-    [pscustomobject]@{ clicked = $false; reason = "uia_button_unavailable" } |
+    [pscustomobject]@{ clicked = $false; recognized = $false; reason = "uia_button_unavailable" } |
         ConvertTo-Json -Compress
     exit 0
 }

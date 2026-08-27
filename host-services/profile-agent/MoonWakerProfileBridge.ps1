@@ -72,8 +72,28 @@ function Start-Component([string]$Name) {
         $owner = Get-NetTCPConnection -State Listen -LocalAddress "127.0.0.1" -LocalPort $port `
             -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -First 1
         if ($owner) {
-            Write-AgentLog "$Name already owns its configured port; adopting PID $owner."
-            return Get-Process -Id $owner -ErrorAction SilentlyContinue
+            if (Test-ComponentHealth $Name $true) {
+                Write-AgentLog "$Name already owns its configured port with the expected identity; adopting PID $owner."
+                return Get-Process -Id $owner -ErrorAction SilentlyContinue
+            }
+            if ($Name -eq "playnite") {
+                $health = Get-ComponentHealth $Name
+                $legacyBridgeIdentity = $health -and [int]$health.pid -eq [int]$owner -and
+                    $null -ne $health.connector_connected -and
+                    -not [string]::IsNullOrWhiteSpace([string]$health.version)
+                if ($health -and ([string]$health.component -eq "playnite" -or
+                    $legacyBridgeIdentity)) {
+                    Write-AgentLog "Stopping stale Playnite Bridge PID $owner (version/profile mismatch)."
+                    Stop-Process -Id $owner -Force -ErrorAction Stop
+                    Start-Sleep -Milliseconds 250
+                } else {
+                    Write-AgentLog "Refusing to adopt unknown process PID $owner on the Playnite port."
+                    return $null
+                }
+            } else {
+                Write-AgentLog "Refusing to adopt unhealthy $Name process PID $owner."
+                return Get-Process -Id $owner -ErrorAction SilentlyContinue
+            }
         }
     } catch {}
     if ($Name -eq "discord") {
@@ -93,7 +113,7 @@ function Start-Component([string]$Name) {
         $script.Replace('"', '\"'), $config.Replace('"', '\"')) $directory
 }
 
-function Test-ComponentHealth([string]$Name) {
+function Get-ComponentHealth([string]$Name) {
     $directory = Join-Path $ProfileRoot $Name
     $configName = if ($Name -eq "discord") { "discord_bridge_config.json" } else { "config.json" }
     $portProperty = if ($Name -eq "discord") { "port" } else { "listen_port" }
@@ -103,10 +123,24 @@ function Test-ComponentHealth([string]$Name) {
         $client = [Net.Sockets.TcpClient]::new()
         try {
             $pending = $client.ConnectAsync("127.0.0.1", $port)
-            if (-not $pending.Wait(750) -or -not $client.Connected) { return $false }
+            if (-not $pending.Wait(750) -or -not $client.Connected) { return $null }
         } finally { $client.Dispose() }
         $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2
-        return $response.StatusCode -ge 200 -and $response.StatusCode -lt 300
+        if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 300) { return $null }
+        return $response.Content | ConvertFrom-Json
+    } catch { return $null }
+}
+
+function Test-ComponentHealth([string]$Name, [bool]$RequireIdentity = $false) {
+    $health = Get-ComponentHealth $Name
+    if (-not $health) { return $false }
+    if ($Name -ne "playnite" -or -not $RequireIdentity) { return $true }
+    try {
+        $expected = Get-Content -LiteralPath (Join-Path $ProfileRoot "moonwaker-version.json") -Raw |
+            ConvertFrom-Json
+        return [string]$health.component -eq "playnite" -and
+            [string]$health.profile_id -eq $ProfileId -and
+            [string]$health.version -eq [string]$expected.version
     } catch { return $false }
 }
 
@@ -179,7 +213,8 @@ try {
                 # RPC read timeout and the normal exited-process check above still
                 # recover a genuinely failed Bridge.
                 if ($name -eq "discord") { continue }
-                if ($null -ne $process -and -not $process.HasExited -and -not (Test-ComponentHealth $name)) {
+                if ($null -ne $process -and -not $process.HasExited -and
+                    -not (Test-ComponentHealth $name ($name -eq "playnite"))) {
                     Restart-Component $name $process
                 }
             }

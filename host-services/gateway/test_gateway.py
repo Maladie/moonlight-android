@@ -535,6 +535,38 @@ class GatewayStateTest(unittest.TestCase):
             "game_id": "840317c9-b9a4-4f72-be8e-807414e36a9b",
         }, 15.0), requests[0])
 
+    def test_playnite_terminal_operation_failure_is_not_successful_gateway_response(self):
+        state = GatewayState(self.config_path, None)
+        state.proxy_json = lambda _name, _path, _body, timeout=8.0: (True, {
+            "accepted": False, "requires_attention": False,
+            "operation_state": "failed",
+            "reason": "epic_egl_export_verification_failed",
+        })
+
+        for action in ("game/install", "game/uninstall"):
+            with self.subTest(action=action):
+                status, result = state.playnite_action(action, {
+                    "game_id": "840317C9-B9A4-4F72-BE8E-807414E36A9B",
+                })
+
+                self.assertEqual(200, status)
+                self.assertFalse(result["ok"])
+                self.assertEqual("epic_egl_export_verification_failed", result["error"])
+                self.assertFalse(result["result"]["requires_attention"])
+
+    def test_non_operation_rejection_preserves_proxy_success_contract(self):
+        state = GatewayState(self.config_path, None)
+        state.proxy_json = lambda _name, _path, _body, timeout=8.0: (True, {
+            "accepted": False, "reason": "playnite_busy"})
+
+        status, result = state.playnite_action("game/start", {
+            "game_id": "840317C9-B9A4-4F72-BE8E-807414E36A9B",
+        })
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["ok"])
+        self.assertEqual("playnite_busy", result["result"]["reason"])
+
     def test_playnite_installation_focus_is_scoped_to_the_requested_game(self):
         state = GatewayState(self.config_path, None)
         requests = []

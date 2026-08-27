@@ -1062,6 +1062,7 @@
     <string name="transition_verifying_readiness">Verifying readiness</string>
     <string name="transition_ready">Ready</string>
     <string name="transition_cancel">Cancel</string>
+    <string name="transition_back">Back</string>
     <string name="transition_retry">Retry</string>
     <string name="transition_show_anyway">Show stream anyway</string>
     <string name="transition_reveal_now">Reveal now</string>
@@ -1085,6 +1086,7 @@
     <string name="preflight_target_timeout">The Sunshine target did not finish propagating in time.</string>
     <string name="transition_stream_disconnected">Stream disconnected</string>
     <string name="transition_readiness_unconfirmed">Readiness could not be confirmed</string>
+    <string name="transition_launcher_interaction_required">The game launcher needs your attention. Reveal the stream to continue, or go back to end it.</string>
     <string name="transition_host_session_locked">The Windows session is locked. Choose Reveal now, then enter the Windows password.</string>
     <string name="transition_stream_display_not_configured">The streamed display is not configured on the host</string>
     <string name="transition_step_pending">○  %1$s — pending</string>
@@ -1094,4 +1096,18 @@
     <string name="transition_waiting_gateway">Waiting for host readiness confirmation…</string>
     <string name="transition_window_stabilizing">Target window is stabilizing…</string>
     <string name="transition_cancel_details">The start was cancelled. Returning safely to the dashboard.</string>
+    <string name="discord_hub_title">Discord</string>
+    <string name="discord_hub_details">Connect your Discord account on this device or manage the existing host voice integration.</string>
+    <string name="discord_social_action">Discord Social</string>
+    <string name="discord_host_voice_action">Host voice integration</string>
+    <string name="discord_social_sdk_missing">Discord Social SDK is not installed in this build. The host voice integration is still available.</string>
+    <string name="discord_social_title">Discord Social</string>
+    <string name="discord_social_details">Connect once to show your Discord account and friends in MoonWaker.</string>
+    <string name="discord_social_connect">Connect Discord</string>
+    <string name="discord_social_not_connected">Not connected</string>
+    <string name="discord_social_authorizing">Opening Discord authorization…</string>
+    <string name="discord_social_connected_as">%1$s · %2$s</string>
+    <string name="discord_social_no_friends">Friends will appear after the connection is ready.</string>
+    <string name="discord_social_friends">Friends (%1$d)\n%2$s</string>
+    <string name="discord_social_error">Discord error: %1$s</string>
 </resources>

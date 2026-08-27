@@ -70,6 +70,18 @@ public class GameOperationsControllerTest {
         assertFalse(value.installActive);
     }
 
+    @Test public void failedHostOperationIsIdleAndNeverRequiresContinuation() {
+        Fixture fixture = new Fixture(Runnable::run);
+        GameOperationsController.Presentation value = fixture.controller.presentation(
+                HOST_A, game(false, false, false, "failed", -1, false, ""));
+
+        assertEquals(GameOperationsController.Phase.FAILED, value.phase);
+        assertFalse(value.installActive);
+        assertFalse(value.uninstallActive);
+        assertFalse(value.attentionRequired);
+        assertFalse(value.launchBlocked);
+    }
+
     @Test public void installConfirmationOnlyComesFromInstalledSnapshot() {
         Fixture fixture = new Fixture(Runnable::run);
         fixture.controller.requestInstall(HOST_A,
@@ -164,6 +176,28 @@ public class GameOperationsControllerTest {
         fixture.dispatcher.runAll();
 
         assertEquals(0, callbacks[0]);
+        assertEquals(GameOperationsController.Phase.REQUESTING_INSTALL,
+                fixture.controller.presentation(HOST_A, idle).phase);
+    }
+
+    @Test public void rejectedOperationClearsOptimisticStateAndAllowsImmediateRetry() {
+        Fixture fixture = new Fixture(Runnable::run);
+        fixture.gateway.failNextInstall = true;
+        PlayniteLibraryGame idle = game(false, false, false, "", -1, false, "");
+        boolean[] results = {true, false};
+
+        fixture.controller.requestInstall(HOST_A, idle, null, success -> results[0] = success);
+        fixture.dispatcher.runAll();
+
+        assertFalse(results[0]);
+        assertEquals(GameOperationsController.Phase.IDLE,
+                fixture.controller.presentation(HOST_A, idle).phase);
+        assertEquals(0, fixture.gateway.focusRequests);
+
+        fixture.controller.requestInstall(HOST_A, idle, null, success -> results[1] = success);
+        fixture.dispatcher.runAll();
+
+        assertTrue(results[1]);
         assertEquals(GameOperationsController.Phase.REQUESTING_INSTALL,
                 fixture.controller.presentation(HOST_A, idle).phase);
     }
@@ -271,6 +305,7 @@ public class GameOperationsControllerTest {
     private static final class FakeGateway implements GameOperationsController.Gateway {
         boolean failNextInstall;
         boolean focusFails;
+        int focusRequests;
 
         @Override public void install(GatewayConnection connection, String gameId)
                 throws IOException {
@@ -284,6 +319,7 @@ public class GameOperationsControllerTest {
 
         @Override public void focusInstallation(GatewayConnection connection, String gameId)
                 throws IOException {
+            focusRequests++;
             if (focusFails) throw new IOException("focus failed");
         }
     }

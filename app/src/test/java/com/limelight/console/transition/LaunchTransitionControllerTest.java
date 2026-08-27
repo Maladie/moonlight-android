@@ -347,6 +347,33 @@ public class LaunchTransitionControllerTest {
     }
 
     @Test
+    public void launcherInteractionRequiresExplicitRevealOrCancel() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        transportReady(controller);
+        controller.gatewayConnected("transition-1", HOST);
+
+        controller.launcherInteractionRequired(
+                "transition-1", HOST, GAME, "reveal launcher");
+
+        assertEquals(LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED,
+                controller.snapshot().state);
+        assertTrue(controller.snapshot().overlayVisible);
+        assertTrue(controller.snapshot().inputBlocked);
+        assertTrue(controller.snapshot().manualRevealAvailable);
+        assertFalse(controller.snapshot().revealAuthorized);
+        controller.showStreamAnyway("transition-1");
+        assertTrue(controller.snapshot().revealAuthorized);
+        controller.launcherInteractionRequired(
+                "transition-1", HOST, GAME, "repeated host sample");
+        assertTrue(controller.snapshot().revealAuthorized);
+        controller.revealCompleted("transition-1");
+        controller.launcherInteractionRequired(
+                "transition-1", HOST, GAME, "late host sample");
+        assertEquals(LaunchTransitionState.GAME_RUNNING, controller.snapshot().state);
+        assertFalse(controller.snapshot().overlayVisible);
+    }
+
+    @Test
     public void recreationStartsCoveredWithoutAuthorizingAnotherOperation() {
         LaunchTransitionController recreated = new LaunchTransitionController(null);
         recreated.begin(spec(LaunchTransitionType.PLAYNITE));

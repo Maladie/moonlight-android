@@ -13,6 +13,7 @@ import android.widget.TextView;
 import android.widget.Toast;
 
 import com.limelight.R;
+import com.limelight.discord.DiscordSocialClient;
 import com.limelight.gateway.GatewayConnection;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.ui.overlay.DiscordGatewayClient;
@@ -39,6 +40,7 @@ public final class DiscordOverlayController {
     private final HostGatewayClient gatewayClient = new HostGatewayClient();
     private final HostGatewayStore store;
     private final String hostUuid;
+    private final boolean socialAvailable;
     private final Runnable scheduledRefresh = () -> refresh(false);
 
     private GatewayConnection connection;
@@ -62,6 +64,9 @@ public final class DiscordOverlayController {
         SharedPreferences state = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
         dockEnabled = state.getBoolean(DOCK_KEY_PREFIX + this.hostUuid, false);
         overlay.setDiscordConfigured(connection != null);
+        socialAvailable = DiscordSocialClient.isAvailable();
+        overlay.setDiscordSocialAvailable(socialAvailable);
+        refreshSocialSnapshot();
         overlay.setDiscordDocked(dockEnabled);
         overlay.setDiscordShortcuts(preferences.discordMuteShortcut,
                 preferences.discordLeaveShortcut);
@@ -115,6 +120,10 @@ public final class DiscordOverlayController {
         else schedule();
     }
 
+    public void toggleSocialFriends() {
+        overlay.toggleDiscordSocialFriends();
+    }
+
     public void destroy() {
         destroyed = true;
         handler.removeCallbacks(scheduledRefresh);
@@ -123,7 +132,12 @@ public final class DiscordOverlayController {
 
     private void refresh(boolean force) {
         handler.removeCallbacks(scheduledRefresh);
-        if (destroyed || connection == null || !refreshInFlight.compareAndSet(false, true)) return;
+        if (destroyed) return;
+        refreshSocialSnapshot();
+        if (connection == null || !refreshInFlight.compareAndSet(false, true)) {
+            schedule();
+            return;
+        }
         overlay.setDiscordState(voice, null, true);
         GatewayConnection current = connection;
         executor.execute(() -> {
@@ -203,10 +217,15 @@ public final class DiscordOverlayController {
 
     private void schedule() {
         handler.removeCallbacks(scheduledRefresh);
-        if (!destroyed && connection != null &&
-                (overlay.getVisibility() == View.VISIBLE || dockEnabled)) {
+        if (!destroyed && ((connection != null && dockEnabled)
+                || (overlay.getVisibility() == View.VISIBLE
+                && (connection != null || socialAvailable)))) {
             handler.postDelayed(scheduledRefresh, REFRESH_MS);
         }
+    }
+
+    private void refreshSocialSnapshot() {
+        if (socialAvailable) overlay.setDiscordSocialState(DiscordSocialClient.getSnapshot());
     }
 
     private interface Action { void run() throws Exception; }

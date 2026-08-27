@@ -333,7 +333,8 @@ $playniteDirectory = $null
 if (-not $SkipPlaynite) {
     Stop-InstalledBridge "playnite" "Stop-PlayniteBridge.ps1"
     $playniteDirectory = Install-BridgeFiles "playnite" @(
-        "PlayniteBridge.py", "GameOperations.py", "OperationJournal.py", "Confirm-SteamOperation.ps1",
+        "PlayniteBridge.py", "GameOperations.py", "OperationJournal.py",
+        "Confirm-SteamOperation.ps1", "Invoke-GameLauncher.ps1",
         "config.example.json",
         "Start-PlayniteBridge.ps1", "Stop-PlayniteBridge.ps1",
         "PatchPlayniteConnector.py", "Install-WakePlayConnectorPatch.ps1", "README.md")

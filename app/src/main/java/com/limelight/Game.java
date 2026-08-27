@@ -21,6 +21,7 @@ import com.limelight.nvstream.av.video.SwitchableVideoDecoderRenderer;
 import com.limelight.console.ConsoleStreamTransitionCoordinator;
 import com.limelight.console.DiscordOverlayController;
 import com.limelight.console.PlayniteTransitionGateway;
+import com.limelight.discord.DiscordSocialClient;
 import com.limelight.console.transition.LaunchTransitionController;
 import com.limelight.console.transition.LaunchTransitionSnapshot;
 import com.limelight.console.transition.LaunchTransitionSpec;
@@ -167,6 +168,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private final Handler transitionUiHandler = new Handler(Looper.getMainLooper());
     private Runnable pendingAutomaticReveal;
     private boolean manualRevealRequested;
+    private boolean transitionCancelInFlight;
     private boolean displayedFailureDialog = false;
     private boolean connecting = false;
     private boolean connected = false;
@@ -468,6 +470,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         overlayMenuView.setInstallationConfirmationAvailable(
                 transitionCoordinator != null
                         && transitionCoordinator.isInstallationConfirmationStream());
+        try {
+            DiscordSocialClient.attach(this);
+        } catch (Exception | LinkageError ignored) {
+            // Social is optional; a failed SDK attach must not affect the stream.
+        }
         discordOverlayController = new DiscordOverlayController(this, overlayMenuView,
                 (LinearLayout) findViewById(R.id.discordDockView), prefConfig,
                 getIntent().getStringExtra(EXTRA_PC_UUID),
@@ -3216,6 +3223,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         return getString(R.string.transition_readiness_unconfirmed);
                     }
 
+                    @Override public String launcherInteractionRequiredMessage() {
+                        return getString(R.string.transition_launcher_interaction_required);
+                    }
+
                     @Override public String windowStabilizingMessage() {
                         return getString(R.string.transition_window_stabilizing);
                     }
@@ -3326,7 +3337,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         transitionController.videoFrameRendered(transitionSpec.id));
             }
         }
-        if (snapshot.state == LaunchTransitionState.ERROR
+        if (snapshot.state == LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED) {
+            consoleLoadingView.showLauncherInteraction(
+                    getString(R.string.transition_game_failed),
+                    snapshot.detail.isEmpty()
+                            ? getString(R.string.transition_launcher_interaction_required)
+                            : snapshot.detail,
+                    snapshot.manualRevealAvailable);
+        } else if (snapshot.state == LaunchTransitionState.ERROR
                 || snapshot.state == LaunchTransitionState.TIMED_OUT) {
             int title = transitionSpec.type == LaunchTransitionType.PLAYNITE
                     ? (snapshot.step >= 4
@@ -3406,6 +3424,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             case GAME_WINDOW_STABILIZING:
                 return snapshot.detail.isEmpty()
                         ? getString(R.string.transition_window_stabilizing) : snapshot.detail;
+            case LAUNCHER_INTERACTION_REQUIRED:
+                return getString(R.string.transition_launcher_interaction_required);
             case GAME_STOPPING:
             case PLAYNITE_RETURNING:
                 return getString(R.string.transition_waiting_playnite_return);
@@ -3445,14 +3465,23 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void cancelTransition() {
-        if (transitionController == null) return;
+        if (transitionController == null || transitionCancelInFlight) return;
+        transitionCancelInFlight = true;
         transitionController.cancel(transitionSpec.id);
         if (transitionCoordinator != null) transitionCoordinator.stop();
-        consoleLoadingView.doAfterNextFrame(() -> {
-            userInitiatedDisconnect = true;
-            stopConnection();
-            finish();
-        });
+        cancelPendingAutomaticReveal();
+        userInitiatedDisconnect = true;
+        backgroundStreamParked = false;
+        RetainedStreamSessionCoordinator.clearIfMatches(streamSessionId);
+        SessionResumeManager.clearIfMatches(this, streamSessionId);
+        BackgroundStreamService.resumed(this, streamSessionId);
+        if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
+        AtomicBoolean finished = new AtomicBoolean();
+        Runnable finishOnce = () -> {
+            if (finished.compareAndSet(false, true)) finish();
+        };
+        transitionUiHandler.postDelayed(finishOnce, 5_000L);
+        stopConnection(finishOnce);
     }
 
     private void retryTransition() {
@@ -3859,6 +3888,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             @Override
             public void onDiscordDockToggle() {
                 discordOverlayController.toggleDock();
+            }
+
+            @Override
+            public void onDiscordSocialFriends() {
+                discordOverlayController.toggleSocialFriends();
             }
 
             @Override

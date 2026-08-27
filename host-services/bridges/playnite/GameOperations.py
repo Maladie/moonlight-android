@@ -9,11 +9,85 @@ import stat
 import subprocess
 import threading
 import time
-import urllib.parse
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Hashable
 
 from OperationJournal import OperationJournal
+
+
+@dataclass
+class TrackedOperationProcess:
+    """One provider process, correlated to the operation that started it."""
+
+    task_id: Hashable
+    game_id: str
+    provider: str
+    operation_type: str
+    process_type: str
+    phase: str
+    process: Any
+    started_at: float = field(default_factory=time.time)
+    progress: int | None = None
+    error_excerpt: str = ""
+    app_name: str = ""
+    executable: Path | None = None
+    environment: dict[str, str] | None = None
+    collector: Any = None
+    finalizing: bool = False
+
+
+class OperationProcessRegistry:
+    """Small in-memory registry; the durable owner remains OperationJournal."""
+
+    def __init__(self) -> None:
+        self.lock = threading.RLock()
+        self.by_task: dict[Hashable, TrackedOperationProcess] = {}
+        self.active_by_game: dict[str, Hashable] = {}
+
+    def register(self, tracked: TrackedOperationProcess) -> bool:
+        with self.lock:
+            previous_id = self.active_by_game.get(tracked.game_id)
+            previous = self.by_task.get(previous_id) if previous_id is not None else None
+            if previous is not None and (previous.finalizing
+                                         or previous.process.poll() is None):
+                return False
+            if previous_id is not None:
+                self.by_task.pop(previous_id, None)
+            self.by_task[tracked.task_id] = tracked
+            self.active_by_game[tracked.game_id] = tracked.task_id
+            return True
+
+    def get(self, task_id: Hashable) -> TrackedOperationProcess | None:
+        with self.lock:
+            return self.by_task.get(task_id)
+
+    def active(self, game_id: str) -> TrackedOperationProcess | None:
+        with self.lock:
+            task_id = self.active_by_game.get(game_id)
+            return self.by_task.get(task_id) if task_id is not None else None
+
+    def busy(self, game_id: str) -> bool:
+        with self.lock:
+            tracked = self.active(game_id)
+            if tracked is None:
+                return False
+            if tracked.finalizing or tracked.process.poll() is None:
+                return True
+            self.remove(tracked)
+            return False
+
+    def remove(self, tracked: TrackedOperationProcess) -> None:
+        with self.lock:
+            if self.by_task.get(tracked.task_id) is tracked:
+                self.by_task.pop(tracked.task_id, None)
+            if self.active_by_game.get(tracked.game_id) == tracked.task_id:
+                self.active_by_game.pop(tracked.game_id, None)
+
+    def owns(self, tracked: TrackedOperationProcess) -> bool:
+        with self.lock:
+            return self.by_task.get(tracked.task_id) is tracked \
+                and self.active_by_game.get(tracked.game_id) == tracked.task_id
 
 
 class GenericPlayniteProvider:
@@ -365,26 +439,64 @@ class EpicProvider(GenericPlayniteProvider):
     """Epic operations, preferring optional per-profile Legendary."""
 
     def __init__(self, manifests: Path | None = None,
-                 automation_path: Path | None = None,
                  legendary_path: Path | None = None,
                  legendary_state_path: Path | None = None,
                  epic_install_root: Path | None = None,
                  legendary_enabled: bool = True,
                  command_runner: Callable[..., Any] | None = None,
-                 process_runner: Callable[..., Any] | None = None) -> None:
+                 process_runner: Callable[..., Any] | None = None,
+                 process_registry: OperationProcessRegistry | None = None) -> None:
         self.manifests = manifests
-        self.automation_path = automation_path
         self.legendary_path = legendary_path
         self.legendary_state_path = legendary_state_path
-        self.epic_install_root = epic_install_root or Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Epic Games"
+        self.epic_install_root = epic_install_root
         self.legendary_enabled = legendary_enabled
         self.command_runner = command_runner or subprocess.run
         self.process_runner = process_runner or subprocess.Popen
-        self.processes: dict[str, dict[str, Any]] = {}
+        self.process_registry = process_registry or OperationProcessRegistry()
 
     def directory(self) -> Path:
         return self.manifests or Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / \
             "Epic" / "EpicGamesLauncher" / "Data" / "Manifests"
+
+    @staticmethod
+    def _valid_install_root(value: str) -> Path | None:
+        candidate = Path(os.path.expandvars(str(value or "").strip().strip('"')))
+        return candidate if candidate.is_absolute() \
+            and candidate != Path(candidate.anchor) else None
+
+    def _install_root(self) -> Path:
+        if self.epic_install_root is not None:
+            explicit = self._valid_install_root(str(self.epic_install_root))
+            if explicit is not None:
+                return explicit
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        if local_app_data:
+            config_root = Path(local_app_data) / "EpicGamesLauncher" / "Saved" / "Config"
+            for platform in ("WindowsEditor", "Windows"):
+                settings = config_root / platform / "GameUserSettings.ini"
+                try:
+                    text = settings.read_bytes().decode("utf-8-sig", errors="ignore")
+                except OSError:
+                    continue
+                match = re.search(
+                    r"(?im)^\s*DefaultAppInstallLocation\s*=\s*(.*?)\s*$", text)
+                configured = self._valid_install_root(match.group(1) if match else "")
+                if configured is not None:
+                    return configured
+        counts: dict[str, tuple[int, Path]] = {}
+        for item in (self.scan().get("by_id") or {}).values():
+            location = self._valid_install_root(str(item.get("install_location") or ""))
+            if location is None:
+                continue
+            root = location.parent
+            key = os.path.normcase(os.path.normpath(str(root)))
+            count, _ = counts.get(key, (0, root))
+            counts[key] = (count + 1, root)
+        if counts:
+            return sorted(counts.values(), key=lambda value: (-value[0],
+                          str(value[1]).casefold()))[0][1]
+        return Path(os.environ.get("ProgramFiles", r"C:\Program Files")) / "Epic Games"
 
     def scan(self) -> dict[str, Any]:
         directory = self.directory()
@@ -408,9 +520,15 @@ class EpicProvider(GenericPlayniteProvider):
             install_location = value.get("InstallLocation")
             install_directory = str(install_location or "").strip()
             executable = str(value.get("LaunchExecutable") or "").strip()
+            install_path = Path(install_directory) if install_directory else None
+            egstore = install_path / ".egstore" if install_path is not None else None
+            try:
+                pending = bool(egstore and (egstore / "Pending").exists())
+            except OSError:
+                pending = True
             installed = not bool(value.get("bIsIncompleteInstall", False)) and \
-                bool(install_directory) and Path(install_directory).is_dir() and \
-                (not executable or (Path(install_directory) / executable).is_file())
+                install_path is not None and install_path.is_dir() and not pending and \
+                (not executable or (install_path / executable).is_file())
             item = {"installed": installed, "install_directory": install_directory,
                     "install_location": install_location if isinstance(install_location, str) else "",
                     "manifest_path": str(path.absolute()), "provider": "epic"}
@@ -503,33 +621,176 @@ class EpicProvider(GenericPlayniteProvider):
         self._dispatch_reason = "legendary_unresolved"
         return None
 
-    def _installed_legendary(self, app_name: str) -> tuple[bool, dict[str, Any] | None]:
-        readable, payload = self._legendary_json(["list-installed", "--json", "--show-dirs"])
-        if not readable: return False, None
+    @staticmethod
+    def _verified_legendary_item(item: Any) -> tuple[str, dict[str, Any]] | None:
+        if not isinstance(item, dict):
+            return None
+        if item.get("needs_verification") is True:
+            return None
+        app_name = EpicProvider._app_name(item)
+        install_directory = str(item.get("install_path") or item.get("install_dir")
+                                or item.get("install_location") or "").strip()
+        executable = str(item.get("executable") or "").strip()
+        if not app_name or not install_directory or not executable:
+            return None
+        directory = Path(install_directory)
+        relative_executable = Path(executable)
+        if not directory.is_absolute() or directory == Path(directory.anchor) \
+                or relative_executable.is_absolute():
+            return None
+        try:
+            resolved_directory = directory.resolve(strict=True)
+            resolved_executable = (directory / relative_executable).resolve(strict=True)
+            resolved_executable.relative_to(resolved_directory)
+        except (OSError, ValueError):
+            return None
+        if not resolved_directory.is_dir() or not resolved_executable.is_file():
+            return None
+        return app_name.casefold(), {
+            "installed": True, "provider": "epic",
+            "install_directory": str(directory), "executable": executable,
+            "app_name": app_name,
+        }
+
+    def legendary_snapshot(self) -> dict[str, Any]:
+        readable, payload = self._legendary_json(
+            ["list-installed", "--json", "--show-dirs"])
+        if not readable:
+            return {"available": False, "complete": False, "by_id": {}}
         if isinstance(payload, list):
             items = payload
         elif isinstance(payload, dict) and isinstance(payload.get("installed"), list):
             items = payload["installed"]
         else:
-            return False, None
+            return {"available": False, "complete": False, "by_id": {}}
+        by_id: dict[str, dict[str, Any]] = {}
+        invalid_ids: set[str] = set()
+        complete = True
         for item in items:
-            if isinstance(item, dict) and self._app_name(item).casefold() == app_name.casefold():
-                return True, {"installed": True, "provider": "epic", "install_directory": str(item.get("install_path") or item.get("install_dir") or item.get("install_location") or "")}
-        return True, None
+            verified = self._verified_legendary_item(item)
+            if verified is None:
+                app_name = self._app_name(item) if isinstance(item, dict) else ""
+                if app_name:
+                    invalid_ids.add(app_name.casefold())
+                else:
+                    complete = False
+                continue
+            by_id[verified[0]] = verified[1]
+        return {"available": True, "complete": complete, "by_id": by_id,
+                "invalid_ids": sorted(invalid_ids)}
 
-    def _sync_egl(self, mode: str = "--export-only") -> bool:
+    def _installed_legendary(self, app_name: str) -> tuple[bool, dict[str, Any] | None]:
+        snapshot = self.legendary_snapshot()
+        if not snapshot.get("available"):
+            return False, None
+        if app_name.casefold() in set(snapshot.get("invalid_ids") or []):
+            return False, None
+        installed = (snapshot.get("by_id") or {}).get(app_name.casefold())
+        if installed is None and not snapshot.get("complete"):
+            return False, None
+        return True, installed
+
+    def _migration_candidate(self, game: dict[str, Any],
+                             app_name: str) -> dict[str, Any] | None:
+        trusted, _reason = self._trusted_egl_install_directory(game, app_name)
+        if trusted is None:
+            return None
+        return {
+            "accepted": False, "provider": "epic", "requires_attention": False,
+            "reason": "legendary_import_required",
+            "install_directory": str(trusted["install_directory"]),
+        }
+
+    def launch(self, game: dict[str, Any], task_id: Hashable | None = None) -> dict[str, Any]:
         executable, environment = self._legendary(), self._legendary_environment()
-        try:
-            if executable is None or environment is None:
-                return False
-            result = self.command_runner(
-                [str(executable), "-y", "egl-sync", "--one-shot", mode],
-                capture_output=True, text=True, shell=False, env=environment,
-                cwd=str(executable.parent), timeout=30,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
-            return result.returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            return False
+        if executable is None or environment is None:
+            return {"accepted": False, "command": "launch", "provider": "epic",
+                    "requires_attention": False,
+                    "reason": getattr(self, "_legendary_reason", "legendary_unavailable")}
+        app_name = self._resolve_legendary_app(game)
+        if app_name is None:
+            return {"accepted": False, "command": "launch", "provider": "epic",
+                    "requires_attention": False,
+                    "reason": self._dispatch_reason or "legendary_not_installed"}
+        listed, installed = self._installed_legendary(app_name)
+        if not listed:
+            reason = "legendary_verification_failed"
+        elif installed is None:
+            migration = self._migration_candidate(game, app_name)
+            if migration is not None:
+                return {**migration, "command": "launch", "app_name": app_name}
+            reason = "legendary_not_installed"
+        else:
+            arguments = [str(executable), "launch", app_name]
+            game_id = str(game.get("id") or app_name)
+            task_id = task_id if task_id is not None else \
+                (game_id, "launch", time.time_ns())
+            if self.process_registry.busy(game_id):
+                return {"accepted": False, "command": "launch", "provider": "epic",
+                        "requires_attention": False, "reason": "operation_busy",
+                        "app_name": app_name}
+            try:
+                process = self.process_runner(
+                    arguments, shell=False, env=environment, cwd=str(executable.parent),
+                    stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT, text=True,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except (OSError, subprocess.SubprocessError):
+                process = None
+            if process is not None:
+                tracked = TrackedOperationProcess(
+                    task_id=task_id, game_id=game_id, provider="epic",
+                    operation_type="launch", process_type="launch", phase="launch",
+                    process=process, app_name=app_name, executable=executable,
+                    environment=environment)
+                if not self.process_registry.register(tracked):
+                    try:
+                        process.terminate()
+                    except (AttributeError, OSError, subprocess.SubprocessError):
+                        pass
+                    reason = "operation_busy"
+                else:
+                    self._collect_legendary_output(tracked)
+                    immediate = self.sample_launch(game, task_id)
+                    if immediate is None or not immediate.get("requires_attention"):
+                        return {"accepted": True, "command": "launch", "provider": "epic",
+                                "dispatch": "legendary", "app_name": app_name,
+                                "task_id": task_id,
+                                "install_directory": installed["install_directory"],
+                                "executable": str(Path(installed["install_directory"]) /
+                                                  installed["executable"])}
+                    return {"accepted": False, "command": "launch", "provider": "epic",
+                            "requires_attention": False, "app_name": app_name,
+                            **immediate}
+            else:
+                reason = "legendary_start_failed"
+        return {"accepted": False, "command": "launch", "provider": "epic",
+                "requires_attention": False, "reason": reason,
+                "app_name": app_name}
+
+    def sample_launch(self, game: dict[str, Any], task_id: Hashable) -> dict[str, Any] | None:
+        tracked = self.process_registry.get(task_id)
+        if tracked is None or tracked.game_id != str(game.get("id") or tracked.app_name) \
+                or tracked.operation_type != "launch":
+            return None
+        if tracked.process.poll() is None:
+            return {"provider": tracked.provider, "started": True,
+                    "process_type": tracked.process_type,
+                    "reason": "legendary_launch_running"}
+        self._finish_output_collection(tracked)
+        exit_code = int(tracked.process.returncode)
+        self.process_registry.remove(tracked)
+        if exit_code != 0:
+            return {"provider": tracked.provider, "requires_attention": True,
+                    "reason": "legendary_process_failed", "exit_code": exit_code,
+                    "error_excerpt": tracked.error_excerpt,
+                    "launcher": "legendary.exe"}
+        return {"provider": tracked.provider, "launched": True,
+                "reason": "legendary_launch_completed", "exit_code": 0}
+
+
+
+
 
     def _egl_manifest_item(self, game: dict[str, Any]) -> dict[str, Any] | None:
         provider_id = str(game.get("providerGameId") or "").strip()
@@ -593,6 +854,18 @@ class EpicProvider(GenericPlayniteProvider):
             return reason or "epic_manifest_cleanup_unsafe"
         if self._egl_orphaned(trusted["install_directory"]) is not True:
             return "epic_manifest_cleanup_unsafe"
+        return self._quarantine_egl_manifest(trusted)
+
+    def _quarantine_tracked_egl_manifest(self, game: dict[str, Any], app_name: str,
+                                         manifest_path: str,
+                                         install_directory: str) -> str:
+        trusted, reason = self._trusted_egl_manifest(
+            game, app_name, manifest_path, install_directory)
+        if trusted is None:
+            return reason or "epic_manifest_cleanup_unsafe"
+        return self._quarantine_egl_manifest(trusted)
+
+    def _quarantine_egl_manifest(self, trusted: dict[str, str]) -> str:
         if self.legendary_state_path is None:
             return "epic_manifest_cleanup_failed"
         try:
@@ -619,29 +892,42 @@ class EpicProvider(GenericPlayniteProvider):
     def _trusted_egl_install_directory(self, game: dict[str, Any],
                                        app_name: str) -> tuple[dict[str, str] | None, str]:
         item = self._egl_manifest_item(game)
-        if not item or not item.get("installed"):
+        if not item:
             return None, ""
-        return self._trusted_egl_manifest(game, app_name)
-
-    def _import_egl_install(self, executable: Path, environment: dict[str, str],
-                            app_name: str, install_directory: Path) -> bool:
+        trusted, reason = self._trusted_egl_manifest(game, app_name)
+        if trusted is None:
+            return None, reason
+        directory = Path(trusted["install_directory"])
         try:
-            result = self.command_runner(
-                [str(executable), "-y", "import", app_name, str(install_directory),
-                 "--platform", "Windows", "--skip-dlcs"],
-                capture_output=True, text=True, shell=False, env=environment,
-                cwd=str(executable.parent), timeout=30,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
-            return result.returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            return False
+            resolved = directory.resolve(strict=True)
+            absolute = directory.absolute()
+            if not resolved.is_dir() or os.path.normcase(os.path.normpath(str(absolute))) \
+                    != os.path.normcase(os.path.normpath(str(resolved))):
+                return None, "epic_manifest_cleanup_unsafe"
+            payload = False
+            for child in resolved.iterdir():
+                if child.name.casefold() == ".egstore":
+                    continue
+                resolved_child = child.resolve(strict=True)
+                resolved_child.relative_to(resolved)
+                if os.path.normcase(os.path.normpath(str(child.absolute()))) \
+                        != os.path.normcase(os.path.normpath(str(resolved_child))):
+                    return None, "epic_manifest_cleanup_unsafe"
+                payload = True
+                break
+            if not payload:
+                return None, "epic_manifest_cleanup_unsafe"
+        except (OSError, ValueError):
+            return None, "epic_manifest_cleanup_unsafe"
+        return trusted, ""
 
     @staticmethod
     def _progress(line: str) -> int | None:
         match = re.search(r"(?:^|\s)(\d{1,3})(?:\.\d+)?%", line)
         return min(100, int(match.group(1))) if match else None
 
-    def _start_legendary(self, game: dict[str, Any], operation: str) -> dict[str, Any] | None:
+    def _start_legendary(self, game: dict[str, Any], operation: str,
+                         task_id: Hashable | None = None) -> dict[str, Any] | None:
         self._dispatch_reason = ""
         executable, environment = self._legendary(), self._legendary_environment()
         if executable is None or environment is None:
@@ -651,62 +937,32 @@ class EpicProvider(GenericPlayniteProvider):
         if app_name is None:
             if not self._dispatch_reason: self._dispatch_reason = "legendary_unresolved"
             return None
-        imported_manifest: dict[str, str] | None = None
-        if operation == "uninstall":
-            listed, installed = self._installed_legendary(app_name)
-            if not listed:
-                self._dispatch_reason = "legendary_installed_query_failed"
-                return None
-            if not installed:
-                trusted, reason = self._trusted_egl_manifest(game, app_name)
-                orphaned = self._egl_orphaned(trusted["install_directory"]) \
-                    if trusted is not None else None
-                if trusted is not None and orphaned is True:
-                    reason = self._quarantine_egl_orphan(
-                        game, app_name, trusted["manifest_path"],
-                        trusted["install_directory"])
-                    if reason:
-                        self._dispatch_reason = reason
-                        return None
-                    return {"accepted": True, "command": "uninstall", "provider": "epic",
-                            "dispatch": "manifest_cleanup", "app_name": app_name}
-                if (trusted is None and reason) or (trusted is not None and orphaned is None):
-                    self._dispatch_reason = reason or "epic_manifest_cleanup_unsafe"
-                    return None
-                synced = self._sync_egl("--import-only")
-                if synced:
-                    listed, installed = self._installed_legendary(app_name)
-                    if not listed:
-                        self._dispatch_reason = "legendary_post_sync_query_failed"
-                        return None
-                    if installed:
-                        imported_manifest, reason = self._trusted_egl_manifest(game, app_name)
-                        if imported_manifest is None:
-                            self._dispatch_reason = reason or "epic_manifest_cleanup_unsafe"
-                            return None
-                if not installed:
-                    trusted, reason = self._trusted_egl_install_directory(game, app_name)
-                    if trusted is None:
-                        if reason:
-                            self._dispatch_reason = reason
-                            return None
-                        self._dispatch_reason = "legendary_egl_install_missing_or_unsafe"
-                        return None
-                    if not self._import_egl_install(executable, environment, app_name,
-                                                    Path(trusted["install_directory"])):
-                        self._dispatch_reason = "legendary_import_failed"
-                        return None
-                    imported_manifest = trusted
-                    listed, installed = self._installed_legendary(app_name)
-                    if not listed:
-                        self._dispatch_reason = "legendary_post_import_query_failed"
-                        return None
-                    if not installed:
-                        self._dispatch_reason = "legendary_post_import_still_absent"
-                        return None
-        arguments = [str(executable), "-y", operation, app_name]
-        if operation == "install":
-            arguments += ["--platform", "Windows", "--skip-dlcs", "--skip-sdl", "--base-path", str(self.epic_install_root)]
+        listed, installed = self._installed_legendary(app_name)
+        if not listed:
+            self._dispatch_reason = "legendary_verification_failed"
+            return None
+        if operation == "install" and installed is not None:
+            return {"accepted": True, "command": "install", "provider": "epic",
+                    "dispatch": "legendary_preinstalled", "app_name": app_name,
+                    "install_directory": installed["install_directory"]}
+        migration = self._migration_candidate(game, app_name) \
+            if operation == "install" else None
+        if operation == "uninstall" and installed is None:
+            return {"accepted": True, "command": "uninstall", "provider": "epic",
+                    "dispatch": "already_absent", "app_name": app_name}
+        if migration is not None:
+            arguments = [str(executable), "-y", "import", app_name,
+                         str(migration["install_directory"]),
+                         "--platform", "Windows", "--skip-dlcs"]
+        else:
+            arguments = [str(executable), "-y", operation, app_name]
+        if operation == "install" and migration is None:
+            arguments += ["--platform", "Windows", "--skip-dlcs", "--skip-sdl",
+                          "--base-path", str(self._install_root())]
+        game_id = str(game.get("id") or app_name)
+        if self.process_registry.busy(game_id):
+            self._dispatch_reason = "operation_busy"
+            return None
         try:
             process = self.process_runner(arguments, shell=False, env=environment, cwd=str(executable.parent),
                 stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -714,23 +970,48 @@ class EpicProvider(GenericPlayniteProvider):
         except (OSError, subprocess.SubprocessError):
             self._dispatch_reason = "legendary_start_failed"
             return None
-        tracked = {"process": process, "app": app_name, "progress": None,
-                   "error_excerpt": ""}
-        if imported_manifest is not None:
-            tracked.update({"imported_from_egl": True,
-                            "manifest_path": imported_manifest["manifest_path"],
-                            "install_directory": imported_manifest["install_directory"]})
-        self.processes[str(game.get("id") or app_name)] = tracked
-        if process.stdout is not None:
-            def collect() -> None:
-                for line in process.stdout:
-                    text = self._error_excerpt(str(line))
-                    if text:
-                        tracked["error_excerpt"] = text
-                    progress = self._progress(str(line))
-                    if progress is not None: tracked["progress"] = progress
-            threading.Thread(target=collect, name="LegendaryOutput", daemon=True).start()
-        return {"accepted": True, "command": operation, "provider": "epic", "dispatch": "legendary", "app_name": app_name}
+        task_id = task_id if task_id is not None else \
+            (game_id, operation, time.time_ns())
+        tracked = TrackedOperationProcess(
+            task_id=task_id, game_id=game_id, provider="epic",
+            operation_type=operation,
+            process_type="import" if migration is not None else operation,
+            phase="import" if migration is not None else operation,
+            process=process, app_name=app_name, executable=executable,
+            environment=environment)
+        if not self.process_registry.register(tracked):
+            try:
+                process.terminate()
+            except (AttributeError, OSError, subprocess.SubprocessError):
+                pass
+            self._dispatch_reason = "operation_busy"
+            return None
+        self._collect_legendary_output(tracked)
+        return {"accepted": True, "command": operation, "provider": "epic",
+                "dispatch": "legendary_import" if migration is not None else "legendary",
+                "app_name": app_name, "task_id": task_id}
+
+    def _collect_legendary_output(self, tracked: TrackedOperationProcess) -> None:
+        process = tracked.process
+        if process.stdout is None:
+            return
+        def collect() -> None:
+            for line in process.stdout:
+                text = self._error_excerpt(str(line))
+                if text:
+                    tracked.error_excerpt = text
+                progress = self._progress(str(line))
+                if progress is not None:
+                    tracked.progress = progress
+        tracked.collector = threading.Thread(
+            target=collect, name="LegendaryOutput", daemon=True)
+        tracked.collector.start()
+
+    @staticmethod
+    def _finish_output_collection(tracked: TrackedOperationProcess) -> None:
+        collector = tracked.collector
+        if collector is not None and hasattr(collector, "join"):
+            collector.join(timeout=0.2)
 
     @staticmethod
     def _error_excerpt(line: str) -> str:
@@ -740,106 +1021,134 @@ class EpicProvider(GenericPlayniteProvider):
             return ""
         return text[:300]
 
-    def _sample_legendary(self, game: dict[str, Any], operation: str) -> dict[str, Any] | None:
-        key = str(game.get("id") or "")
-        tracked = self.processes.get(key)
-        if tracked is None: return None
-        process = tracked["process"]
-        if process.poll() is None:
-            result = {"provider": "epic", "started": True, "phase": "active_uninstall" if operation == "uninstall" else "active_install", "requires_attention": False, "reason": "legendary_running"}
-            if tracked["progress"] is not None: result["progress"] = tracked["progress"]
-            return result
-        self.processes.pop(key, None)
-        exit_code = int(process.returncode)
-        error_excerpt = str(tracked.get("error_excerpt") or "")
-        if exit_code != 0:
-            return {"provider": "epic", "requires_attention": True,
-                    "reason": "legendary_process_failed", "exit_code": exit_code,
-                    "error_excerpt": error_excerpt, "launcher": "legendary.exe"}
-        listed, installed = self._installed_legendary(str(tracked["app"]))
-        if operation == "install" and listed and installed:
-            synced = self._sync_egl()
-            if not synced:
-                print(json.dumps({"event": "epic_egl_sync_failed", "app_name": str(tracked["app"]), "kind": operation}, separators=(",", ":")), flush=True)
-            return {**installed, "progress": 100,
-                    "reconciliation": "egl_sync_complete" if synced else "egl_sync_failed"}
-        if operation == "uninstall" and listed and not installed:
-            synced = self._sync_egl()
-            if not synced:
-                print(json.dumps({"event": "epic_egl_sync_failed", "app_name": str(tracked["app"]), "kind": operation}, separators=(",", ":")), flush=True)
-            manifest_path = str(tracked.get("manifest_path") or "")
-            if tracked.get("imported_from_egl") and manifest_path and Path(manifest_path).exists():
-                reason = self._quarantine_egl_orphan(
-                    game, str(tracked["app"]), manifest_path,
-                    str(tracked.get("install_directory") or ""))
-                if reason:
-                    return {"provider": "epic", "requires_attention": True,
-                            "reason": reason, "exit_code": exit_code,
-                            "error_excerpt": error_excerpt, "launcher": "legendary.exe"}
-            if self._egl_manifest_item(game) is not None:
+    def _sample_legendary(self, game: dict[str, Any], operation: str,
+                          task_id: Hashable | None = None) -> dict[str, Any] | None:
+        game_id = str(game.get("id") or "")
+        with self.process_registry.lock:
+            tracked = self.process_registry.by_task.get(task_id) if task_id is not None \
+                else self.process_registry.active(game_id)
+            if tracked is None or tracked.game_id != game_id \
+                    or tracked.operation_type != operation:
+                return None
+            phase = "active_uninstall" if operation == "uninstall" else "active_install"
+            if tracked.finalizing:
+                result = {"provider": "epic", "started": True, "phase": phase,
+                          "requires_attention": False, "reason": "legendary_verifying"}
+                if tracked.progress is not None:
+                    result["progress"] = tracked.progress
+                return result
+            process = tracked.process
+            if process.poll() is None:
+                result = {"provider": "epic", "started": True, "phase": phase,
+                          "requires_attention": False, "reason": "legendary_running"}
+                if tracked.progress is not None: result["progress"] = tracked.progress
+                return result
+            tracked.finalizing = True
+            completed_phase = tracked.phase
+        transitioned = False
+        try:
+            self._finish_output_collection(tracked)
+            exit_code = int(process.returncode)
+            error_excerpt = tracked.error_excerpt
+            if not self.process_registry.owns(tracked):
                 return {"provider": "epic", "requires_attention": True,
-                        "reason": "epic_manifest_cleanup_unsafe", "exit_code": exit_code,
+                        "reason": "legendary_operation_stale",
+                        "launcher": "legendary.exe"}
+            if exit_code != 0:
+                return {"provider": "epic", "requires_attention": True,
+                        "reason": "legendary_process_failed", "exit_code": exit_code,
                         "error_excerpt": error_excerpt, "launcher": "legendary.exe"}
-            return {"uninstalled": True, "provider": "epic",
-                    "reconciliation": "egl_sync_complete" if synced else "egl_sync_failed"}
-        return {"provider": "epic", "requires_attention": True,
-                "reason": "legendary_verification_failed", "exit_code": exit_code,
-                "error_excerpt": error_excerpt, "launcher": "legendary.exe"}
+            if operation == "install" and completed_phase == "import":
+                executable = tracked.executable
+                arguments = [str(executable), "-y", "repair", tracked.app_name,
+                             "--platform", "Windows", "--skip-dlcs", "--skip-sdl"]
+                try:
+                    repair = self.process_runner(
+                        arguments, shell=False, env=tracked.environment,
+                        cwd=str(executable.parent), stdin=subprocess.DEVNULL,
+                        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+                        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+                except (OSError, subprocess.SubprocessError):
+                    return {"provider": "epic", "requires_attention": True,
+                            "reason": "legendary_repair_start_failed", "exit_code": -1,
+                            "error_excerpt": "", "launcher": "legendary.exe"}
+                with self.process_registry.lock:
+                    if self.process_registry.by_task.get(tracked.task_id) is not tracked \
+                            or self.process_registry.active_by_game.get(tracked.game_id) \
+                            != tracked.task_id:
+                        try:
+                            repair.terminate()
+                        except (AttributeError, OSError, subprocess.SubprocessError):
+                            pass
+                        return {"provider": "epic", "requires_attention": True,
+                                "reason": "legendary_operation_stale",
+                                "launcher": "legendary.exe"}
+                    tracked.process = repair
+                    tracked.process_type = "repair"
+                    tracked.phase = "repair"
+                    tracked.progress = None
+                    tracked.error_excerpt = ""
+                    tracked.finalizing = False
+                    transitioned = True
+                self._collect_legendary_output(tracked)
+                return {"provider": "epic", "started": True,
+                        "phase": "active_install", "requires_attention": False,
+                        "reason": "legendary_repair_running"}
+            listed, installed = self._installed_legendary(tracked.app_name)
+            if not self.process_registry.owns(tracked):
+                return {"provider": "epic", "requires_attention": True,
+                        "reason": "legendary_operation_stale",
+                        "launcher": "legendary.exe"}
+            if operation == "install" and listed and installed:
+                return {**installed, "progress": 100,
+                        "reconciliation": "legendary_verified"}
+            if operation == "uninstall" and listed and not installed:
+                return {"uninstalled": True, "provider": "epic",
+                        "reconciliation": "legendary_verified"}
+            return {"provider": "epic", "requires_attention": True,
+                    "reason": "legendary_verification_failed", "exit_code": exit_code,
+                    "error_excerpt": error_excerpt, "launcher": "legendary.exe"}
+        finally:
+            if not transitioned:
+                self.process_registry.remove(tracked)
 
-    def sample(self, game: dict[str, Any], operation: str) -> dict[str, Any] | None:
-        direct = self._sample_legendary(game, operation)
-        if direct is not None: return direct
-        snapshot = self.scan()
-        installed = self.installed_from_snapshot(game, snapshot)
-        if installed:
-            return None if operation == "uninstall" else {
-                "installed": True, "progress": 100, **installed}
-        provider_id = str(game.get("providerGameId") or "").strip().casefold()
-        if operation == "uninstall" and snapshot.get("available") \
-                and snapshot.get("complete") and provider_id \
-                and provider_id not in (snapshot.get("by_id") or {}):
-            return {"uninstalled": True, "provider": "epic"}
-        if operation == "install" and snapshot.get("available") \
-                and snapshot.get("complete") and provider_id \
-                and provider_id not in (snapshot.get("by_id") or {}):
-            return {"manifest_absent": True, "provider": "epic",
-                    "requires_attention": False, "reason": "epic_manifest_absent"}
-        return None
-
-    def dispatch_install(self, game: dict[str, Any],
-                         send_command: Callable[..., dict[str, Any]]) -> dict[str, Any]:
-        direct = self._start_legendary(game, "install")
+    def sample(self, game: dict[str, Any], operation: str,
+               task_id: Hashable | None = None) -> dict[str, Any] | None:
+        direct = self._sample_legendary(game, operation, task_id)
         if direct is not None: return direct
         app_name = str(game.get("providerGameId") or "").strip()
         if not re.fullmatch(r"[A-Za-z0-9_-]+", app_name):
-            return {**send_command("install", id=str(game["id"])), "provider": "epic", "dispatch": "egl_auto", "fallback_reason": self._dispatch_reason or "legendary_unresolved"}
-        uri = "com.epicgames.launcher://apps/" + urllib.parse.quote(
-            app_name, safe="") + "?action=install"
-        if os.name != "nt":
-            raise OSError("Epic installation requires Windows.")
-        os.startfile(uri)  # type: ignore[attr-defined]
-        return {"accepted": True, "command": "install", "provider": "epic", "dispatch": "egl_auto", "fallback_reason": self._dispatch_reason or "legendary_unavailable"}
+            return None
+        listed, installed = self._installed_legendary(app_name)
+        if not listed:
+            return {"provider": "epic", "requires_attention": True,
+                    "reason": "legendary_verification_failed",
+                    "launcher": "legendary.exe"}
+        if installed is not None:
+            return None if operation == "uninstall" else {
+                **installed, "progress": 100, "reconciliation": "legendary_verified"}
+        if operation == "uninstall":
+            return {"uninstalled": True, "provider": "epic",
+                    "reconciliation": "legendary_verified"}
+        return None
 
-    def dispatch_uninstall(self, game: dict[str, Any], _send_command: Callable[..., dict[str, Any]]) -> dict[str, Any]:
-        direct = self._start_legendary(game, "uninstall")
+    def dispatch_install(self, game: dict[str, Any],
+                         send_command: Callable[..., dict[str, Any]],
+                         task_id: Hashable | None = None) -> dict[str, Any]:
+        direct = self._start_legendary(game, "install", task_id)
+        if direct is not None: return direct
+        return {"accepted": False, "command": "install", "provider": "epic",
+                "dispatch": "none", "requires_attention": False,
+                "reason": self._dispatch_reason or "legendary_process_failed",
+                "launcher": "legendary.exe"}
+
+    def dispatch_uninstall(self, game: dict[str, Any], _send_command: Callable[..., dict[str, Any]],
+                           task_id: Hashable | None = None) -> dict[str, Any]:
+        direct = self._start_legendary(game, "uninstall", task_id)
         if direct is not None: return direct
         return {"accepted": False, "command": "uninstall", "provider": "epic",
-                "dispatch": "none", "requires_attention": True,
-                "reason": self._dispatch_reason or "legendary_unavailable"}
-
-    def confirm_operation(self, hwnd: int, operation: str, game_name: str,
-                          allow_visual_fallback: bool = False, probe_only: bool = False) -> dict[str, Any]:
-        return SteamProvider.confirm_operation(self, hwnd, operation, game_name, allow_visual_fallback, probe_only)
-
-    def manual_attention(self, game: dict[str, Any], _operation: str) -> dict[str, Any] | None:
-        return {"reason": "epic_manual", "launcher": "epicgameslauncher.exe"} if not game else None
-
-    def can_auto_confirm(self, sample: dict[str, Any]) -> bool:
-        return str(sample.get("image") or "").casefold() in self.expected_launcher_images()
-
-    def expected_launcher_images(self) -> set[str]:
-        return {"epicgameslauncher.exe"}
-
+                "dispatch": "none", "requires_attention": False,
+                "reason": self._dispatch_reason or "legendary_process_failed"}
 
 class GameOperationsService:
     def __init__(self, journal: OperationJournal,
@@ -850,6 +1159,8 @@ class GameOperationsService:
         self.generic = generic or GenericPlayniteProvider()
         self.steam = steam or SteamProvider()
         self.epic = epic or EpicProvider()
+        self.processes = OperationProcessRegistry()
+        self.epic.process_registry = self.processes
 
     @staticmethod
     def provider_label(game: dict[str, Any]) -> str:
@@ -867,12 +1178,18 @@ class GameOperationsService:
         return self.generic
 
     def dispatch_install(self, game: dict[str, Any],
-                         send_command: Callable[..., dict[str, Any]]) -> dict[str, Any]:
-        return self.provider_for(game).dispatch_install(game, send_command)
+                         send_command: Callable[..., dict[str, Any]],
+                         task_id: Hashable | None = None) -> dict[str, Any]:
+        provider = self.provider_for(game)
+        return self.epic.dispatch_install(game, send_command, task_id) \
+            if provider is self.epic else provider.dispatch_install(game, send_command)
 
     def dispatch_uninstall(self, game: dict[str, Any],
-                           send_command: Callable[..., dict[str, Any]]) -> dict[str, Any]:
-        return self.provider_for(game).dispatch_uninstall(game, send_command)
+                           send_command: Callable[..., dict[str, Any]],
+                           task_id: Hashable | None = None) -> dict[str, Any]:
+        provider = self.provider_for(game)
+        return self.epic.dispatch_uninstall(game, send_command, task_id) \
+            if provider is self.epic else provider.dispatch_uninstall(game, send_command)
 
     def sample(self, baseline: dict[str, Any]) -> dict[str, Any] | None:
         game = baseline.get("game") or {}
@@ -880,7 +1197,8 @@ class GameOperationsService:
         operation = str(baseline.get("operation") or "install")
         if provider is self.steam:
             return self.steam.sample(game, operation, baseline)
-        return provider.sample(game, operation)
+        return self.epic.sample(game, operation, baseline.get("task_id")) \
+            if provider is self.epic else provider.sample(game, operation)
 
     def operation_baseline(self, game: dict[str, Any]) -> dict[str, Any] | None:
         if self.provider_for(game) is self.steam:
@@ -909,11 +1227,33 @@ class GameOperationsService:
     def expected_launcher_images(self, game: dict[str, Any]) -> set[str]:
         return self.provider_for(game).expected_launcher_images()
 
+    def launch(self, game: dict[str, Any], task_id: Hashable | None = None) -> dict[str, Any]:
+        if self.provider_for(game) is not self.epic:
+            raise ValueError("Direct launch is only available for Epic games.")
+        return self.epic.launch(game, task_id)
+
+    def sample_launch(self, game: dict[str, Any], task_id: Hashable) -> dict[str, Any] | None:
+        if self.provider_for(game) is not self.epic:
+            return None
+        return self.epic.sample_launch(game, task_id)
+
+    def finish_process(self, task_id: Hashable) -> None:
+        tracked = self.processes.get(task_id)
+        if tracked is not None:
+            self.processes.remove(tracked)
+
+    def migration_candidate(self, game: dict[str, Any]) -> dict[str, Any] | None:
+        if self.provider_for(game) is not self.epic:
+            return None
+        return self.epic._migration_candidate(
+            game, str(game.get("providerGameId") or "").strip())
+
     def external_snapshot(self) -> dict[str, Any]:
-        return self.epic.scan()
+        return self.epic.legendary_snapshot()
 
     def installed_from_external_snapshot(self, game: dict[str, Any],
                                          snapshot: dict[str, Any]) -> dict[str, Any] | None:
         if self.provider_for(game) is not self.epic:
             return None
-        return self.epic.installed_from_snapshot(game, snapshot)
+        provider_id = str(game.get("providerGameId") or "").strip().casefold()
+        return (snapshot.get("by_id") or {}).get(provider_id) if provider_id else None

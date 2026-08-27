@@ -6,6 +6,7 @@ import android.animation.ValueAnimator;
 import android.Manifest;
 import android.app.Activity;
 import android.app.Service;
+import android.content.ActivityNotFoundException;
 import android.content.ComponentName;
 import android.content.Context;
 import android.content.Intent;
@@ -19,8 +20,8 @@ import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
-import android.graphics.RectF;
 import android.graphics.Rect;
+import android.graphics.RectF;
 import android.graphics.drawable.BitmapDrawable;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
@@ -36,6 +37,7 @@ import android.os.Looper;
 import android.os.SystemClock;
 import android.preference.PreferenceManager;
 import android.provider.Settings;
+import android.speech.RecognizerIntent;
 import android.text.TextUtils;
 import android.text.InputType;
 import android.text.SpannableString;
@@ -156,6 +158,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final boolean CONSOLE_UI_V2 = true;
     private static final String PREFS = "console_dashboard";
     private static final int REQUEST_BLUETOOTH_CONNECT = 2201;
+    private static final int REQUEST_COMMUNITY_DICTATION = 2202;
     private static final long CONTROLLER_REFRESH_MS = 30_000L;
     private static final long DUPLICATE_NAVIGATION_WINDOW_MS = 70L;
     private static final long PLAYNITE_REFRESH_MS = 60_000L;
@@ -203,6 +206,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private ConsoleUiFeedback consoleFeedback;
     private InputManager inputManager;
     private DiscordPanelController discordPanelController;
+    private DiscordSocialPanelController discordSocialPanelController;
     private HostGatewayClient hostGatewayClient;
     private GameOperationsController gameOperationsController;
     private HostLaunchPreflight hostLaunchPreflight;
@@ -286,8 +290,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private long streamLoadingEpoch;
     private FrameLayout modalLayer;
     private LinearLayout sidePanel;
-    private ScrollView sidePanelScroll;
+    private LockableScrollView sidePanelScroll;
+    private FrameLayout communityPanelHost;
     private android.app.Dialog sideDialog;
+    private final CommunityDictationSession communityDictationSession = new CommunityDictationSession();
     private final Deque<PanelSnapshot> panelHistory = new ArrayDeque<>();
     private String currentPanelKey;
     private View sidePanelBusyBanner;
@@ -663,6 +669,158 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         ConsoleUiFeedback.makeText(ConsoleActivity.this, message, Toast.LENGTH_LONG).show();
                     }
                 });
+        discordSocialPanelController = new DiscordSocialPanelController(this, mainHandler,
+                new DiscordSocialPanelController.Ui() {
+                    @Override public TextView action(String label) {
+                        return panelAction(label);
+                    }
+
+                    @Override public TextView label(String label) {
+                        TextView view = text(label, 13, 0xFFBDC4D8, false);
+                        view.setPadding(dp(8), dp(7), dp(8), dp(7));
+                        return view;
+                    }
+
+                    @Override public void show(String eyebrow, String title, String details,
+                                               View... actions) {
+                        showSidePanel(eyebrow, title, details, actions);
+                    }
+
+                    @Override public void showCommunity(View shell) {
+                        showCommunityPanel(shell);
+                    }
+
+                    @Override public void toast(String message) {
+                        ConsoleUiFeedback.makeText(ConsoleActivity.this, message,
+                                Toast.LENGTH_LONG).show();
+                    }
+
+                    @Override public void backPanel() {
+                        handlePanelBack();
+                    }
+
+                    @Override public void requestCommunityDictation(long recipientId,
+                                                                     long directMessageGeneration) {
+                        startCommunityDictation(recipientId, directMessageGeneration);
+                    }
+
+                    @Override public void dismissCommunityForAuthorization() {
+                        hideSidePanelImmediately();
+                    }
+                }, new DiscordSocialPanelController.CommunitySource() {
+                    @Override public void requestHome(DiscordPanelController.CommunityHomeCallback callback) {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        if (host == null) {
+                            callback.onUnavailable();
+                            return;
+                        }
+                        String address = host.activeAddress == null ? null : host.activeAddress.address;
+                        discordPanelController.loadCommunityHome(host.uuid, address, host.name, callback);
+                    }
+
+                    @Override public void requestGuildChannels(HostGatewayClient.DiscordGuild guild,
+                            DiscordPanelController.CommunityChannelsCallback callback) {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        if (host == null) {
+                            callback.onUnavailable();
+                            return;
+                        }
+                        String address = host.activeAddress == null ? null : host.activeAddress.address;
+                        discordPanelController.loadCommunityGuildChannels(host.uuid, address, host.name,
+                                guild, callback);
+                    }
+
+                    @Override public void joinChannel(HostGatewayClient.DiscordChannel channel,
+                            DiscordPanelController.CommunityActionCallback callback) {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        if (host == null) {
+                            callback.onError(getString(R.string.discord_join_not_confirmed));
+                            return;
+                        }
+                        String address = host.activeAddress == null ? null : host.activeAddress.address;
+                        discordPanelController.joinCommunityChannel(host.uuid, address, host.name,
+                                channel, callback);
+                    }
+
+                    @Override public void requestVoice(
+                            DiscordPanelController.CommunityVoiceCallback callback) {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        if (host == null) { callback.onError(getString(R.string.discord_join_not_confirmed)); return; }
+                        String address = host.activeAddress == null ? null : host.activeAddress.address;
+                        discordPanelController.loadCommunityVoice(host.uuid, address, host.name, callback);
+                    }
+
+                    @Override public void voiceAction(DiscordPanelController.CommunityVoiceAction action,
+                                                      DiscordPanelController.CommunityVoiceCallback callback) {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        if (host == null) { callback.onError(getString(R.string.discord_join_not_confirmed)); return; }
+                        String address = host.activeAddress == null ? null : host.activeAddress.address;
+                        discordPanelController.performCommunityVoiceAction(host.uuid, address, host.name,
+                                action, callback);
+                    }
+
+                    @Override public void requestOptions(boolean refresh,
+                            DiscordPanelController.CommunityOptionsCallback callback) {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        if (host == null) { callback.onError(getString(R.string.discord_join_not_confirmed)); return; }
+                        String address = host.activeAddress == null ? null : host.activeAddress.address;
+                        discordPanelController.loadCommunityOptions(host.uuid, address, host.name, refresh, callback);
+                    }
+
+                    @Override public void setOption(DiscordPanelController.CommunitySetting setting,
+                                                    boolean enabled,
+                                                    DiscordPanelController.CommunityOptionsCallback callback) {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        if (host == null) { callback.onError(getString(R.string.discord_join_not_confirmed)); return; }
+                        String address = host.activeAddress == null ? null : host.activeAddress.address;
+                        discordPanelController.setCommunitySetting(host.uuid, address, host.name, setting,
+                                enabled, callback);
+                    }
+
+                    @Override public void hostAction(DiscordPanelController.CommunityHostAction action,
+                                                     DiscordPanelController.CommunityOptionsCallback callback) {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        if (host == null) { callback.onError(getString(R.string.discord_join_not_confirmed)); return; }
+                        String address = host.activeAddress == null ? null : host.activeAddress.address;
+                        discordPanelController.performCommunityHostAction(host.uuid, address, host.name,
+                                action, callback);
+                    }
+
+                    @Override public void requestAudio(
+                            DiscordPanelController.CommunityAudioCallback callback) {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        if (host == null) { callback.onError(getString(R.string.discord_join_not_confirmed)); return; }
+                        String address = host.activeAddress == null ? null : host.activeAddress.address;
+                        discordPanelController.loadCommunityAudio(host.uuid, address, host.name, callback);
+                    }
+
+                    @Override public void selectAudioDevice(HostGatewayClient.AudioDevice device,
+                                                            DiscordPanelController.CommunityAudioCallback callback) {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        if (host == null) { callback.onError(getString(R.string.discord_join_not_confirmed)); return; }
+                        String address = host.activeAddress == null ? null : host.activeAddress.address;
+                        discordPanelController.selectCommunityAudioDevice(host.uuid, address, host.name,
+                                device, callback);
+                    }
+
+                    @Override public void changeSystemVolume(int delta,
+                                                             DiscordPanelController.CommunityAudioCallback callback) {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        if (host == null) { callback.onError(getString(R.string.discord_join_not_confirmed)); return; }
+                        String address = host.activeAddress == null ? null : host.activeAddress.address;
+                        discordPanelController.changeCommunitySystemVolume(host.uuid, address, host.name,
+                                delta, callback);
+                    }
+
+                    @Override public void toggleSystemMute(
+                            DiscordPanelController.CommunityAudioCallback callback) {
+                        ComputerDetails host = hosts.get(selectedHostUuid);
+                        if (host == null) { callback.onError(getString(R.string.discord_join_not_confirmed)); return; }
+                        String address = host.activeAddress == null ? null : host.activeAddress.address;
+                        discordPanelController.toggleCommunitySystemMute(host.uuid, address, host.name, callback);
+                    }
+
+                });
         hideSystemUi();
         loadKnownHosts();
         serviceBound = bindService(new Intent(this, ComputerManagerService.class),
@@ -672,6 +830,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     @Override
     protected void onResume() {
         super.onResume();
+        if (discordSocialPanelController != null) discordSocialPanelController.onActivityResumed();
         active = true;
         // The retained stream Home always belongs to the host backing the live stream.
         // A stale "return to hosts" request from an earlier suspend flow must not move it
@@ -1044,6 +1203,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     @Override
     protected void onPause() {
+        if (discordSocialPanelController != null) discordSocialPanelController.onActivityPaused();
         active = false;
         screenSaverDismissKeyCode = KeyEvent.KEYCODE_UNKNOWN;
         screenSaverMotionBlockUntil = 0L;
@@ -1087,6 +1247,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (consoleFeedback != null) consoleFeedback.release();
         if (artworkScrimAnimator != null) artworkScrimAnimator.cancel();
         if (discordPanelController != null) discordPanelController.destroy();
+        if (discordSocialPanelController != null) discordSocialPanelController.closePanel();
         if (playniteFilterPopup != null) playniteFilterPopup.dismiss();
         if (sideDialog != null) sideDialog.dismiss();
         if (serviceBound) unbindService(serviceConnection);
@@ -2211,7 +2372,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         dim.setClickable(true);
         dim.setOnClickListener(v -> hideSidePanel());
         modalLayer.addView(dim, match());
-        sidePanelScroll = new ScrollView(this);
+        sidePanelScroll = new LockableScrollView(this);
         sidePanelScroll.setFillViewport(true);
         sidePanelScroll.setVerticalScrollBarEnabled(false);
         GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
@@ -2227,13 +2388,31 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         modalLayer.addView(sidePanelScroll, new FrameLayout.LayoutParams(dp(510),
                 ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
+        // Community is a full-screen, bounded composition with its own feed/detail scrollers.
+        // Keeping it out of the generic ScrollView prevents the modal root from stealing focus
+        // and prevents the fixed header/footer from being measured as scrollable content.
+        communityPanelHost = new FrameLayout(this);
+        communityPanelHost.setVisibility(View.GONE);
+        communityPanelHost.setFocusable(false);
+        modalLayer.addView(communityPanelHost, match());
         sideDialog = new android.app.Dialog(this);
         sideDialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         sideDialog.setContentView(modalLayer);
         sideDialog.setCanceledOnTouchOutside(false);
         sideDialog.setOnKeyListener((dialog, keyCode, event) -> {
+            if ("discord.community".equals(currentPanelKey)
+                    && discordSocialPanelController != null
+                    && discordSocialPanelController.handleCommunityBack(event)) {
+                return true;
+            }
+            if ("discord.community".equals(currentPanelKey)
+                    && discordSocialPanelController != null
+                    && discordSocialPanelController.handleCommunityKey(event)) {
+                return true;
+            }
             if (handleVolumeAdjustment(event, sideDialog.getCurrentFocus())) return true;
-            if (keyCode == KeyEvent.KEYCODE_BACK && event.getAction() == KeyEvent.ACTION_UP) {
+            if ((keyCode == KeyEvent.KEYCODE_BACK || ("discord.community".equals(currentPanelKey)
+                    && keyCode == KeyEvent.KEYCODE_BUTTON_B)) && event.getAction() == KeyEvent.ACTION_UP) {
                 handlePanelBack();
                 return true;
             }
@@ -2832,8 +3011,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         if (!ConsoleActionCatalog.isOnline(host)) {
             hideSidePanel();
-            sessionOrchestrator.play(PlayIntent.sunshineApp(host.uuid, item.appId,
-                    item.originalAppName, false, item.key));
+            playSunshineApp(host,
+                    new NvApp(item.originalAppName, item.appId, false), item.key);
             return;
         }
         ConsoleUiFeedback.makeText(this, R.string.console_quick_launch_app_missing, Toast.LENGTH_LONG).show();
@@ -2931,8 +3110,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void launchQuickOrConfirm(ComputerDetails host, NvApp app, String quickKey) {
-        sessionOrchestrator.play(PlayIntent.sunshineApp(host.uuid, app.getAppId(),
-                app.getAppName(), app.isHdrSupported(), quickKey));
+        playSunshineApp(host, app, quickKey);
     }
 
     private void showOverridesPanel() {
@@ -3143,16 +3321,22 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             running = new NvApp(name == null ? "Moonlight" : name,
                     snapshot.hostGameAppId, false);
         }
+        String loadingArtworkGameId = snapshot.playniteGameId.isEmpty()
+                ? uniquePlayniteGameIdForRunningApp(host, running)
+                : snapshot.playniteGameId;
         PlayIntent intent = snapshot.playniteGameId.isEmpty()
                 ? PlayIntent.sunshineApp(host.uuid, running.getAppId(), running.getAppName(),
-                running.isHdrSupported(), "")
+                running.isHdrSupported(), "", loadingArtworkGameId)
                 : PlayIntent.playniteGame(host.uuid, running.getAppId(), running.getAppName(),
                 running.isHdrSupported(), snapshot.playniteGameId,
-                snapshot.playniteGameId);
+                loadingArtworkGameId);
         sessionOrchestrator.play(intent);
     }
-    private String uniquePlayniteGameIdForRunningApp(ComputerDetails host, int appId) {
+    private String uniquePlayniteGameIdForRunningApp(ComputerDetails host, NvApp app) {
         if (host == null || !host.uuid.equals(selectedHostUuid)) return "";
+        String synchronizedId = PlayniteTargetResolver.playniteGameId(app);
+        if (!synchronizedId.isEmpty()) return synchronizedId;
+        int appId = app == null ? 0 : app.getAppId();
         String match = "";
         for (PlayniteDashboardItem item : allPlayniteItems) {
             if (item.sunshineAppId == null || item.sunshineAppId != appId) continue;
@@ -3160,6 +3344,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             match = item.game.playniteGameId;
         }
         return HostGatewayClient.isPlayniteId(match) ? match : "";
+    }
+
+    private String uniquePlayniteGameIdForRunningApp(ComputerDetails host, int appId) {
+        return uniquePlayniteGameIdForRunningApp(host,
+                PlayniteTargetResolver.findById(loadApps(host, true), appId));
     }
 
     private void pairHost(ComputerDetails host) {
@@ -3541,7 +3730,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 suspended.sunshineAppId, false);
         PlayIntent intent = suspended.playniteGameId.isEmpty()
                 ? PlayIntent.sunshineApp(host.uuid, target.getAppId(), target.getAppName(),
-                false, "")
+                false, "", uniquePlayniteGameIdForRunningApp(host, target))
                 : PlayIntent.playniteGame(host.uuid, target.getAppId(), target.getAppName(),
                 false, suspended.playniteGameId, suspended.playniteGameId);
         sessionOrchestrator.play(intent);
@@ -3962,12 +4151,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             mainHandler.post(() -> {
                 vibepolloEnsureInFlight.remove(key);
                 if (ensured != null) {
-                    Integer appId = HostGatewayClient.parseVibepolloAppId(ensured);
-                    if (appId != null) {
-                        playniteLaunchTargetStore.setGameTarget(
-                                host.uuid, game.playniteGameId, appId);
-                    }
                     if (appListPoller != null) appListPoller.pollNow();
+                    return;
                 }
                 ComputerDetails current = currentHost(host.uuid);
                 if (current != null && host.uuid.equals(selectedHostUuid)) {
@@ -5829,12 +6014,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                    String previousResumeGameId,
                                    String previousSuspendedGameId,
                                    boolean sessionPresentationChanged) {
-        Object focusTag = getCurrentFocus() != null ? getCurrentFocus().getTag() : null;
+        View currentFocus = getCurrentFocus();
+        boolean carouselFocused = currentFocus != null && appRow != null
+                && isDescendant(appRow, currentFocus);
+        Object focusTag = carouselFocused ? currentFocus.getTag() : null;
         String focusedId = focusTag instanceof String &&
                 ((String) focusTag).startsWith("playnite:")
                 ? ((String) focusTag).substring("playnite:".length()) : null;
-        int previousIndex = getCurrentFocus() != null
-                ? Math.max(0, appRow.indexOfChild(getCurrentFocus())) : 0;
+        int previousIndex = carouselFocused
+                ? Math.max(0, appRow.indexOfChild(currentFocus)) : 0;
 
         List<PlayniteDashboardItem> items = requestedItems;
         if (focusedId != null && resumePlayniteGameId.isEmpty()
@@ -7586,7 +7774,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void playSunshineApp(ComputerDetails host, NvApp app, String quickLaunchId) {
         if (host == null || app == null) return;
         sessionOrchestrator.play(PlayIntent.sunshineApp(host.uuid, app.getAppId(),
-                app.getAppName(), app.isHdrSupported(), quickLaunchId));
+                app.getAppName(), app.isHdrSupported(), quickLaunchId,
+                uniquePlayniteGameIdForRunningApp(host, app)));
     }
 
     private void playPlayniteGame(ComputerDetails host, NvApp app, String gameId) {
@@ -9225,17 +9414,111 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showDiscordPanel() {
-        ComputerDetails host = hosts.get(selectedHostUuid);
-        if (host == null) {
-            ConsoleUiFeedback.makeText(this, R.string.console_select_host_first, Toast.LENGTH_LONG).show();
+        discordSocialPanelController.showHub();
+    }
+
+    private void startCommunityDictation(long recipientId, long directMessageGeneration) {
+        if (discordSocialPanelController == null
+                || !communityDictationSession.begin(recipientId, directMessageGeneration)) return;
+        if (!discordSocialPanelController.collapseCommunityKeyboardForDictation(recipientId,
+                directMessageGeneration)) {
+            communityDictationSession.finish();
             return;
         }
-        String address = host.activeAddress != null ? host.activeAddress.address : null;
-        discordPanelController.openDiscord(host.uuid, address, host.name);
+        Intent recognition = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+                .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                        RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
+        if (getPackageManager().resolveActivity(recognition, PackageManager.MATCH_DEFAULT_ONLY) == null) {
+            communityDictationSession.finish();
+            discordSocialPanelController.restoreCommunityKeyboardAfterDictation(recipientId,
+                    directMessageGeneration);
+            ConsoleUiFeedback.makeText(this, R.string.discord_dm_dictation_unavailable,
+                    Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            startActivityForResult(recognition, REQUEST_COMMUNITY_DICTATION);
+        } catch (ActivityNotFoundException | SecurityException error) {
+            communityDictationSession.finish();
+            discordSocialPanelController.restoreCommunityKeyboardAfterDictation(recipientId,
+                    directMessageGeneration);
+            ConsoleUiFeedback.makeText(this, R.string.discord_dm_dictation_failed,
+                    Toast.LENGTH_SHORT).show();
+        }
+    }
+
+    @Override
+    @SuppressWarnings("deprecation")
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQUEST_COMMUNITY_DICTATION || !communityDictationSession.isActive()) return;
+        long recipientId = communityDictationSession.recipientId();
+        long directMessageGeneration = communityDictationSession.directMessageGeneration();
+        communityDictationSession.finish();
+        if (discordSocialPanelController == null) return;
+        if (resultCode == RESULT_OK && data != null) {
+            ArrayList<String> results = data.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS);
+            String transcript = results == null || results.isEmpty() ? "" : results.get(0);
+            if (!TextUtils.isEmpty(transcript)) {
+                discordSocialPanelController.insertCommunityDictationResult(recipientId,
+                        directMessageGeneration, transcript);
+            }
+        }
+        discordSocialPanelController.restoreCommunityKeyboardAfterDictation(recipientId,
+                directMessageGeneration);
     }
 
     private void showSidePanel(String eyebrow, String title, String details, View... actions) {
-        showSidePanelInternal(eyebrow, title, details, false, actions);
+        showSidePanelInternal(eyebrow, title, details, false, false, actions);
+    }
+
+    private void showCommunityPanel(View shell) {
+        if (communityPanelHost == null) return;
+        boolean alreadyShowing = sideDialog != null && sideDialog.isShowing();
+        boolean sameCommunity = alreadyShowing && "discord.community".equals(currentPanelKey)
+                && communityPanelHost.getChildCount() == 1
+                && communityPanelHost.getChildAt(0) == shell;
+        if (!alreadyShowing) {
+            lastContentFocus = getCurrentFocus();
+            lastContentFocusTag = lastContentFocus != null ? lastContentFocus.getTag() : null;
+            panelHistory.clear();
+            homeLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+            homeLayer.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+            if (hostSelectionLayer != null) {
+                hostSelectionLayer.setImportantForAccessibility(
+                        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+                hostSelectionLayer.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
+            }
+        }
+        if (!sameCommunity) {
+            communityPanelHost.removeAllViews();
+            ViewParent parent = shell.getParent();
+            if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(shell);
+            communityPanelHost.addView(shell, match());
+        }
+        currentPanelKey = "discord.community";
+        sidePanelScroll.animate().cancel();
+        sidePanelScroll.setVisibility(View.GONE);
+        sidePanelScroll.setScrollLocked(false);
+        communityPanelHost.setVisibility(View.VISIBLE);
+        GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xFF0C111A, 0xFE0D121D, 0xFE090C13});
+        communityPanelHost.setBackground(background);
+        if (!alreadyShowing) {
+            sideDialog.show();
+            Window window = sideDialog.getWindow();
+            if (window != null) window.setLayout(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
+        }
+        communityPanelHost.setAlpha(1f);
+        communityPanelHost.setTranslationX(0f);
+        if (!sameCommunity) {
+            shell.post(() -> {
+                if ("discord.community".equals(currentPanelKey)) {
+                    discordSocialPanelController.focusCommunityEntry();
+                }
+            });
+        }
     }
 
     private void showRetainedStreamExitConfirmation() {
@@ -9340,17 +9623,24 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
     private void showScrollableDetailsSidePanel(String eyebrow, String title, String details,
                                                 View... actions) {
-        showSidePanelInternal(eyebrow, title, details, true, actions);
+        showSidePanelInternal(eyebrow, title, details, true, false, actions);
     }
 
     private void showSidePanelInternal(String eyebrow, String title, String details,
-                                       boolean scrollableDetails, View... actions) {
+                                       boolean scrollableDetails, boolean communityShell,
+                                       View... actions) {
+        if (communityPanelHost != null && communityPanelHost.getVisibility() == View.VISIBLE) {
+            communityPanelHost.removeAllViews();
+            communityPanelHost.setVisibility(View.GONE);
+            sidePanelScroll.setVisibility(View.VISIBLE);
+        }
         if (sidePanelBusyBanner != null) {
             ViewParent parent = sidePanelBusyBanner.getParent();
             if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(sidePanelBusyBanner);
             sidePanelBusyBanner = null;
         }
-        String nextKey = eyebrow + "\n" + title;
+        applySidePanelFrame(communityShell);
+        String nextKey = communityShell ? "discord.community" : eyebrow + "\n" + title;
         boolean alreadyShowing = sideDialog != null && sideDialog.isShowing();
         boolean samePanel = alreadyShowing && nextKey.equals(currentPanelKey);
         View previousPanelFocus = samePanel ? getCurrentFocus() : null;
@@ -9383,41 +9673,46 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         sidePanelTransient = false;
         sidePanel.removeAllViews();
-        sidePanel.addView(text(eyebrow, 12, 0xFFAFA4C9, true), wrapLinear());
-        TextView titleView = text(title, 29, Color.WHITE, true);
-        sidePanel.addView(titleView, sectionWithTop(10));
-        TextView detailView = text(details, 14, 0xFFC1C5D6, false);
-        if (scrollableDetails) {
-            detailView.setId(View.generateViewId());
-            detailView.setTag("panel.scrollable.details");
-            detailView.setFocusable(true);
-            detailView.setPadding(dp(6), dp(4), dp(6), dp(4));
-            detailView.setOnFocusChangeListener((view, focused) ->
-                    detailView.setTextColor(focused ? Color.WHITE : 0xFFC1C5D6));
-            detailView.setOnKeyListener((view, keyCode, event) -> {
-                if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-                int direction;
-                if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) direction = 1;
-                else if (keyCode == KeyEvent.KEYCODE_DPAD_UP) direction = -1;
-                else return false;
-                if (!sidePanelScroll.canScrollVertically(direction)) return false;
-                sidePanelScroll.smoothScrollBy(0, direction * dp(124));
-                return true;
-            });
-        }
-        LinearLayout.LayoutParams detailParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        detailParams.topMargin = dp(10);
-        detailParams.bottomMargin = dp(16);
-        sidePanel.addView(detailView, detailParams);
-        for (View action : actions) {
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+        if (communityShell) {
+            sidePanel.addView(actions[0], new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        } else {
+            sidePanel.addView(text(eyebrow, 12, 0xFFAFA4C9, true), wrapLinear());
+            TextView titleView = text(title, 29, Color.WHITE, true);
+            sidePanel.addView(titleView, sectionWithTop(10));
+            TextView detailView = text(details, 14, 0xFFC1C5D6, false);
+            if (scrollableDetails) {
+                detailView.setId(View.generateViewId());
+                detailView.setTag("panel.scrollable.details");
+                detailView.setFocusable(true);
+                detailView.setPadding(dp(6), dp(4), dp(6), dp(4));
+                detailView.setOnFocusChangeListener((view, focused) ->
+                        detailView.setTextColor(focused ? Color.WHITE : 0xFFC1C5D6));
+                detailView.setOnKeyListener((view, keyCode, event) -> {
+                    if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+                    int direction;
+                    if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) direction = 1;
+                    else if (keyCode == KeyEvent.KEYCODE_DPAD_UP) direction = -1;
+                    else return false;
+                    if (!sidePanelScroll.canScrollVertically(direction)) return false;
+                    sidePanelScroll.smoothScrollBy(0, direction * dp(124));
+                    return true;
+                });
+            }
+            LinearLayout.LayoutParams detailParams = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            params.bottomMargin = dp(7);
-            sidePanel.addView(action, params);
+            detailParams.topMargin = dp(10);
+            detailParams.bottomMargin = dp(16);
+            sidePanel.addView(detailView, detailParams);
+            for (View action : actions) {
+                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
+                params.bottomMargin = dp(7);
+                sidePanel.addView(action, params);
+            }
+            TextView hint = text(getString(R.string.console_back_close), 11, 0x8FFFFFFF, true);
+            sidePanel.addView(hint, sectionWithTop(12));
         }
-        TextView hint = text(getString(R.string.console_back_close), 11, 0x8FFFFFFF, true);
-        sidePanel.addView(hint, sectionWithTop(12));
         currentPanelKey = nextKey;
         if (!alreadyShowing) {
             sideDialog.show();
@@ -9426,12 +9721,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         }
         if (!alreadyShowing) {
-            sidePanelScroll.setTranslationX(reducedMotion ? 0 : dp(510));
-            if (!reducedMotion) {
+            sidePanelScroll.setTranslationX(communityShell || reducedMotion ? 0 : dp(510));
+            if (communityShell && !reducedMotion) {
+                sidePanelScroll.setAlpha(0f);
+                sidePanelScroll.animate().alpha(1f).setDuration(180).start();
+            } else if (!reducedMotion) {
                 sidePanelScroll.animate().translationX(0).setDuration(180).start();
             }
         } else {
             sidePanelScroll.animate().cancel();
+            sidePanelScroll.setAlpha(1f);
+            sidePanelScroll.setScaleX(1f);
+            sidePanelScroll.setScaleY(1f);
             sidePanelScroll.setTranslationX(0);
         }
         wireModalFocusTrap(false);
@@ -9454,6 +9755,45 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (!samePanel) {
             sidePanelScroll.post(() -> sidePanelScroll.scrollTo(0, 0));
         }
+    }
+
+    private void applySidePanelFrame(boolean communityShell) {
+        if (sidePanelScroll == null || sidePanel == null) return;
+        sidePanelScroll.setScrollLocked(communityShell);
+        FrameLayout.LayoutParams frame = (FrameLayout.LayoutParams) sidePanelScroll.getLayoutParams();
+        if (communityShell) {
+            frame.width = ViewGroup.LayoutParams.MATCH_PARENT;
+            frame.height = ViewGroup.LayoutParams.MATCH_PARENT;
+            frame.gravity = Gravity.CENTER;
+            frame.leftMargin = 0;
+            frame.topMargin = 0;
+            frame.rightMargin = 0;
+            frame.bottomMargin = 0;
+            GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                    new int[]{0xFF0C111A, 0xFE0D121D, 0xFE090C13});
+            sidePanelScroll.setBackground(background);
+            sidePanel.setPadding(0, 0, 0, 0);
+            ViewGroup.LayoutParams content = sidePanel.getLayoutParams();
+            content.height = ViewGroup.LayoutParams.MATCH_PARENT;
+            sidePanel.setLayoutParams(content);
+            return;
+        }
+        frame.width = dp(510);
+        frame.height = ViewGroup.LayoutParams.MATCH_PARENT;
+        frame.gravity = Gravity.END;
+        frame.leftMargin = 0;
+        frame.topMargin = 0;
+        frame.rightMargin = 0;
+        frame.bottomMargin = 0;
+        GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                new int[]{0xFC1A2028, 0xFC12171E, 0xFF090C10});
+        background.setCornerRadii(new float[]{dp(24), dp(24), 0, 0, 0, 0, dp(24), dp(24)});
+        background.setStroke(dp(1), 0x704A6677);
+        sidePanelScroll.setBackground(background);
+        sidePanel.setPadding(dp(34), dp(26), dp(34), dp(20));
+        ViewGroup.LayoutParams content = sidePanel.getLayoutParams();
+        content.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+        sidePanel.setLayoutParams(content);
     }
 
     private void showSidePanelBusy(String eyebrow, String title, String details) {
@@ -9481,7 +9821,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void hideSidePanel() {
         Runnable finish = this::completeSidePanelDismissal;
-        if (reducedMotion) finish.run();
+        if (reducedMotion || "discord.community".equals(currentPanelKey)) finish.run();
         else sidePanelScroll.animate().translationX(dp(510)).setDuration(150).withEndAction(finish).start();
     }
 
@@ -9491,12 +9831,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void completeSidePanelDismissal() {
+        if (discordSocialPanelController != null) discordSocialPanelController.closePanel();
         if (discordPanelController != null) discordPanelController.closePanel();
         if (sideDialog != null) sideDialog.dismiss();
+        if (communityPanelHost != null) {
+            communityPanelHost.removeAllViews();
+            communityPanelHost.setVisibility(View.GONE);
+        }
+        sidePanelScroll.setVisibility(View.VISIBLE);
         sidePanelScroll.setTranslationX(0);
         sidePanelScroll.setAlpha(1f);
         sidePanelScroll.setScaleX(1f);
         sidePanelScroll.setScaleY(1f);
+        applySidePanelFrame(false);
         panelHistory.clear();
         currentPanelKey = null;
         sidePanelBusyBanner = null;
@@ -9526,8 +9873,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void handlePanelBack() {
+        if (discordSocialPanelController != null && discordSocialPanelController.prepareForPanelBack()) return;
         if (!panelHistory.isEmpty()) {
             PanelSnapshot snapshot = panelHistory.pop();
+            applySidePanelFrame("discord.community".equals(snapshot.key));
             sidePanel.removeAllViews();
             for (View child : snapshot.children) sidePanel.addView(child);
             currentPanelKey = snapshot.key;
@@ -9575,8 +9924,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             View item = focusable.get(index);
             View up = focusable.get(Math.max(0, index - 1));
             View down = focusable.get(Math.min(focusable.size() - 1, index + 1));
-            item.setNextFocusUpId(up.getId());
-            item.setNextFocusDownId(down.getId());
+            if (!isSpatialDiscordTile(item)) {
+                if (item.getNextFocusUpId() == View.NO_ID) item.setNextFocusUpId(up.getId());
+                if (item.getNextFocusDownId() == View.NO_ID) item.setNextFocusDownId(down.getId());
+            }
         }
         if (requestFirst) focusable.get(0).post(focusable.get(0)::requestFocus);
     }
@@ -9585,6 +9936,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         List<View> focusable = new ArrayList<>();
         collectFocusable(sidePanel, focusable);
         if (!focusable.isEmpty()) focusable.get(0).post(focusable.get(0)::requestFocus);
+    }
+
+    private boolean isSpatialDiscordTile(View view) {
+        Object tag = view.getTag();
+        return tag instanceof String && ((String) tag).startsWith("discord.");
     }
 
     private boolean isDescendant(ViewGroup ancestor, View view) {
@@ -9637,7 +9993,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         action.setMinHeight(dp(46));
         action.setPadding(dp(16), dp(7), dp(16), dp(7));
         action.setOnFocusChangeListener((view, focused) -> {
-            styleCompactButton(action, focused);
+            if (DiscordPanelViews.isTile(action)) DiscordPanelViews.styleTile(action, focused);
+            else styleCompactButton(action, focused);
             if (focused) revealSidePanelFocus(action);
         });
         styleCompactButton(action, false);

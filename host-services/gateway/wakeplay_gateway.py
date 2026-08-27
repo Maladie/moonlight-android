@@ -930,6 +930,14 @@ class GatewayState:
         else:
             return HTTPStatus.NOT_FOUND, {"error": "Unknown Playnite action."}
         ok, result = self.proxy_json("playnite", path, payload, timeout=timeout)
+        accepted = not isinstance(result, dict) or bool(result.get("accepted", True))
+        if ok and action in {"game/install", "game/uninstall"} and not accepted:
+            return HTTPStatus.OK, {
+                "ok": False,
+                "action": action,
+                "result": result,
+                "error": str(result.get("reason") or "Playnite action was rejected."),
+            }
         return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), {
             "ok": ok,
             "action": action,

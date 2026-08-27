@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="discord_panel_modern_social_card">%1$s\n%2$s</string>
+    <string name="discord_panel_modern_voice_card">%1$s\n%2$s</string>
+    <string name="discord_host_voice_pc_card_summary">Discord RPC przez Host Control na PC</string>
+    <string name="discord_show_all_servers">Pokaż wszystkie serwery · %1$d</string>
+    <string name="discord_show_fewer_servers">Pokaż mniej</string>
+    <string name="discord_community_title">Społeczność</string>
+    <string name="discord_community_details">Znajomi i miejsca głosowe dostępne teraz.</string>
+    <string name="discord_community_together">Razem</string>
+    <string name="discord_community_friends">Znajomi</string>
+    <string name="discord_community_servers">Serwery</string>
+    <string name="discord_community_active">Aktywne teraz</string>
+    <string name="discord_community_recent">Ostatnie</string>
+    <string name="discord_community_loading">Wczytywanie dostępnych miejsc…</string>
+    <string name="discord_community_host_unavailable">Miejsca głosowe pojawią się, gdy sparowany host będzie dostępny.</string>
+    <string name="discord_community_no_active">Żaden znajomy nie jest teraz aktywny.</string>
+    <string name="discord_community_playing">Gra</string>
+    <string name="discord_community_online">Online</string>
+    <string name="discord_community_offline">Offline</string>
+    <string name="discord_community_connected">Połączono</string>
+    <string name="discord_community_voice_channels">Kanały głosowe</string>
+    <string name="discord_community_people">%1$d osób</string>
+    <string name="discord_community_selected">WYBRANE</string>
+    <string name="discord_community_open">Otwórz</string>
+    <string name="discord_community_footer">✕ Otwórz   ○ Zamknij</string>
+    <string name="discord_community_join">Dołącz</string>
+    <string name="discord_community_profile">Profil</string>
+    <string name="discord_social_show_offline">Pokaż offline · %1$d</string>
+    <string name="discord_social_hide_offline">Ukryj offline · %1$d</string>
+    <string name="discord_join_success">Połączono z #%1$s</string>
+    <string name="discord_join_failed">Nie udało się dołączyć: %1$s</string>
+    <string name="discord_join_not_confirmed">Discord nie potwierdził zmiany kanału.</string>
+    <string name="discord_community_options">Opcje Discorda</string>
+    <string name="discord_community_left">Opuszczono kanał</string>
+    <string name="discord_community_voice_updated">Zaktualizowano ustawienia głosu</string>
+    <string name="discord_community_voice_failed">Nie udało się zaktualizować głosu: %1$s</string>
+    <string name="discord_community_updating_voice">Aktualizowanie głosu…</string>
+    <string name="discord_community_integration">Integracja: %1$s</string>
+    <string name="discord_community_auto_connect">Automatyczne łączenie: %1$s</string>
+    <string name="discord_community_auto_join">Automatyczne dołączanie: %1$s</string>
+    <string name="discord_community_host_status">Bridge: %1$s · RPC: %2$s · Konto: %3$s</string>
+</resources>

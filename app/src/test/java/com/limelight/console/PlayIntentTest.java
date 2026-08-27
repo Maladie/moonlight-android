@@ -49,6 +49,15 @@ public class PlayIntentTest {
         assertFalse(intent.matches(snapshot("host", 7, "game-b")));
     }
 
+    @Test public void directSunshineTargetMayRetainLoadingArtworkIdentity() {
+        PlayIntent intent = PlayIntent.sunshineApp(
+                "host", 42, "App", false, "", " GAME-B ");
+
+        assertTrue("game-b".equals(intent.loadingArtworkGameId));
+        assertTrue(intent.playniteGameId.isEmpty());
+        assertTrue(intent.matches(snapshot("host", 42, "different-game")));
+    }
+
     @Test public void fullscreenDoesNotMatchIdentifiedPlayniteGame() {
         PlayIntent intent = PlayIntent.playniteFullscreen("host", 42, "Playnite", false);
 
