@@ -26,3 +26,5 @@
 # jMDNS
 -dontwarn javax.jmdns.impl.DNSCache
 -dontwarn org.slf4j.**
+-keep class com.discord.** { *; }
+-keep class org.webrtc.** { *; }

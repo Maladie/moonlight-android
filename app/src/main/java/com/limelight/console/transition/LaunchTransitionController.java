@@ -193,6 +193,21 @@ public final class LaunchTransitionController {
         evaluateReady();
     }
 
+    public synchronized void launcherInteractionRequired(
+            String transitionId, String hostId, String gameId, String reason) {
+        if (!acceptTarget(transitionId, hostId, LaunchTransitionType.GAME, gameId)
+                || revealAuthorized || revealCompleted) return;
+        overlayVisible = true;
+        inputBlocked = true;
+        revealAuthorized = false;
+        revealCompleted = false;
+        targetWindowReady = false;
+        detail = reason == null ? "" : reason;
+        state = LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED;
+        manualRevealAvailable = surfaceReady && streamConnected && videoFrameReady && inputReady;
+        publish();
+    }
+
     public synchronized void gameStopping(String transitionId, String hostId, String gameId) {
         if (!acceptTarget(transitionId, hostId, LaunchTransitionType.GAME, gameId)) return;
         overlayVisible = true;
@@ -378,6 +393,7 @@ public final class LaunchTransitionController {
                 return 3;
             case PLAYNITE_FULLSCREEN_STARTING:
             case GAME_WINDOW_STABILIZING:
+            case LAUNCHER_INTERACTION_REQUIRED:
             case GAME_STOPPING:
             case PLAYNITE_RETURNING:
             case PLAYNITE_STOPPING:

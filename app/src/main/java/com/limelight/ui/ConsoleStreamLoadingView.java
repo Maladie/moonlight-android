@@ -274,6 +274,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         statusView.setText(status == null || status.trim().isEmpty()
                 ? getContext().getString(R.string.transition_preparing_session) : status);
         activityView.setVisibility(currentStep == 5 ? INVISIBLE : VISIBLE);
+        cancelView.setText(R.string.transition_cancel);
         retryView.setVisibility(GONE);
         showAnywayView.setVisibility(GONE);
         renderSteps();
@@ -304,10 +305,36 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         statusView.setText(details);
         statusView.setTextColor(0xFFFFAAA2);
         activityView.setVisibility(INVISIBLE);
+        cancelView.setText(R.string.transition_cancel);
         retryView.setVisibility(VISIBLE);
         showAnywayView.setVisibility(allowShowAnyway ? VISIBLE : GONE);
         renderSteps();
         retryView.requestFocus();
+        sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+    }
+
+    public void showLauncherInteraction(String title, String details, boolean allowReveal) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(() -> showLauncherInteraction(title, details, allowReveal));
+            return;
+        }
+        if (stopped) return;
+        error = true;
+        handler.removeCallbacks(rotateMessage);
+        messageView.animate().cancel();
+        messageView.setAlpha(1f);
+        messageView.setText(title);
+        statusView.setText(details);
+        statusView.setTextColor(0xFFFFAAA2);
+        activityView.setVisibility(INVISIBLE);
+        cancelView.setText(R.string.transition_back);
+        retryView.setVisibility(GONE);
+        showAnywayView.setVisibility(allowReveal ? VISIBLE : GONE);
+        cancelView.setNextFocusRightId(showAnywayView.getId());
+        showAnywayView.setNextFocusLeftId(cancelView.getId());
+        renderSteps();
+        if (allowReveal) showAnywayView.requestFocus();
+        else cancelView.requestFocus();
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
     }
 

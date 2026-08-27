@@ -22,6 +22,17 @@ final class PlayniteTargetResolver {
             return new PlayniteDashboardItem(game, null, "",
                     PlayniteDashboardItem.MappingState.NOT_INSTALLED);
         }
+        if (appListAuthoritative) {
+            NvApp synchronizedApp = findByUuid(apps, game.playniteGameId);
+            if (synchronizedApp != null) {
+                if (store != null) {
+                    store.setGameTarget(hostUuid, game.playniteGameId,
+                            synchronizedApp.getAppId());
+                }
+                return new PlayniteDashboardItem(game, synchronizedApp.getAppId(),
+                        synchronizedApp.getAppName(), PlayniteDashboardItem.MappingState.MAPPED);
+            }
+        }
         Integer saved = store != null ? store.gameTarget(hostUuid, game.playniteGameId) : null;
         NvApp mapped = findById(apps, saved);
         if (mapped != null) {
@@ -91,10 +102,18 @@ final class PlayniteTargetResolver {
         return null;
     }
 
+    static String playniteGameId(NvApp app) {
+        String uuid = app == null ? "" : normalizeUuid(app.getAppUuid());
+        return HostGatewayClient.isPlayniteId(uuid) ? uuid : "";
+    }
+
     static NvApp launchTarget(PlayniteDashboardItem item, List<NvApp> apps,
                               boolean hostOnline) {
-        if (item == null || item.sunshineAppId == null) return null;
-        NvApp current = findById(apps, item.sunshineAppId);
+        if (item == null) return null;
+        NvApp current = findByUuid(apps, item.game.playniteGameId);
+        if (current != null) return current;
+        if (item.sunshineAppId == null) return null;
+        current = findById(apps, item.sunshineAppId);
         if (current != null || hostOnline) return current;
         String name = item.sunshineAppName.isEmpty()
                 ? item.game.name : item.sunshineAppName;

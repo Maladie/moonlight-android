@@ -1030,6 +1030,7 @@
     <string name="transition_verifying_readiness">Weryfikowanie gotowości</string>
     <string name="transition_ready">Gotowe</string>
     <string name="transition_cancel">Anuluj</string>
+    <string name="transition_back">Powrót</string>
     <string name="transition_retry">Ponów</string>
     <string name="transition_show_anyway">Pokaż obraz mimo to</string>
     <string name="transition_reveal_now">Odsłoń teraz</string>
@@ -1048,6 +1049,7 @@
     <string name="transition_gateway_unavailable">Gateway jest niedostępny</string>
     <string name="transition_stream_disconnected">Stream został rozłączony</string>
     <string name="transition_readiness_unconfirmed">Nie udało się potwierdzić gotowości</string>
+    <string name="transition_launcher_interaction_required">Launcher gry wymaga Twojej uwagi. Odsłoń stream, aby kontynuować, albo wróć, aby go zakończyć.</string>
     <string name="transition_host_session_locked">Sesja Windows jest zablokowana. Wybierz Odsłoń teraz, a następnie wpisz hasło systemu Windows.</string>
     <string name="transition_stream_display_not_configured">Wyświetlacz streamowany przez host nie jest skonfigurowany</string>
     <string name="transition_step_pending">○  %1$s — oczekuje</string>
@@ -1057,4 +1059,18 @@
     <string name="transition_waiting_gateway">Oczekiwanie na potwierdzenie gotowości hosta…</string>
     <string name="transition_window_stabilizing">Okno docelowe stabilizuje się…</string>
     <string name="transition_cancel_details">Start został anulowany. Bezpieczny powrót do dashboardu.</string>
+    <string name="discord_hub_title">Discord</string>
+    <string name="discord_hub_details">Połącz konto Discord na tym urządzeniu albo zarządzaj dotychczasową integracją głosową hosta.</string>
+    <string name="discord_social_action">Discord Social</string>
+    <string name="discord_host_voice_action">Integracja głosowa hosta</string>
+    <string name="discord_social_sdk_missing">Ten build nie zawiera Discord Social SDK. Integracja głosowa hosta nadal jest dostępna.</string>
+    <string name="discord_social_title">Discord Social</string>
+    <string name="discord_social_details">Połącz konto raz, aby pokazać konto Discord i znajomych w MoonWakerze.</string>
+    <string name="discord_social_connect">Połącz Discord</string>
+    <string name="discord_social_not_connected">Nie połączono</string>
+    <string name="discord_social_authorizing">Otwieranie autoryzacji Discord…</string>
+    <string name="discord_social_connected_as">%1$s · %2$s</string>
+    <string name="discord_social_no_friends">Znajomi pojawią się po nawiązaniu połączenia.</string>
+    <string name="discord_social_friends">Znajomi (%1$d)\n%2$s</string>
+    <string name="discord_social_error">Błąd Discorda: %1$s</string>
 </resources>

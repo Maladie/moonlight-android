@@ -10,9 +10,9 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.17.0")]
-[assembly: AssemblyFileVersion("0.7.17.0")]
-[assembly: AssemblyInformationalVersion("0.7.17+2026.08.25")]
+[assembly: AssemblyVersion("0.7.28.0")]
+[assembly: AssemblyFileVersion("0.7.28.0")]
+[assembly: AssemblyInformationalVersion("0.7.28+2026.08.26")]
 
 namespace MoonWaker.HostControl
 {

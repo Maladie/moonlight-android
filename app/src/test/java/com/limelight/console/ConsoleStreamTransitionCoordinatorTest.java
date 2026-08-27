@@ -61,6 +61,33 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void failedHostLaunchStopsWaitingForReadinessImmediately() {
+        FakeGateway gateway = gatewayWith(snapshot(true, true, "failed", GAME, 0,
+                false, "game", 0, "legendary_process_failed"));
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+
+        harness.runObservation();
+
+        assertEquals(LaunchTransitionState.ERROR, harness.controller.snapshot().state);
+        assertEquals("unconfirmed", harness.controller.snapshot().detail);
+    }
+
+    @Test
+    public void launcherAttentionIsProviderIndependentAndStopsReadinessTimeout() {
+        FakeGateway gateway = gatewayWith(snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "launcher_interaction_required"));
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        makeTransportReady(harness.controller);
+
+        harness.runObservation();
+
+        assertEquals(LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED,
+                harness.controller.snapshot().state);
+        assertEquals("reveal launcher", harness.controller.snapshot().detail);
+        assertTrue(harness.controller.snapshot().manualRevealAvailable);
+    }
+
+    @Test
     public void lockedSessionUsesOneManualPrivacyGateUntilUnlocked() {
         PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "running", GAME, 42,
                 false, "game", 0, "host_session_locked");
@@ -207,6 +234,18 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(Collections.singletonList("failed"), harness.callbacks.failed);
         assertTrue(harness.callbacks.attention.isEmpty());
         assertEquals(1, gateway.ensureTargetCalls);
+    }
+
+    @Test
+    public void terminalInstallationFailureWithoutPendingMarkerIsIgnored() {
+        FakeGateway gateway = gatewayWith(snapshotReadyPlaynite());
+        gateway.events.add(events(1,
+                event(1, "game-installation-failed", "failed", "Failed")));
+        Harness harness = new Harness(LaunchTransitionType.PLAYNITE, gateway);
+
+        harness.runObservation();
+
+        assertTrue(harness.callbacks.failed.isEmpty());
     }
 
     @Test
@@ -556,6 +595,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         @Override public String hostSessionLockedMessage() { return "host locked"; }
         @Override public String streamDisplayNotConfiguredMessage() { return "display missing"; }
         @Override public String readinessUnconfirmedMessage() { return "unconfirmed"; }
+        @Override public String launcherInteractionRequiredMessage() { return "reveal launcher"; }
         @Override public String windowStabilizingMessage() { return "stabilizing"; }
         @Override public boolean isPendingInstallation(String hostId, String gameId) {
             return pending.contains(gameId);

@@ -41,8 +41,18 @@ foreach ($component in @(
         foreach ($ownerPid in $owners) {
             $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
             $commandLine = if ($process) { [string]$process.CommandLine } else { "" }
+            $verifiedPlaynite = $false
+            if ($component.name -eq "Playnite" -and [string]::IsNullOrWhiteSpace($commandLine)) {
+                try {
+                    $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2
+                    $verifiedPlaynite = [int]$health.pid -eq [int]$ownerPid -and
+                        -not [string]::IsNullOrWhiteSpace([string]$health.version) -and
+                        ($null -ne $health.connector_connected -or
+                         [string]$health.component -eq "playnite")
+                } catch {}
+            }
             if ($commandLine -like "*$ProfileRoot*" -or $commandLine -like "*Bridge*" -or
-                $commandLine -like "*PlayniteBridge.py*") {
+                $commandLine -like "*PlayniteBridge.py*" -or $verifiedPlaynite) {
                 Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
             }
         }

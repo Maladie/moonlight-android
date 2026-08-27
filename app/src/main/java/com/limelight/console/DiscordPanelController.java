@@ -13,8 +13,10 @@ import android.widget.SeekBar;
 import android.widget.TextView;
 
 import com.limelight.R;
+import com.limelight.LimeLog;
 import com.limelight.gateway.GatewayConnection;
 
+import java.io.IOException;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
@@ -22,6 +24,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 
 /** Owns the Gateway pairing and Discord panel tree without participating in streaming. */
 final class DiscordPanelController {
+    private static final int COLLAPSED_GUILD_COUNT = 4;
     interface Ui {
         TextView action(String label);
         TextView back(String label);
@@ -33,6 +36,47 @@ final class DiscordPanelController {
 
     private interface Task<T> { T run() throws Exception; }
     private interface Result<T> { void accept(T value); }
+    interface CommunityHomeCallback {
+        void onHome(HostGatewayClient.DiscordHome home);
+        void onUnavailable();
+    }
+    interface CommunityChannelsCallback {
+        void onChannels(List<HostGatewayClient.DiscordChannel> channels);
+        void onUnavailable();
+    }
+    interface CommunityActionCallback {
+        void onComplete(HostGatewayClient.DiscordVoice verifiedVoice);
+        void onError(String safeMessage);
+    }
+    enum CommunityVoiceAction { LEAVE, MUTE, DEAFEN }
+    enum CommunitySetting { INTEGRATION, AUTO_CONNECT, AUTO_JOIN_LAST }
+    enum CommunityHostAction { START, RECONNECT, REFRESH_STATUS }
+    static final class CommunityOptions {
+        final boolean integrationEnabled;
+        final boolean autoConnect;
+        final boolean autoJoinLast;
+        final HostGatewayClient.DiscordStatus status;
+
+        CommunityOptions(boolean integrationEnabled, boolean autoConnect, boolean autoJoinLast,
+                         HostGatewayClient.DiscordStatus status) {
+            this.integrationEnabled = integrationEnabled;
+            this.autoConnect = autoConnect;
+            this.autoJoinLast = autoJoinLast;
+            this.status = status;
+        }
+    }
+    interface CommunityVoiceCallback {
+        void onVoice(HostGatewayClient.DiscordVoice voice);
+        void onError(String safeMessage);
+    }
+    interface CommunityOptionsCallback {
+        void onOptions(CommunityOptions options);
+        void onError(String safeMessage);
+    }
+    interface CommunityAudioCallback {
+        void onAudio(HostGatewayClient.DiscordAudioState audio);
+        void onError(String safeMessage);
+    }
 
     private final Context context;
     private final android.os.Handler mainHandler;
@@ -46,6 +90,7 @@ final class DiscordPanelController {
     private String hostAddress;
     private String hostName;
     private int currentPanelTitle = R.string.host_integrations_title;
+    private boolean showAllGuilds;
 
     DiscordPanelController(Context context, android.os.Handler mainHandler,
                            ExecutorService executor, Ui ui) {
@@ -70,6 +115,7 @@ final class DiscordPanelController {
         hostAddress = address;
         hostName = name == null || name.isEmpty()
                 ? context.getString(R.string.discord_selected_host) : name;
+        showAllGuilds = false;
         GatewayConnection connection = connection();
         if (connection == null) {
             TextView pair = ui.action(context.getString(R.string.gateway_pair_action));
@@ -213,8 +259,20 @@ final class DiscordPanelController {
         showDiscordBusy(context.getString(R.string.discord_loading_title),
                 context.getString(R.string.discord_loading_home));
         load(context.getString(R.string.discord_home_error),
-                () -> loadDiscordHome(connection, force), home -> {
+                () -> loadDiscordHome(connection, force), home -> renderDiscordHome(connection, home),
+                () -> showDiscordServers(true));
+    }
+
+    private void renderDiscordHome(GatewayConnection connection, HostGatewayClient.DiscordHome home) {
             List<View> actions = new ArrayList<>();
+            TextView settings = DiscordPanelViews.tile(ui.action(
+                    context.getString(R.string.discord_settings_action)), "discord.voice.settings");
+            settings.setOnClickListener(view -> showDiscordSettings(connection));
+            TextView refresh = DiscordPanelViews.tile(ui.action(context.getString(R.string.discord_refresh)),
+                    "discord.voice.refresh");
+            refresh.setOnClickListener(view -> showDiscordServers(true));
+            TextView back = ui.back(context.getString(R.string.discord_back_action));
+            DiscordPanelViews.tile(back, null);
             addChannelGroup(actions, context.getString(R.string.discord_favorites),
                     home.favorites, connection);
             addChannelGroup(actions, context.getString(R.string.discord_recent),
@@ -224,28 +282,66 @@ final class DiscordPanelController {
             String selectedGuild = store.loadLastDiscordGuildId(hostUuid, connection.profileId());
             if (home.guilds.isEmpty()) actions.add(ui.label(
                     context.getString(R.string.discord_no_servers)));
-            for (HostGatewayClient.DiscordGuild guild : home.guilds) {
+            List<String> guildIds = new ArrayList<>();
+            for (HostGatewayClient.DiscordGuild guild : home.guilds) guildIds.add(guild.id);
+            List<String> visibleIds = visibleGuildIds(guildIds, selectedGuild,
+                    showAllGuilds ? home.guilds.size() : COLLAPSED_GUILD_COUNT);
+            List<View> guildTiles = new ArrayList<>();
+            for (String guildId : visibleIds) {
+                HostGatewayClient.DiscordGuild guild = findGuild(home.guilds, guildId);
+                if (guild == null) continue;
                 String suffix = guild.id.equals(selectedGuild)
                         ? context.getString(R.string.discord_selected_suffix) : "";
-                TextView action = ui.action(guild.name + suffix + "  ›");
+                TextView action = DiscordPanelViews.tile(ui.action(guild.name + suffix + "  ›"),
+                        "discord.voice.guild:" + guild.id);
                 action.setOnClickListener(view -> {
                     store.saveLastDiscordGuild(hostUuid, connection.profileId(),
                             guild.id, guild.name);
                     showDiscordChannels(connection, guild, false);
                 });
-                actions.add(action);
+                guildTiles.add(action);
             }
-            TextView settings = ui.action(context.getString(R.string.discord_settings_action));
-            settings.setOnClickListener(view -> showDiscordSettings(connection));
-            TextView refresh = ui.action(context.getString(R.string.discord_refresh));
-            refresh.setOnClickListener(view -> showDiscordServers(true));
-            TextView back = ui.back(context.getString(R.string.discord_back_action));
-            actions.add(settings); actions.add(refresh); actions.add(back);
+            if (!guildTiles.isEmpty()) actions.add(DiscordPanelViews.twoColumnGrid(context,
+                    guildTiles, dp(8)));
+            if (home.guilds.size() > COLLAPSED_GUILD_COUNT) {
+                TextView toggle = DiscordPanelViews.tile(ui.action(context.getString(showAllGuilds
+                        ? R.string.discord_show_fewer_servers
+                        : R.string.discord_show_all_servers, home.guilds.size())),
+                        "discord.voice.guilds.toggle");
+                toggle.setOnClickListener(view -> {
+                    showAllGuilds = toggleGuildVisibility(showAllGuilds);
+                    renderDiscordHome(connection, home);
+                });
+                actions.add(toggle);
+            }
+            actions.add(DiscordPanelViews.twoColumnGrid(context,
+                    java.util.Arrays.asList(settings, refresh, back), dp(8)));
             ui.show(context.getString(R.string.discord_panel_title),
                     context.getString(R.string.discord_home_title),
                     context.getString(R.string.discord_home_details),
                     actions.toArray(new View[0]));
-        }, () -> showDiscordServers(true));
+    }
+
+    static List<String> visibleGuildIds(List<String> guildIds, String selectedGuildId, int limit) {
+        List<String> visible = new ArrayList<>();
+        if (selectedGuildId != null && guildIds.contains(selectedGuildId)) visible.add(selectedGuildId);
+        for (String guildId : guildIds) {
+            if (visible.size() == limit) break;
+            if (!guildId.equals(selectedGuildId)) visible.add(guildId);
+        }
+        return visible;
+    }
+
+    static boolean toggleGuildVisibility(boolean showAllGuilds) {
+        return !showAllGuilds;
+    }
+
+    private HostGatewayClient.DiscordGuild findGuild(List<HostGatewayClient.DiscordGuild> guilds,
+                                                      String guildId) {
+        for (HostGatewayClient.DiscordGuild guild : guilds) {
+            if (guild.id.equals(guildId)) return guild;
+        }
+        return null;
     }
 
     private void showDiscordGatewayRequired() {
@@ -279,11 +375,14 @@ final class DiscordPanelController {
                                  GatewayConnection connection) {
         if (channels.isEmpty()) return;
         actions.add(ui.label(title));
+        List<View> tiles = new ArrayList<>();
         for (HostGatewayClient.DiscordChannel channel : channels) {
-            TextView action = ui.action("#  " + channel.name + "  ·  " + channel.guildName);
+            TextView action = DiscordPanelViews.tile(ui.action("#  " + channel.name + "\n"
+                    + channel.guildName), "discord.voice.channel:" + channel.id);
             action.setOnClickListener(view -> showDiscordChannel(connection, channel, false));
-            actions.add(action);
+            tiles.add(action);
         }
+        actions.add(DiscordPanelViews.twoColumnGrid(context, tiles, dp(8)));
     }
 
     private void showDiscordChannels(GatewayConnection connection,
@@ -293,18 +392,25 @@ final class DiscordPanelController {
         load(context.getString(R.string.discord_channels_error),
                 () -> client.getDiscordChannels(connection, guild, force), channels -> {
             List<View> actions = new ArrayList<>();
-            if (channels.isEmpty()) actions.add(ui.label(
-                    context.getString(R.string.discord_no_channels)));
-            for (HostGatewayClient.DiscordChannel channel : channels) {
-                String people = channel.people >= 0 ? "  ·  " + channel.people : "";
-                TextView action = ui.action((channel.favorite ? "★  " : "#  ") + channel.name + people);
-                action.setOnClickListener(view -> showDiscordChannel(connection, channel, false));
-                actions.add(action);
-            }
-            TextView refresh = ui.action(context.getString(R.string.discord_refresh));
+            TextView refresh = DiscordPanelViews.tile(ui.action(context.getString(R.string.discord_refresh)),
+                    "discord.voice.refresh.channels");
             refresh.setOnClickListener(view -> showDiscordChannels(connection, guild, true));
             TextView back = ui.back(context.getString(R.string.discord_back_action));
-            actions.add(refresh); actions.add(back);
+            DiscordPanelViews.tile(back, null);
+            if (channels.isEmpty()) actions.add(ui.label(
+                    context.getString(R.string.discord_no_channels)));
+            List<View> channelTiles = new ArrayList<>();
+            for (HostGatewayClient.DiscordChannel channel : channels) {
+                String people = channel.people >= 0 ? "  ·  " + channel.people : "";
+                TextView action = DiscordPanelViews.tile(ui.action((channel.favorite ? "★  " : "#  ")
+                        + channel.name + people), "discord.voice.channel:" + channel.id);
+                action.setOnClickListener(view -> showDiscordChannel(connection, channel, false));
+                channelTiles.add(action);
+            }
+            if (!channelTiles.isEmpty()) actions.add(DiscordPanelViews.twoColumnGrid(context,
+                    channelTiles, dp(8)));
+            actions.add(DiscordPanelViews.twoColumnGrid(context,
+                    java.util.Arrays.asList(refresh, back), dp(8)));
             ui.show(context.getString(R.string.discord_panel_title), guild.name,
                     context.getString(R.string.discord_select_channel),
                     actions.toArray(new View[0]));
@@ -319,31 +425,35 @@ final class DiscordPanelController {
                 () -> client.getDiscordVoice(connection, force), voice -> {
             boolean active = voice.connected && channel.id.equals(voice.channelId);
             List<View> actions = new ArrayList<>();
+            List<View> voiceActions = new ArrayList<>();
             if (active) {
-                TextView mute = ui.action(context.getString(voice.muted
-                        ? R.string.overlay_discord_unmute : R.string.overlay_discord_mute));
+                TextView mute = DiscordPanelViews.tile(ui.action(context.getString(voice.muted
+                        ? R.string.overlay_discord_unmute : R.string.overlay_discord_mute)),
+                        "discord.voice.mute");
                 mute.setOnClickListener(view -> operation(
                         context.getString(R.string.discord_updating_microphone),
                         () -> client.setDiscordVoiceFlag(connection, "mute", "toggle"),
                         () -> showDiscordChannel(connection, channel, true)));
-                TextView deafen = ui.action(context.getString(voice.deafened
-                        ? R.string.discord_enable_audio : R.string.discord_disable_audio));
+                TextView deafen = DiscordPanelViews.tile(ui.action(context.getString(voice.deafened
+                        ? R.string.discord_enable_audio : R.string.discord_disable_audio)),
+                        "discord.voice.deafen");
                 deafen.setOnClickListener(view -> operation(
                         context.getString(R.string.discord_updating_audio),
                         () -> client.setDiscordVoiceFlag(connection, "deafen", "toggle"),
                         () -> showDiscordChannel(connection, channel, true)));
-                TextView leave = ui.action(context.getString(R.string.overlay_discord_leave));
+                TextView leave = DiscordPanelViews.tile(ui.action(context.getString(R.string.overlay_discord_leave)),
+                        "discord.voice.leave");
                 leave.setOnClickListener(view -> operation(
                         context.getString(R.string.discord_leaving_channel),
                         () -> client.leaveDiscordChannel(connection),
                         () -> showDiscordChannel(connection, channel, true)));
-                TextView people = ui.action(context.getString(
-                        R.string.discord_people_action, voice.participants));
+                TextView people = DiscordPanelViews.tile(ui.action(context.getString(
+                        R.string.discord_people_action, voice.participants)), "discord.voice.people");
                 people.setOnClickListener(view -> showParticipants(connection, channel));
-                actions.add(mute); actions.add(deafen); actions.add(leave); actions.add(people);
+                voiceActions.add(mute); voiceActions.add(deafen); voiceActions.add(leave); voiceActions.add(people);
             } else {
-                TextView join = ui.action(context.getString(
-                        R.string.discord_join_channel, channel.name));
+                TextView join = DiscordPanelViews.tile(ui.action(context.getString(
+                        R.string.discord_join_channel, channel.name)), "discord.voice.join:" + channel.id);
                 join.setOnClickListener(view -> operation(
                         context.getString(R.string.discord_joining_channel),
                         () -> client.joinDiscordChannel(connection, channel), () -> {
@@ -351,9 +461,11 @@ final class DiscordPanelController {
                                     channel.id, channel.guildId, channel.guildName, channel.name);
                             showDiscordChannel(connection, channel, true);
                         }));
-                actions.add(join);
+                voiceActions.add(join);
             }
             TextView back = ui.back(context.getString(R.string.discord_back_action));
+            DiscordPanelViews.tile(back, null);
+            actions.add(DiscordPanelViews.twoColumnGrid(context, voiceActions, dp(8)));
             actions.add(back);
             ui.show(context.getString(R.string.discord_panel_title), "# " + channel.name,
                     channel.guildName + (active ? context.getString(
@@ -507,6 +619,7 @@ final class DiscordPanelController {
         hostAddress = address;
         hostName = name == null || name.isEmpty()
                 ? context.getString(R.string.discord_selected_host) : name;
+        showAllGuilds = false;
         if (connection() == null) {
             showDiscordGatewayRequired();
         } else {
@@ -662,6 +775,330 @@ final class DiscordPanelController {
 
     private GatewayConnection connection() {
         return hostUuid == null ? null : store.loadForHost(hostUuid, hostAddress);
+    }
+
+    void loadCommunityHome(String uuid, String address, String name, CommunityHomeCallback callback) {
+        hostUuid = uuid;
+        hostAddress = address;
+        hostName = name == null || name.isEmpty()
+                ? context.getString(R.string.discord_selected_host) : name;
+        GatewayConnection current = connection();
+        if (current == null || !store.isDiscordEnabled(hostUuid, current.profileId())) {
+            callback.onUnavailable();
+            return;
+        }
+        executor.execute(() -> {
+            try {
+                HostGatewayClient.DiscordHome home = loadDiscordHome(current, false);
+                mainHandler.post(() -> callback.onHome(home));
+            } catch (Exception ignored) {
+                mainHandler.post(callback::onUnavailable);
+            }
+        });
+    }
+
+    void loadCommunityGuildChannels(String uuid, String address, String name,
+                                    HostGatewayClient.DiscordGuild guild,
+                                    CommunityChannelsCallback callback) {
+        hostUuid = uuid;
+        hostAddress = address;
+        hostName = name == null || name.isEmpty() ? context.getString(R.string.discord_selected_host) : name;
+        GatewayConnection current = connection();
+        if (current == null || !store.isDiscordEnabled(hostUuid, current.profileId())) {
+            callback.onUnavailable();
+            return;
+        }
+        executor.execute(() -> {
+            try {
+                List<HostGatewayClient.DiscordChannel> channels = client.getDiscordChannels(current, guild, false);
+                mainHandler.post(() -> callback.onChannels(channels));
+            } catch (Exception ignored) {
+                mainHandler.post(callback::onUnavailable);
+            }
+        });
+    }
+
+    void joinCommunityChannel(String uuid, String address, String name,
+                              HostGatewayClient.DiscordChannel channel,
+                              CommunityActionCallback callback) {
+        hostUuid = uuid;
+        hostAddress = address;
+        hostName = name == null || name.isEmpty() ? context.getString(R.string.discord_selected_host) : name;
+        GatewayConnection current = connection();
+        if (current == null || !store.isDiscordEnabled(hostUuid, current.profileId())) {
+            callback.onError(context.getString(R.string.discord_join_not_confirmed));
+            return;
+        }
+        final String requestHostUuid = hostUuid;
+        final String requestProfileId = current.profileId();
+        executor.execute(() -> {
+            try {
+                client.joinDiscordChannel(current, channel);
+                HostGatewayClient.DiscordVoice verifiedVoice = confirmCommunityJoin(current, channel);
+                if (verifiedVoice == null) {
+                    String message = context.getString(R.string.discord_join_not_confirmed);
+                    LimeLog.warning("Community Discord join failed (HTTP 200): " + message);
+                    mainHandler.post(() -> callback.onError(message));
+                    return;
+                }
+                store.saveLastDiscordChannel(requestHostUuid, requestProfileId, channel.id,
+                        channel.guildId, channel.guildName, channel.name);
+                mainHandler.post(() -> callback.onComplete(verifiedVoice));
+            } catch (Exception error) {
+                int statusCode = error instanceof HostGatewayClient.GatewayException
+                        ? ((HostGatewayClient.GatewayException) error).statusCode : 0;
+                String message = safeCommunityJoinError(error);
+                LimeLog.warning("Community Discord join failed (HTTP " + statusCode + "): " + message);
+                mainHandler.post(() -> callback.onError(message));
+            }
+        });
+    }
+
+    void loadCommunityVoice(String uuid, String address, String name,
+                            CommunityVoiceCallback callback) {
+        configureCommunityHost(uuid, address, name);
+        GatewayConnection current = connection();
+        if (current == null || !store.isDiscordEnabled(hostUuid, current.profileId())) {
+            callback.onError(context.getString(R.string.discord_join_not_confirmed));
+            return;
+        }
+        final int request = requestGeneration.get();
+        executor.execute(() -> {
+            try {
+                HostGatewayClient.DiscordVoice voice = client.getDiscordVoice(current, true);
+                mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onVoice(voice); });
+            } catch (Exception error) {
+                String message = safeCommunityJoinError(error);
+                LimeLog.warning("Community Discord voice refresh failed: " + message);
+                mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onError(message); });
+            }
+        });
+    }
+
+    void performCommunityVoiceAction(String uuid, String address, String name,
+                                     CommunityVoiceAction action, CommunityVoiceCallback callback) {
+        configureCommunityHost(uuid, address, name);
+        GatewayConnection current = connection();
+        if (current == null || !store.isDiscordEnabled(hostUuid, current.profileId())) {
+            callback.onError(context.getString(R.string.discord_join_not_confirmed));
+            return;
+        }
+        final int request = requestGeneration.get();
+        executor.execute(() -> {
+            try {
+                HostGatewayClient.DiscordVoice before = client.getDiscordVoice(current, true);
+                if (action == CommunityVoiceAction.LEAVE) client.leaveDiscordChannel(current);
+                else client.setDiscordVoiceFlag(current,
+                        action == CommunityVoiceAction.MUTE ? "mute" : "deafen", "toggle");
+                HostGatewayClient.DiscordVoice voice = confirmCommunityVoiceAction(current, action, before);
+                if (voice == null) {
+                    String message = context.getString(R.string.discord_join_not_confirmed);
+                    mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onError(message); });
+                    return;
+                }
+                mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onVoice(voice); });
+            } catch (Exception error) {
+                String message = safeCommunityJoinError(error);
+                LimeLog.warning("Community Discord voice action failed: " + message);
+                mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onError(message); });
+            }
+        });
+    }
+
+    private HostGatewayClient.DiscordVoice confirmCommunityVoiceAction(GatewayConnection connection,
+                                                                        CommunityVoiceAction action,
+                                                                        HostGatewayClient.DiscordVoice before)
+            throws IOException {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            HostGatewayClient.DiscordVoice voice = client.getDiscordVoice(connection, true);
+            boolean confirmed = action == CommunityVoiceAction.LEAVE ? !voice.connected
+                    : voice.connected && (action == CommunityVoiceAction.MUTE
+                    ? voice.muted != before.muted : voice.deafened != before.deafened);
+            if (confirmed) return voice;
+            if (attempt < 2) {
+                try { Thread.sleep(350L); }
+                catch (InterruptedException interrupted) { Thread.currentThread().interrupt(); return null; }
+            }
+        }
+        return null;
+    }
+
+    void loadCommunityOptions(String uuid, String address, String name,
+                              boolean refreshStatus, CommunityOptionsCallback callback) {
+        configureCommunityHost(uuid, address, name);
+        GatewayConnection current = connection();
+        if (current == null) {
+            callback.onError(context.getString(R.string.discord_join_not_confirmed));
+            return;
+        }
+        boolean enabled = store.isDiscordEnabled(hostUuid, current.profileId());
+        boolean autoConnect = store.isDiscordAutoConnectEnabled(hostUuid, current.profileId());
+        boolean autoJoin = store.isDiscordAutoJoinLastEnabled(hostUuid, current.profileId());
+        if (!refreshStatus) {
+            callback.onOptions(new CommunityOptions(enabled, autoConnect, autoJoin, null));
+            return;
+        }
+        final int request = requestGeneration.get();
+        executor.execute(() -> {
+            try {
+                HostGatewayClient.DiscordStatus status = client.getDiscordStatus(current);
+                mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onOptions(
+                        new CommunityOptions(enabled, autoConnect, autoJoin, status)); });
+            } catch (Exception error) {
+                String message = safeCommunityJoinError(error);
+                LimeLog.warning("Community Discord status refresh failed: " + message);
+                mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onError(message); });
+            }
+        });
+    }
+
+    void setCommunitySetting(String uuid, String address, String name, CommunitySetting setting,
+                             boolean enabled, CommunityOptionsCallback callback) {
+        configureCommunityHost(uuid, address, name);
+        GatewayConnection current = connection();
+        if (current == null) { callback.onError(context.getString(R.string.discord_join_not_confirmed)); return; }
+        if (setting == CommunitySetting.INTEGRATION) {
+            store.setDiscordEnabled(hostUuid, current.profileId(), enabled);
+        } else if (setting == CommunitySetting.AUTO_CONNECT) {
+            store.setDiscordAutoConnectEnabled(hostUuid, current.profileId(), enabled);
+        } else {
+            store.setDiscordAutoJoinLastEnabled(hostUuid, current.profileId(), enabled);
+        }
+        loadCommunityOptions(uuid, address, name, false, callback);
+    }
+
+    void performCommunityHostAction(String uuid, String address, String name,
+                                    CommunityHostAction action, CommunityOptionsCallback callback) {
+        configureCommunityHost(uuid, address, name);
+        GatewayConnection current = connection();
+        if (current == null) { callback.onError(context.getString(R.string.discord_join_not_confirmed)); return; }
+        final String requestHostUuid = hostUuid;
+        final String requestProfileId = current.profileId();
+        final int request = requestGeneration.get();
+        executor.execute(() -> {
+            try {
+                if (action == CommunityHostAction.START) client.startDiscord(current);
+                else if (action == CommunityHostAction.RECONNECT) client.connectDiscord(current, false);
+                HostGatewayClient.DiscordStatus status = client.getDiscordStatus(current);
+                boolean enabled = store.isDiscordEnabled(requestHostUuid, requestProfileId);
+                boolean autoConnect = store.isDiscordAutoConnectEnabled(requestHostUuid, requestProfileId);
+                boolean autoJoin = store.isDiscordAutoJoinLastEnabled(requestHostUuid, requestProfileId);
+                mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onOptions(
+                        new CommunityOptions(enabled, autoConnect, autoJoin, status)); });
+            } catch (Exception error) {
+                String message = safeCommunityJoinError(error);
+                LimeLog.warning("Community Discord host action failed: " + message);
+                mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onError(message); });
+            }
+        });
+    }
+
+    /** Narrow, headless audio adapter used by the inline Community options surface. */
+    void loadCommunityAudio(String uuid, String address, String name, CommunityAudioCallback callback) {
+        configureCommunityHost(uuid, address, name);
+        GatewayConnection current = connection();
+        if (current == null) { callback.onError(context.getString(R.string.discord_join_not_confirmed)); return; }
+        final int request = requestGeneration.get();
+        executor.execute(() -> {
+            try {
+                HostGatewayClient.DiscordAudioState audio = client.getDiscordAudioState(current);
+                mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onAudio(audio); });
+            } catch (Exception error) {
+                String message = safeCommunityJoinError(error);
+                LimeLog.warning("Community Discord audio refresh failed: " + message);
+                mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onError(message); });
+            }
+        });
+    }
+
+    void selectCommunityAudioDevice(String uuid, String address, String name,
+                                    HostGatewayClient.AudioDevice device, CommunityAudioCallback callback) {
+        performCommunityAudioAction(uuid, address, name,
+                connection -> client.selectAudioDevice(connection, device), callback);
+    }
+
+    void changeCommunitySystemVolume(String uuid, String address, String name, int delta,
+                                     CommunityAudioCallback callback) {
+        performCommunityAudioAction(uuid, address, name,
+                connection -> client.changeSystemVolume(connection, delta), callback);
+    }
+
+    void toggleCommunitySystemMute(String uuid, String address, String name,
+                                   CommunityAudioCallback callback) {
+        performCommunityAudioAction(uuid, address, name,
+                client::toggleSystemMute, callback);
+    }
+
+    private interface CommunityAudioTask { void run(GatewayConnection connection) throws Exception; }
+
+    private void performCommunityAudioAction(String uuid, String address, String name,
+                                             CommunityAudioTask action, CommunityAudioCallback callback) {
+        configureCommunityHost(uuid, address, name);
+        GatewayConnection current = connection();
+        if (current == null) { callback.onError(context.getString(R.string.discord_join_not_confirmed)); return; }
+        final int request = requestGeneration.get();
+        executor.execute(() -> {
+            try {
+                action.run(current);
+                HostGatewayClient.DiscordAudioState audio = client.getDiscordAudioState(current);
+                mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onAudio(audio); });
+            } catch (Exception error) {
+                String message = safeCommunityJoinError(error);
+                LimeLog.warning("Community Discord audio action failed: " + message);
+                mainHandler.post(() -> { if (request == requestGeneration.get()) callback.onError(message); });
+            }
+        });
+    }
+
+    private void configureCommunityHost(String uuid, String address, String name) {
+        hostUuid = uuid;
+        hostAddress = address;
+        hostName = name == null || name.isEmpty()
+                ? context.getString(R.string.discord_selected_host) : name;
+    }
+
+    private HostGatewayClient.DiscordVoice confirmCommunityJoin(GatewayConnection connection,
+                                                                 HostGatewayClient.DiscordChannel channel)
+            throws IOException {
+        for (int attempt = 0; attempt < 3; attempt++) {
+            HostGatewayClient.DiscordVoice voice = client.getDiscordVoice(connection, true);
+            if (matchesJoinedVoice(channel.id, voice)) return voice;
+            if (attempt < 2) {
+                try {
+                    Thread.sleep(350L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    return null;
+                }
+            }
+        }
+        return null;
+    }
+
+    static boolean matchesJoinedVoice(String channelId, HostGatewayClient.DiscordVoice voice) {
+        return voice != null && voice.connected && channelId != null && channelId.equals(voice.channelId);
+    }
+
+    static String safeCommunityJoinError(Throwable error) {
+        if (error instanceof HostGatewayClient.GatewayException) {
+            HostGatewayClient.GatewayException gateway = (HostGatewayClient.GatewayException) error;
+            return "HTTP " + gateway.statusCode + ": " + sanitizeCommunityJoinMessage(gateway.getMessage());
+        }
+        if (error instanceof java.net.SocketTimeoutException) return "Timed out waiting for host.";
+        if (error instanceof IOException) return sanitizeCommunityJoinMessage(error.getMessage());
+        return "Discord action failed.";
+    }
+
+    static String sanitizeCommunityJoinMessage(String value) {
+        String cleaned = value == null ? "" : value.replaceAll("[\\r\\n\\t]+", " ").trim();
+        cleaned = cleaned.replaceAll("(?i)bearer\\s+[^\\s]+", "Bearer [redacted]");
+        cleaned = cleaned.replaceAll("https?://[^\\s]+", "[host]");
+        if (cleaned.isEmpty()) cleaned = "Host gateway request failed.";
+        return cleaned.length() > 160 ? cleaned.substring(0, 160) : cleaned;
+    }
+
+    private int dp(int value) {
+        return Math.round(value * context.getResources().getDisplayMetrics().density);
     }
 
     private void showGatewayBusy(String title, String message) {

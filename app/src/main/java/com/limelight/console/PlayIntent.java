@@ -41,8 +41,14 @@ final class PlayIntent {
 
     static PlayIntent sunshineApp(String hostId, int appId, String appName,
                                   boolean hdrSupported, String quickLaunchId) {
+        return sunshineApp(hostId, appId, appName, hdrSupported, quickLaunchId, "");
+    }
+
+    static PlayIntent sunshineApp(String hostId, int appId, String appName,
+                                  boolean hdrSupported, String quickLaunchId,
+                                  String loadingArtworkGameId) {
         return new PlayIntent(hostId, Kind.SUNSHINE_APP, appId, appName,
-                hdrSupported, "", quickLaunchId, "");
+                hdrSupported, "", quickLaunchId, loadingArtworkGameId);
     }
 
     static PlayIntent playniteGame(String hostId, int appId, String appName,

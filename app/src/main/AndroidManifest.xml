@@ -46,6 +46,19 @@
         android:name="android.hardware.type.pc"
         android:required="false"/>
 
+    <queries>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+        <intent>
+            <action android:name="android.support.customtabs.action.CustomTabsService" />
+        </intent>
+        <intent>
+            <action android:name="com.discord.socialsdk.rpc.IDiscordRpcService" />
+        </intent>
+        <package android:name="com.discord" />
+    </queries>
+
     <application
         android:allowBackup="true"
         android:fullBackupContent="@xml/backup_rules"
@@ -60,6 +73,20 @@
         android:localeConfig="@xml/locales_config"
         android:enableOnBackInvokedCallback="false"
         android:theme="@style/AppTheme">
+
+        <activity
+            android:name="com.discord.socialsdk.AuthenticationActivity"
+            android:enabled="${discordSocialSdkEnabled}"
+            android:exported="true"
+            android:launchMode="singleTask"
+            android:theme="@android:style/Theme.Translucent.NoTitleBar">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="discord-1525578509454676190" />
+            </intent-filter>
+        </activity>
 
         <provider
             android:name=".PosterContentProvider"

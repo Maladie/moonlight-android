@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="discord_panel_modern_social_card">%1$s\n%2$s</string>
+    <string name="discord_panel_modern_voice_card">%1$s\n%2$s</string>
+    <string name="discord_host_voice_pc_card_summary">Discord RPC through Host Control on your PC</string>
+    <string name="discord_show_all_servers">Show all servers · %1$d</string>
+    <string name="discord_show_fewer_servers">Show less</string>
+    <string name="discord_community_title">Community</string>
+    <string name="discord_community_details">Friends and voice places available now.</string>
+    <string name="discord_community_together">Together</string>
+    <string name="discord_community_friends">Friends</string>
+    <string name="discord_community_servers">Servers</string>
+    <string name="discord_community_active">Active now</string>
+    <string name="discord_community_recent">Recent</string>
+    <string name="discord_community_loading">Loading available places…</string>
+    <string name="discord_community_host_unavailable">Voice places will appear when a paired host is available.</string>
+    <string name="discord_community_no_active">No friends are active right now.</string>
+    <string name="discord_community_playing">Playing</string>
+    <string name="discord_community_online">Online</string>
+    <string name="discord_community_offline">Offline</string>
+    <string name="discord_community_connected">Connected</string>
+    <string name="discord_community_voice_channels">Voice channels</string>
+    <string name="discord_community_people">%1$d here</string>
+    <string name="discord_community_selected">SELECTED</string>
+    <string name="discord_community_open">Open</string>
+    <string name="discord_community_footer">✕ Open   ○ Close</string>
+    <string name="discord_community_join">Join</string>
+    <string name="discord_community_profile">Profile</string>
+    <string name="discord_social_show_offline">Show offline · %1$d</string>
+    <string name="discord_social_hide_offline">Hide offline · %1$d</string>
+    <string name="discord_join_success">Connected to #%1$s</string>
+    <string name="discord_join_failed">Unable to join: %1$s</string>
+    <string name="discord_join_not_confirmed">Discord did not confirm the channel change.</string>
+    <string name="discord_community_options">Discord options</string>
+    <string name="discord_community_left">Left the channel</string>
+    <string name="discord_community_voice_updated">Voice settings updated</string>
+    <string name="discord_community_voice_failed">Unable to update voice: %1$s</string>
+    <string name="discord_community_updating_voice">Updating voice…</string>
+    <string name="discord_community_integration">Integration: %1$s</string>
+    <string name="discord_community_auto_connect">Auto-connect: %1$s</string>
+    <string name="discord_community_auto_join">Auto-join last: %1$s</string>
+    <string name="discord_community_host_status">Bridge: %1$s · RPC: %2$s · Account: %3$s</string>
+</resources>

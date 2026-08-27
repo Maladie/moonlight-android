@@ -1,0 +1,13 @@
+<resources>
+    <string name="overlay_community_title">Społeczność</string>
+    <string name="overlay_community_active">Aktywne teraz</string>
+    <string name="overlay_discord_host_title">HOST CONTROL (PC)</string>
+    <string name="overlay_discord_social_title">DISCORD SOCIAL</string>
+    <string name="overlay_discord_social_connected">Połączono jako %1$s</string>
+    <string name="overlay_discord_social_connect_in_menu">Połącz w menu głównym</string>
+    <string name="overlay_discord_social_friends">Znajomi</string>
+    <string name="overlay_discord_social_hide_friends">Ukryj znajomych</string>
+    <string name="overlay_discord_social_playing">GRA</string>
+    <string name="overlay_discord_social_online">ONLINE</string>
+    <string name="overlay_discord_social_no_friends">Brak znajomych online</string>
+</resources>

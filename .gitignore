@@ -19,6 +19,9 @@ gen/
 # Local configuration file (sdk path, etc)
 local.properties
 
+# Locally provisioned Discord Social SDK vendor bundle (licensed binary dependency)
+/local-sdk/
+
 # Windows thumbnail db
 Thumbs.db
 
