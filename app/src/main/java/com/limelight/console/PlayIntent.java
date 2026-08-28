@@ -1,5 +1,7 @@
 package com.limelight.console;
 
+import com.limelight.console.transition.LaunchTransitionType;
+
 import java.util.Objects;
 
 /** Immutable destination selected by the user. */
@@ -23,9 +25,10 @@ final class PlayIntent {
         this.sunshineAppId = sunshineAppId;
         this.appName = appName == null ? "" : appName.trim();
         this.hdrSupported = hdrSupported;
-        this.playniteGameId = SessionSnapshot.normalize(playniteGameId);
+        this.playniteGameId = playniteGameId == null ? "" : playniteGameId.trim();
         this.quickLaunchId = quickLaunchId == null ? "" : quickLaunchId.trim();
-        this.loadingArtworkGameId = SessionSnapshot.normalize(loadingArtworkGameId);
+        this.loadingArtworkGameId = loadingArtworkGameId == null
+                ? "" : loadingArtworkGameId.trim();
         boolean targetMayBePrepared = kind == Kind.PLAYNITE_GAME && sunshineAppId == 0;
         if (this.hostId.isEmpty() || (sunshineAppId <= 0 && !targetMayBePrepared)
                 || this.appName.isEmpty()) {
@@ -64,6 +67,14 @@ final class PlayIntent {
                 hdrSupported, "", "", "" );
     }
 
+    String transitionGameId() {
+        return kind == Kind.PLAYNITE_GAME ? playniteGameId : "";
+    }
+
+    LaunchTransitionType transitionType(LaunchTransitionType requestedType) {
+        return kind == Kind.PLAYNITE_GAME && requestedType == LaunchTransitionType.GENERIC
+                ? LaunchTransitionType.GAME_CONNECTION : requestedType;
+    }
 
     boolean matches(SessionSnapshot snapshot) {
         return snapshot != null && matches(snapshot.hostId, snapshot.hostGameAppId,
@@ -75,7 +86,8 @@ final class PlayIntent {
                 SessionSnapshot.normalize(currentHostId))) return false;
         switch (kind) {
             case PLAYNITE_GAME:
-                return playniteGameId.equals(SessionSnapshot.normalize(currentGameId));
+                return SessionSnapshot.normalize(playniteGameId).equals(
+                        SessionSnapshot.normalize(currentGameId));
             case PLAYNITE_FULLSCREEN:
                 return sunshineAppId == currentAppId
                         && SessionSnapshot.normalize(currentGameId).isEmpty();

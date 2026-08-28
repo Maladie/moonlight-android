@@ -35,12 +35,19 @@ try {
     if ($LASTEXITCODE -ne 0 -or -not $tracked) {
         throw "Unable to enumerate the host payload."
     }
+    # The renamed provider entry point is a mandatory payload file.
+    $tracked = @($tracked) + "host-services/bridges/playnite/GameProviderBridge.py" |
+        Sort-Object -Unique
     foreach ($relative in $tracked) {
         if ($relative -match "(^|/)(dist|__pycache__)(/|$)" -or
                 $relative -match "\.pyc$") {
             continue
         }
         $source = Join-Path $repoRoot ($relative -replace "/", "\")
+        if (-not (Test-Path -LiteralPath $source -PathType Leaf)) {
+            if ($relative -eq "host-services/bridges/playnite/PlayniteBridge.py") { continue }
+            throw "Required host payload file is missing: $relative"
+        }
         $destination = Join-Path $payloadRoot ($relative -replace "/", "\")
         $destinationDirectory = Split-Path -Parent $destination
         New-Item -ItemType Directory -Path $destinationDirectory -Force | Out-Null
@@ -48,8 +55,6 @@ try {
     }
     & (Join-Path $PSScriptRoot "Install-LegendaryPayload.ps1") `
         -TargetDirectory (Join-Path $payloadHostServices "tools\legendary")
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Install-LegendaryPayload.ps1") `
-        -Destination (Join-Path $payloadHostServices "control") -Force
 
     & (Join-Path $payloadHostServices "control\Build-MoonWakerHostControl.ps1") `
         -OutputDirectory (Join-Path $payloadHostServices "control")
@@ -91,7 +96,7 @@ try {
         "/reference:System.IO.Compression.FileSystem.dll",
         (Join-Path $PSScriptRoot "MoonWakerHostInstaller.cs")
     )
-    $icon = Join-Path $hostServicesRoot "control\moonwaker-host.ico"
+    $icon = Join-Path $PSScriptRoot "moonwaker-host.ico"
     if (Test-Path -LiteralPath $icon) {
         $arguments = @("/win32icon:$icon") + $arguments
     }

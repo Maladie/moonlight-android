@@ -60,6 +60,42 @@ public class HostLaunchPreflightTest {
                 HostLaunchPreflight.FailureReason.PLAYNITE_CONNECTOR_DISCONNECTED);
     }
 
+    @Test public void directProviderRecordDoesNotRequirePlayniteConnector() {
+        Fake fake = new Fake();
+        fake.profile = profile(true, true, false, true);
+        fake.apps.add(Collections.singletonList(app("Desktop", 8, "desktop")));
+
+        HostLaunchPreflight.Result result = fake.run(providerGame(42), new AtomicBoolean());
+
+        assertEquals(HostLaunchPreflight.Status.READY, result.status);
+        assertEquals(8, result.target.getAppId());
+        assertEquals(0, fake.ensureCalls);
+    }
+
+    @Test public void directProviderIgnoresTransientPerGameTarget() {
+        Fake fake = new Fake();
+        fake.profile = profile(true, true, false, true);
+        fake.apps.add(Arrays.asList(app("Game", 42, "steam:289070"),
+                app("Desktop", 8, "desktop")));
+
+        HostLaunchPreflight.Result result = fake.run(providerGame(42), new AtomicBoolean());
+
+        assertEquals(HostLaunchPreflight.Status.READY, result.status);
+        assertEquals(8, result.target.getAppId());
+        assertEquals(0, fake.ensureCalls);
+    }
+
+    @Test public void directProviderWithoutDesktopFailsWithoutCreatingTransientTarget() {
+        Fake fake = new Fake();
+        fake.profile = profile(true, true, false, true);
+        fake.apps.add(Collections.emptyList());
+
+        assertFailure(fake.run(providerGame(42), new AtomicBoolean()),
+                HostLaunchPreflight.Stage.TARGET_READY,
+                HostLaunchPreflight.FailureReason.TARGET_UNAVAILABLE);
+        assertEquals(0, fake.ensureCalls);
+    }
+
     @Test public void existingExactTargetDoesNotRequireVibepollo() {
         Fake fake = new Fake();
         fake.profile = profile(true, true, true, false);
@@ -183,6 +219,12 @@ public class HostLaunchPreflightTest {
     private static HostLaunchPreflight.Request game(int appId) {
         return HostLaunchPreflight.Request.from(PlayIntent.playniteGame(
                 "host", appId, "Game", false, "game", "game"),
+                HostLaunchPreflight.Action.LAUNCH);
+    }
+
+    private static HostLaunchPreflight.Request providerGame(int appId) {
+        return HostLaunchPreflight.Request.from(PlayIntent.playniteGame(
+                "host", appId, "Game", false, "steam:289070", "steam:289070"),
                 HostLaunchPreflight.Action.LAUNCH);
     }
 

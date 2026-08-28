@@ -18,7 +18,8 @@ public class LaunchTransitionControllerTest {
 
     private static LaunchTransitionSpec spec(LaunchTransitionType type) {
         return new LaunchTransitionSpec("transition-1", HOST, type, 42,
-                type == LaunchTransitionType.GAME ? GAME : "", 1000L);
+                type == LaunchTransitionType.GAME
+                        || type == LaunchTransitionType.GAME_CONNECTION ? GAME : "", 1000L);
     }
 
     private static LaunchTransitionController started(LaunchTransitionType type) {
@@ -204,6 +205,17 @@ public class LaunchTransitionControllerTest {
         controller.revealCompleted("transition-1");
         assertFalse(controller.snapshot().inputBlocked);
         assertFalse(controller.snapshot().overlayVisible);
+    }
+
+    @Test
+    public void existingGameConnectionNeedsOnlyTransportAndKeepsGameIdentity() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME_CONNECTION);
+
+        transportReady(controller);
+
+        assertTrue(controller.snapshot().revealAuthorized);
+        controller.revealCompleted("transition-1");
+        assertEquals(LaunchTransitionState.GAME_RUNNING, controller.snapshot().state);
     }
 
     @Test

@@ -3,11 +3,15 @@
 param(
     [Parameter(Mandatory)]
     [ValidateSet("Status", "StartGateway", "StopGateway", "RestartGateway", "PairGateway",
-        "StartProfile", "StopProfile", "RestartProfile", "RecoverAll", "InstallLegendary",
+        "StartProfile", "StopProfile", "RestartProfile", "RecoverAll",
+        "ConfigureSteamWebApi", "DisconnectSteam", "ConnectEpic", "DisconnectEpic",
         "ClearDiscord", "ClearDiscordMachine", "RemoveProfile")]
     [string]$Action,
     [ValidatePattern('^[A-Za-z0-9._-]{0,64}$')][string]$ProfileId = "",
     [switch]$RemoveMachineDiscordApplication,
+    [switch]$SteamWebApiKeyFromStdin,
+    [switch]$SteamWebApiKeyProtectedFromEnvironment,
+    [string]$SteamWebApiDiagnosticPath = "",
     [string]$ResultPath = ""
 )
 
@@ -24,6 +28,27 @@ function Get-GatewayDirectory {
         if (Test-Path -LiteralPath (Join-Path $candidate "gateway.json")) { return $candidate }
     }
     return (Join-Path (Get-InstallRoot) "gateway")
+}
+
+function Get-SteamWebApiDiagnosticPath {
+    if (-not [string]::IsNullOrWhiteSpace($SteamWebApiDiagnosticPath)) {
+        return [IO.Path]::GetFullPath($SteamWebApiDiagnosticPath)
+    }
+    return Join-Path $env:LOCALAPPDATA "MoonWaker\logs\steam-web-api-configure.log"
+}
+
+function Write-SteamWebApiDiagnostic([string]$Profile, [string]$Phase) {
+    try {
+        $path = Get-SteamWebApiDiagnosticPath
+        $directory = Split-Path -Parent $path
+        New-Item -ItemType Directory -Path $directory -Force | Out-Null
+        if ((Test-Path -LiteralPath $path) -and (Get-Item -LiteralPath $path).Length -gt 65536) {
+            Clear-Content -LiteralPath $path
+        }
+        Add-Content -LiteralPath $path -Encoding UTF8 -Value (
+            "{0:o} pid={1} profile={2} component=script phase={3}" -f `
+                [DateTimeOffset]::Now, $PID, $Profile, $Phase)
+    } catch {}
 }
 
 function Get-MoonWakerVersion {
@@ -110,6 +135,76 @@ function Test-CurrentProfileOwner([object]$Entry) {
         [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Protect-ForCurrentUser([string]$Value) {
+    Add-Type -AssemblyName System.Security
+    $plainBytes = [Text.Encoding]::Unicode.GetBytes($Value)
+    $protectedBytes = $null
+    try {
+        $protectedBytes = [Security.Cryptography.ProtectedData]::Protect(
+            $plainBytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+        return ($protectedBytes | ForEach-Object { $_.ToString("x2") }) -join ""
+    } finally {
+        [Array]::Clear($plainBytes, 0, $plainBytes.Length)
+        if ($null -ne $protectedBytes) {
+            [Array]::Clear($protectedBytes, 0, $protectedBytes.Length)
+        }
+    }
+}
+
+function Unprotect-ForCurrentUser([string]$Value) {
+    if ($Value -notmatch '^(?:[A-Fa-f0-9]{2})+$') {
+        throw "The DPAPI value is not valid hexadecimal data."
+    }
+    Add-Type -AssemblyName System.Security
+    $protectedBytes = New-Object byte[] ($Value.Length / 2)
+    for ($index = 0; $index -lt $protectedBytes.Length; $index++) {
+        $protectedBytes[$index] = [Convert]::ToByte($Value.Substring($index * 2, 2), 16)
+    }
+    $plainBytes = $null
+    try {
+        $plainBytes = [Security.Cryptography.ProtectedData]::Unprotect(
+            $protectedBytes, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
+        return [Text.Encoding]::Unicode.GetString($plainBytes)
+    } finally {
+        [Array]::Clear($protectedBytes, 0, $protectedBytes.Length)
+        if ($null -ne $plainBytes) {
+            [Array]::Clear($plainBytes, 0, $plainBytes.Length)
+        }
+    }
+}
+
+function Get-LegendaryExecutable {
+    $path = Join-Path (Get-InstallRoot) "tools\legendary\legendary.exe"
+    if (Test-Path -LiteralPath $path -PathType Leaf) { return $path }
+    return ""
+}
+
+function Test-SteamConnection([string]$Root) {
+    if ([string]::IsNullOrWhiteSpace($Root)) { return $false }
+    $path = Join-Path $Root "playnite\steam-web-api-key.dpapi"
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
+    try {
+        $protected = (Get-Content -LiteralPath $path -Raw).Trim()
+        return (Unprotect-ForCurrentUser $protected) -match '^[A-Fa-f0-9]{32}$'
+    } catch { return $false }
+}
+
+function Test-LegendaryConnection([string]$Root) {
+    $executable = Get-LegendaryExecutable
+    if ([string]::IsNullOrWhiteSpace($Root) -or
+        [string]::IsNullOrWhiteSpace($executable)) { return $false }
+    $state = Join-Path $Root "state\legendary"
+    if (-not (Test-Path -LiteralPath $state -PathType Container)) { return $false }
+    $previous = $env:LEGENDARY_CONFIG_PATH
+    try {
+        $env:LEGENDARY_CONFIG_PATH = $state
+        $raw = (& $executable status --offline --json 2>$null | Out-String)
+        if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) { return $false }
+        $status = $raw | ConvertFrom-Json
+        return $null -ne $status.account
+    } catch { return $false } finally { $env:LEGENDARY_CONFIG_PATH = $previous }
+}
+
 function Ensure-BackgroundServices([object]$Gateway, [string]$GatewayDirectory, [int]$GatewayPort) {
     if (-not (Test-TcpPort "127.0.0.1" $GatewayPort) -and -not (Test-GatewayManualStop $GatewayDirectory)) {
         try { Start-Gateway } catch {}
@@ -164,6 +259,7 @@ function Get-Status {
             $root = Get-ProfileRoot $entry $id
             $manuallyStopped = -not [string]::IsNullOrWhiteSpace($root) -and
                 (Test-Path -LiteralPath (Join-Path $root "profile-bridge-manually-stopped"))
+            $steamConnected = Test-SteamConnection $root
             $profiles += [ordered]@{
                 id = $id
                 name = if ($entry.PSObject.Properties["name"]) { [string]$entry.name } else { $id }
@@ -179,6 +275,10 @@ function Get-Status {
                 vibepollo_pid = Get-ProfileProcessId $root "vibepollo"
                 playnite = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth ([string]$entry.playnite_bridge) }
                 playnite_pid = Get-ProfileProcessId $root "playnite"
+                steam_web_api_configured = $steamConnected
+                steam_connected = $steamConnected
+                epic_connected = Test-LegendaryConnection $root
+                platform_controls_available = Test-CurrentProfileOwner $entry
                 last_used = $runtime -and [string]$runtime.profile_id -eq $id
                 last_used_at = if ($runtime -and [string]$runtime.profile_id -eq $id) { [int64]$runtime.updated_at } else { 0 }
             }
@@ -188,7 +288,7 @@ function Get-Status {
         ok = $true
         version = $version
         legendary = [ordered]@{
-            installed = Test-Path -LiteralPath (Join-Path (Get-InstallRoot) "tools\legendary\legendary.exe")
+            installed = -not [string]::IsNullOrWhiteSpace((Get-LegendaryExecutable))
         }
         gateway = [ordered]@{
             installed = Test-Path -LiteralPath $configPath
@@ -210,18 +310,6 @@ function Get-Status {
         }
         active_profile = if ($runtime) { [string]$runtime.profile_id } else { "" }
         profiles = $profiles
-    }
-}
-
-function Install-Legendary {
-    $installer = Join-Path $PSScriptRoot "Install-LegendaryPayload.ps1"
-    if (-not (Test-Path -LiteralPath $installer)) {
-        throw "Brak komponentu instalacyjnego Legendary. Zaktualizuj MoonWaker Host."
-    }
-    $target = Join-Path (Get-InstallRoot) "tools\legendary"
-    & $installer -TargetDirectory $target
-    if (-not (Test-Path -LiteralPath (Join-Path $target "legendary.exe"))) {
-        throw "Instalacja Legendary nie utworzyła pliku wykonywalnego."
     }
 }
 
@@ -337,6 +425,137 @@ function Clear-DiscordData([string]$Id) {
     }
 }
 
+function Set-SteamWebApiKey([string]$Id, [switch]$FromStdin,
+        [switch]$ProtectedFromEnvironment) {
+    $phase = "start"
+    Write-SteamWebApiDiagnostic $Id $phase
+    try {
+        $profile = Resolve-Profile $Id
+        $phase = "profile_resolved"
+        Write-SteamWebApiDiagnostic $Id $phase
+        if (-not (Test-CurrentProfileOwner $profile.entry) -or
+            [string]::IsNullOrWhiteSpace($profile.root)) {
+            throw "Sign in to the Windows account that owns profile '$Id' to configure Steam."
+        }
+        $phase = "owner_verified"
+        Write-SteamWebApiDiagnostic $Id $phase
+        $protected = ""
+        if ($ProtectedFromEnvironment) {
+            $protected = [Environment]::GetEnvironmentVariable(
+                "MOONWAKER_STEAM_WEB_API_PROTECTED", "Process")
+            Remove-Item Env:MOONWAKER_STEAM_WEB_API_PROTECTED -ErrorAction SilentlyContinue
+            if ([string]::IsNullOrWhiteSpace($protected)) {
+                throw "Host Control did not provide a protected Steam Web API key."
+            }
+            $phase = "protected_value_received"
+            Write-SteamWebApiDiagnostic $Id $phase
+            $protected = $protected.Trim()
+            $plain = Unprotect-ForCurrentUser $protected
+            $phase = "dpapi_decrypted"
+            Write-SteamWebApiDiagnostic $Id $phase
+        } elseif ($FromStdin) {
+            $plain = [Console]::In.ReadLine()
+        } else {
+            $secret = Read-Host "Steam Web API key (hidden)" -AsSecureString
+            $credential = [pscredential]::new("steam", $secret)
+            $plain = $credential.GetNetworkCredential().Password
+        }
+        if ($plain -notmatch '^[A-Fa-f0-9]{32}$') {
+            throw "Steam Web API key must contain exactly 32 hexadecimal characters."
+        }
+        $phase = "key_validated"
+        Write-SteamWebApiDiagnostic $Id $phase
+        $path = Join-Path $profile.root "playnite\steam-web-api-key.dpapi"
+        New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
+        $phase = "directory_ready"
+        Write-SteamWebApiDiagnostic $Id $phase
+        if ([string]::IsNullOrWhiteSpace($protected)) {
+            $protected = Protect-ForCurrentUser $plain
+        }
+        Set-Content -LiteralPath $path -Value $protected -Encoding ASCII
+        $phase = "secret_written"
+        Write-SteamWebApiDiagnostic $Id $phase
+        if (-not (Test-SteamConnection $profile.root)) {
+            Remove-Item -LiteralPath $path -Force -ErrorAction SilentlyContinue
+            throw "Windows DPAPI could not verify the saved Steam Web API key."
+        }
+        $phase = "secret_verified"
+        Write-SteamWebApiDiagnostic $Id $phase
+        $plain = $null
+        $phase = "completed"
+        Write-SteamWebApiDiagnostic $Id $phase
+        return [ordered]@{ ok = $true; profile_id = $Id; configured = $true; connected = $true }
+    } catch {
+        Write-SteamWebApiDiagnostic $Id ("failed_at_" + $phase + "_" + $_.Exception.GetType().Name)
+        throw
+    } finally {
+        $plain = $null
+    }
+}
+
+function Disconnect-Steam([string]$Id) {
+    $profile = Resolve-Profile $Id
+    if (-not (Test-CurrentProfileOwner $profile.entry) -or
+        [string]::IsNullOrWhiteSpace($profile.root)) {
+        throw "Sign in to the Windows account that owns profile '$Id' to disconnect Steam."
+    }
+    Remove-Item -LiteralPath (Join-Path $profile.root "playnite\steam-web-api-key.dpapi") `
+        -Force -ErrorAction SilentlyContinue
+    return [ordered]@{ ok = $true; profile_id = $Id; connected = $false }
+}
+
+function Connect-Epic([string]$Id) {
+    $profile = Resolve-Profile $Id
+    if (-not (Test-CurrentProfileOwner $profile.entry) -or
+        [string]::IsNullOrWhiteSpace($profile.root)) {
+        throw "Sign in to the Windows account that owns profile '$Id' to connect Epic."
+    }
+    $executable = Get-LegendaryExecutable
+    if ([string]::IsNullOrWhiteSpace($executable)) {
+        throw "Legendary is missing. Update MoonWaker Host with the current installer."
+    }
+    $state = Join-Path $profile.root "state\legendary"
+    New-Item -ItemType Directory -Path $state -Force | Out-Null
+    $previous = $env:LEGENDARY_CONFIG_PATH
+    try {
+        $env:LEGENDARY_CONFIG_PATH = $state
+        $process = Start-Process -FilePath $executable -ArgumentList @("auth") `
+            -WorkingDirectory (Split-Path -Parent $executable) -PassThru -Wait
+        if ($process.ExitCode -ne 0) {
+            throw "Legendary authentication ended with code $($process.ExitCode)."
+        }
+    } finally { $env:LEGENDARY_CONFIG_PATH = $previous }
+    if (-not (Test-LegendaryConnection $profile.root)) {
+        throw "Legendary did not confirm an Epic connection."
+    }
+    return [ordered]@{ ok = $true; profile_id = $Id; connected = $true }
+}
+
+function Disconnect-Epic([string]$Id) {
+    $profile = Resolve-Profile $Id
+    if (-not (Test-CurrentProfileOwner $profile.entry) -or
+        [string]::IsNullOrWhiteSpace($profile.root)) {
+        throw "Sign in to the Windows account that owns profile '$Id' to disconnect Epic."
+    }
+    $executable = Get-LegendaryExecutable
+    if ([string]::IsNullOrWhiteSpace($executable)) {
+        throw "Legendary is missing. Update MoonWaker Host with the current installer."
+    }
+    $state = Join-Path $profile.root "state\legendary"
+    $previous = $env:LEGENDARY_CONFIG_PATH
+    try {
+        $env:LEGENDARY_CONFIG_PATH = $state
+        $null = & $executable auth --delete 2>&1
+        if ($LASTEXITCODE -ne 0) {
+            throw "Legendary could not remove the Epic authentication."
+        }
+    } finally { $env:LEGENDARY_CONFIG_PATH = $previous }
+    if (Test-LegendaryConnection $profile.root) {
+        throw "Legendary still reports an active Epic connection."
+    }
+    return [ordered]@{ ok = $true; profile_id = $Id; connected = $false }
+}
+
 function Remove-Profile([string]$Id) {
     $profile = Resolve-Profile $Id
     if ([string]::IsNullOrWhiteSpace($profile.root)) { throw "This profile's files are not available in the current Windows session." }
@@ -347,6 +566,7 @@ function Remove-Profile([string]$Id) {
     }
     try { Invoke-ProfileControl $Id "stop" } catch {}
     foreach ($taskName in @("Wake & Play Discord Bridge ($Id)", "Wake & Play Vibepollo Bridge ($Id)",
+        "Wake & Play Game Provider Bridge ($Id)",
         "Wake & Play Playnite Bridge ($Id)", "MoonWaker Profile Bridge ($Id)")) {
         Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
     }
@@ -372,7 +592,12 @@ try {
         "StopProfile" { Invoke-ProfileControl $ProfileId "stop"; [ordered]@{ ok = $true } }
         "RestartProfile" { Invoke-ProfileControl $ProfileId "stop"; Start-Sleep -Milliseconds 500; Invoke-ProfileControl $ProfileId "start"; [ordered]@{ ok = $true } }
         "RecoverAll" { Recover-All; [ordered]@{ ok = $true } }
-        "InstallLegendary" { Install-Legendary; [ordered]@{ ok = $true } }
+        "ConfigureSteamWebApi" { Set-SteamWebApiKey -Id $ProfileId `
+            -FromStdin:$SteamWebApiKeyFromStdin `
+            -ProtectedFromEnvironment:$SteamWebApiKeyProtectedFromEnvironment }
+        "DisconnectSteam" { Disconnect-Steam $ProfileId }
+        "ConnectEpic" { Connect-Epic $ProfileId }
+        "DisconnectEpic" { Disconnect-Epic $ProfileId }
         "ClearDiscord" { Clear-DiscordData $ProfileId; [ordered]@{ ok = $true } }
         "ClearDiscordMachine" { $RemoveMachineDiscordApplication = $true; Clear-DiscordData $ProfileId; [ordered]@{ ok = $true } }
         "RemoveProfile" { Remove-Profile $ProfileId; [ordered]@{ ok = $true } }

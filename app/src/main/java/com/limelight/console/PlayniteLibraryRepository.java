@@ -123,7 +123,10 @@ final class PlayniteLibraryRepository {
                     game.source, game.genres, game.installRequiresAttention,
                     game.installAttentionReason, game.installWindowTitle,
                     game.installLauncher, game.operationState,
-                    game.operationProgress, game.uninstalling, game.vibepolloState));
+                    game.operationProgress, game.uninstalling, game.vibepolloState,
+                    game.provider, game.providerGameId, game.playniteGameId,
+                    game.libraryKey, game.libraryName, game.canLaunch,
+                    game.canInstall, game.canUninstall));
         }
         return new PlayniteLibraryCache.Entry(games, System.currentTimeMillis(),
                 pages.revision, pages.apiVersion);

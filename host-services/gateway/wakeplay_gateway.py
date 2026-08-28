@@ -34,6 +34,9 @@ PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 PLAYNITE_GAME_ID_PATTERN = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+GAME_RECORD_ID_PATTERN = re.compile(
+    r"^(?:steam:[0-9]+|epic:[A-Za-z0-9_-]+|playnite:[0-9A-Fa-f]{8}-"
+    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$")
 PLAYNITE_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{0,128}$")
 
 
@@ -321,7 +324,7 @@ class GatewayState:
                     raise ValueError("Artwork response is incomplete or too large.")
                 content_type = response.headers.get_content_type()
                 if not content_type.startswith("image/"):
-                    raise ValueError("Playnite Bridge returned non-image artwork.")
+                    raise ValueError("Game Provider Bridge returned non-image artwork.")
                 return HTTPStatus.OK, body, content_type
         except urllib.error.HTTPError as error:
             return error.code, b"", "application/octet-stream"
@@ -800,9 +803,10 @@ class GatewayState:
     @staticmethod
     def _playnite_game_id(value: Any) -> str:
         result = str(value or "").strip()
-        if not PLAYNITE_GAME_ID_PATTERN.fullmatch(result):
-            raise ValueError("Invalid Playnite game ID.")
-        return result.lower()
+        if not (PLAYNITE_GAME_ID_PATTERN.fullmatch(result)
+                or GAME_RECORD_ID_PATTERN.fullmatch(result)):
+            raise ValueError("Invalid game record ID.")
+        return result if result.startswith("epic:") else result.lower()
 
     def playnite_health(self) -> tuple[int, Any]:
         ok, result = self.proxy("playnite", "/health", timeout=1.5)
@@ -810,7 +814,7 @@ class GatewayState:
             "ok": ok,
             "bridge": result if ok and isinstance(result, dict) else {},
             "error": "" if ok else self.upstream_error(
-                result, "Playnite Bridge is offline in this profile."),
+                result, "Game Provider Bridge is offline in this profile."),
         }
 
     def playnite_library(self, cursor: Any, limit: Any) -> tuple[int, Any]:
@@ -845,8 +849,9 @@ class GatewayState:
     def playnite_artwork(self, game_id: Any, kind: Any) -> tuple[int, bytes, str]:
         normalized_id = str(game_id or "").strip()
         normalized_kind = str(kind or "cover").strip().lower()
-        if not PLAYNITE_GAME_ID_PATTERN.fullmatch(normalized_id):
-            raise ValueError("Invalid Playnite game ID.")
+        if not (PLAYNITE_GAME_ID_PATTERN.fullmatch(normalized_id)
+                or GAME_RECORD_ID_PATTERN.fullmatch(normalized_id)):
+            raise ValueError("Invalid game record ID.")
         if normalized_kind not in {"cover", "background", "icon"}:
             raise ValueError("Invalid artwork kind.")
         path = "/artwork?" + urllib.parse.urlencode({
@@ -892,7 +897,7 @@ class GatewayState:
         if action == "game/start":
             payload = {"game_id": self._playnite_game_id(body.get("game_id"))}
             path = "/game/start"
-            timeout = 15.0
+            timeout = 22.0
         elif action == "game/install":
             payload = {"game_id": self._playnite_game_id(body.get("game_id"))}
             path = "/game/install"
@@ -914,7 +919,7 @@ class GatewayState:
             if body.get("game_id"):
                 payload["game_id"] = self._playnite_game_id(body.get("game_id"))
             path = "/game/stop"
-            timeout = 15.0
+            timeout = 25.0
         elif action == "game/focus":
             payload = {}
             path = "/game/focus"
@@ -931,7 +936,8 @@ class GatewayState:
             return HTTPStatus.NOT_FOUND, {"error": "Unknown Playnite action."}
         ok, result = self.proxy_json("playnite", path, payload, timeout=timeout)
         accepted = not isinstance(result, dict) or bool(result.get("accepted", True))
-        if ok and action in {"game/install", "game/uninstall"} and not accepted:
+        if ok and action in {"game/start", "game/install", "game/uninstall", "game/stop"} \
+                and not accepted:
             return HTTPStatus.OK, {
                 "ok": False,
                 "action": action,
@@ -1073,7 +1079,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
         elif path == f"{API_PREFIX}/playnite/health":
             status, result = self.state.playnite_health()
             self.send_json(status, result)
-        elif path == f"{API_PREFIX}/playnite/library/list":
+        elif path in {f"{API_PREFIX}/library",
+                      f"{API_PREFIX}/playnite/library/list"}:
             status, result = self.state.playnite_library(
                 query.get("cursor", [""])[0], query.get("limit", ["50"])[0])
             self.send_json(status, result)
@@ -1193,8 +1200,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self.send_json(status, result)
                 return
             playnite_prefix = f"{API_PREFIX}/playnite/"
-            if path.startswith(playnite_prefix):
-                action = path[len(playnite_prefix):]
+            provider_action = path in {
+                f"{API_PREFIX}/game/start", f"{API_PREFIX}/game/install",
+                f"{API_PREFIX}/game/uninstall", f"{API_PREFIX}/game/stop"}
+            if path.startswith(playnite_prefix) or provider_action:
+                action = path[len(playnite_prefix):] if path.startswith(playnite_prefix) \
+                    else path[len(API_PREFIX) + 1:]
                 request_id = self.headers.get("X-Request-Id", "").strip()
                 if not request_id or len(request_id) > 128:
                     self.send_json(HTTPStatus.BAD_REQUEST, {

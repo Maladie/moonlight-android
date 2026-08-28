@@ -26,7 +26,7 @@ if (-not $SkipTests) {
     & python.exe -m unittest discover -s (Join-Path $hostServices "gateway") -p "test*.py"
     if ($LASTEXITCODE -ne 0) { throw "Gateway tests failed." }
     & python.exe -m unittest discover -s (Join-Path $hostServices "bridges\playnite") -p "test*.py"
-    if ($LASTEXITCODE -ne 0) { throw "Playnite Bridge tests failed." }
+    if ($LASTEXITCODE -ne 0) { throw "Game Provider Bridge tests failed." }
 }
 
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ("moonwaker-host-build-" + [guid]::NewGuid().ToString("N"))

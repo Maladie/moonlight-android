@@ -85,6 +85,7 @@ final class DiscordCommunityView extends LinearLayout {
         final List<DiscordDirectMessageState.Message> directMessages;
         final DiscordDirectMessageState.SendState directSendState;
         final String directDraft;
+        final boolean directMessagesScopeAvailable;
         final boolean directMessagesCapable;
 
         Model(DiscordSocialClient.Snapshot snapshot, DiscordCommunityState state,
@@ -96,7 +97,7 @@ final class DiscordCommunityView extends LinearLayout {
             this(snapshot, state, active, recent, guildChannels, homeLoading, homeUnavailable,
                     guildLoading, guildUnavailable, error, voice, false, false, null, false, "",
                     null, false, false, "", null, Collections.emptyList(),
-                    new DiscordDirectMessageState.SendState(false, false, 0, ""), "", false);
+                    new DiscordDirectMessageState.SendState(false, false, 0, ""), "", false, false);
         }
 
         Model(DiscordSocialClient.Snapshot snapshot, DiscordCommunityState state,
@@ -111,7 +112,7 @@ final class DiscordCommunityView extends LinearLayout {
               DiscordSocialClient.Friend directFriend,
               List<DiscordDirectMessageState.Message> directMessages,
               DiscordDirectMessageState.SendState directSendState, String directDraft,
-              boolean directMessagesCapable) {
+              boolean directMessagesScopeAvailable, boolean directMessagesCapable) {
             this.snapshot = snapshot;
             this.state = state;
             this.active = active;
@@ -137,7 +138,8 @@ final class DiscordCommunityView extends LinearLayout {
             this.directSendState = directSendState == null
                     ? new DiscordDirectMessageState.SendState(false, false, 0, "") : directSendState;
             this.directDraft = directDraft == null ? "" : directDraft;
-            this.directMessagesCapable = directMessagesCapable;
+            this.directMessagesScopeAvailable = directMessagesScopeAvailable;
+            this.directMessagesCapable = directMessagesScopeAvailable && directMessagesCapable;
         }
     }
 
@@ -155,6 +157,7 @@ final class DiscordCommunityView extends LinearLayout {
     private static final long HISTORY_SCROLL_REPEAT_MS = 110L;
     enum ActionTone { NEUTRAL, POSITIVE_JOIN, DESTRUCTIVE_LEAVE }
     private final Callback callback;
+    private final LinearLayout topChrome;
     private final LinearLayout tabBar;
     private final LinearLayout activeContainer;
     private final TextView recentLabel;
@@ -170,6 +173,7 @@ final class DiscordCommunityView extends LinearLayout {
     private final LinearLayout directWorkspace;
     private final ScrollView directHistoryScroll;
     private final LinearLayout directHistory;
+    private final LinearLayout communityFooter;
     private EditText directComposer;
     private TextView directSend;
     private EmbeddedTvKeyboardView directKeyboard;
@@ -220,8 +224,8 @@ final class DiscordCommunityView extends LinearLayout {
         setLayoutParams(new ViewGroup.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        LinearLayout top = new LinearLayout(context);
-        top.setGravity(Gravity.BOTTOM);
+        topChrome = new LinearLayout(context);
+        topChrome.setGravity(Gravity.BOTTOM);
         LinearLayout heading = new LinearLayout(context);
         heading.setOrientation(VERTICAL);
         TextView title = text(context.getString(R.string.discord_community_title), 28, WHITE);
@@ -229,7 +233,7 @@ final class DiscordCommunityView extends LinearLayout {
         tabBar = new LinearLayout(context);
         tabBar.setOrientation(HORIZONTAL);
         heading.addView(tabBar);
-        top.addView(heading, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
+        topChrome.addView(heading, new LinearLayout.LayoutParams(0, WRAP_CONTENT, 1f));
         account = new LinearLayout(context);
         account.setGravity(Gravity.CENTER_VERTICAL);
         accountName = text("Discord", 13, MUTED);
@@ -238,10 +242,10 @@ final class DiscordCommunityView extends LinearLayout {
         LinearLayout.LayoutParams avatarParams = new LinearLayout.LayoutParams(dp(34), dp(34));
         avatarParams.leftMargin = dp(8);
         account.addView(accountAvatar, avatarParams);
-        top.addView(account);
+        topChrome.addView(account);
         LinearLayout.LayoutParams topParams = new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT);
         topParams.bottomMargin = dp(22);
-        addView(top, topParams);
+        addView(topChrome, topParams);
 
         LinearLayout content = new LinearLayout(context);
         content.setOrientation(HORIZONTAL);
@@ -291,12 +295,12 @@ final class DiscordCommunityView extends LinearLayout {
         content.addView(directWorkspace, new LinearLayout.LayoutParams(0, MATCH_PARENT, 1f));
         addView(content, new LinearLayout.LayoutParams(MATCH_PARENT, 0, 1f));
 
-        addCommunityFooter(context);
+        communityFooter = addCommunityFooter(context);
         buildTabs();
     }
 
     /** Fixed footer: use the installed controller glyph font, never look-alike Unicode symbols. */
-    private void addCommunityFooter(Context context) {
+    private LinearLayout addCommunityFooter(Context context) {
         LinearLayout footer = new LinearLayout(context);
         footer.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
         footer.setPadding(0, dp(8), 0, 0);
@@ -306,6 +310,7 @@ final class DiscordCommunityView extends LinearLayout {
         addFooterItem(footer, ControllerGlyphs.text(playStation, ControllerGlyphs.Button.CANCEL),
                 context.getString(R.string.playnite_legend_back));
         addView(footer, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+        return footer;
     }
 
     private void addFooterItem(LinearLayout footer, String glyph, String label) {
@@ -322,9 +327,9 @@ final class DiscordCommunityView extends LinearLayout {
     void bind(Model value) {
         String focusId = focusedDestinationId();
         model = value;
-        bindAccount(value.snapshot);
-        bindTabs();
-        if (value.state.detail == DiscordCommunityState.Detail.DIRECT_MESSAGE) {
+        boolean chatOnly = isChatOnlyPresentation(value.state.detail);
+        setChatOnlyPresentation(chatOnly);
+        if (chatOnly) {
             feedColumn.setVisibility(GONE);
             contentDivider.setVisibility(GONE);
             detailScroll.setVisibility(GONE);
@@ -332,6 +337,8 @@ final class DiscordCommunityView extends LinearLayout {
             bindDirectMessage();
             return;
         }
+        bindAccount(value.snapshot);
+        bindTabs();
         feedColumn.setVisibility(VISIBLE);
         contentDivider.setVisibility(VISIBLE);
         detailScroll.setVisibility(VISIBLE);
@@ -345,6 +352,17 @@ final class DiscordCommunityView extends LinearLayout {
         wireCommunityFocus();
         if (focusId != null) logicalFocusTag = focusId;
         if (!logicalFocusTag.isEmpty()) restoreFocus(logicalFocusTag);
+    }
+
+    private void setChatOnlyPresentation(boolean chatOnly) {
+        topChrome.setVisibility(chatOnly ? GONE : VISIBLE);
+        communityFooter.setVisibility(chatOnly ? GONE : VISIBLE);
+        int horizontal = dp(chatOnly ? 22 : 38);
+        setPadding(horizontal, dp(chatOnly ? 18 : 48), horizontal, dp(chatOnly ? 18 : 20));
+    }
+
+    static boolean isChatOnlyPresentation(DiscordCommunityState.Detail detail) {
+        return detail == DiscordCommunityState.Detail.DIRECT_MESSAGE;
     }
 
     void focusDetailAction() {
@@ -431,8 +449,8 @@ final class DiscordCommunityView extends LinearLayout {
     private boolean handleNavigationMotion(MotionEvent event) {
         if (event == null || event.getAction() != MotionEvent.ACTION_MOVE
                 || !isCommunityGamepadSource(event.getSource())) return false;
-        if (handleDirectKeyboardTriggerMotion(event)) return true;
-        if (handleDirectHistoryScrollMotion(event)) return true;
+        boolean triggerHandled = handleDirectKeyboardTriggerMotion(event);
+        boolean historyHandled = handleDirectHistoryScrollMotion(event);
         InputDevice device = event.getDevice();
         boolean hasHat = device != null && (device.getMotionRange(MotionEvent.AXIS_HAT_X) != null
                 || device.getMotionRange(MotionEvent.AXIS_HAT_Y) != null);
@@ -442,6 +460,12 @@ final class DiscordCommunityView extends LinearLayout {
                 : event.getAxisValue(MotionEvent.AXIS_Y);
         int direction = motionDirection(horizontal, vertical, hasHat ? .45f : .85f,
                 activeMotionDirection);
+        if (shouldRouteMotionHatToKeyboard(model == null ? null : model.state.detail,
+                directKeyboardVisible, directKeyboard != null)) {
+            activeMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
+            return directKeyboard.updateDirectionalHat(direction) || triggerHandled || historyHandled;
+        }
+        if (triggerHandled || historyHandled) return true;
         if (direction == KeyEvent.KEYCODE_UNKNOWN) {
             boolean consumed = activeMotionDirection != KeyEvent.KEYCODE_UNKNOWN;
             activeMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
@@ -485,9 +509,11 @@ final class DiscordCommunityView extends LinearLayout {
     private boolean handleDirectHistoryScrollMotion(MotionEvent event) {
         if (model == null || model.state.detail != DiscordCommunityState.Detail.DIRECT_MESSAGE) return false;
         InputDevice device = event.getDevice();
-        if (device == null || device.getMotionRange(MotionEvent.AXIS_RY, InputDevice.SOURCE_JOYSTICK) == null
-                && device.getMotionRange(MotionEvent.AXIS_RY, InputDevice.SOURCE_GAMEPAD) == null) return false;
-        float vertical = event.getAxisValue(MotionEvent.AXIS_RY);
+        int verticalAxis = device == null ? -1 : rightStickVerticalAxis(
+                hasTriggerRange(device, MotionEvent.AXIS_RX), hasTriggerRange(device, MotionEvent.AXIS_RY),
+                hasTriggerRange(device, MotionEvent.AXIS_Z), hasTriggerRange(device, MotionEvent.AXIS_RZ));
+        if (verticalAxis < 0) return false;
+        float vertical = event.getAxisValue(verticalAxis);
         if (Math.abs(vertical) < HISTORY_SCROLL_DEAD_ZONE) return false;
         long eventTime = event.getEventTime();
         if (!shouldDispatchHistoryScroll(lastHistoryScrollEventTime, eventTime)) return true;
@@ -500,6 +526,12 @@ final class DiscordCommunityView extends LinearLayout {
 
     static boolean shouldDispatchHistoryScroll(long lastEventTime, long eventTime) {
         return lastEventTime == Long.MIN_VALUE || eventTime - lastEventTime >= HISTORY_SCROLL_REPEAT_MS;
+    }
+
+    /** Matches ControllerHandler: modern controllers use RX/RY; others commonly use Z/RZ. */
+    static int rightStickVerticalAxis(boolean hasRx, boolean hasRy, boolean hasZ, boolean hasRz) {
+        if (hasRx && hasRy) return MotionEvent.AXIS_RY;
+        return hasZ && hasRz ? MotionEvent.AXIS_RZ : -1;
     }
 
     private static boolean hasTriggerRange(InputDevice device, int axis) {
@@ -520,6 +552,12 @@ final class DiscordCommunityView extends LinearLayout {
 
     static boolean shouldDispatchMotionEdge(int latchedDirection, int nextDirection) {
         return nextDirection != KeyEvent.KEYCODE_UNKNOWN && nextDirection != latchedDirection;
+    }
+
+    static boolean shouldRouteMotionHatToKeyboard(DiscordCommunityState.Detail detail,
+                                                   boolean keyboardVisible, boolean keyboardPresent) {
+        return detail == DiscordCommunityState.Detail.DIRECT_MESSAGE
+                && keyboardVisible && keyboardPresent;
     }
 
     /** Equal diagonals prefer vertical, matching TV menus and avoiding left/right oscillation. */
@@ -796,13 +834,16 @@ final class DiscordCommunityView extends LinearLayout {
                 && selected.source instanceof HostGatewayClient.DiscordChannel) {
             addJoinAction((HostGatewayClient.DiscordChannel) selected.source);
         } else if (model.state.detail == DiscordCommunityState.Detail.FRIEND) {
-            TextView message = pill(getContext().getString(model.directMessagesCapable
-                    ? R.string.discord_dm_send_message : R.string.discord_dm_upgrade), ActionTone.POSITIVE_JOIN);
+            int label = model.directMessagesCapable ? R.string.discord_dm_send_message
+                    : model.directMessagesScopeAvailable ? R.string.discord_dm_chat_open_elsewhere
+                    : R.string.discord_dm_upgrade;
+            TextView message = pill(getContext().getString(label), ActionTone.POSITIVE_JOIN);
             message.setTag("discord.community.friend.message");
             message.setOnClickListener(ignored -> {
                 if (model.directMessagesCapable) callback.onOpenDirectMessage(selected);
-                else callback.onUpgradeDirectMessages();
+                else if (!model.directMessagesScopeAvailable) callback.onUpgradeDirectMessages();
             });
+            message.setEnabled(model.directMessagesCapable || !model.directMessagesScopeAvailable);
             detailAction = message;
             addAction(message, ActionTone.POSITIVE_JOIN, false);
         } else if (selected.kind == DiscordCommunityPresentation.Kind.SERVER) {
@@ -819,6 +860,9 @@ final class DiscordCommunityView extends LinearLayout {
     private void bindDirectMessage() {
         final boolean wasNearBottom = directNearBottom;
         final long recipientId = model.state.directMessageRecipientId;
+        if (boundDirectRecipientId != recipientId && directKeyboard != null) {
+            directKeyboard.cancelKeyboardHold();
+        }
         final boolean preserveComposer = shouldPreserveDirectComposer(boundDirectRecipientId, recipientId);
         final String retainedDraft = directComposerDraftForRebind(model.directDraft);
         final int retainedSelection = preserveComposer && directComposer != null
@@ -849,6 +893,19 @@ final class DiscordCommunityView extends LinearLayout {
         titleParams.leftMargin = dp(10); header.addView(title, titleParams);
         directWorkspace.addView(header, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
 
+        if (!model.directMessagesCapable) {
+            if (directKeyboard != null) directKeyboard.cancelKeyboardHold();
+            directComposer = null;
+            directSend = null;
+            directKeyboard = null;
+            directKeyboardVisible = false;
+            TextView unavailable = text(getContext().getString(model.directMessagesScopeAvailable
+                    ? R.string.discord_dm_chat_open_elsewhere : R.string.discord_dm_upgrade), 13, MUTED);
+            unavailable.setPadding(dp(8), dp(12), dp(8), dp(12));
+            directWorkspace.addView(unavailable, new LinearLayout.LayoutParams(MATCH_PARENT, WRAP_CONTENT));
+            return;
+        }
+
         directHistory.removeAllViews();
         pendingNewMessageView = null;
         directMediaRows.clear();
@@ -861,7 +918,12 @@ final class DiscordCommunityView extends LinearLayout {
             }
             boolean self = safeUserId(model.snapshot.userId) == message.authorId;
             if (!message.content.isEmpty()) addDirectMessageText(message, self);
-            if (message.additionalContentCount > 0) addAdditionalContent(message, self);
+            if (shouldRenderAdditionalNotice(message.additionalContentType, message.additionalContentCount)) {
+                addAdditionalContent(message, self);
+            } else if (shouldRenderGenericUnsupportedContent(message.content, message.additionalContentType,
+                    message.additionalContentCount, message.disclosure)) {
+                addGenericUnsupportedContent(message, self);
+            }
         }
         if (pendingNewMessagePill) {
             TextView newMessage = pill(getContext().getString(R.string.discord_dm_new_message));
@@ -983,7 +1045,15 @@ final class DiscordCommunityView extends LinearLayout {
     }
 
     private void addAdditionalContent(DiscordDirectMessageState.Message message, boolean self) {
-        TextView content = text(additionalContentLabel(message), 11, CYAN);
+        addDirectContentNotice(message, self, additionalContentLabel(message));
+    }
+
+    private void addGenericUnsupportedContent(DiscordDirectMessageState.Message message, boolean self) {
+        addDirectContentNotice(message, self, getContext().getString(R.string.discord_dm_unsupported_content));
+    }
+
+    private void addDirectContentNotice(DiscordDirectMessageState.Message message, boolean self, String label) {
+        TextView content = text(label, 11, CYAN);
         content.setPadding(dp(11), dp(7), dp(11), dp(7));
         content.setClickable(true);
         content.setFocusable(false);
@@ -998,6 +1068,18 @@ final class DiscordCommunityView extends LinearLayout {
         directHistory.addView(content, params);
         directMediaRows.add(new DirectMediaRow(content, message.id));
     }
+
+    static boolean shouldRenderAdditionalNotice(String additionalContentType, int additionalContentCount) {
+        return !isEmpty(additionalContentType) || additionalContentCount > 0;
+    }
+
+    static boolean shouldRenderGenericUnsupportedContent(String content, String additionalContentType,
+                                                         int additionalContentCount, boolean disclosure) {
+        return !disclosure && isEmpty(content)
+                && !shouldRenderAdditionalNotice(additionalContentType, additionalContentCount);
+    }
+
+    private static boolean isEmpty(String value) { return value == null || value.isEmpty(); }
 
     private String additionalContentLabel(DiscordDirectMessageState.Message message) {
         int count = Math.max(1, message.additionalContentCount);
@@ -1100,8 +1182,11 @@ final class DiscordCommunityView extends LinearLayout {
     }
 
     boolean handleDirectMessageBack(KeyEvent event) {
-        if (event == null || model == null || model.state.detail != DiscordCommunityState.Detail.DIRECT_MESSAGE
-                || !isDirectMessageBackKey(event.getKeyCode())) return false;
+        if (event == null || model == null || model.state.detail != DiscordCommunityState.Detail.DIRECT_MESSAGE) {
+            return false;
+        }
+        if (directKeyboard != null && directKeyboard.handleAccentCancel(event)) return true;
+        if (!isDirectMessageBackKey(event.getKeyCode())) return false;
         int key = event.getKeyCode();
         if (directKeyboardBackKeyCode == key) {
             if (event.getAction() == KeyEvent.ACTION_UP) directKeyboardBackKeyCode = KeyEvent.KEYCODE_UNKNOWN;
@@ -1152,8 +1237,16 @@ final class DiscordCommunityView extends LinearLayout {
 
     private void hideEmbeddedKeyboard() {
         directKeyboardVisible = false;
-        if (directKeyboard != null) directKeyboard.setVisibility(GONE);
+        if (directKeyboard != null) {
+            directKeyboard.cancelKeyboardHold();
+            directKeyboard.setVisibility(GONE);
+        }
         if (directComposer != null) directComposer.requestFocus();
+    }
+
+    void cancelDirectKeyboardHold() {
+        if (directKeyboard != null) directKeyboard.cancelKeyboardHold();
+        activeMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
     }
 
     private void replaceComposerText(String value) {

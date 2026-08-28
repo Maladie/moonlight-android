@@ -24,19 +24,21 @@ $gatewayConfigPath = Join-Path $GatewayDirectory "gateway.json"
 if (-not (Test-Path -LiteralPath $source) -or
     -not (Test-Path -LiteralPath $gatewaySource) -or
     -not (Test-Path -LiteralPath $gatewayConfigPath)) {
-    throw "The Playnite source or existing flat Gateway installation was not found."
+    throw "The Game Provider source or existing flat Gateway installation was not found."
 }
 
-if ($PSCmdlet.ShouldProcess($BridgeDirectory, "Install profile-scoped Playnite Bridge")) {
+if ($PSCmdlet.ShouldProcess($BridgeDirectory, "Install profile-scoped Game Provider Bridge")) {
     New-Item -ItemType Directory -Path $BridgeDirectory -Force | Out-Null
     foreach ($file in @(
-        "PlayniteBridge.py", "GameOperations.py", "OperationJournal.py",
+        "GameProviderBridge.py", "GameOperations.py", "OperationJournal.py",
         "Confirm-SteamOperation.ps1", "Invoke-GameLauncher.ps1",
         "config.example.json", "Start-PlayniteBridge.ps1",
         "Stop-PlayniteBridge.ps1", "PatchPlayniteConnector.py",
         "Install-WakePlayConnectorPatch.ps1", "README.md")) {
         Copy-Item -LiteralPath (Join-Path $source $file) -Destination $BridgeDirectory -Force
     }
+    Remove-Item -LiteralPath (Join-Path $BridgeDirectory "PlayniteBridge.py") `
+        -Force -ErrorAction SilentlyContinue
     $configPath = Join-Path $BridgeDirectory "config.json"
     if (-not (Test-Path -LiteralPath $configPath)) {
         Copy-Item -LiteralPath (Join-Path $source "config.example.json") `
@@ -84,7 +86,7 @@ if ($PSCmdlet.ShouldProcess($BridgeDirectory, "Install profile-scoped Playnite B
             -RestartInterval (New-TimeSpan -Minutes 1) -ExecutionTimeLimit (New-TimeSpan -Days 3650)
         $principal = New-ScheduledTaskPrincipal -UserId $identity `
             -LogonType Interactive -RunLevel Limited
-        Register-ScheduledTask -TaskName "Wake & Play Playnite Bridge (default)" `
+        Register-ScheduledTask -TaskName "Wake & Play Game Provider Bridge (default)" `
             -Action $action -Trigger $trigger -Settings $settings -Principal $principal -Force | Out-Null
     }
     if (-not $SkipStart) { & (Join-Path $BridgeDirectory "Start-PlayniteBridge.ps1") }

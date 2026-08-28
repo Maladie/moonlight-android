@@ -3,5 +3,6 @@
 param()
 
 Get-CimInstance Win32_Process -Filter "Name='python.exe'" -ErrorAction SilentlyContinue |
-    Where-Object { $_.CommandLine -like '*PlayniteBridge.py*' } |
+    Where-Object { $_.CommandLine -like '*GameProviderBridge.py*' -or
+        $_.CommandLine -like '*PlayniteBridge.py*' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }

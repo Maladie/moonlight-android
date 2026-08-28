@@ -42,6 +42,7 @@ public final class LaunchTransitionController {
         spec = next;
         currentTarget = next.type;
         currentGameId = next.type == LaunchTransitionType.GAME
+                || next.type == LaunchTransitionType.GAME_CONNECTION
                 ? normalizedGameId(next.playniteGameId) : "";
         state = LaunchTransitionState.PREPARING_SESSION;
         activeStep = 1;
@@ -55,9 +56,11 @@ public final class LaunchTransitionController {
         streamConnected = false;
         videoFrameReady = false;
         inputReady = false;
-        gatewayReady = next.type == LaunchTransitionType.GENERIC;
-        targetProcessRunning = next.type == LaunchTransitionType.GENERIC;
-        targetWindowReady = next.type == LaunchTransitionType.GENERIC;
+        boolean targetAlreadyRunning = next.type == LaunchTransitionType.GENERIC
+                || next.type == LaunchTransitionType.GAME_CONNECTION;
+        gatewayReady = targetAlreadyRunning;
+        targetProcessRunning = targetAlreadyRunning;
+        targetWindowReady = targetAlreadyRunning;
         uncertain = false;
         detail = "";
         return publish();
@@ -310,6 +313,7 @@ public final class LaunchTransitionController {
         overlayVisible = false;
         inputBlocked = false;
         state = currentTarget == LaunchTransitionType.GAME
+                || currentTarget == LaunchTransitionType.GAME_CONNECTION
                 ? LaunchTransitionState.GAME_RUNNING
                 : currentTarget == LaunchTransitionType.PLAYNITE
                 ? LaunchTransitionState.PLAYNITE_FULLSCREEN_READY

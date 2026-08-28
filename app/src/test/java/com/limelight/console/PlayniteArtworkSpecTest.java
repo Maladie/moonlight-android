@@ -39,6 +39,16 @@ public class PlayniteArtworkSpecTest {
         assertTrue(spec.hasFallback());
     }
 
+    @Test public void screenSaverNeverFallsBackToCover() {
+        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forScreenSaver(
+                game("cover", "background"));
+
+        assertEquals("background", spec.kind);
+        assertEquals("background", spec.version);
+        assertFalse(spec.hasFallback());
+        assertFalse(PlayniteArtworkSpec.forScreenSaver(game("cover", "")).available());
+    }
+
     private static PlayniteLibraryGame game(String cover, String background) {
         return new PlayniteLibraryGame("00000001-0000-0000-0000-000000000000",
                 "Game", true, false, 0, "", cover, background, "Playnite");

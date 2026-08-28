@@ -62,6 +62,14 @@ final class PlayniteLibraryCache {
                     String id = value.optString("id", "");
                     String name = value.optString("name", "").trim();
                     if (!HostGatewayClient.isPlayniteId(id) || name.isEmpty()) continue;
+                    String source = value.optString("source", "").trim();
+                    String provider = HostGatewayClient.providerOrLegacy(
+                            value.optString("provider", ""), source);
+                    String providerGameId = value.optString("provider_game_id", "");
+                    boolean exactIdentity = HostGatewayClient.hasExactProviderIdentity(
+                            id, provider, providerGameId);
+                    String legacyLibraryKey = source.isEmpty() ? "playnite"
+                            : source.toLowerCase(java.util.Locale.ROOT);
                     games.add(new PlayniteLibraryGame(id, name,
                             value.optBoolean("installed", false),
                             value.optBoolean("installing", false),
@@ -72,7 +80,7 @@ final class PlayniteLibraryCache {
                             value.optString("background", ""),
                             value.optString("description", ""),
                             Math.max(0, value.optInt("play_count", 0)),
-                            value.optString("source", ""),
+                            source,
                             value.optString("genres", ""),
                             value.optBoolean("install_requires_attention", false),
                             value.optString("install_attention_reason", ""),
@@ -80,7 +88,17 @@ final class PlayniteLibraryCache {
                             value.optString("install_launcher", ""),
                             value.optString("operation_state", ""),
                             value.optInt("operation_progress", -1),
-                            value.optBoolean("uninstalling", false)));
+                            value.optBoolean("uninstalling", false), "",
+                            provider,
+                            providerGameId,
+                            value.optString("playnite_game_id",
+                                    id.matches("(?i)[0-9a-f-]{36}") ? id : ""),
+                            value.optString("library_key", legacyLibraryKey),
+                            value.optString("library_name",
+                                    source.isEmpty() ? "Playnite" : source),
+                            exactIdentity && value.optBoolean("can_launch", true),
+                            exactIdentity && value.optBoolean("can_install", true),
+                            exactIdentity && value.optBoolean("can_uninstall", true)));
                 }
             }
             return new Entry(games, root.optLong("saved_at", file.lastModified()),
@@ -116,6 +134,14 @@ final class PlayniteLibraryCache {
                 value.put("description", game.description);
                 value.put("play_count", game.playCount);
                 value.put("source", game.source);
+                value.put("provider", game.provider);
+                value.put("provider_game_id", game.providerGameId);
+                value.put("playnite_game_id", game.metadataPlayniteGameId);
+                value.put("library_key", game.libraryKey);
+                value.put("library_name", game.libraryName);
+                value.put("can_launch", game.canLaunch);
+                value.put("can_install", game.canInstall);
+                value.put("can_uninstall", game.canUninstall);
                 value.put("genres", game.genres);
                 value.put("install_requires_attention", game.installRequiresAttention);
                 value.put("install_attention_reason", game.installAttentionReason);

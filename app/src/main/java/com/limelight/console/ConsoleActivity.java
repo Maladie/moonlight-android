@@ -103,6 +103,7 @@ import com.limelight.utils.SessionResumeManager;
 import com.limelight.utils.ShortcutHelper;
 import com.limelight.ui.OverridesView;
 import com.limelight.ui.ConsoleStreamLoadingView;
+import com.limelight.ui.LoadingArtworkPolicy;
 import com.limelight.ui.ControllerGlyphs;
 import com.limelight.console.transition.LaunchTransitionSpec;
 import com.limelight.console.transition.LaunchTransitionType;
@@ -1697,7 +1698,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private ImageView screenSaverImage() {
         ImageView image = new ImageView(this);
-        image.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        image.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
         image.setAlpha(0f);
         return image;
     }
@@ -2731,7 +2732,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         ConsoleHostPresentation.State state = consoleHostState(host, snapshot);
         switch (state) {
             case ACTIVE_SESSION:
-                String appName = findAppName(host, snapshot.hostGameAppId);
+                String appName = activeSessionName(host, snapshot);
                 return appName == null ? getString(R.string.console_status_active_session)
                         : getString(R.string.console_status_active_app, appName);
             case WAKING:
@@ -2783,6 +2784,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (app.getAppId() == appId) return app.getAppName();
         }
         return null;
+    }
+
+    private String activeSessionName(ComputerDetails host, SessionSnapshot snapshot) {
+        for (PlayniteDashboardItem item : unfilteredPlayniteItems) {
+            if (snapshot.playniteGameId.equals(
+                    SessionSnapshot.normalize(item.stableId()))) return item.game.name;
+        }
+        return findAppName(host, snapshot.hostGameAppId);
     }
 
     private TextView label(String value) {
@@ -3063,10 +3072,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             quit.setTextColor(0xFFFF9B92);
             quit.setOnClickListener(view -> confirmQuitAction(() -> {
                 hideSidePanel();
-                ServerHelper.doQuit(this, host, new NvApp("app", item.appId, false),
-                        managerBinder, () -> {
-                            if (appListPoller != null) appListPoller.pollNow();
-                        });
+                requestTerminateSession(host);
             }));
             actions.add(quit);
         }
@@ -3756,11 +3762,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         SuspendedSessionStore.Session suspended =
                 SuspendedSessionStore.load(this, host.uuid);
         String expectedSuspendId = suspended == null ? "" : suspended.suspendId;
+        String providerGameId = knownProviderGameId(host, suspended);
         ConsoleUiFeedback.makeText(this, R.string.console_terminate_session_request,
                 Toast.LENGTH_SHORT).show();
         executor.execute(() -> {
             boolean stopped = false;
             try {
+                stopActiveProviderGame(host, providerGameId);
                 NvHTTP connection = new NvHTTP(
                         ServerHelper.getCurrentAddressFromComputer(host), host.httpsPort,
                         managerBinder.getUniqueId(), host.serverCert,
@@ -3785,6 +3793,52 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         Toast.LENGTH_LONG).show();
             });
         });
+    }
+
+    private String knownProviderGameId(ComputerDetails host,
+                                       SuspendedSessionStore.Session suspended) {
+        if (suspended != null && HostGatewayClient.isPlayniteId(suspended.playniteGameId)) {
+            return suspended.playniteGameId;
+        }
+        String active = host == null ? "" : activePlayniteGameIds.get(host.uuid);
+        if (HostGatewayClient.isPlayniteId(active)) return active;
+        RetainedStreamSessionCoordinator.Snapshot retained =
+                RetainedStreamSessionCoordinator.snapshot();
+        if (host != null && host.uuid.equalsIgnoreCase(retained.hostId)
+                && HostGatewayClient.isPlayniteId(retained.playniteGameId)) {
+            return retained.playniteGameId;
+        }
+        if (host != null && host.uuid.equalsIgnoreCase(retainedStreamHostId)
+                && HostGatewayClient.isPlayniteId(retainedStreamPlayniteGameId)) {
+            return retainedStreamPlayniteGameId;
+        }
+        return "";
+    }
+
+    private void stopActiveProviderGame(ComputerDetails host, String knownGameId)
+            throws IOException {
+        String address = host.activeAddress == null ? null : host.activeAddress.address;
+        GatewayConnection gateway = hostGatewayStore.loadForHost(host.uuid, address);
+        String gameId = normalizeId(knownGameId);
+        if (gateway == null) {
+            if (!gameId.isEmpty()) throw new IOException("Gateway unavailable for provider stop");
+            return;
+        }
+        if (gameId.isEmpty()) {
+            HostGatewayClient.PlayniteCurrentGame current;
+            try {
+                current = hostGatewayClient.getPlayniteCurrentGame(gateway);
+            } catch (IOException unavailableForGenericSession) {
+                return;
+            }
+            if (("starting".equalsIgnoreCase(current.state)
+                    || "running".equalsIgnoreCase(current.state)
+                    || "stopping".equalsIgnoreCase(current.state))
+                    && HostGatewayClient.isPlayniteId(current.id)) {
+                gameId = current.id;
+            }
+        }
+        if (!gameId.isEmpty()) hostGatewayClient.stopGame(gateway, gameId);
     }
 
     private void finishHostWaking(String hostUuid, long token) {
@@ -4121,7 +4175,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             ConsoleUiFeedback.makeText(this, getString(R.string.playnite_install_complete,
                     gameName), Toast.LENGTH_LONG).show();
         }
-        preferences.edit().remove(playniteInstallNotificationKey(host.uuid, gameId))
+        preferences.edit()
+                .putLong(playniteCarouselInstallActivityKey(
+                        host.uuid, gameId), System.currentTimeMillis())
+                .remove(playniteInstallNotificationKey(host.uuid, gameId))
                 .remove(playniteInstallPendingKey(host.uuid, gameId)).apply();
         completedPlayniteInstallAnimations.add(playniteInstallKey(host.uuid, gameId));
     }
@@ -4137,8 +4194,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         executor.execute(() -> {
             JSONObject result = null;
             try {
-                result = hostGatewayClient.ensureVibepolloPlayniteApp(
-                        connection, game.playniteGameId, game.name);
+                if ("playnite".equals(game.provider)) {
+                    result = hostGatewayClient.ensureVibepolloPlayniteApp(
+                            connection, game.playniteGameId, game.name);
+                }
             } catch (IOException | RuntimeException ignored) { }
             PlayniteArtworkSpec artworkSpec = PlayniteArtworkSpec.forBackdrop(game);
             if (artworkSpec.available()) {
@@ -4709,9 +4768,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 visibleLibraryGames.add(game);
             }
         }
-        List<PlayniteLibraryGame> sourceFiltered = PlayniteLibrarySources.filter(
+        Set<String> storedSources = hostGatewayStore.playniteLibrarySources(host.uuid);
+        Map<String, String> availableSources = PlayniteLibrarySources.available(
                 visibleLibraryGames,
-                hostGatewayStore.playniteLibrarySources(host.uuid));
+                getResources().getConfiguration().getLocales().get(0));
+        Set<String> selectedSources = PlayniteLibrarySources.migrateSelection(
+                storedSources, availableSources);
+        if (storedSources != null && selectedSources == null) {
+            hostGatewayStore.clearPlayniteLibrarySources(host.uuid);
+        } else if (selectedSources != null && !selectedSources.equals(storedSources)) {
+            hostGatewayStore.setPlayniteLibrarySources(host.uuid, selectedSources);
+        }
+        List<PlayniteLibraryGame> sourceFiltered = PlayniteLibrarySources.filter(
+                visibleLibraryGames, selectedSources);
         boolean appListAuthoritative = ConsoleActionCatalog.isOnline(host);
         Map<String, PlayniteDashboardItem> resolvedById = new LinkedHashMap<>();
         Map<String, Long> localActivity = new LinkedHashMap<>();
@@ -4780,6 +4849,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         renderedAppsSignature = null;
         appsLabel.setText(getString(R.string.playnite_library,
                 host.name.toUpperCase(Locale.ROOT)));
+        updateHostSelector();
         updatePlayniteLibraryStatus(host);
         if (pendingExpandedLibraryRestore && CONSOLE_UI_V2
                 && !unfilteredItems.isEmpty()) {
@@ -4902,8 +4972,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private long playActivityEpoch(String hostUuid, PlayniteDashboardItem item) {
         long playActivity = PlayniteLibraryOrdering.activityEpoch(item.game.lastActivity);
-        long localLaunchActivity = item.sunshineAppId == null ? 0L : preferences.getLong(
-                appHistoryKey(hostUuid, item.sunshineAppId), 0L);
+        long localLaunchActivity = preferences.getLong(
+                playniteGameHistoryKey(hostUuid, item.stableId()), 0L);
         return Math.max(playActivity, localLaunchActivity);
     }
 
@@ -6145,7 +6215,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 old.game.playtimeSeconds != item.game.playtimeSeconds ||
                 old.game.playCount != item.game.playCount ||
                 !old.game.description.equals(item.game.description) ||
-                !old.game.source.equals(item.game.source)) payload |= PlayniteLibraryDiff.TEXT;
+                !old.game.source.equals(item.game.source) ||
+                !old.game.libraryKey.equals(item.game.libraryKey) ||
+                !old.game.libraryName.equals(item.game.libraryName)) {
+            payload |= PlayniteLibraryDiff.TEXT;
+        }
         if (!old.game.coverKey.equals(item.game.coverKey) ||
                 !old.game.backgroundKey.equals(item.game.backgroundKey)) {
             payload |= PlayniteLibraryDiff.ARTWORK;
@@ -7095,17 +7169,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
         if (item.game.installed) {
             TextView launch = panelAction(getString(R.string.console_play));
-            launch.setEnabled(!operation.launchBlocked);
-            launch.setAlpha(operation.launchBlocked ? .42f : 1f);
+            launch.setEnabled(item.game.canLaunch && !operation.launchBlocked);
+            launch.setAlpha(!item.game.canLaunch || operation.launchBlocked ? .42f : 1f);
             launch.setOnClickListener(view -> {
                 hideSidePanel();
                 activatePlayniteItem(host.uuid, item);
             });
             actions.add(launch);
-            TextView uninstall = panelAction(getString(R.string.playnite_uninstall));
-            uninstall.setTextColor(0xFFFF9B92);
-            uninstall.setOnClickListener(view -> confirmPlayniteUninstall(host, item));
-            actions.add(uninstall);
+            if (item.game.canUninstall) {
+                TextView uninstall = panelAction(getString(R.string.playnite_uninstall));
+                uninstall.setTextColor(0xFFFF9B92);
+                uninstall.setOnClickListener(view -> confirmPlayniteUninstall(host, item));
+                actions.add(uninstall);
+            }
             if (item.stableId().equals(resumePlayniteGameId)
                     && host.runningGameId != 0) {
                 TextView terminate = panelAction(
@@ -7131,7 +7207,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 status.setAlpha(.52f);
                 actions.add(status);
             }
-        } else {
+        } else if (item.game.canInstall) {
             TextView install = panelAction(getString(R.string.playnite_install_action_short));
             install.setOnClickListener(view -> {
                 hideSidePanel();
@@ -7297,7 +7373,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         List<NvApp> apps = currentSunshineApps;
         if (!item.game.installed) {
+            if (!item.game.canInstall) {
+                ConsoleUiFeedback.makeText(this, R.string.playnite_launch_unavailable,
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
             startPlayniteInstallation(host, item);
+            return;
+        }
+        if (!item.game.canLaunch) {
+            ConsoleUiFeedback.makeText(this, R.string.playnite_launch_unavailable,
+                    Toast.LENGTH_SHORT).show();
             return;
         }
         if (isVibepolloEnsureInFlight(hostUuid, item)
@@ -7310,7 +7396,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             NvApp target = PlayniteTargetResolver.launchTarget(item, apps,
                     ConsoleActionCatalog.isOnline(host));
             if (target != null) {
-                playPlayniteGame(host, target, item.game.playniteGameId);
+                playPlayniteGame(host, target, item.game.playniteGameId, item.game.name);
                 return;
             }
         }
@@ -7318,7 +7404,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             NvApp fallback = PlayniteTargetResolver.launchTarget(item, apps,
                     ConsoleActionCatalog.isOnline(host));
             if (fallback != null) {
-                playPlayniteGame(host, fallback, item.game.playniteGameId);
+                playPlayniteGame(host, fallback, item.game.playniteGameId, item.game.name);
                 return;
             }
         }
@@ -7333,7 +7419,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void startPlayniteInstallation(ComputerDetails host,
                                            PlayniteDashboardItem item) {
-        if (host == null || item == null) return;
+        if (host == null || item == null || !item.game.canInstall) return;
         if (hasPlayniteOperationAwaitingConfirmation()) {
             ConsoleUiFeedback.makeText(this, R.string.playnite_operation_waiting,
                     Toast.LENGTH_LONG).show();
@@ -7394,6 +7480,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void uninstallPlayniteGame(ComputerDetails host,
                                        PlayniteDashboardItem item) {
+        if (item == null || !item.game.canUninstall) return;
         if (hasPlayniteOperationAwaitingConfirmation()) {
             ConsoleUiFeedback.makeText(this, R.string.playnite_operation_waiting,
                     Toast.LENGTH_LONG).show();
@@ -7778,10 +7865,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 uniquePlayniteGameIdForRunningApp(host, app)));
     }
 
-    private void playPlayniteGame(ComputerDetails host, NvApp app, String gameId) {
+    private void playPlayniteGame(ComputerDetails host, NvApp app, String gameId,
+                                  String gameName) {
         if (host == null || app == null) return;
         sessionOrchestrator.play(PlayIntent.playniteGame(host.uuid, app.getAppId(),
-                app.getAppName(), app.isHdrSupported(), gameId, gameId));
+                gameName, app.isHdrSupported(), gameId, gameId));
     }
 
     private ComputerDetails currentHost(String hostUuid) {
@@ -7831,8 +7919,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 anotherAppRunning, quickLaunch, isHidden, hasArtwork, shortcutsSupported,
                 true, () -> confirmQuitAction(() -> {
                     hideSidePanel();
-                    ServerHelper.doQuit(this, host, app, managerBinder,
-                            () -> { if (appListPoller != null) appListPoller.pollNow(); });
+                    requestTerminateSession(host);
                 }));
         addAppAction(resolved, ConsoleActionCatalog.AppCapability.SETTINGS,
                 getString(R.string.console_app_stream_settings), online, paired, thisAppRunning,
@@ -8392,11 +8479,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     playniteLaunchTargetStore.setGameTarget(intent.hostId,
                             intent.playniteGameId, app.getAppId());
                 }
-                String transitionGameId = type == LaunchTransitionType.GENERIC
-                        ? "" : intent.playniteGameId;
+                LaunchTransitionType transitionType = intent.transitionType(type);
                 LaunchTransitionSpec transition = LaunchTransitionSpec.create(
-                        intent.hostId, type, intent.sunshineAppId,
-                        transitionGameId, System.currentTimeMillis());
+                        intent.hostId, transitionType, intent.sunshineAppId,
+                        intent.transitionGameId(), System.currentTimeMillis());
                 launchPreparedStream(host, app,
                         intent.quickLaunchId.isEmpty() ? null : intent.quickLaunchId,
                         transition, cachedLoadingArtworkPath(
@@ -8522,10 +8608,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                       String loadingArtworkPath,
                                       String sourceSuspendId,
                                       String sourceSuspendPlayniteGameId) {
-        preferences.edit()
-                .putLong(appHistoryKey(host.uuid, app.getAppId()), System.currentTimeMillis())
-                .putLong("host_played." + host.uuid, System.currentTimeMillis())
-                .apply();
+        long playedAt = System.currentTimeMillis();
+        SharedPreferences.Editor history = preferences.edit()
+                .putLong(appHistoryKey(host.uuid, app.getAppId()), playedAt)
+                .putLong("host_played." + host.uuid, playedAt);
+        if (transition.type == LaunchTransitionType.GAME
+                || transition.type == LaunchTransitionType.GAME_CONNECTION) {
+            history.putLong(playniteGameHistoryKey(
+                    host.uuid, transition.playniteGameId), playedAt);
+        }
+        history.apply();
         String openingStatus = getString(R.string.console_opening_stream);
         if (streamLoadingView != null) streamLoadingView.setStep(2, openingStatus);
         Bundle presentation = new Bundle();
@@ -8589,6 +8681,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 || (!closeMatchingApp && host.runningGameId == targetAppId)) return true;
         if (cancelled.getAsBoolean()) return false;
         status.accept(getString(R.string.transition_closing_session));
+        stopActiveProviderGame(host, knownProviderGameId(
+                host, SuspendedSessionStore.load(this, host.uuid)));
         NvHTTP connection = new NvHTTP(
                 ServerHelper.getCurrentAddressFromComputer(host), host.httpsPort,
                 managerBinder.getUniqueId(), host.serverCert,
@@ -9186,22 +9280,26 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String hostUuid = screenSaverHostUuid;
         ComputerDetails host = hosts.get(hostUuid);
         executor.execute(() -> {
-            ArtworkResult result = cachedPlayniteArtwork(hostUuid, item,
-                    PlayniteArtworkSpec.forBackdrop(item.game));
+            PlayniteArtworkSpec spec = PlayniteArtworkSpec.forScreenSaver(item.game);
+            ArtworkResult result = cachedPlayniteArtwork(hostUuid, item, spec);
             if (result == null && host != null) {
                 String address = host.activeAddress != null ? host.activeAddress.address : null;
                 GatewayConnection connection =
                         hostGatewayStore.loadForHost(hostUuid, address);
                 if (connection != null) {
                     try {
-                        result = fetchPlayniteArtwork(connection, hostUuid, item,
-                                PlayniteArtworkSpec.forBackdrop(item.game));
+                        result = fetchPlayniteArtwork(connection, hostUuid, item, spec);
                     } catch (IOException ignored) { }
                 }
             }
             Bitmap bitmap = result == null ? null : decodeArtwork(result.file, 1920);
+            if (bitmap != null && !LoadingArtworkPolicy.canUseAsSplash(
+                    bitmap.getWidth(), bitmap.getHeight())) {
+                bitmap = null;
+            }
+            Bitmap selectedBitmap = bitmap;
             mainHandler.post(() -> applyScreenSaverArtwork(
-                    generation, item.game.name, bitmap));
+                    generation, item.game.name, selectedBitmap));
         });
     }
 
@@ -9553,8 +9651,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void terminateRetainedSessionAndExit() {
         final String expectedStreamSessionId = currentRetainedStreamSessionId();
         if (expectedStreamSessionId.isEmpty()) return;
-        Runnable complete = () -> mainHandler.post(() -> {
+        RetainedStreamSessionCoordinator.TerminationCallback complete = success ->
+                mainHandler.post(() -> {
             if (!mayCompleteTermination(expectedStreamSessionId)) return;
+            if (!success) {
+                hideSidePanel();
+                ConsoleUiFeedback.makeText(this, R.string.console_terminate_session_failed,
+                        Toast.LENGTH_LONG).show();
+                return;
+            }
             RetainedStreamSessionCoordinator.clearIfMatches(expectedStreamSessionId);
             SessionResumeManager.clearIfMatches(this, expectedStreamSessionId);
             BackgroundStreamService.resumed(this, expectedStreamSessionId);
@@ -9577,9 +9682,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
         ComputerDetails host = hosts.get(!retainedStreamHostId.isEmpty()
                 ? retainedStreamHostId : selectedHostUuid);
+        RetainedStreamSessionCoordinator.Snapshot retained =
+                RetainedStreamSessionCoordinator.snapshot();
+        String providerGameId = HostGatewayClient.isPlayniteId(retained.playniteGameId)
+                ? retained.playniteGameId : retainedStreamPlayniteGameId;
         if (host == null || managerBinder == null) {
-            RetainedStreamSessionCoordinator.clearIfMatches(expectedStreamSessionId);
-            complete.run();
+            complete.complete(providerGameId.isEmpty());
             return;
         }
 
@@ -9588,17 +9696,22 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 getString(R.string.console_closing_game_and_moonwaker));
         executor.execute(() -> {
             if (!mayCompleteTermination(expectedStreamSessionId)) return;
+            boolean stopped = false;
             try {
+                stopActiveProviderGame(host, providerGameId);
                 NvHTTP connection = new NvHTTP(
                         ServerHelper.getCurrentAddressFromComputer(host), host.httpsPort,
                         managerBinder.getUniqueId(), host.serverCert,
                         PlatformBinding.getCryptoProvider(this));
-                connection.quitApp();
+                stopped = connection.quitApp();
             } catch (IOException | XmlPullParserException ignored) { }
+            boolean success = stopped;
             mainHandler.post(() -> {
-                RetainedStreamSessionCoordinator.clearIfMatches(
-                        expectedStreamSessionId);
-                complete.run();
+                if (success) {
+                    RetainedStreamSessionCoordinator.clearIfMatches(
+                            expectedStreamSessionId);
+                }
+                complete.complete(success);
             });
         });
     }
@@ -10549,6 +10662,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private static String appHistoryKey(String hostUuid, int appId) {
         return "played_at.app." + hostUuid + "." + appId;
+    }
+
+    private static String playniteGameHistoryKey(String hostUuid, String gameId) {
+        return "played_at.game." + hostUuid + "." + gameId;
     }
 
     private String formatRelative(long milliseconds) {

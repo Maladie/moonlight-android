@@ -89,6 +89,19 @@ final class HostLaunchPreflight {
         boolean requiresPlaynite() {
             return kind == PlayIntent.Kind.PLAYNITE_GAME;
         }
+
+        boolean requiresPlayniteConnector() {
+            if (!requiresPlaynite()) return false;
+            String normalized = gameId == null ? ""
+                    : gameId.toLowerCase(java.util.Locale.ROOT);
+            return !normalized.startsWith("steam:") && !normalized.startsWith("epic:");
+        }
+
+        boolean isDirectProvider() {
+            String normalized = gameId == null ? ""
+                    : gameId.toLowerCase(java.util.Locale.ROOT);
+            return normalized.startsWith("steam:") || normalized.startsWith("epic:");
+        }
     }
 
     static final class Profile {
@@ -203,7 +216,7 @@ final class HostLaunchPreflight {
                 return Result.failed(Stage.PLAYNITE_READY,
                         FailureReason.PLAYNITE_BRIDGE_OFFLINE);
             }
-            if (!profile.playniteConnectorConnected) {
+            if (request.requiresPlayniteConnector() && !profile.playniteConnectorConnected) {
                 return Result.failed(Stage.PLAYNITE_READY,
                         FailureReason.PLAYNITE_CONNECTOR_DISCONNECTED);
             }
@@ -218,6 +231,14 @@ final class HostLaunchPreflight {
                     FailureReason.TARGET_UNAVAILABLE);
         }
         if (cancelled.getAsBoolean()) return Result.cancelled();
+        if (request.isDirectProvider()) {
+            NvApp desktop = PlayniteTargetResolver.resolveProviderStream(apps);
+            if (desktop != null) {
+                progress.onStage(Stage.TARGET_READY);
+                return Result.ready(desktop, TargetResolution.EXISTING);
+            }
+            return Result.failed(Stage.TARGET_READY, FailureReason.TARGET_UNAVAILABLE);
+        }
         NvApp existing = request.appId > 0
                 ? PlayniteTargetResolver.findById(apps, request.appId) : null;
         if (existing != null) {

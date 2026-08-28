@@ -51,16 +51,30 @@ public class DiscordDirectMessageStateTest {
         DiscordDirectMessageState state = new DiscordDirectMessageState();
         assertTrue(state.beginSend(42, 1));
         assertFalse(state.beginSend(42, 2));
-        state.finishSend(42, 1, false, true, 12f, "HTTPError");
+        assertTrue(state.finishSend(42, 1, false, true, 12f, "HTTPError"));
         assertFalse(state.sendState(42).inFlight);
         assertTrue(state.sendState(42).retryable);
         assertEquals(12f, state.sendState(42).retryAfterSeconds, 0f);
         assertTrue(state.beginSend(42, 2));
     }
 
-    @Test public void successfulSendClearsDraftButFailureKeepsItForManualRetry() {
-        assertEquals("", DiscordSocialPanelController.directMessageDraftAfterSendResult("hello", true));
-        assertEquals("hello", DiscordSocialPanelController.directMessageDraftAfterSendResult("hello", false));
+    @Test
+    public void lateSendResultIsRejectedWithoutChangingTheActiveRequest() {
+        DiscordDirectMessageState state = new DiscordDirectMessageState();
+        assertTrue(state.beginSend(42, 2));
+        assertFalse(state.finishSend(42, 1, true, false, 0, ""));
+        assertTrue(state.sendState(42).inFlight);
+    }
+
+    @Test public void successfulSendClearsOnlyTheUnchangedDraftForTheAcceptedRequest() {
+        assertTrue(DiscordSocialPanelController.shouldClearDirectMessageDraftAfterSendResult(
+                true, true, "hello", "hello"));
+        assertFalse(DiscordSocialPanelController.shouldClearDirectMessageDraftAfterSendResult(
+                false, true, "hello", "hello"));
+        assertFalse(DiscordSocialPanelController.shouldClearDirectMessageDraftAfterSendResult(
+                true, false, "hello", "hello"));
+        assertFalse(DiscordSocialPanelController.shouldClearDirectMessageDraftAfterSendResult(
+                true, true, "newer", "hello"));
     }
 
     @Test

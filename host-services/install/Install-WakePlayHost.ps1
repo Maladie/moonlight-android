@@ -6,7 +6,6 @@ param(
     [int]$GatewayPort = 8785,
     [switch]$SkipFirewall,
     [switch]$SkipScheduledTask,
-    [switch]$SkipEpicLegendary,
     [switch]$SkipStart
 )
 
@@ -75,7 +74,7 @@ function Stop-MoonWakerHostControlForUpdate {
         $running = @(Get-Process -Name "MoonWakerHostControl" -ErrorAction SilentlyContinue)
         if ($running.Count -eq 0) { return }
         foreach ($process in $running) {
-            try { Stop-Process -Id $process.Id -Force -ErrorAction Stop } catch {}
+            try { & taskkill.exe /PID $process.Id /T /F 2>$null | Out-Null } catch {}
         }
         Start-Sleep -Milliseconds 250
     } while ([DateTime]::UtcNow -lt $deadline)
@@ -98,6 +97,8 @@ Copy-Item -LiteralPath (Join-Path $bridgeSource "vibepollo") `
     -Destination $sourceDirectory -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $bridgeSource "playnite") `
     -Destination $sourceDirectory -Recurse -Force
+Remove-Item -LiteralPath (Join-Path $sourceDirectory "playnite\PlayniteBridge.py") `
+    -Force -ErrorAction SilentlyContinue
 Copy-Item -Path (Join-Path $profileAgentSource "*") `
     -Destination $profileAgentDirectory -Recurse -Force
 # Keep existing profile supervisors on the current safety logic. These scripts
@@ -116,11 +117,11 @@ if (Test-Path -LiteralPath $profilesDirectory) {
 Stop-MoonWakerHostControlForUpdate
 Copy-Item -Path (Join-Path $controlSource "*") `
     -Destination $controlDirectory -Recurse -Force
-if (-not $SkipEpicLegendary -and
-        (Test-Path -LiteralPath (Join-Path $toolsSource "legendary\legendary.exe"))) {
-    Copy-Item -LiteralPath (Join-Path $toolsSource "legendary") `
-        -Destination $toolsDirectory -Recurse -Force
+if (-not (Test-Path -LiteralPath (Join-Path $toolsSource "legendary\legendary.exe"))) {
+    throw "The MoonWaker package does not contain the required Legendary executable."
 }
+Copy-Item -LiteralPath (Join-Path $toolsSource "legendary") `
+    -Destination $toolsDirectory -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Install-WakePlayProfile.ps1") `
     -Destination $installScripts -Force
 

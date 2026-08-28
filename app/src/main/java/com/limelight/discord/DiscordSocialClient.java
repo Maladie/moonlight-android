@@ -43,6 +43,7 @@ import java.util.Collections;
 import java.util.Deque;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
@@ -69,6 +70,7 @@ public final class DiscordSocialClient {
     private static final Object stateLock = new Object();
     private static final Object messageLock = new Object();
     private static final int MAX_JAVA_MESSAGE_EVENTS = 256;
+    private static final AtomicLong nextDirectMessageRequestId = new AtomicLong();
     private static final Snapshot EMPTY = new Snapshot(0, "Not connected", false, false,
             "", "", "", Collections.emptyList());
 
@@ -86,6 +88,8 @@ public final class DiscordSocialClient {
     private static Dialog deviceDialog;
     private static WeakReference<Activity> dialogActivity = new WeakReference<>(null);
     private static final Deque<MessageEvent> pendingMessageEvents = new ArrayDeque<>();
+    private static long nextMessageEventLeaseEpoch;
+    private static MessageEventLease activeMessageEventLease;
 
     private DiscordSocialClient() {}
 
@@ -198,13 +202,13 @@ public final class DiscordSocialClient {
 
     /** Requests at most 30 recent messages. The native request is owned by the SDK HandlerThread. */
     public static void requestUserMessages(long recipientId, long requestId) {
-        if (recipientId <= 0 || requestId < 0 || !canUseDirectMessages()) return;
+        if (recipientId <= 0 || requestId <= 0 || !canUseDirectMessages()) return;
         postNative(() -> nativeRequestUserMessages(recipientId, requestId, 30));
     }
 
     /** Sends only following an explicit UI action; callers own retry policy and drafts. */
     public static void sendUserMessage(long recipientId, long requestId, String content) {
-        if (recipientId <= 0 || requestId < 0 || content == null || content.isEmpty()
+        if (recipientId <= 0 || requestId <= 0 || content == null || content.isEmpty()
                 || content.length() > 2000 || !canUseDirectMessages()) return;
         postNative(() -> nativeSendUserMessage(recipientId, requestId, content));
     }
@@ -215,17 +219,74 @@ public final class DiscordSocialClient {
         postNative(() -> nativeOpenMessageInDiscord(messageId));
     }
 
-    public static void setShowingChat(boolean showing) {
-        postNative(() -> nativeSetShowingChat(showing));
+    /**
+     * Acquires the process-wide consumer lease for direct-message events and chat presence.
+     * A null result means another presentation currently owns both.
+     */
+    public static MessageEventLease tryAcquireMessageEventLease() {
+        synchronized (messageLock) {
+            if (activeMessageEventLease != null) return null;
+            nextMessageEventLeaseEpoch = nextPositiveValue(nextMessageEventLeaseEpoch);
+            activeMessageEventLease = new MessageEventLease(nextMessageEventLeaseEpoch);
+            return activeMessageEventLease;
+        }
     }
 
-    /** Returns and clears already-parsed native events; UI never enters JNI directly. */
-    public static List<MessageEvent> drainMessageEvents() {
+    /** Releases a lease only when it is still the active token, and clears native chat presence. */
+    public static void releaseMessageEventLease(MessageEventLease lease) {
         synchronized (messageLock) {
+            if (!ownsMessageEventLeaseLocked(lease)) return;
+            // Queue false before allowing a new owner to queue true, so a late old-owner
+            // callback cannot turn off the replacement presentation's chat state.
+            postNative(() -> nativeSetShowingChat(false));
+            activeMessageEventLease = null;
+        }
+    }
+
+    /** Updates native chat presence only for the active direct-message event consumer. */
+    public static void setShowingChat(MessageEventLease lease, boolean showing) {
+        synchronized (messageLock) {
+            if (!ownsMessageEventLeaseLocked(lease)) return;
+            // Posting under the lease lock preserves ordering with release/handoff.
+            postNative(() -> nativeSetShowingChat(showing));
+        }
+    }
+
+    /** Returns and clears already-parsed native events only for the active lease holder. */
+    public static List<MessageEvent> drainMessageEvents(MessageEventLease lease) {
+        synchronized (messageLock) {
+            if (!ownsMessageEventLeaseLocked(lease)) return Collections.emptyList();
             if (pendingMessageEvents.isEmpty()) return Collections.emptyList();
             List<MessageEvent> result = new ArrayList<>(pendingMessageEvents);
             pendingMessageEvents.clear();
             return Collections.unmodifiableList(result);
+        }
+    }
+
+    /** Allocates a non-zero, positive request ID shared by all DM history and send requests. */
+    public static long nextDirectMessageRequestId() {
+        while (true) {
+            long current = nextDirectMessageRequestId.get();
+            long next = nextPositiveValue(current);
+            if (nextDirectMessageRequestId.compareAndSet(current, next)) return next;
+        }
+    }
+
+    private static boolean ownsMessageEventLeaseLocked(MessageEventLease lease) {
+        return lease != null && lease == activeMessageEventLease
+                && lease.epoch == activeMessageEventLease.epoch;
+    }
+
+    static long nextPositiveValue(long current) {
+        return current >= Long.MAX_VALUE || current < 0 ? 1L : current + 1L;
+    }
+
+    /** Opaque token for the sole process-local DM consumer. */
+    public static final class MessageEventLease {
+        private final long epoch;
+
+        private MessageEventLease(long epoch) {
+            this.epoch = epoch;
         }
     }
 
@@ -546,6 +607,10 @@ public final class DiscordSocialClient {
                 pendingMessageEvents.addLast(event);
             }
         }
+    }
+
+    static void enqueueMessageEventsForTest(String... records) {
+        enqueueMessageEvents(records);
     }
 
     static boolean authorizationRequiredForOwner(boolean hasSession, boolean flowActive,

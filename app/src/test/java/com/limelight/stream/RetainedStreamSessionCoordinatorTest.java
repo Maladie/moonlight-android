@@ -15,13 +15,17 @@ public class RetainedStreamSessionCoordinatorTest {
         boolean parkResult = true;
         boolean terminated;
         boolean completeTermination = true;
-        Runnable terminationCompletion;
+        boolean terminationResult = true;
+        RetainedStreamSessionCoordinator.TerminationCallback terminationCompletion;
 
         @Override public boolean parkRetainedTransport() { return parkResult; }
-        @Override public void terminateRetainedSession(Runnable completion) {
+        @Override public void terminateRetainedSession(
+                RetainedStreamSessionCoordinator.TerminationCallback completion) {
             terminated = true;
             terminationCompletion = completion;
-            if (completeTermination && completion != null) completion.run();
+            if (completeTermination && completion != null) {
+                completion.complete(terminationResult);
+            }
         }
     }
 
@@ -94,7 +98,7 @@ public class RetainedStreamSessionCoordinatorTest {
         assertEquals(RetainedStreamSessionCoordinator.State.TERMINATING,
                 RetainedStreamSessionCoordinator.state());
 
-        controller.terminationCompletion.run();
+        controller.terminationCompletion.complete(true);
         assertEquals(RetainedStreamSessionCoordinator.State.NONE,
                 RetainedStreamSessionCoordinator.state());
     }
@@ -125,7 +129,7 @@ public class RetainedStreamSessionCoordinatorTest {
         RetainedStreamSessionCoordinator.enterHome(
                 new FakeController(), "session-b", "host", 8, "other");
 
-        old.terminationCompletion.run();
+        old.terminationCompletion.complete(true);
 
         assertEquals("session-b", RetainedStreamSessionCoordinator.snapshot().streamSessionId);
         assertEquals(RetainedStreamSessionCoordinator.State.HOME_LIVE,
@@ -143,5 +147,19 @@ public class RetainedStreamSessionCoordinatorTest {
                 RetainedStreamSessionCoordinator.state());
         assertEquals(RetainedStreamSessionCoordinator.TerminationResult.NO_CONTROLLER,
                 RetainedStreamSessionCoordinator.terminate(SESSION_A, null));
+    }
+
+    @Test public void rejectedTerminationRestoresTheLiveOwner() {
+        FakeController controller = new FakeController();
+        controller.terminationResult = false;
+        RetainedStreamSessionCoordinator.enterHome(controller, SESSION_A, "host", 7, "game");
+
+        assertEquals(RetainedStreamSessionCoordinator.TerminationResult.STARTED,
+                RetainedStreamSessionCoordinator.terminate(SESSION_A, null));
+
+        assertEquals(RetainedStreamSessionCoordinator.State.HOME_LIVE,
+                RetainedStreamSessionCoordinator.state());
+        assertTrue(RetainedStreamSessionCoordinator.canResumeInstantly());
+        assertTrue(RetainedStreamSessionCoordinator.hasRetainedSession());
     }
 }

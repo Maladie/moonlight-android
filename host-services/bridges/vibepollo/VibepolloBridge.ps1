@@ -83,6 +83,7 @@ $script:SnapshotCacheTime = [datetime]::MinValue
 $script:DiagnosticsCache = $null
 $script:DiagnosticsCacheTime = [datetime]::MinValue
 $script:MoonWakerClientPermissions = 0x07001F00 # list, view, launch and all input devices
+$script:GameRecordIdPattern = '^(?:steam:[0-9]+|epic:[a-z0-9_-]+|playnite:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'
 
 function Invoke-VibepolloApi {
     param(
@@ -851,8 +852,8 @@ function Remove-DuplicatePlayniteApps {
 function Get-PlayniteAppStatus {
     param([string]$GameId)
     $normalizedId = $GameId.Trim().ToLowerInvariant()
-    if ($normalizedId -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
-        throw "Invalid Playnite game ID"
+    if ($normalizedId -notmatch $script:GameRecordIdPattern) {
+        throw "Invalid game record ID"
     }
     $matches = @(Find-AppsByPlayniteId @(Get-VibepolloApps) $normalizedId)
     if ($matches.Count -eq 0) {
@@ -886,20 +887,33 @@ function Ensure-PlayniteApp {
     param([string]$GameId, [string]$Name)
     $normalizedId = $GameId.Trim().ToLowerInvariant()
     $normalizedName = $Name.Trim()
-    if ($normalizedId -notmatch '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$') {
-        throw "Invalid Playnite game ID"
+    if ($normalizedId -notmatch $script:GameRecordIdPattern) {
+        throw "Invalid game record ID"
     }
     if ([string]::IsNullOrWhiteSpace($normalizedName) -or $normalizedName.Length -gt 200 -or
         $normalizedName -match '[\x00-\x1f\x7f]') {
         throw "Invalid application name"
     }
+    $isProviderRecord = $normalizedId -match '^(?:steam:[0-9]+|epic:[a-z0-9_-]+)$'
 
     $apps = @(Get-VibepolloApps)
     $existing = @(Find-AppsByPlayniteId $apps $normalizedId)
     if ($existing.Count -gt 0) {
         $canonical = Select-CanonicalPlayniteApp $existing
         $managed = [string](Get-PropertyValue $canonical.app @("playnite-managed") "")
-        if ($managed -in @("manual", "auto")) {
+        if ($isProviderRecord) {
+            # Rebuild every direct-provider target from a command-free allowlist.
+            # Copying an existing payload could preserve a legacy Playnite command.
+            $payload = [ordered]@{
+                index = [int]$canonical.index
+                name = $normalizedName
+                "playnite-id" = $normalizedId
+                "playnite-managed" = "manual"
+                "exit-timeout" = 10
+            }
+            $created = $false
+        }
+        elseif ($managed -in @("manual", "auto")) {
             # The native Playnite integration launches a short-lived helper process.
             # Monitoring that helper as the streamed application makes Vibepollo end a
             # healthy session a few seconds after the real game has started. Keep the
@@ -927,16 +941,10 @@ function Ensure-PlayniteApp {
         }
     }
     else {
-        $expectedName = Get-NormalizedAppName $normalizedName
-        $sameName = @($apps | Where-Object {
-            (Get-NormalizedAppName (Get-PropertyValue $_ @("name") "")) -eq $expectedName
-        })
-        if ($sameName.Count -gt 1) {
-            throw "Multiple Vibepollo applications already use this name"
-        }
-
-        $created = $sameName.Count -eq 0
-        if ($created) {
+        if ($isProviderRecord) {
+            # Steam/Epic targets deliberately have no inherited Playnite command.
+            # Android starts the authoritative provider through /api/v1/game/start.
+            $created = $true
             $payload = [ordered]@{
                 index = -1
                 name = $normalizedName
@@ -944,18 +952,37 @@ function Ensure-PlayniteApp {
                 "playnite-managed" = "manual"
                 "exit-timeout" = 10
             }
-        } else {
-            # Vibepollo replaces an app record on POST. Copy every legacy field first
-            # so assigning the Playnite ID never resets command, image or hook settings.
-            $payload = ConvertTo-RemoteJsonSafe $sameName[0]
-            $payload["index"] = [array]::IndexOf($apps, $sameName[0])
-            $payload["playnite-id"] = $normalizedId
-            $payload["playnite-managed"] = "manual"
-            [void]$payload.Remove("playnite-source")
+        }
+        else {
+            $expectedName = Get-NormalizedAppName $normalizedName
+            $sameName = @($apps | Where-Object {
+                (Get-NormalizedAppName (Get-PropertyValue $_ @("name") "")) -eq $expectedName
+            })
+            if ($sameName.Count -gt 1) {
+                throw "Multiple Vibepollo applications already use this name"
+            }
+
+            $created = $sameName.Count -eq 0
+            if ($created) {
+                $payload = [ordered]@{
+                    index = -1
+                    name = $normalizedName
+                    "playnite-id" = $normalizedId
+                    "playnite-managed" = "manual"
+                    "exit-timeout" = 10
+                }
+            } else {
+                # Vibepollo replaces an app record on POST. Copy every legacy field first
+                # so assigning the Playnite ID never resets command, image or hook settings.
+                $payload = ConvertTo-RemoteJsonSafe $sameName[0]
+                $payload["index"] = [array]::IndexOf($apps, $sameName[0])
+                $payload["playnite-id"] = $normalizedId
+                $payload["playnite-managed"] = "manual"
+                [void]$payload.Remove("playnite-source")
+            }
         }
     }
-    # A Playnite game is launched through a helper which exits after handing off
-    # to the game. Its exit must not be treated as the end of the stream.
+    # The stream target only provides a detached surface; the provider owns launch.
     $payload["auto-detach"] = $true
     [void](Invoke-VibepolloApi "/api/apps" POST $payload)
     $script:CacheTime.Clear()

@@ -81,9 +81,9 @@ function Start-Component([string]$Name) {
                 $legacyBridgeIdentity = $health -and [int]$health.pid -eq [int]$owner -and
                     $null -ne $health.connector_connected -and
                     -not [string]::IsNullOrWhiteSpace([string]$health.version)
-                if ($health -and ([string]$health.component -eq "playnite" -or
+                if ($health -and ([string]$health.component -in @("game-provider", "playnite") -or
                     $legacyBridgeIdentity)) {
-                    Write-AgentLog "Stopping stale Playnite Bridge PID $owner (version/profile mismatch)."
+                    Write-AgentLog "Stopping stale Game Provider Bridge PID $owner (version/profile mismatch)."
                     Stop-Process -Id $owner -Force -ErrorAction Stop
                     Start-Sleep -Milliseconds 250
                 } else {
@@ -106,7 +106,7 @@ function Start-Component([string]$Name) {
         if (-not (Test-Path -LiteralPath $script)) { return $null }
         return Start-HiddenProcess "powershell.exe" ('-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $script.Replace('"', '\"'))
     }
-    $script = Join-Path $directory "PlayniteBridge.py"
+    $script = Join-Path $directory "GameProviderBridge.py"
     $config = Join-Path $directory "config.json"
     if (-not (Test-Path -LiteralPath $script) -or -not (Test-Path -LiteralPath $config)) { return $null }
     return Start-HiddenProcess "python.exe" ('"{0}" --config "{1}"' -f `
@@ -138,7 +138,7 @@ function Test-ComponentHealth([string]$Name, [bool]$RequireIdentity = $false) {
     try {
         $expected = Get-Content -LiteralPath (Join-Path $ProfileRoot "moonwaker-version.json") -Raw |
             ConvertFrom-Json
-        return [string]$health.component -eq "playnite" -and
+        return [string]$health.component -eq "game-provider" -and
             [string]$health.profile_id -eq $ProfileId -and
             [string]$health.version -eq [string]$expected.version
     } catch { return $false }

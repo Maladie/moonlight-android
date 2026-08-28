@@ -25,6 +25,7 @@
     <string name="discord_social_no_friends_panel">Friends will appear after the connection is ready.</string>
     <string name="discord_dm_send_message">Send message</string>
     <string name="discord_dm_upgrade">Upgrade Discord connection to send messages</string>
+    <string name="discord_dm_chat_open_elsewhere">Chat is open in another view</string>
     <string name="discord_dm_placeholder">Message</string>
     <string name="discord_dm_send">Send</string>
     <string name="discord_dm_keyboard_microphone">Dictate</string>

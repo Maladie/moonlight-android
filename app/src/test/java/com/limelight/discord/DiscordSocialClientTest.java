@@ -15,6 +15,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.util.Collections;
+import java.util.HashSet;
+import java.util.List;
+import java.util.Set;
 
 public class DiscordSocialClientTest {
     @Test
@@ -167,5 +170,71 @@ public class DiscordSocialClientTest {
     public void directMessagePeerIsTheOtherParticipantInBothDirections() {
         assertEquals(42L, DiscordSocialClient.directMessagePeer(7L, 42L, 7L));
         assertEquals(42L, DiscordSocialClient.directMessagePeer(7L, 7L, 42L));
+    }
+
+    @Test
+    public void directMessageEventsHaveExactlyOneConsumerLease() {
+        DiscordSocialClient.MessageEventLease first = DiscordSocialClient.tryAcquireMessageEventLease();
+        assertNotNull(first);
+        try {
+            assertNull(DiscordSocialClient.tryAcquireMessageEventLease());
+        } finally {
+            DiscordSocialClient.releaseMessageEventLease(first);
+        }
+    }
+
+    @Test
+    public void staleLeaseCannotDrainOrReleaseAfterHandoff() {
+        DiscordSocialClient.MessageEventLease first = DiscordSocialClient.tryAcquireMessageEventLease();
+        assertNotNull(first);
+        DiscordSocialClient.releaseMessageEventLease(first);
+
+        DiscordSocialClient.MessageEventLease second = DiscordSocialClient.tryAcquireMessageEventLease();
+        assertNotNull(second);
+        try {
+            DiscordSocialClient.enqueueMessageEventsForTest(DiscordSocialClient.encodeMessageEventForTest(
+                    "1", "OVERFLOW"));
+            assertTrue(DiscordSocialClient.drainMessageEvents(first).isEmpty());
+            DiscordSocialClient.releaseMessageEventLease(first);
+            assertEquals(1, DiscordSocialClient.drainMessageEvents(second).size());
+        } finally {
+            DiscordSocialClient.releaseMessageEventLease(second);
+        }
+    }
+
+    @Test
+    public void eventsRemainQueuedUntilAConsumerOwnsALease() {
+        DiscordSocialClient.enqueueMessageEventsForTest(DiscordSocialClient.encodeMessageEventForTest(
+                "1", "OVERFLOW"));
+        assertTrue(DiscordSocialClient.drainMessageEvents(null).isEmpty());
+
+        DiscordSocialClient.MessageEventLease lease = DiscordSocialClient.tryAcquireMessageEventLease();
+        assertNotNull(lease);
+        try {
+            List<DiscordSocialClient.MessageEvent> events = DiscordSocialClient.drainMessageEvents(lease);
+            assertEquals(1, events.size());
+            assertEquals(DiscordSocialClient.MessageEvent.Type.OVERFLOW, events.get(0).type);
+        } finally {
+            DiscordSocialClient.releaseMessageEventLease(lease);
+        }
+    }
+
+    @Test
+    public void directMessageRequestIdsAreGloballyPositiveUniqueAndIncreasing() {
+        Set<Long> ids = new HashSet<>();
+        long previous = 0;
+        for (int index = 0; index < 32; index++) {
+            long requestId = DiscordSocialClient.nextDirectMessageRequestId();
+            assertTrue(requestId > 0);
+            assertTrue(requestId > previous);
+            assertTrue(ids.add(requestId));
+            previous = requestId;
+        }
+    }
+
+    @Test
+    public void requestIdOverflowSkipsZeroAndNegativeValues() {
+        assertEquals(1L, DiscordSocialClient.nextPositiveValue(Long.MAX_VALUE));
+        assertEquals(1L, DiscordSocialClient.nextPositiveValue(-1L));
     }
 }

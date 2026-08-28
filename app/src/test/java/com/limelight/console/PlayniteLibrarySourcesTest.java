@@ -21,12 +21,12 @@ public class PlayniteLibrarySourcesTest {
                 Arrays.asList(available.values().toArray(new String[0])));
     }
 
-    @Test public void nullSelectionShowsEverythingAndConfiguredEmptyShowsNothing() {
+    @Test public void nullOrUnmappableSelectionFallsBackToEverything() {
         List<PlayniteLibraryGame> games = Arrays.asList(
                 game(1, "Steam"), game(2, "Epic"));
 
         assertEquals(2, PlayniteLibrarySources.filter(games, null).size());
-        assertEquals(0, PlayniteLibrarySources.filter(
+        assertEquals(2, PlayniteLibrarySources.filter(
                 games, Collections.emptySet()).size());
     }
 
@@ -37,6 +37,19 @@ public class PlayniteLibrarySourcesTest {
 
         assertEquals(1, filtered.size());
         assertEquals("Steam", filtered.get(0).source);
+    }
+
+    @Test public void legacyLabelsMigrateToLibraryKeysAndUnknownFallsBackToAll() {
+        List<PlayniteLibraryGame> games = Arrays.asList(
+                game(1, "Steam"), game(2, "Epic"));
+        Map<String, String> available = PlayniteLibrarySources.available(
+                games, Locale.ENGLISH);
+
+        assertEquals(Collections.singleton("steam"),
+                PlayniteLibrarySources.migrateSelection(
+                        Collections.singleton("Steam"), available));
+        assertEquals(null, PlayniteLibrarySources.migrateSelection(
+                Collections.singleton("Missing"), available));
     }
 
     private static PlayniteLibraryGame game(int suffix, String source) {

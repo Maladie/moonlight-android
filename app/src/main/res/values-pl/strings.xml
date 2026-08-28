@@ -378,6 +378,7 @@
     <string name="overlay_discord_participant">%1$s</string>
     <string name="overlay_discord_self">%1$s · TY</string>
     <string name="overlay_discord_muted">WYCISZONY</string>
+    <string name="overlay_discord_deafened">OGŁUCHIONY</string>
     <string name="overlay_discord_mute">Wycisz mikrofon</string>
     <string name="overlay_discord_unmute">Włącz mikrofon</string>
     <string name="overlay_discord_leave">Opuść kanał</string>
@@ -1073,4 +1074,7 @@
     <string name="discord_social_no_friends">Znajomi pojawią się po nawiązaniu połączenia.</string>
     <string name="discord_social_friends">Znajomi (%1$d)\n%2$s</string>
     <string name="discord_social_error">Błąd Discorda: %1$s</string>
+    <string name="overlay_discord_chat_retrying">Ponawianie dostępu do czatu…</string>
+    <string name="overlay_discord_chat_in_use">Czat jest otwarty w innym widoku</string>
+    <string name="overlay_discord_chat_history_failed">Nie udało się wczytać wiadomości. Otwórz czat ponownie, aby spróbować jeszcze raz.</string>
 </resources>

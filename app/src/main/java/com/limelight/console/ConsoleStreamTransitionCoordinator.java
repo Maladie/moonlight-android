@@ -21,6 +21,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         void focusInstallation(String gameId) throws IOException;
         boolean verifyInstallation(String gameId) throws IOException;
         void ensureInstalledGameTarget(String gameId, String gameName) throws IOException;
+        default void startGame(String gameId) throws IOException { }
     }
 
     interface MonotonicClock {
@@ -50,6 +51,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         void onInstallationFailed(String hostId, String gameId, String gameName);
         void onInstallationAttentionRequired(String hostId, String gameId, String gameName);
 
+        default void onProviderGameStopped() { }
+
         void onInstallationVerified();
         void onInstallationStillNeedsConfirmation();
         void onInstallationVerificationFailed();
@@ -67,6 +70,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private Future<?> observation;
     private boolean stopped = true;
     private boolean closed;
+    private boolean providerStartRequested;
     private long epoch;
 
     public ConsoleStreamTransitionCoordinator(
@@ -76,7 +80,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             Scheduler scheduler,
             Callbacks callbacks) {
         this(transitionSpec, transitionController, adapt(gateway),
-                Executors.newSingleThreadExecutor(),
+                Executors.newFixedThreadPool(2),
                 () -> System.nanoTime() / 1_000_000L,
                 Thread::sleep, scheduler, callbacks);
     }
@@ -104,7 +108,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         if (closed || !stopped) return;
         stopped = false;
         long runEpoch = ++epoch;
-        if (transitionSpec.type == LaunchTransitionType.GENERIC) return;
+        if (transitionSpec.type == LaunchTransitionType.GENERIC
+                || transitionSpec.type == LaunchTransitionType.GAME_CONNECTION) return;
         if (gateway == null) {
             if (isCurrent(runEpoch)) {
                 transitionController.timedOut(
@@ -148,6 +153,34 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     }
 
     public void onStreamConnected() {
+        if (transitionSpec.type == LaunchTransitionType.GAME
+                && isProviderRecordId(transitionSpec.playniteGameId)) {
+            long actionEpoch;
+            synchronized (this) {
+                if (providerStartRequested) return;
+                providerStartRequested = true;
+                actionEpoch = currentEpoch();
+            }
+            if (gateway == null || actionEpoch < 0L) return;
+            try {
+                executor.execute(() -> {
+                    if (!isCurrent(actionEpoch)) return;
+                    try {
+                        gateway.startGame(transitionSpec.playniteGameId);
+                    } catch (IOException | RuntimeException error) {
+                        if (isCurrent(actionEpoch)) {
+                            providerStartFailed(error);
+                        }
+                    }
+                });
+            } catch (RuntimeException error) {
+                if (isCurrent(actionEpoch)) {
+                    transitionController.error(
+                            transitionSpec.id, callbacks.readinessUnconfirmedMessage());
+                }
+            }
+            return;
+        }
         if (!isInstallationConfirmationStream() || gateway == null) return;
         long actionEpoch = currentEpoch();
         if (actionEpoch < 0L) return;
@@ -239,14 +272,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                     context.gameWasRunning = true;
                 }
                 if (context.gameWasRunning
-                        && "idle".equalsIgnoreCase(snapshot.gameState)
-                        && "playnite".equalsIgnoreCase(snapshot.targetKind)) {
+                        && "idle".equalsIgnoreCase(snapshot.gameState)) {
                     transitionController.gameStopping(transitionSpec.id,
                             transitionSpec.hostId, transitionSpec.playniteGameId);
                     if (!isCurrent(runEpoch)) return;
-                    transitionController.playniteReturning(
-                            transitionSpec.id, transitionSpec.hostId);
                     context.gameWasRunning = false;
+                    callbacks.onProviderGameStopped();
                 }
 
                 PlayniteTransitionGateway.Events events =
@@ -368,12 +399,15 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         } else if ("game-running".equals(name)) {
             transitionController.targetProcessRunning(transitionSpec.id, transitionSpec.hostId,
                     LaunchTransitionType.GAME, event.gameId);
-        } else if ("game-stopping".equals(name) || "game-stopped".equals(name)) {
+        } else if ("game-stopping".equals(name)) {
             transitionController.gameStopping(
                     transitionSpec.id, transitionSpec.hostId, event.gameId);
-            if (!isCurrent(runEpoch)) return;
-            transitionController.playniteReturning(
-                    transitionSpec.id, transitionSpec.hostId);
+        } else if ("game-stopped".equals(name)) {
+            transitionController.gameStopping(
+                    transitionSpec.id, transitionSpec.hostId, event.gameId);
+            if (transitionSpec.playniteGameId.equals(event.gameId) && isCurrent(runEpoch)) {
+                callbacks.onProviderGameStopped();
+            }
         } else if ("privacy-gate-closed".equals(name)) {
             transitionController.targetWindowLost(transitionSpec.id, transitionSpec.hostId,
                     LaunchTransitionType.GAME, transitionSpec.playniteGameId,
@@ -477,7 +511,31 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                     String gameId, String gameName) throws IOException {
                 gateway.ensureInstalledGameTarget(gameId, gameName);
             }
+
+            @Override public void startGame(String gameId) throws IOException {
+                gateway.startGame(gameId);
+            }
         };
+    }
+
+    private static boolean isProviderRecordId(String value) {
+        if (value == null) return false;
+        String normalized = value.toLowerCase(java.util.Locale.ROOT);
+        return normalized.startsWith("steam:") || normalized.startsWith("epic:")
+                || normalized.startsWith("playnite:");
+    }
+
+    private void providerStartFailed(Exception error) {
+        String reason = error.getMessage() == null ? "" : error.getMessage();
+        if (reason.contains("launcher_interaction_required")) {
+            transitionController.launcherInteractionRequired(
+                    transitionSpec.id, transitionSpec.hostId,
+                    transitionSpec.playniteGameId,
+                    callbacks.launcherInteractionRequiredMessage());
+        } else {
+            transitionController.error(
+                    transitionSpec.id, callbacks.readinessUnconfirmedMessage());
+        }
     }
 
     private static final class ObservationContext {

@@ -33,6 +33,13 @@ final class PlayniteArtworkSpec {
         return new PlayniteArtworkSpec("", "", "", "");
     }
 
+    static PlayniteArtworkSpec forScreenSaver(PlayniteLibraryGame game) {
+        Objects.requireNonNull(game, "game");
+        return game.backgroundKey.isEmpty()
+                ? new PlayniteArtworkSpec("", "", "", "")
+                : new PlayniteArtworkSpec("background", game.backgroundKey, "", "");
+    }
+
     static PlayniteArtworkSpec forCard(PlayniteLibraryGame game) {
         Objects.requireNonNull(game, "game");
         if (!game.coverKey.isEmpty()) {

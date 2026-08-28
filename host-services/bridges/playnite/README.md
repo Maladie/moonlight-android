@@ -1,13 +1,33 @@
-# Playnite Bridge
+# Game Provider Bridge
 
-This per-profile loopback service uses the existing `launcher` role exposed by
-the installed Sunshine Playnite Connector. It talks to Playnite through the
-extension's named pipe and never automates the Playnite UI with keystrokes.
+`GameProviderBridge.py` is the per-profile loopback service for the Steam,
+Epic/Legendary and Playnite providers. It also uses the existing `launcher`
+role exposed by the installed Sunshine Playnite Connector for Playnite IPC and
+never automates the Playnite UI with keystrokes.
 
-The Bridge exposes library pages, current-game state, readiness and lifecycle
-events to the authenticated host Gateway. Commands are limited to launching a
-Playnite GUID, graceful game stop and restoring Playnite Fullscreen. Forced
-process termination is intentionally unavailable.
+The installed profile directory, Gateway key `playnite_bridge`, legacy API
+paths and `Start/Stop-PlayniteBridge.ps1` names remain compatibility aliases for
+one migration cycle. They all start or address `GameProviderBridge.py`.
+
+The Bridge exposes one provider-neutral library, current-game state, readiness
+and lifecycle events to the authenticated host Gateway. Steam, Epic/Legendary
+and Playnite are separate execution providers; Playnite entries use exact GUIDs,
+Steam exact numeric AppIDs, and Epic exact Legendary AppNames. Forced process
+termination is intentionally unavailable.
+
+Steam ownership comes from `IPlayerService/GetOwnedGames`; the active SteamID is
+read from the trusted local `loginusers.vdf`. Configure the Web API key for the
+profile with Host Control action `ConfigureSteamWebApi`. The key is stored with
+the current Windows user's DPAPI protection and is never returned by health or
+Gateway responses. Local `appmanifest_*.acf` files remain the sole authority for
+Steam installation state and install directories. Epic ownership and install
+state come from `legendary list --json` and `legendary list-installed`.
+
+Playnite metadata is overlaid only for exact `(source, providerGameId)` matches.
+A matched Steam/Epic entry is not emitted twice, titles are never correlation
+keys, and an unavailable or incomplete provider retains only its last successful snapshot.
+Unmatched Playnite entries remain full Playnite-provider games, including GOG,
+emulators and manual entries.
 
 The readiness response is privacy-sensitive. `ready=false` means MoonWaker must
 keep its opaque loading surface visible. A timeout is not permission to reveal
@@ -43,13 +63,16 @@ may reveal the stream.
 For a numeric Steam AppID, the Bridge resolves the current user's Steam install
 from `HKCU\Software\Valve\Steam` and invokes `steam.exe` directly with the fixed
 `-silent +app_install <appid>` or `-silent +app_uninstall <appid>` argument list.
-If direct dispatch is unavailable, or produces no Steam activity within 30
-seconds, the Bridge sends the existing Playnite install/uninstall command once.
-It captures a fresh window baseline before that fallback, then uses the existing
-Steam-owned-window UI Automation and verified visual confirmation path if a
-prompt appears. If neither activity nor a usable prompt appears within another
-20 seconds, the operation becomes `attention_required` with `steam.exe` as the
-launcher so the manual desktop flow remains available.
+There is no Playnite fallback. If direct dispatch is unavailable, the request is
+rejected; if no authoritative Steam activity appears within 30 seconds, the
+operation becomes `attention_required` with `steam_operation_not_started`.
+Steam-owned-window UI Automation and verified visual confirmation remain
+available for prompts created by the direct operation.
+
+Direct Steam launch first verifies the local installed manifest, ensures a
+stable Big Picture window on the streamed monitor, and then invokes the exact
+Steam executable with `-applaunch <appid>`. A dispatch process exit is not launch
+success; the existing stable-window readiness probe remains authoritative.
 
 Steam manifests and library directories remain authoritative for progress and
 completion. An incomplete library scan never proves uninstallation, and healthy
@@ -66,9 +89,9 @@ line includes `game_id`, operation `kind`, `requested_at`, and the numeric Steam
 Bridge restart. `steam_direct_dispatched` means Windows accepted the direct
 `steam.exe` launch; it does not by itself prove Steam started the operation.
 `steam_activity_observed` records the first authoritative post-dispatch Steam
-activity and identifies `direct`, `playnite_fallback`, or `restart_observation`
-as its path. Fallback dispatch, UI automation success/failure, manual attention,
-and final manifest-authoritative completion have separate events. Thus a direct
-zero-touch success has no Playnite or automation event, while any click-script
-use is explicit. The audit contains no Steam credentials or arbitrary command
-strings and is append-only across Bridge restarts.
+activity and identifies `direct` or `restart_observation` as its path. UI
+automation success/failure, manual attention, and final manifest-authoritative
+completion have separate events. Thus a direct zero-touch success has no
+Playnite or automation event, while any click-script use is explicit. The audit
+contains no Steam credentials or arbitrary command strings and is append-only
+across Bridge restarts.

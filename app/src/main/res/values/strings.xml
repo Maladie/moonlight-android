@@ -413,6 +413,7 @@
     <string name="overlay_discord_participant">%1$s</string>
     <string name="overlay_discord_self">%1$s · YOU</string>
     <string name="overlay_discord_muted">MUTED</string>
+    <string name="overlay_discord_deafened">DEAFENED</string>
     <string name="overlay_discord_mute">Mute</string>
     <string name="overlay_discord_unmute">Unmute</string>
     <string name="overlay_discord_leave">Leave channel</string>
@@ -1080,7 +1081,7 @@
     <string name="console_terminate_session_failed">The host did not end the session.</string>
     <string name="transition_gateway_unavailable">Gateway unavailable</string>
     <string name="preflight_profile_unavailable">The selected integration profile is unavailable.</string>
-    <string name="preflight_playnite_offline">The Playnite Bridge is offline.</string>
+    <string name="preflight_playnite_offline">The Game Provider Bridge is offline.</string>
     <string name="preflight_playnite_connector_disconnected">Playnite is not connected to its Bridge.</string>
     <string name="preflight_vibepollo_unavailable">Vibepollo is unavailable for this profile.</string>
     <string name="preflight_target_timeout">The Sunshine target did not finish propagating in time.</string>
@@ -1110,4 +1111,7 @@
     <string name="discord_social_no_friends">Friends will appear after the connection is ready.</string>
     <string name="discord_social_friends">Friends (%1$d)\n%2$s</string>
     <string name="discord_social_error">Discord error: %1$s</string>
+    <string name="overlay_discord_chat_retrying">Retrying chat access…</string>
+    <string name="overlay_discord_chat_in_use">Chat is open in another view</string>
+    <string name="overlay_discord_chat_history_failed">Messages could not be loaded. Open the chat again to retry.</string>
 </resources>

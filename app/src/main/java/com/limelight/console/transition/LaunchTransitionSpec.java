@@ -1,6 +1,5 @@
 package com.limelight.console.transition;
 
-import java.util.Locale;
 import java.util.Objects;
 import java.util.concurrent.atomic.AtomicLong;
 
@@ -21,8 +20,7 @@ public final class LaunchTransitionSpec {
         this.hostId = Objects.requireNonNull(hostId, "hostId");
         this.type = Objects.requireNonNull(type, "type");
         this.sunshineAppId = sunshineAppId;
-        this.playniteGameId = playniteGameId == null
-                ? "" : playniteGameId.toLowerCase(Locale.ROOT);
+        this.playniteGameId = playniteGameId == null ? "" : playniteGameId.trim();
         this.createdAtMillis = createdAtMillis;
     }
 
@@ -30,7 +28,7 @@ public final class LaunchTransitionSpec {
                                               int sunshineAppId, String playniteGameId,
                                               long nowMillis) {
         long sequence = SEQUENCE.incrementAndGet();
-        String id = hostId + ":" + type.name().toLowerCase(Locale.ROOT) + ":" +
+        String id = hostId + ":" + type.name().toLowerCase(java.util.Locale.ROOT) + ":" +
                 sunshineAppId + ":" + nowMillis + ":" + sequence;
         return new LaunchTransitionSpec(id, hostId, type, sunshineAppId,
                 playniteGameId, nowMillis);

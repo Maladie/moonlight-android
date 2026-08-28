@@ -12,10 +12,12 @@ import com.limelight.discord.DiscordSocialClient;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.Iterator;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Locale;
+import java.util.Map;
 
 /** Data and action coordinator for the dedicated Community presentation. */
 final class DiscordSocialPanelController {
@@ -61,6 +63,8 @@ final class DiscordSocialPanelController {
     private final CommunitySource source;
     private boolean visible;
     private boolean shellShown;
+    private boolean activityResumed;
+    private DiscordSocialClient.MessageEventLease messageEventLease;
     private int generation;
     private long revision = Long.MIN_VALUE;
     private boolean offlineExpanded;
@@ -85,9 +89,19 @@ final class DiscordSocialPanelController {
     private String audioError = "";
     private DiscordCommunityView communityView;
     private final DiscordDirectMessageState directMessages = new DiscordDirectMessageState();
-    private long directMessageRequestGeneration;
-    private long directMessageSendGeneration;
+    private long directMessageGeneration;
     private final LinkedHashMap<Long, String> directMessageDrafts = new LinkedHashMap<>(16, .75f, true);
+    private final Map<Long, SentDirectMessageDraft> sentDirectMessageDrafts = new HashMap<>();
+
+    private static final class SentDirectMessageDraft {
+        final long recipientId;
+        final String content;
+
+        SentDirectMessageDraft(long recipientId, String content) {
+            this.recipientId = recipientId;
+            this.content = content;
+        }
+    }
 
     DiscordSocialPanelController(Activity activity, Handler mainHandler, Ui ui, CommunitySource source) {
         this.activity = activity;
@@ -103,6 +117,7 @@ final class DiscordSocialPanelController {
         revision = Long.MIN_VALUE;
         offlineExpanded = false;
         state = DiscordCommunityState.initial();
+        updateShowingChat();
         home = null;
         homeLoading = true;
         homeUnavailable = false;
@@ -122,6 +137,7 @@ final class DiscordSocialPanelController {
         audioError = "";
         attachSilently();
         render(DiscordSocialClient.getSnapshot());
+        acquireMessageEventLeaseIfPresented();
         requestHome(generation);
         refreshVoice(generation);
         watch(generation);
@@ -129,17 +145,22 @@ final class DiscordSocialPanelController {
 
     void closePanel() {
         visible = false; shellShown = false; generation++;
-        DiscordSocialClient.setShowingChat(false);
+        if (communityView != null) communityView.cancelDirectKeyboardHold();
+        releaseMessageEventLease();
+        sentDirectMessageDrafts.clear();
     }
 
     void onActivityPaused() {
-        DiscordSocialClient.setShowingChat(false);
+        activityResumed = false;
+        if (shouldCancelDirectKeyboardHoldOnPause(communityView != null)) {
+            communityView.cancelDirectKeyboardHold();
+        }
+        releaseMessageEventLease();
     }
 
     void onActivityResumed() {
-        if (visible && state.detail == DiscordCommunityState.Detail.DIRECT_MESSAGE) {
-            DiscordSocialClient.setShowingChat(true);
-        }
+        activityResumed = true;
+        acquireMessageEventLeaseIfPresented();
     }
 
     boolean handleCommunityKey(KeyEvent event) {
@@ -185,7 +206,8 @@ final class DiscordSocialPanelController {
         DiscordCommunityState.Detail previousDetail = state.detail;
         state = state.back();
         if (previousDetail == DiscordCommunityState.Detail.DIRECT_MESSAGE) {
-            DiscordSocialClient.setShowingChat(false);
+            if (communityView != null) communityView.cancelDirectKeyboardHold();
+            updateShowingChat();
         }
         render(DiscordSocialClient.getSnapshot());
         if (previousDetail == DiscordCommunityState.Detail.AUDIO
@@ -244,9 +266,10 @@ final class DiscordSocialPanelController {
     }
 
     private boolean consumeDirectMessageEvents(DiscordSocialClient.Snapshot snapshot) {
+        if (messageEventLease == null) return false;
         boolean changed = false;
         long currentUserId = safeLong(snapshot.userId);
-        for (DiscordSocialClient.MessageEvent event : DiscordSocialClient.drainMessageEvents()) {
+        for (DiscordSocialClient.MessageEvent event : DiscordSocialClient.drainMessageEvents(messageEventLease)) {
             switch (event.type) {
                 case OVERFLOW:
                     // The native queue explicitly signals loss; a single active conversation
@@ -285,10 +308,14 @@ final class DiscordSocialPanelController {
                     changed = true;
                     break;
                 case SEND_RESULT:
-                    directMessages.finishSend(event.recipientId, event.requestId, event.successful,
-                            event.retryable, event.retryAfterSeconds, event.errorType);
-                    setDirectMessageDraft(event.recipientId, directMessageDraftAfterSendResult(
-                            directMessageDraft(event.recipientId), event.successful));
+                    boolean accepted = directMessages.finishSend(event.recipientId, event.requestId,
+                            event.successful, event.retryable, event.retryAfterSeconds, event.errorType);
+                    SentDirectMessageDraft sent = sentDirectMessageDrafts.remove(event.requestId);
+                    if (sent != null && sent.recipientId == event.recipientId
+                            && shouldClearDirectMessageDraftAfterSendResult(accepted, event.successful,
+                            directMessageDraft(event.recipientId), sent.content)) {
+                        setDirectMessageDraft(event.recipientId, "");
+                    }
                     changed = true;
                     break;
                 case OPEN_MESSAGE_RESULT:
@@ -300,10 +327,37 @@ final class DiscordSocialPanelController {
     }
 
     private void requestDirectMessageHistory(long recipientId) {
-        if (recipientId <= 0 || !DiscordSocialClient.canUseDirectMessages()) return;
-        long requestId = ++directMessageRequestGeneration;
+        if (!hasMessageEventLease() || recipientId <= 0 || !DiscordSocialClient.canUseDirectMessages()) return;
+        long requestId = DiscordSocialClient.nextDirectMessageRequestId();
         directMessages.requestHistory(recipientId, requestId);
         DiscordSocialClient.requestUserMessages(recipientId, requestId);
+    }
+
+    private boolean acquireMessageEventLeaseIfPresented() {
+        if (!visible || !shellShown || !activityResumed || messageEventLease != null) return false;
+        messageEventLease = DiscordSocialClient.tryAcquireMessageEventLease();
+        if (messageEventLease == null) return false;
+        updateShowingChat();
+        if (state.detail == DiscordCommunityState.Detail.DIRECT_MESSAGE) {
+            requestDirectMessageHistory(state.directMessageRecipientId);
+        }
+        return true;
+    }
+
+    private void releaseMessageEventLease() {
+        if (messageEventLease == null) return;
+        DiscordSocialClient.releaseMessageEventLease(messageEventLease);
+        messageEventLease = null;
+    }
+
+    private boolean hasMessageEventLease() {
+        return messageEventLease != null;
+    }
+
+    private void updateShowingChat() {
+        if (!hasMessageEventLease()) return;
+        DiscordSocialClient.setShowingChat(messageEventLease, activityResumed && visible
+                && state.detail == DiscordCommunityState.Detail.DIRECT_MESSAGE);
     }
 
     private static long safeLong(String value) {
@@ -327,7 +381,8 @@ final class DiscordSocialPanelController {
                 directFriend(snapshot, state.directMessageRecipientId),
                 directMessages.history(state.directMessageRecipientId),
                 directMessages.sendState(state.directMessageRecipientId),
-                directMessageDraft(state.directMessageRecipientId), DiscordSocialClient.canUseDirectMessages()));
+                directMessageDraft(state.directMessageRecipientId), DiscordSocialClient.canUseDirectMessages(),
+                hasMessageEventLease()));
         if (state.detail == DiscordCommunityState.Detail.DIRECT_MESSAGE) {
             directMessages.clearUnreadAfterRendered(state.directMessageRecipientId);
         }
@@ -482,9 +537,10 @@ final class DiscordSocialPanelController {
         if (!(item.source instanceof DiscordSocialClient.Friend)) return;
         long recipientId = safeLong(((DiscordSocialClient.Friend) item.source).userId);
         if (recipientId <= 0 || !DiscordSocialClient.canUseDirectMessages()) return;
-        state = state.select(item.id).openDirectMessage(recipientId, ++directMessageRequestGeneration);
-        DiscordSocialClient.setShowingChat(true);
-        requestDirectMessageHistory(recipientId);
+        state = state.select(item.id).openDirectMessage(recipientId, ++directMessageGeneration);
+        boolean acquiredLease = acquireMessageEventLeaseIfPresented();
+        updateShowingChat();
+        if (!acquiredLease) requestDirectMessageHistory(recipientId);
         render(DiscordSocialClient.getSnapshot());
         communityView.focusDirectComposer();
     }
@@ -502,9 +558,10 @@ final class DiscordSocialPanelController {
 
     private void sendDirectMessage(long recipientId, String content) {
         String draft = content == null ? "" : content;
-        if (draft.trim().isEmpty() || draft.length() > 2000) return;
-        long requestId = ++directMessageSendGeneration;
+        if (!hasMessageEventLease() || draft.trim().isEmpty() || draft.length() > 2000) return;
+        long requestId = DiscordSocialClient.nextDirectMessageRequestId();
         if (!directMessages.beginSend(recipientId, requestId)) return;
+        sentDirectMessageDrafts.put(requestId, new SentDirectMessageDraft(recipientId, draft));
         DiscordSocialClient.sendUserMessage(recipientId, requestId, draft);
         render(DiscordSocialClient.getSnapshot());
     }
@@ -796,6 +853,7 @@ final class DiscordSocialPanelController {
                 .setPositiveButton(R.string.discord_social_unlink, (dialog, ignored) -> {
                     DiscordSocialClient.unlink();
                     directMessageDrafts.clear();
+                    sentDirectMessageDrafts.clear();
                     localError = "";
                     render(DiscordSocialClient.getSnapshot());
                 }).show();
@@ -806,8 +864,10 @@ final class DiscordSocialPanelController {
         return draft == null ? "" : draft;
     }
 
-    static String directMessageDraftAfterSendResult(String existingDraft, boolean successful) {
-        return successful ? "" : (existingDraft == null ? "" : existingDraft);
+    static boolean shouldClearDirectMessageDraftAfterSendResult(boolean accepted, boolean successful,
+                                                                String currentDraft, String sentDraft) {
+        return accepted && successful && (currentDraft == null ? "" : currentDraft)
+                .equals(sentDraft == null ? "" : sentDraft);
     }
 
     private void setDirectMessageDraft(long recipientId, String draft) {
@@ -835,6 +895,9 @@ final class DiscordSocialPanelController {
     }
 
     static boolean shouldRender(long renderedRevision, long latestRevision) { return renderedRevision != latestRevision; }
+    static boolean shouldCancelDirectKeyboardHoldOnPause(boolean communityViewPresent) {
+        return communityViewPresent;
+    }
     static boolean shouldFocusDetailAfterOpen(DiscordCommunityPresentation.Kind kind) {
         return kind == DiscordCommunityPresentation.Kind.FRIEND;
     }

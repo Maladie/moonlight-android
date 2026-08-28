@@ -743,18 +743,14 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 reportFirstFrameRendered();
                 Runnable callback = nextFrameRenderedCallback.getAndSet(null);
                 if (callback != null) callback.run();
-                if (!USE_FRAME_RENDER_TIME && nextFrameRenderedCallback.get() == null) {
-                    try {
-                        mediaCodec.setOnFrameRenderedListener(null, null);
-                    } catch (IllegalStateException ignored) {}
-                }
             }, null);
         } catch (IllegalStateException ignored) {}
     }
 
     /**
      * Arms a one-shot callback for the next frame actually rendered by MediaCodec.
-     * It does not keep a permanent per-frame Java listener in the steady state.
+     * The listener remains registered because some vendor codecs do not reliably
+     * resume callbacks when a listener is removed and registered again after start.
      */
     public void requestNextFrameRendered(Runnable callback) {
         if (callback == null) return;

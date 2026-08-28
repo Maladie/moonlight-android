@@ -5,14 +5,15 @@ using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.28.0")]
-[assembly: AssemblyFileVersion("0.7.28.0")]
-[assembly: AssemblyInformationalVersion("0.7.28+2026.08.26")]
+[assembly: AssemblyVersion("0.7.35.0")]
+[assembly: AssemblyFileVersion("0.7.35.0")]
+[assembly: AssemblyInformationalVersion("0.7.35+2026.08.28")]
 
 namespace MoonWaker.HostControl
 {
@@ -37,7 +38,10 @@ namespace MoonWaker.HostControl
         private readonly Label gatewayState = new Label();
         private readonly Label gatewayDetails = new Label();
         private readonly Label activeProfile = new Label();
-        private readonly Button legendaryButton;
+        private readonly Label steamConnectionState = new Label();
+        private readonly Label epicConnectionState = new Label();
+        private readonly Button steamConnectionButton;
+        private readonly Button epicConnectionButton;
         private readonly ListView profiles = new ListView();
         private readonly Label footer = new Label();
         private readonly Timer timer = new Timer();
@@ -48,6 +52,7 @@ namespace MoonWaker.HostControl
         private readonly bool startInTray;
         private bool refreshing;
         private bool exiting;
+        private bool legendaryInstalled;
         private readonly string hostVersion;
 
         public ControlForm(bool startInTray)
@@ -57,8 +62,8 @@ namespace MoonWaker.HostControl
             hostVersion = ReadHostVersion();
             Text = "MoonWaker Host Control " + hostVersion;
             Icon = moonWakerIcon;
-            ClientSize = new Size(1040, 708);
-            MinimumSize = new Size(940, 640);
+            ClientSize = new Size(1040, 832);
+            MinimumSize = new Size(940, 760);
             StartPosition = FormStartPosition.CenterScreen;
             BackColor = background;
             ForeColor = Color.White;
@@ -91,14 +96,43 @@ namespace MoonWaker.HostControl
             Button pair = AddActionButton(gatewayPanel, "Sparuj TV", 802, 27, delegate { PairGateway(); }, 142);
             pair.BackColor = accent;
             pair.FlatAppearance.BorderSize = 0;
-            AddActionButton(gatewayPanel, "Napraw wszystko", 430, 74, delegate { RunAction("RecoverAll", null); }, 320);
-            legendaryButton = AddActionButton(gatewayPanel, "Zainstaluj Legendary", 758, 74,
-                delegate { RunAction("InstallLegendary", null); }, 186);
+            AddActionButton(gatewayPanel, "Napraw wszystko", 430, 74, delegate { RunAction("RecoverAll", null); }, 514);
             activeProfile.SetBounds(430, 122, 510, 25);
             activeProfile.ForeColor = muted;
             gatewayPanel.Controls.Add(activeProfile);
 
-            Panel profilePanel = NewPanel(34, 284, 972, 346);
+            Panel connectionsPanel = NewPanel(34, 284, 972, 128);
+            Controls.Add(connectionsPanel);
+            Label connectionsTitle = MakeLabel("Połączenia bibliotek", 16F, FontStyle.Bold, Color.White);
+            connectionsTitle.SetBounds(24, 14, 280, 30);
+            connectionsPanel.Controls.Add(connectionsTitle);
+            Label connectionsHint = MakeLabel("Dotyczy zaznaczonego profilu Windows.", 9F, FontStyle.Regular, muted);
+            connectionsHint.SetBounds(26, 42, 300, 22);
+            connectionsPanel.Controls.Add(connectionsHint);
+
+            Label steamTitle = MakeLabel("Steam", 10F, FontStyle.Bold, Color.White);
+            steamTitle.SetBounds(350, 18, 120, 22);
+            connectionsPanel.Controls.Add(steamTitle);
+            steamConnectionState.SetBounds(350, 43, 180, 24);
+            steamConnectionState.ForeColor = muted;
+            connectionsPanel.Controls.Add(steamConnectionState);
+            steamConnectionButton = AddActionButton(connectionsPanel, "Connect Steam", 350, 74,
+                delegate { SteamConnectionClicked(); }, 180);
+
+            Label epicTitle = MakeLabel("Epic przez Legendary", 10F, FontStyle.Bold, Color.White);
+            epicTitle.SetBounds(570, 18, 190, 22);
+            connectionsPanel.Controls.Add(epicTitle);
+            epicConnectionState.SetBounds(570, 43, 180, 24);
+            epicConnectionState.ForeColor = muted;
+            connectionsPanel.Controls.Add(epicConnectionState);
+            epicConnectionButton = AddActionButton(connectionsPanel, "Connect Epic", 570, 74,
+                delegate { EpicConnectionClicked(); }, 180);
+
+            Label epicHint = MakeLabel("Bez synchronizacji z Epic Games Launcherem", 8.5F, FontStyle.Regular, muted);
+            epicHint.SetBounds(770, 80, 180, 32);
+            connectionsPanel.Controls.Add(epicHint);
+
+            Panel profilePanel = NewPanel(34, 428, 972, 346);
             Controls.Add(profilePanel);
             Label profileTitle = MakeLabel("Profile i Bridge'e", 16F, FontStyle.Bold, Color.White);
             profileTitle.SetBounds(24, 16, 400, 32);
@@ -106,7 +140,6 @@ namespace MoonWaker.HostControl
             Label profileHint = MakeLabel("Jeden nadzorca Bridge na każde konto Windows", 9F, FontStyle.Regular, muted);
             profileHint.SetBounds(26, 48, 500, 24);
             profilePanel.Controls.Add(profileHint);
-
             profiles.SetBounds(24, 82, 924, 180);
             profiles.View = View.Details;
             profiles.FullRowSelect = true;
@@ -120,8 +153,9 @@ namespace MoonWaker.HostControl
             profiles.Columns.Add("Nadzorca / PID", 126);
             profiles.Columns.Add("Discord / PID", 116);
             profiles.Columns.Add("Vibepollo / PID", 124);
-            profiles.Columns.Add("Playnite / PID", 116);
+            profiles.Columns.Add("Provider / PID", 116);
             profiles.Columns.Add("Używany", 88);
+            profiles.SelectedIndexChanged += delegate { UpdateConnectionControls(); };
             profilePanel.Controls.Add(profiles);
 
             AddActionButton(profilePanel, "Uruchom Bridge", 24, 282, delegate { RunProfileAction("StartProfile"); }, 140);
@@ -132,7 +166,7 @@ namespace MoonWaker.HostControl
             remove.ForeColor = Color.FromArgb(255, 180, 180);
             AddActionButton(profilePanel, "Odśwież", 804, 282, delegate { RefreshStatus(); }, 140);
 
-            footer.SetBounds(36, 646, 968, 36);
+            footer.SetBounds(36, 790, 968, 36);
             footer.ForeColor = muted;
             Controls.Add(footer);
 
@@ -267,12 +301,10 @@ namespace MoonWaker.HostControl
                 : "Wersja: " + installedVersion + " / działa: " + runtimeVersion;
             if (GetBool(gateway, "version_mismatch")) versionLine += "  ⚠ Różnica wersji";
             Dictionary<string, object> legendary = AsDictionary(result["legendary"]);
-            bool legendaryInstalled = GetBool(legendary, "installed");
+            legendaryInstalled = GetBool(legendary, "installed");
             gatewayDetails.Text = "Port " + GetText(gateway, "port", "—") + "  •  sparowane urządzenia: " +
                 GetText(gateway, "paired_clients", "0") + "\n" + versionLine + "\nLegendary: " +
                 (legendaryInstalled ? "zainstalowane" : "niezainstalowane");
-            legendaryButton.Enabled = !legendaryInstalled;
-            legendaryButton.Text = legendaryInstalled ? "Legendary: gotowe" : "Zainstaluj Legendary";
             string active = GetText(result, "active_profile", "");
             activeProfile.Text = String.IsNullOrWhiteSpace(active) ? "Ostatnio używany profil: brak danych" : "Ostatnio używany profil: " + active;
 
@@ -300,6 +332,9 @@ namespace MoonWaker.HostControl
                 }
             }
             profiles.EndUpdate();
+            if (profiles.SelectedItems.Count == 0 && profiles.Items.Count > 0)
+                profiles.Items[0].Selected = true;
+            UpdateConnectionControls();
         }
 
         private static string StatusLabel(string value)
@@ -324,11 +359,160 @@ namespace MoonWaker.HostControl
             return profiles.SelectedItems[0].Name;
         }
 
+        private Dictionary<string, object> SelectedProfile()
+        {
+            if (profiles.SelectedItems.Count == 0) return null;
+            return profiles.SelectedItems[0].Tag as Dictionary<string, object>;
+        }
+
+        private void UpdateConnectionControls()
+        {
+            Dictionary<string, object> profile = SelectedProfile();
+            if (profile == null)
+            {
+                steamConnectionState.Text = "Wybierz profil";
+                epicConnectionState.Text = "Wybierz profil";
+                steamConnectionState.ForeColor = muted;
+                epicConnectionState.ForeColor = muted;
+                steamConnectionButton.Enabled = false;
+                epicConnectionButton.Enabled = false;
+                return;
+            }
+            bool available = GetBool(profile, "platform_controls_available");
+            bool steamConnected = GetBool(profile, "steam_connected");
+            bool epicConnected = GetBool(profile, "epic_connected");
+            steamConnectionState.Text = steamConnected ? "POŁĄCZONO" : "NIEPOŁĄCZONO";
+            epicConnectionState.Text = epicConnected ? "POŁĄCZONO" : "NIEPOŁĄCZONO";
+            steamConnectionState.ForeColor = steamConnected
+                ? Color.FromArgb(129, 226, 169) : (available ? muted : Color.FromArgb(255, 170, 170));
+            epicConnectionState.ForeColor = epicConnected
+                ? Color.FromArgb(129, 226, 169) : (available ? muted : Color.FromArgb(255, 170, 170));
+            steamConnectionButton.Text = steamConnected ? "Disconnect Steam" : "Connect Steam";
+            epicConnectionButton.Text = epicConnected ? "Disconnect Epic" : "Connect Epic";
+            steamConnectionButton.Enabled = available;
+            epicConnectionButton.Enabled = available && legendaryInstalled;
+            if (!available)
+            {
+                steamConnectionState.Text = "Zaloguj się na ten profil";
+                epicConnectionState.Text = "Zaloguj się na ten profil";
+            }
+            else if (!legendaryInstalled)
+            {
+                epicConnectionState.Text = "Brak Legendary — zaktualizuj Host";
+            }
+        }
+
         private void RunProfileAction(string action)
         {
             string id = SelectedProfileId();
             if (String.IsNullOrWhiteSpace(id)) { MessageBox.Show(this, "Wybierz profil.", "MoonWaker", MessageBoxButtons.OK, MessageBoxIcon.Information); return; }
             RunAction(action, id);
+        }
+
+        private async void ConfigureSteamWebApi()
+        {
+            string id = SelectedProfileId();
+            if (String.IsNullOrWhiteSpace(id))
+            {
+                MessageBox.Show(this, "Wybierz profil.", "MoonWaker",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            using (SteamApiKeyDialog dialog = new SteamApiKeyDialog(id))
+            {
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                string key = dialog.ApiKey;
+                try
+                {
+                    footer.Text = "Zapisuję klucz Steam Web API…";
+                    Dictionary<string, object> result = await RunControlAsync(
+                        "ConfigureSteamWebApi", id, false, key);
+                    if (!IsOk(result))
+                        throw new InvalidOperationException(GetText(result, "error",
+                            "Nie udało się zapisać klucza Steam Web API."));
+                    if (!GetBool(result, "connected"))
+                        throw new InvalidOperationException("Host Control nie potwierdził zapisu klucza Steam Web API.");
+                    Dictionary<string, object> profile = SelectedProfile();
+                    if (profile != null)
+                    {
+                        profile["steam_connected"] = true;
+                        profile["steam_web_api_configured"] = true;
+                        UpdateConnectionControls();
+                    }
+                    MessageBox.Show(this,
+                        "Klucz został zapisany dla profilu " + id + " i zabezpieczony przez Windows DPAPI.",
+                        "Steam Web API", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                    RefreshStatus();
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, ex.Message, "Steam Web API",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    RefreshStatus();
+                }
+                finally { key = null; }
+            }
+        }
+
+        private void SteamConnectionClicked()
+        {
+            string id = SelectedProfileId();
+            Dictionary<string, object> profile = SelectedProfile();
+            if (String.IsNullOrWhiteSpace(id) || profile == null) return;
+            if (!GetBool(profile, "steam_connected"))
+            {
+                ConfigureSteamWebApi();
+                return;
+            }
+            string warning = "Odłączenie Steam usunie zaszyfrowany klucz Web API dla tego profilu. " +
+                "MoonWaker nie będzie mógł odświeżać pełnej biblioteki Steam. Lokalne manifesty nadal " +
+                "potwierdzą zainstalowane gry, a ostatni snapshot może pozostać widoczny.\n\nKontynuować?";
+            if (MessageBox.Show(this, warning, "Disconnect Steam", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning) == DialogResult.Yes)
+                RunPlatformAction("DisconnectSteam", id, "Steam został odłączony.");
+        }
+
+        private void EpicConnectionClicked()
+        {
+            string id = SelectedProfileId();
+            Dictionary<string, object> profile = SelectedProfile();
+            if (String.IsNullOrWhiteSpace(id) || profile == null) return;
+            if (GetBool(profile, "epic_connected"))
+            {
+                string warning = "Odłączenie Epic usunie uwierzytelnienie Legendary. MoonWaker nie będzie " +
+                    "odświeżać katalogu Epic ani uruchamiać, instalować lub odinstalowywać gier Epic do " +
+                    "ponownego połączenia. Pliki gier nie zostaną usunięte.\n\nKontynuować?";
+                if (MessageBox.Show(this, warning, "Disconnect Epic", MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning) == DialogResult.Yes)
+                    RunPlatformAction("DisconnectEpic", id, "Epic został odłączony od Legendary.");
+                return;
+            }
+            string explanation = "Obsługa Epic działa przez Legendary, nie przez Epic Games Launcher. " +
+                "Legendary utrzymuje własny katalog i stan instalacji; gry nie będą synchronizowane z " +
+                "Epic Games Launcherem.\n\nLogowanie otworzy interaktywny proces Legendary. MoonWaker nie " +
+                "przechwytuje hasła Epic. Kontynuować?";
+            if (MessageBox.Show(this, explanation, "Connect Epic", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Information) == DialogResult.Yes)
+                RunPlatformAction("ConnectEpic", id, "Epic został połączony przez Legendary.");
+        }
+
+        private async void RunPlatformAction(string action, string profile, string successMessage)
+        {
+            try
+            {
+                footer.Text = "Aktualizuję połączenie platformy…";
+                Dictionary<string, object> result = await RunControlAsync(action, profile, false);
+                if (!IsOk(result)) throw new InvalidOperationException(GetText(result, "error", "Operacja nie powiodła się."));
+                MessageBox.Show(this, successMessage, "MoonWaker Host Control",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                RefreshStatus();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "MoonWaker Host Control",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                RefreshStatus();
+            }
         }
 
         private async void RunAction(string action, string profile)
@@ -337,7 +521,7 @@ namespace MoonWaker.HostControl
             {
                 footer.Text = "Wykonuję operację…";
                 Dictionary<string, object> result = await RunControlAsync(action, profile, false);
-                if (!IsOk(result))
+                if (!IsOk(result) && action != "ConfigureSteamWebApi")
                 {
                     DialogResult elevate = MessageBox.Show(this, GetText(result, "error", "Operacja nie powiodła się.") +
                         "\n\nSpróbować z uprawnieniami administratora?", "MoonWaker Host Control",
@@ -390,16 +574,34 @@ namespace MoonWaker.HostControl
 
         private async Task<Dictionary<string, object>> RunControlAsync(string action, string profile, bool elevated)
         {
+            return await RunControlAsync(action, profile, elevated, null);
+        }
+
+        private async Task<Dictionary<string, object>> RunControlAsync(
+            string action, string profile, bool elevated, string steamApiKey)
+        {
             return await Task.Run(delegate
             {
                 if (!File.Exists(script)) throw new FileNotFoundException("Brak komponentu sterującego.", script);
                 string resultPath = Path.Combine(Path.GetTempPath(), "MoonWakerControl-" + Guid.NewGuid().ToString("N") + ".json");
+                bool hasSteamApiKey = steamApiKey != null && action == "ConfigureSteamWebApi";
+                string steamDiagnosticPath = hasSteamApiKey ? SteamConfigurationDiagnosticPath() : null;
                 string arguments = "-NoProfile -ExecutionPolicy Bypass -File " + Quote(script) + " -Action " + Quote(action) +
-                    (String.IsNullOrWhiteSpace(profile) ? "" : " -ProfileId " + Quote(profile)) + " -ResultPath " + Quote(resultPath);
+                    (String.IsNullOrWhiteSpace(profile) ? "" : " -ProfileId " + Quote(profile)) +
+                    (hasSteamApiKey ? " -SteamWebApiKeyProtectedFromEnvironment" : "") +
+                    (hasSteamApiKey ? " -SteamWebApiDiagnosticPath " + Quote(steamDiagnosticPath) : "") +
+                    " -ResultPath " + Quote(resultPath);
                 try
                 {
+                    if (hasSteamApiKey) WriteSteamConfigurationDiagnostic(steamDiagnosticPath, profile, "child_starting", 0);
                     ProcessStartInfo info = new ProcessStartInfo("powershell.exe", arguments);
                     info.UseShellExecute = elevated;
+                    if (hasSteamApiKey)
+                    {
+                        if (elevated) return Error("Klucz Steam musi zostać zapisany z konta właściciela profilu.");
+                        info.EnvironmentVariables["MOONWAKER_STEAM_WEB_API_PROTECTED"] =
+                            ProtectForCurrentUser(steamApiKey);
+                    }
                     if (elevated) info.Verb = "runas";
                     else
                     {
@@ -411,8 +613,24 @@ namespace MoonWaker.HostControl
                     }
                     using (Process process = Process.Start(info))
                     {
-                        string output = elevated ? "" : process.StandardOutput.ReadToEnd();
+                        if (hasSteamApiKey) WriteSteamConfigurationDiagnostic(
+                            steamDiagnosticPath, profile, "child_started", process.Id);
+                        Task<string> stdout = elevated ? null : process.StandardOutput.ReadToEndAsync();
+                        Task<string> stderr = elevated ? null : process.StandardError.ReadToEndAsync();
+                        int timeout = action == "ConnectEpic" ? 900000 : 30000;
+                        if (!process.WaitForExit(timeout))
+                        {
+                            if (hasSteamApiKey) WriteSteamConfigurationDiagnostic(
+                                steamDiagnosticPath, profile, "child_timeout", process.Id);
+                            try { process.Kill(); } catch { }
+                            return Error("Operacja Host Control przekroczyła limit czasu. Szczegóły: " + steamDiagnosticPath);
+                        }
                         process.WaitForExit();
+                        if (hasSteamApiKey) WriteSteamConfigurationDiagnostic(
+                            steamDiagnosticPath, profile, "child_exited", process.Id);
+                        string output = "";
+                        if (!elevated && Task.WaitAll(new Task[] { stdout, stderr }, 2000))
+                            output = stdout.Result;
                         if (File.Exists(resultPath)) output = File.ReadAllText(resultPath, Encoding.UTF8).TrimStart('\uFEFF');
                         if (String.IsNullOrWhiteSpace(output)) return Error("Brak odpowiedzi komponentu sterującego.");
                         return json.Deserialize<Dictionary<string, object>>(output.Trim());
@@ -421,6 +639,45 @@ namespace MoonWaker.HostControl
                 catch (System.ComponentModel.Win32Exception ex) { return Error(ex.NativeErrorCode == 1223 ? "Anulowano prośbę o uprawnienia administratora." : ex.Message); }
                 finally { try { File.Delete(resultPath); } catch { } }
             });
+        }
+
+        private static string ProtectForCurrentUser(string value)
+        {
+            byte[] plain = Encoding.Unicode.GetBytes(value);
+            byte[] encrypted = null;
+            try
+            {
+                encrypted = ProtectedData.Protect(plain, null, DataProtectionScope.CurrentUser);
+                StringBuilder text = new StringBuilder(encrypted.Length * 2);
+                foreach (byte item in encrypted) text.Append(item.ToString("x2"));
+                return text.ToString();
+            }
+            finally
+            {
+                Array.Clear(plain, 0, plain.Length);
+                if (encrypted != null) Array.Clear(encrypted, 0, encrypted.Length);
+            }
+        }
+
+        private static string SteamConfigurationDiagnosticPath()
+        {
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+                "MoonWaker", "logs", "steam-web-api-configure.log");
+        }
+
+        private static void WriteSteamConfigurationDiagnostic(
+            string path, string profile, string phase, int childPid)
+        {
+            try
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                if (File.Exists(path) && new FileInfo(path).Length > 65536) File.WriteAllText(path, "");
+                string line = DateTimeOffset.Now.ToString("o") + " pid=" + Process.GetCurrentProcess().Id +
+                    " child_pid=" + childPid + " profile=" + profile +
+                    " component=host-control phase=" + phase + Environment.NewLine;
+                File.AppendAllText(path, line, Encoding.UTF8);
+            }
+            catch { }
         }
 
         private static Dictionary<string, object> Error(string message)
@@ -466,6 +723,218 @@ namespace MoonWaker.HostControl
         }
 
         private static string Quote(string value) { return "\"" + value.Replace("\"", "\\\"") + "\""; }
+    }
+
+    internal sealed class SteamApiKeyDialog : Form
+    {
+        private readonly TextBox keyBox = new TextBox();
+
+        public string ApiKey { get { return keyBox.Text.Trim(); } }
+
+        public SteamApiKeyDialog(string profileId)
+        {
+            Text = "Steam Web API key";
+            Icon = MoonWakerIcon.Create();
+            ClientSize = new Size(620, 236);
+            MinimumSize = new Size(620, 275);
+            StartPosition = FormStartPosition.CenterParent;
+            FormBorderStyle = FormBorderStyle.FixedDialog;
+            MaximizeBox = false;
+            MinimizeBox = false;
+            ShowInTaskbar = false;
+            BackColor = Color.FromArgb(17, 20, 28);
+            ForeColor = Color.White;
+            Font = new Font("Segoe UI", 9.5F);
+            AutoScaleMode = AutoScaleMode.Dpi;
+
+            Label title = new Label();
+            title.Text = "Connect a Steam Web API key";
+            title.Font = new Font("Segoe UI", 14F, FontStyle.Bold);
+            title.SetBounds(24, 20, 440, 30);
+            Controls.Add(title);
+
+            Label profile = new Label();
+            profile.Text = "Profile: " + profileId;
+            profile.ForeColor = Color.FromArgb(164, 171, 193);
+            profile.SetBounds(26, 54, 500, 24);
+            Controls.Add(profile);
+
+            Label prompt = new Label();
+            prompt.Text = "32-character Steam Web API key";
+            prompt.SetBounds(26, 88, 360, 22);
+            Controls.Add(prompt);
+
+            keyBox.Name = "SteamApiKeyInput";
+            keyBox.SetBounds(26, 112, 500, 32);
+            keyBox.UseSystemPasswordChar = true;
+            keyBox.MaxLength = 32;
+            keyBox.Font = new Font("Consolas", 11F);
+            keyBox.BackColor = Color.FromArgb(28, 33, 45);
+            keyBox.ForeColor = Color.White;
+            keyBox.BorderStyle = BorderStyle.FixedSingle;
+            Controls.Add(keyBox);
+
+            Button help = new Button();
+            help.Name = "SteamApiHelpButton";
+            help.Text = "?";
+            help.AccessibleName = "How to get a Steam Web API key";
+            help.AccessibleDescription = "Shows key registration and secure storage instructions.";
+            help.Font = new Font("Segoe UI", 13F, FontStyle.Bold);
+            help.SetBounds(536, 109, 46, 38);
+            help.FlatStyle = FlatStyle.Flat;
+            help.FlatAppearance.BorderColor = Color.FromArgb(116, 100, 255);
+            help.BackColor = Color.FromArgb(28, 33, 45);
+            help.ForeColor = Color.White;
+            help.Cursor = Cursors.Hand;
+            help.Click += delegate
+            {
+                using (SteamApiHelpForm instructions = new SteamApiHelpForm())
+                    instructions.ShowDialog(this);
+            };
+            Controls.Add(help);
+            ToolTip tip = new ToolTip();
+            tip.SetToolTip(help, "How to get and store a Steam Web API key");
+
+            Label storage = new Label();
+            storage.Text = "The key is stored for this Windows user using DPAPI and is never returned by Gateway.";
+            storage.ForeColor = Color.FromArgb(164, 171, 193);
+            storage.SetBounds(26, 152, 560, 34);
+            Controls.Add(storage);
+
+            Button save = new Button();
+            save.Text = "Save key";
+            save.DialogResult = DialogResult.None;
+            save.SetBounds(354, 190, 108, 36);
+            save.BackColor = Color.FromArgb(116, 100, 255);
+            save.ForeColor = Color.White;
+            save.FlatStyle = FlatStyle.Flat;
+            save.FlatAppearance.BorderSize = 0;
+            save.Click += delegate
+            {
+                if (!System.Text.RegularExpressions.Regex.IsMatch(
+                    keyBox.Text.Trim(), "^[A-Fa-f0-9]{32}$"))
+                {
+                    MessageBox.Show(this,
+                        "Enter exactly 32 hexadecimal characters.", "Steam Web API",
+                        MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    keyBox.Focus();
+                    return;
+                }
+                DialogResult = DialogResult.OK;
+                Close();
+            };
+            Controls.Add(save);
+
+            Button cancel = new Button();
+            cancel.Text = "Cancel";
+            cancel.DialogResult = DialogResult.Cancel;
+            cancel.SetBounds(474, 190, 108, 36);
+            cancel.FlatStyle = FlatStyle.Flat;
+            cancel.FlatAppearance.BorderColor = Color.FromArgb(77, 85, 109);
+            cancel.BackColor = Color.FromArgb(28, 33, 45);
+            cancel.ForeColor = Color.White;
+            Controls.Add(cancel);
+
+            AcceptButton = save;
+            CancelButton = cancel;
+            Shown += delegate { keyBox.Focus(); };
+        }
+    }
+
+    internal sealed class SteamApiHelpForm : Form
+    {
+        private const string RegistrationUrl = "https://steamcommunity.com/dev/apikey";
+        private const string Instructions =
+            "HOW TO GET A STEAM WEB API KEY\r\n\r\n" +
+            "1. Open the official Steam registration page:\r\n" + RegistrationUrl + "\r\n\r\n" +
+            "2. Sign in with the Steam account whose library MoonWaker should read.\r\n\r\n" +
+            "3. Enter localhost in the Domain Name field for this local integration.\r\n\r\n" +
+            "4. Review and accept the Steam Web API Terms of Use, then register the key.\r\n\r\n" +
+            "5. Copy the generated 32-character key into the masked field in Host Control.\r\n\r\n" +
+            "STORAGE AND SECURITY\r\n\r\n" +
+            "• The key is stored in the selected MoonWaker profile as steam-web-api-key.dpapi.\r\n" +
+            "• Windows DPAPI encrypts it for the Windows account that owns the profile.\r\n" +
+            "• The key is not stored in config.json, command-line arguments, logs, audit files, or Gateway responses.\r\n" +
+            "• MoonWaker sends it only to api.steampowered.com over HTTPS with normal certificate validation.\r\n" +
+            "• Host Control never displays a previously stored key. Re-entering a key replaces it.\r\n" +
+            "• Never paste the key into chat or share it. If it is exposed, revoke it on the Steam registration page and create a new one.";
+
+        public SteamApiHelpForm()
+        {
+            Text = "Steam Web API key help";
+            Icon = MoonWakerIcon.Create();
+            ClientSize = new Size(760, 620);
+            MinimumSize = new Size(640, 520);
+            StartPosition = FormStartPosition.CenterParent;
+            BackColor = Color.FromArgb(17, 20, 28);
+            ForeColor = Color.White;
+            Font = new Font("Segoe UI", 10F);
+            AutoScaleMode = AutoScaleMode.Dpi;
+
+            TableLayoutPanel layout = new TableLayoutPanel();
+            layout.Name = "SteamApiHelpLayout";
+            layout.Dock = DockStyle.Fill;
+            layout.Padding = new Padding(20);
+            layout.RowCount = 2;
+            layout.ColumnCount = 1;
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100F));
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 48F));
+            Controls.Add(layout);
+
+            TextBox text = new TextBox();
+            text.Name = "SteamApiHelpText";
+            text.Text = Instructions;
+            text.Multiline = true;
+            text.ReadOnly = true;
+            text.WordWrap = true;
+            text.ScrollBars = ScrollBars.Vertical;
+            text.Dock = DockStyle.Fill;
+            text.BackColor = Color.FromArgb(28, 33, 45);
+            text.ForeColor = Color.White;
+            text.BorderStyle = BorderStyle.FixedSingle;
+            text.Font = new Font("Segoe UI", 10.5F);
+            text.TabStop = false;
+            layout.Controls.Add(text, 0, 0);
+
+            FlowLayoutPanel buttons = new FlowLayoutPanel();
+            buttons.Dock = DockStyle.Fill;
+            buttons.FlowDirection = FlowDirection.RightToLeft;
+            buttons.WrapContents = false;
+            buttons.Padding = new Padding(0, 8, 0, 0);
+            layout.Controls.Add(buttons, 0, 1);
+
+            Button close = new Button();
+            close.Text = "Close";
+            close.DialogResult = DialogResult.OK;
+            close.Size = new Size(100, 34);
+            close.FlatStyle = FlatStyle.Flat;
+            close.BackColor = Color.FromArgb(28, 33, 45);
+            close.ForeColor = Color.White;
+            buttons.Controls.Add(close);
+
+            Button open = new Button();
+            open.Text = "Open Steam key page";
+            open.Size = new Size(180, 34);
+            open.FlatStyle = FlatStyle.Flat;
+            open.FlatAppearance.BorderColor = Color.FromArgb(116, 100, 255);
+            open.BackColor = Color.FromArgb(28, 33, 45);
+            open.ForeColor = Color.White;
+            open.Click += delegate
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo(RegistrationUrl) { UseShellExecute = true });
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, ex.Message, "Steam Web API",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+            };
+            buttons.Controls.Add(open);
+            AcceptButton = close;
+            CancelButton = close;
+        }
     }
 
     internal sealed class GamepadBadge : Control

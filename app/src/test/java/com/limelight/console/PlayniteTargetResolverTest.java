@@ -38,6 +38,44 @@ public class PlayniteTargetResolverTest {
                 "My Game"));
     }
 
+    @Test public void directProviderNeverCorrelatesSunshineTargetByTitle() {
+        PlayniteLibraryGame providerGame = providerGame("steam:289070", "My Game", "steam");
+
+        PlayniteDashboardItem item = PlayniteTargetResolver.resolve(
+                "host", providerGame,
+                Collections.singletonList(new NvApp("My Game", 9, false)), null);
+
+        assertEquals(PlayniteDashboardItem.MappingState.MISSING, item.mappingState);
+        assertNull(item.sunshineAppId);
+    }
+
+    @Test public void directProviderUsesNeutralDesktopInsteadOfPerGameTarget() {
+        PlayniteLibraryGame providerGame = providerGame("epic:Salt", "Celeste", "epic");
+        NvApp stalePerGame = app("Celeste", 9, "epic:Salt", "sha256:cover");
+        NvApp desktop = app("Desktop", 8, "desktop", "default");
+
+        PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host", providerGame,
+                Arrays.asList(stalePerGame, desktop), null);
+
+        assertEquals(PlayniteDashboardItem.MappingState.MAPPED, item.mappingState);
+        assertEquals(Integer.valueOf(8), item.sunshineAppId);
+        assertEquals("Desktop", item.sunshineAppName);
+    }
+
+    @Test public void directProviderLaunchRefreshesToCurrentDesktop() {
+        PlayniteLibraryGame providerGame = providerGame("steam:367520", "Hollow Knight",
+                "steam");
+        PlayniteDashboardItem item = new PlayniteDashboardItem(providerGame, 42,
+                "Desktop", PlayniteDashboardItem.MappingState.MAPPED);
+        NvApp current = app("Desktop", 8, "desktop", "default");
+
+        NvApp target = PlayniteTargetResolver.launchTarget(item,
+                Collections.singletonList(current), true);
+
+        assertNotNull(target);
+        assertEquals(8, target.getAppId());
+    }
+
     @Test public void duplicateGamestreamRowsWithSameUuidAreOnePlayableTarget() {
         NvApp transientRow = app("My Game", 1,
                 "11223344-5566-7788-99aa-bbccddeeff00", "default");
@@ -154,6 +192,14 @@ public class PlayniteTargetResolverTest {
 
     private static PlayniteLibraryGame game(String name) {
         return new PlayniteLibraryGame("11223344-5566-7788-99aa-bbccddeeff00", name,
-                true, false, 0, "", "", "", "Steam");
+                true, false, 0, "", "", "", "Playnite");
+    }
+
+    private static PlayniteLibraryGame providerGame(String id, String name, String provider) {
+        String providerGameId = id.substring(id.indexOf(':') + 1);
+        return new PlayniteLibraryGame(id, name, true, false, false, 0, "", "", "",
+                "", 0, provider, "", false, "", "", "", "", -1, false, "",
+                provider, providerGameId, "11223344-5566-7788-99aa-bbccddeeff00",
+                provider, provider, true, true, true);
     }
 }

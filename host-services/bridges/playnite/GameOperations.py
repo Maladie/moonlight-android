@@ -9,6 +9,8 @@ import stat
 import subprocess
 import threading
 import time
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Hashable
@@ -91,13 +93,27 @@ class OperationProcessRegistry:
 
 
 class GenericPlayniteProvider:
+    def launch(self, game: dict[str, Any], task_id: Hashable | None = None,
+               send_command: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
+        if send_command is None:
+            return {"accepted": False, "command": "launch", "provider": "playnite",
+                    "reason": "playnite_connector_unavailable"}
+        return {**send_command("launch", id=str(game.get("playniteGameId")
+                                                      or game.get("providerGameId")
+                                                      or game.get("id") or "")),
+                "provider": "playnite", "dispatch": "playnite"}
+
     def dispatch_install(self, game: dict[str, Any],
                          send_command: Callable[..., dict[str, Any]]) -> dict[str, Any]:
-        return send_command("install", id=str(game["id"]))
+        return send_command("install", id=str(game.get("playniteGameId")
+                                               or game.get("providerGameId")
+                                               or game.get("id") or ""))
 
     def dispatch_uninstall(self, game: dict[str, Any],
                            send_command: Callable[..., dict[str, Any]]) -> dict[str, Any]:
-        return send_command("uninstall", id=str(game["id"]))
+        return send_command("uninstall", id=str(game.get("playniteGameId")
+                                                 or game.get("providerGameId")
+                                                 or game.get("id") or ""))
 
     def sample(self, _game: dict[str, Any], _operation: str) -> dict[str, Any] | None:
         return None
@@ -120,6 +136,7 @@ class GenericPlayniteProvider:
 
 class SteamProvider(GenericPlayniteProvider):
     KEY_VALUE = re.compile(r'^\s*"([^"]+)"\s+"([^"]*)"\s*$')
+    LAUNCH_LOG_GRACE = 2.0
     OPERATIONS = {
         "install": "+app_install",
         "uninstall": "+app_uninstall",
@@ -128,11 +145,22 @@ class SteamProvider(GenericPlayniteProvider):
     def __init__(self, automation_path: Path | None = None,
                  roots: list[Path] | None = None,
                  root_resolver: Callable[[], Path | None] | None = None,
-                 command_runner: Callable[..., Any] | None = None) -> None:
+                 command_runner: Callable[..., Any] | None = None,
+                 api_key_path: Path | None = None,
+                 secret_reader: Callable[[Path], str] | None = None,
+                 web_opener: Callable[..., Any] | None = None,
+                 process_registry: OperationProcessRegistry | None = None,
+                 big_picture_preflight: Callable[["SteamProvider"], dict[str, Any]] | None = None) -> None:
         self.automation_path = automation_path
         self.roots = roots
         self.root_resolver = root_resolver
         self.command_runner = command_runner or subprocess.Popen
+        self.api_key_path = api_key_path
+        self.secret_reader = secret_reader or self._read_dpapi_secret
+        self.web_opener = web_opener or urllib.request.urlopen
+        self.process_registry = process_registry or OperationProcessRegistry()
+        self.big_picture_preflight = big_picture_preflight
+        self._dispatch_reason = ""
 
     @staticmethod
     def _values(path: Path) -> dict[str, str] | None:
@@ -152,11 +180,23 @@ class SteamProvider(GenericPlayniteProvider):
             return None
         try:
             import winreg
-            with winreg.OpenKey(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam") as key:
-                value, _kind = winreg.QueryValueEx(key, "SteamPath")
-                return Path(str(value))
-        except (ImportError, OSError):
+        except ImportError:
             return None
+        locations = (
+            (winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam", "SteamPath"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam", "InstallPath"),
+            (winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\WOW6432Node\Valve\Steam",
+             "InstallPath"),
+        )
+        for hive, key_path, value_name in locations:
+            try:
+                with winreg.OpenKey(hive, key_path) as key:
+                    value, _kind = winreg.QueryValueEx(key, value_name)
+                if str(value).strip():
+                    return Path(str(value))
+            except OSError:
+                continue
+        return None
 
     def _root(self) -> Path | None:
         return self.root_resolver() if self.root_resolver is not None else self._steam_root()
@@ -215,6 +255,150 @@ class SteamProvider(GenericPlayniteProvider):
             return None
         return executable
 
+    @staticmethod
+    def _read_dpapi_secret(path: Path) -> str:
+        if os.name != "nt" or not path.is_file():
+            return ""
+        script = (
+            "$e=Get-Content -LiteralPath $args[0] -Raw | ConvertTo-SecureString;"
+            "$c=[pscredential]::new('steam',$e);"
+            "$c.GetNetworkCredential().Password")
+        try:
+            result = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                 script, str(path)], capture_output=True, text=True, timeout=5,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
+            return str(result.stdout or "").strip() if result.returncode == 0 else ""
+        except (OSError, subprocess.SubprocessError):
+            return ""
+
+    def steam_id(self) -> str:
+        root = self._root()
+        if root is None:
+            return ""
+        try:
+            text = (root / "config" / "loginusers.vdf").read_text(
+                encoding="utf-8-sig", errors="replace")
+        except OSError:
+            return ""
+        accounts: list[tuple[bool, str]] = []
+        for match in re.finditer(r'"(7656[0-9]{13})"\s*\{(.*?)\n\s*\}', text, re.DOTALL):
+            values = {}
+            for line in match.group(2).splitlines():
+                item = self.KEY_VALUE.match(line)
+                if item:
+                    values[item.group(1).casefold()] = item.group(2)
+            accounts.append((values.get("mostrecent") == "1", match.group(1)))
+        return next((account for recent, account in accounts if recent),
+                    accounts[0][1] if accounts else "")
+
+    def _installed_catalog(self) -> dict[str, Any]:
+        discovery = self._library_discovery()
+        result: dict[str, dict[str, Any]] = {}
+        complete = bool(discovery["complete"])
+        for library in discovery["libraries"]:
+            steamapps = library / "steamapps"
+            if self._path_state(steamapps)[0] != "directory":
+                complete = False
+                continue
+            try:
+                manifests = list(steamapps.glob("appmanifest_*.acf"))
+            except OSError:
+                complete = False
+                continue
+            for manifest in manifests:
+                match = re.fullmatch(r"appmanifest_([0-9]+)\.acf", manifest.name,
+                                     re.IGNORECASE)
+                values = self._values(manifest) if match else None
+                app_id = match.group(1) if match else ""
+                if not values or values.get("appid") != app_id:
+                    complete = False
+                    continue
+                install_name = str(values.get("installdir") or "").strip()
+                directory = steamapps / "common" / install_name if install_name else None
+                ready = self._number(values, "stateflags") == 4 and directory is not None \
+                    and self._path_state(directory)[0] == "directory"
+                result[app_id] = {
+                    "name": str(values.get("name") or f"Steam App {app_id}"),
+                    "installed": ready,
+                    "install_directory": str(directory or "") if ready else "",
+                }
+        return {"available": bool(discovery["available"]),
+                "complete": complete, "by_id": result}
+
+    def catalog(self) -> dict[str, Any]:
+        steam_id = self.steam_id()
+        installed_snapshot = self._installed_catalog()
+        installed = installed_snapshot["by_id"]
+        local_games = [{
+            "id": f"steam:{app_id}", "provider": "steam",
+            "providerGameId": app_id, "libraryKey": "steam",
+            "libraryName": "Steam", "source": "Steam", "playniteGameId": "",
+            "capabilities": {"launch": True, "install": True, "uninstall": True},
+            "name": str(local.get("name") or f"Steam App {app_id}"),
+            "installed": bool(local.get("installed")),
+            "installDir": str(local.get("install_directory") or ""),
+            "playtimeMinutes": 0,
+        } for app_id, local in installed.items()]
+        try:
+            api_key = self.secret_reader(self.api_key_path) if self.api_key_path else ""
+        except Exception:
+            api_key = ""
+        if not re.fullmatch(r"[A-Fa-f0-9]{32}", api_key):
+            return {"available": bool(installed_snapshot["available"]),
+                    "complete": False, "games": local_games,
+                    "installationComplete": bool(installed_snapshot["complete"]),
+                    "reason": "steam_api_key_missing"}
+        if not re.fullmatch(r"7656[0-9]{13}", steam_id):
+            return {"available": bool(installed_snapshot["available"]),
+                    "complete": False, "games": local_games,
+                    "installationComplete": bool(installed_snapshot["complete"]),
+                    "reason": "steam_id_unavailable"}
+        query = urllib.parse.urlencode({
+            "key": api_key, "steamid": steam_id, "include_appinfo": "true",
+            "include_played_free_games": "true", "format": "json",
+        })
+        request = urllib.request.Request(
+            "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?" + query,
+            headers={"Accept": "application/json", "User-Agent": "MoonWakerHost/1"})
+        try:
+            with self.web_opener(request, timeout=8) as response:
+                body = response.read(8 * 1024 * 1024 + 1)
+            if len(body) > 8 * 1024 * 1024:
+                raise ValueError("response_too_large")
+            payload = json.loads(body.decode("utf-8"))
+            owned = payload.get("response", {}).get("games")
+            if not isinstance(owned, list):
+                raise ValueError("invalid_response")
+        except Exception:
+            return {"available": bool(installed_snapshot["available"]),
+                    "complete": False, "games": local_games,
+                    "installationComplete": bool(installed_snapshot["complete"]),
+                    "reason": "steam_catalog_unavailable"}
+        games: list[dict[str, Any]] = []
+        for item in owned[:100000]:
+            if not isinstance(item, dict):
+                continue
+            app_id = str(item.get("appid") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if not re.fullmatch(r"[0-9]+", app_id) or not name:
+                continue
+            local = installed.get(app_id) or {}
+            games.append({
+                "id": f"steam:{app_id}", "provider": "steam",
+                "providerGameId": app_id, "libraryKey": "steam",
+                "libraryName": "Steam", "source": "Steam", "playniteGameId": "",
+                "capabilities": {"launch": True, "install": True, "uninstall": True},
+                "name": name, "installed": bool(local.get("installed")),
+                "installDir": str(local.get("install_directory") or ""),
+                "playtimeMinutes": max(0, int(item.get("playtime_forever") or 0)),
+            })
+        complete = bool(installed_snapshot["available"] and
+                        installed_snapshot["complete"])
+        return {"available": True, "complete": complete, "games": games,
+                "installationComplete": bool(installed_snapshot["complete"]),
+                "reason": "" if complete else "steam_manifest_scan_incomplete"}
+
     def _direct_dispatch(self, game: dict[str, Any], operation: str) -> dict[str, Any] | None:
         console_command = self.OPERATIONS.get(operation)
         app_id = str(game.get("providerGameId") or "").strip()
@@ -239,23 +423,91 @@ class SteamProvider(GenericPlayniteProvider):
             "dispatch": "direct",
         }
 
-    @staticmethod
-    def dispatch_playnite(game: dict[str, Any], operation: str,
-                          send_command: Callable[..., dict[str, Any]]) -> dict[str, Any]:
-        if operation not in SteamProvider.OPERATIONS:
-            raise ValueError("Unsupported Steam operation.")
-        result = send_command(operation, id=str(game["id"]))
-        return {**result, "provider": "steam", "dispatch": "playnite"}
-
     def dispatch_install(self, game: dict[str, Any],
                          send_command: Callable[..., dict[str, Any]]) -> dict[str, Any]:
-        return self._direct_dispatch(game, "install") or \
-            self.dispatch_playnite(game, "install", send_command)
+        return self._direct_dispatch(game, "install") or {
+            "accepted": False, "command": "install", "provider": "steam",
+            "dispatch": "none", "reason": "steam_direct_dispatch_failed"}
 
     def dispatch_uninstall(self, game: dict[str, Any],
                            send_command: Callable[..., dict[str, Any]]) -> dict[str, Any]:
-        return self._direct_dispatch(game, "uninstall") or \
-            self.dispatch_playnite(game, "uninstall", send_command)
+        return self._direct_dispatch(game, "uninstall") or {
+            "accepted": False, "command": "uninstall", "provider": "steam",
+            "dispatch": "none", "reason": "steam_direct_dispatch_failed"}
+
+    def launch(self, game: dict[str, Any], task_id: Hashable | None = None,
+               send_command: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
+        app_id = str(game.get("providerGameId") or "").strip()
+        if not re.fullmatch(r"[0-9]+", app_id):
+            return {"accepted": False, "command": "launch", "provider": "steam",
+                    "reason": "invalid_steam_app_id"}
+        executable = self.executable()
+        snapshot = self.scan(game)
+        if executable is None:
+            return {"accepted": False, "command": "launch", "provider": "steam",
+                    "reason": "steam_unavailable"}
+        if not snapshot.get("manifest_complete"):
+            return {"accepted": False, "command": "launch", "provider": "steam",
+                    "reason": "steam_game_not_installed"}
+        preflight = self.big_picture_preflight(self) if self.big_picture_preflight else {
+            "ready": False, "reason": "steam_big_picture_unavailable"}
+        if not preflight.get("ready"):
+            return {"accepted": False, "command": "launch", "provider": "steam",
+                    "requires_attention": preflight.get("reason") ==
+                    "launcher_interaction_required",
+                    "reason": str(preflight.get("reason") or
+                                  "steam_big_picture_unavailable")}
+        arguments = [str(executable), f"steam://launch/{app_id}/Dialog"]
+        game_id = str(game.get("id") or f"steam:{app_id}")
+        task_id = task_id if task_id is not None else (game_id, "launch", time.time_ns())
+        if self.process_registry.busy(game_id):
+            return {"accepted": False, "command": "launch", "provider": "steam",
+                    "reason": "operation_busy"}
+        try:
+            process = self.command_runner(
+                arguments, cwd=str(executable.parent), shell=False,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            return {"accepted": False, "command": "launch", "provider": "steam",
+                    "reason": "steam_launch_failed"}
+        tracked = TrackedOperationProcess(
+            task_id=task_id, game_id=game_id, provider="steam",
+            operation_type="launch", process_type="launch", phase="dispatch",
+            process=process, app_name=app_id, executable=executable)
+        if not self.process_registry.register(tracked):
+            try:
+                process.terminate()
+            except (AttributeError, OSError, subprocess.SubprocessError):
+                pass
+            return {"accepted": False, "command": "launch", "provider": "steam",
+                    "reason": "operation_busy"}
+        return {"accepted": True, "command": "launch", "provider": "steam",
+                "dispatch": "direct", "task_id": task_id,
+                "install_directory": str(snapshot.get("install_directory") or "")}
+
+    def sample_launch(self, game: dict[str, Any], task_id: Hashable) -> dict[str, Any] | None:
+        tracked = self.process_registry.get(task_id)
+        if tracked is None or tracked.game_id != str(game.get("id") or "") \
+                or tracked.provider != "steam" or tracked.operation_type != "launch":
+            return None
+        if tracked.process.poll() is None:
+            return {"provider": "steam", "started": True,
+                    "reason": "steam_launch_dispatch_running"}
+        exit_code = int(tracked.process.returncode)
+        if exit_code != 0:
+            self.process_registry.remove(tracked)
+            return {"provider": "steam", "requires_attention": True,
+                    "reason": "steam_launch_failed", "exit_code": exit_code,
+                    "launcher": "steam.exe"}
+        if time.time() - tracked.started_at < self.LAUNCH_LOG_GRACE:
+            tracked.phase = "client_ack"
+            return {"provider": "steam", "dispatched": True,
+                    "reason": "steam_launch_dispatched", "exit_code": 0}
+        self.process_registry.remove(tracked)
+        return {"provider": "steam", "dispatched": True,
+                "reason": "steam_launch_dispatched", "exit_code": 0}
 
     @staticmethod
     def _number(values: dict[str, str], key: str) -> int:
@@ -501,14 +753,13 @@ class EpicProvider(GenericPlayniteProvider):
     def scan(self) -> dict[str, Any]:
         directory = self.directory()
         if not directory.is_dir():
-            return {"available": False, "complete": False, "by_id": {}, "by_name": {}}
+            return {"available": False, "complete": False, "by_id": {}}
         by_id: dict[str, dict[str, Any]] = {}
-        by_name: dict[str, list[dict[str, Any]]] = {}
         complete = True
         try:
             paths = list(directory.glob("*.item"))
         except OSError:
-            return {"available": False, "complete": False, "by_id": {}, "by_name": {}}
+            return {"available": False, "complete": False, "by_id": {}}
         for path in paths:
             try:
                 value = json.loads(path.read_text(encoding="utf-8-sig"))
@@ -516,7 +767,6 @@ class EpicProvider(GenericPlayniteProvider):
                 complete = False
                 continue
             app_name = str(value.get("AppName") or "").strip().casefold()
-            display_name = str(value.get("DisplayName") or "").strip().casefold()
             install_location = value.get("InstallLocation")
             install_directory = str(install_location or "").strip()
             executable = str(value.get("LaunchExecutable") or "").strip()
@@ -534,24 +784,16 @@ class EpicProvider(GenericPlayniteProvider):
                     "manifest_path": str(path.absolute()), "provider": "epic"}
             if app_name:
                 by_id[app_name] = item
-            if display_name:
-                by_name.setdefault(display_name, []).append(item)
-        return {"available": True, "complete": complete,
-                "by_id": by_id, "by_name": by_name}
+        return {"available": True, "complete": complete, "by_id": by_id}
 
     @staticmethod
     def installed_from_snapshot(game: dict[str, Any],
                                 snapshot: dict[str, Any]) -> dict[str, Any] | None:
         if not snapshot.get("available"):
             return None
-        provider_id = str(game.get("providerGameId") or "").strip().casefold()
-        name = str(game.get("name") or "").strip().casefold()
+        provider_id = str(game.get("providerGameId") or "").strip()
         item = (snapshot.get("by_id") or {}).get(provider_id) if provider_id else None
-        if item is not None:
-            return item if item.get("installed") else None
-        matches = (snapshot.get("by_name") or {}).get(name, []) if name else []
-        installed = [value for value in matches if value.get("installed")]
-        return installed[0] if len(installed) == 1 else None
+        return item if item is not None and item.get("installed") else None
 
     def _legendary(self) -> Path | None:
         if not self.legendary_enabled:
@@ -606,18 +848,13 @@ class EpicProvider(GenericPlayniteProvider):
 
     def _resolve_legendary_app(self, game: dict[str, Any]) -> str | None:
         stable = str(game.get("providerGameId") or "").strip()
-        if re.fullmatch(r"[A-Za-z0-9_-]+", stable):
-            info_ok, info = self._legendary_json(["info", stable, "--json", "--platform", "Windows"])
-            if info_ok and isinstance(info, dict): return stable
-        catalog_ok, catalog = self._legendary_json(["list", "--json"])
-        if not catalog_ok or not isinstance(catalog, list):
-            self._dispatch_reason = "legendary_auth_required"
+        if not re.fullmatch(r"[A-Za-z0-9_-]+", stable):
+            self._dispatch_reason = "legendary_unresolved"
             return None
-        title = str(game.get("name") or "").strip().casefold()
-        matches = [self._app_name(item) for item in catalog if isinstance(item, dict)
-                   and ((stable and self._app_name(item).casefold() == stable.casefold()) or
-                        (title and str(item.get("title") or item.get("app_title") or "").strip().casefold() == title))]
-        if len(matches) == 1 and matches[0]: return matches[0]
+        info_ok, info = self._legendary_json(
+            ["info", stable, "--json", "--platform", "Windows"])
+        if info_ok and isinstance(info, dict):
+            return stable
         self._dispatch_reason = "legendary_unresolved"
         return None
 
@@ -646,7 +883,7 @@ class EpicProvider(GenericPlayniteProvider):
             return None
         if not resolved_directory.is_dir() or not resolved_executable.is_file():
             return None
-        return app_name.casefold(), {
+        return app_name, {
             "installed": True, "provider": "epic",
             "install_directory": str(directory), "executable": executable,
             "app_name": app_name,
@@ -671,7 +908,7 @@ class EpicProvider(GenericPlayniteProvider):
             if verified is None:
                 app_name = self._app_name(item) if isinstance(item, dict) else ""
                 if app_name:
-                    invalid_ids.add(app_name.casefold())
+                    invalid_ids.add(app_name)
                 else:
                     complete = False
                 continue
@@ -683,12 +920,44 @@ class EpicProvider(GenericPlayniteProvider):
         snapshot = self.legendary_snapshot()
         if not snapshot.get("available"):
             return False, None
-        if app_name.casefold() in set(snapshot.get("invalid_ids") or []):
+        if app_name in set(snapshot.get("invalid_ids") or []):
             return False, None
-        installed = (snapshot.get("by_id") or {}).get(app_name.casefold())
+        installed = (snapshot.get("by_id") or {}).get(app_name)
         if installed is None and not snapshot.get("complete"):
             return False, None
         return True, installed
+
+    def catalog(self) -> dict[str, Any]:
+        readable, payload = self._legendary_json(["list", "--json"])
+        if not readable or not isinstance(payload, list):
+            return {"available": False, "complete": False, "games": [],
+                    "reason": "legendary_catalog_unavailable"}
+        installed = self.legendary_snapshot()
+        if not installed.get("available"):
+            return {"available": False, "complete": False, "games": [],
+                    "reason": "legendary_verification_failed"}
+        games: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for item in payload[:100000]:
+            if not isinstance(item, dict):
+                continue
+            app_name = self._app_name(item)
+            title = str(item.get("title") or item.get("app_title") or "").strip()
+            if not re.fullmatch(r"[A-Za-z0-9_-]+", app_name) or not title \
+                    or app_name in seen:
+                continue
+            seen.add(app_name)
+            local = (installed.get("by_id") or {}).get(app_name) or {}
+            games.append({
+                "id": f"epic:{app_name}", "provider": "epic",
+                "providerGameId": app_name, "libraryKey": "epic",
+                "libraryName": "Epic", "source": "Epic", "playniteGameId": "",
+                "capabilities": {"launch": True, "install": True, "uninstall": True},
+                "name": title, "installed": bool(local.get("installed")),
+                "installDir": str(local.get("install_directory") or ""),
+            })
+        return {"available": True, "complete": bool(installed.get("complete")),
+                "games": games, "reason": ""}
 
     def _migration_candidate(self, game: dict[str, Any],
                              app_name: str) -> dict[str, Any] | None:
@@ -1161,19 +1430,24 @@ class GameOperationsService:
         self.epic = epic or EpicProvider()
         self.processes = OperationProcessRegistry()
         self.epic.process_registry = self.processes
+        self.steam.process_registry = self.processes
 
     @staticmethod
     def provider_label(game: dict[str, Any]) -> str:
-        return str(game.get("source") or game.get("pluginName") or "playnite").casefold()
+        explicit = str(game.get("provider") or "").strip().casefold()
+        if explicit in {"steam", "epic", "playnite"}:
+            return explicit
+        legacy = str(game.get("source") or game.get("pluginName") or "").strip().casefold()
+        return legacy if legacy in {"steam", "epic"} else "playnite"
 
     def provider_for(self, game: dict[str, Any]) -> GenericPlayniteProvider:
         return self.provider_for_label(self.provider_label(game))
 
     def provider_for_label(self, label: str) -> GenericPlayniteProvider:
         normalized = str(label).casefold()
-        if "epic" in normalized:
+        if normalized == "epic":
             return self.epic
-        if "steam" in normalized:
+        if normalized == "steam":
             return self.steam
         return self.generic
 
@@ -1205,12 +1479,6 @@ class GameOperationsService:
             return self.steam.operation_baseline(game)
         return None
 
-    def dispatch_steam_fallback(self, game: dict[str, Any], operation: str,
-                                send_command: Callable[..., dict[str, Any]]) -> dict[str, Any]:
-        if self.provider_for(game) is not self.steam:
-            raise ValueError("Playnite fallback is only explicit for Steam operations.")
-        return self.steam.dispatch_playnite(game, operation, send_command)
-
     def manual_attention(self, game: dict[str, Any],
                          operation: str) -> dict[str, Any] | None:
         return self.provider_for(game).manual_attention(game, operation)
@@ -1227,15 +1495,19 @@ class GameOperationsService:
     def expected_launcher_images(self, game: dict[str, Any]) -> set[str]:
         return self.provider_for(game).expected_launcher_images()
 
-    def launch(self, game: dict[str, Any], task_id: Hashable | None = None) -> dict[str, Any]:
-        if self.provider_for(game) is not self.epic:
-            raise ValueError("Direct launch is only available for Epic games.")
-        return self.epic.launch(game, task_id)
+    def launch(self, game: dict[str, Any], task_id: Hashable | None = None,
+               send_command: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
+        provider = self.provider_for(game)
+        return provider.launch(game, task_id, send_command) \
+            if provider is self.generic else provider.launch(game, task_id)
 
     def sample_launch(self, game: dict[str, Any], task_id: Hashable) -> dict[str, Any] | None:
-        if self.provider_for(game) is not self.epic:
-            return None
-        return self.epic.sample_launch(game, task_id)
+        provider = self.provider_for(game)
+        if provider is self.epic:
+            return self.epic.sample_launch(game, task_id)
+        if provider is self.steam:
+            return self.steam.sample_launch(game, task_id)
+        return None
 
     def finish_process(self, task_id: Hashable) -> None:
         tracked = self.processes.get(task_id)
@@ -1255,5 +1527,90 @@ class GameOperationsService:
                                          snapshot: dict[str, Any]) -> dict[str, Any] | None:
         if self.provider_for(game) is not self.epic:
             return None
-        provider_id = str(game.get("providerGameId") or "").strip().casefold()
+        provider_id = str(game.get("providerGameId") or "").strip()
         return (snapshot.get("by_id") or {}).get(provider_id) if provider_id else None
+
+    @staticmethod
+    def _playnite_source(game: dict[str, Any]) -> str:
+        return str(game.get("source") or game.get("sourceName") or "").strip()
+
+    @staticmethod
+    def _playnite_record(game: dict[str, Any]) -> dict[str, Any] | None:
+        game_id = str(game.get("id") or "").strip().lower()
+        if not re.fullmatch(
+                r"[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}",
+                game_id):
+            return None
+        source = GameOperationsService._playnite_source(game)
+        library_key = re.sub(r"[^a-z0-9_-]+", "-", source.casefold()).strip("-") \
+            or "playnite"
+        record = dict(game)
+        record.update({
+            "id": game_id, "provider": "playnite",
+            "providerGameId": game_id, "playniteGameId": game_id,
+            "libraryKey": library_key,
+            "libraryName": source or "Playnite",
+            "capabilities": {"launch": True, "install": True, "uninstall": True},
+            "installed": bool(game.get("installed") or game.get("isInstalled")),
+            "installDir": str(game.get("installDir") or game.get("install_dir") or ""),
+        })
+        return record
+
+    @staticmethod
+    def _overlay(record: dict[str, Any], metadata: dict[str, Any]) -> None:
+        playnite_id = str(metadata.get("id") or "").strip().lower()
+        record["playniteGameId"] = playnite_id
+        for key in ("boxArtPath", "cover", "coverImage", "backgroundImagePath",
+                    "background", "backgroundImage", "iconPath", "icon",
+                    "description", "genres", "playCount", "lastPlayed",
+                    "playtimeMinutes", "hidden", "favorite", "artworkVersion"):
+            if key in metadata and metadata.get(key) not in (None, "", []):
+                record[key] = metadata[key]
+
+    def aggregate_catalog(self, playnite_games: list[dict[str, Any]],
+                          previous: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
+        previous = previous or {}
+        steam = self.steam.catalog()
+        epic = self.epic.catalog()
+        health = {
+            "steam": {key: value for key, value in steam.items() if key != "games"},
+            "epic": {key: value for key, value in epic.items() if key != "games"},
+            "playnite": {"available": True, "complete": True, "reason": ""},
+        }
+        records: dict[str, dict[str, Any]] = {}
+        for provider, snapshot in (("steam", steam), ("epic", epic)):
+            if snapshot.get("available"):
+                for game in snapshot.get("games") or []:
+                    if isinstance(game, dict):
+                        records[str(game["id"])] = dict(game)
+            if not snapshot.get("available") or not snapshot.get("complete"):
+                for game_id, game in previous.items():
+                    if str(game.get("provider") or "") == provider:
+                        if snapshot.get("installationComplete"):
+                            records.setdefault(game_id, dict(game))
+                        else:
+                            records[game_id] = dict(game)
+
+        overlays: dict[tuple[str, str], dict[str, Any]] = {}
+        standalone: list[dict[str, Any]] = []
+        for game in playnite_games:
+            if not isinstance(game, dict):
+                continue
+            source = self._playnite_source(game).casefold()
+            provider_id = str(game.get("providerGameId") or "").strip()
+            if source == "steam" and re.fullmatch(r"[0-9]+", provider_id):
+                overlays[("steam", provider_id)] = game
+            elif source == "epic" and re.fullmatch(r"[A-Za-z0-9_-]+", provider_id):
+                overlays[("epic", provider_id)] = game
+            elif source not in {"steam", "epic"}:
+                playnite = self._playnite_record(game)
+                if playnite is not None:
+                    standalone.append(playnite)
+        for record in records.values():
+            metadata = overlays.get((str(record.get("provider") or ""),
+                                     str(record.get("providerGameId") or "")))
+            if metadata is not None:
+                self._overlay(record, metadata)
+        for record in standalone:
+            records[record["id"]] = record
+        return {"library": records, "providers": health}

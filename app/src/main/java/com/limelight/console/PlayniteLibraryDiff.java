@@ -49,7 +49,9 @@ final class PlayniteLibraryDiff {
                     old.game.playCount != next.game.playCount ||
                     !old.game.lastActivity.equals(next.game.lastActivity) ||
                     !old.game.description.equals(next.game.description) ||
-                    !old.game.source.equals(next.game.source)) payload |= TEXT;
+                    !old.game.source.equals(next.game.source) ||
+                    !old.game.libraryKey.equals(next.game.libraryKey) ||
+                    !old.game.libraryName.equals(next.game.libraryName)) payload |= TEXT;
             if (!old.game.coverKey.equals(next.game.coverKey) ||
                     !old.game.backgroundKey.equals(next.game.backgroundKey)) payload |= ARTWORK;
             if (!java.util.Objects.equals(old.sunshineAppId, next.sunshineAppId) ||
