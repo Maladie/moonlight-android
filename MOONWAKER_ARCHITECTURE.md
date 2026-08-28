@@ -351,9 +351,9 @@ The Profile Bridge supervisor already owns:
 
 Guardian should use host-side repair actions rather than reimplement process supervision on Android.
 
-### 5.3 Playnite Bridge
+### 5.3 Game Provider Bridge
 
-`PlayniteBridge.py` currently combines:
+`GameProviderBridge.py` currently combines:
 
 - Playnite pipe/IPC;
 - library cache;
@@ -372,7 +372,7 @@ Extract GameOps providers mechanically when the architecture is stable.
 Target shape:
 
 ```text
-PlayniteBridge
+GameProviderBridge
     |
     +-- Playnite IPC / library / lifecycle
     +-- readiness

@@ -118,7 +118,9 @@ import java.lang.reflect.Method;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
+import java.util.HashSet;
 import java.util.Locale;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
 
@@ -129,6 +131,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         PerfOverlayListener, UsbDriverService.UsbDriverStateListener, View.OnKeyListener,
         RetainedStreamSessionCoordinator.Controller {
     private int lastButtonState = 0;
+    // An overlay may hide synchronously from its first key-down. Keep that physical
+    // device/key sequence out of the stream until its matching key-up arrives.
+    private final OverlayKeySequenceLatch overlayOwnedKeySequences = new OverlayKeySequenceLatch();
 
     // Only 2 touches are supported
     private final TouchContext[] touchContextMap = new TouchContext[2];
@@ -169,6 +174,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private Runnable pendingAutomaticReveal;
     private boolean manualRevealRequested;
     private boolean transitionCancelInFlight;
+    private boolean providerStopInFlight;
+    private boolean providerStopConfirmed;
     private boolean displayedFailureDialog = false;
     private boolean connecting = false;
     private boolean connected = false;
@@ -1371,6 +1378,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onPause() {
+        if (discordOverlayController != null) {
+            discordOverlayController.onActivityPaused();
+        }
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
         if (!pm.isInteractive() && connected && !userInitiatedDisconnect) {
             if (PreferenceConfiguration.readPreferences(this).autoResumeStream) {
@@ -1400,6 +1410,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onResume() {
         super.onResume();
+        if (discordOverlayController != null) {
+            discordOverlayController.onActivityResumed();
+        }
         boolean returningFromStreamHome = streamHomeVisible;
         if (streamHomeVisible) {
             streamHomeVisible = false;
@@ -1659,6 +1672,46 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return handleKeyDown(event) || super.onKeyDown(keyCode, event);
     }
 
+    private boolean consumeOverlayOwnedKeySequence(KeyEvent event) {
+        long sequence = overlayKeySequence(event);
+        return overlayOwnedKeySequences.consume(sequence,
+                event.getAction() == KeyEvent.ACTION_UP || event.isCanceled());
+    }
+
+    private boolean dispatchOverlayKeyEvent(KeyEvent event) {
+        boolean handled = overlayMenuView.dispatchKeyEvent(event);
+        if (!handled) return false;
+        long sequence = overlayKeySequence(event);
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+            overlayOwnedKeySequences.retain(sequence);
+        } else if (event.getAction() == KeyEvent.ACTION_UP || event.isCanceled()) {
+            overlayOwnedKeySequences.consume(sequence, true);
+        }
+        return true;
+    }
+
+    private static long overlayKeySequence(KeyEvent event) {
+        return overlayKeySequence(event.getDeviceId(), event.getKeyCode());
+    }
+
+    static long overlayKeySequence(int deviceId, int keyCode) {
+        return ((long) deviceId << 32) ^ (keyCode & 0xffffffffL);
+    }
+
+    static final class OverlayKeySequenceLatch {
+        private final Set<Long> sequences = new HashSet<>();
+
+        void retain(long sequence) {
+            sequences.add(sequence);
+        }
+
+        boolean consume(long sequence, boolean terminalUp) {
+            if (!sequences.contains(sequence)) return false;
+            if (terminalUp) sequences.remove(sequence);
+            return true;
+        }
+    }
+
     @Override
     public void onBackPressed() {
         if (connected && !streamHomeVisible && !isTransitionInputBlocked()) {
@@ -1670,6 +1723,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public boolean handleKeyDown(KeyEvent event) {
+        if (consumeOverlayOwnedKeySequence(event)) return true;
         if (isTransitionInputBlocked()) {
             if (consoleLoadingView != null) {
                 consoleLoadingView.handleControllerKey(event);
@@ -1704,7 +1758,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // If overlay menu is visible, route all key events to it
         if (overlayMenuView != null && overlayMenuView.getVisibility() == View.VISIBLE) {
-            return overlayMenuView.dispatchKeyEvent(event);
+            return dispatchOverlayKeyEvent(event);
         }
 
         // Handle a synthetic back button event that some Android OS versions
@@ -1784,6 +1838,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public boolean handleKeyUp(KeyEvent event) {
+        if (consumeOverlayOwnedKeySequence(event)) return true;
         if (isTransitionInputBlocked()) {
             if (consoleLoadingView != null
                     && consoleLoadingView.handleControllerKey(event)) {
@@ -1824,7 +1879,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // If overlay menu is visible, route all key events to it
         if (overlayMenuView != null && overlayMenuView.getVisibility() == View.VISIBLE) {
-            return overlayMenuView.dispatchKeyEvent(event);
+            return dispatchOverlayKeyEvent(event);
         }
 
         // Handle a synthetic back button event that some Android OS versions
@@ -1885,6 +1940,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private boolean handleKeyMultiple(KeyEvent event) {
+        if (consumeOverlayOwnedKeySequence(event)) return true;
         // We can receive keys from a software keyboard that don't correspond to any existing
         // KEYCODE value. Android will give those to us as an ACTION_MULTIPLE KeyEvent.
         //
@@ -2733,18 +2789,61 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
-    public void terminateRetainedSession(Runnable completion) {
-        userInitiatedDisconnect = true;
-        backgroundStreamParked = false;
-        SessionResumeManager.clearIfMatches(this, streamSessionId);
-        BackgroundStreamService.resumed(this, streamSessionId);
-        if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
-        stopConnection(() -> quitRetainedApplication(() -> {
-            runOnUiThread(() -> {
+    public void terminateRetainedSession(
+            RetainedStreamSessionCoordinator.TerminationCallback completion) {
+        stopProviderGame(success -> {
+            if (!success) {
+                if (completion != null) completion.complete(false);
+                return;
+            }
+            userInitiatedDisconnect = true;
+            backgroundStreamParked = false;
+            SessionResumeManager.clearIfMatches(this, streamSessionId);
+            BackgroundStreamService.resumed(this, streamSessionId);
+            if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
+            stopConnection(() -> quitRetainedApplication(() -> runOnUiThread(() -> {
                 finish();
-                if (completion != null) completion.run();
-            });
-        }));
+                if (completion != null) completion.complete(true);
+            })));
+        });
+    }
+
+    private interface ProviderStopCallback {
+        void complete(boolean success);
+    }
+
+    private boolean hasProviderGameTransition() {
+        return transitionSpec != null && transitionSpec.playniteGameId != null
+                && !transitionSpec.playniteGameId.isEmpty()
+                && (transitionSpec.type == LaunchTransitionType.GAME
+                || transitionSpec.type == LaunchTransitionType.GAME_CONNECTION);
+    }
+
+    private void stopProviderGame(ProviderStopCallback completion) {
+        if (!hasProviderGameTransition()) {
+            completion.complete(true);
+            return;
+        }
+        String gameId = transitionSpec.playniteGameId;
+        String hostId = transitionSpec.hostId;
+        String activeHost = getIntent().getStringExtra(EXTRA_HOST);
+        new Thread(() -> {
+            boolean success = false;
+            try {
+                PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
+                        Game.this, hostId, activeHost);
+                if (gateway == null) {
+                    LimeLog.warning("Unable to stop provider game: Gateway unavailable");
+                } else {
+                    gateway.stopGame(gameId);
+                    success = true;
+                }
+            } catch (IOException | RuntimeException error) {
+                LimeLog.warning("Unable to stop provider game: " + error.getMessage());
+            }
+            boolean stopped = success;
+            runOnUiThread(() -> completion.complete(stopped));
+        }, "MoonWaker-StopProviderGame").start();
     }
 
     private void quitRetainedApplication(Runnable completion) {
@@ -2852,6 +2951,20 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void closeStreamWithPrivacy(boolean quitApplication) {
+        if (quitApplication && hasProviderGameTransition() && !providerStopConfirmed) {
+            if (providerStopInFlight) return;
+            providerStopInFlight = true;
+            stopProviderGame(success -> {
+                providerStopInFlight = false;
+                if (!success) {
+                    displayMessage(getString(R.string.console_terminate_session_failed));
+                    return;
+                }
+                providerStopConfirmed = true;
+                closeStreamWithPrivacy(true);
+            });
+            return;
+        }
         userInitiatedDisconnect = true;
         if (quitApplication) {
             clearResumedSuspendedSession();
@@ -3270,6 +3383,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                 R.string.playnite_install_attention_overlay, gameName)));
                     }
 
+                    @Override public void onProviderGameStopped() {
+                        runOnUiThread(() -> {
+                            providerStopConfirmed = true;
+                            if (hasProviderGameTransition() && !providerStopInFlight
+                                    && !transitionCancelInFlight
+                                    && !backgroundStreamParked && !userInitiatedDisconnect) {
+                                closeStreamWithPrivacy(true);
+                            }
+                        });
+                    }
+
                     @Override public void onInstallationVerified() {
                         // This Desktop target exists only for the launcher prompt.
                         runOnUiThread(() -> closeStreamWithPrivacy(true));
@@ -3427,6 +3551,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             case LAUNCHER_INTERACTION_REQUIRED:
                 return getString(R.string.transition_launcher_interaction_required);
             case GAME_STOPPING:
+                return getString(R.string.transition_closing_session);
             case PLAYNITE_RETURNING:
                 return getString(R.string.transition_waiting_playnite_return);
             case PLAYNITE_STOPPING:
@@ -3476,6 +3601,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         SessionResumeManager.clearIfMatches(this, streamSessionId);
         BackgroundStreamService.resumed(this, streamSessionId);
         if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
+        stopProviderGame(success -> {
+            if (!success) {
+                LimeLog.warning("Provider game stop was not confirmed after transition cancel");
+            }
+        });
         AtomicBoolean finished = new AtomicBoolean();
         Runnable finishOnce = () -> {
             if (finished.compareAndSet(false, true)) finish();
@@ -3893,6 +4023,52 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             @Override
             public void onDiscordSocialFriends() {
                 discordOverlayController.toggleSocialFriends();
+            }
+
+            @Override public void onDiscordCommunityOpenFriendChat(String friendId) {
+                discordOverlayController.onDiscordCommunityOpenFriendChat(friendId);
+            }
+
+            @Override public void onDiscordCommunityLoadGuild(String guildId) {
+                discordOverlayController.onDiscordCommunityLoadGuild(guildId);
+            }
+
+            @Override public void onDiscordCommunityJoinChannel(String channelId) {
+                discordOverlayController.onDiscordCommunityJoinChannel(channelId);
+            }
+
+            @Override public void onDiscordCommunityChatDraftChanged(String friendId, String draft) {
+                discordOverlayController.onDiscordCommunityChatDraftChanged(friendId, draft);
+            }
+
+            @Override public void onDiscordCommunitySendChat(String friendId, String draft) {
+                discordOverlayController.onDiscordCommunitySendChat(friendId, draft);
+            }
+
+            @Override public void onDiscordCommunityOpenMessageInDiscord(String messageId) {
+                discordOverlayController.onDiscordCommunityOpenMessageInDiscord(messageId);
+            }
+
+            @Override public void onDiscordCommunityBackToFriends() {
+                discordOverlayController.onDiscordCommunityBackToFriends();
+            }
+
+            @Override public void onDiscordCommunityBackToChannels() {
+                discordOverlayController.onDiscordCommunityBackToChannels();
+            }
+
+            @Override public void onDiscordCommunityOpened() {
+                discordOverlayController.onDiscordCommunityOpened();
+            }
+
+            @Override public void onDiscordCommunitySectionChanged(OverlayMenuView.CommunitySection section) {
+                discordOverlayController.onDiscordCommunitySectionChanged(section);
+            }
+
+            @Override public void onDiscordCommunityAuthorizeDirectMessages() {
+                // The controller releases its DM lease before closeMenu(), and begins OAuth
+                // only after this listener receives onMenuClosed().
+                discordOverlayController.authorizeDirectMessages();
             }
 
             @Override

@@ -4,13 +4,19 @@ import android.view.KeyEvent;
 
 import java.util.ArrayList;
 import java.util.Collections;
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
 
 /** Immutable TV keyboard pages plus the small, process-local selection state. */
 final class EmbeddedTvKeyboardModel {
     static final int MAX_DRAFT_LENGTH = 2000;
     static final float GRID_COLUMNS = 10f;
     static final float GRID_ROWS = 4f;
+    private static final Map<String, String> CURATED_ACCENTS = curatedAccents();
 
     enum Page { ALPHA, POLISH, SYMBOLS }
     enum Shift { LOWER, ONE_SHOT, CAPS }
@@ -58,6 +64,20 @@ final class EmbeddedTvKeyboardModel {
         }
     }
 
+    static final class PopupBounds {
+        final int left;
+        final int top;
+        final int right;
+        final int bottom;
+
+        PopupBounds(int left, int top, int right, int bottom) {
+            this.left = left;
+            this.top = top;
+            this.right = right;
+            this.bottom = bottom;
+        }
+    }
+
     static final class Activation {
         final Action action;
         final String text;
@@ -85,6 +105,8 @@ final class EmbeddedTvKeyboardModel {
     Page page() { return page; }
     Shift shift() { return shift; }
     String selectedId() { return selectedId; }
+
+    Key selectedKey() { return selected(); }
 
     List<Key> keys() { return keysFor(page, shift); }
 
@@ -139,6 +161,20 @@ final class EmbeddedTvKeyboardModel {
     void cycleShift() {
         shift = shift == Shift.LOWER ? Shift.ONE_SHOT
                 : shift == Shift.ONE_SHOT ? Shift.CAPS : Shift.LOWER;
+    }
+
+    List<String> accentVariantsForSelected() {
+        Key key = selected();
+        return key == null || key.type != Type.TEXT ? Collections.emptyList()
+                : accentVariants(key.text, shift);
+    }
+
+    Activation activateAccent(String accent) {
+        if (accent == null || !accentVariantsForSelected().contains(accent)) {
+            return new Activation(Action.NONE, "");
+        }
+        if (shift == Shift.ONE_SHOT) shift = Shift.LOWER;
+        return new Activation(Action.TEXT, accent);
     }
 
     void select(String id) {
@@ -234,6 +270,123 @@ final class EmbeddedTvKeyboardModel {
                 Math.round((key.y + 1f) / GRID_ROWS * safeHeight));
     }
 
+    static PopupBounds accentPopupBounds(Bounds keyBounds, int popupWidth, int popupHeight,
+                                         int availableWidth, int availableHeight) {
+        int width = Math.max(1, Math.min(Math.max(1, popupWidth), Math.max(1, availableWidth)));
+        int height = Math.max(1, Math.min(Math.max(1, popupHeight), Math.max(1, availableHeight)));
+        int left = Math.max(0, Math.min(Math.max(0, availableWidth - width),
+                keyBounds.left + (keyBounds.right - keyBounds.left - width) / 2));
+        int above = keyBounds.top - height;
+        int top = above >= 0 ? above : Math.min(Math.max(0, availableHeight - height), keyBounds.bottom);
+        return new PopupBounds(left, top, left + width, top + height);
+    }
+
+    static List<String> accentVariants(String base, Shift shift) {
+        return accentVariants(base, shift, Locale.getDefault().toLanguageTag());
+    }
+
+    /** Curated, locale-prioritized variants; every returned entry is exactly one code point. */
+    static List<String> accentVariants(String base, Shift shift, String languageTag) {
+        String letter = base == null ? "" : base.toLowerCase(Locale.ROOT);
+        String canonical = CURATED_ACCENTS.get(letter);
+        if (canonical == null) return Collections.emptyList();
+        String language = primaryLanguage(languageTag);
+        Set<Integer> ordered = new LinkedHashSet<>();
+        addCodePoints(ordered, localePriority(language, letter));
+        addCodePoints(ordered, canonical);
+        ArrayList<String> result = new ArrayList<>();
+        for (int codePoint : ordered) {
+            result.add(shift == Shift.LOWER ? new String(Character.toChars(codePoint))
+                    : uppercaseCodePoint(codePoint, language));
+        }
+        return Collections.unmodifiableList(result);
+    }
+
+    static String primaryLanguage(String languageTag) {
+        String tag = languageTag == null ? "" : languageTag.trim();
+        int separator = tag.indexOf('-');
+        if (separator < 0) separator = tag.indexOf('_');
+        return (separator < 0 ? tag : tag.substring(0, separator)).toLowerCase(Locale.ROOT);
+    }
+
+    static String uppercaseCodePoint(String value, String languageTag) {
+        if (value == null || value.codePointCount(0, value.length()) != 1) return value == null ? "" : value;
+        return uppercaseCodePoint(value.codePointAt(0), primaryLanguage(languageTag));
+    }
+
+    private static String uppercaseCodePoint(int codePoint, String language) {
+        if (codePoint == 0x00DF) return "ẞ"; // ß must remain one code point, not SS.
+        if (codePoint == 0x0131) return "I"; // dotless i
+        if (codePoint == 'i' && "tr".equals(language)) return "İ";
+        return new String(Character.toChars(Character.toUpperCase(codePoint)));
+    }
+
+    private static Map<String, String> curatedAccents() {
+        LinkedHashMap<String, String> values = new LinkedHashMap<>();
+        values.put("a", "áàâäãåāăąæ");
+        values.put("c", "çćč");
+        values.put("d", "ďð");
+        values.put("e", "éèêëēĕėęě");
+        values.put("g", "ĝğġ");
+        values.put("i", "íìîïīĭįı");
+        values.put("l", "łľĺ");
+        values.put("n", "ñńň");
+        values.put("o", "óòôöõøōŏőœ");
+        values.put("r", "ŕř");
+        values.put("s", "śšşșß");
+        values.put("t", "ťţțþ");
+        values.put("u", "úùûüūŭůűų");
+        values.put("y", "ýÿ");
+        values.put("z", "źżž");
+        return Collections.unmodifiableMap(values);
+    }
+
+    private static void addCodePoints(Set<Integer> destination, String values) {
+        if (values == null) return;
+        for (int index = 0; index < values.length();) {
+            int codePoint = values.codePointAt(index);
+            destination.add(codePoint);
+            index += Character.charCount(codePoint);
+        }
+    }
+
+    private static String localePriority(String language, String base) {
+        switch (language) {
+            case "pl": return priority(base, "a:ą,c:ć,e:ę,l:ł,n:ń,o:ó,s:ś,z:źż");
+            case "de": return priority(base, "a:ä,o:ö,u:ü,s:ß");
+            case "fr": return priority(base, "a:àâä,c:ç,e:éèêë,i:îï,o:ôœ,u:ùûü,y:ÿ");
+            case "es": return priority(base, "a:á,e:é,i:í,n:ñ,o:ó,u:ú");
+            case "pt": return priority(base, "a:áâãà,c:ç,e:éê,i:í,o:óôõ,u:ú");
+            case "it": return priority(base, "a:à,e:èé,i:ìí,o:òó,u:ùú");
+            case "cs": return priority(base, "a:á,c:č,d:ď,e:ěé,i:í,n:ň,o:ó,r:ř,s:š,t:ť,u:ůú,y:ý,z:ž");
+            case "sk": return priority(base, "a:áä,c:č,d:ď,e:é,i:í,l:ľ,n:ň,o:óô,r:ŕ,s:š,t:ť,u:ú,y:ý,z:ž");
+            case "hu": return priority(base, "a:á,e:é,i:í,o:óöő,u:úüű");
+            case "ro": return priority(base, "a:ăâ,i:î,s:ș,t:ț");
+            case "da":
+            case "no": return priority(base, "a:åæ,o:ø");
+            case "sv": return priority(base, "a:åä,o:ö");
+            case "is": return priority(base, "a:áæ,d:ð,e:é,i:í,o:óö,t:þ,u:ú,y:ý");
+            case "nl": return priority(base, "a:áàä,e:éèë,i:ï,o:óö,u:ü");
+            case "tr": return priority(base, "c:ç,g:ğ,i:ı,o:ö,s:ş,u:ü");
+            default: return "";
+        }
+    }
+
+    private static String priority(String base, String entries) {
+        String marker = base + ":";
+        for (String entry : entries.split(",")) {
+            if (entry.startsWith(marker)) return entry.substring(marker.length());
+        }
+        return "";
+    }
+
+    static int moveAccentSelection(int selected, int direction, int count) {
+        if (count <= 0) return -1;
+        if (direction < 0) return Math.max(0, selected - 1);
+        if (direction > 0) return Math.min(count - 1, selected + 1);
+        return Math.max(0, Math.min(count - 1, selected));
+    }
+
     private void setPage(Page next) {
         page = next;
         shift = Shift.LOWER;
@@ -250,7 +403,8 @@ final class EmbeddedTvKeyboardModel {
     }
 
     private String displayText(Key key) {
-        return shift == Shift.LOWER ? key.text : key.text.toUpperCase(java.util.Locale.ROOT);
+        return shift == Shift.LOWER ? key.text : uppercaseCodePoint(key.text,
+                Locale.getDefault().toLanguageTag());
     }
 
     private static boolean isDirectional(int keyCode) {

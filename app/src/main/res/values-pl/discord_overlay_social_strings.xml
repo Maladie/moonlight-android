@@ -10,4 +10,6 @@
     <string name="overlay_discord_social_playing">GRA</string>
     <string name="overlay_discord_social_online">ONLINE</string>
     <string name="overlay_discord_social_no_friends">Brak znajomych online</string>
+    <string name="overlay_discord_unread">Nieprzeczytana wiadomość</string>
+    <string name="overlay_discord_chat_empty">Brak wiadomości</string>
 </resources>

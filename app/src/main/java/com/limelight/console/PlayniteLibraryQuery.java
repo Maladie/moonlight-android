@@ -42,7 +42,7 @@ final class PlayniteLibraryQuery {
                 return byName;
             case LIBRARY:
                 return Comparator.comparing(
-                        (PlayniteDashboardItem item) -> item.game.source,
+                        (PlayniteDashboardItem item) -> item.game.libraryName,
                         String.CASE_INSENSITIVE_ORDER).thenComparing(byName);
             case GENRE:
                 return Comparator.comparing(

@@ -2,11 +2,17 @@ package com.limelight.console;
 
 import org.junit.Test;
 
+import java.lang.reflect.Field;
+import java.lang.reflect.Method;
 import java.util.Arrays;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+
+import com.limelight.discord.DiscordSocialClient;
 
 public class DiscordSocialPanelControllerTest {
     @Test
@@ -169,4 +175,38 @@ public class DiscordSocialPanelControllerTest {
         assertTrue(DiscordCommunityView.shouldResetRecentScroll(DiscordCommunityState.Tab.TOGETHER,
                 DiscordCommunityState.Tab.FRIENDS));
     }
+
+    @Test
+    public void releasedCommunityLifecycleDoesNotDrainOnTheNextWatcherTick() throws Exception {
+        DiscordSocialPanelController controller = new DiscordSocialPanelController(null, null, null, null);
+        DiscordSocialClient.MessageEventLease controllerLease =
+                DiscordSocialClient.tryAcquireMessageEventLease();
+        assertNotNull(controllerLease);
+        Field leaseField = DiscordSocialPanelController.class.getDeclaredField("messageEventLease");
+        leaseField.setAccessible(true);
+        leaseField.set(controller, controllerLease);
+        try {
+            controller.onActivityPaused();
+            assertNull(leaseField.get(controller));
+
+            Method consume = DiscordSocialPanelController.class.getDeclaredMethod(
+                    "consumeDirectMessageEvents", DiscordSocialClient.Snapshot.class);
+            consume.setAccessible(true);
+            assertFalse((Boolean) consume.invoke(controller, DiscordSocialClient.getSnapshot()));
+
+            DiscordSocialClient.MessageEventLease nextOwner =
+                    DiscordSocialClient.tryAcquireMessageEventLease();
+            assertNotNull(nextOwner);
+            DiscordSocialClient.releaseMessageEventLease(nextOwner);
+        } finally {
+            DiscordSocialClient.releaseMessageEventLease(controllerLease);
+        }
+    }
+
+    @Test
+    public void pauseCancelsKeyboardHoldOnlyWhenTheCommunityViewExists() {
+        assertTrue(DiscordSocialPanelController.shouldCancelDirectKeyboardHoldOnPause(true));
+        assertFalse(DiscordSocialPanelController.shouldCancelDirectKeyboardHoldOnPause(false));
+    }
+
 }

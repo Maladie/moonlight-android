@@ -25,6 +25,7 @@
     <string name="discord_social_no_friends_panel">Znajomi pojawią się po nawiązaniu połączenia.</string>
     <string name="discord_dm_send_message">Wyślij wiadomość</string>
     <string name="discord_dm_upgrade">Uaktualnij połączenie Discord, aby wysyłać wiadomości</string>
+    <string name="discord_dm_chat_open_elsewhere">Czat jest otwarty w innym widoku</string>
     <string name="discord_dm_placeholder">Wiadomość</string>
     <string name="discord_dm_send">Wyślij</string>
     <string name="discord_dm_keyboard_microphone">Dyktuj</string>

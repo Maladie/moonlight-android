@@ -188,14 +188,15 @@ final class DiscordDirectMessageState {
         return true;
     }
 
-    void finishSend(long recipientId, long requestId, boolean successful, boolean retryable,
-                    float retryAfterSeconds, String errorType) {
+    boolean finishSend(long recipientId, long requestId, boolean successful, boolean retryable,
+                       float retryAfterSeconds, String errorType) {
         Long active = activeSendRequests.get(recipientId);
-        if (active == null || active != requestId) return;
+        if (active == null || active != requestId) return false;
         activeSendRequests.remove(recipientId);
         sendStates.put(recipientId, new SendState(false, retryable, retryAfterSeconds,
                 successful ? "" : errorType));
         trim();
+        return true;
     }
 
     SendState sendState(long recipientId) {

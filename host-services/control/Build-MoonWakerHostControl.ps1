@@ -44,6 +44,7 @@ $compilerArguments = @(
     "/win32manifest:$(Join-Path $PSScriptRoot 'MoonWakerHostControl.manifest')",
     "/reference:System.dll", "/reference:System.Core.dll", "/reference:System.Drawing.dll",
     "/reference:System.Windows.Forms.dll", "/reference:System.Web.Extensions.dll",
+    "/reference:System.Security.dll",
     (Join-Path $PSScriptRoot "MoonWakerHostControl.cs"))
 & $compiler @compilerArguments
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) { throw "MoonWaker Host Control compilation failed." }
@@ -52,7 +53,7 @@ if ($false) {
 & $compiler /nologo /target:winexe /optimize+ "/out:$output" `
     "/win32manifest:$(Join-Path $PSScriptRoot 'MoonWakerHostControl.manifest')" `
     /reference:System.dll /reference:System.Core.dll /reference:System.Drawing.dll `
-    /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll `
+    /reference:System.Windows.Forms.dll /reference:System.Web.Extensions.dll /reference:System.Security.dll `
     (Join-Path $PSScriptRoot "MoonWakerHostControl.cs")
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) { throw "MoonWaker Host Control compilation failed." }
 Get-Item -LiteralPath $output

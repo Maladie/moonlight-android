@@ -14,7 +14,6 @@ param(
     [switch]$SkipDiscord,
     [switch]$SkipVibepollo,
     [switch]$SkipPlaynite,
-    [switch]$SkipEpicLegendary,
     [switch]$SkipGatewayRegistration,
     [switch]$NonInteractiveConfiguration,
     [switch]$SkipStart
@@ -42,7 +41,7 @@ if (-not $SkipVibepollo) { $activePorts += $VibepolloPort }
 if (-not $SkipPlaynite) { $activePorts += $PlaynitePort }
 $uniqueActivePorts = @($activePorts | Select-Object -Unique)
 if ($uniqueActivePorts.Count -ne $activePorts.Count) {
-    throw "Discord, Vibepollo and Playnite Bridges must use different ports."
+    throw "Discord, Vibepollo and Game Provider Bridges must use different ports."
 }
 if ($ProfileId -ne "default" -and (
     (-not $SkipDiscord -and -not $PSBoundParameters.ContainsKey("DiscordPort")) -or
@@ -189,7 +188,9 @@ function Initialize-VibepolloConfig {
 
 function Remove-LegacyBridgeStartup {
     foreach ($name in @("Wake & Play Discord Bridge ($ProfileId)",
-        "Wake & Play Vibepollo Bridge ($ProfileId)", "Wake & Play Playnite Bridge ($ProfileId)")) {
+        "Wake & Play Vibepollo Bridge ($ProfileId)",
+        "Wake & Play Game Provider Bridge ($ProfileId)",
+        "Wake & Play Playnite Bridge ($ProfileId)")) {
         try { Unregister-ScheduledTask -TaskName $name -Confirm:$false -ErrorAction SilentlyContinue } catch {}
     }
     $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
@@ -333,11 +334,13 @@ $playniteDirectory = $null
 if (-not $SkipPlaynite) {
     Stop-InstalledBridge "playnite" "Stop-PlayniteBridge.ps1"
     $playniteDirectory = Install-BridgeFiles "playnite" @(
-        "PlayniteBridge.py", "GameOperations.py", "OperationJournal.py",
+        "GameProviderBridge.py", "GameOperations.py", "OperationJournal.py",
         "Confirm-SteamOperation.ps1", "Invoke-GameLauncher.ps1",
         "config.example.json",
         "Start-PlayniteBridge.ps1", "Stop-PlayniteBridge.ps1",
         "PatchPlayniteConnector.py", "Install-WakePlayConnectorPatch.ps1", "README.md")
+    Remove-Item -LiteralPath (Join-Path $playniteDirectory "PlayniteBridge.py") `
+        -Force -ErrorAction SilentlyContinue
     $playniteConfig = Join-Path $playniteDirectory "config.json"
     if (-not (Test-Path -LiteralPath $playniteConfig)) {
         Copy-Item -LiteralPath (Join-Path $playniteDirectory "config.example.json") `
@@ -346,7 +349,7 @@ if (-not $SkipPlaynite) {
     Set-ConfigPort $playniteConfig "listen_port" $PlaynitePort
     Set-ConfigValue $playniteConfig "vibepollo_bridge" `
         $(if ($SkipVibepollo) { "" } else { "http://127.0.0.1:$VibepolloPort" })
-    Set-ConfigValue $playniteConfig "epic_legendary_enabled" (-not $SkipEpicLegendary)
+    Set-ConfigValue $playniteConfig "epic_legendary_enabled" $true
     if ($null -eq (Get-Content -LiteralPath $playniteConfig -Raw | ConvertFrom-Json).PSObject.Properties["legendary_path"]) {
         Set-ConfigValue $playniteConfig "legendary_path" ""
     }

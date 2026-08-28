@@ -14,7 +14,7 @@ $targetRoot = Join-Path $ProfileRoot "playnite"
 $statePath = Join-Path $ProfileRoot "profile-bridge-state.json"
 $configPath = Join-Path $targetRoot "config.json"
 $runtimeFiles = @(
-    "PlayniteBridge.py",
+    "GameProviderBridge.py",
     "GameOperations.py",
     "OperationJournal.py",
     "Confirm-SteamOperation.ps1",
@@ -62,8 +62,10 @@ foreach ($name in $runtimeFiles) {
         $changed += $name
     }
 }
+$legacyBridgePath = Join-Path $targetRoot "PlayniteBridge.py"
+$removeLegacyBridge = Test-Path -LiteralPath $legacyBridgePath
 
-if ($changed.Count -eq 0 -and -not $ForceRestart) {
+if ($changed.Count -eq 0 -and -not $removeLegacyBridge -and -not $ForceRestart) {
     [pscustomobject]@{
         changed = $false
         restarted = $false
@@ -76,8 +78,8 @@ if ($changed.Count -eq 0 -and -not $ForceRestart) {
 $oldPid = Get-ManagedBridgePid
 $health = Get-BridgeHealth
 if ($oldPid -le 0 -or $null -eq $health -or [int]$health.pid -ne $oldPid -or
-    [string]$health.component -ne "playnite") {
-    throw "The supervisor state does not match the active Playnite Bridge."
+    [string]$health.component -notin @("game-provider", "playnite")) {
+    throw "The supervisor state does not match the active Game Provider Bridge."
 }
 
 if (-not $PSCmdlet.ShouldProcess(
@@ -96,6 +98,9 @@ foreach ($name in $changed) {
         throw "Bridge deployment hash mismatch for $name."
     }
 }
+if ($removeLegacyBridge) {
+    Remove-Item -LiteralPath $legacyBridgePath -Force
+}
 
 Stop-Process -Id $oldPid -Force
 $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
@@ -107,7 +112,7 @@ do {
     $newHealth = Get-BridgeHealth
     if ($newPid -gt 0 -and $newPid -ne $oldPid -and $null -ne $newHealth -and
         [int]$newHealth.pid -eq $newPid -and
-        [string]$newHealth.component -eq "playnite" -and
+        [string]$newHealth.component -eq "game-provider" -and
         [bool]$newHealth.connector_connected) {
         break
     }
@@ -116,7 +121,7 @@ do {
 if ($newPid -le 0 -or $newPid -eq $oldPid -or $null -eq $newHealth -or
     [int]$newHealth.pid -ne $newPid -or
     -not [bool]$newHealth.connector_connected) {
-    throw "The Playnite Bridge did not restart healthy within $TimeoutSeconds seconds."
+    throw "The Game Provider Bridge did not restart healthy within $TimeoutSeconds seconds."
 }
 
 [pscustomobject]@{
@@ -126,4 +131,5 @@ if ($newPid -le 0 -or $newPid -eq $oldPid -or $null -eq $newHealth -or
     pid = $newPid
     connector_connected = [bool]$newHealth.connector_connected
     files = $changed
+    removed_legacy_bridge = $removeLegacyBridge
 }

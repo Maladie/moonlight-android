@@ -26,11 +26,13 @@ import android.widget.TextView;
 import com.limelight.ui.ControllerGlyphs;
 
 import java.util.LinkedHashMap;
+import java.util.Collections;
+import java.util.List;
 import java.util.Map;
 
 /** A non-focusable, controller-driven keyboard; the associated EditText always owns focus. */
-final class EmbeddedTvKeyboardView extends FrameLayout {
-    interface Callback {
+public final class EmbeddedTvKeyboardView extends FrameLayout {
+    public interface Callback {
         void onText(String value);
         void onBackspace();
         void onMoveCursor(int direction);
@@ -45,6 +47,11 @@ final class EmbeddedTvKeyboardView extends FrameLayout {
     private static final int SELECTED = 0xFF18749E;
     private static final int KEYBOARD_HEIGHT_DP = 168;
     private static final int LEGEND_HEIGHT_DP = 22;
+    private static final int ACCENT_POPUP_HEIGHT_DP = 42;
+    private static final int ACCENT_MIN_VARIANT_WIDTH_DP = 42;
+    static final long DIRECTION_REPEAT_INITIAL_DELAY_MS = 400L;
+    static final long DIRECTION_REPEAT_INTERVAL_MS = 180L;
+    static final long ACCENT_HOLD_DELAY_MS = 350L;
     private final EmbeddedTvKeyboardModel model = new EmbeddedTvKeyboardModel();
     private final Callback callback;
     private final String microphoneLabel;
@@ -58,8 +65,28 @@ final class EmbeddedTvKeyboardView extends FrameLayout {
     private final String mediaOpenLegend;
     private final Map<String, TextView> keyViews = new LinkedHashMap<>();
     private LinearLayout controlLegend;
+    private LinearLayout accentPopup;
+    private boolean compactMode;
+    private int heldDirection = KeyEvent.KEYCODE_UNKNOWN;
+    private int accentHoldKey = KeyEvent.KEYCODE_UNKNOWN;
+    private int accentSelection;
+    private List<String> visibleAccentVariants = Collections.emptyList();
+    private final Runnable directionalRepeat = new Runnable() {
+        @Override public void run() {
+            if (heldDirection == KeyEvent.KEYCODE_UNKNOWN) return;
+            moveDirection(heldDirection);
+            postDelayed(this, DIRECTION_REPEAT_INTERVAL_MS);
+        }
+    };
+    private final Runnable accentHold = new Runnable() {
+        @Override public void run() {
+            if (accentHoldKey == KeyEvent.KEYCODE_UNKNOWN) return;
+            accentHoldKey = KeyEvent.KEYCODE_UNKNOWN;
+            showAccentPopup();
+        }
+    };
 
-    EmbeddedTvKeyboardView(Context context, Callback callback, String microphoneLabel,
+    public EmbeddedTvKeyboardView(Context context, Callback callback, String microphoneLabel,
                            String spaceLabel, String sendLabel, String shiftLegend,
                            String backspaceLegend, String cursorLegend, String sendLegend,
                            String historyScrollLegend, String mediaOpenLegend) {
@@ -89,9 +116,31 @@ final class EmbeddedTvKeyboardView extends FrameLayout {
         rebuild();
     }
 
-    boolean handleNavigationKey(KeyEvent event) {
+    /** Compact overlay chat keeps every key at its normal size and only removes the legend. */
+    public void setCompactMode(boolean compact) {
+        if (compactMode == compact) return;
+        compactMode = compact;
+        rebuild();
+    }
+
+    public boolean handleNavigationKey(KeyEvent event) {
         if (event == null) return false;
         int keyCode = event.getKeyCode();
+        if (isDirectionalKey(keyCode)) return handleDirectionalKey(event);
+        if (handleAccentCancel(event)) return true;
+        if (isAccentAcceptKey(keyCode) && event.getAction() == KeyEvent.ACTION_UP
+                && accentHoldKey == keyCode) {
+            cancelAccentHold();
+            activate();
+            return true;
+        }
+        if (hasAccentPopup()) {
+            if (isAccentAcceptKey(keyCode)) {
+                if (event.getAction() == KeyEvent.ACTION_UP) commitAccent();
+                return true;
+            }
+            if (event.getAction() == KeyEvent.ACTION_DOWN) dismissAccentPopup();
+        }
         if (event.getAction() != KeyEvent.ACTION_DOWN) return isEmbeddedKeyboardHandledKey(keyCode);
         if (isTriangleSpaceKey(keyCode)) {
             if (event.getRepeatCount() == 0) {
@@ -124,17 +173,49 @@ final class EmbeddedTvKeyboardView extends FrameLayout {
             callback.onMoveCursor(1);
             return true;
         }
-        if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
-                || keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
-            if (model.move(keyCode)) refresh();
-            return true;
-        }
         if (keyCode == KeyEvent.KEYCODE_BUTTON_A || keyCode == KeyEvent.KEYCODE_DPAD_CENTER
                 || keyCode == KeyEvent.KEYCODE_ENTER || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER) {
+            if (event.getRepeatCount() != 0) return true;
+            if (isAccentAcceptKey(keyCode) && beginAccentHold(keyCode)) return true;
             activate();
             return true;
         }
         return false;
+    }
+
+    /** Receives the current normalized HAT direction on every MotionEvent, including neutral. */
+    public boolean updateDirectionalHat(int direction) {
+        if (direction == KeyEvent.KEYCODE_UNKNOWN) {
+            boolean consumed = heldDirection != KeyEvent.KEYCODE_UNKNOWN;
+            cancelDirectionalRepeat();
+            return consumed;
+        }
+        if (!isDirectionalKey(direction)) return false;
+        beginDirectionalRepeat(direction);
+        return true;
+    }
+
+    /** Consumes Circle/Back only while an accent choice or pending accent hold is active. */
+    public boolean handleAccentCancel(KeyEvent event) {
+        if (event == null || !isCancelKey(event.getKeyCode())
+                || (!hasAccentPopup() && accentHoldKey == KeyEvent.KEYCODE_UNKNOWN)) return false;
+        if (event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0) {
+            cancelAccentHold();
+            dismissAccentPopup();
+        }
+        return true;
+    }
+
+    /** Cancels held direction and any deferred accent interaction before hide/detach/recipient change. */
+    public void cancelKeyboardHold() {
+        cancelDirectionalRepeat();
+        cancelAccentHold();
+        dismissAccentPopup();
+    }
+
+    @Override protected void onDetachedFromWindow() {
+        cancelKeyboardHold();
+        super.onDetachedFromWindow();
     }
 
     static boolean isTriangleSpaceKey(int keyCode) {
@@ -152,6 +233,15 @@ final class EmbeddedTvKeyboardView extends FrameLayout {
                 || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER;
     }
 
+    static boolean isDirectionalKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                || keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN;
+    }
+
+    static boolean shouldStartDirectionalRepeat(int heldDirection, int nextDirection) {
+        return isDirectionalKey(nextDirection) && heldDirection != nextDirection;
+    }
+
     @Override public boolean onTouchEvent(MotionEvent event) {
         if (event == null) return false;
         if (event.getAction() == MotionEvent.ACTION_UP) {
@@ -164,23 +254,174 @@ final class EmbeddedTvKeyboardView extends FrameLayout {
         return true;
     }
 
+    private boolean handleDirectionalKey(KeyEvent event) {
+        int direction = event.getKeyCode();
+        if (event.getAction() == KeyEvent.ACTION_UP) {
+            if (heldDirection == direction) cancelDirectionalRepeat();
+            return true;
+        }
+        if (event.getAction() != KeyEvent.ACTION_DOWN) return true;
+        if (event.getRepeatCount() == 0) beginDirectionalRepeat(direction);
+        return true;
+    }
+
+    private void beginDirectionalRepeat(int direction) {
+        if (!shouldStartDirectionalRepeat(heldDirection, direction)) return;
+        cancelAccentHold();
+        cancelDirectionalRepeat();
+        heldDirection = direction;
+        moveDirection(direction);
+        postDelayed(directionalRepeat, DIRECTION_REPEAT_INITIAL_DELAY_MS);
+    }
+
+    private void cancelDirectionalRepeat() {
+        heldDirection = KeyEvent.KEYCODE_UNKNOWN;
+        removeCallbacks(directionalRepeat);
+    }
+
+    private void moveDirection(int direction) {
+        if (hasAccentPopup()) {
+            if (direction == KeyEvent.KEYCODE_DPAD_LEFT || direction == KeyEvent.KEYCODE_DPAD_RIGHT) {
+                accentSelection = EmbeddedTvKeyboardModel.moveAccentSelection(accentSelection,
+                        direction == KeyEvent.KEYCODE_DPAD_LEFT ? -1 : 1, visibleAccentVariants.size());
+                refreshAccentPopup();
+            }
+            return;
+        }
+        if (model.move(direction)) refresh();
+    }
+
+    private boolean beginAccentHold(int keyCode) {
+        if (model.accentVariantsForSelected().isEmpty()) return false;
+        cancelDirectionalRepeat();
+        cancelAccentHold();
+        accentHoldKey = keyCode;
+        postDelayed(accentHold, ACCENT_HOLD_DELAY_MS);
+        return true;
+    }
+
+    private void cancelAccentHold() {
+        accentHoldKey = KeyEvent.KEYCODE_UNKNOWN;
+        removeCallbacks(accentHold);
+    }
+
+    private boolean hasAccentPopup() { return accentPopup != null; }
+
+    private void showAccentPopup() {
+        visibleAccentVariants = model.accentVariantsForSelected();
+        if (visibleAccentVariants.isEmpty()) return;
+        accentSelection = 0;
+        accentPopup = new LinearLayout(getContext());
+        accentPopup.setGravity(Gravity.CENTER);
+        accentPopup.setOrientation(LinearLayout.HORIZONTAL);
+        GradientDrawable background = new GradientDrawable();
+        background.setColor(0xFF101A29);
+        background.setCornerRadius(dp(7));
+        background.setStroke(dp(1), 0xFF77E5FF);
+        accentPopup.setBackground(background);
+        for (String accent : visibleAccentVariants) {
+            TextView option = new TextView(getContext());
+            option.setGravity(Gravity.CENTER);
+            option.setTextColor(TEXT);
+            option.setTextSize(16);
+            option.setSingleLine(true);
+            option.setText(accent);
+            option.setFocusable(false);
+            accentPopup.addView(option, new LinearLayout.LayoutParams(0,
+                    ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        }
+        addView(accentPopup, new ViewGroup.LayoutParams(0, 0));
+        refreshAccentPopup();
+        requestLayout();
+    }
+
+    private void dismissAccentPopup() {
+        if (accentPopup != null) removeView(accentPopup);
+        accentPopup = null;
+        visibleAccentVariants = Collections.emptyList();
+        accentSelection = 0;
+        requestLayout();
+    }
+
+    private void commitAccent() {
+        if (accentSelection < 0 || accentSelection >= visibleAccentVariants.size()) {
+            dismissAccentPopup();
+            return;
+        }
+        EmbeddedTvKeyboardModel.Activation activation = model.activateAccent(
+                visibleAccentVariants.get(accentSelection));
+        dismissAccentPopup();
+        if (activation.action == EmbeddedTvKeyboardModel.Action.TEXT) callback.onText(activation.text);
+        rebuild();
+    }
+
+    private void refreshAccentPopup() {
+        if (accentPopup == null) return;
+        for (int index = 0; index < accentPopup.getChildCount(); index++) {
+            View child = accentPopup.getChildAt(index);
+            GradientDrawable background = new GradientDrawable();
+            background.setCornerRadius(dp(5));
+            boolean selected = index == accentSelection;
+            background.setColor(selected ? SELECTED : Color.TRANSPARENT);
+            background.setStroke(selected ? dp(2) : 0, selected ? Color.WHITE : Color.TRANSPARENT);
+            child.setBackground(background);
+        }
+    }
+
+    private void measureAccentPopup(int width, int keyAreaHeight) {
+        if (accentPopup == null) return;
+        int availableWidth = Math.max(1, width - getPaddingLeft() - getPaddingRight());
+        EmbeddedTvKeyboardModel.Key selected = model.selectedKey();
+        if (selected == null) return;
+        EmbeddedTvKeyboardModel.Bounds keyBounds = EmbeddedTvKeyboardModel.bounds(selected,
+                availableWidth, Math.max(1, keyAreaHeight));
+        int popupWidth = Math.min(availableWidth, Math.max(keyBounds.right - keyBounds.left,
+                dp(ACCENT_MIN_VARIANT_WIDTH_DP) * visibleAccentVariants.size()));
+        int popupHeight = Math.min(Math.max(1, keyAreaHeight), dp(ACCENT_POPUP_HEIGHT_DP));
+        accentPopup.measure(MeasureSpec.makeMeasureSpec(popupWidth, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(popupHeight, MeasureSpec.EXACTLY));
+    }
+
+    private void layoutAccentPopup(int availableWidth, int keyAreaHeight) {
+        if (accentPopup == null) return;
+        EmbeddedTvKeyboardModel.Key selected = model.selectedKey();
+        if (selected == null) return;
+        EmbeddedTvKeyboardModel.Bounds keyBounds = EmbeddedTvKeyboardModel.bounds(selected,
+                availableWidth, keyAreaHeight);
+        EmbeddedTvKeyboardModel.PopupBounds popupBounds = EmbeddedTvKeyboardModel.accentPopupBounds(
+                keyBounds, accentPopup.getMeasuredWidth(), accentPopup.getMeasuredHeight(),
+                availableWidth, keyAreaHeight);
+        accentPopup.layout(getPaddingLeft() + popupBounds.left, getPaddingTop() + popupBounds.top,
+                getPaddingLeft() + popupBounds.right, getPaddingTop() + popupBounds.bottom);
+    }
+
+    private static boolean isAccentAcceptKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_BUTTON_A || keyCode == KeyEvent.KEYCODE_DPAD_CENTER;
+    }
+
+    private static boolean isCancelKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_BUTTON_B || keyCode == KeyEvent.KEYCODE_BACK;
+    }
+
     @Override protected void onMeasure(int widthMeasureSpec, int heightMeasureSpec) {
         int width = MeasureSpec.getSize(widthMeasureSpec);
-        int height = dp(KEYBOARD_HEIGHT_DP + LEGEND_HEIGHT_DP) + getPaddingTop() + getPaddingBottom();
+        int legendHeight = compactMode ? 0 : dp(LEGEND_HEIGHT_DP);
+        int height = dp(KEYBOARD_HEIGHT_DP) + legendHeight + getPaddingTop() + getPaddingBottom();
         int heightMode = MeasureSpec.getMode(heightMeasureSpec);
         if (heightMode == MeasureSpec.EXACTLY) height = MeasureSpec.getSize(heightMeasureSpec);
         else if (heightMode == MeasureSpec.AT_MOST) height = Math.min(height, MeasureSpec.getSize(heightMeasureSpec));
         setMeasuredDimension(width, height);
-        int keyAreaHeight = Math.max(1, height - getPaddingTop() - getPaddingBottom() - dp(LEGEND_HEIGHT_DP));
+        int keyAreaHeight = Math.max(1, height - getPaddingTop() - getPaddingBottom() - legendHeight);
         measureKeyViews(width, keyAreaHeight);
         if (controlLegend != null) controlLegend.measure(
                 MeasureSpec.makeMeasureSpec(Math.max(1, width - getPaddingLeft() - getPaddingRight()), MeasureSpec.EXACTLY),
-                MeasureSpec.makeMeasureSpec(dp(LEGEND_HEIGHT_DP), MeasureSpec.EXACTLY));
+                MeasureSpec.makeMeasureSpec(legendHeight, MeasureSpec.EXACTLY));
+        measureAccentPopup(width, keyAreaHeight);
     }
 
     @Override protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
         float availableWidth = Math.max(1, getWidth() - getPaddingLeft() - getPaddingRight());
-        int legendHeight = dp(LEGEND_HEIGHT_DP);
+        int legendHeight = compactMode ? 0 : dp(LEGEND_HEIGHT_DP);
         float availableHeight = Math.max(1, getHeight() - getPaddingTop() - getPaddingBottom() - legendHeight);
         for (EmbeddedTvKeyboardModel.Key key : model.keys()) {
             TextView view = keyViews.get(key.id);
@@ -200,6 +441,7 @@ final class EmbeddedTvKeyboardView extends FrameLayout {
             controlLegend.layout(getPaddingLeft(), legendTop, getWidth() - getPaddingRight(),
                     legendTop + legendHeight);
         }
+        layoutAccentPopup(Math.round(availableWidth), Math.round(availableHeight));
     }
 
     private void activate() {
@@ -245,6 +487,10 @@ final class EmbeddedTvKeyboardView extends FrameLayout {
     }
 
     private void buildLegend() {
+        if (compactMode) {
+            controlLegend = null;
+            return;
+        }
         controlLegend = new LinearLayout(getContext());
         controlLegend.setGravity(Gravity.CENTER_VERTICAL);
         controlLegend.setOrientation(LinearLayout.HORIZONTAL);

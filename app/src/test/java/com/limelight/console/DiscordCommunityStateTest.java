@@ -46,6 +46,24 @@ public class DiscordCommunityStateTest {
     }
 
     @Test
+    public void directMessageUsesTheChatOnlyCommunityPresentation() {
+        assertTrue(DiscordCommunityView.isChatOnlyPresentation(
+                DiscordCommunityState.Detail.DIRECT_MESSAGE));
+        assertFalse(DiscordCommunityView.isChatOnlyPresentation(DiscordCommunityState.Detail.FRIEND));
+        assertFalse(DiscordCommunityView.isChatOnlyPresentation(DiscordCommunityState.Detail.FEED));
+    }
+
+    @Test
+    public void onlyVisibleDirectMessageKeyboardUsesContinuousHatRouting() {
+        assertTrue(DiscordCommunityView.shouldRouteMotionHatToKeyboard(
+                DiscordCommunityState.Detail.DIRECT_MESSAGE, true, true));
+        assertFalse(DiscordCommunityView.shouldRouteMotionHatToKeyboard(
+                DiscordCommunityState.Detail.DIRECT_MESSAGE, false, true));
+        assertFalse(DiscordCommunityView.shouldRouteMotionHatToKeyboard(
+                DiscordCommunityState.Detail.FRIEND, true, true));
+    }
+
+    @Test
     public void sameDirectMessageRecipientPreservesComposerStateAcrossRebinds() {
         assertEquals(true, DiscordCommunityView.shouldPreserveDirectComposer(42, 42));
         assertEquals(false, DiscordCommunityView.shouldPreserveDirectComposer(42, 43));
@@ -193,6 +211,28 @@ public class DiscordCommunityStateTest {
         assertTrue(DiscordCommunityView.shouldDispatchHistoryScroll(Long.MIN_VALUE, 100L));
         assertFalse(DiscordCommunityView.shouldDispatchHistoryScroll(100L, 209L));
         assertTrue(DiscordCommunityView.shouldDispatchHistoryScroll(100L, 210L));
+    }
+
+    @Test
+    public void rightStickAxisUsesBraviaDualSenseZAndRzWhenRxRyAreAbsent() {
+        assertEquals(android.view.MotionEvent.AXIS_RZ,
+                DiscordCommunityView.rightStickVerticalAxis(false, false, true, true));
+    }
+
+    @Test
+    public void rightStickAxisPrefersRxRyWhenBothPairsExist() {
+        assertEquals(android.view.MotionEvent.AXIS_RY,
+                DiscordCommunityView.rightStickVerticalAxis(true, true, true, true));
+    }
+
+    @Test
+    public void mediaNoticeAndGenericFallbackCoverEmptyMessages() {
+        assertTrue(DiscordCommunityView.shouldRenderAdditionalNotice("Sticker", 0));
+        assertTrue(DiscordCommunityView.shouldRenderAdditionalNotice("", 1));
+        assertFalse(DiscordCommunityView.shouldRenderGenericUnsupportedContent("", "Embed", 0, false));
+        assertTrue(DiscordCommunityView.shouldRenderGenericUnsupportedContent("", "", 0, false));
+        assertFalse(DiscordCommunityView.shouldRenderGenericUnsupportedContent("text", "", 0, false));
+        assertFalse(DiscordCommunityView.shouldRenderGenericUnsupportedContent("", "", 0, true));
     }
 
     @Test

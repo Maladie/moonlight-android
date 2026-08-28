@@ -505,7 +505,7 @@ class GatewayStateTest(unittest.TestCase):
         state = GatewayState(self.config_path, None)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
-            requests.append((name, path, body)) is None, {"accepted": True})
+            requests.append((name, path, body, timeout)) is None, {"accepted": True})
 
         status, result = state.playnite_action("game/start", {
             "game_id": "840317C9-B9A4-4F72-BE8E-807414E36A9B",
@@ -515,7 +515,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(("playnite", "/game/start", {
             "game_id": "840317c9-b9a4-4f72-be8e-807414e36a9b",
-        }), requests[0])
+        }, 22.0), requests[0])
         with self.assertRaises(ValueError):
             state.playnite_action("game/start", {"game_id": "../../cmd.exe"})
 
@@ -554,7 +554,7 @@ class GatewayStateTest(unittest.TestCase):
                 self.assertEqual("epic_egl_export_verification_failed", result["error"])
                 self.assertFalse(result["result"]["requires_attention"])
 
-    def test_non_operation_rejection_preserves_proxy_success_contract(self):
+    def test_rejected_start_is_normalized_to_outer_failure(self):
         state = GatewayState(self.config_path, None)
         state.proxy_json = lambda _name, _path, _body, timeout=8.0: (True, {
             "accepted": False, "reason": "playnite_busy"})
@@ -564,8 +564,25 @@ class GatewayStateTest(unittest.TestCase):
         })
 
         self.assertEqual(200, status)
-        self.assertTrue(result["ok"])
+        self.assertFalse(result["ok"])
+        self.assertEqual("playnite_busy", result["error"])
         self.assertEqual("playnite_busy", result["result"]["reason"])
+
+    def test_provider_neutral_actions_accept_strict_record_ids(self):
+        state = GatewayState(self.config_path, None)
+        requests = []
+        state.proxy_json = lambda name, path, body, timeout=8.0: (
+            requests.append((name, path, body)) is None, {"accepted": True})
+
+        for game_id in ("steam:289070", "epic:CelesteApp"):
+            with self.subTest(game_id=game_id):
+                status, result = state.playnite_action(
+                    "game/start", {"game_id": game_id})
+                self.assertEqual(200, status)
+                self.assertTrue(result["ok"])
+
+        self.assertEqual(["steam:289070", "epic:CelesteApp"],
+                         [request[2]["game_id"] for request in requests])
 
     def test_playnite_installation_focus_is_scoped_to_the_requested_game(self):
         state = GatewayState(self.config_path, None)
@@ -618,13 +635,42 @@ class GatewayStateTest(unittest.TestCase):
         state = GatewayState(self.config_path, None)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
-            requests.append((path, body)) is None, {"accepted": True})
+            requests.append((path, body, timeout)) is None, {"accepted": True})
 
         status, result = state.playnite_action("game/stop", {})
 
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
-        self.assertEqual(("/game/stop", {"force": False}), requests[0])
+        self.assertEqual(("/game/stop", {"force": False}, 25.0), requests[0])
+
+    def test_provider_neutral_stop_preserves_exact_game_identity(self):
+        state = GatewayState(self.config_path, None)
+        requests = []
+        state.proxy_json = lambda name, path, body, timeout=8.0: (
+            requests.append((path, body)) is None, {"accepted": True})
+
+        status, result = state.playnite_action("game/stop", {
+            "game_id": "epic:CelesteApp",
+        })
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["ok"])
+        self.assertEqual(("/game/stop", {
+            "force": False, "game_id": "epic:CelesteApp",
+        }), requests[0])
+
+    def test_rejected_stop_is_normalized_to_outer_failure(self):
+        state = GatewayState(self.config_path, None)
+        state.proxy_json = lambda _name, _path, _body, timeout=8.0: (True, {
+            "accepted": False, "reason": "another_game_running"})
+
+        status, result = state.playnite_action("game/stop", {
+            "game_id": "steam:289070",
+        })
+
+        self.assertEqual(200, status)
+        self.assertFalse(result["ok"])
+        self.assertEqual("another_game_running", result["error"])
 
     def test_playnite_focus_is_narrow_and_bodyless(self):
         state = GatewayState(self.config_path, None)

@@ -48,10 +48,11 @@ foreach ($component in @(
                     $verifiedPlaynite = [int]$health.pid -eq [int]$ownerPid -and
                         -not [string]::IsNullOrWhiteSpace([string]$health.version) -and
                         ($null -ne $health.connector_connected -or
-                         [string]$health.component -eq "playnite")
+                         [string]$health.component -in @("game-provider", "playnite"))
                 } catch {}
             }
             if ($commandLine -like "*$ProfileRoot*" -or $commandLine -like "*Bridge*" -or
+                $commandLine -like "*GameProviderBridge.py*" -or
                 $commandLine -like "*PlayniteBridge.py*" -or $verifiedPlaynite) {
                 Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
             }

@@ -10,4 +10,6 @@
     <string name="overlay_discord_social_playing">PLAYING</string>
     <string name="overlay_discord_social_online">ONLINE</string>
     <string name="overlay_discord_social_no_friends">No friends online</string>
+    <string name="overlay_discord_unread">Unread message</string>
+    <string name="overlay_discord_chat_empty">No messages yet</string>
 </resources>

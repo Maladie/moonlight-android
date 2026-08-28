@@ -57,11 +57,16 @@ public class HostGatewayClientTest {
     @Test
     public void playniteContractUsesSdkSecondsAndPreservesMetadata() throws Exception {
         JSONObject library = new JSONObject("{\"revision\":\"42\",\"api_version\":\"1\"," +
-                "\"games\":[{\"id\":\"00000001-0000-0000-0000-000000000000\"," +
+                "\"games\":[{\"id\":\"steam:289070\"," +
                 "\"name\":\"Game\",\"isInstalled\":false,\"isInstalling\":true," +
                 "\"hidden\":false," +
                 "\"playtime\":3600,\"lastActivity\":\"2026-07-20T10:00:00Z\"," +
-                "\"source\":\"Steam\",\"genres\":[\"Action\",\"RPG\"]," +
+                "\"source\":\"Steam\",\"provider\":\"steam\"," +
+                "\"providerGameId\":\"289070\",\"playniteGameId\":" +
+                "\"11223344-5566-7788-99aa-bbccddeeff00\"," +
+                "\"libraryKey\":\"steam\",\"libraryName\":\"Steam\"," +
+                "\"capabilities\":{\"launch\":true,\"install\":false," +
+                "\"uninstall\":true},\"genres\":[\"Action\",\"RPG\"]," +
                 "\"description\":\"Short overview\",\"playCount\":17," +
                 "\"installRequiresAttention\":true," +
                 "\"installAttentionReason\":\"launcher_prompt\"," +
@@ -76,6 +81,11 @@ public class HostGatewayClientTest {
         assertEquals(1, parsed.games.size());
         assertEquals(3600L, parsed.games.get(0).playtimeSeconds);
         assertEquals("Steam", parsed.games.get(0).source);
+        assertEquals("steam", parsed.games.get(0).provider);
+        assertEquals("steam:289070", parsed.games.get(0).id);
+        assertEquals("289070", parsed.games.get(0).providerGameId);
+        assertEquals("steam", parsed.games.get(0).libraryKey);
+        assertFalse(parsed.games.get(0).canInstall);
         assertEquals("Action, RPG", parsed.games.get(0).genres);
         assertEquals("Short overview", parsed.games.get(0).description);
         assertEquals(17, parsed.games.get(0).playCount);
@@ -86,6 +96,32 @@ public class HostGatewayClientTest {
         assertEquals("steam.exe", parsed.games.get(0).installLauncher);
         assertEquals("preparing", parsed.games.get(0).vibepolloState);
         assertEquals("42", parsed.revision);
+    }
+
+    @Test public void epicRecordPreservesExactLegendaryAppName() throws Exception {
+        HostGatewayClient.PlayniteLibrary parsed = HostGatewayClient.parsePlayniteLibrary(
+                new JSONObject("{\"games\":[{\"id\":\"epic:CelesteApp\"," +
+                        "\"name\":\"Celeste\",\"source\":\"Epic\"," +
+                        "\"provider\":\"epic\",\"providerGameId\":\"CelesteApp\"," +
+                        "\"capabilities\":{\"launch\":true,\"install\":true," +
+                        "\"uninstall\":true}}]}"));
+
+        assertEquals("epic:CelesteApp", parsed.games.get(0).id);
+        assertEquals("CelesteApp", parsed.games.get(0).providerGameId);
+        assertTrue(parsed.games.get(0).canLaunch);
+    }
+
+    @Test public void legacyExternalGuidHasNoExecutableCapabilities() throws Exception {
+        HostGatewayClient.PlayniteGame game = HostGatewayClient.parsePlayniteLibrary(
+                new JSONObject("{\"games\":[{\"id\":" +
+                        "\"00000001-0000-0000-0000-000000000000\"," +
+                        "\"name\":\"Old Steam Game\",\"source\":\"Steam\"}]}"))
+                .games.get(0);
+
+        assertEquals("steam", game.provider);
+        assertFalse(game.canLaunch);
+        assertFalse(game.canInstall);
+        assertFalse(game.canUninstall);
     }
 
     @Test public void profileProjectionPreservesPlayniteConnectorState() throws Exception {

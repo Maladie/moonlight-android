@@ -23,6 +23,7 @@
     <string name="discord_community_people">%1$d here</string>
     <string name="discord_community_selected">SELECTED</string>
     <string name="discord_community_open">Open</string>
+    <string name="discord_community_back">Back</string>
     <string name="discord_community_footer">✕ Open   ○ Close</string>
     <string name="discord_community_join">Join</string>
     <string name="discord_community_profile">Profile</string>

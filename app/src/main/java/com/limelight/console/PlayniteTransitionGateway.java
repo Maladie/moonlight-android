@@ -115,9 +115,19 @@ public final class PlayniteTransitionGateway {
                 client.getPlayniteCurrentGame(connection);
         HostGatewayClient.PlayniteReadiness readiness =
                 client.getPlayniteReadiness(connection);
-        return new Snapshot(true, health.connectorConnected, current.state, current.id,
+        boolean connectorReady = health.connectorConnected
+                || current.id.startsWith("steam:") || current.id.startsWith("epic:");
+        return new Snapshot(true, connectorReady, current.state, current.id,
                 current.processId, readiness.ready, readiness.targetKind,
                 readiness.stableSamples, readiness.reason);
+    }
+
+    public void startGame(String gameId) throws IOException {
+        client.startGame(connection, gameId);
+    }
+
+    public void stopGame(String gameId) throws IOException {
+        client.stopGame(connection, gameId);
     }
 
     public Events awaitEvents(long after, String transitionId) throws IOException {

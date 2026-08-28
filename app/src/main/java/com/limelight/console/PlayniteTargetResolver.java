@@ -22,8 +22,28 @@ final class PlayniteTargetResolver {
             return new PlayniteDashboardItem(game, null, "",
                     PlayniteDashboardItem.MappingState.NOT_INSTALLED);
         }
+        if (isDirectProvider(game)) {
+            NvApp desktop = appListAuthoritative ? resolveProviderStream(apps) : null;
+            if (desktop != null) {
+                if (store != null) {
+                    store.setGameTarget(hostUuid, game.playniteGameId, desktop.getAppId());
+                }
+                return new PlayniteDashboardItem(game, desktop.getAppId(), desktop.getAppName(),
+                        PlayniteDashboardItem.MappingState.MAPPED);
+            }
+            Integer saved = store != null ? store.gameTarget(hostUuid, game.playniteGameId) : null;
+            if (saved != null && !appListAuthoritative) {
+                return new PlayniteDashboardItem(game, saved, "Desktop",
+                        PlayniteDashboardItem.MappingState.MAPPED);
+            }
+            if (saved != null && store != null) {
+                store.clearGameTarget(hostUuid, game.playniteGameId);
+            }
+            return new PlayniteDashboardItem(game, null, "",
+                    PlayniteDashboardItem.MappingState.MISSING);
+        }
         if (appListAuthoritative) {
-            NvApp synchronizedApp = findByUuid(apps, game.playniteGameId);
+            NvApp synchronizedApp = findByUuid(apps, streamIdentity(game));
             if (synchronizedApp != null) {
                 if (store != null) {
                     store.setGameTarget(hostUuid, game.playniteGameId,
@@ -49,6 +69,11 @@ final class PlayniteTargetResolver {
                     PlayniteDashboardItem.MappingState.MAPPED);
         }
         if (saved != null && store != null) store.clearGameTarget(hostUuid, game.playniteGameId);
+
+        if (!"playnite".equals(game.provider)) {
+            return new PlayniteDashboardItem(game, null, "",
+                    PlayniteDashboardItem.MappingState.MISSING);
+        }
 
         List<NvApp> exact = exactName(apps, game.name);
         NvApp synchronizedApp = preferredEquivalent(exact);
@@ -110,7 +135,13 @@ final class PlayniteTargetResolver {
     static NvApp launchTarget(PlayniteDashboardItem item, List<NvApp> apps,
                               boolean hostOnline) {
         if (item == null) return null;
-        NvApp current = findByUuid(apps, item.game.playniteGameId);
+        if (isDirectProvider(item.game)) {
+            NvApp desktop = resolveProviderStream(apps);
+            if (desktop != null) return desktop;
+            if (item.sunshineAppId == null || hostOnline) return null;
+            return new NvApp("Desktop", item.sunshineAppId, false);
+        }
+        NvApp current = findByUuid(apps, streamIdentity(item.game));
         if (current != null) return current;
         if (item.sunshineAppId == null) return null;
         current = findById(apps, item.sunshineAppId);
@@ -129,6 +160,14 @@ final class PlayniteTargetResolver {
             if (preferred == null || artScore(app) > artScore(preferred)) preferred = app;
         }
         return preferred;
+    }
+
+    static String streamIdentity(PlayniteLibraryGame game) {
+        return game == null ? "" : game.playniteGameId;
+    }
+
+    static NvApp resolveProviderStream(List<NvApp> apps) {
+        return preferredEquivalent(exactName(apps, "Desktop"));
     }
 
     static NvApp findUniqueExactName(List<NvApp> apps, String name) {
@@ -161,6 +200,10 @@ final class PlayniteTargetResolver {
     private static boolean isPlayniteFullscreen(NvApp app) {
         String name = normalize(app.getAppName());
         return "playnite".equals(name) || "playnite fullscreen".equals(name);
+    }
+
+    private static boolean isDirectProvider(PlayniteLibraryGame game) {
+        return game != null && ("steam".equals(game.provider) || "epic".equals(game.provider));
     }
 
     private static String normalizeUuid(String value) {

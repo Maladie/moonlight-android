@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Loopback HTTP bridge for Playnite's existing Sunshine connector pipe."""
+"""Loopback game-provider bridge for catalog, operations, readiness, and Playnite IPC."""
 
 from __future__ import annotations
 
@@ -30,8 +30,11 @@ from GameOperations import (
 from OperationJournal import ACTIVE_STATES, OperationJournal
 
 
-GAME_ID_PATTERN = re.compile(
+PLAYNITE_ID_PATTERN = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
+GAME_ID_PATTERN = re.compile(
+    r"^(?:steam:[0-9]+|epic:[A-Za-z0-9_-]+|(?:playnite:)?[0-9A-Fa-f]{8}-"
+    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$")
 MAX_BODY_BYTES = 16 * 1024
 MAX_ARTWORK_BYTES = 8 * 1024 * 1024
 REQUIRED_STABLE_SAMPLES = 3
@@ -39,8 +42,8 @@ REQUIRED_GAME_STABLE_SAMPLES = 4
 REQUIRED_LAUNCHER_STABLE_SAMPLES = 4
 LAUNCHER_POSTCONDITION_TIMEOUT = 5.0
 GAME_START_TIMEOUT = 60.0
+GAME_STOP_TIMEOUT = 20.0
 STEAM_PRIMARY_START_TIMEOUT = 30.0
-STEAM_FALLBACK_START_TIMEOUT = 20.0
 STEAM_CANCELLATION_EVIDENCE_TIMEOUT = 20.0
 OPERATION_AUDIT_LOCK = threading.Lock()
 DISPLAY_NAME_PATTERN = re.compile(r"^(?:\\\\\.\\)?DISPLAY[0-9]+$", re.IGNORECASE)
@@ -215,6 +218,38 @@ class WindowProbe:
     def _process_image(self, process_id: int) -> str:
         return os.path.basename(self._process_path(process_id)).casefold()
 
+    def _exact_process_running(self, executable: Path) -> bool:
+        if not self.kernel32:
+            return False
+
+        class ProcessEntry(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD), ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD), ("pcPriClassBase", wintypes.LONG),
+                ("dwFlags", wintypes.DWORD), ("szExeFile", wintypes.WCHAR * 260),
+            ]
+
+        expected = ntpath.normcase(ntpath.normpath(str(executable)))
+        snapshot = self.kernel32.CreateToolhelp32Snapshot(self.TH32CS_SNAPPROCESS, 0)
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+            return False
+        entry = ProcessEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        try:
+            if self.kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                while True:
+                    process_path = self._process_path(int(entry.th32ProcessID))
+                    if str(entry.szExeFile).casefold() == executable.name.casefold() \
+                            and ntpath.normcase(ntpath.normpath(process_path)) == expected:
+                        return True
+                    if not self.kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                        break
+        finally:
+            self.kernel32.CloseHandle(snapshot)
+        return False
+
     def _process_tree(self, root_process_id: int) -> set[int]:
         if not self.kernel32 or root_process_id <= 0:
             return set()
@@ -342,7 +377,7 @@ class WindowProbe:
             self.user32.PostMessageW(hwnd, self.WM_CLOSE, 0, 0)
         return bool(windows)
 
-    def interactive_windows(self) -> list[dict[str, Any]]:
+    def interactive_windows(self, include_excluded_images: bool = False) -> list[dict[str, Any]]:
         """Return visible user-facing top-level windows without interpreting their UI."""
         if not self.user32:
             return []
@@ -371,7 +406,8 @@ class WindowProbe:
             process_id = int(pid.value)
             process_path = self._process_path(process_id)
             image = os.path.basename(process_path).casefold()
-            if not image or image in INSTALLER_EXCLUDED_IMAGES:
+            if not image or image in INSTALLER_EXCLUDED_IMAGES \
+                    and not include_excluded_images:
                 return True
             display, monitor_bounds = self._monitor_details(hwnd)
             result.append({
@@ -585,6 +621,84 @@ class WindowProbe:
             raise FileNotFoundError("Playnite.FullscreenApp.exe was not found for this profile.")
         process = subprocess.Popen([str(executable)], cwd=str(executable.parent))
         return {"started": True, "process_id": process.pid}
+
+    @staticmethod
+    def _steam_window(window: dict[str, Any], root: Path,
+                      expected_display: str) -> bool:
+        image = str(window.get("image") or "").casefold()
+        process_path = str(window.get("process_path") or "")
+        if image not in {"steam.exe", "steamwebhelper.exe"} or not process_path:
+            return False
+        try:
+            normalized_root = ntpath.normcase(ntpath.normpath(str(root)))
+            normalized_process = ntpath.normcase(ntpath.normpath(process_path))
+            inside_root = ntpath.commonpath([normalized_root, normalized_process]) \
+                == normalized_root
+        except ValueError:
+            return False
+        exact_steam = image == "steam.exe" and ntpath.dirname(normalized_process) \
+            == normalized_root
+        if not (exact_steam or image == "steamwebhelper.exe" and inside_root):
+            return False
+        display = str(window.get("display") or "")
+        return not expected_display or display.casefold() == expected_display.casefold()
+
+    def ensure_steam_big_picture(self, provider: SteamProvider,
+                                 expected_display: str,
+                                 timeout: float = 15.0) -> dict[str, Any]:
+        executable = provider.executable()
+        if executable is None or not expected_display:
+            return {"ready": False, "reason": "steam_big_picture_unavailable"}
+
+        def qualifying() -> list[dict[str, Any]]:
+            return [window for window in self.interactive_windows(True)
+                    if self._steam_window(window, executable.parent, expected_display)
+                    and self.fills_monitor(list(window.get("bounds") or []),
+                                           list(window.get("monitor_bounds") or []))]
+
+        stable_signature: tuple[Any, ...] | None = None
+        stable_samples = 0
+        for sample_index in range(REQUIRED_STABLE_SAMPLES):
+            windows = qualifying()
+            signature = (windows[0].get("hwnd"), tuple(windows[0].get("bounds") or [])) \
+                if windows else None
+            stable_samples = stable_samples + 1 if signature == stable_signature \
+                and signature is not None else 1 if signature is not None else 0
+            stable_signature = signature
+            if stable_samples >= REQUIRED_STABLE_SAMPLES:
+                break
+            if sample_index + 1 < REQUIRED_STABLE_SAMPLES:
+                time.sleep(0.1)
+        if stable_samples >= REQUIRED_STABLE_SAMPLES:
+            return {"ready": True, "started": False}
+
+        steam_running = self._exact_process_running(executable) or any(self._steam_window(
+            window, executable.parent, "")
+            for window in self.interactive_windows(True))
+        arguments = [str(executable), "steam://open/bigpicture"] if steam_running \
+            else [str(executable), "-gamepadui"]
+        try:
+            provider.command_runner(
+                arguments, cwd=str(executable.parent), shell=False,
+                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+        except (OSError, subprocess.SubprocessError):
+            return {"ready": False, "reason": "steam_big_picture_start_failed"}
+        deadline = time.monotonic() + max(0.1, timeout)
+        stable_signature = None
+        stable_samples = 0
+        while time.monotonic() < deadline:
+            windows = qualifying()
+            signature = (windows[0].get("hwnd"), tuple(windows[0].get("bounds") or [])) \
+                if windows else None
+            stable_samples = stable_samples + 1 if signature == stable_signature \
+                and signature is not None else 1 if signature is not None else 0
+            stable_signature = signature
+            if stable_samples >= REQUIRED_STABLE_SAMPLES:
+                return {"ready": True, "started": True}
+            time.sleep(0.25)
+        return {"ready": False, "reason": "launcher_interaction_required"}
 
     def _monitor_details(self, hwnd: int) -> tuple[str, list[int]]:
         if not self.user32:
@@ -893,15 +1007,17 @@ class BridgeState:
                  game_operations: GameOperationsService | None = None,
                  clock: Callable[[], float] | None = None,
                  operation_audit: Callable[[str, dict[str, Any]], None] | None = None,
-                 profile_id: str = "") -> None:
+                 profile_id: str = "", stop_timeout: float = GAME_STOP_TIMEOUT) -> None:
         self.lock = threading.RLock()
         self.clock = clock or time.time
         self.operation_audit = operation_audit
         self.profile_id = str(profile_id).strip()
+        self.stop_timeout = max(0.01, float(stop_timeout))
         self.events_changed = threading.Condition(self.lock)
         self.connected = False
         self.last_error = "Playnite connector is not connected."
         self.library: dict[str, dict[str, Any]] = {}
+        self.playnite_library: dict[str, dict[str, Any]] = {}
         self.library_staging: dict[str, dict[str, Any]] = {}
         self.library_revision = ""
         self.snapshot_in_progress = False
@@ -933,6 +1049,16 @@ class BridgeState:
         self.installation_probe_action: Callable[[dict[str, Any]], dict[str, Any]] | None = None
         self.focus_installation_action: Callable[[int], dict[str, Any]] | None = None
         self.external_reconciliation_inflight = False
+        self.catalog_refresh_inflight = False
+        self.catalog_refresh_pending = False
+        self.provider_health: dict[str, dict[str, Any]] = {
+            "steam": {"available": False, "complete": False,
+                      "reason": "steam_catalog_pending"},
+            "epic": {"available": False, "complete": False,
+                     "reason": "legendary_catalog_pending"},
+            "playnite": {"available": False, "complete": False,
+                         "reason": "playnite_connector_unavailable"},
+        }
         # Legendary is authoritative when the Playnite Epic plugin returns the
         # Epic Launcher's stale IsInstalled/IsInstalling pair.
         self.external_installed_overrides: dict[str, str] = {}
@@ -1003,8 +1129,6 @@ class BridgeState:
                 "recovery_started_at": self.clock(),
                 "primary_attempted": False,
                 "primary_started": False,
-                "fallback_dispatched": "dispatch=egl_auto" in str(
-                    operation.get("detail") or ""),
             }
         self.cache_path = cache_path
         self.started_at = int(time.time())
@@ -1079,7 +1203,7 @@ class BridgeState:
             return
         try:
             cached = json.loads(self.cache_path.read_text(encoding="utf-8-sig"))
-            if not isinstance(cached, dict) or cached.get("version") != 1:
+            if not isinstance(cached, dict) or cached.get("version") not in {1, 2}:
                 return
             library: dict[str, dict[str, Any]] = {}
             for game in cached.get("library") or []:
@@ -1090,6 +1214,23 @@ class BridgeState:
                 normalized["id"] = game_id
                 library[game_id] = normalized
             self.library = library
+            playnite_values = cached.get("playnite_library") \
+                if cached.get("version") == 2 else cached.get("library")
+            self.playnite_library = {}
+            for game in playnite_values or []:
+                if not isinstance(game, dict):
+                    continue
+                raw_id = str(game.get("playniteGameId") or game.get("id") or "").strip()
+                if raw_id.startswith("playnite:"):
+                    raw_id = raw_id.split(":", 1)[1]
+                if PLAYNITE_ID_PATTERN.fullmatch(raw_id):
+                    normalized = dict(game)
+                    normalized["id"] = raw_id.lower()
+                    self.playnite_library[raw_id.lower()] = normalized
+            if cached.get("version") == 2 and isinstance(cached.get("providers"), dict):
+                self.provider_health.update({
+                    str(key): dict(value) for key, value in cached["providers"].items()
+                    if str(key) in self.provider_health and isinstance(value, dict)})
             self.categories = [dict(item) for item in (cached.get("categories") or [])
                                if isinstance(item, dict)]
             self.plugins = [dict(item) for item in (cached.get("plugins") or [])
@@ -1099,6 +1240,7 @@ class BridgeState:
             # A broken cache must never prevent the Bridge from starting. It will
             # be replaced after the next complete connector snapshot.
             self.library = {}
+            self.playnite_library = {}
             self.categories = []
             self.plugins = []
 
@@ -1106,10 +1248,12 @@ class BridgeState:
         if self.cache_path is None:
             return
         payload = {
-            "version": 1,
+            "version": 2,
             "saved_at": int(time.time()),
             "revision": self.library_revision,
             "library": list(self.library.values()),
+            "playnite_library": list(self.playnite_library.values()),
+            "providers": dict(self.provider_health),
             "categories": list(self.categories),
             "plugins": list(self.plugins),
         }
@@ -1178,7 +1322,7 @@ class BridgeState:
                         game.get("installed") or game.get("isInstalled"))
                     installed = self.game_operations.installed_from_external_snapshot(
                         game, snapshot)
-                    provider_id = str(game.get("providerGameId") or "").strip().casefold()
+                    provider_id = str(game.get("providerGameId") or "").strip()
                     verification_failed = provider_id in set(
                         snapshot.get("invalid_ids") or [])
                     operation = self.operation_journal.get(game_id) or {}
@@ -1234,10 +1378,84 @@ class BridgeState:
 
     @staticmethod
     def game_id(value: Any) -> str:
-        result = str(value or "").strip().lower()
+        result = str(value or "").strip()
         if not GAME_ID_PATTERN.fullmatch(result):
-            raise ValueError("Invalid Playnite game ID.")
-        return result
+            raise ValueError("Invalid game record ID.")
+        return result if result.startswith("epic:") else result.lower()
+
+    def resolve_game_id(self, value: Any) -> str:
+        normalized = self.game_id(value)
+        with self.lock:
+            if normalized in self.library:
+                return normalized
+        if PLAYNITE_ID_PATTERN.fullmatch(normalized):
+            with self.lock:
+                matches = [game_id for game_id, game in self.library.items()
+                           if str(game.get("playniteGameId") or "").casefold()
+                           == normalized]
+            if len(matches) == 1:
+                return matches[0]
+        return normalized
+
+    def _schedule_catalog_refresh_locked(self) -> None:
+        if self.catalog_refresh_inflight:
+            self.catalog_refresh_pending = True
+            return
+        self.catalog_refresh_inflight = True
+        threading.Thread(target=self._refresh_catalog,
+                         name="ProviderCatalogRefresh", daemon=True).start()
+
+    def _publish_playnite_snapshot_locked(self) -> None:
+        records = {game_id: dict(game) for game_id, game in self.library.items()
+                   if str(game.get("provider") or "") in {"steam", "epic"}}
+        for metadata in self.playnite_library.values():
+            if self.game_operations._playnite_source(metadata).casefold() in {
+                    "steam", "epic"}:
+                continue
+            record = self.game_operations._playnite_record(metadata)
+            if record is not None:
+                records[str(record["id"])] = record
+        self.library = records
+        for game_id, game in self.library.items():
+            self._apply_installation_fields_locked(game_id, game)
+        self._advance_library_revision_locked()
+        self._save_library_cache_locked()
+        self._publish_locked("library-updated", {
+            "count": len(self.library), "revision": self.library_revision})
+
+    def _refresh_catalog(self) -> None:
+        with self.lock:
+            playnite = [dict(game) for game in self.playnite_library.values()]
+            previous = {key: dict(value) for key, value in self.library.items()}
+            connected = self.connected
+        try:
+            aggregated = self.game_operations.aggregate_catalog(playnite, previous)
+        except Exception:
+            aggregated = {"library": previous, "providers": dict(self.provider_health)}
+        with self.lock:
+            try:
+                library = aggregated.get("library") or {}
+                self.library = {str(key): dict(value) for key, value in library.items()
+                                if isinstance(value, dict) and GAME_ID_PATTERN.fullmatch(str(key))}
+                providers = aggregated.get("providers") or {}
+                self.provider_health.update({
+                    str(key): dict(value) for key, value in providers.items()
+                    if str(key) in self.provider_health and isinstance(value, dict)})
+                self.provider_health["playnite"] = {
+                    "available": connected, "complete": True if connected else False,
+                    "reason": "" if connected else "playnite_connector_unavailable",
+                }
+                for game_id, game in self.library.items():
+                    self._apply_installation_fields_locked(game_id, game)
+                self._advance_library_revision_locked()
+                self._save_library_cache_locked()
+                self._publish_locked("library-updated", {
+                    "count": len(self.library), "revision": self.library_revision})
+            finally:
+                self.catalog_refresh_inflight = False
+                if self.catalog_refresh_pending:
+                    self.catalog_refresh_pending = False
+                    self._schedule_catalog_refresh_locked()
 
     def set_transport(self, connected: bool,
                       sender: Callable[[dict[str, Any]], None] | None,
@@ -1247,6 +1465,10 @@ class BridgeState:
             self.connected = connected
             self.command_sender = sender
             self.last_error = error[:500]
+            self.provider_health["playnite"] = {
+                "available": connected, "complete": connected,
+                "reason": "" if connected else "playnite_connector_unavailable",
+            }
             if changed:
                 self._publish_locked("bridge-connected" if connected else "bridge-disconnected", {})
 
@@ -1308,23 +1530,13 @@ class BridgeState:
                     if not isinstance(game, dict):
                         continue
                     try:
-                        game_id = self.game_id(game.get("id"))
+                        game_id = str(game.get("id") or "").strip().lower()
+                        if not PLAYNITE_ID_PATTERN.fullmatch(game_id):
+                            raise ValueError("Invalid Playnite game ID.")
                     except ValueError:
                         continue
                     normalized = dict(game)
                     normalized["id"] = game_id
-                    if game_id in self.external_installed_overrides:
-                        normalized.update({
-                            "installed": True, "isInstalled": True,
-                            "installing": False, "isInstalling": False,
-                            "installDir": self.external_installed_overrides[game_id],
-                        })
-                    elif game_id in self.external_uninstalled_overrides:
-                        normalized.update({
-                            "installed": False, "isInstalled": False,
-                            "installing": False, "isInstalling": False,
-                            "uninstalling": False, "installDir": "",
-                        })
                     by_name = {str(key).casefold(): value for key, value in game.items()}
                     last_played = (by_name.get("lastplayed") or
                                    by_name.get("last_activity") or
@@ -1355,9 +1567,10 @@ class BridgeState:
                     normalized["providerGameId"] = str(
                         by_name.get("providergameid") or
                         by_name.get("provider_game_id") or "").strip()
-                    operation = self.operation_journal.get(game_id)
+                    record_id = game_id
+                    operation = self.operation_journal.get(record_id)
                     if operation and operation.get("state") in ACTIVE_STATES:
-                        session = self.installations.setdefault(game_id, {
+                        session = self.installations.setdefault(record_id, {
                             "baseline": {}, "requested_at": operation["requested_at"],
                             "operation": operation["kind"], "requires_attention": False,
                             "token": self.operation_token(operation),
@@ -1382,72 +1595,81 @@ class BridgeState:
                         normalized["playtimeMinutes"] = 0
                     connector_installing = bool(
                         normalized.get("installing") or normalized.get("isInstalling"))
-                    if connector_installing and game_id not in self.installations:
+                    if connector_installing and record_id not in self.installations:
                         baseline = self.installation_baseline_action() \
                             if self.installation_baseline_action else {}
                         baseline["game"] = normalized
-                        self.installations[game_id] = {
+                        self.installations[record_id] = {
                             "baseline": baseline, "requested_at": time.time(),
                             "requires_attention": False, "stable_samples": 0,
                             "candidate_signature": None,
                         }
-                    self._apply_installation_fields_locked(game_id, normalized)
                     self.library_staging[game_id] = normalized
                 # Older connectors did not bracket snapshots. Preserve their
                 # behavior while keeping the visible cache stable for current
                 # connectors until snapshotComplete arrives.
                 if not self.snapshot_in_progress:
-                    self.library = dict(self.library_staging)
-                    self._advance_library_revision_locked()
-                    self._schedule_external_reconciliation_locked()
-                    self._publish_locked("library-updated", {"count": len(self.library)})
+                    self.playnite_library = dict(self.library_staging)
+                    self._publish_playnite_snapshot_locked()
+                    self._schedule_catalog_refresh_locked()
             elif kind == "snapshotComplete":
-                self.library = dict(self.library_staging)
-                self._advance_library_revision_locked()
+                self.playnite_library = dict(self.library_staging)
                 self.snapshot_in_progress = False
-                self._schedule_external_reconciliation_locked()
-                self._save_library_cache_locked()
-                self._publish_locked("library-updated", {
-                    "count": len(self.library), "revision": self.library_revision})
+                self._publish_playnite_snapshot_locked()
+                self._schedule_catalog_refresh_locked()
             elif kind == "status" and isinstance(message.get("status"), dict):
                 status = dict(message["status"])
                 name = str(status.pop("name", ""))
                 game_id = ""
                 try:
-                    game_id = self.game_id(status.get("id"))
+                    playnite_id = str(status.get("id") or "").strip().lower()
+                    if not PLAYNITE_ID_PATTERN.fullmatch(playnite_id):
+                        raise ValueError("Invalid Playnite game ID.")
+                    matches = [record_id for record_id, game in self.library.items()
+                               if str(game.get("playniteGameId") or "").casefold()
+                               == playnite_id]
+                    game_id = matches[0] if len(matches) == 1 else ""
                 except ValueError:
                     pass
                 if game_id:
                     status["id"] = game_id
-                if name == "gameStarted":
-                    self.current = {"state": "running", **status}
-                    self.readiness = {
-                        "ready": False,
-                        "reason": "waiting_for_game_window",
-                        "target_kind": "game",
-                        "game_id": game_id,
-                        "stable_samples": 0,
-                    }
-                    self._last_window_signature = None
-                    self._publish_locked("game-running", dict(self.current))
+                game = self.library.get(game_id)
+                metadata = self.playnite_library.get(playnite_id)
+                advisory = (game is not None and self.game_operations.provider_for(game)
+                            in {self.game_operations.steam, self.game_operations.epic}) \
+                    or self.game_operations._playnite_source(metadata or {}).casefold() \
+                    in {"steam", "epic"}
+                if name in {"gameStarted", "gameStopped"} and advisory:
+                    self._publish_locked("playnite-status", {"name": name, **status})
+                elif name == "gameStarted":
+                    if str(self.current.get("state") or "").casefold() == "stopping" \
+                            and str(self.current.get("id") or "") == game_id:
+                        self.current.update(status)
+                        self.current["state"] = "stopping"
+                        process_id = int(status.get("processId") or
+                                         status.get("process_id") or 0)
+                        if process_id and not self._request_game_close_locked(process_id):
+                            self.readiness.update({
+                                "ready": False, "reason": "game_stop_close_rejected",
+                                "stable_samples": 0,
+                            })
+                            self._publish_locked("game-stop-rejected", {
+                                "id": game_id, "process_id": process_id,
+                                "reason": "game_stop_close_rejected",
+                            })
+                    else:
+                        self.current = {"state": "running", **status}
+                        self.readiness = {
+                            "ready": False,
+                            "reason": "waiting_for_game_window",
+                            "target_kind": "game",
+                            "game_id": game_id,
+                            "stable_samples": 0,
+                        }
+                        self._last_window_signature = None
+                        self._publish_locked("game-running", dict(self.current))
                 elif name == "gameStopped":
-                    previous = dict(self.current)
-                    self.current = {"state": "idle"}
-                    self._launch_baseline = {}
-                    self._launcher_candidate_signature = None
-                    self._launcher_candidate_samples = 0
-                    self._launcher_automation_attempted = False
-                    self._launcher_interaction_required = False
-                    self._launcher_invoked_signature = None
-                    self._launcher_invoked_at = 0.0
-                    self.readiness = {
-                        "ready": False,
-                        "reason": "waiting_for_playnite_window",
-                        "target_kind": "playnite",
-                        "stable_samples": 0,
-                    }
-                    self._last_window_signature = None
-                    self._publish_locked("game-stopped", previous)
+                    self._complete_game_stop_locked()
                 elif name in {"gameInstalled", "gameInstallationCancelled"}:
                     game = self.library.get(game_id)
                     title = str((game or {}).get("name") or status.get("title") or "")
@@ -1527,49 +1749,6 @@ class BridgeState:
             baseline["steam_baseline"] = provider_baseline
         return baseline
 
-    def _send_steam_playnite(self, game_id: str,
-                             token: tuple[str, str, float],
-                             game: dict[str, Any], operation: str,
-                             command: str, values: dict[str, Any],
-                             trigger: str) -> dict[str, Any]:
-        if command != operation or str(values.get("id") or "") != game_id:
-            raise ValueError("Invalid Steam Playnite fallback command.")
-        with self.lock:
-            if not self._operation_active_locked(game_id, token):
-                return {"accepted": False, "command": command, "stale": True}
-            session = self.installations[game_id]
-            if session.get("fallback_dispatched"):
-                return {"accepted": True, "command": command, "already_dispatched": True}
-            old_baseline = dict(session.get("baseline") or {})
-            baseline = self.installation_baseline_action() \
-                if self.installation_baseline_action else {}
-            baseline.update({
-                "game": dict(game), "operation": operation,
-                "restored": bool(old_baseline.get("restored")),
-            })
-            if "steam_baseline" in old_baseline:
-                baseline["steam_baseline"] = old_baseline["steam_baseline"]
-            session.update({
-                "baseline": baseline,
-                "fallback_dispatched": True,
-                "fallback_dispatched_at": self.clock(),
-                "recovery_pending": False,
-            })
-        try:
-            result = self.send_command(command, **values)
-            self._audit_steam(
-                "steam_playnite_fallback_dispatched", game_id, token, game,
-                trigger=trigger)
-            return result
-        except Exception as error:
-            self._audit_steam(
-                "steam_playnite_fallback_failed", game_id, token, game,
-                trigger=trigger, error=type(error).__name__)
-            self._mark_manual_confirmation(game_id, {
-                "reason": "steam_playnite_dispatch_failed", "launcher": "steam.exe",
-            }, token)
-            return {"accepted": True, "command": command, "playnite_unavailable": True}
-
     def _dispatch_operation(self, game_id: str,
                             token: tuple[str, str, float],
                             game: dict[str, Any], operation: str) -> dict[str, Any]:
@@ -1596,12 +1775,6 @@ class BridgeState:
                 if current is not None:
                     self._apply_installation_fields_locked(game_id, current)
 
-            def steam_sender(command: str, **values: Any) -> dict[str, Any]:
-                return self._send_steam_playnite(
-                    game_id, token, game, operation, command, values,
-                    "direct_unavailable")
-
-            sender = steam_sender
         dispatch = self.game_operations.dispatch_install \
             if operation == "install" else self.game_operations.dispatch_uninstall
         result = dispatch(dict(game), sender, token) \
@@ -1636,6 +1809,19 @@ class BridgeState:
                     session = self.installations[game_id]
                     session["primary_dispatched"] = result.get("dispatch") == "direct"
                     direct_dispatched = bool(session["primary_dispatched"])
+                    if result.get("accepted") is False:
+                        reason = str(result.get("reason") or
+                                     "steam_direct_dispatch_failed")
+                        self.operation_journal.update(
+                            game_id, "failed", detail=reason, launcher="steam.exe")
+                        self.installations.pop(game_id, None)
+                        current = self.library.get(game_id)
+                        if current is not None:
+                            current["installing"] = False
+                            current["uninstalling"] = False
+                            self._apply_installation_fields_locked(game_id, current)
+                            self._save_library_cache_locked()
+                        return result
                     journal = self.operation_journal.get(game_id) or {}
                     if operation == "uninstall" \
                             and journal.get("state") != "attention_required":
@@ -1648,35 +1834,39 @@ class BridgeState:
                     "steam_direct_dispatched", game_id, token, game)
         return result
 
-    def _dispatch_steam_fallback(self, game_id: str,
-                                 token: tuple[str, str, float],
-                                 game: dict[str, Any], operation: str,
-                                 trigger: str) -> dict[str, Any]:
-        with self.lock:
-            if not self._operation_active_locked(game_id, token):
-                return {"accepted": False, "command": operation, "stale": True}
-            baseline = dict(self.installations[game_id].get("baseline") or {})
-        current = self.game_operations.sample(baseline)
-        if current and any(current.get(key) for key in (
-                "installed", "uninstalled", "started")):
-            self.apply_installation_probe(game_id, current, token)
-            return {"accepted": True, "command": operation,
-                    "activity_observed": True}
-
-        def sender(command: str, **values: Any) -> dict[str, Any]:
-            return self._send_steam_playnite(
-                game_id, token, game, operation, command, values, trigger)
-
-        return self.game_operations.dispatch_steam_fallback(
-            dict(game), operation, sender)
-
     def start_game(self, game_id: Any) -> dict[str, Any]:
-        normalized = self.game_id(game_id)
+        normalized = self.resolve_game_id(game_id)
         with self.lock:
             game = self.library.get(normalized)
-            is_epic = game is not None and self.game_operations.provider_for(game) \
-                is self.game_operations.epic
+            if game is None:
+                raise FileNotFoundError("Game record was not found.")
+            current_id = str(self.current.get("id") or "")
+            current_state = str(self.current.get("state") or "").casefold()
+            if current_id and current_state in {"starting", "running", "stopping"}:
+                if current_state == "stopping":
+                    return {
+                        "accepted": False,
+                        "command": "launch",
+                        "reason": "game_stopping",
+                        "active_game_id": current_id,
+                    }
+                if current_id == normalized:
+                    return {
+                        "accepted": True,
+                        "command": "resume",
+                        "provider": str(game.get("provider") or "playnite"),
+                        "already_running": True,
+                    }
+                return {
+                    "accepted": False,
+                    "command": "launch",
+                    "reason": "another_game_running",
+                    "active_game_id": current_id,
+                }
+            provider = self.game_operations.provider_for(game)
             baseline_action = self.installation_baseline_action
+            previous_current = dict(self.current)
+            previous_readiness = dict(self.readiness)
         try:
             launch_baseline = baseline_action() if baseline_action else {}
         except Exception:
@@ -1689,18 +1879,18 @@ class BridgeState:
             self._launcher_interaction_required = False
             self._launcher_invoked_signature = None
             self._launcher_invoked_at = 0.0
-        if is_epic:
+        if provider in {self.game_operations.epic, self.game_operations.steam}:
             task_id = f"{normalized}:launch:{time.time_ns()}"
-            result = self.game_operations.launch(dict(game), task_id)
-            if not result.get("accepted"):
-                return result
             with self.lock:
                 self.current = {
                     "state": "starting", "id": normalized,
                     "title": str(game.get("name") or ""),
-                    "installDir": str(result.get("install_directory") or ""),
-                    "exe": str(result.get("executable") or ""),
-                    "source": "Epic", "providerGameId": str(
+                    "installDir": str(game.get("installDir") or
+                                      game.get("install_dir") or ""),
+                    "exe": str(game.get("exe") or game.get("executable") or ""),
+                    "source": str(game.get("libraryName") or ""),
+                    "provider": str(game.get("provider") or ""),
+                    "providerGameId": str(
                         game.get("providerGameId") or ""),
                     "launchTaskId": task_id,
                     "launchRequestedAt": self.clock(),
@@ -1713,9 +1903,43 @@ class BridgeState:
                     "launch_task_id": task_id,
                     "stable_samples": 0,
                 }
-                self._publish_locked("game-starting", {
-                    "id": normalized, "source": "legendary"})
                 self._last_window_signature = None
+            try:
+                result = self.game_operations.launch(dict(game), task_id)
+            except Exception:
+                with self.lock:
+                    if self.current.get("id") == normalized:
+                        if self.current.get("state") == "stopping":
+                            self._complete_game_stop_locked()
+                        elif self.current.get("state") == "starting":
+                            self.current = previous_current
+                            self.readiness = previous_readiness
+                raise
+            with self.lock:
+                if self.current.get("id") == normalized:
+                    self.current.update({
+                        "installDir": str(result.get("install_directory") or
+                                          self.current.get("installDir") or ""),
+                        "exe": str(result.get("executable") or
+                                   self.current.get("exe") or ""),
+                    })
+                    if not result.get("accepted"):
+                        self.game_operations.finish_process(task_id)
+                        if self.current.get("state") == "stopping":
+                            self._complete_game_stop_locked()
+                        elif self.current.get("state") == "starting":
+                            self.current = previous_current
+                            self.readiness = previous_readiness
+                    elif self.current.get("state") == "starting":
+                        self._publish_locked("game-starting", {
+                            "id": normalized,
+                            "source": str(result.get("dispatch") or "direct"),
+                        })
+                    elif self.current.get("state") == "stopping":
+                        self.game_operations.finish_process(task_id)
+                        self._publish_locked("game-stop-dispatch-completed", {
+                            "id": normalized,
+                        })
             return result
         with self.lock:
             self.current = {
@@ -1739,29 +1963,31 @@ class BridgeState:
             self._publish_locked("game-starting", {"id": normalized})
             self._last_window_signature = None
         try:
-            return self.send_command("launch", id=normalized)
+            return self.game_operations.launch(dict(game), send_command=self.send_command)
         except Exception:
             with self.lock:
-                if self.current.get("state") == "starting" \
-                        and self.current.get("id") == normalized:
-                    self.current = {"state": "idle"}
-                    self.readiness = {
-                        "ready": False,
-                        "reason": "waiting_for_game_identity",
-                        "target_kind": "playnite",
-                        "stable_samples": 0,
-                    }
-                    self._launch_baseline = {}
-                    self._launcher_candidate_signature = None
-                    self._launcher_candidate_samples = 0
-                    self._launcher_automation_attempted = False
-                    self._launcher_interaction_required = False
-                    self._launcher_invoked_signature = None
-                    self._launcher_invoked_at = 0.0
+                if self.current.get("id") == normalized:
+                    if self.current.get("state") == "stopping":
+                        self._complete_game_stop_locked()
+                    elif self.current.get("state") == "starting":
+                        self.current = {"state": "idle"}
+                        self.readiness = {
+                            "ready": False,
+                            "reason": "waiting_for_game_identity",
+                            "target_kind": "playnite",
+                            "stable_samples": 0,
+                        }
+                        self._launch_baseline = {}
+                        self._launcher_candidate_signature = None
+                        self._launcher_candidate_samples = 0
+                        self._launcher_automation_attempted = False
+                        self._launcher_interaction_required = False
+                        self._launcher_invoked_signature = None
+                        self._launcher_invoked_at = 0.0
             raise
 
     def install_game(self, game_id: Any) -> dict[str, Any]:
-        normalized = self.game_id(game_id)
+        normalized = self.resolve_game_id(game_id)
         with self.lock:
             candidate = self.library.get(normalized)
             is_epic = candidate is not None and self.game_operations.provider_for(candidate) \
@@ -1800,7 +2026,7 @@ class BridgeState:
         with self.lock:
             game = self.library.get(normalized)
             if game is None:
-                raise FileNotFoundError("Playnite game was not found.")
+                raise FileNotFoundError("Game record was not found.")
             if bool(game.get("installed") or game.get("isInstalled")):
                 raise ValueError("Playnite game is already installed.")
             if bool(game.get("installing") or game.get("isInstalling")):
@@ -1822,7 +2048,7 @@ class BridgeState:
                 "requires_attention": False, "stable_samples": 0,
                 "candidate_signature": None,
                 "primary_attempted": False, "primary_started": False,
-                "fallback_dispatched": False, "recovery_pending": False,
+                "recovery_pending": False,
             }
             game["installing"] = True
             self.external_uninstalled_overrides.discard(normalized)
@@ -1860,7 +2086,7 @@ class BridgeState:
             raise
 
     def uninstall_game(self, game_id: Any) -> dict[str, Any]:
-        normalized = self.game_id(game_id)
+        normalized = self.resolve_game_id(game_id)
         with self.lock:
             candidate = self.library.get(normalized)
             is_epic = candidate is not None and self.game_operations.provider_for(candidate) \
@@ -1886,7 +2112,7 @@ class BridgeState:
         with self.lock:
             game = self.library.get(normalized)
             if game is None:
-                raise FileNotFoundError("Playnite game was not found.")
+                raise FileNotFoundError("Game record was not found.")
             if not bool(game.get("installed") or game.get("isInstalled")):
                 raise ValueError("Playnite game is not installed.")
             self._require_operation_prompt_idle(normalized)
@@ -1905,7 +2131,7 @@ class BridgeState:
                 "token": token,
                 "stable_samples": 0, "candidate_signature": None,
                 "primary_attempted": False, "primary_started": False,
-                "fallback_dispatched": False, "recovery_pending": False,
+                "recovery_pending": False,
             }
             self._apply_installation_fields_locked(normalized, game)
             self._save_library_cache_locked()
@@ -1991,7 +2217,7 @@ class BridgeState:
                     or str(self.current.get("state") or "").casefold() != "starting":
                 return
             game_id = str(self.current.get("id") or "")
-            reason = str(sample.get("reason") or "legendary_process_failed")
+            reason = str(sample.get("reason") or "provider_launch_failed")
             self.current = {"state": "failed", "id": game_id, "reason": reason}
             self.readiness.update({
                 "ready": False, "reason": reason, "stable_samples": 0,
@@ -2103,7 +2329,6 @@ class BridgeState:
         if token is None:
             return False
         action = ""
-        fallback_trigger = ""
         game_copy: dict[str, Any] = {}
         operation = "install"
         with self.lock:
@@ -2122,9 +2347,8 @@ class BridgeState:
                     session["cancellation_observed_at"] = self.clock()
                     session["cancellation_inactive_samples"] = 0
                 first_activity = not bool(session.get("primary_started"))
-                dispatch_path = "playnite_fallback" \
-                    if session.get("fallback_dispatched") else "direct" \
-                    if session.get("primary_dispatched") else "restart_observation"
+                dispatch_path = "direct" if session.get("primary_dispatched") \
+                    else "restart_observation"
                 was_attention = bool(session.get("requires_attention"))
                 session.update({
                     "primary_started": True, "recovery_pending": False,
@@ -2201,8 +2425,6 @@ class BridgeState:
                     session.update({
                         "recovery_pending": False,
                         "primary_attempted": True,
-                        "fallback_dispatched": True,
-                        "fallback_dispatched_at": self.clock(),
                     })
                 return False
             else:
@@ -2213,18 +2435,12 @@ class BridgeState:
                         action = "primary"
                     elif now - float(session.get("recovery_started_at") or now) >= \
                             STEAM_PRIMARY_START_TIMEOUT:
-                        action = "fallback"
-                        fallback_trigger = "restart_observation_timeout"
+                        action = "attention"
                     else:
                         return True
-                elif not session.get("fallback_dispatched") and \
+                elif \
                         now - float(session.get("primary_dispatched_at") or now) >= \
                         STEAM_PRIMARY_START_TIMEOUT:
-                    action = "fallback"
-                    fallback_trigger = "primary_no_activity_timeout"
-                elif session.get("fallback_dispatched") and \
-                        now - float(session.get("fallback_dispatched_at") or now) >= \
-                        STEAM_FALLBACK_START_TIMEOUT:
                     action = "attention"
                 else:
                     return True
@@ -2240,12 +2456,9 @@ class BridgeState:
                 self._mark_manual_confirmation(game_id, {
                     "reason": "steam_direct_dispatch_failed", "launcher": "steam.exe",
                 }, token)
-        elif action == "fallback":
-            self._dispatch_steam_fallback(
-                game_id, token, game_copy, operation, fallback_trigger)
         elif action == "attention":
             self._mark_manual_confirmation(game_id, {
-                "reason": "steam_fallback_not_started", "launcher": "steam.exe",
+                "reason": "steam_operation_not_started", "launcher": "steam.exe",
             }, token)
         return True
 
@@ -2314,8 +2527,8 @@ class BridgeState:
                     "id": game_id, "name": str(game.get("name") or ""),
                     "source": str(sample.get("provider") or "external"),
                 })
-                sender = None if sampled_provider is self.game_operations.epic \
-                    else self.command_sender
+                sender = self.command_sender \
+                    if sampled_provider is self.game_operations.generic else None
             if sender is not None:
                 with self.lock:
                     current = self.operation_journal.get(game_id)
@@ -2354,8 +2567,8 @@ class BridgeState:
                     "id": game_id, "name": str(game.get("name") or ""),
                     "source": str(sample.get("provider") or "external"),
                 })
-                sender = None if provider is self.game_operations.epic \
-                    else self.command_sender
+                sender = self.command_sender \
+                    if provider is self.game_operations.generic else None
             if sender is not None:
                 with self.lock:
                     current = self.operation_journal.get(game_id)
@@ -2484,7 +2697,7 @@ class BridgeState:
                 })
 
     def focus_installation(self, game_id: Any) -> dict[str, Any]:
-        normalized = self.game_id(game_id)
+        normalized = self.resolve_game_id(game_id)
         with self.lock:
             session = dict(self.installations.get(normalized) or {})
             action = self.focus_installation_action
@@ -2501,7 +2714,7 @@ class BridgeState:
         return {"accepted": True, "command": "focus-installation", **details}
 
     def verify_installation(self, game_id: Any) -> dict[str, Any]:
-        normalized = self.game_id(game_id)
+        normalized = self.resolve_game_id(game_id)
         with self.lock:
             session = self.installations.get(normalized)
             probe = self.installation_probe_action
@@ -2561,23 +2774,88 @@ class BridgeState:
                 "installing": bool(game.get("installing") or game.get("isInstalling")),
             }
 
+    def _complete_game_stop_locked(self) -> None:
+        previous = dict(self.current)
+        task_id = previous.get("launchTaskId")
+        if task_id:
+            self.game_operations.finish_process(task_id)
+        self.current = {"state": "idle"}
+        self.readiness = {
+            "ready": False,
+            "reason": "game_stopped",
+            "target_kind": "none",
+            "stable_samples": 0,
+        }
+        self._launch_baseline = {}
+        self._launcher_candidate_signature = None
+        self._launcher_candidate_samples = 0
+        self._launcher_automation_attempted = False
+        self._launcher_interaction_required = False
+        self._launcher_invoked_signature = None
+        self._launcher_invoked_at = 0.0
+        self._last_window_signature = None
+        self._publish_locked("game-stopped", previous)
+
+    def _request_game_close_locked(self, process_id: int) -> bool:
+        close = self.graceful_close
+        if process_id <= 0 or close is None:
+            return False
+        if int(self.current.get("stopCloseRequestedPid") or 0) == process_id:
+            return True
+        if not close(process_id):
+            return False
+        self.current["stopCloseRequestedPid"] = process_id
+        self._publish_locked("game-stop-close-requested", {
+            "id": str(self.current.get("id") or ""),
+            "process_id": process_id,
+        })
+        return True
+
     def stop_game(self, game_id: Any = "") -> dict[str, Any]:
-        normalized = self.game_id(game_id) if game_id else ""
-        with self.lock:
+        normalized = self.resolve_game_id(game_id) if game_id else ""
+        deadline = time.monotonic() + self.stop_timeout
+        with self.events_changed:
             current_id = str(self.current.get("id", ""))
+            current_state = str(self.current.get("state") or "").casefold()
+            if current_state == "idle":
+                return {"accepted": True, "command": "stop", "force": False,
+                        "already_stopped": True}
             process_id = int(self.current.get("processId") or self.current.get("process_id") or 0)
             if normalized and current_id and normalized != current_id:
-                raise ValueError("Requested game is not the current Playnite game.")
-            if not process_id:
-                raise ValueError("Current game process is not available for graceful stop.")
+                raise ValueError("Requested game is not the current provider game.")
+            if current_state not in {"starting", "running", "stopping"}:
+                return {"accepted": False, "command": "stop", "force": False,
+                        "reason": "game_stop_unavailable"}
+            task_id = self.current.pop("launchTaskId", None)
+            if task_id:
+                self.game_operations.finish_process(task_id)
+            self.current.update({
+                "state": "stopping",
+                "stopRequestedAt": self.clock(),
+            })
             self.readiness.update({
                 "ready": False, "reason": "game_stopping", "stable_samples": 0})
             self._last_window_signature = None
             self._publish_locked("game-stopping", {"id": current_id, "process_id": process_id})
-            close = self.graceful_close
-        if not close or not close(process_id):
-            raise RuntimeError("No game window accepted the graceful close request.")
-        return {"accepted": True, "command": "stop", "force": False}
+            if process_id and not self._request_game_close_locked(process_id):
+                self.readiness["reason"] = "game_stop_close_rejected"
+                return {"accepted": False, "command": "stop", "force": False,
+                        "reason": "game_stop_close_rejected"}
+            while True:
+                if str(self.current.get("state") or "").casefold() == "idle":
+                    return {"accepted": True, "command": "stop", "force": False}
+                if str(self.current.get("id") or "") != current_id:
+                    return {"accepted": False, "command": "stop", "force": False,
+                            "reason": "game_stop_correlation_lost"}
+                if str(self.readiness.get("reason") or "") == \
+                        "game_stop_close_rejected":
+                    return {"accepted": False, "command": "stop", "force": False,
+                            "reason": "game_stop_close_rejected"}
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return {"accepted": False, "command": "stop", "force": False,
+                            "reason": "game_stop_timeout"}
+                self.events_changed.wait(remaining)
 
     def show_fullscreen(self) -> dict[str, Any]:
         with self.lock:
@@ -2623,31 +2901,34 @@ class BridgeState:
             sample_reason = str(sample.get("reason") or "")
             target_kind = str(self.readiness.get("target_kind") or "").casefold()
             current_state = str(self.current.get("state") or "").casefold()
+            observed_game_id = str(sample.get("observed_game_id") or "")
+            if target_kind == "game" and observed_game_id and \
+                    observed_game_id != str(self.current.get("id") or ""):
+                return
             if target_kind == "game" and current_state == "failed":
                 return
             if target_kind == "game" and current_state == "running" and \
                     sample.get("launcher_candidate"):
                 return
+            if target_kind == "game" and current_state == "starting" and \
+                    self._launcher_interaction_required and \
+                    not sample.get("qualified") and \
+                    not sample.get("launcher_candidate") and \
+                    sample_reason in {
+                        "waiting_for_game_identity", "waiting_for_game_window",
+                    }:
+                sample = {
+                    **sample,
+                    "reason": "launcher_interaction_required",
+                    "launcher_detail": str(
+                        self.readiness.get("launcher_detail") or
+                        "provider_interaction_required"),
+                }
+                sample_reason = "launcher_interaction_required"
             if target_kind == "game" and sample_reason == "game_process_exited":
                 game_id = str(self.current.get("id") or "")
-                if current_state == "running":
-                    previous = dict(self.current)
-                    self.current = {"state": "idle"}
-                    self.readiness = {
-                        "ready": False,
-                        "reason": "waiting_for_playnite_window",
-                        "target_kind": "playnite",
-                        "stable_samples": 0,
-                    }
-                    self._launch_baseline = {}
-                    self._launcher_candidate_signature = None
-                    self._launcher_candidate_samples = 0
-                    self._launcher_automation_attempted = False
-                    self._launcher_interaction_required = False
-                    self._launcher_invoked_signature = None
-                    self._launcher_invoked_at = 0.0
-                    self._last_window_signature = None
-                    self._publish_locked("game-stopped", previous)
+                if current_state in {"running", "stopping"}:
+                    self._complete_game_stop_locked()
                 elif current_state == "starting":
                     task_id = self.current.get("launchTaskId")
                     if task_id:
@@ -2661,6 +2942,21 @@ class BridgeState:
                     self._publish_locked("game-launch-failed", {
                         "id": game_id, "reason": reason,
                     })
+                return
+            if target_kind == "game" and current_state == "stopping":
+                process_id = int(sample.get("process_id") or 0)
+                if process_id > 0 and not sample.get("launcher_candidate"):
+                    self.current["processId"] = process_id
+                    if not self._request_game_close_locked(process_id):
+                        self.readiness.update({
+                            "ready": False, "reason": "game_stop_close_rejected",
+                            "stable_samples": 0,
+                        })
+                        self._publish_locked("game-stop-rejected", {
+                            "id": str(self.current.get("id") or ""),
+                            "process_id": process_id,
+                            "reason": "game_stop_close_rejected",
+                        })
                 return
             launcher_signature = None
             if sample.get("launcher_candidate"):
@@ -2824,6 +3120,14 @@ class BridgeState:
             games = sorted(self.library.values(), key=lambda game: str(game.get("name", "")).casefold())
             page = games[offset:offset + limit]
             next_offset = offset + len(page)
+            counts: dict[tuple[str, str, str], int] = {}
+            for game in games:
+                descriptor = (
+                    str(game.get("libraryKey") or "playnite"),
+                    str(game.get("libraryName") or "Playnite"),
+                    str(game.get("provider") or "playnite"),
+                )
+                counts[descriptor] = counts.get(descriptor, 0) + 1
             return {
                 "games": page,
                 "next_cursor": str(next_offset) if next_offset < len(games) else "",
@@ -2831,17 +3135,27 @@ class BridgeState:
                 "revision": self.library_revision,
                 "categories": list(self.categories),
                 "plugins": list(self.plugins),
+                "libraries": [{"key": key, "name": name, "provider": provider,
+                               "gameCount": count}
+                              for (key, name, provider), count in sorted(
+                                  counts.items(), key=lambda item: item[0][1].casefold())],
+                "providers": dict(self.provider_health),
             }
 
     def refresh_library(self) -> dict[str, Any]:
         with self.lock:
             previous_revision = self.library_revision
-        result = self.send_command("snapshot")
+            self._schedule_catalog_refresh_locked()
+        try:
+            result = self.send_command("snapshot")
+        except ConnectionError:
+            result = {"accepted": True, "command": "provider-catalog-refresh",
+                      "playnite_connector": False}
         result["previous_revision"] = previous_revision
         return result
 
     def artwork(self, game_id: Any, kind: str) -> tuple[bytes, str]:
-        normalized = self.game_id(game_id)
+        normalized = self.resolve_game_id(game_id)
         fields = {
             "cover": ("boxArtPath", "cover", "coverImage"),
             "background": ("backgroundImagePath", "background", "backgroundImage"),
@@ -2852,7 +3166,7 @@ class BridgeState:
         with self.lock:
             game = dict(self.library.get(normalized) or {})
         if not game:
-            raise FileNotFoundError("Playnite game was not found.")
+            raise FileNotFoundError("Artwork metadata was not found for this game.")
         value = next((str(game.get(field) or "").strip()
                       for field in fields[kind] if game.get(field)), "")
         if not value and kind == "background":
@@ -2923,7 +3237,7 @@ class WindowReadinessWorker:
                 except Exception:
                     self.state.apply_launch_process_sample({
                         "requires_attention": True,
-                        "reason": "legendary_launch_monitor_failed",
+                        "reason": "provider_launch_monitor_failed",
                     }, launch_task_id)
                     time.sleep(0.25)
                     continue
@@ -2938,18 +3252,22 @@ class WindowReadinessWorker:
                 launch_game) if launch_game else set()
             if target_kind == "game" and not process_id and not install_directory:
                 self.state.apply_window_sample({
-                    "qualified": False, "reason": "waiting_for_game_identity"})
+                    "qualified": False, "reason": "waiting_for_game_identity",
+                    "observed_game_id": str(current.get("id") or ""),
+                })
             else:
-                self.state.apply_window_sample(
-                    self.probe.sample(
-                        target_kind, process_id, expected_display, install_directory,
-                        launch_baseline if launch_in_progress else None,
-                        launch_in_progress and launcher_stable and not launcher_attempted,
-                        launch_in_progress and (
-                            launcher_interaction_required or launcher_postcondition_failed),
-                        expected_executable, expected_title,
-                        expected_launcher_images,
-                        launch_in_progress and launcher_attempted))
+                sample = self.probe.sample(
+                    target_kind, process_id, expected_display, install_directory,
+                    launch_baseline if launch_in_progress else None,
+                    launch_in_progress and launcher_stable and not launcher_attempted,
+                    launch_in_progress and (
+                        launcher_interaction_required or launcher_postcondition_failed),
+                    expected_executable, expected_title,
+                    expected_launcher_images,
+                    launch_in_progress and launcher_attempted)
+                if target_kind == "game":
+                    sample["observed_game_id"] = str(current.get("id") or "")
+                self.state.apply_window_sample(sample)
             for game_id, baseline, token in self.state.installation_probes():
                 probe = self.state.installation_probe_action
                 if probe:
@@ -3138,7 +3456,7 @@ class WindowsPipeClient:
                 self._close(handle)
 
 
-class PlayniteHandler(BaseHTTPRequestHandler):
+class GameProviderHandler(BaseHTTPRequestHandler):
     server_version = "WakePlayPlayniteBridge/0.1"
 
     @property
@@ -3183,10 +3501,12 @@ class PlayniteHandler(BaseHTTPRequestHandler):
                 with self.state.lock:
                     self.send_json(HTTPStatus.OK, {
                         "ok": True,
-                        "component": "playnite",
+                        "component": "game-provider",
+                        "compatibility_component": "playnite",
                         "profile_id": self.state.profile_id,
                         "connector_connected": self.state.connected,
                         "library_count": len(self.state.library),
+                        "providers": dict(self.state.provider_health),
                         "error": self.state.last_error,
                         "pid": os.getpid(),
                         "started_at": self.state.started_at,
@@ -3256,12 +3576,12 @@ class PlayniteHandler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(error)})
 
 
-class PlayniteServer(ThreadingHTTPServer):
+class GameProviderServer(ThreadingHTTPServer):
     daemon_threads = True
     allow_reuse_address = True
 
     def __init__(self, address: tuple[str, int], state: BridgeState) -> None:
-        super().__init__(address, PlayniteHandler)
+        super().__init__(address, GameProviderHandler)
         self.state = state
 
 
@@ -3295,16 +3615,19 @@ def main() -> None:
     config = json.loads(config_path.read_text(encoding="utf-8-sig"))
     listen_host = str(config.get("listen_host", "127.0.0.1"))
     if listen_host not in {"127.0.0.1", "localhost"}:
-        raise ValueError("Playnite Bridge must remain on loopback.")
+        raise ValueError("Game Provider Bridge must remain on loopback.")
     expected_display = str(config.get("streamed_display", "")).strip()
     journal = OperationJournal(config_path.with_name("operations.sqlite3"))
     profile_root = config_path.parent.parent
     install_root = profile_root.parent.parent
     legendary_path = str(config.get("legendary_path", "")).strip()
+    steam_provider = SteamProvider(
+        Path(__file__).with_name("Confirm-SteamOperation.ps1"),
+        api_key_path=config_path.with_name("steam-web-api-key.dpapi"))
     game_operations = GameOperationsService(
         journal,
         GenericPlayniteProvider(),
-        SteamProvider(Path(__file__).with_name("Confirm-SteamOperation.ps1")),
+        steam_provider,
         EpicProvider(
             legendary_path=Path(legendary_path) if legendary_path else install_root / "tools" / "legendary" / "legendary.exe",
             legendary_state_path=profile_root / "state" / "legendary",
@@ -3318,6 +3641,8 @@ def main() -> None:
                             audit_path, event, payload),
                         profile_id=profile_root.name)
     window_probe = WindowProbe(game_operations)
+    steam_provider.big_picture_preflight = lambda provider: \
+        window_probe.ensure_steam_big_picture(provider, state.expected_display)
     ensure_playnite_desktop(str(config.get("playnite_desktop_executable", "")).strip())
     fullscreen_path = str(config.get("playnite_fullscreen_executable", "")).strip()
     display_resolver = StreamDisplayResolver(str(config.get("vibepollo_bridge", "")).strip())
@@ -3328,13 +3653,15 @@ def main() -> None:
         window_probe.installation_baseline,
         window_probe.installation_prompt,
         window_probe.focus_installation_window)
+    with state.lock:
+        state._schedule_catalog_refresh_locked()
     threading.Thread(
         target=WindowReadinessWorker(state, window_probe, display_resolver).run,
         name="PlayniteWindowReadiness", daemon=True).start()
     pipe = WindowsPipeClient(state)
     threading.Thread(target=pipe.run, name="PlaynitePipe", daemon=True).start()
-    server = PlayniteServer((listen_host, int(config.get("listen_port", 8780))), state)
-    print(f"Playnite Bridge listening on http://{listen_host}:{server.server_port}", flush=True)
+    server = GameProviderServer((listen_host, int(config.get("listen_port", 8780))), state)
+    print(f"Game Provider Bridge listening on http://{listen_host}:{server.server_port}", flush=True)
     try:
         server.serve_forever(poll_interval=0.25)
     except KeyboardInterrupt:

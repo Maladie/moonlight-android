@@ -110,6 +110,14 @@ final class HostGatewayClient {
         final String description;
         final int playCount;
         final String source;
+        final String provider;
+        final String providerGameId;
+        final String playniteGameId;
+        final String libraryKey;
+        final String libraryName;
+        final boolean canLaunch;
+        final boolean canInstall;
+        final boolean canUninstall;
         final String genres;
         final String artworkVersion;
         final boolean installRequiresAttention;
@@ -206,6 +214,26 @@ final class HostGatewayClient {
                      String installWindowTitle, String installLauncher,
                      String operationState, int operationProgress, boolean uninstalling,
                      String vibepolloState) {
+            this(id, name, installed, installing, hidden, favorite, cover, background,
+                    lastPlayed, description, playCount, source, genres, artworkVersion,
+                    playtimeSeconds, installRequiresAttention, installAttentionReason,
+                    installWindowTitle, installLauncher, operationState, operationProgress,
+                    uninstalling, vibepolloState, providerFrom(source), "",
+                    isGuid(id) ? id : "", sourceKey(source),
+                    source == null || source.trim().isEmpty() ? "Playnite" : source,
+                    true, true, true);
+        }
+
+        PlayniteGame(String id, String name, boolean installed, boolean installing,
+                     boolean hidden, boolean favorite, String cover, String background,
+                     String lastPlayed, String description, int playCount, String source,
+                     String genres, String artworkVersion, long playtimeSeconds,
+                     boolean installRequiresAttention, String installAttentionReason,
+                     String installWindowTitle, String installLauncher,
+                     String operationState, int operationProgress, boolean uninstalling,
+                     String vibepolloState, String provider, String providerGameId,
+                     String playniteGameId, String libraryKey, String libraryName,
+                     boolean canLaunch, boolean canInstall, boolean canUninstall) {
             this.id = id;
             this.name = name;
             this.installed = installed;
@@ -218,6 +246,14 @@ final class HostGatewayClient {
             this.description = description;
             this.playCount = Math.max(0, playCount);
             this.source = source;
+            this.provider = provider == null ? "" : provider;
+            this.providerGameId = providerGameId == null ? "" : providerGameId;
+            this.playniteGameId = playniteGameId == null ? "" : playniteGameId;
+            this.libraryKey = libraryKey == null ? "" : libraryKey;
+            this.libraryName = libraryName == null ? "" : libraryName;
+            this.canLaunch = canLaunch;
+            this.canInstall = canInstall;
+            this.canUninstall = canUninstall;
             this.genres = genres;
             this.artworkVersion = artworkVersion;
             this.installRequiresAttention = installRequiresAttention;
@@ -230,6 +266,21 @@ final class HostGatewayClient {
             this.vibepolloState = vibepolloState == null ? "" : vibepolloState;
             this.playtimeSeconds = Math.max(0L, playtimeSeconds);
             this.playtimeMinutes = this.playtimeSeconds / 60L;
+        }
+
+        private static boolean isGuid(String value) {
+            return value != null && value.matches(
+                    "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+        }
+
+        private static String providerFrom(String source) {
+            String value = source == null ? "" : source.trim().toLowerCase(Locale.ROOT);
+            return "steam".equals(value) || "epic".equals(value) ? value : "playnite";
+        }
+
+        private static String sourceKey(String source) {
+            String value = source == null ? "" : source.trim().toLowerCase(Locale.ROOT);
+            return value.isEmpty() ? "playnite" : value;
         }
     }
 
@@ -722,7 +773,7 @@ final class HostGatewayClient {
         }
         JSONObject body = new JSONObject();
         try {
-            body.put("playnite_game_id", gameId.toLowerCase(Locale.ROOT));
+            body.put("playnite_game_id", requestGameId(gameId));
             body.put("name", normalizedName);
         } catch (JSONException impossible) {
             throw new IOException(impossible);
@@ -771,7 +822,7 @@ final class HostGatewayClient {
         String safeCursor = cursor == null ? "" : cursor;
         String encoded = URLEncoder.encode(safeCursor, StandardCharsets.UTF_8.name());
         JSONObject response = request(connection,
-                "/api/v1/playnite/library/list?cursor=" + encoded + "&limit=" + limit,
+                "/api/v1/library?cursor=" + encoded + "&limit=" + limit,
                 "GET", null, 12_000);
         return parsePlayniteLibrary(response.optJSONObject("library"));
     }
@@ -790,7 +841,7 @@ final class HostGatewayClient {
 
     byte[] getPlayniteArtwork(GatewayConnection connection, String gameId, String kind)
             throws IOException {
-        if (!isPlayniteId(gameId)) throw new IllegalArgumentException("Invalid Playnite game ID");
+        if (!isPlayniteId(gameId)) throw new IllegalArgumentException("Invalid game record ID");
         if (!"cover".equals(kind) && !"background".equals(kind) && !"icon".equals(kind)) {
             throw new IllegalArgumentException("Invalid Playnite artwork kind");
         }
@@ -850,18 +901,61 @@ final class HostGatewayClient {
         }
     }
 
-    void installPlayniteGame(GatewayConnection connection, String gameId) throws IOException {
+    void startGame(GatewayConnection connection, String gameId) throws IOException {
         if (!isPlayniteId(gameId)) {
-            throw new IllegalArgumentException("Invalid Playnite game ID");
+            throw new IllegalArgumentException("Invalid game record ID");
         }
         JSONObject body = new JSONObject();
         try {
-            body.put("game_id", gameId.toLowerCase(Locale.ROOT));
+            body.put("game_id", requestGameId(gameId));
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
         JSONObject response = request(connection,
-                "/api/v1/playnite/game/install", "POST", body, 15_000);
+                "/api/v1/game/start", "POST", body, 25_000);
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error",
+                    "The game could not be started."), 0);
+        }
+    }
+
+    void stopGame(GatewayConnection connection, String gameId) throws IOException {
+        if (!isPlayniteId(gameId)) {
+            throw new IllegalArgumentException("Invalid game record ID");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("game_id", requestGameId(gameId));
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response;
+        try {
+            response = request(connection,
+                    "/api/v1/game/stop", "POST", body, 30_000);
+        } catch (GatewayException error) {
+            if (error.statusCode != 404) throw error;
+            response = request(connection,
+                    "/api/v1/playnite/game/stop", "POST", body, 30_000);
+        }
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error",
+                    "The game could not be stopped."), 0);
+        }
+    }
+
+    void installPlayniteGame(GatewayConnection connection, String gameId) throws IOException {
+        if (!isPlayniteId(gameId)) {
+            throw new IllegalArgumentException("Invalid game record ID");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("game_id", requestGameId(gameId));
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection,
+                "/api/v1/game/install", "POST", body, 15_000);
         if (!response.optBoolean("ok", false)) {
             throw new GatewayException(response.optString("error",
                     "The game installation could not be started."), 0);
@@ -870,16 +964,16 @@ final class HostGatewayClient {
 
     void uninstallPlayniteGame(GatewayConnection connection, String gameId) throws IOException {
         if (!isPlayniteId(gameId)) {
-            throw new IllegalArgumentException("Invalid Playnite game ID");
+            throw new IllegalArgumentException("Invalid game record ID");
         }
         JSONObject body = new JSONObject();
         try {
-            body.put("game_id", gameId.toLowerCase(Locale.ROOT));
+            body.put("game_id", requestGameId(gameId));
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
         JSONObject response = request(connection,
-                "/api/v1/playnite/game/uninstall", "POST", body, 15_000);
+                "/api/v1/game/uninstall", "POST", body, 15_000);
         if (!response.optBoolean("ok", false)) {
             throw new GatewayException(response.optString("error",
                     "The game could not be uninstalled."), 0);
@@ -892,7 +986,7 @@ final class HostGatewayClient {
         }
         JSONObject body = new JSONObject();
         try {
-            body.put("game_id", gameId.toLowerCase(Locale.ROOT));
+            body.put("game_id", requestGameId(gameId));
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
@@ -910,7 +1004,7 @@ final class HostGatewayClient {
         }
         JSONObject body = new JSONObject();
         try {
-            body.put("game_id", gameId.toLowerCase(Locale.ROOT));
+            body.put("game_id", requestGameId(gameId));
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
@@ -977,6 +1071,15 @@ final class HostGatewayClient {
                 if (!isPlayniteId(id)) continue;
                 String name = value.optString("name", "").trim();
                 if (name.isEmpty()) continue;
+                String normalizedId = requestGameId(id);
+                String source = firstText(value, "source", "sourceName", "source_name");
+                String provider = providerOrLegacy(firstText(value, "provider"), source);
+                String providerGameId = firstText(
+                        value, "providerGameId", "provider_game_id");
+                boolean exactIdentity = hasExactProviderIdentity(
+                        normalizedId, provider, providerGameId);
+                String libraryKey = firstText(value, "libraryKey", "library_key");
+                String libraryName = firstText(value, "libraryName", "library_name");
                 long seconds = value.has("playtimeSeconds")
                         ? value.optLong("playtimeSeconds", 0L)
                         : value.has("playtime_seconds")
@@ -986,7 +1089,7 @@ final class HostGatewayClient {
                         : value.has("playtime_minutes")
                         ? value.optLong("playtime_minutes", 0L) * 60L
                         : value.optLong("playtime", 0L);
-                games.add(new PlayniteGame(id.toLowerCase(Locale.ROOT), name,
+                games.add(new PlayniteGame(normalizedId, name,
                         value.optBoolean("installed", value.optBoolean("isInstalled", false)),
                         value.optBoolean("installing", value.optBoolean("isInstalling", false)),
                         value.optBoolean("hidden", value.optBoolean("isHidden", false)),
@@ -999,7 +1102,7 @@ final class HostGatewayClient {
                         Math.max(0, value.has("playCount")
                                 ? value.optInt("playCount", 0)
                                 : value.optInt("play_count", 0)),
-                        firstText(value, "source", "sourceName", "source_name"),
+                        source,
                         joinedText(value, "genres", "genre"),
                         firstText(value, "artworkVersion", "artwork_version", "artworkHash",
                                 "artwork_hash", "cover"),
@@ -1014,7 +1117,16 @@ final class HostGatewayClient {
                         value.isNull("operationProgress") ? -1
                                 : value.optInt("operationProgress", -1),
                         value.optBoolean("uninstalling", false),
-                        firstText(value, "vibepollo_state", "vibepolloState")));
+                        firstText(value, "vibepollo_state", "vibepolloState"),
+                        provider,
+                        providerGameId,
+                        firstText(value, "playniteGameId", "playnite_game_id"),
+                        libraryKey.isEmpty() ? PlayniteGame.sourceKey(source) : libraryKey,
+                        libraryName.isEmpty() ? PlayniteGame.sourceKey(source).equals("playnite")
+                                ? "Playnite" : source : libraryName,
+                        capability(value, "launch", exactIdentity),
+                        capability(value, "install", exactIdentity),
+                        capability(value, "uninstall", exactIdentity)));
             }
         }
         return new PlayniteLibrary(games, safe.optString("next_cursor", ""),
@@ -1041,6 +1153,11 @@ final class HostGatewayClient {
         return "";
     }
 
+    private static boolean capability(JSONObject value, String name, boolean exactIdentity) {
+        JSONObject capabilities = value.optJSONObject("capabilities");
+        return exactIdentity && (capabilities == null || capabilities.optBoolean(name, false));
+    }
+
     private static String joinedText(JSONObject value, String... keys) {
         for (String key : keys) {
             JSONArray array = value.optJSONArray(key);
@@ -1061,8 +1178,37 @@ final class HostGatewayClient {
     }
 
     static boolean isPlayniteId(String value) {
-        return value != null && value.matches(
-                "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+        return value != null && (value.matches(
+                "(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}")
+                || value.matches("steam:[0-9]+")
+                || value.matches("epic:[A-Za-z0-9_-]+")
+                || value.matches("(?i)playnite:[0-9a-f]{8}-[0-9a-f]{4}-"
+                + "[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}"));
+    }
+
+    static String providerOrLegacy(String provider, String source) {
+        String explicit = provider == null ? "" : provider.trim().toLowerCase(Locale.ROOT);
+        if ("steam".equals(explicit) || "epic".equals(explicit)
+                || "playnite".equals(explicit)) return explicit;
+        String legacy = source == null ? "" : source.trim().toLowerCase(Locale.ROOT);
+        return "steam".equals(legacy) || "epic".equals(legacy) ? legacy : "playnite";
+    }
+
+    static boolean hasExactProviderIdentity(String id, String provider,
+                                            String providerGameId) {
+        String recordId = id == null ? "" : id.trim();
+        String owner = provider == null ? "" : provider.trim().toLowerCase(Locale.ROOT);
+        String providerId = providerGameId == null ? "" : providerGameId.trim();
+        if ("playnite".equals(owner)) {
+            return recordId.matches("(?i)(?:playnite:)?[0-9a-f]{8}-[0-9a-f]{4}-"
+                    + "[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}");
+        }
+        return !providerId.isEmpty() && recordId.equals(owner + ":" + providerId);
+    }
+
+    private static String requestGameId(String value) {
+        String result = value == null ? "" : value.trim();
+        return result.startsWith("epic:") ? result : result.toLowerCase(Locale.ROOT);
     }
 
     DiscordStatus getDiscordStatus(GatewayConnection connection) throws IOException {

@@ -5,6 +5,12 @@ import android.content.res.ColorStateList;
 import android.graphics.Color;
 import android.graphics.drawable.GradientDrawable;
 import android.os.Build;
+import android.text.Editable;
+import android.text.InputFilter;
+import android.text.SpannableStringBuilder;
+import android.text.Spanned;
+import android.text.TextWatcher;
+import android.text.style.ForegroundColorSpan;
 import android.util.AttributeSet;
 import android.util.TypedValue;
 import android.view.Gravity;
@@ -14,6 +20,7 @@ import android.view.MotionEvent;
 import android.view.View;
 import android.widget.HorizontalScrollView;
 import android.widget.FrameLayout;
+import android.widget.EditText;
 import android.widget.ImageButton;
 import android.widget.ImageView;
 import android.widget.LinearLayout;
@@ -22,11 +29,13 @@ import android.widget.TextView;
 
 import com.limelight.R;
 import com.limelight.binding.input.ControllerHandler.ControllerBatteryInfo;
+import com.limelight.console.EmbeddedTvKeyboardView;
 import com.limelight.discord.DiscordSocialClient;
 import com.limelight.console.DiscordCommunityPresentation;
 import com.limelight.ui.ControllerGlyphs;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 public class OverlayMenuView extends LinearLayout {
@@ -36,6 +45,10 @@ public class OverlayMenuView extends LinearLayout {
     private static final int BUTTON_PADDING_DP = 12;
     private static final int COMMUNITY_QUICK_WIDTH_DP = 520;
     private static final int COMMUNITY_QUICK_HEIGHT_DP = 360;
+    private static final int COMMUNITY_CHAT_WIDTH_DP = 600;
+    private static final int COMMUNITY_CHAT_HEIGHT_DP = 460;
+    private static final int COMMUNITY_LIST_SCROLL_DP = 84;
+    private static final int COMMUNITY_HISTORY_SCROLL_DP = 96;
     private static final int COMMUNITY_RAIL_ICON_COUNT = 3;
     private static final float ANALOG_STICK_THRESHOLD = 0.5f;
     private static final long ANALOG_NAV_THROTTLE_MS = 200;
@@ -55,8 +68,149 @@ public class OverlayMenuView extends LinearLayout {
         void onDiscordRejoin();
         void onDiscordDockToggle();
         void onDiscordSocialFriends();
+        default void onDiscordCommunityOpenFriendChat(String friendId) { }
+        default void onDiscordCommunityLoadGuild(String guildId) { }
+        default void onDiscordCommunityJoinChannel(String channelId) { }
+        default void onDiscordCommunityChatDraftChanged(String friendId, String draft) { }
+        default void onDiscordCommunitySendChat(String friendId, String draft) { }
+        default void onDiscordCommunityOpenMessageInDiscord(String messageId) { }
+        default void onDiscordCommunityBackToFriends() { }
+        default void onDiscordCommunityBackToChannels() { }
+        default void onDiscordCommunityOpened() { }
+        default void onDiscordCommunitySectionChanged(CommunitySection section) { }
+        default void onDiscordCommunityAuthorizeDirectMessages() { }
         void onInstallationConfirmed();
         void onMenuClosed();
+    }
+
+    /** Immutable data projection for the stream overlay; network and SDK ownership stay outside. */
+    public static final class CommunityModel {
+        public final long revision;
+        public final CommunityStatus gatewayStatus;
+        public final String gatewayMessage;
+        public final CommunityStatus socialStatus;
+        public final String socialMessage;
+        public final VoiceSummary voice;
+        public final List<CommunityFriend> friends;
+        public final List<CommunityChannel> favorites;
+        public final List<CommunityChannel> recent;
+        public final List<CommunityGuild> guilds;
+        public final List<CommunityChannel> guildChannels;
+        public final String selectedGuildId;
+        public final boolean directMessagesAvailable;
+        public final ChatModel chat;
+
+        public CommunityModel(long revision, CommunityStatus gatewayStatus, String gatewayMessage,
+                              CommunityStatus socialStatus, String socialMessage, VoiceSummary voice,
+                              List<CommunityFriend> friends, List<CommunityChannel> favorites,
+                              List<CommunityChannel> recent, List<CommunityGuild> guilds,
+                              List<CommunityChannel> guildChannels, String selectedGuildId,
+                              boolean directMessagesAvailable, ChatModel chat) {
+            this.revision = revision;
+            this.gatewayStatus = gatewayStatus == null ? CommunityStatus.UNAVAILABLE : gatewayStatus;
+            this.gatewayMessage = clean(gatewayMessage);
+            this.socialStatus = socialStatus == null ? CommunityStatus.UNAVAILABLE : socialStatus;
+            this.socialMessage = clean(socialMessage);
+            this.voice = voice;
+            this.friends = immutable(friends);
+            this.favorites = immutable(favorites);
+            this.recent = immutable(recent);
+            this.guilds = immutable(guilds);
+            this.guildChannels = immutable(guildChannels);
+            this.selectedGuildId = clean(selectedGuildId);
+            this.directMessagesAvailable = directMessagesAvailable;
+            this.chat = chat;
+        }
+    }
+
+    public enum CommunityStatus { LOADING, READY, UNAVAILABLE, ERROR }
+    public enum CommunitySection { TOGETHER, FRIENDS, CHANNELS }
+
+    public static final class VoiceSummary {
+        public final boolean connected, muted, deafened;
+        public final String guildName, channelName;
+        public final List<VoiceParticipant> participants;
+        public VoiceSummary(boolean connected, String guildName, String channelName, boolean muted,
+                            boolean deafened, List<VoiceParticipant> participants) {
+            this.connected = connected; this.guildName = clean(guildName); this.channelName = clean(channelName);
+            this.muted = muted; this.deafened = deafened; this.participants = immutable(participants);
+        }
+    }
+    public static final class VoiceParticipant {
+        public final String id, name, avatarUrl;
+        public final int volume;
+        public final boolean muted, speaking, self;
+        public VoiceParticipant(String id, String name, int volume, boolean muted,
+                                boolean speaking, boolean self) {
+            this(id, name, volume, muted, speaking, self, "");
+        }
+        public VoiceParticipant(String id, String name, int volume, boolean muted,
+                                boolean speaking, boolean self, String avatarUrl) {
+            this.id = clean(id); this.name = clean(name); this.volume = Math.max(0, Math.min(200, volume));
+            this.muted = muted; this.speaking = speaking; this.self = self;
+            this.avatarUrl = clean(avatarUrl);
+        }
+    }
+    public static final class CommunityFriend {
+        public final String id, name, activity, avatarUrl;
+        public final FriendPresence presence;
+        public final boolean unread;
+        public CommunityFriend(String id, String name, String activity, String avatarUrl,
+                               FriendPresence presence) {
+            this(id, name, activity, avatarUrl, presence, false);
+        }
+        public CommunityFriend(String id, String name, String activity, String avatarUrl,
+                               FriendPresence presence, boolean unread) {
+            this.id = clean(id); this.name = clean(name); this.activity = clean(activity);
+            this.avatarUrl = clean(avatarUrl); this.presence = presence == null ? FriendPresence.OFFLINE : presence;
+            this.unread = unread;
+        }
+    }
+    public enum FriendPresence { PLAYING, ONLINE, OFFLINE }
+    public static final class CommunityGuild {
+        public final String id, name;
+        public CommunityGuild(String id, String name) { this.id = clean(id); this.name = clean(name); }
+    }
+    public static final class CommunityChannel {
+        public final String id, guildId, guildName, name;
+        public final int people;
+        public final boolean favorite;
+        public CommunityChannel(String id, String guildId, String guildName, String name,
+                                int people, boolean favorite) {
+            this.id = clean(id); this.guildId = clean(guildId); this.guildName = clean(guildName);
+            this.name = clean(name); this.people = people; this.favorite = favorite;
+        }
+    }
+    public static final class ChatModel {
+        public final String recipientId, recipientName, recipientAvatarUrl, draft, error, retryMessage;
+        public final List<ChatMessage> messages;
+        public final boolean loadingHistory, sending, retryable;
+        public ChatModel(String recipientId, String recipientName, String recipientAvatarUrl,
+                         String draft, List<ChatMessage> messages, boolean loadingHistory,
+                         boolean sending, String error, boolean retryable, String retryMessage) {
+            this.recipientId = clean(recipientId); this.recipientName = clean(recipientName);
+            this.recipientAvatarUrl = clean(recipientAvatarUrl); this.draft = clean(draft);
+            this.messages = immutable(messages); this.loadingHistory = loadingHistory; this.sending = sending;
+            this.error = clean(error); this.retryable = retryable; this.retryMessage = clean(retryMessage);
+        }
+    }
+    public static final class ChatMessage {
+        public final String id, content, additionalContentType, additionalContentTitle;
+        public final int additionalContentCount;
+        public final boolean self, disclosure;
+        public ChatMessage(String id, String content, String additionalContentType,
+                           String additionalContentTitle, int additionalContentCount,
+                           boolean self, boolean disclosure) {
+            this.id = clean(id); this.content = clean(content); this.additionalContentType = clean(additionalContentType);
+            this.additionalContentTitle = clean(additionalContentTitle);
+            this.additionalContentCount = Math.max(0, additionalContentCount);
+            this.self = self; this.disclosure = disclosure;
+        }
+    }
+
+    private static String clean(String value) { return value == null ? "" : value; }
+    private static <T> List<T> immutable(List<T> values) {
+        return Collections.unmodifiableList(new ArrayList<>(values == null ? Collections.<T>emptyList() : values));
     }
 
     private LinearLayout verticalContainer;
@@ -67,12 +221,18 @@ public class OverlayMenuView extends LinearLayout {
     private LinearLayout discordRail;
     private LinearLayout discordQuickMain;
     private LinearLayout discordQuickHeader;
-    private TextView discordQuickFooter;
+    private LinearLayout discordQuickFooter;
     private ScrollView discordContentScroll;
     private LinearLayout discordContentContainer;
     private LinearLayout discordVoiceContentContainer;
     private LinearLayout discordSocialContentContainer;
     private LinearLayout discordActionsContainer;
+    private LinearLayout discordChatContainer;
+    private ScrollView discordChatHistoryScroll;
+    private LinearLayout discordChatHistory;
+    private TextView discordChatStatus;
+    private EditText discordChatComposer;
+    private EmbeddedTvKeyboardView discordChatKeyboard;
     private View menuSpacer;
 
     private List<OverlayMenuButton> verticalButtons;
@@ -84,7 +244,9 @@ public class OverlayMenuView extends LinearLayout {
 
     private enum Region { VERTICAL, HORIZONTAL, DISCORD }
     enum OverlayMode { MENU, COMMUNITY }
-    private enum CommunityFocus { RAIL, CONTENT, ACTION }
+    private enum CommunityFocus { RAIL, LIST, ACTION, CHAT_COMPOSER, CHAT_KEYBOARD }
+    enum CommunitySubmode { ROOT, GUILD_CHANNELS, FRIEND_CHAT }
+    private enum CommunityRowKind { INFO, FRIEND, GUILD, CHANNEL }
     static final int COMMUNITY_REGION_RAIL = 0;
     static final int COMMUNITY_REGION_CONTENT = 1;
     static final int COMMUNITY_REGION_ACTION = 2;
@@ -155,6 +317,35 @@ public class OverlayMenuView extends LinearLayout {
     private int discordQuickSection;
     private int communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
     private long lastCommunityDirectionalKeyAt;
+    private long lastCommunityScrollTime;
+    private CommunityModel communityModel;
+    private CommunitySubmode communitySubmode = CommunitySubmode.ROOT;
+    private CommunitySection communitySection = CommunitySection.TOGETHER;
+    private final List<CommunityRow> communityRows = new ArrayList<>();
+    private int communityListIndex = -1;
+    private String selectedTogetherRowId = "";
+    private String selectedFriendRowId = "";
+    private String selectedChannelsRootRowId = "";
+    private String selectedGuildChannelRowId = "";
+    private String selectedGuildChannelGuildId = "";
+    private String selectedFriendId = "";
+    private String selectedGuildId = "";
+    private String selectedChannelId = "";
+    private String pendingGuildId = "";
+    private String pendingChatFriendId = "";
+    private long communityRenderGeneration;
+    private long communityInteractionGeneration;
+    private long renderedCommunityModelRevision = Long.MIN_VALUE;
+    private CommunitySection renderedCommunitySection;
+    private CommunitySubmode renderedCommunitySubmode;
+    private String renderedCommunityHeaderSignature = "";
+    private String renderedChatRecipientId = "";
+    private String renderedChatLastOutgoingMessageId = "";
+    private String renderedChatStructureSignature = "";
+    private String renderedChatDraft = "";
+    private String renderedChatStatusSignature = "";
+    private boolean communityCancelKeyDown;
+    private boolean updatingChatComposer;
     private boolean installationConfirmationAvailable;
     private boolean playStationButtons;
 
@@ -261,12 +452,13 @@ public class OverlayMenuView extends LinearLayout {
         discordContentScroll = new ScrollView(context);
         discordContentScroll.setFillViewport(true);
         discordContentScroll.setVerticalScrollBarEnabled(false);
-        discordContentScroll.setFocusable(true);
-        discordContentScroll.setFocusableInTouchMode(true);
+        // Content rows own selection. A ScrollView must never become one giant focus target.
+        discordContentScroll.setFocusable(false);
+        discordContentScroll.setFocusableInTouchMode(false);
         discordContentScroll.setOnFocusChangeListener((ignored, focused) -> {
             styleDiscordContentScroll(focused);
             if (focused && overlayMode == OverlayMode.COMMUNITY) {
-                communityFocus = CommunityFocus.CONTENT;
+                communityFocus = CommunityFocus.LIST;
                 activeRegion = Region.DISCORD;
             }
         });
@@ -289,6 +481,21 @@ public class OverlayMenuView extends LinearLayout {
         discordContentContainer.addView(discordSocialContentContainer, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT,
                 LinearLayout.LayoutParams.WRAP_CONTENT));
+        discordChatContainer = new LinearLayout(context);
+        discordChatContainer.setOrientation(LinearLayout.VERTICAL);
+        discordChatContainer.setVisibility(GONE);
+        discordChatHistoryScroll = new ScrollView(context);
+        discordChatHistoryScroll.setFillViewport(true);
+        discordChatHistoryScroll.setVerticalScrollBarEnabled(false);
+        discordChatHistoryScroll.setFocusable(false);
+        discordChatHistory = new LinearLayout(context);
+        discordChatHistory.setOrientation(LinearLayout.VERTICAL);
+        discordChatHistoryScroll.addView(discordChatHistory, new ScrollView.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        discordChatContainer.addView(discordChatHistoryScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        discordQuickMain.addView(discordChatContainer, 2, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
         discordActionsContainer = new LinearLayout(context);
         discordActionsContainer.setOrientation(LinearLayout.VERTICAL);
         LinearLayout.LayoutParams discordActionsParams = new LinearLayout.LayoutParams(
@@ -296,13 +503,12 @@ public class OverlayMenuView extends LinearLayout {
                 LinearLayout.LayoutParams.WRAP_CONTENT);
         discordActionsParams.topMargin = dp(8);
         discordQuickMain.addView(discordActionsContainer, discordActionsParams);
-        discordQuickFooter = new TextView(context);
-        discordQuickFooter.setText(R.string.discord_community_footer);
-        discordQuickFooter.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
-        discordQuickFooter.setTextColor(0xFFAEB3C2);
-        discordQuickFooter.setGravity(Gravity.RIGHT);
+        discordQuickFooter = new LinearLayout(context);
+        discordQuickFooter.setOrientation(LinearLayout.HORIZONTAL);
+        discordQuickFooter.setGravity(Gravity.RIGHT | Gravity.CENTER_VERTICAL);
         discordQuickMain.addView(discordQuickFooter, new LinearLayout.LayoutParams(
                 LinearLayout.LayoutParams.MATCH_PARENT, dp(18)));
+        renderDiscordCommunityFooter();
         LinearLayout.LayoutParams discordParams = new LinearLayout.LayoutParams(
                 dp(COMMUNITY_QUICK_WIDTH_DP), dp(COMMUNITY_QUICK_HEIGHT_DP));
         discordParams.leftMargin = dp(BUTTON_SPACING_DP);
@@ -329,6 +535,7 @@ public class OverlayMenuView extends LinearLayout {
     public void buildMenu() {
         overlayMode = OverlayMode.MENU;
         playStationButtons = ControllerGlyphs.hasPlayStationController();
+        renderDiscordCommunityFooter();
         activeRegion = Region.VERTICAL;
         verticalIndex = 0;
         horizontalIndex = 0;
@@ -488,7 +695,8 @@ public class OverlayMenuView extends LinearLayout {
         discordSocialFriendsButton = null;
         if (!communityVoiceActionsVisible(discordQuickSection, discordConfigured)) return;
 
-        boolean connected = discordVoice != null && discordVoice.connected;
+        DiscordActionVoiceState actionVoice = discordActionVoiceState();
+        boolean connected = actionVoice.connected;
         if (connected) {
             LinearLayout firstRow = new LinearLayout(getContext());
             firstRow.setOrientation(LinearLayout.HORIZONTAL);
@@ -496,7 +704,7 @@ public class OverlayMenuView extends LinearLayout {
                     LinearLayout.LayoutParams.MATCH_PARENT,
                     LinearLayout.LayoutParams.WRAP_CONTENT));
             discordMuteButton = addDiscordButton(firstRow, R.drawable.ic_overlay_microphone,
-                    discordMuteLabel(), ACTION_DISCORD_MUTE, spacing);
+                    discordMuteLabel(actionVoice.muted), ACTION_DISCORD_MUTE, spacing);
             discordLeaveButton = addDiscordButton(firstRow, R.drawable.ic_overlay_close,
                     discordLeaveLabel(), ACTION_DISCORD_LEAVE, 0);
             LinearLayout secondRow = new LinearLayout(getContext());
@@ -524,14 +732,23 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     private void ensureDiscordActions() {
+        DiscordActionVoiceState actionVoice = discordActionVoiceState();
         String signature = discordQuickSection + ":" + discordConfigured + ":"
-                + (discordVoice != null && discordVoice.connected) + ":" + discordCanRejoin;
+                + actionVoice.connected + ":" + actionVoice.muted + ":"
+                + actionVoice.deafened + ":" + discordCanRejoin;
         if (signature.equals(renderedDiscordActionSignature)) return;
         renderedDiscordActionSignature = signature;
         int previous = discordIndex;
+        long interactionGeneration = communityInteractionGeneration;
         buildDiscordActions(dp(BUTTON_SPACING_DP));
         if (communityFocus == CommunityFocus.ACTION && !discordButtons.isEmpty()) {
-            post(() -> setDiscordIndex(Math.min(previous, discordButtons.size() - 1)));
+            post(() -> {
+                if (overlayMode == OverlayMode.COMMUNITY
+                        && interactionGeneration == communityInteractionGeneration
+                        && communityFocus == CommunityFocus.ACTION && !discordButtons.isEmpty()) {
+                    setDiscordIndex(Math.min(previous, discordButtons.size() - 1));
+                }
+            });
         } else if (discordButtons.isEmpty()) {
             communityFocus = CommunityFocus.RAIL;
         }
@@ -548,7 +765,10 @@ public class OverlayMenuView extends LinearLayout {
         discordButtons.add(button);
         discordActions.add(action);
         final int index = discordButtons.size() - 1;
-        button.setOnClickListener(v -> selectAndActivate(Region.DISCORD, index));
+        button.setOnClickListener(v -> {
+            if (overlayMode == OverlayMode.COMMUNITY) communityInteractionGeneration++;
+            selectAndActivate(Region.DISCORD, index);
+        });
         button.setOnFocusChangeListener((v, hasFocus) -> {
             if (hasFocus) {
                 activeRegion = Region.DISCORD;
@@ -570,7 +790,10 @@ public class OverlayMenuView extends LinearLayout {
         icon.setPadding(dp(10), dp(10), dp(10), dp(10));
         icon.setFocusable(true);
         icon.setClickable(true);
-        icon.setOnClickListener(ignored -> selectDiscordQuickSection(section));
+        icon.setOnClickListener(ignored -> {
+            if (overlayMode == OverlayMode.COMMUNITY) communityInteractionGeneration++;
+            selectDiscordQuickSection(section);
+        });
         icon.setOnFocusChangeListener((ignored, focused) -> {
             if (focused) {
                 // Rail navigation changes the section immediately; Center is only an optional
@@ -598,6 +821,11 @@ public class OverlayMenuView extends LinearLayout {
             return;
         }
         discordQuickSection = section;
+        CommunitySection nextSection = section == 1 ? CommunitySection.FRIENDS
+                : section == 2 ? CommunitySection.CHANNELS : CommunitySection.TOGETHER;
+        boolean sectionChanged = communitySection != nextSection;
+        communitySection = nextSection;
+        if (communitySubmode != CommunitySubmode.ROOT) communitySubmode = CommunitySubmode.ROOT;
         for (int index = 0; index < discordRailIcons.size(); index++) {
             styleDiscordRailIcon(discordRailIcons.get(index), index == section,
                     discordRailIcons.get(index).hasFocus());
@@ -607,6 +835,9 @@ public class OverlayMenuView extends LinearLayout {
         renderDiscordCard();
         applyOverlayMode();
         if (discordContentScroll != null) discordContentScroll.scrollTo(0, 0);
+        if (sectionChanged && actionListener != null) {
+            actionListener.onDiscordCommunitySectionChanged(communitySection);
+        }
     }
 
     private void styleDiscordRailIcon(ImageButton icon, boolean selected, boolean focused) {
@@ -629,14 +860,19 @@ public class OverlayMenuView extends LinearLayout {
 
     private void openCommunity() {
         if (!shouldShowDiscordCard(discordConfigured, discordSocialAvailable)) return;
+        if (!communityOpenNotifies(overlayMode)) return;
+        invalidateCommunityProjectionCache();
         overlayMode = OverlayMode.COMMUNITY;
         discordQuickSection = 0;
+        communitySection = CommunitySection.TOGETHER;
+        communitySubmode = CommunitySubmode.ROOT;
         communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
         communityFocus = CommunityFocus.RAIL;
         activeRegion = Region.DISCORD;
         discordIndex = 0;
         applyOverlayMode();
         renderDiscordCard();
+        if (actionListener != null) actionListener.onDiscordCommunityOpened();
         post(() -> {
             if (!discordRailIcons.isEmpty()) discordRailIcons.get(discordQuickSection).requestFocus();
         });
@@ -646,6 +882,9 @@ public class OverlayMenuView extends LinearLayout {
         overlayMode = OverlayMode.MENU;
         communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
         communityFocus = CommunityFocus.RAIL;
+        communitySubmode = CommunitySubmode.ROOT;
+        invalidateCommunityProjectionCache();
+        restoreCommunityPanelSize();
         applyOverlayMode();
         post(() -> {
             int index = verticalActions.indexOf(ACTION_DISCORD_SOCIAL_FRIENDS);
@@ -670,6 +909,10 @@ public class OverlayMenuView extends LinearLayout {
 
     static boolean communityVisible(OverlayMode mode, boolean available) {
         return mode == OverlayMode.COMMUNITY && available;
+    }
+
+    static boolean communityOpenNotifies(OverlayMode mode) {
+        return mode != OverlayMode.COMMUNITY;
     }
 
     static int adjacentCommunitySection(int current, int keyCode, int count) {
@@ -723,16 +966,142 @@ public class OverlayMenuView extends LinearLayout {
         return currentRegion;
     }
 
+    static int communityRailRightRegion(boolean hasRows, boolean hasActions) {
+        if (hasRows) return COMMUNITY_REGION_CONTENT;
+        return hasActions ? COMMUNITY_REGION_ACTION : COMMUNITY_REGION_RAIL;
+    }
+
+    static boolean communityBackNotifiesChannels(CommunitySubmode submode) {
+        return submode == CommunitySubmode.GUILD_CHANNELS;
+    }
+
+    static boolean shouldExitCommunityChatForPause(OverlayMode mode, CommunitySubmode submode) {
+        return mode == OverlayMode.COMMUNITY && submode == CommunitySubmode.FRIEND_CHAT;
+    }
+
     static int communityContentScrollTarget(int currentScroll, int maxScroll, int delta) {
         return Math.max(0, Math.min(Math.max(0, maxScroll), currentScroll + delta));
     }
 
     static int communityActionMaxRows() { return 2; }
-    static boolean communityContentUsesSingleScrollOwner() { return true; }
-
     static int communityQuickWidthDp() { return COMMUNITY_QUICK_WIDTH_DP; }
     static int communityQuickHeightDp() { return COMMUNITY_QUICK_HEIGHT_DP; }
+    static int communityChatWidthDp() { return COMMUNITY_CHAT_WIDTH_DP; }
+    static int communityChatHeightDp() { return COMMUNITY_CHAT_HEIGHT_DP; }
     static int communityRailIconCount() { return COMMUNITY_RAIL_ICON_COUNT; }
+    static boolean communityContentUsesSingleScrollOwner() { return false; }
+    static boolean communityContentUsesFocusableRows() { return true; }
+    static int communityPanelDimension(int requested, int available) {
+        return available > 0 ? Math.min(requested, available) : requested;
+    }
+    static int communityStableIndex(List<String> ids, String selectedId) {
+        if (ids == null || ids.isEmpty()) return -1;
+        int index = selectedId == null ? -1 : ids.indexOf(selectedId);
+        return index >= 0 ? index : 0;
+    }
+
+    static boolean shouldAutoScrollCommunityChat(boolean sameRecipient, boolean nearBottom,
+                                                  boolean newOutgoingMessage) {
+        return !sameRecipient || nearBottom || newOutgoingMessage;
+    }
+
+    static boolean isCommunityNavigationKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
+                || keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                || keyCode == KeyEvent.KEYCODE_DPAD_CENTER || keyCode == KeyEvent.KEYCODE_ENTER
+                || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER || keyCode == KeyEvent.KEYCODE_BACK
+                || keyCode == KeyEvent.KEYCODE_BUTTON_A || keyCode == KeyEvent.KEYCODE_BUTTON_B
+                || keyCode == KeyEvent.KEYCODE_BUTTON_L1 || keyCode == KeyEvent.KEYCODE_BUTTON_R1;
+    }
+
+    static boolean communityRestoreStillCurrent(long scheduledGeneration, long currentGeneration,
+                                                long scheduledRevision, long currentRevision,
+                                                CommunitySection scheduledSection, CommunitySection currentSection,
+                                                CommunitySubmode scheduledSubmode, CommunitySubmode currentSubmode,
+                                                long scheduledInteraction, long currentInteraction) {
+        return scheduledGeneration == currentGeneration && scheduledRevision == currentRevision
+                && scheduledSection == currentSection && scheduledSubmode == currentSubmode
+                && scheduledInteraction == currentInteraction;
+    }
+
+    static boolean shouldRenderCommunityProjection(long renderedRevision, long revision,
+                                                   CommunitySection renderedSection,
+                                                   CommunitySection section,
+                                                   CommunitySubmode renderedSubmode,
+                                                   CommunitySubmode submode) {
+        return renderedRevision != revision || renderedSection != section || renderedSubmode != submode;
+    }
+
+    static int communityActionLeftRegion(int actionIndex, boolean hasRows) {
+        if (actionIndex % 2 == 1) return COMMUNITY_REGION_ACTION;
+        return hasRows ? COMMUNITY_REGION_CONTENT : COMMUNITY_REGION_RAIL;
+    }
+
+    static boolean communityCancelDownHasEffect(boolean alreadyDown, int repeatCount) {
+        return !alreadyDown && repeatCount == 0;
+    }
+
+    static boolean communityListDownEntersActions(int listIndex, int rowCount, boolean hasActions) {
+        return hasActions && rowCount > 0 && listIndex >= rowCount - 1;
+    }
+
+    static boolean communityActionUpEntersList(int actionIndex, boolean hasRows) {
+        return hasRows && actionIndex >= 0 && actionIndex < 2;
+    }
+
+    static boolean shouldRouteCommunityChatKeyboard(OverlayMode mode, CommunitySubmode submode,
+                                                    boolean keyboardVisible) {
+        return mode == OverlayMode.COMMUNITY && submode == CommunitySubmode.FRIEND_CHAT
+                && keyboardVisible;
+    }
+
+    static boolean shouldForwardCommunityChatKeyAction(int action) {
+        return action == KeyEvent.ACTION_DOWN || action == KeyEvent.ACTION_UP;
+    }
+
+    static ControllerGlyphs.Button communityFooterButton(boolean confirmAction, boolean flipFaceButtons) {
+        if (confirmAction) {
+            return flipFaceButtons ? ControllerGlyphs.Button.CANCEL : ControllerGlyphs.Button.CONFIRM;
+        }
+        return flipFaceButtons ? ControllerGlyphs.Button.CONFIRM : ControllerGlyphs.Button.CANCEL;
+    }
+
+    static String communityChatStructureSignature(ChatModel chat) {
+        if (chat == null) return "null";
+        StringBuilder value = new StringBuilder();
+        appendCommunitySignature(value, chat.recipientId);
+        appendCommunitySignature(value, chat.recipientName);
+        appendCommunitySignature(value, chat.recipientAvatarUrl);
+        appendCommunitySignature(value, chat.loadingHistory ? "1" : "0");
+        appendCommunitySignature(value, Integer.toString(chat.messages.size()));
+        for (ChatMessage message : chat.messages) {
+            appendCommunitySignature(value, message.id);
+            appendCommunitySignature(value, message.content);
+            appendCommunitySignature(value, message.additionalContentType);
+            appendCommunitySignature(value, message.additionalContentTitle);
+            appendCommunitySignature(value, Integer.toString(message.additionalContentCount));
+            appendCommunitySignature(value, message.self ? "1" : "0");
+            appendCommunitySignature(value, message.disclosure ? "1" : "0");
+        }
+        return value.toString();
+    }
+
+    static boolean shouldRebuildCommunityChat(String renderedSignature, ChatModel chat) {
+        return renderedSignature == null
+                || !renderedSignature.equals(communityChatStructureSignature(chat));
+    }
+
+    static String communityChatStatusSignature(ChatModel chat) {
+        if (chat == null) return "null";
+        return (chat.sending ? "1" : "0") + ":" + (chat.retryable ? "1" : "0") + ":"
+                + chat.error.length() + ":" + chat.error + chat.retryMessage.length() + ":"
+                + chat.retryMessage;
+    }
+
+    private static void appendCommunitySignature(StringBuilder target, String value) {
+        String safe = value == null ? "" : value;
+        target.append(safe.length()).append(':').append(safe);
+    }
 
     public void setMenuActionListener(MenuActionListener listener) {
         this.actionListener = listener;
@@ -740,6 +1109,7 @@ public class OverlayMenuView extends LinearLayout {
 
     public void setFlipFaceButtons(boolean flip) {
         this.flipFaceButtons = flip;
+        renderDiscordCommunityFooter();
     }
 
     public void setInstallationConfirmationAvailable(boolean available) {
@@ -805,6 +1175,43 @@ public class OverlayMenuView extends LinearLayout {
         updateDiscordActionButtons();
     }
 
+    /** Projects controller-owned Community state without doing network or Discord SDK work. */
+    public void setDiscordCommunityModel(CommunityModel model) {
+        if (model == null) {
+            cancelCommunityChatKeyboardHold();
+            communityModel = null;
+            invalidateCommunityProjectionCache();
+            renderDiscordCard();
+            return;
+        }
+        if (communityModel != null && model.revision == communityModel.revision) return;
+        if (communitySubmode == CommunitySubmode.FRIEND_CHAT
+                && !communityChatRecipientId(communityModel).equals(communityChatRecipientId(model))) {
+            cancelCommunityChatKeyboardHold();
+        }
+        communityModel = model;
+        if (!model.selectedGuildId.isEmpty()) selectedGuildId = model.selectedGuildId;
+        if (!pendingGuildId.isEmpty() && pendingGuildId.equals(model.selectedGuildId)) pendingGuildId = "";
+        renderDiscordCard();
+    }
+
+    /** Lifecycle-only chat exit. Controller cleanup already ran, so no user callback fires. */
+    public void exitDiscordCommunityChatForPause() {
+        if (!shouldExitCommunityChatForPause(overlayMode, communitySubmode)) return;
+        cancelCommunityChatKeyboardHold();
+        pendingChatFriendId = "";
+        communitySubmode = CommunitySubmode.ROOT;
+        communitySection = CommunitySection.FRIENDS;
+        discordQuickSection = 1;
+        communityFocus = CommunityFocus.RAIL;
+        restoreCommunityPanelSize();
+        renderDiscordCard();
+        post(() -> {
+            if (!communityRows.isEmpty()) focusCommunityList();
+            else focusCommunityRail();
+        });
+    }
+
     public void toggleDiscordSocialFriends() {
         if (!discordSocialConnected) return;
         discordSocialExpanded = !discordSocialExpanded;
@@ -838,10 +1245,72 @@ public class OverlayMenuView extends LinearLayout {
                 shouldShowDiscordCard(discordConfigured, discordSocialAvailable)) ? VISIBLE : GONE);
         if (!shouldShowDiscordCard(discordConfigured, discordSocialAvailable)) return;
 
-        renderDiscordQuickHeader();
+        renderDiscordQuickHeaderIfChanged();
         ensureDiscordActions();
-        renderDiscordVoiceCard();
-        renderDiscordSocialCard();
+        if (communityModel != null) {
+            if (shouldRenderCommunityProjection(renderedCommunityModelRevision,
+                    communityModel.revision, renderedCommunitySection, communitySection,
+                    renderedCommunitySubmode, communitySubmode)) {
+                renderCommunityModel();
+                renderedCommunityModelRevision = communityModel.revision;
+                renderedCommunitySection = communitySection;
+                renderedCommunitySubmode = communitySubmode;
+            }
+        }
+        else {
+            invalidateCommunityProjectionCache();
+            renderDiscordVoiceCard();
+            renderDiscordSocialCard();
+        }
+    }
+
+    private void renderDiscordQuickHeaderIfChanged() {
+        String signature = discordQuickSection + ":" + discordSocialConnected + ":"
+                + discordSocialDisplayName + ":" + discordSocialAvatarUrl;
+        if (signature.equals(renderedCommunityHeaderSignature)) return;
+        renderedCommunityHeaderSignature = signature;
+        renderDiscordQuickHeader();
+    }
+
+    private void renderDiscordCommunityFooter() {
+        if (discordQuickFooter == null) return;
+        discordQuickFooter.removeAllViews();
+        addDiscordCommunityFooterItem(true, R.string.discord_community_open, dp(14));
+        addDiscordCommunityFooterItem(false, R.string.discord_community_back, 0);
+    }
+
+    private void addDiscordCommunityFooterItem(boolean confirmAction, int labelResource,
+                                               int rightMargin) {
+        TextView glyph = new TextView(getContext());
+        glyph.setText(ControllerGlyphs.text(playStationButtons,
+                communityFooterButton(confirmAction, flipFaceButtons)));
+        glyph.setTextColor(0xFFAEB3C2);
+        glyph.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        glyph.setGravity(Gravity.CENTER);
+        glyph.setTypeface(ControllerGlyphs.typeface(getContext()));
+        discordQuickFooter.addView(glyph, new LinearLayout.LayoutParams(dp(18), dp(18)));
+
+        TextView label = new TextView(getContext());
+        label.setText(labelResource);
+        label.setTextColor(0xFFAEB3C2);
+        label.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+        label.setGravity(Gravity.CENTER_VERTICAL);
+        label.setSingleLine(true);
+        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, dp(18));
+        labelParams.leftMargin = dp(3);
+        labelParams.rightMargin = rightMargin;
+        discordQuickFooter.addView(label, labelParams);
+    }
+
+    private void invalidateCommunityProjectionCache() {
+        renderedCommunityModelRevision = Long.MIN_VALUE;
+        renderedCommunitySection = null;
+        renderedCommunitySubmode = null;
+        renderedCommunityHeaderSignature = "";
+        renderedChatStructureSignature = "";
+        renderedChatDraft = "";
+        renderedChatStatusSignature = "";
     }
 
     private void renderDiscordQuickHeader() {
@@ -869,6 +1338,745 @@ public class OverlayMenuView extends LinearLayout {
             nameParams.leftMargin = dp(7);
             account.addView(name, nameParams);
             discordQuickHeader.addView(account);
+        }
+    }
+
+    private void renderCommunityModel() {
+        CommunityFocus focusBeforeRender = communityFocus;
+        String rowBeforeRender = selectedCommunityRowId();
+        int actionBeforeRender = discordIndex;
+        long interactionBeforeRender = communityInteractionGeneration;
+        long revision = communityModel.revision;
+        CommunitySection section = communitySection;
+        CommunitySubmode submode = communitySubmode;
+        if (communitySubmode == CommunitySubmode.FRIEND_CHAT) {
+            if (!shouldRebuildCommunityChat(renderedChatStructureSignature, communityModel.chat)
+                    && discordChatContainer.getVisibility() == VISIBLE) {
+                ensureCommunityChatComposer(communityModel.chat);
+                bindCommunityChatStatus(communityModel.chat);
+                return;
+            }
+            long generation = ++communityRenderGeneration;
+            renderCommunityChat(generation);
+            postCommunityFocusRestore(generation, revision, section, submode,
+                    interactionBeforeRender, focusBeforeRender, rowBeforeRender, actionBeforeRender);
+            return;
+        }
+        long generation = ++communityRenderGeneration;
+        restoreCommunityPanelSize();
+        discordRail.setVisibility(VISIBLE);
+        discordQuickHeader.setVisibility(VISIBLE);
+        discordContentScroll.setVisibility(VISIBLE);
+        discordActionsContainer.setVisibility(VISIBLE);
+        discordQuickFooter.setVisibility(VISIBLE);
+        discordChatContainer.setVisibility(GONE);
+        discordVoiceContentContainer.removeAllViews();
+        discordSocialContentContainer.removeAllViews();
+        communityRows.clear();
+        communityListIndex = -1;
+        if (communitySection == CommunitySection.TOGETHER) renderCommunityTogether();
+        else if (communitySection == CommunitySection.FRIENDS) renderCommunityFriends();
+        else renderCommunityChannels();
+        restoreCommunityRowSelection();
+        postCommunityFocusRestore(generation, revision, section, submode,
+                interactionBeforeRender, focusBeforeRender, rowBeforeRender, actionBeforeRender);
+    }
+
+    private void postCommunityFocusRestore(long generation, long revision, CommunitySection section,
+                                           CommunitySubmode submode, long interactionGeneration,
+                                           CommunityFocus focus, String rowId, int actionIndex) {
+        post(() -> {
+            if (overlayMode != OverlayMode.COMMUNITY || getVisibility() != VISIBLE
+                    || communityModel == null || !communityRestoreStillCurrent(generation,
+                    communityRenderGeneration, revision, communityModel.revision, section,
+                    communitySection, submode, communitySubmode, interactionGeneration,
+                    communityInteractionGeneration)) return;
+            if (focus == CommunityFocus.LIST && submode != CommunitySubmode.FRIEND_CHAT) {
+                int index = communityRowIndex(rowId);
+                if (index < 0 && !communityRows.isEmpty()) index = 0;
+                if (index >= 0) setCommunityListIndex(index);
+                else if (!discordButtons.isEmpty()) {
+                    communityFocus = CommunityFocus.ACTION;
+                    setDiscordIndex(0);
+                } else focusCommunityRail();
+            } else if (focus == CommunityFocus.ACTION && !discordButtons.isEmpty()
+                    && submode != CommunitySubmode.FRIEND_CHAT) {
+                communityFocus = CommunityFocus.ACTION;
+                setDiscordIndex(Math.max(0, Math.min(actionIndex, discordButtons.size() - 1)));
+            } else if (focus == CommunityFocus.CHAT_COMPOSER
+                    || focus == CommunityFocus.CHAT_KEYBOARD) {
+                if (discordChatComposer != null) discordChatComposer.requestFocus();
+            } else {
+                focusCommunityRail();
+            }
+        });
+    }
+
+    private boolean isCurrentCommunityRender(long generation, long revision,
+                                             CommunitySection section, CommunitySubmode submode) {
+        return overlayMode == OverlayMode.COMMUNITY && getVisibility() == VISIBLE
+                && communityModel != null && communityModel.revision == revision
+                && communityRenderGeneration == generation && communitySection == section
+                && communitySubmode == submode;
+    }
+
+    private void renderCommunityTogether() {
+        VoiceSummary voice = communityModel.voice;
+        if (voice == null || !voice.connected) {
+            addCommunityStateLine(communityModel.gatewayStatus, communityModel.gatewayMessage,
+                    getContext().getString(R.string.overlay_discord_disconnected));
+            return;
+        }
+        String location = voice.guildName.isEmpty() ? voice.channelName
+                : voice.guildName + "  ·  " + voice.channelName;
+        discordVoiceContentContainer.addView(discordLine(location, 16, Color.WHITE, true));
+        String state = voice.deafened ? getContext().getString(R.string.overlay_discord_deafened)
+                : voice.muted ? getContext().getString(R.string.overlay_discord_muted)
+                : getContext().getString(R.string.overlay_community_active);
+        discordVoiceContentContainer.addView(discordLine(state, 12, 0xFF69F0AE, false));
+        if (voice.participants.isEmpty()) {
+            discordVoiceContentContainer.addView(discordLine(getContext().getString(
+                    R.string.overlay_discord_empty), 13, 0xFF9FA3B2, false));
+            return;
+        }
+        for (VoiceParticipant participant : voice.participants) {
+            String title = participant.self ? getContext().getString(R.string.overlay_discord_self,
+                    participant.name) : participant.name;
+            String details = participant.speaking ? getContext().getString(
+                    R.string.overlay_discord_participant_speaking, "")
+                    : participant.muted ? getContext().getString(R.string.overlay_discord_muted)
+                    : participant.volume != 100 ? participant.volume + "%" : "";
+            addCommunityRow("voice:" + participant.id, CommunityRowKind.INFO, title, details, participant);
+        }
+    }
+
+    private void renderCommunityFriends() {
+        if (communityModel.socialStatus != CommunityStatus.READY) {
+            addCommunityStateLine(communityModel.socialStatus, communityModel.socialMessage,
+                    getContext().getString(R.string.overlay_discord_social_connect_in_menu));
+            return;
+        }
+        addCommunityFriends(FriendPresence.PLAYING, R.string.overlay_discord_social_playing);
+        addCommunityFriends(FriendPresence.ONLINE, R.string.overlay_discord_social_online);
+        addCommunityFriends(FriendPresence.OFFLINE, R.string.discord_community_offline);
+        if (communityRows.isEmpty()) {
+            discordVoiceContentContainer.addView(discordLine(getContext().getString(
+                    R.string.overlay_discord_social_no_friends), 13, 0xFF9FA3B2, false));
+        }
+    }
+
+    private void addCommunityFriends(FriendPresence presence, int heading) {
+        boolean added = false;
+        for (CommunityFriend friend : communityModel.friends) {
+            if (friend.presence != presence) continue;
+            if (!added) {
+                discordVoiceContentContainer.addView(discordLine(getContext().getString(heading),
+                        12, 0xFF9FA3B2, true));
+                added = true;
+            }
+            String details = communityFriendDetails(friend);
+            addCommunityRow("friend:" + friend.id, CommunityRowKind.FRIEND, friend.name, details, friend);
+        }
+    }
+
+    private void renderCommunityChannels() {
+        if (communitySubmode == CommunitySubmode.GUILD_CHANNELS) {
+            renderCommunityGuildChannels();
+            return;
+        }
+        if (communityModel.gatewayStatus != CommunityStatus.READY) {
+            addCommunityStateLine(communityModel.gatewayStatus, communityModel.gatewayMessage,
+                    getContext().getString(R.string.discord_community_host_unavailable));
+            return;
+        }
+        addCommunityChannels(communityModel.favorites, R.string.discord_community_active,
+                "favorite-channel:");
+        addCommunityChannels(communityModel.recent, R.string.discord_community_recent,
+                "recent-channel:");
+        if (!communityModel.guilds.isEmpty()) {
+            discordVoiceContentContainer.addView(discordLine(getContext().getString(
+                    R.string.discord_community_servers), 12, 0xFF9FA3B2, true));
+            for (CommunityGuild guild : communityModel.guilds) {
+                addCommunityRow("guild:" + guild.id, CommunityRowKind.GUILD, guild.name, "", guild);
+            }
+        }
+        if (communityRows.isEmpty()) discordVoiceContentContainer.addView(discordLine(getContext().getString(
+                R.string.discord_no_channels), 13, 0xFF9FA3B2, false));
+    }
+
+    private void renderCommunityGuildChannels() {
+        CommunityGuild guild = findGuild(selectedGuildId);
+        String title = guild == null ? getContext().getString(R.string.discord_community_servers) : guild.name;
+        discordVoiceContentContainer.addView(discordLine(title, 16, Color.WHITE, true));
+        if (!pendingGuildId.isEmpty()) {
+            discordVoiceContentContainer.addView(discordLine(getContext().getString(
+                    R.string.overlay_discord_loading), 13, 0xFFC5C8D3, false));
+            return;
+        }
+        if (communityModel.gatewayStatus == CommunityStatus.ERROR) {
+            addCommunityStateLine(communityModel.gatewayStatus, communityModel.gatewayMessage,
+                    getContext().getString(R.string.discord_no_channels));
+            return;
+        }
+        if (communityModel.guildChannels.isEmpty()) {
+            discordVoiceContentContainer.addView(discordLine(getContext().getString(
+                    R.string.discord_no_channels), 13, 0xFF9FA3B2, false));
+            return;
+        }
+        for (CommunityChannel channel : communityModel.guildChannels) {
+            String details = channel.people >= 0 ? channel.people + "" : "";
+            addCommunityRow("guild-channel:" + channel.id, CommunityRowKind.CHANNEL,
+                    "#  " + channel.name, details, channel);
+        }
+    }
+
+    private void addCommunityChannels(List<CommunityChannel> channels, int heading, String stablePrefix) {
+        if (channels.isEmpty()) return;
+        discordVoiceContentContainer.addView(discordLine(getContext().getString(heading),
+                12, 0xFF9FA3B2, true));
+        for (CommunityChannel channel : channels) {
+            String details = channel.guildName + (channel.people >= 0 ? "  ·  " + channel.people : "");
+            addCommunityRow(stablePrefix + channel.id, CommunityRowKind.CHANNEL,
+                    "#  " + channel.name, details, channel);
+        }
+    }
+
+    private void addCommunityStateLine(CommunityStatus status, String message, String fallback) {
+        String value = message.isEmpty() ? fallback : message;
+        int color = status == CommunityStatus.ERROR ? 0xFFFFB4AB
+                : status == CommunityStatus.READY ? 0xFF69F0AE : 0xFFC5C8D3;
+        discordVoiceContentContainer.addView(discordLine(value, 14, color, false));
+    }
+
+    private void addCommunityRow(String id, CommunityRowKind kind, String title, String details, Object source) {
+        LinearLayout row = new LinearLayout(getContext());
+        CommunityFriend friend = source instanceof CommunityFriend ? (CommunityFriend) source : null;
+        VoiceParticipant participant = source instanceof VoiceParticipant ? (VoiceParticipant) source : null;
+        boolean person = friend != null || participant != null;
+        row.setOrientation(person ? LinearLayout.HORIZONTAL : LinearLayout.VERTICAL);
+        if (person) row.setGravity(Gravity.CENTER_VERTICAL);
+        row.setPadding(dp(10), dp(7), dp(10), dp(7));
+        row.setMinimumHeight(dp(48));
+        row.setFocusable(true);
+        row.setFocusableInTouchMode(true);
+        String description = details.isEmpty() ? title : title + ". " + details;
+        if (friend != null && friend.unread) description += ". "
+                + getContext().getString(R.string.overlay_discord_unread);
+        row.setContentDescription(description);
+        if (person) {
+            String avatarTitle = friend != null ? friend.name : participant.name;
+            String avatarUrl = friend != null ? friend.avatarUrl : participant.avatarUrl;
+            FrameLayout avatar = DiscordCommunityPresentation.avatar(getContext(), avatarTitle, avatarUrl, 34);
+            if (friend != null && communityFriendShowsPresenceDot(friend.presence)) {
+                addCommunityPresenceDot(avatar);
+            }
+            if (friend != null && friend.presence == FriendPresence.OFFLINE) {
+                avatar.setAlpha(0.58f);
+            }
+            LinearLayout.LayoutParams avatarParams = new LinearLayout.LayoutParams(dp(34), dp(34));
+            avatarParams.rightMargin = dp(10);
+            row.addView(avatar, avatarParams);
+        }
+        LinearLayout copy = person ? new LinearLayout(getContext()) : row;
+        if (person) copy.setOrientation(LinearLayout.VERTICAL);
+        LinearLayout titleRow = new LinearLayout(getContext());
+        titleRow.setGravity(Gravity.CENTER_VERTICAL);
+        TextView name = new TextView(getContext());
+        name.setText(friend != null && friend.unread ? communityUnreadTitle(title) : title);
+        name.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+        name.setTextColor(0xFFEDEAF5);
+        name.setSingleLine(true);
+        titleRow.addView(name, new LinearLayout.LayoutParams(0, LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        copy.addView(titleRow, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                LinearLayout.LayoutParams.WRAP_CONTENT));
+        if (!details.isEmpty()) {
+            TextView meta = new TextView(getContext());
+            meta.setText(details);
+            meta.setTextSize(TypedValue.COMPLEX_UNIT_SP, 11);
+            meta.setTextColor(friend != null && friend.presence == FriendPresence.OFFLINE
+                    ? 0xFF777C89 : 0xFF9FA3B2);
+            meta.setSingleLine(true);
+            copy.addView(meta, new LinearLayout.LayoutParams(LinearLayout.LayoutParams.MATCH_PARENT,
+                    LinearLayout.LayoutParams.WRAP_CONTENT));
+        }
+        if (person) row.addView(copy, new LinearLayout.LayoutParams(0,
+                LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        CommunityRow item = new CommunityRow(id, kind, source, row);
+        int index = communityRows.size();
+        communityRows.add(item);
+        row.setOnFocusChangeListener((ignored, focused) -> {
+            styleCommunityRow(row, focused);
+            if (focused) {
+                communityFocus = CommunityFocus.LIST;
+                communityListIndex = index;
+                rememberCommunitySelection(item);
+            }
+        });
+        row.setOnClickListener(ignored -> {
+            communityInteractionGeneration++;
+            openCommunityRow(item);
+        });
+        styleCommunityRow(row, false);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.bottomMargin = dp(4);
+        discordVoiceContentContainer.addView(row, params);
+    }
+
+    private void addCommunityPresenceDot(FrameLayout avatar) {
+        View dot = new View(getContext());
+        GradientDrawable background = new GradientDrawable();
+        background.setShape(GradientDrawable.OVAL);
+        background.setColor(0xFF61E594);
+        background.setStroke(dp(1), 0xFF10131C);
+        dot.setBackground(background);
+        FrameLayout.LayoutParams params = new FrameLayout.LayoutParams(dp(8), dp(8),
+                Gravity.RIGHT | Gravity.BOTTOM);
+        avatar.addView(dot, params);
+    }
+
+    private CharSequence communityUnreadTitle(String title) {
+        SpannableStringBuilder value = new SpannableStringBuilder(title).append("  ●");
+        value.setSpan(new ForegroundColorSpan(0xFF5BCBFF), title.length() + 2, value.length(),
+                Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        return value;
+    }
+
+    static boolean communityFriendShowsPresenceDot(FriendPresence presence) {
+        return presence == FriendPresence.ONLINE || presence == FriendPresence.PLAYING;
+    }
+
+    static String communityFriendDetails(CommunityFriend friend) {
+        return friend == null ? "" : friend.activity;
+    }
+
+    private void styleCommunityRow(View row, boolean focused) {
+        GradientDrawable background = new GradientDrawable();
+        background.setCornerRadius(dp(9));
+        background.setColor(focused ? 0xFF1B5A78 : 0x142D5F78);
+        background.setStroke(focused ? dp(2) : dp(1), focused ? 0xFF7CE4FF : 0x20FFFFFF);
+        row.setBackground(background);
+    }
+
+    private void rememberCommunitySelection(CommunityRow item) {
+        if (communitySection == CommunitySection.TOGETHER) selectedTogetherRowId = item.id;
+        else if (communitySection == CommunitySection.FRIENDS) selectedFriendRowId = item.id;
+        else if (communitySubmode == CommunitySubmode.GUILD_CHANNELS) {
+            selectedGuildChannelRowId = item.id;
+            selectedGuildChannelGuildId = selectedGuildId;
+        } else selectedChannelsRootRowId = item.id;
+        if (item.kind == CommunityRowKind.FRIEND) selectedFriendId = idPart(item.id);
+        else if (item.kind == CommunityRowKind.GUILD) selectedGuildId = idPart(item.id);
+        else if (item.kind == CommunityRowKind.CHANNEL) selectedChannelId = idPart(item.id);
+    }
+
+    private void openCommunityRow(CommunityRow row) {
+        rememberCommunitySelection(row);
+        if (actionListener == null) return;
+        if (row.kind == CommunityRowKind.FRIEND) {
+            if (!communityModel.directMessagesAvailable) {
+                actionListener.onDiscordCommunityAuthorizeDirectMessages();
+                return;
+            }
+            pendingChatFriendId = selectedFriendId;
+            communitySubmode = CommunitySubmode.FRIEND_CHAT;
+            communityFocus = CommunityFocus.CHAT_COMPOSER;
+            renderDiscordCard();
+            actionListener.onDiscordCommunityOpenFriendChat(selectedFriendId);
+        } else if (row.kind == CommunityRowKind.GUILD) {
+            pendingGuildId = selectedGuildId;
+            communitySubmode = CommunitySubmode.GUILD_CHANNELS;
+            renderDiscordCard();
+            actionListener.onDiscordCommunityLoadGuild(selectedGuildId);
+        } else if (row.kind == CommunityRowKind.CHANNEL && !selectedChannelId.isEmpty()) {
+            actionListener.onDiscordCommunityJoinChannel(selectedChannelId);
+        }
+    }
+
+    private void restoreCommunityRowSelection() {
+        int index = communityRowIndex(selectedCommunityRowId());
+        if (index >= 0) {
+            communityListIndex = index;
+            return;
+        }
+        if (!communityRows.isEmpty()) communityListIndex = 0;
+    }
+
+    private String selectedCommunityRowId() {
+        if (communitySection == CommunitySection.TOGETHER) return selectedTogetherRowId;
+        if (communitySection == CommunitySection.FRIENDS) return selectedFriendRowId;
+        if (communitySubmode == CommunitySubmode.GUILD_CHANNELS) {
+            return selectedGuildId.equals(selectedGuildChannelGuildId) ? selectedGuildChannelRowId : "";
+        }
+        return selectedChannelsRootRowId;
+    }
+
+    private int communityRowIndex(String id) {
+        if (id == null || id.isEmpty()) return -1;
+        for (int index = 0; index < communityRows.size(); index++) {
+            if (id.equals(communityRows.get(index).id)) return index;
+        }
+        return -1;
+    }
+
+    private CommunityGuild findGuild(String id) {
+        for (CommunityGuild guild : communityModel.guilds) if (guild.id.equals(id)) return guild;
+        return null;
+    }
+
+    private static String idPart(String stableId) {
+        int colon = stableId.indexOf(':');
+        return colon < 0 ? stableId : stableId.substring(colon + 1);
+    }
+
+    private static final class CommunityRow {
+        final String id;
+        final CommunityRowKind kind;
+        final Object source;
+        final View view;
+        CommunityRow(String id, CommunityRowKind kind, Object source, View view) {
+            this.id = id; this.kind = kind; this.source = source; this.view = view;
+        }
+    }
+
+    private void renderCommunityChat(long generation) {
+        ChatModel chat = communityModel.chat;
+        renderedChatStructureSignature = communityChatStructureSignature(chat);
+        String recipientId = chat != null && !chat.recipientId.isEmpty()
+                ? chat.recipientId : pendingChatFriendId;
+        boolean sameRecipient = recipientId.equals(renderedChatRecipientId);
+        int previousScroll = discordChatHistoryScroll == null ? 0 : discordChatHistoryScroll.getScrollY();
+        View previousHistory = discordChatHistoryScroll == null ? null : discordChatHistoryScroll.getChildAt(0);
+        int previousMaxScroll = previousHistory == null ? 0
+                : Math.max(0, previousHistory.getHeight() - discordChatHistoryScroll.getHeight());
+        boolean nearBottom = previousMaxScroll - previousScroll <= dp(48);
+        String lastOutgoingMessageId = lastOutgoingMessageId(chat);
+        boolean newOutgoingMessage = sameRecipient && !lastOutgoingMessageId.isEmpty()
+                && !lastOutgoingMessageId.equals(renderedChatLastOutgoingMessageId);
+        boolean autoScroll = shouldAutoScrollCommunityChat(sameRecipient, nearBottom, newOutgoingMessage);
+        applyCommunityChatPanelSize();
+        discordRail.setVisibility(GONE);
+        discordQuickHeader.setVisibility(GONE);
+        discordContentScroll.setVisibility(GONE);
+        discordActionsContainer.setVisibility(GONE);
+        discordQuickFooter.setVisibility(GONE);
+        discordChatContainer.setVisibility(VISIBLE);
+        discordChatContainer.removeAllViews();
+        String recipient = chat != null && !chat.recipientName.isEmpty() ? chat.recipientName
+                : selectedFriendName(pendingChatFriendId);
+        TextView title = new TextView(getContext());
+        title.setText(recipient.isEmpty() ? getContext().getString(R.string.discord_community_friends) : recipient);
+        title.setTextSize(TypedValue.COMPLEX_UNIT_SP, 17);
+        title.setTextColor(Color.WHITE);
+        title.setSingleLine(true);
+        discordChatContainer.addView(title, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(28)));
+        discordChatHistoryScroll = new ScrollView(getContext());
+        discordChatHistoryScroll.setFillViewport(true);
+        discordChatHistoryScroll.setVerticalScrollBarEnabled(false);
+        discordChatHistoryScroll.setFocusable(false);
+        discordChatHistory = new LinearLayout(getContext());
+        discordChatHistory.setOrientation(LinearLayout.VERTICAL);
+        discordChatHistory.setMinimumHeight(dp(140));
+        discordChatHistory.setPadding(0, dp(4), 0, dp(4));
+        discordChatHistoryScroll.addView(discordChatHistory, new ScrollView.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        renderCommunityChatHistory(chat);
+        discordChatContainer.addView(discordChatHistoryScroll, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, 0, 1f));
+        ensureCommunityChatComposer(chat);
+        ensureCommunityChatStatus();
+        bindCommunityChatStatus(chat);
+        discordChatContainer.addView(discordChatStatus, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        discordChatContainer.addView(discordChatComposer, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, dp(44)));
+        discordChatKeyboard.setCompactMode(true);
+        discordChatContainer.addView(discordChatKeyboard, new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT));
+        renderedChatRecipientId = recipientId;
+        renderedChatLastOutgoingMessageId = lastOutgoingMessageId;
+        ScrollView renderedHistory = discordChatHistoryScroll;
+        renderedHistory.post(() -> {
+            if (overlayMode != OverlayMode.COMMUNITY
+                    || communitySubmode != CommunitySubmode.FRIEND_CHAT
+                    || communityRenderGeneration != generation
+                    || renderedHistory != discordChatHistoryScroll) return;
+            View history = renderedHistory.getChildAt(0);
+            int maxScroll = history == null ? 0
+                    : Math.max(0, history.getHeight() - renderedHistory.getHeight());
+            if (autoScroll) renderedHistory.scrollTo(0, maxScroll);
+            else renderedHistory.scrollTo(0, Math.min(previousScroll, maxScroll));
+        });
+    }
+
+    private static String lastOutgoingMessageId(ChatModel chat) {
+        if (chat == null) return "";
+        for (int index = chat.messages.size() - 1; index >= 0; index--) {
+            ChatMessage message = chat.messages.get(index);
+            if (message.self && !message.disclosure) return message.id;
+        }
+        return "";
+    }
+
+    private void ensureCommunityChatStatus() {
+        if (discordChatStatus != null) return;
+        discordChatStatus = discordLine("", 11, 0xFFC5C8D3, false);
+    }
+
+    private void bindCommunityChatStatus(ChatModel chat) {
+        ensureCommunityChatStatus();
+        String signature = communityChatStatusSignature(chat);
+        if (signature.equals(renderedChatStatusSignature)) return;
+        renderedChatStatusSignature = signature;
+        if (chat != null && chat.sending) {
+            discordChatStatus.setText(R.string.discord_dm_sending);
+            discordChatStatus.setTextColor(0xFFC5C8D3);
+            discordChatStatus.setVisibility(VISIBLE);
+            return;
+        }
+        if (chat != null && (!chat.error.isEmpty()
+                || (chat.retryable && !chat.retryMessage.isEmpty()))) {
+            discordChatStatus.setText(!chat.retryMessage.isEmpty() ? chat.retryMessage : chat.error);
+            discordChatStatus.setTextColor(0xFFFFB4AB);
+            discordChatStatus.setVisibility(VISIBLE);
+            return;
+        }
+        discordChatStatus.setText("");
+        discordChatStatus.setVisibility(GONE);
+    }
+
+    private String selectedFriendName(String id) {
+        for (CommunityFriend friend : communityModel.friends) if (friend.id.equals(id)) return friend.name;
+        return "";
+    }
+
+    private static String communityChatRecipientId(CommunityModel model) {
+        return model == null || model.chat == null ? "" : model.chat.recipientId;
+    }
+
+    private void cancelCommunityChatKeyboardHold() {
+        communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
+        if (discordChatKeyboard != null) discordChatKeyboard.cancelKeyboardHold();
+    }
+
+    private void renderCommunityChatHistory(ChatModel chat) {
+        if (chat == null || chat.loadingHistory) {
+            discordChatHistory.addView(discordLine(getContext().getString(R.string.overlay_discord_loading),
+                    13, 0xFFC5C8D3, false));
+            return;
+        }
+        if (chat.messages.isEmpty()) {
+            discordChatHistory.addView(discordLine(getContext().getString(R.string.overlay_discord_chat_empty),
+                    12, 0xFF9FA3B2, false));
+            return;
+        }
+        for (ChatMessage message : chat.messages) {
+            if (message.disclosure) {
+                TextView notice = discordLine(getContext().getString(R.string.discord_dm_disclosure),
+                        11, 0xFF9FA3B2, false);
+                notice.setGravity(Gravity.CENTER);
+                discordChatHistory.addView(notice);
+                continue;
+            }
+            if (!message.content.isEmpty()) addCommunityChatBubble(message.content, message.self, false, message.id);
+            if (!message.additionalContentType.isEmpty() || message.additionalContentCount > 0) {
+                addCommunityChatBubble(additionalContentLabel(message), message.self, true, message.id);
+            } else if (message.content.isEmpty()) {
+                addCommunityChatBubble(getContext().getString(R.string.discord_dm_unsupported_content),
+                        message.self, true, message.id);
+            }
+        }
+    }
+
+    private void addCommunityChatBubble(String value, boolean self, boolean media, String messageId) {
+        TextView bubble = new TextView(getContext());
+        bubble.setText(value);
+        bubble.setTextSize(TypedValue.COMPLEX_UNIT_SP, media ? 11 : 13);
+        bubble.setTextColor(media ? 0xFF7CE4FF : Color.WHITE);
+        bubble.setPadding(dp(10), dp(6), dp(10), dp(6));
+        GradientDrawable background = new GradientDrawable();
+        background.setCornerRadius(dp(12));
+        background.setColor(self ? 0xFF1F6388 : 0xFF243041);
+        bubble.setBackground(background);
+        if (media && !messageId.isEmpty()) {
+            bubble.setFocusable(true);
+            bubble.setClickable(true);
+            bubble.setOnClickListener(ignored -> {
+                if (actionListener != null) actionListener.onDiscordCommunityOpenMessageInDiscord(messageId);
+            });
+        }
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
+                LinearLayout.LayoutParams.WRAP_CONTENT, LinearLayout.LayoutParams.WRAP_CONTENT);
+        params.gravity = self ? Gravity.RIGHT : Gravity.LEFT;
+        params.topMargin = dp(3);
+        discordChatHistory.addView(bubble, params);
+    }
+
+    private String additionalContentLabel(ChatMessage message) {
+        int count = Math.max(1, message.additionalContentCount);
+        int stringId;
+        switch (message.additionalContentType) {
+            case "Attachment": stringId = R.string.discord_dm_media_attachment; break;
+            case "Poll": stringId = R.string.discord_dm_media_poll; break;
+            case "VoiceMessage": stringId = R.string.discord_dm_media_voice_message; break;
+            case "Thread": stringId = R.string.discord_dm_media_thread; break;
+            case "Embed": stringId = R.string.discord_dm_media_embed; break;
+            case "Sticker": stringId = R.string.discord_dm_media_sticker; break;
+            default: stringId = R.string.discord_dm_media_other; break;
+        }
+        String label = getContext().getString(stringId, count);
+        return message.additionalContentTitle.isEmpty() ? label : getContext().getString(
+                R.string.discord_dm_media_titled, label, message.additionalContentTitle);
+    }
+
+    private void ensureCommunityChatComposer(ChatModel chat) {
+        if (discordChatComposer == null) {
+            discordChatComposer = new EditText(getContext());
+            discordChatComposer.setTextColor(Color.WHITE);
+            discordChatComposer.setTextSize(TypedValue.COMPLEX_UNIT_SP, 14);
+            discordChatComposer.setHintTextColor(0xFFA2A9BB);
+            discordChatComposer.setHint(R.string.discord_dm_placeholder);
+            discordChatComposer.setSingleLine(true);
+            discordChatComposer.setShowSoftInputOnFocus(false);
+            discordChatComposer.setFilters(new InputFilter[]{new InputFilter.LengthFilter(2000)});
+            discordChatComposer.addTextChangedListener(new TextWatcher() {
+                @Override public void beforeTextChanged(CharSequence value, int start, int count, int after) { }
+                @Override public void onTextChanged(CharSequence value, int start, int before, int count) {
+                    if (!updatingChatComposer && actionListener != null && !pendingChatFriendId.isEmpty()) {
+                        actionListener.onDiscordCommunityChatDraftChanged(pendingChatFriendId, value.toString());
+                    }
+                }
+                @Override public void afterTextChanged(Editable value) { }
+            });
+        }
+        String draft = chat == null ? "" : chat.draft;
+        if (!draft.equals(renderedChatDraft)) {
+            if (!draft.equals(discordChatComposer.getText().toString())) {
+                updatingChatComposer = true;
+                discordChatComposer.setText(draft);
+                discordChatComposer.setSelection(draft.length());
+                updatingChatComposer = false;
+            }
+            renderedChatDraft = draft;
+        }
+        if (discordChatKeyboard == null) {
+            discordChatKeyboard = new EmbeddedTvKeyboardView(getContext(), new EmbeddedTvKeyboardView.Callback() {
+                @Override public void onText(String value) { insertCommunityChatText(value); }
+                @Override public void onBackspace() { deleteCommunityChatText(); }
+                @Override public void onMoveCursor(int direction) { moveCommunityChatCursor(direction); }
+                @Override public void onMicrophone() { }
+                @Override public void onSend() { sendCommunityChat(); }
+                @Override public void onOpenVisibleAdditionalContent() { openVisibleCommunityChatContent(); }
+            }, getContext().getString(R.string.discord_dm_keyboard_microphone),
+                    getContext().getString(R.string.discord_dm_keyboard_space),
+                    getContext().getString(R.string.discord_dm_send),
+                    getContext().getString(R.string.discord_dm_keyboard_shift_legend),
+                    getContext().getString(R.string.discord_dm_keyboard_backspace_legend),
+                    getContext().getString(R.string.discord_dm_keyboard_cursor_legend),
+                    getContext().getString(R.string.discord_dm_keyboard_send_legend),
+                    getContext().getString(R.string.discord_dm_keyboard_history_scroll_legend),
+                    getContext().getString(R.string.discord_dm_keyboard_media_open_legend));
+        }
+    }
+
+    private void insertCommunityChatText(String value) {
+        if (discordChatComposer == null) return;
+        Editable editable = discordChatComposer.getText();
+        int start = Math.max(0, discordChatComposer.getSelectionStart());
+        int end = Math.max(start, discordChatComposer.getSelectionEnd());
+        editable.replace(start, end, value == null ? "" : value);
+        discordChatComposer.setSelection(Math.min(editable.length(), start + (value == null ? 0 : value.length())));
+    }
+
+    private void deleteCommunityChatText() {
+        if (discordChatComposer == null) return;
+        Editable editable = discordChatComposer.getText();
+        int start = Math.max(0, discordChatComposer.getSelectionStart());
+        int end = Math.max(start, discordChatComposer.getSelectionEnd());
+        if (start != end) editable.delete(start, end);
+        else if (start > 0) {
+            int previous = Character.offsetByCodePoints(editable, start, -1);
+            editable.delete(previous, start);
+        }
+    }
+
+    private void moveCommunityChatCursor(int direction) {
+        if (discordChatComposer == null) return;
+        int current = Math.max(0, discordChatComposer.getSelectionStart());
+        Editable editable = discordChatComposer.getText();
+        int next = direction < 0 && current > 0 ? Character.offsetByCodePoints(editable, current, -1)
+                : direction > 0 && current < editable.length() ? Character.offsetByCodePoints(editable, current, 1)
+                : current;
+        discordChatComposer.setSelection(next);
+    }
+
+    private void sendCommunityChat() {
+        if (discordChatComposer == null || actionListener == null || pendingChatFriendId.isEmpty()) return;
+        String draft = discordChatComposer.getText().toString();
+        if (!draft.trim().isEmpty()) actionListener.onDiscordCommunitySendChat(pendingChatFriendId, draft);
+    }
+
+    private void openVisibleCommunityChatContent() {
+        if (discordChatHistory == null || actionListener == null) return;
+        int childCount = discordChatHistory.getChildCount();
+        int[] tops = new int[childCount];
+        int[] bottoms = new int[childCount];
+        View[] candidates = new View[childCount];
+        int candidateCount = 0;
+        for (int index = 0; index < childCount; index++) {
+            View child = discordChatHistory.getChildAt(index);
+            if (!child.isFocusable() || !child.isClickable()) continue;
+            android.graphics.Rect bounds = new android.graphics.Rect();
+            child.getDrawingRect(bounds);
+            discordChatHistoryScroll.offsetDescendantRectToMyCoords(child, bounds);
+            tops[candidateCount] = bounds.top;
+            bottoms[candidateCount] = bounds.bottom;
+            candidates[candidateCount] = child;
+            candidateCount++;
+        }
+        int selected = nearestVisibleCommunityMediaIndex(discordChatHistoryScroll.getScrollY(),
+                discordChatHistoryScroll.getHeight(), tops, bottoms, candidateCount);
+        if (selected >= 0) candidates[selected].performClick();
+    }
+
+    /** R3 must never open a stale CTA outside the currently visible chat viewport. */
+    static int nearestVisibleCommunityMediaIndex(int scrollTop, int viewportHeight,
+                                                  int[] tops, int[] bottoms, int count) {
+        if (tops == null || bottoms == null || viewportHeight <= 0) return -1;
+        int limit = Math.min(Math.min(tops.length, bottoms.length), Math.max(0, count));
+        int scrollBottom = scrollTop + viewportHeight;
+        int preferredCenter = scrollTop + Math.round(viewportHeight * .65f);
+        int selected = -1;
+        int bestDistance = Integer.MAX_VALUE;
+        for (int index = 0; index < limit; index++) {
+            if (bottoms[index] <= scrollTop || tops[index] >= scrollBottom) continue;
+            int center = tops[index] + (bottoms[index] - tops[index]) / 2;
+            int distance = Math.abs(center - preferredCenter);
+            if (distance < bestDistance) {
+                selected = index;
+                bestDistance = distance;
+            }
+        }
+        return selected;
+    }
+
+    private void applyCommunityChatPanelSize() { applyCommunityPanelSize(COMMUNITY_CHAT_WIDTH_DP, COMMUNITY_CHAT_HEIGHT_DP); }
+    private void restoreCommunityPanelSize() { applyCommunityPanelSize(COMMUNITY_QUICK_WIDTH_DP, COMMUNITY_QUICK_HEIGHT_DP); }
+
+    private void applyCommunityPanelSize(int widthDp, int heightDp) {
+        if (discordContainer == null || !(discordContainer.getLayoutParams() instanceof LinearLayout.LayoutParams)) return;
+        LinearLayout.LayoutParams params = (LinearLayout.LayoutParams) discordContainer.getLayoutParams();
+        int desiredWidth = dp(widthDp);
+        int desiredHeight = dp(heightDp);
+        View root = getRootView();
+        int availableWidth = root == null ? 0 : root.getWidth() - dp(40);
+        int availableHeight = root == null ? 0 : root.getHeight() - dp(40);
+        params.width = communityPanelDimension(desiredWidth, availableWidth);
+        params.height = communityPanelDimension(desiredHeight, availableHeight);
+        discordContainer.setLayoutParams(params);
+        if (root == null || root.getWidth() <= 0 || root.getHeight() <= 0) {
+            post(() -> applyCommunityPanelSize(widthDp, heightDp));
         }
     }
 
@@ -1053,9 +2261,10 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     private void updateDiscordActionButtons() {
-        boolean connected = discordVoice != null && discordVoice.connected;
+        DiscordActionVoiceState actionVoice = discordActionVoiceState();
+        boolean connected = actionVoice.connected;
         if (discordMuteButton != null) {
-            discordMuteButton.setLabel(discordMuteLabel());
+            discordMuteButton.setLabel(discordMuteLabel(actionVoice.muted));
             discordMuteButton.setAlpha(connected ? 1f : 0.45f);
         }
         if (discordLeaveButton != null) {
@@ -1090,10 +2299,42 @@ public class OverlayMenuView extends LinearLayout {
                 : R.string.overlay_discord_social_friends;
     }
 
-    private String discordMuteLabel() {
-        int stringId = discordVoice != null && discordVoice.muted ?
+    private String discordMuteLabel(boolean muted) {
+        int stringId = muted ?
                 R.string.overlay_discord_unmute : R.string.overlay_discord_mute;
         return getContext().getString(stringId) + shortcutSuffix(discordMuteShortcut);
+    }
+
+    private DiscordActionVoiceState discordActionVoiceState() {
+        return discordActionVoiceState(overlayMode, communityModel,
+                discordVoice != null && discordVoice.connected,
+                discordVoice != null && discordVoice.muted,
+                discordVoice != null && discordVoice.deafened);
+    }
+
+    static DiscordActionVoiceState discordActionVoiceState(OverlayMode mode, CommunityModel model,
+                                                            boolean legacyConnected,
+                                                            boolean legacyMuted,
+                                                            boolean legacyDeafened) {
+        if (mode == OverlayMode.COMMUNITY && model != null) {
+            VoiceSummary voice = model.voice;
+            return voice == null
+                    ? new DiscordActionVoiceState(false, false, false)
+                    : new DiscordActionVoiceState(voice.connected, voice.muted, voice.deafened);
+        }
+        return new DiscordActionVoiceState(legacyConnected, legacyMuted, legacyDeafened);
+    }
+
+    static final class DiscordActionVoiceState {
+        final boolean connected;
+        final boolean muted;
+        final boolean deafened;
+
+        DiscordActionVoiceState(boolean connected, boolean muted, boolean deafened) {
+            this.connected = connected;
+            this.muted = muted;
+            this.deafened = deafened;
+        }
     }
 
     private String discordLeaveLabel() {
@@ -1253,20 +2494,49 @@ public class OverlayMenuView extends LinearLayout {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (event.getKeyCode() == KeyEvent.KEYCODE_BACK && event.getAction() == KeyEvent.ACTION_DOWN) {
-            if (!isFullGamepadEvent(event) && event.getRepeatCount() == 0) {
-                if (overlayMode == OverlayMode.COMMUNITY) returnToMenu(); else closeMenu();
+        int keyCode = flipFaceButtons ? handleFlipFaceButtons(event.getKeyCode()) : event.getKeyCode();
+        boolean chatKeyboardVisible = discordChatKeyboard != null
+                && discordChatKeyboard.getVisibility() == VISIBLE
+                && discordChatContainer != null && discordChatContainer.getVisibility() == VISIBLE;
+        if (shouldRouteCommunityChatKeyboard(overlayMode, communitySubmode, chatKeyboardVisible)
+                && shouldForwardCommunityChatKeyAction(event.getAction())) {
+            KeyEvent translated = keyCode == event.getKeyCode() ? event
+                    : new KeyEvent(event.getDownTime(), event.getEventTime(), event.getAction(), keyCode,
+                    event.getRepeatCount(), event.getMetaState(), event.getDeviceId(), event.getScanCode(),
+                    event.getFlags(), event.getSource());
+            if ((keyCode == KeyEvent.KEYCODE_BUTTON_B || keyCode == KeyEvent.KEYCODE_BACK)
+                    && discordChatKeyboard.handleAccentCancel(translated)) return true;
+            if (discordChatKeyboard.handleNavigationKey(translated)) {
+                communityFocus = CommunityFocus.CHAT_KEYBOARD;
+                return true;
             }
-            return true;
+        }
+        if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_BUTTON_B) {
+            if (event.getAction() == KeyEvent.ACTION_UP) {
+                boolean consumed = communityCancelKeyDown;
+                communityCancelKeyDown = false;
+                return consumed || isGamepadEvent(event) || keyCode == KeyEvent.KEYCODE_BACK;
+            }
+            if (event.getAction() == KeyEvent.ACTION_DOWN) {
+                if (communityCancelDownHasEffect(communityCancelKeyDown, event.getRepeatCount())) {
+                    communityCancelKeyDown = true;
+                    if (keyCode != KeyEvent.KEYCODE_BACK || !isFullGamepadEvent(event)) {
+                        if (overlayMode == OverlayMode.COMMUNITY) backCommunity(); else closeMenu();
+                    }
+                }
+                return true;
+            }
         }
 
         if (event.getAction() == KeyEvent.ACTION_DOWN) {
-            int keyCode = event.getKeyCode();
-            if (flipFaceButtons) {
-                keyCode = handleFlipFaceButtons(keyCode);
-            }
-
             if (overlayMode == OverlayMode.COMMUNITY) {
+                if (isCommunityNavigationKey(keyCode) || isGamepadEvent(event)) {
+                    communityInteractionGeneration++;
+                }
+                if (communitySubmode == CommunitySubmode.FRIEND_CHAT) {
+                    return dispatchCommunityChatKey(keyCode, event);
+                }
+                syncCommunityFocusFromFocusedView();
                 if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT
                         || keyCode == KeyEvent.KEYCODE_DPAD_UP || keyCode == KeyEvent.KEYCODE_DPAD_DOWN) {
                     lastCommunityDirectionalKeyAt = event.getEventTime();
@@ -1281,21 +2551,20 @@ public class OverlayMenuView extends LinearLayout {
                 }
                 if (keyCode == KeyEvent.KEYCODE_DPAD_LEFT) {
                     if (communityFocus == CommunityFocus.ACTION) {
-                        int next = communityActionTarget(discordIndex, keyCode,
-                                discordButtons.size());
-                        if (next >= 0) {
-                            setDiscordIndex(next);
+                        int targetRegion = communityActionLeftRegion(discordIndex,
+                                !communityRows.isEmpty());
+                        if (targetRegion == COMMUNITY_REGION_ACTION) {
+                            setDiscordIndex(discordIndex - 1);
                             return true;
                         }
-                        if (communityRegionTarget(COMMUNITY_REGION_ACTION, keyCode,
-                                !discordButtons.isEmpty()) == COMMUNITY_REGION_CONTENT) {
-                            focusCommunityContent();
-                            return true;
-                        }
+                        focusCommunityListOrRail();
+                        return true;
                     }
-                    communityFocus = CommunityFocus.RAIL;
-                    activeRegion = Region.DISCORD;
-                    if (!discordRailIcons.isEmpty()) discordRailIcons.get(discordQuickSection).requestFocus();
+                    if (communityFocus == CommunityFocus.LIST) {
+                        focusCommunityRail();
+                        return true;
+                    }
+                    focusCommunityRail();
                     return true;
                 }
                 if (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT) {
@@ -1303,15 +2572,20 @@ public class OverlayMenuView extends LinearLayout {
                         int next = communityActionTarget(discordIndex, keyCode,
                                 discordButtons.size());
                         if (next >= 0) setDiscordIndex(next);
-                    } else if (communityFocus == CommunityFocus.CONTENT
+                    } else if (communityFocus == CommunityFocus.LIST
                             && communityRegionTarget(COMMUNITY_REGION_CONTENT, keyCode,
                             !discordButtons.isEmpty()) == COMMUNITY_REGION_ACTION) {
                         communityFocus = CommunityFocus.ACTION;
                         setDiscordIndex(0);
                     } else if (communityFocus == CommunityFocus.RAIL
-                            && communityRegionTarget(COMMUNITY_REGION_RAIL, keyCode,
+                            && communityRailRightRegion(!communityRows.isEmpty(),
                             !discordButtons.isEmpty()) == COMMUNITY_REGION_CONTENT) {
-                        focusCommunityContent();
+                        focusCommunityList();
+                    } else if (communityFocus == CommunityFocus.RAIL
+                            && communityRailRightRegion(!communityRows.isEmpty(),
+                            !discordButtons.isEmpty()) == COMMUNITY_REGION_ACTION) {
+                        communityFocus = CommunityFocus.ACTION;
+                        setDiscordIndex(0);
                     }
                     return true;
                 }
@@ -1322,10 +2596,19 @@ public class OverlayMenuView extends LinearLayout {
                                 discordRailIcons.size());
                         if (next != discordQuickSection) selectDiscordQuickSection(next);
                         if (!discordRailIcons.isEmpty()) discordRailIcons.get(next).requestFocus();
-                    } else if (communityFocus == CommunityFocus.CONTENT) {
-                        scrollCommunityContent(keyCode == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1);
+                    } else if (communityFocus == CommunityFocus.LIST) {
+                        if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN
+                                && communityListDownEntersActions(communityListIndex,
+                                communityRows.size(), !discordButtons.isEmpty())) {
+                            communityFocus = CommunityFocus.ACTION;
+                            setDiscordIndex(0);
+                        } else moveCommunityList(keyCode == KeyEvent.KEYCODE_DPAD_UP ? -1 : 1);
                     } else if (!discordButtons.isEmpty()) {
-                        setDiscordIndex(communityActionTarget(discordIndex, keyCode,
+                        if (keyCode == KeyEvent.KEYCODE_DPAD_UP
+                                && communityActionUpEntersList(discordIndex, !communityRows.isEmpty())) {
+                            communityFocus = CommunityFocus.LIST;
+                            setCommunityListIndex(communityRows.size() - 1);
+                        } else setDiscordIndex(communityActionTarget(discordIndex, keyCode,
                                 discordButtons.size()));
                     }
                     return true;
@@ -1333,11 +2616,13 @@ public class OverlayMenuView extends LinearLayout {
                 if (keyCode == KeyEvent.KEYCODE_BUTTON_A || keyCode == KeyEvent.KEYCODE_DPAD_CENTER
                         || keyCode == KeyEvent.KEYCODE_ENTER) {
                     if (communityFocus == CommunityFocus.ACTION) activateSelected();
-                    else selectDiscordQuickSection(discordQuickSection);
+                    else if (communityFocus == CommunityFocus.LIST && communityListIndex >= 0
+                            && communityListIndex < communityRows.size()) {
+                        communityRows.get(communityListIndex).view.performClick();
+                    } else selectDiscordQuickSection(discordQuickSection);
                     return true;
                 }
-                if (keyCode == KeyEvent.KEYCODE_BUTTON_B) { returnToMenu(); return true; }
-                return isGamepadEvent(event);
+                return isGamepadEvent(event) || isCommunityNavigationKey(keyCode);
             }
 
             if (handleDiscordRailKey(keyCode)) return true;
@@ -1375,10 +2660,6 @@ public class OverlayMenuView extends LinearLayout {
                     activateSelected();
                     return true;
 
-                case KeyEvent.KEYCODE_BUTTON_B:
-                    closeMenu();
-                    return true;
-
                 case KeyEvent.KEYCODE_BUTTON_X:
                     if (event.getRepeatCount() == 0) {
                         activateMouseEmulation();
@@ -1406,7 +2687,9 @@ public class OverlayMenuView extends LinearLayout {
             }
         }
 
-        if (isGamepadEvent(event)) {
+        if (isGamepadEvent(event)
+                || (overlayMode == OverlayMode.COMMUNITY
+                && isCommunityNavigationKey(event.getKeyCode()))) {
             return true;
         }
         return super.dispatchKeyEvent(event);
@@ -1437,16 +2720,51 @@ public class OverlayMenuView extends LinearLayout {
         return false;
     }
 
-    private void focusCommunityContent() {
-        if (discordContentScroll == null) return;
-        communityFocus = CommunityFocus.CONTENT;
+    private void focusCommunityList() {
+        if (communityRows.isEmpty()) return;
+        communityFocus = CommunityFocus.LIST;
         activeRegion = Region.DISCORD;
-        discordContentScroll.requestFocus();
+        setCommunityListIndex(Math.max(0, communityListIndex));
+    }
+
+    private void syncCommunityFocusFromFocusedView() {
+        View focused = findFocus();
+        if (focused == null) return;
+        if (discordRailIcons.contains(focused)) {
+            communityFocus = CommunityFocus.RAIL;
+            activeRegion = Region.DISCORD;
+            return;
+        }
+        for (int index = 0; index < communityRows.size(); index++) {
+            if (communityRows.get(index).view == focused) {
+                communityFocus = CommunityFocus.LIST;
+                communityListIndex = index;
+                activeRegion = Region.DISCORD;
+                return;
+            }
+        }
+        int actionIndex = discordButtons.indexOf(focused);
+        if (actionIndex >= 0) {
+            communityFocus = CommunityFocus.ACTION;
+            discordIndex = actionIndex;
+            activeRegion = Region.DISCORD;
+        }
+    }
+
+    private void focusCommunityListOrRail() {
+        if (communityRows.isEmpty()) focusCommunityRail();
+        else focusCommunityList();
+    }
+
+    private void focusCommunityRail() {
+        communityFocus = CommunityFocus.RAIL;
+        activeRegion = Region.DISCORD;
+        if (!discordRailIcons.isEmpty()) discordRailIcons.get(discordQuickSection).requestFocus();
     }
 
     private void restoreCommunityFocusAfterSectionChange(CommunityFocus previous, int section) {
-        if (previous == CommunityFocus.CONTENT) {
-            focusCommunityContent();
+        if (previous == CommunityFocus.LIST) {
+            focusCommunityList();
             return;
         }
         if (previous == CommunityFocus.ACTION && !discordButtons.isEmpty()) {
@@ -1459,16 +2777,66 @@ public class OverlayMenuView extends LinearLayout {
         if (!discordRailIcons.isEmpty()) discordRailIcons.get(section).requestFocus();
     }
 
-    private void scrollCommunityContent(int direction) {
-        if (discordContentScroll == null) return;
-        View child = discordContentScroll.getChildCount() == 0 ? null
-                : discordContentScroll.getChildAt(0);
-        int max = child == null ? 0 : child.getHeight() - discordContentScroll.getHeight();
-        int target = communityContentScrollTarget(discordContentScroll.getScrollY(), max,
-                direction * dp(84));
-        if (target != discordContentScroll.getScrollY()) {
-            discordContentScroll.smoothScrollTo(0, target);
+    private void setCommunityListIndex(int index) {
+        if (communityRows.isEmpty()) return;
+        communityListIndex = Math.max(0, Math.min(communityRows.size() - 1, index));
+        View row = communityRows.get(communityListIndex).view;
+        row.requestFocus();
+        revealCommunityRow(row);
+    }
+
+    private void moveCommunityList(int direction) {
+        if (communityRows.isEmpty()) return;
+        setCommunityListIndex(Math.max(0, Math.min(communityRows.size() - 1,
+                communityListIndex + direction)));
+    }
+
+    private void revealCommunityRow(View row) {
+        if (row == null || discordContentScroll == null) return;
+        row.post(() -> {
+            android.graphics.Rect bounds = new android.graphics.Rect();
+            row.getDrawingRect(bounds);
+            discordContentScroll.offsetDescendantRectToMyCoords(row, bounds);
+            int top = discordContentScroll.getScrollY();
+            int bottom = top + discordContentScroll.getHeight();
+            if (bounds.top < top) discordContentScroll.smoothScrollTo(0, bounds.top);
+            else if (bounds.bottom > bottom) discordContentScroll.smoothScrollTo(0,
+                    Math.max(0, bounds.bottom - discordContentScroll.getHeight()));
+        });
+    }
+
+    private void backCommunity() {
+        if (communitySubmode == CommunitySubmode.FRIEND_CHAT) {
+            cancelCommunityChatKeyboardHold();
+            communitySubmode = CommunitySubmode.ROOT;
+            communitySection = CommunitySection.FRIENDS;
+            discordQuickSection = 1;
+            pendingChatFriendId = "";
+            communityFocus = CommunityFocus.LIST;
+            restoreCommunityPanelSize();
+            renderDiscordCard();
+            if (actionListener != null) actionListener.onDiscordCommunityBackToFriends();
+            post(this::focusCommunityList);
+            return;
         }
+        if (communityBackNotifiesChannels(communitySubmode)) {
+            communitySubmode = CommunitySubmode.ROOT;
+            pendingGuildId = "";
+            communityFocus = CommunityFocus.LIST;
+            renderDiscordCard();
+            if (actionListener != null) actionListener.onDiscordCommunityBackToChannels();
+            post(this::focusCommunityList);
+            return;
+        }
+        returnToMenu();
+    }
+
+    private boolean dispatchCommunityChatKey(int keyCode, KeyEvent source) {
+        if (keyCode == KeyEvent.KEYCODE_BUTTON_B || keyCode == KeyEvent.KEYCODE_BACK) {
+            backCommunity();
+            return true;
+        }
+        return isGamepadEvent(source) || isCommunityNavigationKey(keyCode);
     }
 
     /**
@@ -1489,7 +2857,7 @@ public class OverlayMenuView extends LinearLayout {
     public boolean onKeyDown(int keyCode, KeyEvent event) {
         if (keyCode == KeyEvent.KEYCODE_BACK) {
             if (!isFullGamepadEvent(event) && event.getRepeatCount() == 0) {
-                if (overlayMode == OverlayMode.COMMUNITY) returnToMenu(); else closeMenu();
+                if (overlayMode == OverlayMode.COMMUNITY) backCommunity(); else closeMenu();
             }
             return true;
         }
@@ -1504,7 +2872,8 @@ public class OverlayMenuView extends LinearLayout {
     @Override
     public boolean onGenericMotionEvent(MotionEvent event) {
         if (overlayMode == OverlayMode.COMMUNITY) {
-            return handleCommunityMotion(event) || super.onGenericMotionEvent(event);
+            boolean handled = handleCommunityMotion(event);
+            return handled || isGamepadMotionEvent(event) || super.onGenericMotionEvent(event);
         }
         if (isGamepadMotionEvent(event)) {
             float x = event.getAxisValue(MotionEvent.AXIS_X);
@@ -1545,6 +2914,7 @@ public class OverlayMenuView extends LinearLayout {
     /** DualSense D-pad is HAT motion on Android TV; send its edges through the Community key reducer. */
     private boolean handleCommunityMotion(MotionEvent event) {
         if (!isGamepadMotionEvent(event) || event.getAction() != MotionEvent.ACTION_MOVE) return false;
+        boolean rightStickHandled = handleCommunityRightStickScroll(event);
         InputDevice device = event.getDevice();
         boolean hasHat = device != null && (device.getMotionRange(MotionEvent.AXIS_HAT_X) != null
                 || device.getMotionRange(MotionEvent.AXIS_HAT_Y) != null);
@@ -1553,6 +2923,14 @@ public class OverlayMenuView extends LinearLayout {
         float vertical = hasHat ? event.getAxisValue(MotionEvent.AXIS_HAT_Y)
                 : event.getAxisValue(MotionEvent.AXIS_Y);
         int direction = communityMotionDirection(horizontal, vertical, hasHat ? .45f : .85f);
+        boolean chatKeyboardVisible = discordChatKeyboard != null
+                && discordChatKeyboard.getVisibility() == VISIBLE
+                && discordChatContainer != null && discordChatContainer.getVisibility() == VISIBLE;
+        if (shouldRouteCommunityChatKeyboard(overlayMode, communitySubmode, chatKeyboardVisible)) {
+            communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
+            return discordChatKeyboard.updateDirectionalHat(direction) || rightStickHandled;
+        }
+        if (rightStickHandled) return true;
         if (direction == KeyEvent.KEYCODE_UNKNOWN) {
             boolean consumed = communityMotionDirection != KeyEvent.KEYCODE_UNKNOWN;
             communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
@@ -1562,6 +2940,38 @@ public class OverlayMenuView extends LinearLayout {
         communityMotionDirection = direction;
         if (Math.abs(event.getEventTime() - lastCommunityDirectionalKeyAt) < 80L) return true;
         return dispatchKeyEvent(new KeyEvent(KeyEvent.ACTION_DOWN, direction));
+    }
+
+    private boolean handleCommunityRightStickScroll(MotionEvent event) {
+        InputDevice device = event.getDevice();
+        int axis = device == null ? -1 : communityRightStickVerticalAxis(
+                hasCommunityAxis(device, MotionEvent.AXIS_RX), hasCommunityAxis(device, MotionEvent.AXIS_RY),
+                hasCommunityAxis(device, MotionEvent.AXIS_Z), hasCommunityAxis(device, MotionEvent.AXIS_RZ));
+        if (axis < 0) return false;
+        float value = event.getAxisValue(axis);
+        if (Math.abs(value) < .5f) return false;
+        long now = event.getEventTime();
+        if (now - lastCommunityScrollTime < ANALOG_NAV_THROTTLE_MS) return true;
+        ScrollView target = communitySubmode == CommunitySubmode.FRIEND_CHAT
+                ? discordChatHistoryScroll : discordContentScroll;
+        if (target == null) return true;
+        int direction = value > 0 ? 1 : -1;
+        if (target.canScrollVertically(direction)) {
+            target.smoothScrollBy(0, direction * dp(communitySubmode == CommunitySubmode.FRIEND_CHAT
+                    ? COMMUNITY_HISTORY_SCROLL_DP : COMMUNITY_LIST_SCROLL_DP));
+            lastCommunityScrollTime = now;
+        }
+        return true;
+    }
+
+    static int communityRightStickVerticalAxis(boolean hasRx, boolean hasRy, boolean hasZ, boolean hasRz) {
+        if (hasRx && hasRy) return MotionEvent.AXIS_RY;
+        return hasZ && hasRz ? MotionEvent.AXIS_RZ : -1;
+    }
+
+    private static boolean hasCommunityAxis(InputDevice device, int axis) {
+        return device.getMotionRange(axis, InputDevice.SOURCE_JOYSTICK) != null
+                || device.getMotionRange(axis, InputDevice.SOURCE_GAMEPAD) != null;
     }
 
     static int communityMotionDirection(float horizontal, float vertical, float threshold) {
@@ -1863,8 +3273,10 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     public void closeMenu() {
+        cancelCommunityChatKeyboardHold();
         overlayMode = OverlayMode.MENU;
         communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
+        invalidateCommunityProjectionCache();
         applyOverlayMode();
         hide(() -> {
             if (actionListener != null) {
@@ -1915,6 +3327,8 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     public void show() {
+        communityCancelKeyDown = false;
+        invalidateCommunityProjectionCache();
         buildMenu();
         setVisibility(VISIBLE);
 

@@ -189,7 +189,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
-    public void runningGameFallbackReportsStoppingAndPlayniteReturning() {
+    public void runningGameFallbackReportsStopAndEndsProviderSession() {
         FakeGateway gateway = gatewayWith(
                 snapshot(true, true, "running", GAME, 42, true, "game", 0, ""),
                 snapshot(true, true, "idle", "", 0, true, "playnite", 0, ""));
@@ -197,8 +197,9 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         harness.runObservation();
 
-        assertEquals(LaunchTransitionState.PLAYNITE_RETURNING,
+        assertEquals(LaunchTransitionState.GAME_STOPPING,
                 harness.controller.snapshot().state);
+        assertEquals(1, harness.callbacks.providerStopCalls);
     }
 
     @Test
@@ -252,13 +253,14 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void subsequentEventsMapToController() {
         FakeGateway gateway = gatewayWith(snapshotReadyGame(), snapshotReadyGame());
         gateway.events.add(events(1));
-        gateway.events.add(events(7,
+        gateway.events.add(events(8,
                 event(2, "game-starting", GAME, "Game"),
                 event(3, "game-running", GAME, "Game"),
                 event(4, "privacy-gate-closed", GAME, "Game"),
                 event(5, "game-stopping", GAME, "Game"),
-                event(6, "game-stopped", GAME, "Game"),
-                event(7, "bridge-disconnected", GAME, "Game")));
+                event(6, "game-stopped", "steam:other", "Other"),
+                event(7, "game-stopped", GAME, "Game"),
+                event(8, "bridge-disconnected", GAME, "Game")));
         Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
 
         harness.runObservation();
@@ -266,7 +268,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertTrue(harness.states.contains(LaunchTransitionState.GAME_STARTING));
         assertTrue(harness.states.contains(LaunchTransitionState.GAME_PROCESS_RUNNING));
         assertTrue(harness.states.contains(LaunchTransitionState.GAME_WINDOW_STABILIZING));
-        assertTrue(harness.states.contains(LaunchTransitionState.PLAYNITE_RETURNING));
+        assertEquals(1, harness.callbacks.providerStopCalls);
         assertEquals(LaunchTransitionState.PLAYNITE_STOPPING,
                 harness.controller.snapshot().state);
     }
@@ -394,6 +396,116 @@ public class ConsoleStreamTransitionCoordinatorTest {
         scheduler.actions.get(1).run();
         scheduler.actions.get(2).run();
         assertEquals(1, gateway.focusInstallationCalls);
+    }
+
+    @Test
+    public void existingGameConnectionDoesNotRestartGameOrActLikeInstallation() {
+        FakeGateway gateway = new FakeGateway();
+        QueuedScheduler scheduler = new QueuedScheduler();
+        Harness harness = new Harness(LaunchTransitionType.GAME_CONNECTION, gateway,
+                new FakeClock(), new InterruptingSleeper(), scheduler);
+
+        harness.coordinator.start();
+        harness.coordinator.onStreamConnected();
+
+        assertFalse(harness.coordinator.isInstallationConfirmationStream());
+        assertEquals(0, gateway.startGameCalls);
+        assertEquals(0, gateway.focusInstallationCalls);
+        assertTrue(scheduler.actions.isEmpty());
+    }
+
+    @Test
+    public void providerRecordStartsExactlyOnceAfterStreamConnect() {
+        LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
+                "transition-provider", HOST, LaunchTransitionType.GAME, 42,
+                "steam:289070", 1_000L);
+        LaunchTransitionController controller = new LaunchTransitionController(null);
+        controller.begin(providerSpec);
+        controller.overlayRendered(providerSpec.id);
+        FakeGateway gateway = new FakeGateway();
+        gateway.snapshots.add(new IOException("stop observation"));
+        ConsoleStreamTransitionCoordinator coordinator =
+                new ConsoleStreamTransitionCoordinator(
+                        providerSpec, controller, gateway, new InlineExecutor(),
+                        new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                        new FakeCallbacks());
+        coordinator.start();
+        Thread.interrupted();
+
+        coordinator.onStreamConnected();
+        coordinator.onStreamConnected();
+
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals("steam:289070", gateway.startedGameId);
+    }
+
+    @Test
+    public void providerStartIsNotStarvedByLongRunningObservation() throws Exception {
+        LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
+                "transition-provider", HOST, LaunchTransitionType.GAME, 42,
+                "steam:289070", 1_000L);
+        LaunchTransitionController controller = new LaunchTransitionController(null);
+        controller.begin(providerSpec);
+        controller.overlayRendered(providerSpec.id);
+        CountDownLatch observationEntered = new CountDownLatch(1);
+        CountDownLatch releaseObservation = new CountDownLatch(1);
+        CountDownLatch startCalled = new CountDownLatch(1);
+        FakeGateway gateway = new FakeGateway() {
+            @Override public PlayniteTransitionGateway.Snapshot snapshot() {
+                observationEntered.countDown();
+                try {
+                    releaseObservation.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                return ConsoleStreamTransitionCoordinatorTest.snapshot(
+                        true, true, "idle", GAME, 0, false, "playnite", 0, "");
+            }
+
+            @Override public void startGame(String gameId) throws IOException {
+                super.startGame(gameId);
+                startCalled.countDown();
+            }
+        };
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                providerSpec, controller, gateway, executor, new FakeClock(),
+                new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
+
+        coordinator.start();
+        assertTrue(observationEntered.await(2, TimeUnit.SECONDS));
+        coordinator.onStreamConnected();
+        assertTrue(startCalled.await(2, TimeUnit.SECONDS));
+        assertEquals("steam:289070", gateway.startedGameId);
+
+        releaseObservation.countDown();
+        coordinator.close();
+        assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS));
+    }
+
+    @Test
+    public void providerLauncherInteractionKeepsRevealChoiceAvailable() {
+        LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
+                "transition-provider", HOST, LaunchTransitionType.GAME, 42,
+                "steam:289070", 1_000L);
+        LaunchTransitionController controller = new LaunchTransitionController(null);
+        controller.begin(providerSpec);
+        controller.overlayRendered(providerSpec.id);
+        FakeGateway gateway = new FakeGateway();
+        gateway.snapshots.add(new IOException("stop observation"));
+        gateway.startError = new IOException("launcher_interaction_required");
+        ConsoleStreamTransitionCoordinator coordinator =
+                new ConsoleStreamTransitionCoordinator(
+                        providerSpec, controller, gateway, new InlineExecutor(),
+                        new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                        new FakeCallbacks());
+        coordinator.start();
+        Thread.interrupted();
+
+        coordinator.onStreamConnected();
+
+        assertEquals(LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED,
+                controller.snapshot().state);
     }
 
     @Test
@@ -536,10 +648,13 @@ public class ConsoleStreamTransitionCoordinatorTest {
         int focusGameCalls;
         int focusInstallationCalls;
         int ensureTargetCalls;
+        int startGameCalls;
+        String startedGameId = "";
         Runnable snapshotAction;
         FakeClock clock;
         boolean verifyResult;
         IOException verifyError;
+        IOException startError;
         boolean focusGameError;
 
         @Override public PlayniteTransitionGateway.Snapshot snapshot() throws IOException {
@@ -580,6 +695,12 @@ public class ConsoleStreamTransitionCoordinatorTest {
         @Override public void ensureInstalledGameTarget(String gameId, String gameName) {
             ensureTargetCalls++;
         }
+
+        @Override public void startGame(String gameId) throws IOException {
+            startGameCalls++;
+            startedGameId = gameId;
+            if (startError != null) throw startError;
+        }
     }
 
     private static final class FakeCallbacks
@@ -590,6 +711,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         final List<String> failed = new ArrayList<>();
         final List<String> attention = new ArrayList<>();
         String verification = "";
+        int providerStopCalls;
 
         @Override public String gatewayUnavailableMessage() { return "gateway unavailable"; }
         @Override public String hostSessionLockedMessage() { return "host locked"; }
@@ -611,6 +733,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 String hostId, String gameId, String gameName) { failed.add(gameId); }
         @Override public void onInstallationAttentionRequired(
                 String hostId, String gameId, String gameName) { attention.add(gameId); }
+        @Override public void onProviderGameStopped() { providerStopCalls++; }
         @Override public void onInstallationVerified() { verification = "verified"; }
         @Override public void onInstallationStillNeedsConfirmation() { verification = "still"; }
         @Override public void onInstallationVerificationFailed() { verification = "failed"; }

@@ -24,10 +24,11 @@ class GameOperationsTest(unittest.TestCase):
     def test_provider_resolver_and_source_precedence(self):
         self.assertIs(self.service.processes, self.epic.process_registry)
         self.assertIs(self.epic, self.service.provider_for({"source": "Epic"}))
-        self.assertIs(self.steam, self.service.provider_for({"pluginName": "Steam Library"}))
+        self.assertIs(self.generic, self.service.provider_for({"pluginName": "Steam Library"}))
+        self.assertIs(self.steam, self.service.provider_for({"provider": "steam"}))
         self.assertIs(self.generic, self.service.provider_for({"source": "GOG"}))
         game = {"source": "Local Games", "pluginName": "Epic"}
-        self.assertEqual("local games", self.service.provider_label(game))
+        self.assertEqual("playnite", self.service.provider_label(game))
         self.assertIs(self.generic, self.service.provider_for(game))
 
     def test_epic_scan_requires_finished_egstore_state(self):
@@ -55,20 +56,20 @@ class GameOperationsTest(unittest.TestCase):
 
             self.assertTrue(provider.scan()["by_id"]["app"]["installed"])
 
-    def test_connector_dispatch_for_generic_and_steam(self):
+    def test_only_playnite_provider_dispatches_connector_operations(self):
         calls = []
 
         def send(command, **payload):
             calls.append((command, payload))
             return {"accepted": True, "command": command}
 
-        for source in ("Playnite", "Steam"):
-            game = {"id": "game-id", "source": source}
-            self.service.dispatch_install(game, send)
-            self.service.dispatch_uninstall(game, send)
+        game = {"id": "game-id", "provider": "playnite",
+                "providerGameId": "playnite-id"}
+        self.service.dispatch_install(game, send)
+        self.service.dispatch_uninstall(game, send)
         self.assertEqual([
-            ("install", {"id": "game-id"}), ("uninstall", {"id": "game-id"}),
-            ("install", {"id": "game-id"}), ("uninstall", {"id": "game-id"}),
+            ("install", {"id": "playnite-id"}),
+            ("uninstall", {"id": "playnite-id"}),
         ], calls)
 
     def test_steam_install_dispatches_exact_direct_command_without_playnite(self):
@@ -92,6 +93,22 @@ class GameOperationsTest(unittest.TestCase):
             self.assertFalse(runner.call_args.kwargs["shell"])
             sender.assert_not_called()
 
+    @mock.patch("winreg.QueryValueEx")
+    @mock.patch("winreg.OpenKey")
+    def test_steam_root_falls_back_to_machine_install_path(self, open_key, query_value):
+        import winreg
+        machine_key = mock.MagicMock()
+        machine_key.__enter__.return_value = machine_key
+        open_key.side_effect = [OSError(), machine_key]
+        query_value.return_value = (r"E:\Gry\Steam", winreg.REG_SZ)
+
+        self.assertEqual(Path(r"E:\Gry\Steam"), SteamProvider._steam_root())
+        self.assertEqual([
+            mock.call(winreg.HKEY_CURRENT_USER, r"Software\Valve\Steam"),
+            mock.call(winreg.HKEY_LOCAL_MACHINE, r"SOFTWARE\Valve\Steam"),
+        ], open_key.call_args_list)
+        query_value.assert_called_once_with(machine_key, "InstallPath")
+
     def test_steam_uninstall_dispatches_exact_direct_command_without_playnite(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -113,7 +130,7 @@ class GameOperationsTest(unittest.TestCase):
             self.assertFalse(runner.call_args.kwargs["shell"])
             sender.assert_not_called()
 
-    def test_invalid_app_id_or_missing_executable_uses_playnite_without_runner(self):
+    def test_invalid_app_id_or_missing_executable_never_uses_playnite(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             runner = mock.Mock()
@@ -126,14 +143,251 @@ class GameOperationsTest(unittest.TestCase):
             ]
 
             for game in games:
-                self.assertEqual(
-                    "playnite", provider.dispatch_install(game, sender)["dispatch"])
+                result = provider.dispatch_install(game, sender)
+                self.assertFalse(result["accepted"])
+                self.assertEqual("none", result["dispatch"])
 
             runner.assert_not_called()
+            sender.assert_not_called()
+
+    def test_aggregate_catalog_uses_exact_provider_ids_and_no_title_matching(self):
+        self.steam.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "reason": "", "games": [{
+                "id": "steam:289070", "provider": "steam",
+                "providerGameId": "289070", "name": "Civilization VI",
+                "libraryKey": "steam", "libraryName": "Steam",
+            }],
+        })
+        self.epic.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "reason": "", "games": [{
+                "id": "epic:CelesteApp", "provider": "epic",
+                "providerGameId": "CelesteApp", "name": "Celeste",
+                "libraryKey": "epic", "libraryName": "Epic",
+            }],
+        })
+        steam_overlay = {
+            "id": "11111111-1111-1111-1111-111111111111", "source": "Steam",
+            "providerGameId": "289070", "name": "Other title", "cover": "steam.jpg",
+        }
+        epic_wrong_case = {
+            "id": "22222222-2222-2222-2222-222222222222", "source": "Epic",
+            "providerGameId": "celesteapp", "name": "Celeste", "cover": "wrong.jpg",
+        }
+        same_title_gog = {
+            "id": "33333333-3333-3333-3333-333333333333", "source": "GOG",
+            "providerGameId": "gog-id", "name": "Celeste",
+        }
+
+        result = self.service.aggregate_catalog(
+            [steam_overlay, epic_wrong_case, same_title_gog])["library"]
+
+        self.assertEqual(3, len(result))
+        self.assertEqual(steam_overlay["id"], result["steam:289070"]["playniteGameId"])
+        self.assertNotIn("cover", result["epic:CelesteApp"])
+        self.assertEqual("playnite", result[same_title_gog["id"]]["provider"])
+        self.assertEqual("gog", result[same_title_gog["id"]]["libraryKey"])
+
+    def test_failed_steam_catalog_preserves_provider_without_reclassification(self):
+        self.steam.catalog = mock.Mock(return_value={
+            "available": False, "complete": False, "reason": "offline", "games": [],
+        })
+        self.epic.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "reason": "", "games": [],
+        })
+        previous = {"steam:10": {
+            "id": "steam:10", "provider": "steam", "providerGameId": "10",
+            "name": "Owned", "libraryKey": "steam", "libraryName": "Steam",
+        }}
+        overlay = {
+            "id": "44444444-4444-4444-4444-444444444444", "source": "Steam",
+            "providerGameId": "10", "name": "Owned",
+        }
+
+        result = self.service.aggregate_catalog([overlay], previous)
+
+        self.assertEqual("steam", result["library"]["steam:10"]["provider"])
+        self.assertEqual("offline", result["providers"]["steam"]["reason"])
+
+    def test_incomplete_provider_snapshot_preserves_last_authoritative_record(self):
+        self.steam.catalog = mock.Mock(return_value={
+            "available": True, "complete": False,
+            "reason": "steam_manifest_scan_incomplete", "games": [{
+                "id": "steam:10", "provider": "steam", "providerGameId": "10",
+                "name": "Owned", "installed": False,
+            }],
+        })
+        self.epic.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "reason": "", "games": [],
+        })
+        previous = {"steam:10": {
+            "id": "steam:10", "provider": "steam", "providerGameId": "10",
+            "name": "Owned", "installed": True,
+        }}
+
+        result = self.service.aggregate_catalog([], previous)
+
+        self.assertTrue(result["library"]["steam:10"]["installed"])
+        self.assertFalse(result["providers"]["steam"]["complete"])
+
+    def test_steam_launch_uses_authoritative_manifest_and_exact_process_contract(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "steam.exe"; executable.touch()
+            steamapps = root / "steamapps"; steamapps.mkdir()
+            install = steamapps / "common" / "Game"; install.mkdir(parents=True)
+            (steamapps / "appmanifest_224760.acf").write_text(
+                '"AppState"\n{\n"appid" "224760"\n"StateFlags" "4"\n'
+                '"installdir" "Game"\n}', encoding="utf-8")
+            process = mock.Mock(returncode=None)
+            process.poll.return_value = None
+            runner = mock.Mock(return_value=process)
+            preflight = mock.Mock(return_value={"ready": True, "started": False})
+            sender = mock.Mock()
+            provider = SteamProvider(
+                roots=[root], root_resolver=lambda: root, command_runner=runner,
+                big_picture_preflight=preflight)
+
+            result = provider.launch({
+                "id": "steam:224760", "provider": "steam",
+                "providerGameId": "224760",
+            }, "launch-task", sender)
+
+            self.assertTrue(result["accepted"])
             self.assertEqual([
-                mock.call("install", id="first"),
-                mock.call("install", id="second"),
-            ], sender.call_args_list)
+                str(executable.resolve()), "steam://launch/224760/Dialog",
+            ],
+                             runner.call_args.args[0])
+            self.assertEqual(str(root.resolve()), runner.call_args.kwargs["cwd"])
+            self.assertFalse(runner.call_args.kwargs["shell"])
+            preflight.assert_called_once_with(provider)
+            sender.assert_not_called()
+
+    def test_steam_console_log_is_not_launcher_surface_evidence(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "steam.exe"; executable.touch()
+            steamapps = root / "steamapps"; steamapps.mkdir()
+            install = steamapps / "common" / "Game"; install.mkdir(parents=True)
+            (steamapps / "appmanifest_224760.acf").write_text(
+                '"AppState"\n{\n"appid" "224760"\n"StateFlags" "4"\n'
+                '"installdir" "Game"\n}', encoding="utf-8")
+            logs = root / "logs"; logs.mkdir()
+            console_log = logs / "console_log.txt"
+            console_log.write_text(
+                "GameAction [AppID 224760, ActionID 1] : ShowLaunchOption\n",
+                encoding="utf-8")
+            process = mock.Mock(returncode=0)
+            process.poll.return_value = 0
+            provider = SteamProvider(
+                roots=[root], root_resolver=lambda: root,
+                command_runner=mock.Mock(return_value=process),
+                big_picture_preflight=mock.Mock(return_value={"ready": True}))
+
+            provider.launch({
+                "id": "steam:224760", "provider": "steam",
+                "providerGameId": "224760",
+            }, "launch-task")
+            with console_log.open("a", encoding="utf-8") as output:
+                output.write(
+                    "GameAction [AppID 999, ActionID 2] : ShowLaunchOption\n"
+                    "GameAction [AppID 224760, ActionID 3] : "
+                    "LaunchApp changed task to ShowLaunchOption with \"\"\n")
+
+            sample = provider.sample_launch({
+                "id": "steam:224760", "provider": "steam",
+                "providerGameId": "224760",
+            }, "launch-task")
+
+            self.assertNotIn("requires_attention", sample)
+            self.assertTrue(sample["dispatched"])
+            self.assertEqual("steam_launch_dispatched", sample["reason"])
+            self.assertIsNotNone(provider.process_registry.get("launch-task"))
+
+    def test_steam_catalog_joins_owned_games_with_local_manifest_truth(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "config"; config.mkdir()
+            (config / "loginusers.vdf").write_text(
+                '"users"\n{\n"76561198000000000"\n{\n'
+                '"MostRecent" "1"\n}\n}', encoding="utf-8")
+            steamapps = root / "steamapps"; steamapps.mkdir()
+            install = steamapps / "common" / "Owned"; install.mkdir(parents=True)
+            (steamapps / "appmanifest_289070.acf").write_text(
+                '"AppState"\n{\n"appid" "289070"\n"StateFlags" "4"\n'
+                '"installdir" "Owned"\n}', encoding="utf-8")
+            body = json.dumps({"response": {"games": [{
+                "appid": 289070, "name": "Civilization VI",
+                "playtime_forever": 120,
+            }]}}).encode("utf-8")
+
+            class Response:
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+                def read(self, _limit): return body
+
+            opened = []
+            provider = SteamProvider(
+                roots=[root], root_resolver=lambda: root,
+                api_key_path=root / "key.dpapi",
+                secret_reader=lambda _path: "A" * 32,
+                web_opener=lambda request, timeout: opened.append(
+                    (request, timeout)) or Response())
+
+            result = provider.catalog()
+
+            self.assertTrue(result["available"])
+            self.assertEqual(1, len(result["games"]))
+            self.assertTrue(result["games"][0]["installed"])
+            self.assertEqual(str(install), result["games"][0]["installDir"])
+            self.assertEqual(8, opened[0][1])
+            self.assertEqual("https", opened[0][0].full_url.split(":", 1)[0])
+
+    def test_steam_catalog_without_key_exposes_installed_manifest_subset(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            steamapps = root / "steamapps"; steamapps.mkdir()
+            install = steamapps / "common" / "Local"; install.mkdir(parents=True)
+            (steamapps / "appmanifest_410110.acf").write_text(
+                '"AppState"\n{\n"appid" "410110"\n"name" "Local Game"\n'
+                '"StateFlags" "4"\n"installdir" "Local"\n}', encoding="utf-8")
+            provider = SteamProvider(roots=[root], root_resolver=lambda: root)
+
+            result = provider.catalog()
+
+            self.assertTrue(result["available"])
+            self.assertFalse(result["complete"])
+            self.assertEqual("steam_api_key_missing", result["reason"])
+            self.assertTrue(result["installationComplete"])
+            self.assertEqual("steam:410110", result["games"][0]["id"])
+            self.assertTrue(result["games"][0]["installed"])
+
+    def test_steam_catalog_reports_incomplete_local_manifest_discovery(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            config = root / "config"; config.mkdir()
+            (config / "loginusers.vdf").write_text(
+                '"users"\n{\n"76561198000000000"\n{\n'
+                '"MostRecent" "1"\n}\n}', encoding="utf-8")
+            (root / "steamapps").mkdir()
+            body = json.dumps({"response": {"games": [{
+                "appid": 10, "name": "Counter-Strike",
+            }]}}).encode("utf-8")
+
+            class Response:
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+                def read(self, _limit): return body
+
+            provider = SteamProvider(
+                root_resolver=lambda: root, api_key_path=root / "key.dpapi",
+                secret_reader=lambda _path: "A" * 32,
+                web_opener=lambda _request, timeout: Response())
+
+            result = provider.catalog()
+
+            self.assertTrue(result["available"])
+            self.assertFalse(result["complete"])
+            self.assertEqual("steam_manifest_scan_incomplete", result["reason"])
 
     def test_epic_legendary_install_uses_exact_argv_env_and_no_playnite(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -1,4 +1,4 @@
-"""Durable install/uninstall state for the Playnite Bridge."""
+"""Durable install/uninstall state for the Game Provider Bridge."""
 
 from __future__ import annotations
 

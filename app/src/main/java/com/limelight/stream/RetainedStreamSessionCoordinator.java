@@ -17,7 +17,11 @@ public final class RetainedStreamSessionCoordinator {
 
     public interface Controller {
         boolean parkRetainedTransport();
-        void terminateRetainedSession(Runnable completion);
+        void terminateRetainedSession(TerminationCallback completion);
+    }
+
+    public interface TerminationCallback {
+        void complete(boolean success);
     }
 
     public enum TerminationResult { STARTED, IN_PROGRESS, NO_CONTROLLER }
@@ -115,13 +119,15 @@ public final class RetainedStreamSessionCoordinator {
     }
 
     public static TerminationResult terminate(String expectedStreamSessionId,
-                                              Runnable completion) {
+                                              TerminationCallback completion) {
         Controller owner;
         String capturedId;
+        State previousState;
         synchronized (RetainedStreamSessionCoordinator.class) {
             if (!matches(expectedStreamSessionId)) return TerminationResult.NO_CONTROLLER;
             if (state == State.TERMINATING) return TerminationResult.IN_PROGRESS;
             capturedId = streamSessionId;
+            previousState = state;
             state = State.TERMINATING;
             owner = controller.get();
             controller.clear();
@@ -130,8 +136,20 @@ public final class RetainedStreamSessionCoordinator {
                 return TerminationResult.NO_CONTROLLER;
             }
         }
-        owner.terminateRetainedSession(() -> {
-            if (clearIfMatches(capturedId) && completion != null) completion.run();
+        owner.terminateRetainedSession(success -> {
+            boolean current;
+            synchronized (RetainedStreamSessionCoordinator.class) {
+                current = matches(capturedId) && state == State.TERMINATING;
+                if (current) {
+                    if (success) {
+                        clearLocked();
+                    } else {
+                        state = previousState;
+                        controller = new WeakReference<>(owner);
+                    }
+                }
+            }
+            if (current && completion != null) completion.complete(success);
         });
         return TerminationResult.STARTED;
     }

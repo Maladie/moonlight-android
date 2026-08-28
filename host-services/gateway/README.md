@@ -1,7 +1,7 @@
 # Wake & Play Host Gateway
 
 Gateway exposes a small authenticated HTTPS API to Wake & Play while keeping
-Discord, Vibepollo and Playnite Bridges bound to `127.0.0.1`.
+Discord, Vibepollo and the Game Provider Bridge bound to `127.0.0.1`.
 
 For a complete installation use `../install/Install-WakePlayHost.ps1`. For
 development, run `Start-WakePlayGateway.ps1` and enter its six-digit code under
@@ -56,15 +56,16 @@ per-profile Bridge when its credentials or runtime state differ.
 - `GET /api/v1/virtualhere/state` - VirtualHere state and shared devices.
 - `POST /api/v1/virtualhere/{use|stop|auto|restart}` - VirtualHere action.
 - `POST /api/v1/system/sleep` - schedule Windows sleep after the authenticated response is sent.
-- `GET /api/v1/playnite/health` - selected profile's Playnite Bridge state.
-- `GET /api/v1/playnite/library/list?cursor=...&limit=...` - paged Playnite library metadata.
+- `GET /api/v1/playnite/health` - compatibility path for the selected profile's Game Provider Bridge state.
+- `GET /api/v1/library?cursor=...&limit=...` - paged provider-neutral library and library descriptors.
+- `POST /api/v1/game/{start|install|uninstall|stop}` - dispatch to the record's authoritative provider.
+- `GET /api/v1/playnite/library/list?cursor=...&limit=...` - compatibility alias for `/api/v1/library`.
 - `GET /api/v1/playnite/game/current` - current Playnite game lifecycle state.
 - `GET /api/v1/playnite/window/readiness` - streamed-window readiness sample.
-- `POST /api/v1/playnite/game/start` - launch an allow-listed Playnite GUID.
-- `POST /api/v1/playnite/game/stop` - gracefully close the current or selected game.
+- `POST /api/v1/playnite/game/{start|install|uninstall|stop}` - one-cycle compatibility aliases for provider-neutral game actions.
 - `POST /api/v1/playnite/show-fullscreen` - restore Playnite Fullscreen.
 
-Playnite readiness is a privacy boundary. The TV must keep its opaque loading
+Game-provider readiness is a privacy boundary. The TV must keep its opaque loading
 surface visible until the Bridge confirms that the requested game, or Playnite
 Fullscreen during a return transition, owns a visible stable window on the
 streamed display. A timeout must not reveal the desktop automatically. Desktop

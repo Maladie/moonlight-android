@@ -8,7 +8,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 
-/** Normalizes Playnite library sources and applies the shared grid/carousel selection. */
+/** Applies provider-neutral library descriptors to the shared grid/carousel selection. */
 final class PlayniteLibrarySources {
     static final String PLAYNITE_KEY = "playnite";
 
@@ -25,7 +25,7 @@ final class PlayniteLibrarySources {
     static Map<String, String> available(List<PlayniteLibraryGame> games, Locale locale) {
         Map<String, String> labels = new LinkedHashMap<>();
         for (PlayniteLibraryGame game : games) {
-            labels.putIfAbsent(key(game.source), label(game.source));
+            labels.putIfAbsent(key(game.libraryKey), label(game.libraryName));
         }
         List<Map.Entry<String, String>> ordered = new ArrayList<>(labels.entrySet());
         Collator collator = Collator.getInstance(locale == null ? Locale.getDefault() : locale);
@@ -41,11 +41,37 @@ final class PlayniteLibrarySources {
     static List<PlayniteLibraryGame> filter(List<PlayniteLibraryGame> games,
                                              Set<String> selectedSources) {
         if (selectedSources == null) return new ArrayList<>(games);
+        Set<String> normalized = new java.util.LinkedHashSet<>();
+        for (String selected : selectedSources) normalized.add(key(selected));
+        Set<String> available = new java.util.LinkedHashSet<>();
+        for (PlayniteLibraryGame game : games) available.add(key(game.libraryKey));
+        normalized.retainAll(available);
+        if (normalized.isEmpty() && !games.isEmpty()) return new ArrayList<>(games);
         List<PlayniteLibraryGame> result = new ArrayList<>();
         for (PlayniteLibraryGame game : games) {
-            if (selectedSources.contains(key(game.source))) result.add(game);
+            if (normalized.contains(key(game.libraryKey))) result.add(game);
         }
         return result;
+    }
+
+    static Set<String> migrateSelection(Set<String> stored,
+                                        Map<String, String> available) {
+        if (stored == null) return null;
+        Set<String> migrated = new java.util.LinkedHashSet<>();
+        for (String value : stored) {
+            String candidate = key(value);
+            if (available.containsKey(candidate)) {
+                migrated.add(candidate);
+                continue;
+            }
+            for (Map.Entry<String, String> entry : available.entrySet()) {
+                if (key(entry.getValue()).equals(candidate)) {
+                    migrated.add(entry.getKey());
+                    break;
+                }
+            }
+        }
+        return migrated.isEmpty() ? null : migrated;
     }
 
     private PlayniteLibrarySources() { }

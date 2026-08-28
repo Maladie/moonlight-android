@@ -16,12 +16,12 @@ from PatchPlayniteConnector import (
 )
 from GameOperations import GameOperationsService, SteamProvider
 from OperationJournal import OperationJournal
-from PlayniteBridge import (
+from GameProviderBridge import (
     BridgeState, GAME_START_TIMEOUT, LAUNCHER_POSTCONDITION_TIMEOUT,
     REQUIRED_GAME_STABLE_SAMPLES, REQUIRED_LAUNCHER_STABLE_SAMPLES,
     REQUIRED_STABLE_SAMPLES,
     STEAM_CANCELLATION_EVIDENCE_TIMEOUT,
-    STEAM_FALLBACK_START_TIMEOUT, STEAM_PRIMARY_START_TIMEOUT,
+    STEAM_PRIMARY_START_TIMEOUT,
     StreamDisplayResolver, WindowProbe, WindowsPipeClient,
     append_operation_audit,
 )
@@ -32,6 +32,97 @@ SECOND_GAME_ID = "65705ca9-b9c7-4ada-b4b7-f73ffb8ac64f"
 
 
 class WindowProbeTest(unittest.TestCase):
+    @staticmethod
+    def _steam_big_picture_window(root):
+        return {
+            "hwnd": 77, "image": "steamwebhelper.exe",
+            "process_path": str(root / "bin" / "cef" / "steamwebhelper.exe"),
+            "display": r"\\.\DISPLAY1", "bounds": [0, 0, 1920, 1080],
+            "monitor_bounds": [0, 0, 1920, 1080],
+        }
+
+    def test_big_picture_already_active_does_not_relaunch(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "steam.exe").touch()
+            runner = mock.Mock()
+            provider = SteamProvider(
+                root_resolver=lambda: root, command_runner=runner)
+            probe = WindowProbe(mock.Mock())
+            window = self._steam_big_picture_window(root)
+            probe.interactive_windows = mock.Mock(return_value=[window])
+
+            result = probe.ensure_steam_big_picture(
+                provider, r"\\.\DISPLAY1", timeout=.1)
+
+            self.assertTrue(result["ready"])
+            self.assertFalse(result["started"])
+            probe.interactive_windows.assert_called_with(True)
+            runner.assert_not_called()
+
+    def test_big_picture_is_opened_and_postcondition_is_confirmed(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "steam.exe"; executable.touch()
+            runner = mock.Mock()
+            provider = SteamProvider(
+                root_resolver=lambda: root, command_runner=runner)
+            probe = WindowProbe(mock.Mock())
+            window = self._steam_big_picture_window(root)
+            probe.interactive_windows = mock.Mock(side_effect=[
+                [], [], [], [], [window], [window], [window],
+            ])
+
+            with mock.patch("GameProviderBridge.time.sleep"):
+                result = probe.ensure_steam_big_picture(
+                    provider, r"\\.\DISPLAY1", timeout=1)
+
+            self.assertTrue(result["ready"])
+            self.assertTrue(result["started"])
+            self.assertEqual([str(executable.resolve()), "-gamepadui"],
+                             runner.call_args.args[0])
+            self.assertEqual(str(root.resolve()), runner.call_args.kwargs["cwd"])
+            self.assertFalse(runner.call_args.kwargs["shell"])
+
+    def test_running_steam_opens_big_picture_without_restart(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            executable = root / "steam.exe"; executable.touch()
+            runner = mock.Mock()
+            provider = SteamProvider(
+                root_resolver=lambda: root, command_runner=runner)
+            probe = WindowProbe(mock.Mock())
+            probe._exact_process_running = mock.Mock(return_value=True)
+            window = self._steam_big_picture_window(root)
+            probe.interactive_windows = mock.Mock(side_effect=[
+                [], [], [], [window], [window], [window],
+            ])
+
+            with mock.patch("GameProviderBridge.time.sleep"):
+                result = probe.ensure_steam_big_picture(
+                    provider, r"\\.\DISPLAY1", timeout=1)
+
+            self.assertTrue(result["ready"])
+            self.assertEqual([str(executable.resolve()), "steam://open/bigpicture"],
+                             runner.call_args.args[0])
+
+    def test_big_picture_missing_postcondition_is_explicit_error(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            (root / "steam.exe").touch()
+            provider = SteamProvider(
+                root_resolver=lambda: root, command_runner=mock.Mock())
+            probe = WindowProbe(mock.Mock())
+            probe.interactive_windows = mock.Mock(return_value=[])
+
+            with mock.patch("GameProviderBridge.time.sleep"), \
+                    mock.patch("GameProviderBridge.time.monotonic", side_effect=[0, 1]):
+                result = probe.ensure_steam_big_picture(
+                    provider, r"\\.\DISPLAY1", timeout=.1)
+
+            self.assertFalse(result["ready"])
+            self.assertEqual("launcher_interaction_required", result["reason"])
+
     def test_launcher_script_covers_uia_win32_and_guarded_visual_action(self):
         script = Path(__file__).with_name("Invoke-GameLauncher.ps1").read_text(
             encoding="utf-8-sig")
@@ -59,7 +150,7 @@ class WindowProbeTest(unittest.TestCase):
             "process_path": r"E:\Games\Example\launcher.exe",
         }
 
-        with mock.patch("PlayniteBridge.subprocess.run", return_value=completed) as run:
+        with mock.patch("GameProviderBridge.subprocess.run", return_value=completed) as run:
             result = probe.invoke_game_launcher(candidate)
 
         self.assertTrue(result["clicked"])
@@ -80,7 +171,7 @@ class WindowProbeTest(unittest.TestCase):
             "allow_default_action": True,
         }
 
-        with mock.patch("PlayniteBridge.subprocess.run", return_value=completed) as run:
+        with mock.patch("GameProviderBridge.subprocess.run", return_value=completed) as run:
             result = probe.invoke_game_launcher(candidate)
 
         self.assertTrue(result["clicked"])
@@ -574,7 +665,7 @@ class WindowProbeTest(unittest.TestCase):
 
         client = WindowsPipeClient.__new__(WindowsPipeClient)
         client._kernel32 = lambda: PartialRead()
-        with mock.patch("PlayniteBridge.ctypes.get_last_error", return_value=234,
+        with mock.patch("GameProviderBridge.ctypes.get_last_error", return_value=234,
                         create=True):
             self.assertEqual(payload, client._read(123, len(payload)))
 
@@ -696,7 +787,7 @@ class BridgeStateTest(unittest.TestCase):
         })
 
         self.assertEqual({"state": "idle"}, self.state.current)
-        self.assertEqual("playnite", self.state.readiness["target_kind"])
+        self.assertEqual("none", self.state.readiness["target_kind"])
         self.assertEqual("game-stopped", self.state.events[-1]["event"])
         self.assertEqual(4242, self.state.events[-1]["payload"]["processId"])
 
@@ -789,11 +880,23 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual(before_events, list(self.state.events))
 
     def _start_direct_steam(self, installed=False, operation="install"):
-        self.state.handle_message({"type": "games", "payload": [{
-            "id": GAME_ID, "name": "FEZ", "installed": installed,
-            "source": "Steam", "providerGameId": "224760",
-        }]})
+        self._put_steam_game(self.state, GAME_ID, "224760", "FEZ", installed)
         return self._dispatch_direct_steam(GAME_ID, operation)
+
+    @staticmethod
+    def _put_steam_game(state, game_id, app_id, name, installed):
+        with state.lock:
+            state.library[game_id] = {
+                "id": game_id, "name": name, "installed": installed,
+                "provider": "steam", "providerGameId": app_id,
+                "playniteGameId": game_id,
+                "libraryKey": "steam", "libraryName": "Steam",
+                "capabilities": {"launch": True, "install": True, "uninstall": True},
+            }
+            session = state.installations.get(game_id)
+            if session is not None:
+                session.setdefault("baseline", {})["game"] = dict(state.library[game_id])
+            state._apply_installation_fields_locked(game_id, state.library[game_id])
 
     def _dispatch_direct_steam(self, game_id, operation):
         with mock.patch.object(
@@ -812,6 +915,11 @@ class BridgeStateTest(unittest.TestCase):
         self.assertIs(service.journal, state.operation_journal)
 
     def test_start_is_allowlisted_and_closes_privacy_gate(self):
+        with self.state.lock:
+            self.state.library[GAME_ID] = {
+                "id": GAME_ID, "name": "Game", "provider": "playnite",
+                "providerGameId": GAME_ID, "playniteGameId": GAME_ID,
+            }
         result = self.state.start_game(GAME_ID.upper())
 
         self.assertTrue(result["accepted"])
@@ -823,13 +931,111 @@ class BridgeStateTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.state.start_game("../../cmd.exe")
 
+    def test_different_game_is_not_dispatched_while_current_game_is_active(self):
+        other_id = "65705ca9-b9c7-4ada-b4b7-f73ffb8ac64f"
+        with self.state.lock:
+            self.state.library[other_id] = {
+                "id": other_id, "name": "Other", "provider": "playnite",
+                "providerGameId": other_id,
+            }
+            self.state.current = {
+                "state": "running", "id": GAME_ID, "processId": 4242,
+            }
+
+        result = self.state.start_game(other_id)
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual("another_game_running", result["reason"])
+        self.assertEqual(GAME_ID, result["active_game_id"])
+        self.assertEqual([], self.commands)
+        self.assertEqual(GAME_ID, self.state.current["id"])
+
+    def test_repeated_start_of_current_game_resumes_without_dispatch(self):
+        with self.state.lock:
+            self.state.library[GAME_ID] = {
+                "id": GAME_ID, "name": "Game", "provider": "playnite",
+                "providerGameId": GAME_ID,
+            }
+            self.state.current = {
+                "state": "running", "id": GAME_ID, "processId": 4242,
+            }
+
+        result = self.state.start_game(GAME_ID)
+
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["already_running"])
+        self.assertEqual("resume", result["command"])
+        self.assertEqual([], self.commands)
+
+    def test_stale_window_sample_cannot_claim_the_next_game(self):
+        next_id = "65705ca9-b9c7-4ada-b4b7-f73ffb8ac64f"
+        with self.state.lock:
+            self.state.current = {"state": "starting", "id": next_id}
+            self.state.readiness = {
+                "ready": False, "reason": "game_starting",
+                "target_kind": "game", "stable_samples": 0,
+            }
+
+        self.state.apply_window_sample({
+            "qualified": True,
+            "reason": "stabilizing_target_window",
+            "observed_game_id": GAME_ID,
+            "process_id": 4242,
+        })
+
+        self.assertEqual({"state": "starting", "id": next_id}, self.state.current)
+        self.assertEqual("game_starting", self.state.readiness["reason"])
+
+    def test_epic_record_resolution_requires_exact_legendary_app_name(self):
+        with self.state.lock:
+            self.state.library["epic:CelesteApp"] = {
+                "id": "epic:CelesteApp", "name": "Celeste", "provider": "epic",
+                "providerGameId": "CelesteApp",
+            }
+
+        self.assertEqual(
+            "epic:CelesteApp", self.state.resolve_game_id("epic:CelesteApp"))
+        self.assertEqual(
+            "epic:celesteapp", self.state.resolve_game_id("epic:celesteapp"))
+        with self.assertRaises(FileNotFoundError):
+            self.state.start_game("epic:celesteapp")
+
+    def test_playnite_status_is_advisory_for_direct_provider_launch_state(self):
+        record_id = "steam:224760"
+        with self.state.lock:
+            self.state.library[record_id] = {
+                "id": record_id, "name": "FEZ", "provider": "steam",
+                "providerGameId": "224760", "playniteGameId": GAME_ID,
+            }
+            self.state.playnite_library[GAME_ID] = {
+                "id": GAME_ID, "source": "Steam", "providerGameId": "224760",
+            }
+            self.state.current = {
+                "state": "running", "id": record_id, "processId": 4242,
+            }
+            self.state.readiness = {
+                "ready": True, "reason": "target_window_ready",
+                "target_kind": "game", "stable_samples": 4,
+            }
+
+        self.state.handle_message({
+            "type": "status", "status": {"name": "gameStopped", "id": GAME_ID},
+        })
+
+        self.assertEqual("running", self.state.current["state"])
+        self.assertEqual(record_id, self.state.current["id"])
+        self.assertTrue(self.state.readiness["ready"])
+        self.assertEqual("playnite-status", self.state.events[-1]["event"])
+
     def test_steam_start_keeps_library_identity_before_game_started_event(self):
         install_dir = r"E:\Steam\steamapps\common\Sid Meier's Civilization V"
-        self.state.handle_message({"type": "games", "payload": [{
-            "id": GAME_ID, "name": "Sid Meier's Civilization V",
-            "installed": True, "source": "Steam", "providerGameId": "8930",
-            "installDir": install_dir, "exe": "",
-        }]})
+        self._put_steam_game(self.state, GAME_ID, "8930",
+                             "Sid Meier's Civilization V", True)
+        self.state.library[GAME_ID]["installDir"] = install_dir
+        self.state.game_operations.launch = mock.Mock(return_value={
+            "accepted": True, "provider": "steam", "dispatch": "direct",
+            "install_directory": install_dir,
+        })
 
         result = self.state.start_game(GAME_ID)
 
@@ -843,7 +1049,7 @@ class BridgeStateTest(unittest.TestCase):
     def test_failed_start_dispatch_rolls_back_provisional_game_identity(self):
         self.state.handle_message({"type": "games", "payload": [{
             "id": GAME_ID, "name": "Sid Meier's Civilization V",
-            "installed": True, "source": "Steam", "providerGameId": "8930",
+            "installed": True,
         }]})
         self.state.set_transport(False, None, "offline")
 
@@ -889,7 +1095,8 @@ class BridgeStateTest(unittest.TestCase):
         })
         self.assertEqual("idle", self.state.current["state"])
         self.assertFalse(self.state.readiness["ready"])
-        self.assertEqual("waiting_for_playnite_window", self.state.readiness["reason"])
+        self.assertEqual("game_stopped", self.state.readiness["reason"])
+        self.assertEqual("none", self.state.readiness["target_kind"])
 
     def test_library_batches_are_paged(self):
         self.state.handle_message({"type": "plugins", "payload": [{"id": "steam"}]})
@@ -901,7 +1108,7 @@ class BridgeStateTest(unittest.TestCase):
                  "name": "Resident Evil 3", "installed": True,
                  "Playtime": 7500, "LastActivity": "2026-07-15T20:10:00Z",
                  "PlayCount": 14,
-                 "Source": "Steam",
+                 "Source": "GOG",
                  "Description": "<b>Escape the city.</b><br>Survive Nemesis."},
             ],
         })
@@ -915,13 +1122,16 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual("Escape the city.\nSurvive Nemesis.",
                          second["games"][0]["description"])
         self.assertEqual(14, second["games"][0]["playCount"])
-        self.assertEqual("Steam", second["games"][0]["source"])
+        self.assertEqual("GOG", second["games"][0]["source"])
         self.assertEqual("", second["next_cursor"])
 
     def test_complete_snapshot_is_loaded_from_disk_after_restart(self):
         with tempfile.TemporaryDirectory() as temporary:
             cache_path = Path(temporary) / "library-cache.json"
-            state = BridgeState(cache_path=cache_path)
+            operations = GameOperationsService(
+                OperationJournal(None), steam=SteamProvider(roots=[]))
+            state = BridgeState(cache_path=cache_path, game_operations=operations)
+            state.handle_message({"type": "snapshotStart"})
             state.handle_message({"type": "plugins", "payload": [{"id": "steam"}]})
             state.handle_message({"type": "categories", "payload": [{"id": "action"}]})
             state.handle_message({"type": "games", "payload": [{
@@ -929,6 +1139,11 @@ class BridgeStateTest(unittest.TestCase):
             }]})
             self.assertFalse(cache_path.exists())
             state.handle_message({"type": "snapshotComplete", "payload": {"games": 1}})
+            for _ in range(100):
+                with state.lock:
+                    if not state.catalog_refresh_inflight:
+                        break
+                time.sleep(.005)
 
             restored = BridgeState(cache_path=cache_path)
             page = restored.library_page("0", 10)
@@ -944,11 +1159,15 @@ class BridgeStateTest(unittest.TestCase):
             state.set_transport(True, lambda _message: None)
             game = {"id": GAME_ID, "name": "FEZ", "installed": False,
                     "source": "Steam", "providerGameId": "224760"}
-            state.handle_message({"type": "games", "payload": [game]})
-            state.install_game(GAME_ID)
+            self._put_steam_game(state, GAME_ID, "224760", "FEZ", False)
+            with mock.patch.object(
+                    state.game_operations.steam, "_direct_dispatch",
+                    return_value={"accepted": True, "command": "install",
+                                  "provider": "steam", "dispatch": "direct"}):
+                state.install_game(GAME_ID)
 
             restored = BridgeState(operations_path=operation_path)
-            restored.handle_message({"type": "games", "payload": [game]})
+            self._put_steam_game(restored, GAME_ID, "224760", "FEZ", False)
             current = restored.library_page("0", 10)["games"][0]
             self.assertTrue(current["installing"])
             self.assertEqual("preparing", current["operationState"])
@@ -987,6 +1206,7 @@ class BridgeStateTest(unittest.TestCase):
                 "id": GAME_ID, "name": "FEZ", "installed": False,
                 "source": "Steam", "providerGameId": "224760",
             }]})
+            self._put_steam_game(restored, GAME_ID, "224760", "FEZ", False)
             session = restored.installations[GAME_ID]
             token = session["token"]
 
@@ -1025,6 +1245,7 @@ class BridgeStateTest(unittest.TestCase):
                 "id": GAME_ID, "name": "FEZ", "installed": False,
                 "source": "Steam", "providerGameId": "224760",
             }]})
+            self._put_steam_game(restored, GAME_ID, "224760", "FEZ", False)
             session = restored.installations[GAME_ID]
             token = session["token"]
 
@@ -1071,6 +1292,7 @@ class BridgeStateTest(unittest.TestCase):
                 "id": GAME_ID, "name": "FEZ", "installed": True,
                 "source": "Steam", "providerGameId": "224760",
             }]})
+            self._put_steam_game(restored, GAME_ID, "224760", "FEZ", True)
             session = restored.installations[GAME_ID]
             token = session["token"]
 
@@ -1119,7 +1341,7 @@ class BridgeStateTest(unittest.TestCase):
         self.state.handle_message({"type": "games", "payload": [{
             "id": GAME_ID, "name": "Baba Is You", "installed": False,
         }]})
-        self.state.install_game(GAME_ID)
+        self._dispatch_direct_steam(GAME_ID, "install")
         sample = {"requires_attention": True, "reason": "launcher_prompt",
                   "hwnd": 77, "process_id": 123, "title": "Choose install location",
                   "image": "futurelauncher.exe"}
@@ -1128,8 +1350,8 @@ class BridgeStateTest(unittest.TestCase):
         game = self.state.library_page("0", 10)["games"][0]
         self.assertTrue(game["installRequiresAttention"])
         self.assertEqual("Choose install location", game["installWindowTitle"])
-        self.assertEqual("game-installation-attention-required",
-                         self.state.events[-1]["event"])
+        self.assertIn("game-installation-attention-required",
+                      [event["event"] for event in self.state.events])
         self.state.handle_message({"type": "games", "payload": [{
             "id": GAME_ID, "name": "Baba Is You", "installed": False,
             "installing": False,
@@ -1172,11 +1394,8 @@ class BridgeStateTest(unittest.TestCase):
         self.state.game_operations.confirm_operation = \
             lambda _game, hwnd, operation, name, _visual: (
             confirmations.append((hwnd, operation, name)) or {"clicked": True})
-        self.state.handle_message({"type": "games", "payload": [{
-            "id": GAME_ID, "name": "FEZ", "installed": False,
-            "source": "Steam", "providerGameId": "224760",
-        }]})
-        self.state.install_game(GAME_ID)
+        self._put_steam_game(self.state, GAME_ID, "224760", "FEZ", False)
+        self._dispatch_direct_steam(GAME_ID, "install")
         sample = {"requires_attention": True, "reason": "launcher_prompt",
                   "hwnd": 77, "process_id": 123, "title": "Install - FEZ",
                   "image": "steam.exe"}
@@ -1193,9 +1412,8 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual("game-installation-auto-confirmed", self.state.events[-1]["event"])
         self.assertIn("steam_automation_succeeded",
                       [event for event, _payload in self.audit])
-        fallback = [payload for event, payload in self.audit
-                    if event == "steam_playnite_fallback_dispatched"]
-        self.assertEqual("direct_unavailable", fallback[0]["trigger"])
+        self.assertNotIn("steam_playnite_fallback_dispatched",
+                         [event for event, _payload in self.audit])
 
     def test_steam_activity_prevents_primary_timeout_fallback(self):
         self._start_direct_steam()
@@ -1239,10 +1457,8 @@ class BridgeStateTest(unittest.TestCase):
         self.assertTrue(all(payload["requested_at"] == token[2]
                             for _event, payload in self.audit))
 
-    def test_primary_timeout_dispatches_fresh_playnite_fallback_once(self):
-        baselines = mock.Mock(side_effect=[
-            {"capture": "primary"}, {"capture": "fallback"},
-        ])
+    def test_primary_timeout_requires_attention_without_playnite_fallback(self):
+        baselines = mock.Mock(return_value={"capture": "primary"})
         self.state.installation_baseline_action = baselines
         self._start_direct_steam()
         token = self.state.installations[GAME_ID]["token"]
@@ -1253,25 +1469,16 @@ class BridgeStateTest(unittest.TestCase):
         self.now += STEAM_PRIMARY_START_TIMEOUT + 1
 
         self.state.apply_installation_probe(GAME_ID, no_evidence, token)
-        self.state.apply_installation_probe(GAME_ID, no_evidence, token)
 
         fallbacks = [command for command in self.commands
                      if command.get("command") == "install"]
-        self.assertEqual(1, len(fallbacks))
-        self.assertEqual("fallback",
-                         self.state.installations[GAME_ID]["baseline"]["capture"])
-        self.assertEqual(2, baselines.call_count)
-        fallback_audits = [payload for event, payload in self.audit
-                           if event == "steam_playnite_fallback_dispatched"]
-        self.assertEqual(1, len(fallback_audits))
-        self.assertEqual("primary_no_activity_timeout",
-                         fallback_audits[0]["trigger"])
-
-        self.now += STEAM_FALLBACK_START_TIMEOUT + 1
-        self.state.apply_installation_probe(GAME_ID, no_evidence, token)
+        self.assertEqual([], fallbacks)
+        self.assertEqual(1, baselines.call_count)
+        self.assertNotIn("steam_playnite_fallback_dispatched",
+                         [event for event, _payload in self.audit])
         current = self.state.library_page("0", 10)["games"][0]
         self.assertTrue(current["installRequiresAttention"])
-        self.assertEqual("steam_fallback_not_started",
+        self.assertEqual("steam_operation_not_started",
                          current["installAttentionReason"])
         self.assertEqual("steam.exe", current["installLauncher"])
 
@@ -1279,11 +1486,8 @@ class BridgeStateTest(unittest.TestCase):
         self.state.game_operations.confirm_operation = mock.Mock(return_value={
             "clicked": False, "reason": "automation_failed",
         })
-        self.state.handle_message({"type": "games", "payload": [{
-            "id": GAME_ID, "name": "FEZ", "installed": False,
-            "source": "Steam", "providerGameId": "224760",
-        }]})
-        self.state.install_game(GAME_ID)
+        self._put_steam_game(self.state, GAME_ID, "224760", "FEZ", False)
+        self._dispatch_direct_steam(GAME_ID, "install")
         sample = {
             "requires_attention": True, "reason": "launcher_prompt",
             "hwnd": 77, "process_id": 123, "title": "Install",
@@ -1317,11 +1521,8 @@ class BridgeStateTest(unittest.TestCase):
             return {"clicked": True}
 
         self.state.game_operations.confirm_operation = confirm
-        self.state.handle_message({"type": "games", "payload": [{
-            "id": GAME_ID, "name": "FEZ", "installed": False,
-            "source": "Steam", "providerGameId": "224760",
-        }]})
-        self.state.install_game(GAME_ID)
+        self._put_steam_game(self.state, GAME_ID, "224760", "FEZ", False)
+        self._dispatch_direct_steam(GAME_ID, "install")
         sample = {
             "requires_attention": True, "reason": "launcher_prompt",
             "hwnd": 77, "process_id": 123, "title": "Install",
@@ -1359,11 +1560,8 @@ class BridgeStateTest(unittest.TestCase):
             release.wait(1)
             return {"clicked": True}
         self.state.game_operations.confirm_operation = confirm
-        self.state.handle_message({"type": "games", "payload": [{
-            "id": GAME_ID, "name": "FTL", "installed": False,
-            "source": "Steam", "providerGameId": "212680",
-        }]})
-        self.state.install_game(GAME_ID)
+        self._put_steam_game(self.state, GAME_ID, "212680", "FTL", False)
+        self._dispatch_direct_steam(GAME_ID, "install")
         sample = {"requires_attention": True, "reason": "launcher_prompt",
                   "hwnd": 77, "process_id": 123, "title": "Steam",
                   "image": "steamwebhelper.exe"}
@@ -1381,21 +1579,18 @@ class BridgeStateTest(unittest.TestCase):
         self.state.game_operations.confirm_operation = \
             lambda _game, hwnd, operation, name, _visual: (
             confirmations.append((hwnd, operation, name)) or {"clicked": True})
-        self.state.handle_message({"type": "games", "payload": [{
-            "id": GAME_ID, "name": "FTL", "installed": True,
-            "source": "Steam", "providerGameId": "212680",
-        }]})
-        self.state.uninstall_game(GAME_ID)
+        self._put_steam_game(self.state, GAME_ID, "212680", "FTL", True)
+        self._dispatch_direct_steam(GAME_ID, "uninstall")
         sample = {"requires_attention": True, "reason": "launcher_prompt",
                   "hwnd": 88, "process_id": 456, "title": "Odinstaluj",
                   "image": "steamwebhelper.exe"}
         for _ in range(3):
             self.state.apply_installation_probe(GAME_ID, sample)
-        for _ in range(20):
+        for _ in range(100):
             if confirmations and self.state.events[-1]["event"] == \
                     "game-installation-auto-confirmed":
                 break
-            time.sleep(.01)
+            time.sleep(.005)
         self.assertEqual([(88, "uninstall", "FTL")], confirmations)
         self.assertEqual("game-installation-auto-confirmed", self.state.events[-1]["event"])
 
@@ -1516,27 +1711,19 @@ class BridgeStateTest(unittest.TestCase):
         })
 
         self.assertTrue(self.state.library[GAME_ID]["installed"])
-        self.assertFalse(self.state.library[SECOND_GAME_ID]["installed"])
+        self.assertNotIn(SECOND_GAME_ID, self.state.library)
 
     def test_prestart_steam_uninstall_blocks_another_launcher_operation(self):
-        self.state.handle_message({"type": "games", "payload": [
-            {"id": GAME_ID, "name": "FEZ", "installed": True,
-             "source": "Steam", "providerGameId": "224760"},
-            {"id": SECOND_GAME_ID, "name": "FTL", "installed": False,
-             "source": "Steam", "providerGameId": "212680"},
-        ]})
+        self._put_steam_game(self.state, GAME_ID, "224760", "FEZ", True)
+        self._put_steam_game(self.state, SECOND_GAME_ID, "212680", "FTL", False)
         self._dispatch_direct_steam(GAME_ID, "uninstall")
 
         with self.assertRaisesRegex(RuntimeError, "awaiting confirmation"):
             self._dispatch_direct_steam(SECOND_GAME_ID, "install")
 
     def test_started_steam_operation_allows_another_launcher_operation(self):
-        self.state.handle_message({"type": "games", "payload": [
-            {"id": GAME_ID, "name": "FEZ", "installed": True,
-             "source": "Steam", "providerGameId": "224760"},
-            {"id": SECOND_GAME_ID, "name": "FTL", "installed": False,
-             "source": "Steam", "providerGameId": "212680"},
-        ]})
+        self._put_steam_game(self.state, GAME_ID, "224760", "FEZ", True)
+        self._put_steam_game(self.state, SECOND_GAME_ID, "212680", "FTL", False)
         self._dispatch_direct_steam(GAME_ID, "uninstall")
         token = self.state.installations[GAME_ID]["token"]
         self.state.apply_installation_probe(GAME_ID, {
@@ -1709,11 +1896,215 @@ class BridgeStateTest(unittest.TestCase):
             "type": "status",
             "status": {"name": "gameStarted", "id": GAME_ID, "processId": 4242},
         })
-        result = self.state.stop_game(GAME_ID)
+        close_requested = threading.Event()
+        self.state.graceful_close = lambda process_id: (
+            self.closed_processes.append(process_id), close_requested.set(), True)[-1]
+        result_holder = {}
+        stopping = threading.Thread(target=lambda: result_holder.update(
+            self.state.stop_game(GAME_ID)))
+        stopping.start()
+        self.assertTrue(close_requested.wait(1))
+        self.state.apply_window_sample({
+            "qualified": False, "reason": "game_process_exited",
+            "process_id": 4242, "observed_game_id": GAME_ID,
+        })
+        stopping.join(1)
+
+        self.assertFalse(stopping.is_alive())
+        result = result_holder
+        self.assertTrue(result["accepted"])
         self.assertEqual(False, result["force"])
         self.assertEqual([4242], self.closed_processes)
         self.assertFalse(self.state.readiness["ready"])
-        self.assertEqual("game_stopping", self.state.readiness["reason"])
+        self.assertEqual("idle", self.state.current["state"])
+
+    def test_stop_waits_for_authoritative_exit_for_every_provider(self):
+        records = (
+            ("steam:289070", "steam", "289070"),
+            ("epic:ExactAppName", "epic", "ExactAppName"),
+            (f"playnite:{GAME_ID}", "playnite", GAME_ID),
+        )
+        for game_id, provider, provider_game_id in records:
+            with self.subTest(provider=provider):
+                closed = threading.Event()
+                self.closed_processes.clear()
+                with self.state.lock:
+                    self.state.library[game_id] = {
+                        "id": game_id, "name": provider, "provider": provider,
+                        "providerGameId": provider_game_id,
+                    }
+                    self.state.current = {
+                        "state": "running", "id": game_id, "processId": 4242,
+                    }
+                    self.state.readiness = {
+                        "ready": True, "reason": "target_window_ready",
+                        "target_kind": "game", "stable_samples": 4,
+                    }
+                self.state.graceful_close = lambda process_id: (
+                    self.closed_processes.append(process_id), closed.set(), True)[-1]
+                result_holder = {}
+                stopping = threading.Thread(target=lambda: result_holder.update(
+                    self.state.stop_game(game_id)))
+                stopping.start()
+                self.assertTrue(closed.wait(1))
+                self.assertTrue(stopping.is_alive())
+                self.state.apply_window_sample({
+                    "qualified": False, "reason": "game_process_exited",
+                    "process_id": 4242, "observed_game_id": game_id,
+                })
+                stopping.join(1)
+
+                self.assertEqual(True, result_holder["accepted"])
+                self.assertEqual([4242], self.closed_processes)
+                self.assertEqual([], self.commands)
+
+    def test_stop_during_start_closes_late_process_before_accepting(self):
+        with self.state.lock:
+            self.state.library["steam:289070"] = {
+                "id": "steam:289070", "name": "Civilization VI",
+                "provider": "steam", "providerGameId": "289070",
+            }
+            self.state.current = {
+                "state": "starting", "id": "steam:289070",
+                "installDir": r"E:\\Games\\Civ6",
+            }
+            self.state.readiness = {
+                "ready": False, "reason": "game_starting",
+                "target_kind": "game", "stable_samples": 0,
+            }
+        closed = threading.Event()
+        self.state.graceful_close = lambda process_id: (
+            self.closed_processes.append(process_id), closed.set(), True)[-1]
+        result_holder = {}
+        stopping = threading.Thread(target=lambda: result_holder.update(
+            self.state.stop_game("steam:289070")))
+        stopping.start()
+        for _ in range(100):
+            if self.state.current.get("state") == "stopping":
+                break
+            time.sleep(.01)
+        self.assertEqual("stopping", self.state.current["state"])
+
+        self.state.apply_window_sample({
+            "qualified": True, "reason": "target_window_ready",
+            "process_id": 5150, "observed_game_id": "steam:289070",
+        })
+        self.assertTrue(closed.wait(1))
+        self.state.apply_window_sample({
+            "qualified": False, "reason": "game_process_exited",
+            "process_id": 5150, "observed_game_id": "steam:289070",
+        })
+        stopping.join(1)
+
+        self.assertEqual({"accepted": True, "command": "stop", "force": False},
+                         result_holder)
+        self.assertEqual([5150], self.closed_processes)
+
+    def test_direct_provider_is_stoppable_while_dispatch_is_blocked(self):
+        game_id = "steam:289070"
+        with self.state.lock:
+            self.state.library[game_id] = {
+                "id": game_id, "name": "Civilization VI", "provider": "steam",
+                "providerGameId": "289070", "installed": True,
+            }
+        dispatch_entered = threading.Event()
+        release_dispatch = threading.Event()
+
+        def blocked_launch(_game, _task_id):
+            dispatch_entered.set()
+            release_dispatch.wait(1)
+            return {"accepted": False, "command": "launch", "provider": "steam",
+                    "reason": "launch_cancelled"}
+
+        self.state.game_operations.steam.launch = blocked_launch
+        launch_result = {}
+        launching = threading.Thread(target=lambda: launch_result.update(
+            self.state.start_game(game_id)))
+        launching.start()
+        self.assertTrue(dispatch_entered.wait(1))
+        self.assertEqual("starting", self.state.current["state"])
+
+        stop_result = {}
+        stopping = threading.Thread(target=lambda: stop_result.update(
+            self.state.stop_game(game_id)))
+        stopping.start()
+        for _ in range(100):
+            if self.state.current.get("state") == "stopping":
+                break
+            time.sleep(.01)
+        self.assertEqual("stopping", self.state.current["state"])
+        release_dispatch.set()
+        launching.join(1)
+        stopping.join(1)
+
+        self.assertFalse(launching.is_alive())
+        self.assertFalse(stopping.is_alive())
+        self.assertFalse(launch_result["accepted"])
+        self.assertTrue(stop_result["accepted"])
+        self.assertEqual("idle", self.state.current["state"])
+
+    def test_unconfirmed_stop_is_rejected_and_remains_stopping(self):
+        with self.state.lock:
+            self.state.library["epic:ExactAppName"] = {
+                "id": "epic:ExactAppName", "name": "Celeste",
+                "provider": "epic", "providerGameId": "ExactAppName",
+            }
+            self.state.current = {
+                "state": "running", "id": "epic:ExactAppName", "processId": 4242,
+            }
+            self.state.readiness = {
+                "ready": True, "reason": "target_window_ready",
+                "target_kind": "game", "stable_samples": 4,
+            }
+        self.state.graceful_close = lambda _process_id: False
+
+        result = self.state.stop_game("epic:ExactAppName")
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual("game_stop_close_rejected", result["reason"])
+        self.assertEqual("stopping", self.state.current["state"])
+
+    def test_close_message_without_process_exit_times_out(self):
+        with self.state.lock:
+            self.state.library["steam:289070"] = {
+                "id": "steam:289070", "name": "Civilization VI",
+                "provider": "steam", "providerGameId": "289070",
+            }
+            self.state.current = {
+                "state": "running", "id": "steam:289070", "processId": 4242,
+            }
+            self.state.readiness = {
+                "ready": True, "reason": "target_window_ready",
+                "target_kind": "game", "stable_samples": 4,
+            }
+        self.state.stop_timeout = .01
+        self.state.graceful_close = lambda _process_id: True
+
+        result = self.state.stop_game("steam:289070")
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual("game_stop_timeout", result["reason"])
+        self.assertEqual("stopping", self.state.current["state"])
+
+    def test_stop_never_targets_a_different_provider_record(self):
+        with self.state.lock:
+            self.state.library["epic:ExactAppName"] = {
+                "id": "epic:ExactAppName", "name": "Celeste",
+                "provider": "epic", "providerGameId": "ExactAppName",
+            }
+            self.state.current = {
+                "state": "running", "id": "steam:289070", "processId": 4242,
+            }
+            self.state.readiness = {
+                "ready": True, "reason": "target_window_ready",
+                "target_kind": "game", "stable_samples": 4,
+            }
+
+        with self.assertRaisesRegex(ValueError, "not the current provider game"):
+            self.state.stop_game("epic:ExactAppName")
+
+        self.assertEqual([], self.closed_processes)
+        self.assertEqual("running", self.state.current["state"])
 
     def test_show_fullscreen_closes_gate_before_activation(self):
         result = self.state.show_fullscreen()
@@ -1848,6 +2239,16 @@ class BridgeStateTest(unittest.TestCase):
         second, changed_again = patch_text(patched)
         self.assertFalse(changed_again)
         self.assertEqual(patched, second)
+
+    def test_vibepollo_rebuilds_existing_direct_provider_target_from_allowlist(self):
+        script = Path(__file__).parents[1] / "vibepollo" / "VibepolloBridge.ps1"
+        source = script.read_text(encoding="utf-8-sig")
+
+        provider_branch = source.index("if ($isProviderRecord) {")
+        managed_branch = source.index('elseif ($managed -in @("manual", "auto"))')
+        self.assertLess(provider_branch, managed_branch)
+        self.assertIn("Rebuild every direct-provider target from a command-free allowlist",
+                      source)
 
     def test_connector_v8_is_upgraded_with_library_source(self):
         patched, changed = patch_text(PATCH_MARKER_V8 + "\n"
@@ -1992,16 +2393,41 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual("launch rejected",
                          self.state.events[-1]["payload"]["error_excerpt"])
 
+    def test_steam_dispatch_hint_does_not_request_reveal_without_window(self):
+        with self.state.lock:
+            self.state.current = {
+                "state": "starting", "id": GAME_ID,
+                "launchTaskId": "launch-task",
+            }
+            self.state.readiness = {
+                "ready": False, "reason": "game_starting",
+                "target_kind": "game", "stable_samples": 0,
+            }
+
+        self.state.apply_launch_process_sample({
+            "provider": "steam", "dispatched": True,
+            "reason": "steam_launch_dispatched",
+        }, "launch-task")
+        self.state.apply_window_sample({
+            "qualified": False, "reason": "waiting_for_game_window",
+        })
+
+        self.assertEqual("starting", self.state.current["state"])
+        self.assertEqual("waiting_for_game_window", self.state.readiness["reason"])
+        self.assertNotIn("launcher-interaction-required", [
+            event["event"] for event in self.state.events])
+
     def test_legendary_overlay_overrides_both_playnite_true_and_false(self):
         with self.state.lock:
             self.state.library[GAME_ID] = {
-                "id": GAME_ID, "name": "Carcassonne", "source": "Epic",
+                "id": GAME_ID, "name": "Carcassonne", "provider": "epic",
+                "source": "Epic",
                 "providerGameId": "Thrush", "installed": False,
                 "installing": True,
             }
         snapshots = [{
             "available": True, "complete": True,
-            "by_id": {"thrush": {
+            "by_id": {"Thrush": {
                 "installed": True, "provider": "epic",
                 "install_directory": r"E:\Games\Carcassonne",
             }},
