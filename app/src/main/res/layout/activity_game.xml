@@ -71,6 +71,16 @@
         android:preferKeepClear="true"
         android:visibility="gone" />
 
+    <com.limelight.console.DiscordDmToastView
+        android:id="@+id/discordDmToastView"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="right|top"
+        android:layout_marginTop="18dp"
+        android:layout_marginRight="18dp"
+        android:layout_marginEnd="18dp"
+        android:preferKeepClear="true" />
+
     <com.limelight.ui.overlay.OverlayMenuView
         android:id="@+id/overlayMenuView"
         android:layout_width="match_parent"

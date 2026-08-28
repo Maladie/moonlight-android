@@ -41,6 +41,7 @@ import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Collections;
 import java.util.Deque;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
@@ -69,6 +70,7 @@ public final class DiscordSocialClient {
     private static final AtomicInteger flowGeneration = new AtomicInteger();
     private static final Object stateLock = new Object();
     private static final Object messageLock = new Object();
+    private static final Object messageObserverLock = new Object();
     private static final int MAX_JAVA_MESSAGE_EVENTS = 256;
     private static final AtomicLong nextDirectMessageRequestId = new AtomicLong();
     private static final Snapshot EMPTY = new Snapshot(0, "Not connected", false, false,
@@ -88,6 +90,8 @@ public final class DiscordSocialClient {
     private static Dialog deviceDialog;
     private static WeakReference<Activity> dialogActivity = new WeakReference<>(null);
     private static final Deque<MessageEvent> pendingMessageEvents = new ArrayDeque<>();
+    private static final LinkedHashMap<ObserverToken, MessageEventObserver> messageEventObservers =
+            new LinkedHashMap<>();
     private static long nextMessageEventLeaseEpoch;
     private static MessageEventLease activeMessageEventLease;
 
@@ -105,17 +109,38 @@ public final class DiscordSocialClient {
 
     /** Restores an existing session first; only displays QR when a new authorization is required. */
     public static void authorize(Activity activity) throws Exception {
-        ensureRuntime(activity);
-        restoreOrAuthorize(new WeakReference<>(activity));
+        notifySocialStateObservers(snapshot, true);
+        try {
+            ensureRuntime(activity);
+            restoreOrAuthorize(new WeakReference<>(activity));
+        } catch (Exception error) {
+            notifyCurrentSocialState();
+            throw error;
+        } catch (LinkageError error) {
+            notifyCurrentSocialState();
+            throw error;
+        }
     }
 
     /** Explicitly upgrades a presence-only grant. This is never invoked automatically. */
     public static void authorizeForDirectMessages(Activity activity) throws Exception {
-        ensureRuntime(activity);
+        notifySocialStateObservers(snapshot, true);
+        try {
+            ensureRuntime(activity);
+        } catch (Exception error) {
+            notifyCurrentSocialState();
+            throw error;
+        } catch (LinkageError error) {
+            notifyCurrentSocialState();
+            throw error;
+        }
         new Thread(() -> {
             TokenBundle restored;
             synchronized (stateLock) {
-                if (flowActive || restoreInProgress) return;
+                if (flowActive || restoreInProgress) {
+                    notifyCurrentSocialState();
+                    return;
+                }
                 restored = readStoredBundleLocked();
                 session = restored;
             }
@@ -133,6 +158,7 @@ public final class DiscordSocialClient {
         flowActive = false;
         dismissDeviceDialog();
         if (wasActive) setStatus("Authorization canceled");
+        else notifyCurrentSocialState();
     }
 
     /** Compatibility with the existing caller. Cancel never unlinks the account. */
@@ -196,7 +222,7 @@ public final class DiscordSocialClient {
     }
 
     /** Conversation identity is the other participant, not MessageHandle.RecipientId blindly. */
-    static long directMessagePeer(long currentUserId, long authorId, long recipientId) {
+    public static long directMessagePeer(long currentUserId, long authorId, long recipientId) {
         return authorId == currentUserId ? recipientId : authorId;
     }
 
@@ -260,6 +286,35 @@ public final class DiscordSocialClient {
             List<MessageEvent> result = new ArrayList<>(pendingMessageEvents);
             pendingMessageEvents.clear();
             return Collections.unmodifiableList(result);
+        }
+    }
+
+    /** Observes accepted immutable events without taking ownership of the DM queue. */
+    public interface MessageEventObserver {
+        void onMessageEvent(MessageEvent event);
+        default void onSocialStateChanged(Snapshot snapshot, boolean authorizationActive) { }
+    }
+
+    /** Opaque registration token; observer identity is never used for removal. */
+    public static final class ObserverToken {
+        private ObserverToken() { }
+    }
+
+    public static ObserverToken addMessageEventObserver(MessageEventObserver observer) {
+        if (observer == null) throw new NullPointerException("observer");
+        ObserverToken token = new ObserverToken();
+        synchronized (messageObserverLock) {
+            messageEventObservers.put(token, observer);
+        }
+        try { observer.onSocialStateChanged(snapshot, isAuthorizationActive()); }
+        catch (RuntimeException ignored) { }
+        return token;
+    }
+
+    public static void removeMessageEventObserver(ObserverToken token) {
+        if (token == null) return;
+        synchronized (messageObserverLock) {
+            messageEventObservers.remove(token);
         }
     }
 
@@ -439,6 +494,7 @@ public final class DiscordSocialClient {
     private static void startDeviceFlow(WeakReference<Activity> activity) {
         final int generation = flowGeneration.incrementAndGet();
         flowActive = true;
+        notifyCurrentSocialState();
         new Thread(() -> runDeviceFlow(activity, generation), "DiscordDeviceFlow").start();
     }
 
@@ -566,7 +622,7 @@ public final class DiscordSocialClient {
     private static void pumpCallbacks() {
         if (!clientStarted) return;
         String[] values = nativePumpAndSnapshot();
-        enqueueMessageEvents(nativeDrainMessageEvents());
+        String[] messageRecords = nativeDrainMessageEvents();
         Snapshot parsed = Snapshot.parse(values, snapshot.revision + 1);
         if (parsed == null) {
             Snapshot previous = snapshot;
@@ -578,8 +634,9 @@ public final class DiscordSocialClient {
                 parsed = parsed.withAuthorizationRequired(authorizationRequiredForOwner(
                         session != null, flowActive, restoreInProgress));
             }
-            if (!parsed.sameData(snapshot)) snapshot = parsed;
+            publishSnapshot(parsed);
         }
+        enqueueMessageEvents(messageRecords);
         TokenBundle current;
         synchronized (stateLock) {
             current = session;
@@ -592,6 +649,7 @@ public final class DiscordSocialClient {
 
     private static void enqueueMessageEvents(String[] records) {
         if (records == null || records.length == 0) return;
+        List<MessageEvent> accepted = new ArrayList<>(records.length);
         synchronized (messageLock) {
             for (String record : records) {
                 MessageEvent event = MessageEvent.parse(record);
@@ -601,16 +659,72 @@ public final class DiscordSocialClient {
                     // The only safe response to a dropped/invalid event is a bounded reload by
                     // the active conversation owner; do not present a partially current model.
                     pendingMessageEvents.clear();
-                    pendingMessageEvents.addLast(MessageEvent.overflow());
+                    accepted.clear();
+                    event = MessageEvent.overflow();
+                    pendingMessageEvents.addLast(event);
+                    accepted.add(event);
                     continue;
                 }
                 pendingMessageEvents.addLast(event);
+                accepted.add(event);
             }
+        }
+        notifyMessageEventObservers(accepted);
+    }
+
+    private static void notifyMessageEventObservers(List<MessageEvent> events) {
+        if (events.isEmpty()) return;
+        List<MessageEventObserver> observers;
+        synchronized (messageObserverLock) {
+            if (messageEventObservers.isEmpty()) return;
+            observers = new ArrayList<>(messageEventObservers.values());
+        }
+        for (MessageEvent event : events) {
+            for (MessageEventObserver observer : observers) {
+                try {
+                    observer.onMessageEvent(event);
+                } catch (RuntimeException ignored) {
+                    // A presentation observer cannot damage queue ownership or other observers.
+                }
+            }
+        }
+    }
+
+    private static boolean isAuthorizationActive() {
+        synchronized (stateLock) {
+            return flowActive || restoreInProgress;
+        }
+    }
+
+    private static void notifyCurrentSocialState() {
+        notifySocialStateObservers(snapshot, isAuthorizationActive());
+    }
+
+    private static void notifySocialStateObservers(Snapshot current,
+                                                   boolean authorizationActive) {
+        List<MessageEventObserver> observers;
+        synchronized (messageObserverLock) {
+            if (messageEventObservers.isEmpty()) return;
+            observers = new ArrayList<>(messageEventObservers.values());
+        }
+        for (MessageEventObserver observer : observers) {
+            try { observer.onSocialStateChanged(current, authorizationActive); }
+            catch (RuntimeException ignored) { }
         }
     }
 
     static void enqueueMessageEventsForTest(String... records) {
         enqueueMessageEvents(records);
+    }
+
+    static boolean messageLockHeldByCurrentThreadForTest() {
+        return Thread.holdsLock(messageLock);
+    }
+
+    static int messageEventObserverCountForTest() {
+        synchronized (messageObserverLock) {
+            return messageEventObservers.size();
+        }
     }
 
     static boolean authorizationRequiredForOwner(boolean hasSession, boolean flowActive,
@@ -641,7 +755,14 @@ public final class DiscordSocialClient {
         Snapshot previous = snapshot;
         Snapshot next = new Snapshot(previous.revision + 1, status, connected, authorizationRequired,
                 userId, displayName, userId.equals(previous.userId) ? previous.avatarUrl : "", friends);
-        if (!next.sameData(previous)) snapshot = next;
+        publishSnapshot(next);
+    }
+
+    private static void publishSnapshot(Snapshot next) {
+        Snapshot previous = snapshot;
+        if (next.sameData(previous)) return;
+        snapshot = next;
+        notifyCurrentSocialState();
     }
 
     private static void showDeviceDialog(WeakReference<Activity> activityReference, int generation,

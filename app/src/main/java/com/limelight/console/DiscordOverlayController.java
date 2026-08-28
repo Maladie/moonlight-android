@@ -29,6 +29,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.function.LongConsumer;
 
 /** Discord state polling and Community projection for the active stream host only. */
 public final class DiscordOverlayController {
@@ -102,6 +103,7 @@ public final class DiscordOverlayController {
     private DiscordSocialClient.MessageEventLease messageEventLease;
     private boolean authorizeAfterOverlayClose;
     private String lastCommunitySignature;
+    private LongConsumer visiblePeerListener = ignored -> { };
 
     private static final class SentDraft {
         final long requestId;
@@ -155,6 +157,31 @@ public final class DiscordOverlayController {
                 Toast.makeText(activity, R.string.discord_social_state_unavailable, Toast.LENGTH_SHORT).show();
             }
         }
+    }
+
+    public void setVisiblePeerListener(LongConsumer listener) {
+        visiblePeerListener = listener == null ? ignored -> { } : listener;
+        updateShowingChat();
+    }
+
+    /** Returns false without leaving the normal overlay root when direct-open is unsafe. */
+    public boolean openDirectMessage(long peerId) {
+        if (!overlayVisible || overlay.getVisibility() != View.VISIBLE || peerId <= 0L) return false;
+        String friendId = Long.toString(peerId);
+        boolean knownPeer = findFriend(friendId) != null;
+        boolean acquiredHere = false;
+        if (DiscordSocialClient.canUseDirectMessages() && knownPeer && messageEventLease == null) {
+            messageEventLease = DiscordSocialClient.tryAcquireMessageEventLease();
+            acquiredHere = messageEventLease != null;
+        }
+        if (!DiscordDmShortcutHandler.canDirectOpen(DiscordSocialClient.canUseDirectMessages(),
+                knownPeer, messageEventLease != null)) return false;
+        boolean opened = overlay.openDiscordFriendChat(friendId);
+        if (!opened && acquiredHere) {
+            DiscordSocialClient.releaseMessageEventLease(messageEventLease);
+            messageEventLease = null;
+        }
+        return opened;
     }
 
     public void onActivityPaused() {
@@ -386,6 +413,7 @@ public final class DiscordOverlayController {
         handler.removeCallbacks(scheduledRefresh); handler.removeCallbacks(scheduledDmRefresh);
         cancelLeaseRetry();
         deactivateCommunity();
+        visiblePeerListener.accept(0L);
         executor.shutdownNow();
     }
 
@@ -606,6 +634,7 @@ public final class DiscordOverlayController {
         homeLoadInFlight = false; chatFriendId = ""; chatGeneration++; chatLeaseRetrying = false;
         directMessages.setVisibleRecipient(0); directMessageHistoryRequests.clear();
         handler.removeCallbacks(scheduledDmRefresh);
+        updateShowingChat();
         if (messageEventLease != null) {
             DiscordSocialClient.releaseMessageEventLease(messageEventLease);
             messageEventLease = null;
@@ -614,7 +643,14 @@ public final class DiscordOverlayController {
     }
 
     private boolean ensureMessageEventLease() {
-        if (messageEventLease != null) return true;
+        if (messageEventLease != null) {
+            if (isCommunityVisible()) {
+                updateShowingChat();
+                handler.removeCallbacks(scheduledDmRefresh);
+                handler.postDelayed(scheduledDmRefresh, DM_REFRESH_MS);
+            }
+            return true;
+        }
         if (!isCommunityVisible()) return false;
         messageEventLease = DiscordSocialClient.tryAcquireMessageEventLease();
         if (messageEventLease != null) {
@@ -746,8 +782,11 @@ public final class DiscordOverlayController {
     }
 
     private void updateShowingChat() {
+        long visiblePeer = isCommunityVisible() && !chatFriendId.isEmpty()
+                ? safeLong(chatFriendId) : 0L;
+        visiblePeerListener.accept(visiblePeer);
         if (messageEventLease != null) DiscordSocialClient.setShowingChat(messageEventLease,
-                isCommunityVisible() && !chatFriendId.isEmpty());
+                visiblePeer > 0L);
     }
 
     private void renderCommunity() {

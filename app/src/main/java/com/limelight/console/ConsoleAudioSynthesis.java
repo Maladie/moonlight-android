@@ -59,6 +59,20 @@ final class ConsoleAudioSynthesis {
         return samples;
     }
 
+    static short[] renderDiscordDmCue(int sampleRate) {
+        int frames = Math.max(1, Math.round(0.22f * sampleRate));
+        short[] samples = new short[frames];
+        for (int frame = 0; frame < frames; frame++) {
+            double time = frame / (double) sampleRate;
+            double progress = frame / (double) Math.max(1, frames - 1);
+            double attack = Math.min(1.0, time / 0.008);
+            double release = Math.pow(Math.max(0.0, 1.0 - progress), 2.1);
+            double chime = sine(523.25, time) * 0.58 + sine(783.99, time) * 0.24;
+            samples[frame] = pcm(chime * attack * release * 0.18);
+        }
+        return samples;
+    }
+
     static void writeWave(File file, short[] samples, int sampleRate, int channels)
             throws IOException {
         File parent = file.getParentFile();

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="discord_dm_toast_message">%1$s przesyła wiadomość: „%2$s”</string>
+    <string name="discord_dm_toast_neutral">%1$s: nowa wiadomość lub załącznik</string>
+    <string name="discord_dm_toast_shortcut">Przytrzymaj %1$s, aby otworzyć</string>
+    <string name="discord_dm_notifications_setting">Powiadomienia o wiadomościach prywatnych · %1$s</string>
+    <plurals name="discord_dm_toast_more">
+        <item quantity="one">+%1$d wiadomość</item>
+        <item quantity="few">+%1$d wiadomości</item>
+        <item quantity="many">+%1$d wiadomości</item>
+        <item quantity="other">+%1$d wiadomości</item>
+    </plurals>
+</resources>

@@ -14,10 +14,12 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicInteger;
 
 public class DiscordSocialClientTest {
     @Test
@@ -236,5 +238,93 @@ public class DiscordSocialClientTest {
     public void requestIdOverflowSkipsZeroAndNegativeValues() {
         assertEquals(1L, DiscordSocialClient.nextPositiveValue(Long.MAX_VALUE));
         assertEquals(1L, DiscordSocialClient.nextPositiveValue(-1L));
+    }
+
+    @Test
+    public void messageObserversRunExactlyOnceOutsideTheQueueLock() {
+        AtomicInteger calls = new AtomicInteger();
+        DiscordSocialClient.ObserverToken token = DiscordSocialClient.addMessageEventObserver(event -> {
+            assertFalse(DiscordSocialClient.messageLockHeldByCurrentThreadForTest());
+            calls.incrementAndGet();
+        });
+        try {
+            DiscordSocialClient.enqueueMessageEventsForTest(
+                    DiscordSocialClient.encodeMessageEventForTest("1", "OVERFLOW"));
+            assertEquals(1, calls.get());
+        } finally {
+            DiscordSocialClient.removeMessageEventObserver(token);
+            drainQueuedEvents();
+        }
+    }
+
+    @Test
+    public void observerFailureIsolatedAndRemovalStopsDelivery() {
+        AtomicInteger calls = new AtomicInteger();
+        DiscordSocialClient.ObserverToken failing = DiscordSocialClient.addMessageEventObserver(
+                event -> { throw new IllegalStateException("expected"); });
+        DiscordSocialClient.ObserverToken healthy = DiscordSocialClient.addMessageEventObserver(
+                event -> calls.incrementAndGet());
+        try {
+            String event = DiscordSocialClient.encodeMessageEventForTest("1", "OVERFLOW");
+            DiscordSocialClient.enqueueMessageEventsForTest(event);
+            assertEquals(1, calls.get());
+            DiscordSocialClient.removeMessageEventObserver(healthy);
+            DiscordSocialClient.enqueueMessageEventsForTest(event);
+            assertEquals(1, calls.get());
+        } finally {
+            DiscordSocialClient.removeMessageEventObserver(failing);
+            DiscordSocialClient.removeMessageEventObserver(healthy);
+            drainQueuedEvents();
+        }
+    }
+
+    @Test
+    public void observerDoesNotReceiveEventsDiscardedByOverflow() {
+        List<DiscordSocialClient.MessageEvent.Type> types = new ArrayList<>();
+        DiscordSocialClient.ObserverToken observer = DiscordSocialClient.addMessageEventObserver(
+                event -> types.add(event.type));
+        try {
+            String created = DiscordSocialClient.encodeMessageEventForTest("1", "CREATED", "42",
+                    "0", "9", "7", "hello", "100", "0", "", "", "0", "0");
+            DiscordSocialClient.enqueueMessageEventsForTest(created, "malformed");
+            assertEquals(Collections.singletonList(DiscordSocialClient.MessageEvent.Type.OVERFLOW),
+                    types);
+        } finally {
+            DiscordSocialClient.removeMessageEventObserver(observer);
+            drainQueuedEvents();
+        }
+    }
+
+    @Test
+    public void observerDoesNotChangeLeaseOrDrainOwnership() {
+        AtomicInteger calls = new AtomicInteger();
+        DiscordSocialClient.ObserverToken observer = DiscordSocialClient.addMessageEventObserver(
+                event -> calls.incrementAndGet());
+        DiscordSocialClient.MessageEventLease owner = DiscordSocialClient.tryAcquireMessageEventLease();
+        assertNotNull(owner);
+        try {
+            DiscordSocialClient.enqueueMessageEventsForTest(
+                    DiscordSocialClient.encodeMessageEventForTest("1", "OVERFLOW"));
+            assertNull(DiscordSocialClient.tryAcquireMessageEventLease());
+            List<DiscordSocialClient.MessageEvent> drained =
+                    DiscordSocialClient.drainMessageEvents(owner);
+            assertEquals(1, calls.get());
+            assertEquals(1, drained.size());
+            assertEquals(DiscordSocialClient.MessageEvent.Type.OVERFLOW, drained.get(0).type);
+        } finally {
+            DiscordSocialClient.removeMessageEventObserver(observer);
+            DiscordSocialClient.releaseMessageEventLease(owner);
+        }
+    }
+
+    private static void drainQueuedEvents() {
+        DiscordSocialClient.MessageEventLease lease =
+                DiscordSocialClient.tryAcquireMessageEventLease();
+        if (lease == null) return;
+        try {
+            DiscordSocialClient.drainMessageEvents(lease);
+        } finally {
+            DiscordSocialClient.releaseMessageEventLease(lease);
+        }
     }
 }

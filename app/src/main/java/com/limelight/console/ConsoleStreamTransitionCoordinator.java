@@ -22,6 +22,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         boolean verifyInstallation(String gameId) throws IOException;
         void ensureInstalledGameTarget(String gameId, String gameName) throws IOException;
         default void startGame(String gameId) throws IOException { }
+        default void stopGame(String gameId) throws IOException { }
     }
 
     interface MonotonicClock {
@@ -71,6 +72,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private boolean stopped = true;
     private boolean closed;
     private boolean providerStartRequested;
+    private boolean providerStartCancellationRequested;
     private long epoch;
 
     public ConsoleStreamTransitionCoordinator(
@@ -137,6 +139,11 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         }
     }
 
+    public synchronized void cancel() {
+        providerStartCancellationRequested = true;
+        stop();
+    }
+
     @Override
     public void close() {
         synchronized (this) {
@@ -165,12 +172,20 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             try {
                 executor.execute(() -> {
                     if (!isCurrent(actionEpoch)) return;
+                    Exception startError = null;
                     try {
                         gateway.startGame(transitionSpec.playniteGameId);
                     } catch (IOException | RuntimeException error) {
-                        if (isCurrent(actionEpoch)) {
-                            providerStartFailed(error);
+                        startError = error;
+                    }
+                    if (shouldCompensateProviderStart(actionEpoch)) {
+                        try {
+                            gateway.stopGame(transitionSpec.playniteGameId);
+                        } catch (IOException | RuntimeException ignored) {
+                            // Game.cancelTransition() also makes a best-effort stop request.
                         }
+                    } else if (startError != null && isCurrent(actionEpoch)) {
+                        providerStartFailed(startError);
                     }
                 });
             } catch (RuntimeException error) {
@@ -479,6 +494,10 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         return closed || stopped ? -1L : epoch;
     }
 
+    private synchronized boolean shouldCompensateProviderStart(long capturedEpoch) {
+        return providerStartCancellationRequested && epoch != capturedEpoch;
+    }
+
     private static Gateway adapt(PlayniteTransitionGateway gateway) {
         if (gateway == null) return null;
         return new Gateway() {
@@ -514,6 +533,10 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
 
             @Override public void startGame(String gameId) throws IOException {
                 gateway.startGame(gameId);
+            }
+
+            @Override public void stopGame(String gameId) throws IOException {
+                gateway.stopGame(gameId);
             }
         };
     }

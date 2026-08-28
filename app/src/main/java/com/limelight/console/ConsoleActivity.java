@@ -91,6 +91,7 @@ import com.limelight.nvstream.wol.WakeOnLanSender;
 import com.limelight.preferences.AddComputerManually;
 import com.limelight.preferences.AppPreferences;
 import com.limelight.preferences.AppStreamSettings;
+import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.preferences.StreamSettings;
 import com.limelight.stream.BackgroundStreamPreferences;
 import com.limelight.stream.BackgroundStreamService;
@@ -248,6 +249,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String autoLoginHostUuid;
 
     private FrameLayout root;
+    private DiscordDmToastView discordDmToastView;
+    private DiscordDmNotificationCoordinator discordDmNotifications;
+    private DiscordDmNotificationCoordinator.HostToken discordDmHostToken;
+    private DiscordDmShortcutHandler discordDmShortcut;
     private FrameLayout screenSaverLayer;
     private ImageView screenSaverArtwork;
     private ImageView screenSaverArtworkNext;
@@ -634,6 +639,28 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ? PixelFormat.TRANSLUCENT : PixelFormat.OPAQUE);
         root = buildUi();
         setContentView(root);
+        PreferenceConfiguration shortcutPreferences = PreferenceConfiguration.readPreferences(this);
+        discordDmToastView.setReducedMotion(reducedMotion);
+        discordDmToastView.setShortcutLabel(getString(R.string.discord_dm_toast_shortcut,
+                getString(DiscordDmShortcutHandler.triggerLabelResource(
+                        shortcutPreferences.overlayTriggerButton))));
+        discordDmNotifications = DiscordDmNotificationCoordinator.getInstance();
+        discordDmNotifications.initialize(this);
+        discordDmHostToken = discordDmNotifications.registerHost(discordDmToastView);
+        discordDmShortcut = new DiscordDmShortcutHandler(
+                shortcutPreferences.overlayTriggerButton,
+                shortcutPreferences.overlayHoldDurationMs,
+                new DiscordDmShortcutHandler.Scheduler() {
+                    @Override public void postDelayed(Runnable task, long delayMs) {
+                        mainHandler.postDelayed(task, delayMs);
+                    }
+
+                    @Override public void remove(Runnable task) {
+                        mainHandler.removeCallbacks(task);
+                    }
+                },
+                () -> discordDmNotifications.hasQuickAction(discordDmHostToken),
+                this::openDiscordDmShortcut);
         consoleFeedback = new ConsoleUiFeedback(this, root, consoleAudioEngine, reducedMotion);
         hostLaunchPreflight = createHostLaunchPreflight();
         sessionOrchestrator = createSessionOrchestrator();
@@ -707,6 +734,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
                     @Override public void dismissCommunityForAuthorization() {
                         hideSidePanelImmediately();
+                    }
+
+                    @Override public void visiblePeerChanged(long peerId) {
+                        if (discordDmNotifications != null) {
+                            discordDmNotifications.setVisiblePeer(discordDmHostToken, peerId);
+                        }
                     }
                 }, new DiscordSocialPanelController.CommunitySource() {
                     @Override public void requestHome(DiscordPanelController.CommunityHomeCallback callback) {
@@ -831,6 +864,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     @Override
     protected void onResume() {
         super.onResume();
+        if (discordDmNotifications != null) {
+            discordDmNotifications.activateHost(discordDmHostToken);
+            discordDmNotifications.setWindowFocused(
+                    discordDmHostToken, getWindow().getDecorView().hasWindowFocus());
+        }
         if (discordSocialPanelController != null) discordSocialPanelController.onActivityResumed();
         active = true;
         // The retained stream Home always belongs to the host backing the live stream.
@@ -902,6 +940,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
             if (event.getAction() == KeyEvent.ACTION_DOWN) resetScreenSaverTimer();
         }
+        if (discordDmShortcut != null && discordDmShortcut.handle(event)) return true;
         if (libraryTransitionRunning && event != null
                 && (isDirectionalNavigationKey(event.getKeyCode())
                 || event.getKeyCode() == KeyEvent.KEYCODE_ENTER
@@ -1196,6 +1235,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 Toast.LENGTH_SHORT).show();
     }
 
+    @Override public void onWindowFocusChanged(boolean hasFocus) {
+        super.onWindowFocusChanged(hasFocus);
+        if (discordDmNotifications != null) {
+            discordDmNotifications.setWindowFocused(discordDmHostToken, hasFocus);
+        }
+    }
+
     private static boolean isExpandedLibraryShortcutKey(int keyCode) {
         return keyCode == KeyEvent.KEYCODE_BUTTON_THUMBR
                 || keyCode == KeyEvent.KEYCODE_BUTTON_THUMBL
@@ -1204,6 +1250,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     @Override
     protected void onPause() {
+        if (discordDmShortcut != null) discordDmShortcut.cancel();
+        if (discordDmNotifications != null) {
+            discordDmNotifications.deactivateHost(discordDmHostToken);
+        }
         if (discordSocialPanelController != null) discordSocialPanelController.onActivityPaused();
         active = false;
         screenSaverDismissKeyCode = KeyEvent.KEYCODE_UNKNOWN;
@@ -1249,6 +1299,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (artworkScrimAnimator != null) artworkScrimAnimator.cancel();
         if (discordPanelController != null) discordPanelController.destroy();
         if (discordSocialPanelController != null) discordSocialPanelController.closePanel();
+        if (discordDmNotifications != null) {
+            discordDmNotifications.unregisterHost(discordDmHostToken);
+            discordDmHostToken = null;
+        }
         if (playniteFilterPopup != null) playniteFilterPopup.dismiss();
         if (sideDialog != null) sideDialog.dismiss();
         if (serviceBound) unbindService(serviceConnection);
@@ -1660,6 +1714,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         buildSidePanel();
         buildLoadingLayer(container);
         buildScreenSaverLayer(container);
+        discordDmToastView = new DiscordDmToastView(this);
+        FrameLayout.LayoutParams toastParams = new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
+                Gravity.TOP | Gravity.END);
+        toastParams.setMargins(dp(18), dp(18), dp(18), 0);
+        container.addView(discordDmToastView, toastParams);
         return container;
     }
 
@@ -1818,6 +1878,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         stopAppListPoller();
         cancelPlayniteArtworkPrefetch();
         if (loadingLayer != null) loadingLayer.setVisibility(View.GONE);
+        if (discordDmNotifications != null) {
+            discordDmNotifications.setPresentationBlocked(discordDmHostToken, false);
+        }
         if (homeLayer != null) homeLayer.setVisibility(View.GONE);
         if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.VISIBLE);
         renderHostSelection();
@@ -2401,6 +2464,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         sideDialog.setContentView(modalLayer);
         sideDialog.setCanceledOnTouchOutside(false);
         sideDialog.setOnKeyListener((dialog, keyCode, event) -> {
+            if (discordDmShortcut != null && discordDmShortcut.handle(event)) return true;
             if ("discord.community".equals(currentPanelKey)
                     && discordSocialPanelController != null
                     && discordSocialPanelController.handleCommunityBack(event)) {
@@ -8729,11 +8793,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void showLoading(String hostName, String appName,
                              LaunchTransitionType transitionType,
                              String loadingArtworkPath) {
+        if (discordDmNotifications != null) {
+            discordDmNotifications.setPresentationBlocked(discordDmHostToken, true);
+        }
         if (consoleAudioEngine != null) consoleAudioEngine.setMenuVisible(false);
         lastContentFocus = getCurrentFocus();
         lastContentFocusTag = lastContentFocus == null ? null : lastContentFocus.getTag();
         homeLayer.setVisibility(View.GONE);
         loadingLayer.setVisibility(View.VISIBLE);
+        loadingLayer.bringToFront();
         if (streamLoadingView != null) {
             streamLoadingView.stop();
             loadingLayer.removeView(streamLoadingView);
@@ -8777,6 +8845,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showHome() {
+        if (discordDmNotifications != null) {
+            discordDmNotifications.setPresentationBlocked(discordDmHostToken, false);
+        }
         if (consoleAudioEngine != null) consoleAudioEngine.setMenuVisible(true);
         if (streamLoadingView != null) {
             streamLoadingView.stopAndHide();
@@ -9144,6 +9215,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             reducedMotion = !reducedMotion;
             preferences.edit().putBoolean("reduced_motion", reducedMotion).apply();
             if (consoleFeedback != null) consoleFeedback.setReducedMotion(reducedMotion);
+            if (discordDmToastView != null) discordDmToastView.setReducedMotion(reducedMotion);
             if (libraryTransitionCoordinator != null) {
                 libraryTransitionCoordinator.setReducedMotion(reducedMotion);
             }
@@ -9314,6 +9386,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         screenSaverVisible = true;
+        if (discordDmNotifications != null) {
+            discordDmNotifications.setScreenSaverActive(discordDmHostToken, true);
+        }
         screenSaverLayer.setVisibility(View.VISIBLE);
         screenSaverLayer.bringToFront();
         screenSaverCaption.setText(getString(R.string.console_screen_saver_caption, title));
@@ -9343,6 +9418,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (screenSaverArtwork != null) screenSaverArtwork.setImageDrawable(null);
         if (screenSaverArtworkNext != null) screenSaverArtworkNext.setImageDrawable(null);
         screenSaverVisible = false;
+        if (discordDmNotifications != null) {
+            discordDmNotifications.setScreenSaverActive(discordDmHostToken, false);
+        }
         resetScreenSaverTimer();
     }
 
@@ -9513,6 +9591,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void showDiscordPanel() {
         discordSocialPanelController.showHub();
+    }
+
+    private void openDiscordDmShortcut() {
+        long peerId = discordDmNotifications.consumeQuickAction(discordDmHostToken);
+        if (sideDialog != null && sideDialog.isShowing()) hideSidePanelImmediately();
+        if (peerId > 0L) discordSocialPanelController.showDirectMessage(peerId);
+        else discordSocialPanelController.showHub();
     }
 
     private void startCommunityDictation(long recipientId, long directMessageGeneration) {

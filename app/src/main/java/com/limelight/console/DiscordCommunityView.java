@@ -54,6 +54,7 @@ final class DiscordCommunityView extends LinearLayout {
         void onHostAction(DiscordPanelController.CommunityHostAction action);
         void onOpenAudio();
         void onOpenSocial();
+        void onDmNotificationsChanged(boolean enabled);
         void onAudioDevice(HostGatewayClient.AudioDevice device);
         void onAudioVolume(int delta);
         void onAudioMute();
@@ -87,6 +88,7 @@ final class DiscordCommunityView extends LinearLayout {
         final String directDraft;
         final boolean directMessagesScopeAvailable;
         final boolean directMessagesCapable;
+        final boolean dmNotificationsEnabled;
 
         Model(DiscordSocialClient.Snapshot snapshot, DiscordCommunityState state,
               List<DiscordCommunityPresentation.Destination> active,
@@ -97,7 +99,8 @@ final class DiscordCommunityView extends LinearLayout {
             this(snapshot, state, active, recent, guildChannels, homeLoading, homeUnavailable,
                     guildLoading, guildUnavailable, error, voice, false, false, null, false, "",
                     null, false, false, "", null, Collections.emptyList(),
-                    new DiscordDirectMessageState.SendState(false, false, 0, ""), "", false, false);
+                    new DiscordDirectMessageState.SendState(false, false, 0, ""), "", false, false,
+                    true);
         }
 
         Model(DiscordSocialClient.Snapshot snapshot, DiscordCommunityState state,
@@ -112,7 +115,8 @@ final class DiscordCommunityView extends LinearLayout {
               DiscordSocialClient.Friend directFriend,
               List<DiscordDirectMessageState.Message> directMessages,
               DiscordDirectMessageState.SendState directSendState, String directDraft,
-              boolean directMessagesScopeAvailable, boolean directMessagesCapable) {
+              boolean directMessagesScopeAvailable, boolean directMessagesCapable,
+              boolean dmNotificationsEnabled) {
             this.snapshot = snapshot;
             this.state = state;
             this.active = active;
@@ -140,6 +144,7 @@ final class DiscordCommunityView extends LinearLayout {
             this.directDraft = directDraft == null ? "" : directDraft;
             this.directMessagesScopeAvailable = directMessagesScopeAvailable;
             this.directMessagesCapable = directMessagesScopeAvailable && directMessagesCapable;
+            this.dmNotificationsEnabled = dmNotificationsEnabled;
         }
     }
 
@@ -1414,6 +1419,14 @@ final class DiscordCommunityView extends LinearLayout {
 
     private void addSocial() {
         detail.addView(section(getContext().getString(R.string.discord_community_title)));
+        TextView notifications = pill(getContext().getString(
+                R.string.discord_dm_notifications_setting,
+                getContext().getString(model.dmNotificationsEnabled
+                        ? R.string.discord_state_on : R.string.discord_state_off)));
+        notifications.setTag("discord.community.social.dm_notifications");
+        notifications.setOnClickListener(ignored -> callback.onDmNotificationsChanged(
+                !model.dmNotificationsEnabled));
+        addAction(notifications);
         String account = model.snapshot.displayName.isEmpty() ? "Discord" : model.snapshot.displayName;
         detail.addView(text(account, 15, WHITE));
         boolean linked = model.snapshot.connected || !model.snapshot.userId.isEmpty();
