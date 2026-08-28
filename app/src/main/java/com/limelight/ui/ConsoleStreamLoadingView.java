@@ -15,6 +15,7 @@ import android.os.SystemClock;
 import android.util.AttributeSet;
 import android.view.Gravity;
 import android.view.KeyEvent;
+import android.view.MotionEvent;
 import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
@@ -70,6 +71,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private boolean error;
     private boolean stopped;
     private boolean revealRequested;
+    private int revealGeneration;
+    private int activeMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
     private int lastMessageIndex = -1;
     private boolean splashLayout;
     private Actions actions;
@@ -274,9 +277,10 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         statusView.setText(status == null || status.trim().isEmpty()
                 ? getContext().getString(R.string.transition_preparing_session) : status);
         activityView.setVisibility(currentStep == 5 ? INVISIBLE : VISIBLE);
+        actionsRow.setVisibility(VISIBLE);
+        cancelView.setEnabled(true);
         cancelView.setText(R.string.transition_cancel);
         retryView.setVisibility(GONE);
-        showAnywayView.setVisibility(GONE);
         renderSteps();
         announceStep();
         if (resumingAfterError) scheduleLoadingMessage(true);
@@ -305,11 +309,13 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         statusView.setText(details);
         statusView.setTextColor(0xFFFFAAA2);
         activityView.setVisibility(INVISIBLE);
+        actionsRow.setVisibility(VISIBLE);
+        cancelView.setEnabled(true);
         cancelView.setText(R.string.transition_cancel);
         retryView.setVisibility(VISIBLE);
         showAnywayView.setVisibility(allowShowAnyway ? VISIBLE : GONE);
         renderSteps();
-        retryView.requestFocus();
+        if (!isVisibleAction(findFocus())) retryView.requestFocus();
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
     }
 
@@ -327,14 +333,33 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         statusView.setText(details);
         statusView.setTextColor(0xFFFFAAA2);
         activityView.setVisibility(INVISIBLE);
+        actionsRow.setVisibility(VISIBLE);
+        cancelView.setEnabled(true);
         cancelView.setText(R.string.transition_back);
         retryView.setVisibility(GONE);
         showAnywayView.setVisibility(allowReveal ? VISIBLE : GONE);
         cancelView.setNextFocusRightId(showAnywayView.getId());
         showAnywayView.setNextFocusLeftId(cancelView.getId());
         renderSteps();
-        if (allowReveal) showAnywayView.requestFocus();
-        else cancelView.requestFocus();
+        requestDefaultActionFocus();
+        sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+    }
+
+    public void showCancelling() {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(this::showCancelling);
+            return;
+        }
+        if (stopped) return;
+        error = false;
+        statusView.setText(R.string.transition_cancelling);
+        statusView.setTextColor(0xFFB8C7D8);
+        activityView.setVisibility(VISIBLE);
+        cancelView.setEnabled(false);
+        retryView.setVisibility(GONE);
+        showAnywayView.setVisibility(GONE);
+        actionsRow.setVisibility(GONE);
+        renderSteps();
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
     }
 
@@ -348,17 +373,18 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             return;
         }
         if (stopped || error || revealRequested) return;
+        if (actionsRow.getVisibility() != VISIBLE) return;
         boolean changed = showAnywayView.getVisibility() != (available ? VISIBLE : GONE);
+        if (!changed) return;
         showAnywayView.setVisibility(available ? VISIBLE : GONE);
         if (available) {
             // Keep the existing Cancel focus, but make Odsłoń teraz the explicit
             // next DPAD-right option for remotes and controllers.
             cancelView.setNextFocusRightId(showAnywayView.getId());
             showAnywayView.setNextFocusLeftId(cancelView.getId());
-            showAnywayView.requestFocus();
-            if (changed) {
-                sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
-            }
+            sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+        } else if (findFocus() == showAnywayView) {
+            cancelView.requestFocus();
         }
     }
 
@@ -396,6 +422,26 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         return false;
     }
 
+    public boolean handleControllerMotion(MotionEvent event) {
+        if (event == null || event.getAction() != MotionEvent.ACTION_MOVE) return false;
+        float horizontal = event.getAxisValue(MotionEvent.AXIS_HAT_X);
+        float vertical = event.getAxisValue(MotionEvent.AXIS_HAT_Y);
+        int direction = KeyEvent.KEYCODE_UNKNOWN;
+        if (Math.max(Math.abs(horizontal), Math.abs(vertical)) >= .45f) {
+            direction = Math.abs(horizontal) > Math.abs(vertical)
+                    ? (horizontal < 0f ? KeyEvent.KEYCODE_DPAD_LEFT : KeyEvent.KEYCODE_DPAD_RIGHT)
+                    : (vertical < 0f ? KeyEvent.KEYCODE_DPAD_UP : KeyEvent.KEYCODE_DPAD_DOWN);
+        }
+        if (direction == KeyEvent.KEYCODE_UNKNOWN) {
+            boolean consumed = activeMotionDirection != KeyEvent.KEYCODE_UNKNOWN;
+            activeMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
+            return consumed;
+        }
+        if (direction == activeMotionDirection) return true;
+        activeMotionDirection = direction;
+        return handleControllerKey(new KeyEvent(KeyEvent.ACTION_DOWN, direction));
+    }
+
     public void waitingForVideo() {
         setStep(4, getContext().getString(R.string.console_stream_waiting_video));
     }
@@ -411,15 +457,17 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         }
         if (stopped || revealRequested) return;
         revealRequested = true;
+        int generation = ++revealGeneration;
         setStep(5, getContext().getString(R.string.transition_ready));
         doAfterNextFrame(() -> {
-            if (stopped) return;
+            if (stopped || generation != revealGeneration || !revealRequested) return;
             handler.removeCallbacks(rotateMessage);
             if (reducedMotion) {
                 setVisibility(GONE);
                 if (afterReveal != null) afterReveal.run();
             } else {
                 animate().alpha(0f).setDuration(300L).withEndAction(() -> {
+                    if (stopped || generation != revealGeneration || !revealRequested) return;
                     setVisibility(GONE);
                     if (afterReveal != null) afterReveal.run();
                 }).start();
@@ -433,6 +481,11 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             return;
         }
         if (stopped) return;
+        if (getVisibility() == VISIBLE && !revealRequested && getAlpha() == 1f) {
+            bringToFront();
+            return;
+        }
+        revealGeneration++;
         animate().cancel();
         revealRequested = false;
         setAlpha(1f);
@@ -499,17 +552,16 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         return 2;
     }
 
-    private String friendlyStage(String stage) {
+    public String friendlyStage(String stage) {
         if (stage == null || stage.isEmpty()) {
             return getContext().getString(R.string.transition_connecting_stream);
         }
         String lower = stage.toLowerCase(Locale.ROOT);
-        if (lower.contains("rtsp")) return getContext().getString(R.string.console_stream_rtsp);
-        if (lower.contains("video")) return getContext().getString(R.string.console_stream_video);
-        if (lower.contains("audio")) return getContext().getString(R.string.console_stream_audio);
-        if (lower.contains("control")) return getContext().getString(R.string.console_stream_control);
-        if (lower.contains("input")) return getContext().getString(R.string.console_stream_input);
-        return getContext().getString(R.string.console_stream_starting_stage, stage);
+        if (lower.contains("rtsp") || lower.contains("video") || lower.contains("audio")
+                || lower.contains("control") || lower.contains("input")) {
+            return getContext().getString(R.string.transition_connecting_stream);
+        }
+        return getContext().getString(R.string.transition_preparing_session);
     }
 
     private void stopAnimations() {
@@ -626,18 +678,40 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         view.setMinWidth(dp(96));
         view.setMinHeight(dp(48));
         view.setPadding(dp(16), dp(8), dp(16), dp(8));
-        view.setBackgroundColor(0xFF172532);
-        view.setOnFocusChangeListener((focusedView, focused) ->
-                focusedView.setBackgroundColor(focused ? 0xFF355B78 : 0xFF172532));
+        view.setBackground(actionBackground(false));
+        view.setOnFocusChangeListener((focusedView, focused) -> {
+            focusedView.setBackground(actionBackground(focused));
+            focusedView.setElevation(dp(focused ? 5 : 1));
+            focusedView.animate().cancel();
+            float scale = focused ? 1.04f : 1f;
+            if (reducedMotion || !focusedView.isLaidOut()) {
+                focusedView.setScaleX(scale);
+                focusedView.setScaleY(scale);
+            } else {
+                focusedView.animate().scaleX(scale).scaleY(scale)
+                        .setDuration(120L).start();
+            }
+        });
         return view;
+    }
+
+    private GradientDrawable actionBackground(boolean focused) {
+        GradientDrawable background = new GradientDrawable(
+                GradientDrawable.Orientation.TOP_BOTTOM,
+                new int[]{focused ? 0xFF324A5A : 0xFF1D2A34,
+                        focused ? 0xFF192A35 : 0xFF111A21});
+        background.setCornerRadius(dp(12));
+        background.setStroke(dp(focused ? 2 : 1),
+                focused ? 0xFFDDF5FF : 0x66788A96);
+        return background;
     }
 
     private void requestDefaultActionFocus() {
         View focused = findFocus();
         if (isVisibleAction(focused)) return;
-        if (showAnywayView.getVisibility() == VISIBLE) showAnywayView.requestFocus();
+        if (cancelView.getVisibility() == VISIBLE) cancelView.requestFocus();
         else if (retryView.getVisibility() == VISIBLE) retryView.requestFocus();
-        else cancelView.requestFocus();
+        else if (showAnywayView.getVisibility() == VISIBLE) showAnywayView.requestFocus();
     }
 
     private boolean focusPreviousAction() {
@@ -666,7 +740,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     }
 
     private boolean isVisibleAction(View view) {
-        return view != null && view.getVisibility() == VISIBLE
+        return actionsRow.getVisibility() == VISIBLE
+                && view != null && view.getVisibility() == VISIBLE
                 && (view == cancelView || view == retryView || view == showAnywayView);
     }
 

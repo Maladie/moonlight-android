@@ -51,6 +51,7 @@ final class DiscordSocialPanelController {
         void backPanel();
         void requestCommunityDictation(long recipientId, long directMessageGeneration);
         void dismissCommunityForAuthorization();
+        default void visiblePeerChanged(long peerId) { }
     }
 
     enum SummaryState { CONNECTED, AUTHORIZATION_REQUIRED, CONNECTING, UNAVAILABLE }
@@ -143,9 +144,24 @@ final class DiscordSocialPanelController {
         watch(generation);
     }
 
+    /** Always leaves the Community hub visible; returns true only when chat opened safely. */
+    boolean showDirectMessage(long recipientId) {
+        DiscordSocialClient.Snapshot snapshot = DiscordSocialClient.getSnapshot();
+        DiscordSocialClient.Friend friend = directFriend(snapshot, recipientId);
+        showHub();
+        if (!DiscordDmShortcutHandler.canDirectOpen(DiscordSocialClient.canUseDirectMessages(),
+                friend != null, hasMessageEventLease())) return false;
+        String subtitle = friend.activityName == null ? "" : friend.activityName;
+        openDirectMessage(new DiscordCommunityPresentation.Destination(
+                FRIEND_TAG_PREFIX + friend.userId, DiscordCommunityPresentation.Kind.FRIEND,
+                friend.displayName, subtitle, friend.avatarUrl, true, 0, friend));
+        return isDirectMessageOpen();
+    }
+
     void closePanel() {
         visible = false; shellShown = false; generation++;
         if (communityView != null) communityView.cancelDirectKeyboardHold();
+        updateShowingChat();
         releaseMessageEventLease();
         sentDirectMessageDrafts.clear();
     }
@@ -155,6 +171,7 @@ final class DiscordSocialPanelController {
         if (shouldCancelDirectKeyboardHoldOnPause(communityView != null)) {
             communityView.cancelDirectKeyboardHold();
         }
+        updateShowingChat();
         releaseMessageEventLease();
     }
 
@@ -355,9 +372,12 @@ final class DiscordSocialPanelController {
     }
 
     private void updateShowingChat() {
-        if (!hasMessageEventLease()) return;
-        DiscordSocialClient.setShowingChat(messageEventLease, activityResumed && visible
-                && state.detail == DiscordCommunityState.Detail.DIRECT_MESSAGE);
+        long visiblePeer = activityResumed && visible
+                && state.detail == DiscordCommunityState.Detail.DIRECT_MESSAGE
+                ? state.directMessageRecipientId : 0L;
+        if (ui != null) ui.visiblePeerChanged(visiblePeer);
+        if (hasMessageEventLease()) DiscordSocialClient.setShowingChat(
+                messageEventLease, visiblePeer > 0L);
     }
 
     private static long safeLong(String value) {
@@ -382,7 +402,7 @@ final class DiscordSocialPanelController {
                 directMessages.history(state.directMessageRecipientId),
                 directMessages.sendState(state.directMessageRecipientId),
                 directMessageDraft(state.directMessageRecipientId), DiscordSocialClient.canUseDirectMessages(),
-                hasMessageEventLease()));
+                hasMessageEventLease(), DiscordDmNotificationPreferences.isEnabled(activity)));
         if (state.detail == DiscordCommunityState.Detail.DIRECT_MESSAGE) {
             directMessages.clearUnreadAfterRendered(state.directMessageRecipientId);
         }
@@ -436,6 +456,11 @@ final class DiscordSocialPanelController {
             }
             @Override public void onOpenAudio() { openAudio(); }
             @Override public void onOpenSocial() { openSocial(); }
+            @Override public void onDmNotificationsChanged(boolean enabled) {
+                DiscordDmNotificationPreferences.setEnabled(activity, enabled);
+                DiscordDmNotificationCoordinator.getInstance().setNotificationsEnabled(enabled);
+                render(DiscordSocialClient.getSnapshot());
+            }
             @Override public void onAudioDevice(HostGatewayClient.AudioDevice device) {
                 selectAudioDevice(device);
             }

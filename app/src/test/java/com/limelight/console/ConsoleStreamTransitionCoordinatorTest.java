@@ -440,6 +440,91 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void cancelledProviderStartIsCompensatedAfterItReturns() throws Exception {
+        LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
+                "transition-provider", HOST, LaunchTransitionType.GAME, 42,
+                "steam:289070", 1_000L);
+        LaunchTransitionController controller = new LaunchTransitionController(null);
+        controller.begin(providerSpec);
+        controller.overlayRendered(providerSpec.id);
+        CountDownLatch startEntered = new CountDownLatch(1);
+        CountDownLatch releaseStart = new CountDownLatch(1);
+        CountDownLatch stopCalled = new CountDownLatch(1);
+        FakeGateway gateway = new FakeGateway() {
+            @Override public void startGame(String gameId) throws IOException {
+                super.startGame(gameId);
+                startEntered.countDown();
+                try {
+                    releaseStart.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+            }
+
+            @Override public void stopGame(String gameId) {
+                super.stopGame(gameId);
+                stopCalled.countDown();
+            }
+        };
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                providerSpec, controller, gateway, executor, new FakeClock(),
+                new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
+
+        coordinator.start();
+        coordinator.onStreamConnected();
+        assertTrue(startEntered.await(2, TimeUnit.SECONDS));
+        coordinator.cancel();
+        releaseStart.countDown();
+
+        assertTrue(stopCalled.await(2, TimeUnit.SECONDS));
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(1, gateway.stopGameCalls);
+        assertEquals("steam:289070", gateway.stoppedGameId);
+        coordinator.close();
+        assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS));
+    }
+
+    @Test
+    public void stoppedProviderStartFailureCannotMutateOldTransition() throws Exception {
+        LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
+                "transition-provider", HOST, LaunchTransitionType.GAME, 42,
+                "steam:289070", 1_000L);
+        LaunchTransitionController controller = new LaunchTransitionController(null);
+        controller.begin(providerSpec);
+        controller.overlayRendered(providerSpec.id);
+        LaunchTransitionState before = controller.snapshot().state;
+        CountDownLatch startEntered = new CountDownLatch(1);
+        CountDownLatch releaseStart = new CountDownLatch(1);
+        FakeGateway gateway = new FakeGateway() {
+            @Override public void startGame(String gameId) throws IOException {
+                super.startGame(gameId);
+                startEntered.countDown();
+                try {
+                    releaseStart.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                throw new IOException("stale failure");
+            }
+        };
+        ExecutorService executor = Executors.newFixedThreadPool(2);
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                providerSpec, controller, gateway, executor, new FakeClock(),
+                new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
+
+        coordinator.start();
+        coordinator.onStreamConnected();
+        assertTrue(startEntered.await(2, TimeUnit.SECONDS));
+        coordinator.stop();
+        releaseStart.countDown();
+        coordinator.close();
+
+        assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS));
+        assertEquals(before, controller.snapshot().state);
+    }
+
+    @Test
     public void providerStartIsNotStarvedByLongRunningObservation() throws Exception {
         LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
                 "transition-provider", HOST, LaunchTransitionType.GAME, 42,
@@ -649,7 +734,9 @@ public class ConsoleStreamTransitionCoordinatorTest {
         int focusInstallationCalls;
         int ensureTargetCalls;
         int startGameCalls;
+        int stopGameCalls;
         String startedGameId = "";
+        String stoppedGameId = "";
         Runnable snapshotAction;
         FakeClock clock;
         boolean verifyResult;
@@ -700,6 +787,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
             startGameCalls++;
             startedGameId = gameId;
             if (startError != null) throw startError;
+        }
+
+        @Override public void stopGame(String gameId) {
+            stopGameCalls++;
+            stoppedGameId = gameId;
         }
     }
 

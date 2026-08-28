@@ -878,6 +878,32 @@ public class OverlayMenuView extends LinearLayout {
         });
     }
 
+    /** Opens an exact known friend after the controller has secured DM ownership. */
+    public boolean openDiscordFriendChat(String friendId) {
+        if (friendId == null || friendId.isEmpty()) return false;
+        if (overlayMode == OverlayMode.MENU) openCommunity();
+        if (overlayMode != OverlayMode.COMMUNITY || communityModel == null
+                || !communityModel.directMessagesAvailable || actionListener == null) return false;
+        boolean known = false;
+        for (CommunityFriend friend : communityModel.friends) {
+            if (friendId.equals(friend.id)) {
+                known = true;
+                break;
+            }
+        }
+        if (!known) return false;
+        communityInteractionGeneration++;
+        communitySection = CommunitySection.FRIENDS;
+        discordQuickSection = 1;
+        selectedFriendId = friendId;
+        pendingChatFriendId = friendId;
+        communitySubmode = CommunitySubmode.FRIEND_CHAT;
+        communityFocus = CommunityFocus.CHAT_COMPOSER;
+        renderDiscordCard();
+        actionListener.onDiscordCommunityOpenFriendChat(friendId);
+        return true;
+    }
+
     private void returnToMenu() {
         overlayMode = OverlayMode.MENU;
         communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;

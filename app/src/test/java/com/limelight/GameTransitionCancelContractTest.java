@@ -12,6 +12,13 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class GameTransitionCancelContractTest {
+    @Test public void repeatedSnapshotsDoNotRecoverOverlayButReadinessRegressionDoes() {
+        assertFalse(Game.shouldShowTransitionOverlay(true, false, true, false));
+        assertFalse(Game.shouldShowTransitionOverlay(true, true, true, true));
+        assertTrue(Game.shouldShowTransitionOverlay(false, false, true, false));
+        assertTrue(Game.shouldShowTransitionOverlay(true, true, true, false));
+    }
+
     @Test public void cancelDoesNotWaitForAnotherVideoFrame() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
@@ -20,6 +27,8 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("private void retryTransition()"));
 
         assertFalse(method.contains("doAfterNextFrame"));
+        assertTrue(method.contains("transitionCancelInFlight = true"));
+        assertTrue(method.contains("transitionCoordinator.cancel()"));
         assertTrue(method.contains("SessionResumeManager.clearIfMatches"));
         assertTrue(method.indexOf("stopProviderGame") < method.indexOf("stopConnection"));
         assertTrue(method.contains("stopConnection(finishOnce)"));
@@ -92,5 +101,73 @@ public class GameTransitionCancelContractTest {
 
         assertTrue(listener.contains("nextFrameRenderedCallback.getAndSet(null)"));
         assertFalse(listener.contains("setOnFrameRenderedListener(null"));
+    }
+
+    @Test public void connectingStateMakesInFlightTransportStoppable() throws IOException {
+        Path source = Paths.get("src/main/java/com/limelight/Game.java");
+        if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String start = text.substring(text.indexOf("private void startConnectionIfReady("),
+                text.indexOf("public void surfaceCreated("));
+        String stop = text.substring(text.indexOf("private void stopConnection(Runnable"),
+                text.indexOf("private void doQuit()"));
+
+        assertTrue(start.indexOf("connecting = true") < start.indexOf("conn.start("));
+        assertTrue(stop.contains("if (connecting || connected)"));
+        assertTrue(stop.contains("conn.stop()"));
+    }
+
+    @Test public void providerObservationIsArmedBeforeTransportCanReportConnected()
+            throws IOException {
+        Path source = Paths.get("src/main/java/com/limelight/Game.java");
+        if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String setup = text.substring(text.indexOf("consoleLoadingView.doAfterNextFrame(() ->"),
+                text.indexOf("} else {", text.indexOf("consoleLoadingView.doAfterNextFrame(() ->")));
+
+        assertTrue(setup.indexOf("transitionCoordinator.start()")
+                < setup.indexOf("startConnectionIfReady("));
+    }
+
+    @Test public void consoleConnectionFailureUsesFriendlyStageInStatus() throws IOException {
+        Path source = Paths.get("src/main/java/com/limelight/Game.java");
+        if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String failed = text.substring(text.indexOf("public void stageFailed("),
+                text.indexOf("public void connectionTerminated("));
+        int transitionStart = failed.indexOf("if (transitionController != null)");
+        String transitionError = failed.substring(transitionStart,
+                failed.indexOf("} else {", transitionStart));
+
+        assertTrue(transitionError.contains("consoleLoadingView.friendlyStage(stage)"));
+        assertFalse(transitionError.contains("+ \" \" + stage"));
+    }
+
+    @Test public void missingInflatedStreamToastGetsAProgrammaticFallback() throws IOException {
+        Path source = Paths.get("src/main/java/com/limelight/Game.java");
+        if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
+        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        int lookup = game.indexOf("discordDmToastView = findViewById(");
+        int controller = game.indexOf("discordOverlayController =", lookup);
+        String initialization = game.substring(lookup, controller);
+
+        assertTrue(initialization.contains("if (discordDmToastView == null)"));
+        assertTrue(initialization.contains("discordDmToastView = new DiscordDmToastView(this)"));
+        assertTrue(initialization.contains("gameRoot.addView(discordDmToastView"));
+        assertTrue(initialization.contains("registerHost(discordDmToastView)"));
+    }
+
+    @Test public void overlayHintWaitsUntilPrivacyRevealCompletes() throws IOException {
+        Path source = Paths.get("src/main/java/com/limelight/Game.java");
+        if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
+        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String connected = game.substring(game.indexOf("public void connectionStarted()"),
+                game.indexOf("private ConsoleStreamTransitionCoordinator createTransitionCoordinator"));
+        String reveal = game.substring(game.indexOf("private void revealTransitionNow()"),
+                game.indexOf("private void cancelPendingAutomaticReveal()"));
+
+        assertTrue(connected.contains("if (transitionController == null) showOverlayMenuHint()"));
+        assertTrue(reveal.indexOf("transitionController.revealCompleted")
+                < reveal.indexOf("showOverlayMenuHint()"));
     }
 }
