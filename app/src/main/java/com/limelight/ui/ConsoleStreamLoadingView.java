@@ -56,6 +56,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private final View defaultShade;
     private final LinearLayout defaultContent;
     private final TextView titleView;
+    private ImageView splashArtworkView;
     private final TextView messageView;
     private final LinearLayout stepsView;
     private final LinearLayout statusLine;
@@ -204,10 +205,24 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     }
 
     public void setSplashArtwork(String artworkPath) {
-        if (artworkPath == null || artworkPath.trim().isEmpty() || stopped) return;
+        if (stopped) return;
+        if (splashArtworkView != null) {
+            splashArtworkView.setImageDrawable(null);
+            splashArtworkView.setVisibility(GONE);
+        }
+        if (artworkPath == null || artworkPath.trim().isEmpty()) return;
         String path = artworkPath.trim();
         Bitmap bitmap = decodeSplashArtwork(path);
         if (bitmap != null) applySplashArtwork(bitmap);
+    }
+
+    public void setTitle(String title) {
+        if (title == null || title.trim().isEmpty() || stopped) return;
+        titleView.setText(title.trim());
+        if (splashLayout) {
+            handler.removeCallbacks(rotateMessage);
+            messageView.setText(title.trim());
+        }
     }
 
     private Bitmap decodeSplashArtwork(String path) {
@@ -573,13 +588,19 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     }
 
     private void applySplashArtwork(Bitmap bitmap) {
-        if (splashLayout || stopped) {
+        if (stopped) {
             bitmap.recycle();
+            return;
+        }
+        if (splashArtworkView != null) {
+            splashArtworkView.setVisibility(VISIBLE);
+            splashArtworkView.setImageBitmap(bitmap);
             return;
         }
         splashLayout = true;
 
         ImageView artwork = new ImageView(getContext());
+        splashArtworkView = artwork;
         artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
         artwork.setImageBitmap(bitmap);
         artwork.setAlpha(0f);

@@ -2,7 +2,8 @@ param(
     [Parameter(Mandatory)][long]$WindowHandle,
     [Parameter(Mandatory)][uint32]$ExpectedProcessId,
     [Parameter(Mandatory)][string]$ExpectedProcessPath,
-    [switch]$AllowDefaultAction
+    [switch]$AllowDefaultAction,
+    [switch]$DetectOnly
 )
 
 $ErrorActionPreference = "Stop"
@@ -238,6 +239,14 @@ if ($matches.Count -gt 1) {
         ConvertTo-Json -Compress
     exit 0
 }
+if ($DetectOnly -and $matches.Count -eq 1) {
+    [pscustomobject]@{
+        recognized = $true; clicked = $false; reason = "launcher_action_detected"
+        action = $(if ($matches[0].Current.Name) { $matches[0].Current.Name }
+                   else { $matches[0].Current.AutomationId })
+    } | ConvertTo-Json -Compress
+    exit 0
+}
 if ($AllowDefaultAction -and $matches.Count -eq 1) {
     if (-not (Test-LauncherIdentity)) {
         [pscustomobject]@{ recognized = $false; clicked = $false; reason = "launcher_identity_changed" } |
@@ -301,6 +310,13 @@ $nativeMatches = @($nativeButtons | Where-Object {
 if ($nativeMatches.Count -gt 1) {
     [pscustomobject]@{ recognized = $false; clicked = $false; reason = "launcher_action_ambiguous"; button_count = $nativeMatches.Count } |
         ConvertTo-Json -Compress
+    exit 0
+}
+if ($DetectOnly -and $nativeMatches.Count -eq 1) {
+    [pscustomobject]@{
+        recognized = $true; clicked = $false; reason = "launcher_action_detected"
+        action = $nativeMatches[0].Text
+    } | ConvertTo-Json -Compress
     exit 0
 }
 if ($nativeMatches.Count -eq 1) {

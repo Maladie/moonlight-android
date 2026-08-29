@@ -28,6 +28,22 @@ public class HostLaunchPreflightTest {
         assertEquals(0, fake.ensureCalls);
     }
 
+    @Test public void retainedSwitchCarriesNoWakeActionThroughNetworkGate() {
+        Fake fake = new Fake();
+        fake.apps.add(Collections.singletonList(app("MoonWaker Stream", 77,
+                PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
+
+        HostLaunchPreflight.Result result = fake.run(
+                HostLaunchPreflight.Request.from(PlayIntent.playniteGame(
+                        "host", 77, "Game", false, "game", "game"),
+                        HostLaunchPreflight.Action.SWITCH_RETAINED),
+                new AtomicBoolean());
+
+        assertEquals(HostLaunchPreflight.Status.READY, result.status);
+        assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED, fake.networkActionSeen);
+        assertEquals(1, fake.profileChecks);
+    }
+
     @Test public void playniteWithoutGatewayFailsAtGatewayStage() {
         Fake fake = new Fake();
         fake.profile = null;
@@ -69,6 +85,30 @@ public class HostLaunchPreflightTest {
 
         assertEquals(HostLaunchPreflight.Status.READY, result.status);
         assertEquals(8, result.target.getAppId());
+        assertEquals(0, fake.ensureCalls);
+    }
+
+    @Test public void managedGamePrefersNeutralStream() {
+        Fake fake = new Fake();
+        fake.apps.add(Arrays.asList(app("Game", 42, "exact"),
+                app("MoonWaker Stream", 77,
+                        PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
+
+        HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
+
+        assertEquals(77, result.target.getAppId());
+        assertEquals(HostLaunchPreflight.TargetResolution.EXISTING, result.resolution);
+        assertEquals(0, fake.ensureCalls);
+    }
+
+    @Test public void olderNativeHostUsesExactLegacyTargetWithoutProviderStart() {
+        Fake fake = new Fake();
+        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
+
+        HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
+
+        assertEquals(42, result.target.getAppId());
+        assertEquals(HostLaunchPreflight.TargetResolution.EXISTING, result.resolution);
         assertEquals(0, fake.ensureCalls);
     }
 
@@ -254,6 +294,7 @@ public class HostLaunchPreflightTest {
         Runnable profileAction;
         Runnable ensureAction;
         Runnable refreshAction;
+        HostLaunchPreflight.Action networkActionSeen;
         int profileChecks;
         int ensureCalls;
         int refreshes;
@@ -266,8 +307,9 @@ public class HostLaunchPreflightTest {
                     .run(request, cancelled::get, stage -> { });
         }
 
-        @Override public boolean awaitReady(String hostId,
+        @Override public boolean awaitReady(String hostId, HostLaunchPreflight.Action action,
                                             java.util.function.BooleanSupplier cancelled) {
+            networkActionSeen = action;
             if (networkAction != null) networkAction.run();
             return !cancelled.getAsBoolean();
         }

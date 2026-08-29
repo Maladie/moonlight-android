@@ -52,6 +52,13 @@ public class PlayniteLibrarySourcesTest {
                 Collections.singleton("Missing"), available));
     }
 
+    @Test public void sourceKeysAndColorsRemainStableForIconSelection() {
+        assertEquals("steam", PlayniteLibrarySources.key("Steam"));
+        assertEquals("epic games", PlayniteLibrarySources.key("Epic Games"));
+        assertEquals("playnite", PlayniteLibrarySources.key(""));
+        assertEquals(0xFF107C10, PlayniteLibrarySources.badgeColor("Xbox"));
+    }
+
     private static PlayniteLibraryGame game(int suffix, String source) {
         return new PlayniteLibraryGame(String.format(Locale.US,
                 "%08d-0000-0000-0000-000000000000", suffix),

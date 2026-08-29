@@ -23,6 +23,7 @@ import com.limelight.utils.UiHelper;
 public class AppStreamSettings extends Activity {
     public static final String EXTRA_APP_KEY = "AppKey";
     public static final String EXTRA_APP_NAME = "AppName";
+    public static final String EXTRA_INHERIT_APP_SETTINGS = "InheritAppSettings";
 
     private String appKey;
     private String appName;
@@ -198,7 +199,9 @@ public class AppStreamSettings extends Activity {
             AppPreferences.AppSettings currentSettings = AppPreferences.getAppSettings(getActivity(), activity.appKey);
 
             // Detect if this is a quick launch item (key format: uuid:appid:timestamp vs uuid:appid)
-            isQuickLaunch = activity.appKey != null && activity.appKey.split(":").length == 3;
+            isQuickLaunch = activity.getIntent().getBooleanExtra(
+                    EXTRA_INHERIT_APP_SETTINGS, false)
+                    || activity.appKey != null && activity.appKey.split(":").length == 3;
 
             CheckBoxPreference useGlobalPref = (CheckBoxPreference) findPreference("checkbox_use_global_settings");
             Preference resolutionPref = findPreference("pref_app_resolution");

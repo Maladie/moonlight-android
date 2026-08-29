@@ -853,7 +853,8 @@ public class PcView extends Activity implements AdapterFragmentCallbacks, QuickL
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         SessionResumeManager.PendingSession pending =
                 SessionResumeManager.pendingSession(this);
-        if (isFreshPoll && pm.isInteractive() && inForeground && pending != null) {
+        if (isFreshPoll && pm.isInteractive() && inForeground && pending != null
+                && pending.autoResume) {
             android.util.Log.d("SessionResume", "updateComputer: pending appId="
                     + pending.appId + " | runningGameId=" + details.runningGameId
                     + " state=" + details.state);

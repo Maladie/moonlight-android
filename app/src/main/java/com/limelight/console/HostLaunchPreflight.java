@@ -35,7 +35,7 @@ final class HostLaunchPreflight {
         TARGET_PROPAGATION_TIMEOUT
     }
 
-    enum Action { LAUNCH, RECONNECT }
+    enum Action { LAUNCH, RECONNECT, SWITCH_RETAINED }
 
     enum TargetResolution { EXISTING, ENSURED }
 
@@ -44,7 +44,7 @@ final class HostLaunchPreflight {
     }
 
     interface Network {
-        boolean awaitReady(String hostId, BooleanSupplier cancelled);
+        boolean awaitReady(String hostId, Action action, BooleanSupplier cancelled);
     }
 
     interface Gateway {
@@ -184,7 +184,7 @@ final class HostLaunchPreflight {
     Result run(Request request, BooleanSupplier cancelled, Progress progress) {
         if (cancelled.getAsBoolean()) return Result.cancelled();
         progress.onStage(Stage.NETWORK_READY);
-        if (!network.awaitReady(request.hostId, cancelled)) {
+        if (!network.awaitReady(request.hostId, request.action, cancelled)) {
             return cancelled.getAsBoolean() ? Result.cancelled()
                     : Result.failed(Stage.NETWORK_READY,
                     FailureReason.NETWORK_UNAVAILABLE);
@@ -238,6 +238,12 @@ final class HostLaunchPreflight {
                 return Result.ready(desktop, TargetResolution.EXISTING);
             }
             return Result.failed(Stage.TARGET_READY, FailureReason.TARGET_UNAVAILABLE);
+        }
+        NvApp neutral = request.requiresPlaynite()
+                ? PlayniteTargetResolver.resolveNeutralStream(apps) : null;
+        if (neutral != null) {
+            progress.onStage(Stage.TARGET_READY);
+            return Result.ready(neutral, TargetResolution.EXISTING);
         }
         NvApp existing = request.appId > 0
                 ? PlayniteTargetResolver.findById(apps, request.appId) : null;

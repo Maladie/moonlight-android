@@ -18,9 +18,9 @@ final class EmbeddedTvKeyboardModel {
     static final float GRID_ROWS = 4f;
     private static final Map<String, String> CURATED_ACCENTS = curatedAccents();
 
-    enum Page { ALPHA, POLISH, SYMBOLS }
+    enum Page { ALPHA, SYMBOLS }
     enum Shift { LOWER, ONE_SHOT, CAPS }
-    enum Type { TEXT, SHIFT, BACKSPACE, SPACE, ALPHA, POLISH, SYMBOLS, MICROPHONE, SEND }
+    enum Type { TEXT, SHIFT, BACKSPACE, SPACE, ALPHA, SYMBOLS, MICROPHONE, SEND }
     enum Action { NONE, TEXT, BACKSPACE, SPACE, MICROPHONE, SEND }
 
     static final class Key {
@@ -119,10 +119,6 @@ final class EmbeddedTvKeyboardModel {
     boolean move(int keyCode) {
         Key selected = selected();
         if (selected == null || !isDirectional(keyCode)) return false;
-        if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN && selected.type == Type.TEXT && selected.y == 2f) {
-            selectedId = "space";
-            return true;
-        }
         boolean horizontal = keyCode == KeyEvent.KEYCODE_DPAD_LEFT || keyCode == KeyEvent.KEYCODE_DPAD_RIGHT;
         boolean hasSameRowCandidate = false;
         if (horizontal) {
@@ -203,9 +199,6 @@ final class EmbeddedTvKeyboardModel {
                 return new Activation(Action.SPACE, " ");
             case ALPHA:
                 setPage(Page.ALPHA);
-                return new Activation(Action.NONE, "");
-            case POLISH:
-                setPage(Page.POLISH);
                 return new Activation(Action.NONE, "");
             case SYMBOLS:
                 setPage(Page.SYMBOLS);
@@ -449,12 +442,6 @@ final class EmbeddedTvKeyboardModel {
             row(keys, "zxcvbnm", 2, 1.25f, .9f);
             keys.add(key("text.!", "!", "!", Type.TEXT, 7.55f, 2, .95f));
             keys.add(key("backspace", "⌫", "", Type.BACKSPACE, 8.5f, 2, 1.5f));
-        } else if (page == Page.POLISH) {
-            row(keys, "ąćęłńóśźż", 0, .5f);
-            row(keys, "qwertyuiop", 1, 0f);
-            keys.add(key("shift", "⇧", "", Type.SHIFT, 0, 2, 1.5f));
-            row(keys, "zxcvbnm", 2, 1.5f);
-            keys.add(key("backspace", "⌫", "", Type.BACKSPACE, 8.5f, 2, 1.5f));
         } else {
             row(keys, "1234567890", 0, 0f);
             row(keys, "@#$%&-+()/", 1, 0f);
@@ -463,9 +450,8 @@ final class EmbeddedTvKeyboardModel {
             keys.add(key("backspace", "⌫", "", Type.BACKSPACE, 9f, 2, 1f));
         }
         keys.add(key(page == Page.SYMBOLS ? "alpha" : "symbols", page == Page.SYMBOLS ? "ABC" : "123",
-                "", page == Page.SYMBOLS ? Type.ALPHA : Type.SYMBOLS, 0, 3, 1.5f));
-        keys.add(key("polish", "ĄĘ", "", Type.POLISH, 1.5f, 3, 1.5f));
-        keys.add(key("microphone", "MIC", "", Type.MICROPHONE, 3, 3, 1f));
+                "", page == Page.SYMBOLS ? Type.ALPHA : Type.SYMBOLS, 0, 3, 2f));
+        keys.add(key("microphone", "MIC", "", Type.MICROPHONE, 2, 3, 2f));
         keys.add(key("space", "SPACE", " ", Type.SPACE, 4, 3, 3f));
         keys.add(key("send", "SEND", "", Type.SEND, 7, 3, 3f));
         return Collections.unmodifiableList(keys);

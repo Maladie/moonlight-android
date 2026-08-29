@@ -19,6 +19,24 @@ import static org.junit.Assert.assertTrue;
 
 public class OverlayMenuViewTest {
     @Test
+    public void endGameIsASeparateConditionalActionFromQuitSession() throws Exception {
+        Path source = Paths.get("src/main/java/com/limelight/ui/overlay/OverlayMenuView.java");
+        if (!Files.exists(source)) source = Paths.get(
+                "app/src/main/java/com/limelight/ui/overlay/OverlayMenuView.java");
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String menu = text.substring(text.indexOf("public void buildMenu()"),
+                text.indexOf("private void addVerticalButton("));
+        String activate = text.substring(text.indexOf("private void activateSelected()"),
+                text.indexOf("private void activateDiscordMute()"));
+
+        assertTrue(menu.contains("if (endGameAvailable)"));
+        assertTrue(menu.contains("R.string.overlay_menu_end_game"));
+        assertTrue(menu.contains("ACTION_END_GAME"));
+        assertTrue(menu.contains("R.string.overlay_menu_quit_session"));
+        assertTrue(activate.contains("actionListener.onEndGame()"));
+        assertTrue(activate.contains("actionListener.onQuitSession()"));
+    }
+    @Test
     public void socialVisibilityAndActionAreIndependentOfHostVoice() {
         assertTrue(OverlayMenuView.shouldShowDiscordCard(false, true));
         assertTrue(OverlayMenuView.shouldShowDiscordCard(true, false));

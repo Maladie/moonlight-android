@@ -55,6 +55,7 @@ public class OverlayMenuView extends LinearLayout {
 
     public interface MenuActionListener {
         void onHome();
+        void onEndGame();
         void onQuitSession();
         void onSuspendSession();
         void onToggleStats();
@@ -277,6 +278,7 @@ public class OverlayMenuView extends LinearLayout {
     private static final int ACTION_DISCORD_DOCK = 14;
     private static final int ACTION_INSTALLATION_CONFIRMED = 15;
     private static final int ACTION_SUSPEND_SESSION = 16;
+    private static final int ACTION_END_GAME = 17;
     private static final int ACTION_CUSTOM_BASE = 100;
     private static final int BITRATE_STEP_KBPS = 5000;
     private static final int BITRATE_MIN_KBPS = 1000;
@@ -347,6 +349,7 @@ public class OverlayMenuView extends LinearLayout {
     private boolean communityCancelKeyDown;
     private boolean updatingChatComposer;
     private boolean installationConfirmationAvailable;
+    private boolean endGameAvailable;
     private boolean playStationButtons;
 
     public OverlayMenuView(Context context) {
@@ -566,6 +569,11 @@ public class OverlayMenuView extends LinearLayout {
             addVerticalButton(R.drawable.ic_overlay_play,
                     getContext().getString(R.string.playnite_install_confirmation_done),
                     ACTION_INSTALLATION_CONFIRMED, spacing);
+        }
+        if (endGameAvailable) {
+            addVerticalButton(R.drawable.ic_overlay_power,
+                    getContext().getString(R.string.overlay_menu_end_game),
+                    ACTION_END_GAME, spacing);
         }
         addVerticalButton(R.drawable.ic_overlay_power,
             getContext().getString(R.string.overlay_menu_suspend_session),
@@ -1131,6 +1139,10 @@ public class OverlayMenuView extends LinearLayout {
 
     public void setMenuActionListener(MenuActionListener listener) {
         this.actionListener = listener;
+    }
+
+    public void setEndGameAvailable(boolean available) {
+        endGameAvailable = available;
     }
 
     public void setFlipFaceButtons(boolean flip) {
@@ -3234,6 +3246,9 @@ public class OverlayMenuView extends LinearLayout {
         if (actionListener != null) {
             if (action == ACTION_HOME) {
                 actionListener.onHome();
+                shouldCloseMenu = true;
+            } else if (action == ACTION_END_GAME) {
+                actionListener.onEndGame();
                 shouldCloseMenu = true;
             } else if (action == ACTION_QUIT) {
                 actionListener.onQuitSession();

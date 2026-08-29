@@ -6,6 +6,7 @@ import android.content.SharedPreferences;
 import android.util.Base64;
 
 import com.limelight.Game;
+import com.limelight.console.transition.LaunchTransitionType;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
@@ -17,6 +18,7 @@ import java.util.UUID;
 public final class SessionResumeManager {
     private static final String PREFS_NAME = "SessionResume";
     private static final String KEY_PENDING = "pending";
+    private static final String KEY_AUTO_RESUME = "autoResume";
     private static final String KEY_STREAM_SESSION_ID = "streamSessionId";
     private static final String KEY_CREATED_AT = "createdAt";
     private static final String KEY_UPDATED_AT = "updatedAt";
@@ -24,6 +26,8 @@ public final class SessionResumeManager {
     private static final String KEY_PORT = "port";
     private static final String KEY_HTTPS_PORT = "httpsPort";
     private static final String KEY_APP_NAME = "appName";
+    private static final String KEY_STREAM_TARGET_NAME = "streamTargetName";
+    private static final String KEY_NEUTRAL_STREAM_TARGET = "neutralStreamTarget";
     private static final String KEY_APP_ID = "appId";
     private static final String KEY_APP_HDR = "appHdr";
     private static final String KEY_UNIQUE_ID = "uniqueId";
@@ -52,17 +56,22 @@ public final class SessionResumeManager {
         public final String streamSessionId;
         public final String hostUuid;
         public final int appId;
+        public final String playniteGameId;
+        public final boolean autoResume;
         public final long createdAt;
         public final long updatedAt;
         public final boolean legacy;
         private final Values values;
 
         private PendingSession(String streamSessionId, String hostUuid, int appId,
+                               String playniteGameId, boolean autoResume,
                                long createdAt, long updatedAt, boolean legacy,
                                SharedPreferences prefs) {
             this.streamSessionId = streamSessionId;
             this.hostUuid = hostUuid;
             this.appId = appId;
+            this.playniteGameId = normalize(playniteGameId);
+            this.autoResume = autoResume;
             this.createdAt = createdAt;
             this.updatedAt = updatedAt;
             this.legacy = legacy;
@@ -106,6 +115,17 @@ public final class SessionResumeManager {
 
     public static synchronized void save(Context context, Intent gameIntent,
                                          String streamSessionId) {
+        save(context, gameIntent, streamSessionId, true);
+    }
+
+    /** Persist correlation for process-death recovery without forcing foreground resume. */
+    public static synchronized void saveActive(Context context, Intent gameIntent,
+                                               String streamSessionId) {
+        save(context, gameIntent, streamSessionId, false);
+    }
+
+    private static void save(Context context, Intent gameIntent,
+                             String streamSessionId, boolean autoResume) {
         String sessionId = requireId(streamSessionId);
         gameIntent.putExtra(Game.EXTRA_STREAM_SESSION_ID, sessionId);
         SharedPreferences prefs = prefs(context);
@@ -116,6 +136,7 @@ public final class SessionResumeManager {
         SharedPreferences.Editor editor = prefs.edit();
         editor.clear();
         editor.putBoolean(KEY_PENDING, true);
+        editor.putBoolean(KEY_AUTO_RESUME, autoResume);
         editor.putString(KEY_STREAM_SESSION_ID, sessionId);
         editor.putLong(KEY_CREATED_AT, createdAt);
         editor.putLong(KEY_UPDATED_AT, now);
@@ -123,6 +144,10 @@ public final class SessionResumeManager {
         editor.putInt(KEY_PORT, gameIntent.getIntExtra(Game.EXTRA_PORT, 0));
         editor.putInt(KEY_HTTPS_PORT, gameIntent.getIntExtra(Game.EXTRA_HTTPS_PORT, 0));
         editor.putString(KEY_APP_NAME, gameIntent.getStringExtra(Game.EXTRA_APP_NAME));
+        editor.putString(KEY_STREAM_TARGET_NAME,
+                gameIntent.getStringExtra(Game.EXTRA_STREAM_TARGET_NAME));
+        editor.putBoolean(KEY_NEUTRAL_STREAM_TARGET,
+                gameIntent.getBooleanExtra(Game.EXTRA_NEUTRAL_STREAM_TARGET, false));
         editor.putInt(KEY_APP_ID, gameIntent.getIntExtra(Game.EXTRA_APP_ID, 0));
         editor.putBoolean(KEY_APP_HDR, gameIntent.getBooleanExtra(Game.EXTRA_APP_HDR, false));
         editor.putString(KEY_UNIQUE_ID, gameIntent.getStringExtra(Game.EXTRA_UNIQUEID));
@@ -202,6 +227,10 @@ public final class SessionResumeManager {
         intent.putExtra(Game.EXTRA_PORT, prefs.getInt(KEY_PORT, 0));
         intent.putExtra(Game.EXTRA_HTTPS_PORT, prefs.getInt(KEY_HTTPS_PORT, 0));
         intent.putExtra(Game.EXTRA_APP_NAME, prefs.getString(KEY_APP_NAME, null));
+        intent.putExtra(Game.EXTRA_STREAM_TARGET_NAME,
+                prefs.getString(KEY_STREAM_TARGET_NAME, null));
+        intent.putExtra(Game.EXTRA_NEUTRAL_STREAM_TARGET,
+                prefs.getBoolean(KEY_NEUTRAL_STREAM_TARGET, false));
         intent.putExtra(Game.EXTRA_APP_ID, prefs.getInt(KEY_APP_ID, 0));
         intent.putExtra(Game.EXTRA_APP_HDR, prefs.getBoolean(KEY_APP_HDR, false));
         intent.putExtra(Game.EXTRA_UNIQUEID, prefs.getString(KEY_UNIQUE_ID, null));
@@ -229,8 +258,10 @@ public final class SessionResumeManager {
                     prefs.getBoolean(KEY_REDUCED_MOTION, false));
             putExtra(intent, Game.EXTRA_TRANSITION_ID,
                     prefs.getString(KEY_TRANSITION_ID, null));
-            putExtra(intent, Game.EXTRA_TRANSITION_TYPE,
+            String transitionType = reconnectTransitionType(
                     prefs.getString(KEY_TRANSITION_TYPE, null));
+            putExtra(intent, Game.EXTRA_TRANSITION_TYPE,
+                    transitionType);
             putExtra(intent, Game.EXTRA_TRANSITION_HOST_ID,
                     prefs.getString(KEY_TRANSITION_HOST_ID, null));
             putExtra(intent, Game.EXTRA_TRANSITION_PLAYNITE_GAME_ID,
@@ -268,6 +299,11 @@ public final class SessionResumeManager {
         return UUID.nameUUIDFromBytes(material.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
+    static String reconnectTransitionType(String transitionType) {
+        return LaunchTransitionType.GAME.name().equals(transitionType)
+                ? LaunchTransitionType.GAME_CONNECTION.name() : transitionType;
+    }
+
     private static PendingSession read(SharedPreferences prefs) {
         if (!prefs.getBoolean(KEY_PENDING, false)) return null;
         String hostUuid = normalize(prefs.getString(KEY_PC_UUID, null));
@@ -277,6 +313,8 @@ public final class SessionResumeManager {
         String streamSessionId = resolveStreamSessionId(storedId, hostUuid, appId,
                 prefs.getString(KEY_UNIQUE_ID, null));
         return new PendingSession(streamSessionId, hostUuid, appId,
+                prefs.getString(KEY_TRANSITION_GAME_ID, null),
+                prefs.getBoolean(KEY_AUTO_RESUME, true),
                 prefs.getLong(KEY_CREATED_AT, 0L), prefs.getLong(KEY_UPDATED_AT, 0L),
                 legacy, prefs);
     }

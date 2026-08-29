@@ -5,6 +5,7 @@ import com.limelight.console.transition.LaunchTransitionSpec;
 import com.limelight.console.transition.LaunchTransitionState;
 import com.limelight.console.transition.LaunchTransitionType;
 
+import org.junit.Before;
 import org.junit.Test;
 
 import java.io.IOException;
@@ -14,6 +15,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.AbstractExecutorService;
 import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -25,6 +27,11 @@ import static org.junit.Assert.assertTrue;
 public class ConsoleStreamTransitionCoordinatorTest {
     private static final String HOST = "host-1";
     private static final String GAME = "11111111-2222-3333-4444-555555555555";
+
+    @Before
+    public void resetProviderOwnership() {
+        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+    }
 
     @Test
     public void noGatewayTimesOutNonGenericTransition() {
@@ -98,6 +105,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         makeTransportReady(harness.controller);
         gateway.snapshotActions.add(() -> { });
         gateway.snapshotActions.add(() -> {
+            harness.controller.videoFrameRendered("transition-1");
             assertTrue(harness.controller.snapshot().manualRevealAvailable);
             harness.controller.showStreamAnyway("transition-1");
             harness.controller.revealCompleted("transition-1");
@@ -113,14 +121,34 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertFalse(harness.states.contains(LaunchTransitionState.ERROR));
         assertFalse(harness.states.contains(LaunchTransitionState.TIMED_OUT));
         assertTrue(harness.states.contains(LaunchTransitionState.GAME_RUNNING));
-        assertTrue(harness.controller.snapshot().overlayVisible);
-        assertTrue(harness.controller.snapshot().inputBlocked);
+        assertFalse(harness.controller.snapshot().overlayVisible);
+        assertFalse(harness.controller.snapshot().inputBlocked);
         assertEquals("host locked", harness.controller.snapshot().detail);
     }
 
     @Test
+    public void wrongDisplayRecoversPrivacyWithSpecificReason() {
+        FakeGateway gateway = gatewayWith(snapshotReadyGame(),
+                snapshot(true, true, "running", GAME, 42,
+                        false, "game", 0, "target_on_wrong_display"));
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        makeTransportReady(harness.controller);
+        gateway.snapshotActions.add(() -> { });
+        gateway.snapshotActions.add(() -> {
+            harness.controller.videoFrameRendered("transition-1");
+            harness.controller.revealCompleted("transition-1");
+        });
+
+        harness.runObservation();
+
+        assertTrue(harness.controller.snapshot().overlayVisible);
+        assertTrue(harness.controller.snapshot().inputBlocked);
+        assertEquals("wrong display", harness.controller.snapshot().detail);
+    }
+
+    @Test
     public void lockedSessionSkipsPlayniteFullscreenAndReadinessTimeout() {
-        PlayniteTransitionGateway.Snapshot locked = snapshot(true, true, "idle", "", 0,
+        PlayniteTransitionGateway.Snapshot locked = snapshot(true, false, "idle", "", 0,
                 false, "playnite", 0, "host_session_locked");
         FakeGateway gateway = gatewayWith(locked, locked);
         FakeClock clock = new FakeClock();
@@ -136,6 +164,29 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertFalse(harness.states.contains(LaunchTransitionState.ERROR));
         assertTrue(harness.controller.snapshot().overlayVisible);
         assertTrue(harness.controller.snapshot().inputBlocked);
+    }
+
+    @Test
+    public void lockedProviderStartOffersManualRevealWithoutCompensatingStop() {
+        LaunchTransitionSpec providerSpec = providerSpec("locked-start", "steam:289070");
+        LaunchTransitionController controller = providerController(providerSpec);
+        FakeGateway gateway = stoppingObservationGateway();
+        gateway.startError = new IOException("host_session_locked");
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                providerSpec, controller, gateway, new InlineExecutor(), new FakeClock(),
+                new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
+
+        coordinator.start();
+        Thread.interrupted();
+        controller.surfaceReady(providerSpec.id);
+        controller.inputPipelineReady(providerSpec.id);
+        controller.streamConnected(providerSpec.id);
+        controller.videoFrameRendered(providerSpec.id);
+
+        assertEquals("host locked", controller.snapshot().detail);
+        assertTrue(controller.snapshot().manualRevealAvailable);
+        coordinator.cancel();
+        assertEquals(0, gateway.stopGameCalls);
     }
 
     @Test
@@ -274,9 +325,34 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void failedLaunchCleanupDoesNotCoverAnExplicitlyRevealedLauncher() {
+        PlayniteTransitionGateway.Snapshot launcher = snapshot(
+                true, true, "starting", GAME, 0,
+                false, "game", 0, "launcher_interaction_required");
+        FakeGateway gateway = gatewayWith(launcher, launcher);
+        gateway.events.add(events(1));
+        gateway.events.add(events(3,
+                event(2, "game-stopping", GAME, "Game"),
+                event(3, "game-stopped", GAME, "Game")));
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        makeTransportReady(harness.controller);
+        gateway.snapshotActions.add(() -> { });
+        gateway.snapshotActions.add(() -> {
+            harness.controller.showStreamAnyway("transition-1");
+            harness.controller.revealCompleted("transition-1");
+        });
+
+        harness.runObservation();
+
+        assertFalse(harness.controller.snapshot().overlayVisible);
+        assertFalse(harness.controller.snapshot().inputBlocked);
+        assertEquals(1, harness.callbacks.providerStopCalls);
+    }
+
+    @Test
     public void timeoutDurationsRemainExact() {
         assertEquals(90_000L, timeout(LaunchTransitionState.PREPARING_SESSION));
-        assertEquals(30_000L, timeout(LaunchTransitionState.CONNECTING_STREAM));
+        assertEquals(60_000L, timeout(LaunchTransitionState.CONNECTING_STREAM));
         assertEquals(15_000L, timeout(LaunchTransitionState.WAITING_FOR_VIDEO_SURFACE));
         assertEquals(45_000L, timeout(LaunchTransitionState.PLAYNITE_STARTING));
         assertEquals(45_000L, timeout(LaunchTransitionState.PLAYNITE_PROCESS_RUNNING));
@@ -341,7 +417,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         harness.runObservation();
 
-        assertEquals(Arrays.asList(1_000L, 1_000L, 2_000L, 3_000L), sleeper.delays);
+        assertEquals(Arrays.asList(1_000L, 1_000L, 2_000L), sleeper.delays);
         assertEquals(LaunchTransitionState.ERROR, harness.controller.snapshot().state);
     }
 
@@ -399,8 +475,9 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
-    public void existingGameConnectionDoesNotRestartGameOrActLikeInstallation() {
-        FakeGateway gateway = new FakeGateway();
+    public void existingGameConnectionObservesPrivacyWithoutRestartingGame() {
+        FakeGateway gateway = gatewayWith(snapshot(true, true, "running", GAME, 42,
+                false, "game", 0, "target_on_wrong_display"));
         QueuedScheduler scheduler = new QueuedScheduler();
         Harness harness = new Harness(LaunchTransitionType.GAME_CONNECTION, gateway,
                 new FakeClock(), new InterruptingSleeper(), scheduler);
@@ -412,10 +489,12 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(0, gateway.startGameCalls);
         assertEquals(0, gateway.focusInstallationCalls);
         assertTrue(scheduler.actions.isEmpty());
+        assertTrue(harness.controller.snapshot().overlayVisible);
+        assertEquals("wrong display", harness.controller.snapshot().detail);
     }
 
     @Test
-    public void providerRecordStartsExactlyOnceAfterStreamConnect() {
+    public void providerRecordStartsExactlyOnceBeforeStreamConnect() {
         LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
                 "transition-provider", HOST, LaunchTransitionType.GAME, 42,
                 "steam:289070", 1_000L);
@@ -432,6 +511,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         coordinator.start();
         Thread.interrupted();
 
+        assertEquals(1, gateway.startGameCalls);
         coordinator.onStreamConnected();
         coordinator.onStreamConnected();
 
@@ -466,15 +546,17 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 stopCalled.countDown();
             }
         };
-        ExecutorService executor = Executors.newFixedThreadPool(2);
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        ExecutorService providerExecutor = Executors.newSingleThreadExecutor();
         ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
-                providerSpec, controller, gateway, executor, new FakeClock(),
-                new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
+                providerSpec, controller, gateway, executor, providerExecutor,
+                new FakeClock(), 0L, new InterruptingSleeper(),
+                (action, delay) -> { }, new FakeCallbacks());
 
         coordinator.start();
-        coordinator.onStreamConnected();
         assertTrue(startEntered.await(2, TimeUnit.SECONDS));
         coordinator.cancel();
+        assertFalse(stopCalled.await(100, TimeUnit.MILLISECONDS));
         releaseStart.countDown();
 
         assertTrue(stopCalled.await(2, TimeUnit.SECONDS));
@@ -482,7 +564,9 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(1, gateway.stopGameCalls);
         assertEquals("steam:289070", gateway.stoppedGameId);
         coordinator.close();
+        providerExecutor.shutdownNow();
         assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS));
+        assertTrue(providerExecutor.awaitTermination(2, TimeUnit.SECONDS));
     }
 
     @Test
@@ -514,7 +598,6 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
 
         coordinator.start();
-        coordinator.onStreamConnected();
         assertTrue(startEntered.await(2, TimeUnit.SECONDS));
         coordinator.stop();
         releaseStart.countDown();
@@ -525,7 +608,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
-    public void providerStartIsNotStarvedByLongRunningObservation() throws Exception {
+    public void providerStartAndStreamConnectionCanProgressTogether() throws Exception {
         LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
                 "transition-provider", HOST, LaunchTransitionType.GAME, 42,
                 "steam:289070", 1_000L);
@@ -535,6 +618,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         CountDownLatch observationEntered = new CountDownLatch(1);
         CountDownLatch releaseObservation = new CountDownLatch(1);
         CountDownLatch startCalled = new CountDownLatch(1);
+        CountDownLatch releaseStart = new CountDownLatch(1);
         FakeGateway gateway = new FakeGateway() {
             @Override public PlayniteTransitionGateway.Snapshot snapshot() {
                 observationEntered.countDown();
@@ -550,6 +634,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
             @Override public void startGame(String gameId) throws IOException {
                 super.startGame(gameId);
                 startCalled.countDown();
+                try {
+                    releaseStart.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
             }
         };
         ExecutorService executor = Executors.newFixedThreadPool(2);
@@ -558,11 +647,22 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
 
         coordinator.start();
-        assertTrue(observationEntered.await(2, TimeUnit.SECONDS));
-        coordinator.onStreamConnected();
         assertTrue(startCalled.await(2, TimeUnit.SECONDS));
+        assertFalse(observationEntered.await(100, TimeUnit.MILLISECONDS));
+        controller.streamConnected(providerSpec.id);
+        coordinator.onStreamConnected();
+        assertEquals(LaunchTransitionState.GAME_START_REQUESTED,
+                controller.snapshot().state);
+        assertEquals(1, gateway.startGameCalls);
         assertEquals("steam:289070", gateway.startedGameId);
+        assertEquals(0, gateway.snapshotIndex);
+        controller.surfaceReady(providerSpec.id);
+        controller.inputPipelineReady(providerSpec.id);
+        controller.videoFrameRendered(providerSpec.id);
+        assertFalse(controller.snapshot().revealAuthorized);
 
+        releaseStart.countDown();
+        assertTrue(observationEntered.await(2, TimeUnit.SECONDS));
         releaseObservation.countDown();
         coordinator.close();
         assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS));
@@ -587,10 +687,443 @@ public class ConsoleStreamTransitionCoordinatorTest {
         coordinator.start();
         Thread.interrupted();
 
-        coordinator.onStreamConnected();
-
         assertEquals(LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED,
                 controller.snapshot().state);
+    }
+
+    @Test
+    public void cancellationBeforeQueuedProviderStartPreventsStart() {
+        LaunchTransitionSpec providerSpec = providerSpec("old", "steam:289070");
+        LaunchTransitionController controller = providerController(providerSpec);
+        FakeGateway gateway = stoppingObservationGateway();
+        QueuedExecutor provider = new QueuedExecutor();
+        ConsoleStreamTransitionCoordinator coordinator = coordinator(
+                providerSpec, controller, gateway, provider);
+
+        coordinator.start();
+        Thread.interrupted();
+        coordinator.cancel();
+        provider.runAll();
+
+        assertEquals(0, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void streamFailureAfterEarlyStartStopsOwnedGame() {
+        LaunchTransitionSpec providerSpec = providerSpec("failed-stream", "steam:289070");
+        LaunchTransitionController controller = providerController(providerSpec);
+        FakeGateway gateway = stoppingObservationGateway();
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                providerSpec, controller, gateway, new InlineExecutor(), new FakeClock(),
+                new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
+
+        coordinator.start();
+        Thread.interrupted();
+        coordinator.onStreamFailed();
+
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(1, gateway.stopGameCalls);
+        assertEquals("steam:289070", gateway.stoppedGameId);
+    }
+
+    @Test
+    public void observerFailureAfterRevealCannotStopCommittedProviderGame() {
+        LaunchTransitionSpec providerSpec = providerSpec("revealed", "steam:289070");
+        FakeGateway gateway = stoppingObservationGateway();
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                providerSpec, providerController(providerSpec), gateway,
+                new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
+                (action, delay) -> { }, new FakeCallbacks());
+        coordinator.start();
+        Thread.interrupted();
+
+        coordinator.commitProviderLaunch();
+        coordinator.onStreamFailed();
+        coordinator.cancel();
+
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void repeatedFailureAndCancelSignalsStopOwnedGameOnlyOnce() {
+        LaunchTransitionSpec providerSpec = providerSpec("repeated-failure", "steam:289070");
+        LaunchTransitionController controller = providerController(providerSpec);
+        FakeGateway gateway = stoppingObservationGateway();
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                providerSpec, controller, gateway, new InlineExecutor(), new FakeClock(),
+                new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
+
+        coordinator.start();
+        Thread.interrupted();
+        coordinator.onStreamFailed();
+        coordinator.onStreamFailed();
+        coordinator.cancel();
+
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(1, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void staleAttemptCleanupRunsBeforeNewAttemptStart() {
+        List<String> actions = new ArrayList<>();
+        FakeGateway gateway = stoppingObservationGateway();
+        gateway.actions = actions;
+        QueuedExecutor provider = new QueuedExecutor();
+        LaunchTransitionSpec oldSpec = providerSpec("old", "steam:old");
+        LaunchTransitionSpec newSpec = providerSpec("new", "steam:new");
+        ConsoleStreamTransitionCoordinator oldCoordinator = coordinator(
+                oldSpec, providerController(oldSpec), gateway, provider);
+        ConsoleStreamTransitionCoordinator newCoordinator = coordinator(
+                newSpec, providerController(newSpec), gateway, provider);
+
+        oldCoordinator.start();
+        Thread.interrupted();
+        provider.runNext();
+        oldCoordinator.onStreamFailed();
+        newCoordinator.start();
+        Thread.interrupted();
+        provider.runAll();
+
+        assertEquals(Arrays.asList(
+                "start:steam:old", "stop:steam:old", "start:steam:new"), actions);
+    }
+
+    @Test
+    public void failedProviderStartCannotBecomeAutomaticallyReady() {
+        LaunchTransitionSpec providerSpec = providerSpec("failed-start", "steam:289070");
+        LaunchTransitionController controller = providerController(providerSpec);
+        FakeGateway gateway = stoppingObservationGateway();
+        gateway.startError = new IOException("failed");
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                providerSpec, controller, gateway, new InlineExecutor(), new FakeClock(),
+                new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
+
+        coordinator.start();
+        Thread.interrupted();
+
+        assertEquals(LaunchTransitionState.ERROR, controller.snapshot().state);
+        assertFalse(controller.snapshot().revealAuthorized);
+        assertEquals(1, gateway.stopGameCalls);
+        assertEquals(0, gateway.snapshotIndex);
+    }
+
+    @Test
+    public void silentStreamTimeoutStopsEarlyProviderGame() {
+        LaunchTransitionSpec providerSpec = providerSpec("silent-stream", "steam:289070");
+        LaunchTransitionController controller = providerController(providerSpec);
+        FakeGateway gateway = stoppingObservationGateway();
+        QueuedExecutor provider = new QueuedExecutor();
+        QueuedScheduler scheduler = new QueuedScheduler();
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                providerSpec, controller, gateway, new InlineExecutor(), provider,
+                new FakeClock(), 0L, new InterruptingSleeper(), scheduler,
+                new FakeCallbacks());
+
+        coordinator.start();
+        provider.runNext();
+        Thread.interrupted();
+        assertEquals(Collections.singletonList(60_000L), scheduler.delays);
+
+        scheduler.actions.get(0).run();
+        provider.runAll();
+
+        assertEquals(LaunchTransitionState.TIMED_OUT, controller.snapshot().state);
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(1, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void lateOldCleanupCannotStopNewOwnerOnSameHost() {
+        List<String> actions = new ArrayList<>();
+        FakeGateway gateway = stoppingObservationGateway();
+        gateway.actions = actions;
+        QueuedExecutor provider = new QueuedExecutor();
+        LaunchTransitionSpec oldSpec = providerSpec("old", "steam:same");
+        LaunchTransitionSpec newSpec = providerSpec("new", "steam:same");
+        ConsoleStreamTransitionCoordinator oldCoordinator = coordinator(
+                oldSpec, providerController(oldSpec), gateway, provider);
+        ConsoleStreamTransitionCoordinator newCoordinator = coordinator(
+                newSpec, providerController(newSpec), gateway, provider);
+
+        oldCoordinator.start();
+        provider.runNext();
+        Thread.interrupted();
+        newCoordinator.start();
+        provider.runNext();
+        Thread.interrupted();
+        oldCoordinator.onStreamFailed();
+        provider.runAll();
+
+        assertEquals(Arrays.asList("start:steam:same", "start:steam:same"), actions);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void skippedCleanupForNewerOwnerCompletesOnceAsFailure() {
+        FakeGateway gateway = stoppingObservationGateway();
+        LaunchTransitionSpec oldSpec = providerSpec("old", "steam:same");
+        LaunchTransitionSpec newSpec = providerSpec("new", "steam:same");
+        FakeCallbacks oldCallbacks = new FakeCallbacks();
+        ConsoleStreamTransitionCoordinator oldCoordinator =
+                new ConsoleStreamTransitionCoordinator(oldSpec,
+                        providerController(oldSpec), gateway, new InlineExecutor(),
+                        new FakeClock(), new InterruptingSleeper(),
+                        (action, delay) -> { }, oldCallbacks);
+        ConsoleStreamTransitionCoordinator newCoordinator =
+                new ConsoleStreamTransitionCoordinator(newSpec,
+                        providerController(newSpec), gateway, new InlineExecutor(),
+                        new FakeClock(), new InterruptingSleeper(),
+                        (action, delay) -> { }, new FakeCallbacks());
+        oldCoordinator.start();
+        Thread.interrupted();
+        newCoordinator.start();
+        Thread.interrupted();
+
+        oldCoordinator.onStreamFailed();
+        oldCoordinator.cancel();
+
+        assertEquals(0, gateway.stopGameCalls);
+        assertEquals(1, oldCallbacks.cleanupCalls);
+        assertFalse(oldCallbacks.lastCleanupSuccess);
+    }
+
+    @Test
+    public void reconstructedCoordinatorReusesSameAttemptWithoutStartingAgain() {
+        LaunchTransitionSpec providerSpec = providerSpec("same-attempt", "steam:289070");
+        FakeGateway gateway = stoppingObservationGateway();
+        QueuedExecutor provider = new QueuedExecutor();
+        ConsoleStreamTransitionCoordinator first = coordinator(
+                providerSpec, providerController(providerSpec), gateway, provider);
+        ConsoleStreamTransitionCoordinator reconstructed = coordinator(
+                providerSpec, providerController(providerSpec), gateway, provider);
+
+        first.start();
+        provider.runNext();
+        Thread.interrupted();
+        reconstructed.start();
+        provider.runNext();
+        Thread.interrupted();
+
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void reconstructedObservationOnlyAttemptCanNeverStopProviderOwner() {
+        LaunchTransitionSpec game = providerSpec("same-attempt", "steam:289070");
+        LaunchTransitionSpec observation = new LaunchTransitionSpec(
+                game.id, game.hostId, LaunchTransitionType.GAME_CONNECTION,
+                game.sunshineAppId, game.playniteGameId, game.createdAtMillis);
+        FakeGateway gateway = stoppingObservationGateway();
+        ConsoleStreamTransitionCoordinator owner = new ConsoleStreamTransitionCoordinator(
+                game, providerController(game), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        ConsoleStreamTransitionCoordinator observer = new ConsoleStreamTransitionCoordinator(
+                observation, providerController(observation), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        owner.start();
+        Thread.interrupted();
+        observer.start();
+        Thread.interrupted();
+
+        observer.onStreamFailed();
+        observer.cancel();
+
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void detachForSwitchReleasesExactOwnerWithoutProviderStop() {
+        LaunchTransitionSpec oldSpec = providerSpec("old-switch", "steam:old");
+        FakeGateway gateway = stoppingObservationGateway();
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        coordinator.start();
+        Thread.interrupted();
+
+        assertTrue(coordinator.detachForSwitch());
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void confirmedStopCanDetachAfterExactOwnerWasAlreadyCleared() {
+        LaunchTransitionSpec spec = providerSpec("confirmed-stop", "steam:old");
+        FakeGateway gateway = stoppingObservationGateway();
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                spec, providerController(spec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        coordinator.start();
+        Thread.interrupted();
+        ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+
+        assertTrue(coordinator.detachAfterConfirmedGameStop());
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void confirmedStopCannotDetachANewerProviderOwner() {
+        LaunchTransitionSpec newer = providerSpec("newer", "steam:new");
+        LaunchTransitionSpec stale = providerSpec("stale", "steam:old");
+        FakeGateway gateway = stoppingObservationGateway();
+        ConsoleStreamTransitionCoordinator newerCoordinator =
+                new ConsoleStreamTransitionCoordinator(
+                        newer, providerController(newer), gateway, new InlineExecutor(),
+                        new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                        new FakeCallbacks());
+        ConsoleStreamTransitionCoordinator staleCoordinator =
+                new ConsoleStreamTransitionCoordinator(
+                        stale, providerController(stale), gateway, new InlineExecutor(),
+                        new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                        new FakeCallbacks());
+        newerCoordinator.start();
+        Thread.interrupted();
+
+        assertFalse(staleCoordinator.detachAfterConfirmedGameStop());
+        assertTrue(newerCoordinator.detachForSwitch());
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void failedSwitchRecoveryCannotReplaceNewerProviderOwner() {
+        FakeGateway gateway = stoppingObservationGateway();
+        LaunchTransitionSpec oldSpec = providerSpec("old-switch", "steam:old");
+        LaunchTransitionSpec newSpec = providerSpec("new-switch", "steam:new");
+        ConsoleStreamTransitionCoordinator oldCoordinator = new ConsoleStreamTransitionCoordinator(
+                oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        ConsoleStreamTransitionCoordinator newCoordinator = new ConsoleStreamTransitionCoordinator(
+                newSpec, providerController(newSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        oldCoordinator.start();
+        Thread.interrupted();
+        assertTrue(oldCoordinator.detachForSwitch());
+        newCoordinator.start();
+        Thread.interrupted();
+
+        assertFalse(oldCoordinator.adoptDetachedProviderOwnership());
+        oldCoordinator.cancel();
+
+        assertEquals(2, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void observationRetryTransfersExactOwnerWithoutProviderAction() {
+        FakeGateway gateway = stoppingObservationGateway();
+        LaunchTransitionSpec oldSpec = new LaunchTransitionSpec(
+                "old-observer", HOST, LaunchTransitionType.GAME_CONNECTION,
+                42, "steam:old", 1L);
+        LaunchTransitionSpec newSpec = new LaunchTransitionSpec(
+                "new-observer", HOST, LaunchTransitionType.GAME_CONNECTION,
+                42, "steam:old", 2L);
+        ConsoleStreamTransitionCoordinator oldObserver = new ConsoleStreamTransitionCoordinator(
+                oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        ConsoleStreamTransitionCoordinator newObserver = new ConsoleStreamTransitionCoordinator(
+                newSpec, providerController(newSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        assertTrue(oldObserver.adoptDetachedProviderOwnership());
+
+        assertTrue(oldObserver.transferProviderOwnershipTo(newObserver));
+        newObserver.start();
+        Thread.interrupted();
+        assertTrue(newObserver.detachForSwitch());
+
+        assertEquals(0, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void reconstructedObservationWithoutStaticOwnerCanDetachSafely() {
+        FakeGateway gateway = stoppingObservationGateway();
+        LaunchTransitionSpec observation = new LaunchTransitionSpec(
+                "restored-observer", HOST, LaunchTransitionType.GAME_CONNECTION,
+                42, "steam:old", 1L);
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                observation, providerController(observation), gateway,
+                new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
+                (action, delay) -> { }, new FakeCallbacks());
+        coordinator.start();
+        Thread.interrupted();
+
+        assertTrue(coordinator.detachForSwitch());
+        assertEquals(0, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void neutralObservationWithoutOwnerCanDetachSafely() {
+        FakeGateway gateway = stoppingObservationGateway();
+        LaunchTransitionSpec observation = new LaunchTransitionSpec(
+                "neutral-observer", HOST, LaunchTransitionType.GAME_CONNECTION,
+                42, "", 1L);
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                observation, providerController(observation), gateway,
+                new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
+                (action, delay) -> { }, new FakeCallbacks());
+        coordinator.start();
+        Thread.interrupted();
+
+        assertTrue(coordinator.detachForSwitch());
+        assertEquals(0, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void observationRetryCannotOverwriteNewerOwner() {
+        FakeGateway gateway = stoppingObservationGateway();
+        LaunchTransitionSpec oldSpec = new LaunchTransitionSpec(
+                "old-observer", HOST, LaunchTransitionType.GAME_CONNECTION,
+                42, "steam:old", 1L);
+        LaunchTransitionSpec replacementSpec = new LaunchTransitionSpec(
+                "replacement", HOST, LaunchTransitionType.GAME_CONNECTION,
+                42, "steam:old", 2L);
+        LaunchTransitionSpec newerSpec = providerSpec("newer", "steam:new");
+        ConsoleStreamTransitionCoordinator oldObserver = new ConsoleStreamTransitionCoordinator(
+                oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        ConsoleStreamTransitionCoordinator replacement = new ConsoleStreamTransitionCoordinator(
+                replacementSpec, providerController(replacementSpec), gateway,
+                new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
+                (action, delay) -> { }, new FakeCallbacks());
+        ConsoleStreamTransitionCoordinator newer = new ConsoleStreamTransitionCoordinator(
+                newerSpec, providerController(newerSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        assertTrue(oldObserver.adoptDetachedProviderOwnership());
+        newer.start();
+        Thread.interrupted();
+
+        assertFalse(oldObserver.transferProviderOwnershipTo(replacement));
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void runningProviderGameDoesNotCloseStreamUntilItActuallyStops() {
+        FakeGateway gateway = gatewayWith(snapshotReadyGame());
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+
+        harness.runObservation();
+
+        assertEquals(0, harness.callbacks.providerStopCalls);
+        assertEquals(0, gateway.stopGameCalls);
     }
 
     @Test
@@ -618,6 +1151,33 @@ public class ConsoleStreamTransitionCoordinatorTest {
         harness.coordinator.start();
         harness.coordinator.verifyInstallation();
         assertEquals(expected, harness.callbacks.verification);
+    }
+
+    private static LaunchTransitionSpec providerSpec(String transitionId, String gameId) {
+        return new LaunchTransitionSpec(
+                transitionId, HOST, LaunchTransitionType.GAME, 42, gameId, 1_000L);
+    }
+
+    private static LaunchTransitionController providerController(LaunchTransitionSpec spec) {
+        LaunchTransitionController controller = new LaunchTransitionController(null);
+        controller.begin(spec);
+        controller.overlayRendered(spec.id);
+        return controller;
+    }
+
+    private static FakeGateway stoppingObservationGateway() {
+        FakeGateway gateway = new FakeGateway();
+        gateway.snapshots.add(new IOException("stop observation"));
+        return gateway;
+    }
+
+    private static ConsoleStreamTransitionCoordinator coordinator(
+            LaunchTransitionSpec spec, LaunchTransitionController controller,
+            FakeGateway gateway, Executor providerExecutor) {
+        return new ConsoleStreamTransitionCoordinator(
+                spec, controller, gateway, new InlineExecutor(), providerExecutor,
+                new FakeClock(), 0L, new InterruptingSleeper(),
+                (action, delay) -> { }, new FakeCallbacks());
     }
 
     private static long timeout(LaunchTransitionState state) {
@@ -737,6 +1297,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         int stopGameCalls;
         String startedGameId = "";
         String stoppedGameId = "";
+        List<String> actions;
         Runnable snapshotAction;
         FakeClock clock;
         boolean verifyResult;
@@ -786,12 +1347,14 @@ public class ConsoleStreamTransitionCoordinatorTest {
         @Override public void startGame(String gameId) throws IOException {
             startGameCalls++;
             startedGameId = gameId;
+            if (actions != null) actions.add("start:" + gameId);
             if (startError != null) throw startError;
         }
 
         @Override public void stopGame(String gameId) {
             stopGameCalls++;
             stoppedGameId = gameId;
+            if (actions != null) actions.add("stop:" + gameId);
         }
     }
 
@@ -804,10 +1367,13 @@ public class ConsoleStreamTransitionCoordinatorTest {
         final List<String> attention = new ArrayList<>();
         String verification = "";
         int providerStopCalls;
+        int cleanupCalls;
+        boolean lastCleanupSuccess;
 
         @Override public String gatewayUnavailableMessage() { return "gateway unavailable"; }
         @Override public String hostSessionLockedMessage() { return "host locked"; }
         @Override public String streamDisplayNotConfiguredMessage() { return "display missing"; }
+        @Override public String targetWrongDisplayMessage() { return "wrong display"; }
         @Override public String readinessUnconfirmedMessage() { return "unconfirmed"; }
         @Override public String launcherInteractionRequiredMessage() { return "reveal launcher"; }
         @Override public String windowStabilizingMessage() { return "stabilizing"; }
@@ -825,7 +1391,13 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 String hostId, String gameId, String gameName) { failed.add(gameId); }
         @Override public void onInstallationAttentionRequired(
                 String hostId, String gameId, String gameName) { attention.add(gameId); }
-        @Override public void onProviderGameStopped() { providerStopCalls++; }
+        @Override public void onProviderGameStopped(
+                String transitionId, String gameId) { providerStopCalls++; }
+        @Override public void onProviderGameCleanupComplete(
+                String transitionId, String gameId, boolean success) {
+            cleanupCalls++;
+            lastCleanupSuccess = success;
+        }
         @Override public void onInstallationVerified() { verification = "verified"; }
         @Override public void onInstallationStillNeedsConfirmation() { verification = "still"; }
         @Override public void onInstallationVerificationFailed() { verification = "failed"; }
@@ -860,6 +1432,13 @@ public class ConsoleStreamTransitionCoordinatorTest {
             delays.add(delayMs);
             actions.add(action);
         }
+    }
+
+    private static final class QueuedExecutor implements Executor {
+        final List<Runnable> actions = new ArrayList<>();
+        @Override public void execute(Runnable action) { actions.add(action); }
+        void runNext() { actions.remove(0).run(); }
+        void runAll() { while (!actions.isEmpty()) runNext(); }
     }
 
     private static final class InlineExecutor extends AbstractExecutorService {

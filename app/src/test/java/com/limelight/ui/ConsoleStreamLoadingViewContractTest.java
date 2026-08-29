@@ -82,6 +82,23 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(method.contains("handleControllerKey(new KeyEvent"));
     }
 
+    @Test public void retainedIdentityCanReplaceArtworkAndClearToNeutral()
+            throws IOException {
+        String text = source();
+        String artwork = text.substring(text.indexOf("public void setSplashArtwork("),
+                text.indexOf("private Bitmap decodeSplashArtwork("));
+        String apply = text.substring(text.indexOf("private void applySplashArtwork("),
+                text.indexOf("private void showSplashMessageImmediately("));
+        String title = text.substring(text.indexOf("public void setTitle("),
+                text.indexOf("private Bitmap decodeSplashArtwork("));
+
+        assertTrue(artwork.contains("splashArtworkView.setImageDrawable(null)"));
+        assertTrue(artwork.contains("splashArtworkView.setVisibility(GONE)"));
+        assertTrue(apply.contains("splashArtworkView.setVisibility(VISIBLE)"));
+        assertTrue(apply.contains("splashArtworkView.setImageBitmap(bitmap)"));
+        assertTrue(title.contains("messageView.setText(title.trim())"));
+    }
+
     private static String source() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
         if (!Files.exists(source)) {

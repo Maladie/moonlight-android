@@ -78,6 +78,19 @@ public class SessionStateResolverTest {
         assertFalse(snapshot.isResumeAvailable());
     }
 
+    @Test public void terminatingHostStillBlocksAfterTargetIdentityDisappears() {
+        Facts facts = new Facts();
+        facts.runningApp = 99;
+        facts.resolvedGame = "new-poll-value";
+        facts.retainedState = RetainedStreamSessionCoordinator.State.TERMINATING;
+        facts.retainedHost = "host";
+        facts.retainedApp = 42;
+        facts.retainedGame = "old-game";
+
+        assertEquals(SessionSnapshot.State.TERMINATING,
+                resolver.resolve(facts.build()).state);
+    }
+
     @Test public void activePlayniteIdentityIsPreservedForSharedTargetDisambiguation() {
         Facts facts = new Facts();
         facts.runningApp = 42;
@@ -89,6 +102,68 @@ public class SessionStateResolverTest {
         assertEquals("game-b", snapshot.playniteGameId);
         assertFalse(snapshot.matches("game-a", 42));
         assertTrue(snapshot.matches("game-b", 42));
+    }
+
+    @Test public void staleIdleProjectedAsUnknownIsUncertainWithoutSunshineStream() {
+        Facts facts = new Facts();
+        facts.bridgeState = "unknown";
+
+        SessionSnapshot snapshot = resolver.resolve(facts.build());
+
+        assertEquals(SessionSnapshot.State.UNCERTAIN, snapshot.state);
+        assertFalse(snapshot.isResumeAvailable());
+    }
+
+    @Test public void bridgeRunningWithoutStreamCreatesGameOnlyActiveSession() {
+        Facts facts = new Facts();
+        facts.resolvedGame = "game";
+        facts.bridgeState = "running";
+
+        SessionSnapshot snapshot = resolver.resolve(facts.build());
+
+        assertEquals(SessionSnapshot.State.ACTIVE, snapshot.state);
+        assertEquals(0, snapshot.hostGameAppId);
+        assertEquals("game", snapshot.playniteGameId);
+    }
+
+    @Test public void freshBridgeIdleClearsRetainedGameNameButKeepsNeutralStream() {
+        Facts facts = new Facts();
+        facts.retainedState = RetainedStreamSessionCoordinator.State.HOME_LIVE;
+        facts.retainedHost = "host";
+        facts.retainedApp = 42;
+        facts.retainedGame = "stale";
+        facts.bridgeState = "idle";
+
+        SessionSnapshot snapshot = resolver.resolve(facts.build());
+
+        assertEquals(SessionSnapshot.State.ACTIVE, snapshot.state);
+        assertEquals("", snapshot.playniteGameId);
+        assertTrue(snapshot.retainedTransport);
+    }
+
+    @Test public void freshBridgeIdleSuppressesStaleSuspendedGame() {
+        Facts facts = suspendedFacts();
+        facts.bridgeState = "idle";
+        facts.hostOnline = true;
+
+        assertEquals(SessionSnapshot.State.NONE, resolver.resolve(facts.build()).state);
+
+        facts.retainedState = RetainedStreamSessionCoordinator.State.HOME_LIVE;
+        facts.retainedHost = "host";
+        facts.retainedApp = 42;
+        facts.retainedGame = "game";
+        SessionSnapshot stream = resolver.resolve(facts.build());
+        assertEquals(SessionSnapshot.State.ACTIVE, stream.state);
+        assertEquals("", stream.playniteGameId);
+    }
+
+    @Test public void verifiedBridgeGameBeatsRecentApkEndMarker() {
+        Facts facts = new Facts();
+        facts.resolvedGame = "game";
+        facts.bridgeState = "running";
+        facts.recentlyEnded = true;
+
+        assertEquals(SessionSnapshot.State.ACTIVE, resolver.resolve(facts.build()).state);
     }
 
     @Test public void explicitSuspensionWinsMatchingHostAppButNotDifferentApp() {
@@ -188,12 +263,13 @@ public class SessionStateResolverTest {
         facts.recentlyEnded = true;
         facts.runningApp = 42;
         facts.resolvedGame = "game-b";
+        facts.bridgeState = "idle";
 
         SessionSnapshot snapshot = resolver.resolve(facts.build());
         assertEquals(SessionSnapshot.State.NONE, snapshot.state);
         assertEquals(PlayniteIdentityResolutionPolicy.Action.REQUEST,
                 PlayniteIdentityResolutionPolicy.decide(
-                        true, true, facts.runningApp, snapshot.state));
+                        true, true, snapshot.state));
     }
 
     @Test public void hostSleepMarkerAloneNeverCreatesGameSession() {
@@ -269,6 +345,7 @@ public class SessionStateResolverTest {
         boolean sleepRequested;
         boolean sleepObserved;
         boolean hostOnline = true;
+        String bridgeState = "";
         String suspendedId = "";
 
         SessionStateResolver.Observations build() {
@@ -279,6 +356,8 @@ public class SessionStateResolverTest {
                     suspendedSleepObservedAt, recentlyEnded, pending, pendingHost,
                     pendingApp, sleepHost, sleepRequested, sleepObserved);
             observations.hostOnline = hostOnline;
+            observations.bridgeGameState = bridgeState.isEmpty()
+                    ? observations.bridgeGameState : bridgeState;
             observations.suspendedId = suspendedId;
             return observations;
         }

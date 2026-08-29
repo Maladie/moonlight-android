@@ -57,8 +57,15 @@ final class PlayIntent {
     static PlayIntent playniteGame(String hostId, int appId, String appName,
                                    boolean hdrSupported, String gameId,
                                    String loadingArtworkGameId) {
+        return playniteGame(hostId, appId, appName, hdrSupported, gameId,
+                loadingArtworkGameId, "");
+    }
+
+    static PlayIntent playniteGame(String hostId, int appId, String appName,
+                                   boolean hdrSupported, String gameId,
+                                   String loadingArtworkGameId, String streamSettingsKey) {
         return new PlayIntent(hostId, Kind.PLAYNITE_GAME, appId, appName,
-                hdrSupported, gameId, "", loadingArtworkGameId);
+                hdrSupported, gameId, streamSettingsKey, loadingArtworkGameId);
     }
 
     static PlayIntent playniteFullscreen(String hostId, int appId, String appName,

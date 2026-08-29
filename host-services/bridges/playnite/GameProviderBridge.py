@@ -37,10 +37,12 @@ GAME_ID_PATTERN = re.compile(
     r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$")
 MAX_BODY_BYTES = 16 * 1024
 MAX_ARTWORK_BYTES = 8 * 1024 * 1024
+MAX_ACTIVE_GAME_TRACE_BYTES = 16 * 1024
 REQUIRED_STABLE_SAMPLES = 3
 REQUIRED_GAME_STABLE_SAMPLES = 4
 REQUIRED_LAUNCHER_STABLE_SAMPLES = 4
 LAUNCHER_POSTCONDITION_TIMEOUT = 5.0
+PROVIDER_LAUNCHER_PROBE_DELAY = 15.0
 GAME_START_TIMEOUT = 60.0
 GAME_STOP_TIMEOUT = 20.0
 STEAM_PRIMARY_START_TIMEOUT = 30.0
@@ -188,6 +190,11 @@ class WindowProbe:
                 wintypes.HANDLE, wintypes.DWORD, wintypes.LPWSTR,
                 ctypes.POINTER(wintypes.DWORD)]
             self.kernel32.QueryFullProcessImageNameW.restype = wintypes.BOOL
+            self.kernel32.GetProcessTimes.argtypes = [
+                wintypes.HANDLE, ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME),
+                ctypes.POINTER(wintypes.FILETIME)]
+            self.kernel32.GetProcessTimes.restype = wintypes.BOOL
             self.kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
             self.kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
             try:
@@ -217,6 +224,75 @@ class WindowProbe:
 
     def _process_image(self, process_id: int) -> str:
         return os.path.basename(self._process_path(process_id)).casefold()
+
+    def process_identity(self, process_id: int) -> dict[str, Any] | None:
+        if not self.kernel32 or process_id <= 0:
+            return None
+        handle = self.kernel32.OpenProcess(
+            self.PROCESS_QUERY_LIMITED_INFORMATION, False, process_id)
+        if not handle:
+            return None
+        try:
+            size = wintypes.DWORD(32768)
+            buffer = ctypes.create_unicode_buffer(size.value)
+            created = wintypes.FILETIME()
+            exited = wintypes.FILETIME()
+            kernel = wintypes.FILETIME()
+            user = wintypes.FILETIME()
+            if not self.kernel32.QueryFullProcessImageNameW(
+                    handle, 0, buffer, ctypes.byref(size)) or \
+                    not self.kernel32.GetProcessTimes(
+                        handle, ctypes.byref(created), ctypes.byref(exited),
+                        ctypes.byref(kernel), ctypes.byref(user)):
+                return None
+            started = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
+            return {
+                "process_id": process_id,
+                "process_path": buffer.value,
+                "process_started_filetime": started,
+            }
+        finally:
+            self.kernel32.CloseHandle(handle)
+
+    def process_identities(self, exact_path: str) -> list[dict[str, Any]] | None:
+        if not self.kernel32:
+            return None
+        if not exact_path:
+            return []
+        expected = ntpath.normcase(ntpath.normpath(exact_path))
+        snapshot = self.kernel32.CreateToolhelp32Snapshot(self.TH32CS_SNAPPROCESS, 0)
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+            return None
+        result: list[dict[str, Any]] = []
+        entry = self._process_entry()
+        try:
+            if self.kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                while True:
+                    identity = self.process_identity(int(entry.th32ProcessID))
+                    if identity and ntpath.normcase(ntpath.normpath(
+                            str(identity.get("process_path") or ""))) == expected:
+                        result.append(identity)
+                    if not self.kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                        break
+        finally:
+            self.kernel32.CloseHandle(snapshot)
+        return result
+
+    @staticmethod
+    def _process_entry():
+        class ProcessEntry(ctypes.Structure):
+            _fields_ = [
+                ("dwSize", wintypes.DWORD), ("cntUsage", wintypes.DWORD),
+                ("th32ProcessID", wintypes.DWORD),
+                ("th32DefaultHeapID", ctypes.c_size_t),
+                ("th32ModuleID", wintypes.DWORD), ("cntThreads", wintypes.DWORD),
+                ("th32ParentProcessID", wintypes.DWORD),
+                ("pcPriClassBase", wintypes.LONG), ("dwFlags", wintypes.DWORD),
+                ("szExeFile", wintypes.WCHAR * 260),
+            ]
+        entry = ProcessEntry()
+        entry.dwSize = ctypes.sizeof(entry)
+        return entry
 
     def _exact_process_running(self, executable: Path) -> bool:
         if not self.kernel32:
@@ -646,8 +722,10 @@ class WindowProbe:
     def ensure_steam_big_picture(self, provider: SteamProvider,
                                  expected_display: str,
                                  timeout: float = 15.0) -> dict[str, Any]:
+        if self.user32 and self.is_session_locked():
+            return {"ready": False, "reason": "host_session_locked"}
         executable = provider.executable()
-        if executable is None or not expected_display:
+        if executable is None:
             return {"ready": False, "reason": "steam_big_picture_unavailable"}
 
         def qualifying() -> list[dict[str, Any]]:
@@ -741,7 +819,8 @@ class WindowProbe:
             foreground_display.casefold() == expected_display.casefold()
         return not foreground_is_on_stream and cls.fills_monitor(bounds, monitor_bounds)
 
-    def invoke_game_launcher(self, candidate: dict[str, Any]) -> dict[str, Any]:
+    def invoke_game_launcher(self, candidate: dict[str, Any],
+                             detect_only: bool = False) -> dict[str, Any]:
         hwnd = int(candidate.get("hwnd") or 0)
         process_id = int(candidate.get("process_id") or 0)
         process_path = str(candidate.get("process_path") or "")
@@ -760,6 +839,8 @@ class WindowProbe:
             ]
             if candidate.get("allow_default_action"):
                 command.append("-AllowDefaultAction")
+            if detect_only:
+                command.append("-DetectOnly")
             result = subprocess.run(command, capture_output=True, text=True, timeout=5,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
             payload = json.loads((result.stdout or "").strip().splitlines()[-1])
@@ -812,7 +893,7 @@ class WindowProbe:
         expected_images = {str(value).casefold() for value in
                            (expected_launcher_images or set())}
         provider_web_surface = str(candidate.get("image") or "").casefold() \
-            in expected_images and cls.is_web_launcher_surface(candidate) and \
+            in expected_images and \
             cls.title_correlates(str(candidate.get("title") or ""), expected_title)
         return (correlated_surface and (native_dialog or launcher_named)) or \
             provider_web_surface
@@ -824,19 +905,21 @@ class WindowProbe:
                launcher_interaction_required: bool = False,
                expected_executable: str = "", expected_title: str = "",
                expected_launcher_images: set[str] | None = None,
-               launcher_action_attempted: bool = False) -> dict[str, Any]:
+               launcher_action_attempted: bool = False,
+               probe_provider_launcher: bool = False,
+               tracked_process_path: str = "") -> dict[str, Any]:
         if not self.user32:
             return {"qualified": False, "reason": "window_probe_unavailable"}
         if self.is_session_locked():
             return {"qualified": False, "reason": "host_session_locked"}
 
         windows: list[dict[str, Any]] = []
+        correlated_windows: list[dict[str, Any]] = []
         launcher_windows: list[dict[str, Any]] = []
         process_tree = self._process_tree(process_id) \
             if target_kind == "game" and process_id else set()
-        if target_kind == "game" and process_id and not process_tree:
-            return {"qualified": False, "reason": "game_process_exited",
-                    "process_id": process_id}
+        tracked_process_exited = target_kind == "game" and process_id > 0 \
+            and not process_tree
         foreground = int(self.user32.GetForegroundWindow() or 0)
         foreground_display = self._monitor_details(foreground)[0] if foreground else ""
         foreground_process_id = 0
@@ -890,15 +973,22 @@ class WindowProbe:
             }
             provider_surface_after_action = launcher_action_attempted and \
                 image in provider_images and self.is_web_launcher_surface(details)
+            provider_surface_probe = probe_provider_launcher and details["foreground"] and \
+                image in provider_images
             if target_kind == "game" and width >= 240 and height >= 120 \
                     and image not in INSTALLER_EXCLUDED_IMAGES and details["title"] \
                     and (correlated_process or provider_surface_after_action or
+                         provider_surface_probe or
                          self.has_launcher_evidence(
                              details, expected_executable, install_directory,
                              expected_launcher_images, expected_title)):
                 launcher_windows.append(details)
             if target_kind == "game" and not correlated_process:
                 return True
+            if target_kind == "game":
+                if tracked_process_exited:
+                    details["replacement_process"] = True
+                correlated_windows.append(details)
             if width < 640 or height < 360:
                 return True
             windows.append(details)
@@ -906,6 +996,25 @@ class WindowProbe:
 
         callback = callback_type(visit)
         self.user32.EnumWindows(callback, 0)
+        if tracked_process_exited and not correlated_windows:
+            identities = self.process_identities(tracked_process_path) \
+                if tracked_process_path else None
+            if identities is None:
+                return {"qualified": False,
+                        "reason": "game_process_probe_unavailable"}
+            if len(identities) == 1:
+                return {"qualified": False,
+                        "reason": "game_replacement_headless"}
+            if len(identities) > 1:
+                return {"qualified": False,
+                        "reason": "game_process_identity_ambiguous"}
+            return {"qualified": False, "reason": "game_process_exited",
+                    "process_id": process_id}
+        if tracked_process_exited and correlated_windows and not windows:
+            candidate = next((item for item in correlated_windows
+                              if item["foreground"]), correlated_windows[0])
+            return {"qualified": False, "reason": "waiting_for_game_window",
+                    **candidate}
         if target_kind == "game" and launch_baseline:
             baseline_windows = (launch_baseline or {}).get("windows") or {}
             candidates = []
@@ -921,11 +1030,17 @@ class WindowProbe:
                 provider_surface_after_action = launcher_action_attempted and \
                     str(candidate.get("image") or "").casefold() in provider_images and \
                     self.is_web_launcher_surface(candidate)
-                if changed and candidate["foreground"] and not self.fills_monitor(
-                        candidate["bounds"], candidate["monitor_bounds"], .90) and \
-                        (provider_surface_after_action or self.has_launcher_evidence(
-                            candidate, expected_executable, install_directory,
-                            expected_launcher_images, expected_title)):
+                provider_surface_probe = probe_provider_launcher and \
+                    str(candidate.get("image") or "").casefold() in provider_images
+                ordinary_candidate = changed and not self.fills_monitor(
+                    candidate["bounds"], candidate["monitor_bounds"], .90) and \
+                    (provider_surface_after_action or self.has_launcher_evidence(
+                        candidate, expected_executable, install_directory,
+                        expected_launcher_images, expected_title))
+                if candidate["foreground"] and (ordinary_candidate or
+                                                  provider_surface_probe):
+                    candidate["provider_surface_probe"] = provider_surface_probe and \
+                        not ordinary_candidate
                     candidates.append(candidate)
             if candidates:
                 selected = max(candidates, key=lambda item: (
@@ -935,9 +1050,22 @@ class WindowProbe:
                     str(selected.get("image") or "").casefold() in {
                         str(value).casefold() for value in
                         (expected_launcher_images or set())
-                    } and self.is_web_launcher_surface(selected) and
-                    self.title_correlates(
+                    } and self.title_correlates(
                         str(selected.get("title") or ""), expected_title))
+                if selected.get("provider_surface_probe"):
+                    result = self.invoke_game_launcher(selected, detect_only=True)
+                    if result.get("recognized") or \
+                            result.get("reason") == "launcher_action_ambiguous":
+                        return {"qualified": False,
+                                "reason": "launcher_interaction_required",
+                                "launcher_candidate": True,
+                                "launcher_action_attempted": True,
+                                "launcher_detail": str(result.get("reason") or
+                                                       "launcher_action_detected"),
+                                **selected}
+                    reason = "waiting_for_game_window" if target_kind == "game" \
+                        else "waiting_for_playnite_window"
+                    return {"qualified": False, "reason": reason}
                 if launcher_interaction_required:
                     return {"qualified": False,
                             "reason": "launcher_interaction_required",
@@ -1004,6 +1132,7 @@ class BridgeState:
     def __init__(self, expected_display: str = "", cache_path: Path | None = None,
                  version_path: Path | None = None,
                  operations_path: Path | None = None,
+                 active_game_path: Path | None = None,
                  game_operations: GameOperationsService | None = None,
                  clock: Callable[[], float] | None = None,
                  operation_audit: Callable[[str, dict[str, Any]], None] | None = None,
@@ -1015,6 +1144,7 @@ class BridgeState:
         self.stop_timeout = max(0.01, float(stop_timeout))
         self.events_changed = threading.Condition(self.lock)
         self.connected = False
+        self._transport_observed = False
         self.last_error = "Playnite connector is not connected."
         self.library: dict[str, dict[str, Any]] = {}
         self.playnite_library: dict[str, dict[str, Any]] = {}
@@ -1024,6 +1154,12 @@ class BridgeState:
         self.categories: list[dict[str, Any]] = []
         self.plugins: list[dict[str, Any]] = []
         self.current: dict[str, Any] = {"state": "idle"}
+        self.active_game_path = active_game_path
+        self._active_game_trace: dict[str, Any] | None = None
+        self._process_identity_action: Callable[[int], dict[str, Any] | None] | None = None
+        self._process_identities_action: Callable[
+            [str], list[dict[str, Any]] | None] | None = None
+        self._native_reconciliation_confirmation: tuple[str, int] | None = None
         self.readiness: dict[str, Any] = {
             "ready": False,
             "reason": "window_probe_pending",
@@ -1134,6 +1270,7 @@ class BridgeState:
         self.started_at = int(time.time())
         self.version_info = self._load_version_info(version_path)
         self._load_library_cache()
+        self._load_active_game_trace()
 
     @staticmethod
     def operation_token(operation: dict[str, Any]) -> tuple[str, str, float]:
@@ -1243,6 +1380,269 @@ class BridgeState:
             self.playnite_library = {}
             self.categories = []
             self.plugins = []
+
+    @staticmethod
+    def _normalized_process_path(value: Any) -> str:
+        path = str(value or "").strip()
+        return ntpath.normcase(ntpath.normpath(path)) if path else ""
+
+    def _remove_active_game_trace(self) -> None:
+        if self.active_game_path is None:
+            return
+        try:
+            self.active_game_path.unlink(missing_ok=True)
+            self.active_game_path.with_name(
+                self.active_game_path.name + ".tmp").unlink(missing_ok=True)
+        except OSError as error:
+            print(json.dumps({
+                "event": "active_game_trace_warning",
+                "operation": "remove",
+                "error": type(error).__name__,
+            }, separators=(",", ":")), flush=True)
+
+    def _load_active_game_trace(self) -> None:
+        path = self.active_game_path
+        if path is None or not path.is_file():
+            return
+        try:
+            if path.stat().st_size > MAX_ACTIVE_GAME_TRACE_BYTES:
+                raise ValueError("Oversized active game trace")
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
+            if not isinstance(value, dict) or value.get("version") != 1:
+                raise ValueError("Unsupported active game trace")
+            game_id = str(value.get("game_id") or "")
+            provider = str(value.get("provider") or "").casefold()
+            provider_game_id = str(value.get("provider_game_id") or "")
+            playnite_guid = str(value.get("playnite_guid") or "").casefold()
+            process_id = int(value.get("process_id") or 0)
+            process_path = self._normalized_process_path(value.get("process_path"))
+            process_started = int(value.get("process_started_filetime") or 0)
+            if not GAME_ID_PATTERN.fullmatch(game_id) \
+                    or provider not in {"steam", "epic", "playnite"} \
+                    or not provider_game_id or len(provider_game_id) > 512 \
+                    or process_id <= 0 or len(process_path) > 8192 \
+                    or not ntpath.isabs(process_path) or process_started <= 0 \
+                    or provider == "playnite" \
+                    and not PLAYNITE_ID_PATTERN.fullmatch(playnite_guid):
+                raise ValueError("Malformed active game trace")
+            self._active_game_trace = {
+                "version": 1,
+                "game_id": game_id,
+                "provider": provider,
+                "provider_game_id": provider_game_id,
+                "playnite_guid": playnite_guid,
+                "process_id": process_id,
+                "process_path": process_path,
+                "process_started_filetime": process_started,
+            }
+            self.current = {
+                "state": "reconciling", "id": game_id,
+                "reason": "active_game_verification_pending",
+            }
+            self.readiness = {
+                "ready": False,
+                "reason": "active_game_verification_pending",
+                "target_kind": "game",
+                "game_id": game_id,
+                "stable_samples": 0,
+            }
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            self._active_game_trace = None
+            self._remove_active_game_trace()
+
+    def set_reconciliation_actions(
+            self, process_identity: Callable[[int], dict[str, Any] | None],
+            process_identities: Callable[
+                [str], list[dict[str, Any]] | None]) -> None:
+        with self.lock:
+            self._process_identity_action = process_identity
+            self._process_identities_action = process_identities
+            self._attempt_active_game_reconciliation_locked()
+
+    def _trace_library_candidates_locked(
+            self, trace: dict[str, Any]) -> list[dict[str, Any]]:
+        provider = str(trace["provider"])
+        provider_game_id = str(trace["provider_game_id"])
+        playnite_guid = str(trace["playnite_guid"])
+        return [game for game in self.library.values()
+                if str(game.get("provider") or "").casefold() == provider
+                and str(game.get("providerGameId") or "") == provider_game_id
+                and str(game.get("playniteGameId") or "").casefold() == playnite_guid]
+
+    def _trace_path_matches_game(self, trace: dict[str, Any],
+                                 game: dict[str, Any]) -> bool:
+        process_path = str(trace["process_path"])
+        install_dir = self._normalized_process_path(
+            game.get("installDir") or game.get("install_dir"))
+        executable = str(game.get("exe") or game.get("executable") or "").strip()
+        if executable:
+            expected = executable if ntpath.isabs(executable) \
+                else ntpath.join(install_dir, executable)
+            return process_path == self._normalized_process_path(expected)
+        return bool(install_dir) and WindowProbe.belongs_to_install_directory(
+            process_path, install_dir)
+
+    def _clear_reconciliation_locked(self, reason: str) -> None:
+        previous = dict(self.current)
+        self._active_game_trace = None
+        self._native_reconciliation_confirmation = None
+        self._remove_active_game_trace()
+        self.current = {"state": "idle"}
+        self.readiness = {
+            "ready": False, "reason": reason,
+            "target_kind": "none", "stable_samples": 0,
+        }
+        self._publish_locked("game-reconciliation-cleared", previous)
+
+    def _mark_reconciliation_ambiguous_locked(self, reason: str) -> None:
+        trace = self._active_game_trace or {}
+        self.current = {
+            "state": "ambiguous", "id": str(trace.get("game_id") or ""),
+            "reason": reason,
+        }
+        self.readiness = {
+            "ready": False, "reason": reason,
+            "target_kind": "game", "game_id": str(trace.get("game_id") or ""),
+            "stable_samples": 0,
+        }
+        self._publish_locked("game-reconciliation-ambiguous", dict(self.current))
+
+    def _attempt_active_game_reconciliation_locked(self) -> None:
+        trace = self._active_game_trace
+        identity_action = self._process_identity_action
+        identities_action = self._process_identities_action
+        if trace is None or identity_action is None or identities_action is None:
+            return
+        if str(self.current.get("state") or "").casefold() not in {
+                "reconciling", "ambiguous"}:
+            return
+        if not self.library:
+            return
+        candidates = self._trace_library_candidates_locked(trace)
+        if len(candidates) > 1:
+            self._mark_reconciliation_ambiguous_locked(
+                "active_game_library_ambiguous")
+            return
+        if len(candidates) != 1 or str(candidates[0].get("id") or "") != trace["game_id"] \
+                or not self._trace_path_matches_game(trace, candidates[0]):
+            self._clear_reconciliation_locked("active_game_trace_stale")
+            return
+        identity = identity_action(int(trace["process_id"]))
+        if identity is None \
+                or self._normalized_process_path(identity.get("process_path")) != \
+                trace["process_path"] \
+                or int(identity.get("process_started_filetime") or 0) != \
+                int(trace["process_started_filetime"]):
+            self._clear_reconciliation_locked("active_game_process_stale")
+            return
+        observed = identities_action(str(trace["process_path"]))
+        if observed is None:
+            return
+        matches = [item for item in observed
+                   if self._normalized_process_path(item.get("process_path")) ==
+                   trace["process_path"]]
+        if len(matches) > 1:
+            self._mark_reconciliation_ambiguous_locked(
+                "active_game_process_ambiguous")
+            return
+        if len(matches) != 1 or int(matches[0].get("process_id") or 0) != \
+                int(trace["process_id"]) or int(
+                    matches[0].get("process_started_filetime") or 0) != int(
+                        trace["process_started_filetime"]):
+            self._clear_reconciliation_locked("active_game_process_stale")
+            return
+        if trace["provider"] == "playnite":
+            if not self._transport_observed:
+                return
+            if self.connected:
+                expected = (str(trace["playnite_guid"]), int(trace["process_id"]))
+                if self._native_reconciliation_confirmation != expected:
+                    return
+        game = candidates[0]
+        self.current = {
+            "state": "running", "id": str(game["id"]),
+            "title": str(game.get("name") or ""),
+            "installDir": str(game.get("installDir") or game.get("install_dir") or ""),
+            "exe": str(game.get("exe") or game.get("executable") or ""),
+            "source": str(game.get("libraryName") or game.get("source") or ""),
+            "provider": str(game.get("provider") or ""),
+            "providerGameId": str(game.get("providerGameId") or ""),
+            "playniteGameId": str(game.get("playniteGameId") or ""),
+            "processId": int(trace["process_id"]),
+            "processPath": str(trace["process_path"]),
+            "processStartedFiletime": int(trace["process_started_filetime"]),
+            "reconciled": True,
+        }
+        self.readiness = {
+            "ready": False, "reason": "waiting_for_game_window",
+            "target_kind": "game", "game_id": str(game["id"]),
+            "stable_samples": 0,
+        }
+        self._last_window_signature = None
+        self._publish_locked("game-reconciled", dict(self.current))
+
+    def _save_active_game_trace_locked(self) -> None:
+        if self.active_game_path is None \
+                or str(self.current.get("state") or "").casefold() != "running" \
+                or self._process_identity_action is None \
+                or self._process_identities_action is None:
+            return
+        game = self.library.get(str(self.current.get("id") or ""))
+        process_id = int(self.current.get("processId") or
+                         self.current.get("process_id") or 0)
+        if game is None or process_id <= 0:
+            return
+        identity = self._process_identity_action(process_id)
+        if identity is None:
+            return
+        process_path = self._normalized_process_path(identity.get("process_path"))
+        process_started = int(identity.get("process_started_filetime") or 0)
+        observed = self._process_identities_action(process_path)
+        if observed is None:
+            return
+        matches = [item for item in observed
+                   if self._normalized_process_path(item.get("process_path")) == process_path]
+        playnite_guid = str(game.get("playniteGameId") or "").casefold()
+        payload = {
+            "version": 1,
+            "game_id": str(game.get("id") or ""),
+            "provider": str(game.get("provider") or "").casefold(),
+            "provider_game_id": str(game.get("providerGameId") or ""),
+            "playnite_guid": playnite_guid,
+            "process_id": process_id,
+            "process_path": process_path,
+            "process_started_filetime": process_started,
+        }
+        if not process_path or process_started <= 0 or len(matches) != 1 \
+                or int(matches[0].get("process_id") or 0) != process_id \
+                or int(matches[0].get("process_started_filetime") or 0) != process_started \
+                or not payload["provider_game_id"] \
+                or payload["provider"] not in {"steam", "epic", "playnite"} \
+                or payload["provider"] == "playnite" \
+                and not PLAYNITE_ID_PATTERN.fullmatch(playnite_guid) \
+                or not self._trace_path_matches_game(payload, game):
+            return
+        self.current["processPath"] = process_path
+        self.current["processStartedFiletime"] = process_started
+        temporary = self.active_game_path.with_name(self.active_game_path.name + ".tmp")
+        try:
+            self.active_game_path.parent.mkdir(parents=True, exist_ok=True)
+            with temporary.open("w", encoding="utf-8", newline="") as output:
+                json.dump(payload, output, ensure_ascii=False, separators=(",", ":"))
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.active_game_path)
+            self._active_game_trace = payload
+        except OSError as error:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            print(json.dumps({
+                "event": "active_game_trace_warning",
+                "operation": "save",
+                "error": type(error).__name__,
+            }, separators=(",", ":")), flush=True)
 
     def _save_library_cache_locked(self) -> None:
         if self.cache_path is None:
@@ -1420,6 +1820,7 @@ class BridgeState:
             self._apply_installation_fields_locked(game_id, game)
         self._advance_library_revision_locked()
         self._save_library_cache_locked()
+        self._attempt_active_game_reconciliation_locked()
         self._publish_locked("library-updated", {
             "count": len(self.library), "revision": self.library_revision})
 
@@ -1449,6 +1850,7 @@ class BridgeState:
                     self._apply_installation_fields_locked(game_id, game)
                 self._advance_library_revision_locked()
                 self._save_library_cache_locked()
+                self._attempt_active_game_reconciliation_locked()
                 self._publish_locked("library-updated", {
                     "count": len(self.library), "revision": self.library_revision})
             finally:
@@ -1462,6 +1864,7 @@ class BridgeState:
                       error: str = "") -> None:
         with self.lock:
             changed = self.connected != connected
+            self._transport_observed = True
             self.connected = connected
             self.command_sender = sender
             self.last_error = error[:500]
@@ -1471,6 +1874,7 @@ class BridgeState:
             }
             if changed:
                 self._publish_locked("bridge-connected" if connected else "bridge-disconnected", {})
+            self._attempt_active_game_reconciliation_locked()
 
     def _publish_locked(self, name: str, payload: dict[str, Any]) -> None:
         event = {
@@ -1621,6 +2025,7 @@ class BridgeState:
                 status = dict(message["status"])
                 name = str(status.pop("name", ""))
                 game_id = ""
+                playnite_id = ""
                 try:
                     playnite_id = str(status.get("id") or "").strip().lower()
                     if not PLAYNITE_ID_PATTERN.fullmatch(playnite_id):
@@ -1639,11 +2044,44 @@ class BridgeState:
                             in {self.game_operations.steam, self.game_operations.epic}) \
                     or self.game_operations._playnite_source(metadata or {}).casefold() \
                     in {"steam", "epic"}
-                if name in {"gameStarted", "gameStopped"} and advisory:
+                current_state = str(self.current.get("state") or "").casefold()
+                trace = self._active_game_trace or {}
+                reconciliation_status = False
+                if name in {"gameStarted", "gameStopped"} \
+                        and current_state in {"reconciling", "ambiguous"} \
+                        and str(trace.get("provider") or "") == "playnite":
+                    reconciliation_status = True
+                    expected_guid = str(trace.get("playnite_guid") or "")
+                    expected_pid = int(trace.get("process_id") or 0)
+                    observed_pid = int(status.get("processId") or
+                                       status.get("process_id") or 0)
+                    if current_state == "reconciling" and name == "gameStarted":
+                        if playnite_id == expected_guid and observed_pid == expected_pid:
+                            self._native_reconciliation_confirmation = (
+                                playnite_id, observed_pid)
+                            self._attempt_active_game_reconciliation_locked()
+                        else:
+                            self._mark_reconciliation_ambiguous_locked(
+                                "active_game_connector_mismatch")
+                    elif current_state == "reconciling" and name == "gameStopped" \
+                            and playnite_id == expected_guid \
+                            and observed_pid == expected_pid:
+                        self._clear_reconciliation_locked(
+                            "active_game_connector_stopped")
+                    self._publish_locked("playnite-status", {"name": name, **status})
+                active_id = str(self.current.get("id") or "")
+                active_state = str(self.current.get("state") or "").casefold()
+                if reconciliation_status:
+                    pass
+                elif name in {"gameStarted", "gameStopped"} and advisory:
                     self._publish_locked("playnite-status", {"name": name, **status})
                 elif name == "gameStarted":
-                    if str(self.current.get("state") or "").casefold() == "stopping" \
-                            and str(self.current.get("id") or "") == game_id:
+                    if not game_id:
+                        self._publish_locked("playnite-status", {"name": name, **status})
+                    elif active_state in {"starting", "running", "stopping"} \
+                            and active_id and active_id != game_id:
+                        self._publish_locked("playnite-status", {"name": name, **status})
+                    elif active_state == "stopping" and active_id == game_id:
                         self.current.update(status)
                         self.current["state"] = "stopping"
                         process_id = int(status.get("processId") or
@@ -1667,9 +2105,13 @@ class BridgeState:
                             "stable_samples": 0,
                         }
                         self._last_window_signature = None
+                        self._save_active_game_trace_locked()
                         self._publish_locked("game-running", dict(self.current))
-                elif name == "gameStopped":
+                elif name == "gameStopped" and game_id and active_id == game_id \
+                        and active_state in {"starting", "running", "stopping"}:
                     self._complete_game_stop_locked()
+                elif name == "gameStopped":
+                    self._publish_locked("playnite-status", {"name": name, **status})
                 elif name in {"gameInstalled", "gameInstallationCancelled"}:
                     game = self.library.get(game_id)
                     title = str((game or {}).get("name") or status.get("title") or "")
@@ -1842,6 +2284,13 @@ class BridgeState:
                 raise FileNotFoundError("Game record was not found.")
             current_id = str(self.current.get("id") or "")
             current_state = str(self.current.get("state") or "").casefold()
+            if current_state in {"reconciling", "ambiguous"}:
+                return {
+                    "accepted": False,
+                    "command": "launch",
+                    "reason": "game_identity_" + current_state,
+                    "active_game_id": current_id,
+                }
             if current_id and current_state in {"starting", "running", "stopping"}:
                 if current_state == "stopping":
                     return {
@@ -1864,6 +2313,9 @@ class BridgeState:
                     "active_game_id": current_id,
                 }
             provider = self.game_operations.provider_for(game)
+            self._active_game_trace = None
+            self._native_reconciliation_confirmation = None
+            self._remove_active_game_trace()
             baseline_action = self.installation_baseline_action
             previous_current = dict(self.current)
             previous_readiness = dict(self.readiness)
@@ -2779,6 +3231,9 @@ class BridgeState:
         task_id = previous.get("launchTaskId")
         if task_id:
             self.game_operations.finish_process(task_id)
+        self._active_game_trace = None
+        self._native_reconciliation_confirmation = None
+        self._remove_active_game_trace()
         self.current = {"state": "idle"}
         self.readiness = {
             "ready": False,
@@ -2817,6 +3272,11 @@ class BridgeState:
         with self.events_changed:
             current_id = str(self.current.get("id", ""))
             current_state = str(self.current.get("state") or "").casefold()
+            if current_state in {"reconciling", "ambiguous"}:
+                return {
+                    "accepted": False, "command": "stop", "force": False,
+                    "reason": "game_identity_" + current_state,
+                }
             if current_state == "idle":
                 return {"accepted": True, "command": "stop", "force": False,
                         "already_stopped": True}
@@ -2853,6 +3313,12 @@ class BridgeState:
                             "reason": "game_stop_close_rejected"}
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    process_id = int(self.current.get("processId") or
+                                     self.current.get("process_id") or 0)
+                    if process_id <= 0:
+                        self._complete_game_stop_locked()
+                        return {"accepted": True, "command": "stop", "force": False,
+                                "already_stopped": True}
                     return {"accepted": False, "command": "stop", "force": False,
                             "reason": "game_stop_timeout"}
                 self.events_changed.wait(remaining)
@@ -2901,6 +3367,15 @@ class BridgeState:
             sample_reason = str(sample.get("reason") or "")
             target_kind = str(self.readiness.get("target_kind") or "").casefold()
             current_state = str(self.current.get("state") or "").casefold()
+            if current_state in {"reconciling", "ambiguous"}:
+                self.readiness.update({
+                    "ready": False,
+                    "reason": str(self.current.get("reason") or
+                                  "active_game_verification_pending"),
+                    "stable_samples": 0,
+                })
+                self._last_window_signature = None
+                return
             observed_game_id = str(sample.get("observed_game_id") or "")
             if target_kind == "game" and observed_game_id and \
                     observed_game_id != str(self.current.get("id") or ""):
@@ -2958,6 +3433,14 @@ class BridgeState:
                             "reason": "game_stop_close_rejected",
                         })
                 return
+            if target_kind == "game" and current_state == "running" \
+                    and sample.get("replacement_process") \
+                    and int(sample.get("process_id") or 0) > 0:
+                self.current.update({
+                    "processId": int(sample["process_id"]),
+                    "processPath": str(sample.get("process_path") or ""),
+                })
+                self._save_active_game_trace_locked()
             launcher_signature = None
             if sample.get("launcher_candidate"):
                 launcher_signature = (
@@ -3046,10 +3529,12 @@ class BridgeState:
                 self.current.update({
                     "state": "running",
                     "processId": int(sample["process_id"]),
+                    "processPath": str(sample.get("process_path") or ""),
                 })
                 launch_task_id = self.current.pop("launchTaskId", None)
                 if launch_task_id:
                     self.game_operations.finish_process(launch_task_id)
+                self._save_active_game_trace_locked()
                 self._publish_locked("game-running", dict(self.current))
             previous_ready = bool(self.readiness.get("ready"))
             if not sample.get("qualified"):
@@ -3201,6 +3686,8 @@ class WindowReadinessWorker:
         self.display_resolver = display_resolver
 
     def run(self) -> None:
+        last_provider_probe_key = ""
+        last_provider_probe_at = 0.0
         while True:
             resolved_display = self.display_resolver.resolve()
             if resolved_display:
@@ -3219,9 +3706,22 @@ class WindowReadinessWorker:
                     self.state._launcher_interaction_required
                 launcher_postcondition_failed = \
                     self.state._launcher_postcondition_failed_locked()
+                launch_requested_at = float(current.get("launchRequestedAt") or 0.0)
             target_kind = str(readiness.get("target_kind", "playnite"))
             launch_in_progress = target_kind == "game" and \
                 str(current.get("state") or "").casefold() == "starting"
+            probe_now = self.state.clock()
+            provider_probe_key = "%s:%s" % (
+                str(current.get("id") or ""), launch_requested_at)
+            probe_provider_launcher = launch_in_progress and not int(
+                current.get("processId") or current.get("process_id") or 0) and \
+                not launcher_interaction_required and launch_requested_at > 0 and \
+                probe_now - launch_requested_at >= PROVIDER_LAUNCHER_PROBE_DELAY and \
+                (provider_probe_key != last_provider_probe_key or
+                 probe_now - last_provider_probe_at >= LAUNCHER_POSTCONDITION_TIMEOUT)
+            if probe_provider_launcher:
+                last_provider_probe_key = provider_probe_key
+                last_provider_probe_at = probe_now
             launch_task_id = str(current.get("launchTaskId") or "")
             if target_kind == "game" and launch_task_id \
                     and str(current.get("state") or "").casefold() == "starting":
@@ -3246,6 +3746,7 @@ class WindowReadinessWorker:
                 current.get("installDir") or current.get("install_dir") or "")
             expected_executable = str(
                 current.get("exe") or current.get("executable") or "")
+            tracked_process_path = str(current.get("processPath") or "")
             expected_title = str(current.get("title") or
                                  launch_game.get("name") or "")
             expected_launcher_images = self.state.game_operations.expected_launcher_images(
@@ -3264,7 +3765,8 @@ class WindowReadinessWorker:
                         launcher_interaction_required or launcher_postcondition_failed),
                     expected_executable, expected_title,
                     expected_launcher_images,
-                    launch_in_progress and launcher_attempted)
+                    launch_in_progress and launcher_attempted,
+                    probe_provider_launcher, tracked_process_path)
                 if target_kind == "game":
                     sample["observed_game_id"] = str(current.get("id") or "")
                 self.state.apply_window_sample(sample)
@@ -3636,11 +4138,14 @@ def main() -> None:
     audit_path = config_path.with_name("playnite-operation-audit.jsonl")
     state = BridgeState(expected_display, config_path.with_name("library-cache.json"),
                         config_path.parent.parent / "moonwaker-version.json",
+                        active_game_path=config_path.with_name("active-game.json"),
                         game_operations=game_operations,
                         operation_audit=lambda event, payload: append_operation_audit(
                             audit_path, event, payload),
                         profile_id=profile_root.name)
     window_probe = WindowProbe(game_operations)
+    state.set_reconciliation_actions(
+        window_probe.process_identity, window_probe.process_identities)
     steam_provider.big_picture_preflight = lambda provider: \
         window_probe.ensure_steam_big_picture(provider, state.expected_display)
     ensure_playnite_desktop(str(config.get("playnite_desktop_executable", "")).strip())

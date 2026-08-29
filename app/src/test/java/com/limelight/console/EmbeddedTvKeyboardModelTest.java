@@ -20,7 +20,7 @@ public class EmbeddedTvKeyboardModelTest {
         assertEquals("space", keyboard.selectedId());
     }
 
-    @Test public void horizontalNavigationStaysOnTheLetterRowAndBottomLettersPreferSpace() {
+    @Test public void horizontalNavigationStaysOnTheLetterRowAndDownUsesNearestBottomKey() {
         EmbeddedTvKeyboardModel keyboard = new EmbeddedTvKeyboardModel();
         keyboard.select("text.b");
         assertTrue(keyboard.move(KeyEvent.KEYCODE_DPAD_RIGHT));
@@ -28,12 +28,18 @@ public class EmbeddedTvKeyboardModelTest {
         assertTrue(keyboard.move(KeyEvent.KEYCODE_DPAD_LEFT));
         assertEquals("text.b", keyboard.selectedId());
 
+        keyboard.select("text.z");
+        assertTrue(keyboard.move(KeyEvent.KEYCODE_DPAD_DOWN));
+        assertEquals("symbols", keyboard.selectedId());
+        keyboard.select("text.c");
+        assertTrue(keyboard.move(KeyEvent.KEYCODE_DPAD_DOWN));
+        assertEquals("microphone", keyboard.selectedId());
         keyboard.select("text.m");
         assertTrue(keyboard.move(KeyEvent.KEYCODE_DPAD_DOWN));
-        assertEquals("space", keyboard.selectedId());
+        assertEquals("send", keyboard.selectedId());
         keyboard.select("text.!");
         assertTrue(keyboard.move(KeyEvent.KEYCODE_DPAD_DOWN));
-        assertEquals("space", keyboard.selectedId());
+        assertEquals("send", keyboard.selectedId());
     }
 
     @Test public void alphabetKeepsBasicPunctuationOnThePrimaryPageWithoutOverlappingKeys() {
@@ -80,13 +86,9 @@ public class EmbeddedTvKeyboardModelTest {
         assertEquals(EmbeddedTvKeyboardModel.Shift.CAPS, keyboard.shift());
     }
 
-    @Test public void polishAndSymbolPagesAreDirectlyReachableAndResetShiftSafely() {
+    @Test public void polishPageButtonIsRemovedButSymbolPageRemainsReachable() {
         EmbeddedTvKeyboardModel keyboard = new EmbeddedTvKeyboardModel();
-        keyboard.select("polish");
-        keyboard.activateSelected();
-        assertEquals(EmbeddedTvKeyboardModel.Page.POLISH, keyboard.page());
-        keyboard.select("text.ą");
-        assertEquals("ą", keyboard.activateSelected().text);
+        assertFalse(hasKey(keyboard, "polish"));
 
         keyboard.select("symbols");
         keyboard.activateSelected();
@@ -216,7 +218,7 @@ public class EmbeddedTvKeyboardModelTest {
 
     @Test public void resetRestoresTheSafeAlphabetInitialSelection() {
         EmbeddedTvKeyboardModel keyboard = new EmbeddedTvKeyboardModel();
-        keyboard.select("polish");
+        keyboard.select("symbols");
         keyboard.activateSelected();
         keyboard.reset();
 
@@ -250,5 +252,10 @@ public class EmbeddedTvKeyboardModelTest {
     private static EmbeddedTvKeyboardModel.Key find(EmbeddedTvKeyboardModel keyboard, String id) {
         for (EmbeddedTvKeyboardModel.Key key : keyboard.keys()) if (id.equals(key.id)) return key;
         throw new AssertionError("missing key " + id);
+    }
+
+    private static boolean hasKey(EmbeddedTvKeyboardModel keyboard, String id) {
+        for (EmbeddedTvKeyboardModel.Key key : keyboard.keys()) if (id.equals(key.id)) return true;
+        return false;
     }
 }

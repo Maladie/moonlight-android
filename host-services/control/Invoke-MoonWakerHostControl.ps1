@@ -73,6 +73,43 @@ function Test-TcpPort([string]$HostName, [int]$Port) {
     } catch { return $false } finally { $client.Dispose() }
 }
 
+function Get-ListeningProcessIds([int]$Port) {
+    $values = @(Get-NetTCPConnection -State Listen -LocalPort $Port `
+        -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique)
+    if ($values.Count -gt 0) { return $values }
+    $pattern = "^\s*TCP\s+\S+:$Port\s+\S+\s+LISTENING\s+(\d+)\s*$"
+    return @(& netstat.exe -ano -p TCP | ForEach-Object {
+        if ($_ -match $pattern) { [int]$matches[1] }
+    } | Sort-Object -Unique)
+}
+
+function Wait-GatewayState([bool]$Running, [int]$TimeoutSeconds = 20,
+        [string]$Directory = "") {
+    $directory = if ([string]::IsNullOrWhiteSpace($Directory)) {
+        Get-GatewayDirectory
+    } else { [IO.Path]::GetFullPath($Directory) }
+    $port = 8785
+    try { $port = [int](Get-Content -LiteralPath (Join-Path $directory "gateway.json") -Raw |
+        ConvertFrom-Json).listen_port } catch {}
+    $expected = Get-MoonWakerVersion
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $listening = Test-TcpPort "127.0.0.1" $port
+        if (-not $Running -and -not $listening) { return $true }
+        if ($Running -and $listening) {
+            try {
+                $runtime = Get-Content -LiteralPath (Join-Path $directory "gateway-runtime.json") -Raw |
+                    ConvertFrom-Json
+                $process = Get-Process -Id ([int]$runtime.pid) -ErrorAction SilentlyContinue
+                if ($process -and [string]$runtime.version -eq [string]$expected.version -and
+                    [string]$runtime.build -eq [string]$expected.build) { return $true }
+            } catch {}
+        }
+        Start-Sleep -Milliseconds 200
+    }
+    return $false
+}
+
 function Test-HttpHealth([string]$Endpoint) {
     if ([string]::IsNullOrWhiteSpace($Endpoint)) { return "disabled" }
     try {
@@ -265,8 +302,7 @@ function Get-Status {
                 name = if ($entry.PSObject.Properties["name"]) { [string]$entry.name } else { $id }
                 owner = if ($entry.PSObject.Properties["owner"]) { [string]$entry.owner } else { "" }
                 profile_root = $root
-                current_user = -not [string]::IsNullOrWhiteSpace($root) -and
-                    $root.StartsWith((Join-Path (Get-InstallRoot) "profiles"), [StringComparison]::OrdinalIgnoreCase)
+                current_user = Test-CurrentProfileOwner $entry
                 supervisor = Get-SupervisorStatus $root
                 supervisor_pid = Get-ProfileProcessId $root "supervisor"
                 discord = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth ([string]$entry.discord_bridge) }
@@ -318,17 +354,25 @@ function Start-Gateway {
     $script = Join-Path $directory "Start-MoonWakerGateway.ps1"
     if (-not (Test-Path -LiteralPath $script)) { throw "Gateway is not installed." }
     & $script -GatewayDirectory $directory
+    if (-not (Wait-GatewayState -Running $true -Directory $directory)) {
+        throw "Gateway did not start with the installed MoonWaker version."
+    }
 }
 
 function Stop-Gateway {
     $directory = Get-GatewayDirectory
     $stopScript = Join-Path $directory "Stop-MoonWakerGateway.ps1"
-    if (Test-Path -LiteralPath $stopScript) { & $stopScript -GatewayDirectory $directory; return }
+    if (Test-Path -LiteralPath $stopScript) {
+        & $stopScript -GatewayDirectory $directory
+        if (-not (Wait-GatewayState -Running $false -Directory $directory)) {
+            throw "Gateway did not stop."
+        }
+        return
+    }
     $configPath = Join-Path $directory "gateway.json"
     $port = 8785
     try { $port = [int](Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json).listen_port } catch {}
-    $owners = Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
-        Select-Object -ExpandProperty OwningProcess -Unique
+    $owners = @(Get-ListeningProcessIds $port)
     foreach ($ownerPid in $owners) {
         $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
         if ($process -and [string]$process.CommandLine -like "*wakeplay_gateway.py*" -and
@@ -336,21 +380,41 @@ function Stop-Gateway {
             Stop-Process -Id $ownerPid -Force -ErrorAction Stop
         }
     }
+    if (-not (Wait-GatewayState -Running $false -Directory $directory)) {
+        throw "Gateway did not stop."
+    }
+}
+
+function Wait-ProfileState([string]$Id, [bool]$Running, [int]$TimeoutSeconds = 20) {
+    $profile = Resolve-Profile $Id
+    $deadline = [DateTime]::UtcNow.AddSeconds($TimeoutSeconds)
+    while ([DateTime]::UtcNow -lt $deadline) {
+        $state = Get-SupervisorStatus $profile.root
+        if ($Running -and $state -eq "running") { return $true }
+        if (-not $Running -and $state -in @("stopped", "manually_stopped")) { return $true }
+        Start-Sleep -Milliseconds 200
+    }
+    return $false
+}
+
+function Restart-Profile([string]$Id) {
+    Invoke-ProfileControl $Id "stop"
+    if (-not (Wait-ProfileState $Id $false)) { throw "Profile '$Id' did not stop." }
+    Invoke-ProfileControl $Id "start"
+    if (-not (Wait-ProfileState $Id $true)) { throw "Profile '$Id' did not start." }
 }
 
 function Recover-All {
     Stop-Gateway
-    Start-Sleep -Milliseconds 500
     Start-Gateway
     $status = Get-Status
+    $failures = @()
     foreach ($profile in @($status.profiles)) {
-        if ($profile.supervisor -ne "unavailable") {
-            try {
-                Invoke-ProfileControl ([string]$profile.id) "stop"
-                Start-Sleep -Milliseconds 250
-                Invoke-ProfileControl ([string]$profile.id) "start"
-            } catch {}
-        }
+        if (-not $profile.current_user -or $profile.supervisor -eq "unavailable") { continue }
+        try { Restart-Profile ([string]$profile.id) } catch { $failures += $_.Exception.Message }
+    }
+    if ($failures.Count) {
+        throw "Gateway was repaired, but profile repair failed: $($failures -join '; ')"
     }
 }
 
@@ -586,11 +650,19 @@ try {
         "Status" { Get-Status }
         "StartGateway" { Start-Gateway; [ordered]@{ ok = $true } }
         "StopGateway" { Stop-Gateway; [ordered]@{ ok = $true } }
-        "RestartGateway" { Stop-Gateway; Start-Sleep -Milliseconds 500; Start-Gateway; [ordered]@{ ok = $true } }
+        "RestartGateway" { Stop-Gateway; Start-Gateway; [ordered]@{ ok = $true } }
         "PairGateway" { [ordered]@{ ok = $true; pairing_code = Set-PairingCode; expires_minutes = 10 } }
-        "StartProfile" { Invoke-ProfileControl $ProfileId "start"; [ordered]@{ ok = $true } }
-        "StopProfile" { Invoke-ProfileControl $ProfileId "stop"; [ordered]@{ ok = $true } }
-        "RestartProfile" { Invoke-ProfileControl $ProfileId "stop"; Start-Sleep -Milliseconds 500; Invoke-ProfileControl $ProfileId "start"; [ordered]@{ ok = $true } }
+        "StartProfile" {
+            Invoke-ProfileControl $ProfileId "start"
+            if (-not (Wait-ProfileState $ProfileId $true)) { throw "Profile '$ProfileId' did not start." }
+            [ordered]@{ ok = $true }
+        }
+        "StopProfile" {
+            Invoke-ProfileControl $ProfileId "stop"
+            if (-not (Wait-ProfileState $ProfileId $false)) { throw "Profile '$ProfileId' did not stop." }
+            [ordered]@{ ok = $true }
+        }
+        "RestartProfile" { Restart-Profile $ProfileId; [ordered]@{ ok = $true } }
         "RecoverAll" { Recover-All; [ordered]@{ ok = $true } }
         "ConfigureSteamWebApi" { Set-SteamWebApiKey -Id $ProfileId `
             -FromStdin:$SteamWebApiKeyFromStdin `

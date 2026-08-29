@@ -22,6 +22,26 @@ final class PlayniteLibrarySources {
         return value.isEmpty() ? "Playnite" : value;
     }
 
+    static int badgeColor(String source) {
+        switch (key(source)) {
+            case "steam": return 0xFF1B5A7A;
+            case "epic":
+            case "epic games": return 0xFF3C3C3C;
+            case "gog":
+            case "gog.com": return 0xFF7B2D8E;
+            case "xbox":
+            case "microsoft store": return 0xFF107C10;
+            case "ea":
+            case "origin": return 0xFFD63C48;
+            case "ubisoft":
+            case "uplay": return 0xFF006EF5;
+            case "amazon":
+            case "amazon games": return 0xFF008DBA;
+            case PLAYNITE_KEY: return 0xFF238BC1;
+            default: return 0xFF53636F;
+        }
+    }
+
     static Map<String, String> available(List<PlayniteLibraryGame> games, Locale locale) {
         Map<String, String> labels = new LinkedHashMap<>();
         for (PlayniteLibraryGame game : games) {

@@ -534,7 +534,9 @@ namespace MoonWaker.HostInstaller
                         !File.Exists(Path.Combine(directory, "control", "MoonWakerHostControl.exe"))) return true;
                 if (!File.Exists(Path.Combine(directory, "tools", "legendary", "legendary.exe"))) return true;
                 return !String.Equals(ReadInstalledVersion(directory), payloadVersion,
-                    StringComparison.OrdinalIgnoreCase);
+                           StringComparison.OrdinalIgnoreCase) ||
+                    !String.Equals(ReadInstalledVersion(Path.Combine(directory, "gateway")), payloadVersion,
+                        StringComparison.OrdinalIgnoreCase);
             }
             catch { return true; }
         }
