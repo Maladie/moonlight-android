@@ -4,8 +4,9 @@ import android.os.Handler;
 
 /** Coordinates library presentation so stale delayed stages cannot update a newer selection. */
 final class ConsoleLibraryTransitionCoordinator {
-    private static final long METADATA_DELAY_MS = 120L;
-    private static final long DESCRIPTION_DELAY_MS = 230L;
+    private static final long ARTWORK_DELAY_MS = 120L;
+    private static final long METADATA_DELAY_MS = 220L;
+    private static final long DESCRIPTION_DELAY_MS = 380L;
 
     interface Scheduler {
         void postDelayed(Runnable action, long delayMs);
@@ -41,7 +42,7 @@ final class ConsoleLibraryTransitionCoordinator {
         int token = ++generation;
         selectedGameId = normalizedGameId;
         selectionPresentationActive = true;
-        artwork.run();
+        post(token, reducedMotion ? 0L : ARTWORK_DELAY_MS, artwork);
         post(token, reducedMotion ? 0L : METADATA_DELAY_MS, metadata);
         post(token, reducedMotion ? 0L : DESCRIPTION_DELAY_MS, description);
         return token;

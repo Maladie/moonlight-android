@@ -461,7 +461,8 @@ public class NvHTTP {
             resp.close();
 
             if (verbose && !path.equals("serverinfo")) {
-                LimeLog.info(getCompleteUrl(baseUrl, path, query)+" -> "+respString);
+                LimeLog.info(getCompleteUrl(baseUrl, path, query)+" -> "+
+                        (path.equals("applist") ? respString.length()+" bytes" : respString));
             }
 
             return respString;

@@ -22,7 +22,7 @@ public class ConsoleLibraryTransitionCoordinatorTest {
                 () -> events.add("second-meta"), () -> events.add("second-description"));
         scheduler.runAll();
 
-        assertEquals(Arrays.asList("first-art", "second-art", "second-meta", "second-description"),
+        assertEquals(Arrays.asList("second-art", "second-meta", "second-description"),
                 events);
     }
 
@@ -38,7 +38,7 @@ public class ConsoleLibraryTransitionCoordinatorTest {
         scheduler.runAll();
 
         assertEquals(Arrays.asList("art", "meta", "description"), events);
-        assertEquals(Arrays.asList(0L, 0L), scheduler.delays);
+        assertEquals(Arrays.asList(0L, 0L, 0L), scheduler.delays);
     }
 
     @Test

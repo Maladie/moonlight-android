@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <item name="playnite_artwork_key" type="id" />
+    <item name="carousel_marquee_start" type="id" />
 </resources>

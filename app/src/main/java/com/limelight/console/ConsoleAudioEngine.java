@@ -29,7 +29,7 @@ final class ConsoleAudioEngine {
     private static final float DEFAULT_HOST_SELECTION_VOLUME = 0.30f;
     private static final float DEFAULT_MENU_VOLUME = 0.16f;
     private static final float DEFAULT_EFFECTS_VOLUME = 0.40f;
-    private static final long NAVIGATION_THROTTLE_MS = 48L;
+    private static final long NAVIGATION_THROTTLE_MS = 90L;
     private static final int FADE_STEPS = 18;
     private static final long FADE_STEP_MS = 35L;
 
