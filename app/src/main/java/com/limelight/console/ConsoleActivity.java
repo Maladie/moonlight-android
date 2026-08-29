@@ -188,9 +188,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final int EXPANDED_WINDOW_WARMUP_ROWS = 1;
     private static final long EXPANDED_WINDOW_WARMUP_DELAY_MS = 150L;
     private static final long EXPANDED_FOCUS_TRANSITION_TIMEOUT_MS = 300L;
-    private static final long ARTWORK_FOCUS_SETTLE_MS = 260L;
+    private static final long ARTWORK_FOCUS_SETTLE_MS = 350L;
+    private static final long CAROUSEL_MARQUEE_SETTLE_MS = 320L;
     private static final long ARTWORK_CROSSFADE_MS = 480L;
     private static final long PLAYNITE_SELECTION_SAVE_DELAY_MS = 350L;
+    private static final long LIBRARY_UPDATE_NAVIGATION_IDLE_MS = 180L;
     private static final String PREF_SCREEN_SAVER_SECONDS = "screen_saver_seconds";
     private static final String PREF_SCREEN_SAVER_MINUTES_LEGACY = "screen_saver_minutes";
     private static final int SCREEN_SAVER_NEVER = 0;
@@ -206,6 +208,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final AtomicInteger artworkGeneration = new AtomicInteger();
     private final AtomicInteger discordStatusGeneration = new AtomicInteger();
     private final AtomicInteger playniteGeneration = new AtomicInteger();
+    private final AtomicInteger appListRenderGeneration = new AtomicInteger();
     private final AtomicInteger playniteArtworkGeneration = new AtomicInteger();
     private final SessionStateResolver sessionStateResolver = new SessionStateResolver();
     private final Map<String, ComputerDetails> hosts = new LinkedHashMap<>();
@@ -370,6 +373,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private List<PlayniteDashboardItem> renderedExpandedItems = Collections.emptyList();
     private int renderedExpandedWindowStartRow = -1;
     private long lastExpandedGridNavigationAt;
+    private long lastDirectionalNavigationAt;
     private ValueAnimator expandedGridScrollAnimator;
     private TextView quickResumeButton;
     private LinearLayout quickActions;
@@ -456,12 +460,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final ViewTreeObserver.OnGlobalFocusChangeListener consoleFocusSoundListener =
             (oldFocus, newFocus) -> {
                 if (newFocus != null) newFocus.setSoundEffectsEnabled(false);
-                if (newFocus != null && newFocus.getTag() instanceof String) {
-                    android.util.Log.d("MoonWakerFocus",
-                            "focus=" + newFocus.getTag()
-                                    + " expanded=" + expandedLibraryMode
-                                    + " transitioning=" + expandedFocusTransitionInProgress);
-                }
                 if (newFocus != null && oldFocus != null
                         && SystemClock.uptimeMillis() - lastDirectionalAudioInputAt < 320L
                         && consoleAudioEngine != null) {
@@ -997,6 +995,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return true;
             }
             if (event.getAction() == KeyEvent.ACTION_DOWN) resetScreenSaverTimer();
+            if (event.getAction() == KeyEvent.ACTION_DOWN
+                    && isDirectionalNavigationKey(event.getKeyCode())) {
+                lastDirectionalNavigationAt = event.getEventTime();
+            }
         }
         if (discordDmShortcut != null && discordDmShortcut.handle(event)) return true;
         if (libraryTransitionRunning && event != null
@@ -4222,9 +4224,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void renderAppsAsync(ComputerDetails host, boolean focusApps) {
         String uuid = host.uuid;
+        int generation = appListRenderGeneration.incrementAndGet();
         executor.execute(() -> {
             List<NvApp> apps = loadApps(host);
-            mainHandler.post(() -> {
+            mainHandler.post(() -> runLibraryUpdateWhenNavigationIdle(() -> {
+                if (generation != appListRenderGeneration.get()) return;
                 if (!uuid.equals(selectedHostUuid)) return;
                 ComputerDetails latestHost = currentHost(uuid);
                 if (latestHost == null) return;
@@ -4239,8 +4243,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     renderApps(latestHost, apps);
                 }
                 if (!playniteAvailable) requestPendingInitialGameFocus(latestHost);
-            });
+            }));
         });
+    }
+
+    private void runLibraryUpdateWhenNavigationIdle(Runnable update) {
+        long delay = LIBRARY_UPDATE_NAVIGATION_IDLE_MS
+                - (SystemClock.uptimeMillis() - lastDirectionalNavigationAt);
+        if (delay > 0L) mainHandler.postDelayed(
+                () -> runLibraryUpdateWhenNavigationIdle(update), delay);
+        else update.run();
     }
 
     private List<NvApp> loadApps(ComputerDetails host) {
@@ -5791,7 +5803,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     || (playnitePayload(previousItem, item) & PlayniteLibraryDiff.ARTWORK) != 0;
             if (card == null) {
                 card = playniteCard(host, item, currentSunshineApps, true);
-            } else {
+            } else if (!item.equals(previousItem)
+                    || sessionPresentationChanged
+                    || isVibepolloEnsureInFlight(host.uuid, item)
+                    || isPlayniteInstalling(host.uuid, item)) {
                 int payload = previousItem == null ? PlayniteLibraryDiff.TEXT
                         | PlayniteLibraryDiff.ARTWORK | PlayniteLibraryDiff.LAUNCH
                         : playnitePayload(previousItem, item);
@@ -8104,12 +8119,25 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void updateCarouselMarquee(TextView title, boolean focused) {
         if (!CONSOLE_UI_V2 || title == null) return;
+        Object pending = title.getTag(R.id.carousel_marquee_start);
+        if (pending instanceof Runnable) title.removeCallbacks((Runnable) pending);
         title.setSingleLine(true);
-        title.setHorizontallyScrolling(focused);
-        title.setEllipsize(focused
-                ? TextUtils.TruncateAt.MARQUEE : TextUtils.TruncateAt.END);
-        title.setMarqueeRepeatLimit(focused ? -1 : 0);
-        title.setSelected(focused);
+        title.setHorizontallyScrolling(false);
+        title.setEllipsize(TextUtils.TruncateAt.END);
+        title.setMarqueeRepeatLimit(0);
+        title.setSelected(false);
+        title.setTag(R.id.carousel_marquee_start, null);
+        if (!focused) return;
+        Runnable start = () -> {
+            title.setTag(R.id.carousel_marquee_start, null);
+            if (!title.isAttachedToWindow() || !cardParentHasFocus(title)) return;
+            title.setHorizontallyScrolling(true);
+            title.setEllipsize(TextUtils.TruncateAt.MARQUEE);
+            title.setMarqueeRepeatLimit(1);
+            title.setSelected(true);
+        };
+        title.setTag(R.id.carousel_marquee_start, start);
+        title.postDelayed(start, reducedMotion ? 0L : CAROUSEL_MARQUEE_SETTLE_MS);
     }
 
     private boolean isQuickLaunch(String hostUuid, int appId) {
