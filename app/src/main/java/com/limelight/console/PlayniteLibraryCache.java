@@ -17,9 +17,13 @@ import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 /** Last-known-good Playnite library, isolated by Moonlight host UUID. */
 final class PlayniteLibraryCache {
+    private static final Map<String, Entry> MEMORY = new ConcurrentHashMap<>();
+
     static final class Entry {
         final List<PlayniteLibraryGame> games;
         final long savedAt;
@@ -42,6 +46,8 @@ final class PlayniteLibraryCache {
     }
 
     Entry read(String hostUuid) {
+        Entry memory = hostUuid == null ? null : MEMORY.get(hostUuid);
+        if (memory != null) return memory;
         File file = fileFor(hostUuid);
         if (file == null || !file.isFile()) return null;
         try (BufferedInputStream input = new BufferedInputStream(new FileInputStream(file));
@@ -101,8 +107,10 @@ final class PlayniteLibraryCache {
                             exactIdentity && value.optBoolean("can_uninstall", true)));
                 }
             }
-            return new Entry(games, root.optLong("saved_at", file.lastModified()),
+            Entry entry = new Entry(games, root.optLong("saved_at", file.lastModified()),
                     root.optString("revision", ""), root.optString("api_version", ""));
+            MEMORY.put(hostUuid, entry);
+            return entry;
         } catch (IOException | JSONException invalidCache) {
             return null;
         }
@@ -172,6 +180,7 @@ final class PlayniteLibraryCache {
             temporary.delete();
             throw new IOException("Unable to publish Playnite library cache");
         }
+        MEMORY.put(hostUuid, entry);
     }
 
     private File fileFor(String hostUuid) {

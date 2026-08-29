@@ -16,16 +16,22 @@ public class ConsoleActivityLibraryPerformanceContractTest {
             throws IOException {
         String source = consoleActivitySource();
 
-        assertTrue(source.contains("EXPANDED_CACHE_ROWS_EACH_SIDE = 1"));
+        assertTrue(source.contains("EXPANDED_CACHE_ROWS_EACH_SIDE = 2"));
         assertTrue(source.contains("EXPANDED_PREFETCH_ROWS_EACH_SIDE = 1"));
         assertTrue(source.contains("PLAYNITE_ARTWORK_PREFETCH_WORKERS = 2"));
         assertTrue(source.contains("EXPANDED_NAVIGATION_INTERVAL_MS = 70L"));
         assertTrue(source.contains("EXPANDED_FOCUS_TRANSITION_TIMEOUT_MS = 300L"));
 
         String entrance = source.substring(source.indexOf(
-                        "private void staggerExpandedGridEntrance()"),
-                source.indexOf("private void revealNormalLibraryAfterTransition()"));
-        assertTrue(entrance.contains("firstAnimatedRow + EXPANDED_VISIBLE_ROWS"));
+                        "private void enterExpandedLibrary(boolean"),
+                source.indexOf("private void exitExpandedLibrary()"));
+        assertFalse(entrance.contains("createCarouselToGridGhosts"));
+        assertFalse(entrance.contains("staggerExpandedGridEntrance"));
+        String exit = source.substring(source.indexOf("private void exitExpandedLibrary()"),
+                source.indexOf("private void setNormalLibraryVisibility("));
+        assertFalse(exit.contains("createGridToCarouselGhosts"));
+        assertTrue(source.contains("private static final LruCache<String, Bitmap>"));
+        assertTrue(source.contains("deferSecondaryLayersAfterFirstLayout(container)"));
 
         String prefetch = source.substring(source.indexOf(
                         "private void schedulePlayniteArtworkPrefetch(ComputerDetails host,"),
@@ -75,12 +81,21 @@ public class ConsoleActivityLibraryPerformanceContractTest {
         assertTrue(pause.contains("flushPendingPlayniteSelection()"));
         assertTrue(pause.contains("playniteBitmapCache.evictAll()"));
         assertTrue(pause.contains("playniteBitmapCache.trimToSize(16 * 1024 * 1024)"));
+        assertTrue(pause.contains("TRIM_MEMORY_MODERATE"));
+
+        String cache = source("PlayniteLibraryCache.java");
+        assertTrue(cache.contains("private static final Map<String, Entry> MEMORY"));
+        assertTrue(cache.contains("MEMORY.get(hostUuid)"));
     }
 
     private static String consoleActivitySource() throws IOException {
-        Path source = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
+        return source("ConsoleActivity.java");
+    }
+
+    private static String source(String file) throws IOException {
+        Path source = Paths.get("src/main/java/com/limelight/console/" + file);
         if (!Files.exists(source)) {
-            source = Paths.get("app/src/main/java/com/limelight/console/ConsoleActivity.java");
+            source = Paths.get("app/src/main/java/com/limelight/console/" + file);
         }
         return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
     }

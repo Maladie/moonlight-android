@@ -178,7 +178,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final long LIBRARY_SHARED_ARTWORK_MS = 260L;
     private static final long HOST_WAKING_TIMEOUT_MS = 45_000L;
     private static final int EXPANDED_VISIBLE_ROWS = 3;
-    private static final int EXPANDED_CACHE_ROWS_EACH_SIDE = 1;
+    private static final int EXPANDED_CACHE_ROWS_EACH_SIDE = 2;
     private static final int EXPANDED_PREFETCH_ROWS_EACH_SIDE = 1;
     private static final int PLAYNITE_ARTWORK_PREFETCH_WORKERS = 2;
     private static final int EXPANDED_WINDOW_ROWS = EXPANDED_VISIBLE_ROWS
@@ -362,7 +362,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private int expandedDescriptionScrollGeneration;
     private boolean expandedLibraryMode;
     private boolean libraryTransitionRunning;
-    private final List<LibraryTransitionGhost> libraryTransitionGhosts = new ArrayList<>();
     private int expandedGridWindowStartRow;
     private int pendingExpandedFocusIndex = -1;
     private int pendingExpandedWindowWarmupIndex = -1;
@@ -405,13 +404,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String playniteArtworkPrefetchSignature;
     private final List<Future<?>> playniteArtworkPrefetchTasks =
             Collections.synchronizedList(new ArrayList<>());
-    private final LruCache<String, Bitmap> playniteBitmapCache =
+    private static final LruCache<String, Bitmap> playniteBitmapCache =
             new LruCache<String, Bitmap>(32 * 1024 * 1024) {
                 @Override protected int sizeOf(String key, Bitmap bitmap) {
                     return bitmap == null ? 0 : bitmap.getAllocationByteCount();
                 }
             };
-    private final ConcurrentHashMap<String, Object> playniteBitmapDecodeLocks =
+    private static final ConcurrentHashMap<String, Object> playniteBitmapDecodeLocks =
             new ConcurrentHashMap<>();
     private String expandedSearchQuery = "";
     private final PlayniteLibraryQuery.Cache expandedLibraryQuery =
@@ -443,6 +442,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String lastCarouselGameId = "";
     private String libraryTransitionGameId = "";
     private boolean pendingExpandedLibraryRestore;
+    private final List<LibraryTransitionGhost> libraryTransitionGhosts = new ArrayList<>();
     private final Set<String> vibepolloEnsureInFlight =
             Collections.synchronizedSet(new HashSet<>());
     private final Set<String> completedPlayniteInstallAnimations = new HashSet<>();
@@ -1334,7 +1334,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         cancelPlayniteArtworkPrefetch();
         stopExpandedDescriptionAutoScroll();
         if (libraryTransitionCoordinator != null) libraryTransitionCoordinator.cancel();
-        removeLibraryTransitionGhost();
         libraryTransitionRunning = false;
         if (streamLoadingView != null) streamLoadingView.stop();
         saveScrollPositions();
@@ -1353,7 +1352,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     @Override
     public void onTrimMemory(int level) {
         super.onTrimMemory(level);
-        if (level >= ComponentCallbacks2.TRIM_MEMORY_UI_HIDDEN) {
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_MODERATE) {
             playniteBitmapCache.evictAll();
         } else if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
             playniteBitmapCache.trimToSize(16 * 1024 * 1024);
@@ -1758,17 +1757,41 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         wireHomeFocusNavigation();
 
         container.addView(homeLayer, match());
-        buildHostSelectionLayer(container);
-        buildSidePanel();
-        buildLoadingLayer(container);
-        buildScreenSaverLayer(container);
         discordDmToastView = new DiscordDmToastView(this);
         FrameLayout.LayoutParams toastParams = new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
                 Gravity.TOP | Gravity.END);
         toastParams.setMargins(dp(18), dp(18), dp(18), 0);
         container.addView(discordDmToastView, toastParams);
+        if (retainedStreamHome) deferSecondaryLayersAfterFirstLayout(container);
+        else buildSecondaryLayers(container);
         return container;
+    }
+
+    private void deferSecondaryLayersAfterFirstLayout(FrameLayout container) {
+        ViewTreeObserver.OnGlobalLayoutListener listener =
+                new ViewTreeObserver.OnGlobalLayoutListener() {
+                    @Override public void onGlobalLayout() {
+                        if (container.getViewTreeObserver().isAlive()) {
+                            container.getViewTreeObserver().removeOnGlobalLayoutListener(this);
+                        }
+                        mainHandler.post(() -> {
+                            if (isFinishing() || isDestroyed()) return;
+                            buildSecondaryLayers(container);
+                            homeLayer.setVisibility(View.VISIBLE);
+                            hostSelectionLayer.setVisibility(View.GONE);
+                        });
+                    }
+                };
+        container.getViewTreeObserver().addOnGlobalLayoutListener(listener);
+    }
+
+    private void buildSecondaryLayers(FrameLayout container) {
+        buildHostSelectionLayer(container);
+        buildSidePanel();
+        buildLoadingLayer(container);
+        buildScreenSaverLayer(container);
+        discordDmToastView.bringToFront();
     }
 
     private void buildScreenSaverLayer(FrameLayout container) {
@@ -5305,19 +5328,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         libraryTransitionRunning = true;
-        int transitionToken = libraryTransitionCoordinator.beginTransition(
-                libraryTransitionGameId);
-        createCarouselToGridGhosts();
-        expandedLibrary.setAlpha(.18f);
-        expandedLibrary.setTranslationX(dp(28));
-        expandedLibrary.setScaleX(.985f);
-        expandedLibrary.setScaleY(.985f);
+        libraryTransitionCoordinator.beginTransition(libraryTransitionGameId);
+        expandedLibrary.setAlpha(0f);
+        expandedLibrary.setTranslationX(dp(18));
         expandedLibrary.setVisibility(View.VISIBLE);
-        staggerExpandedGridEntrance();
-        expandedLibrary.post(() -> animateLibraryTransitionGhosts(
-                transitionToken, expandedGrid, true));
-        animateNormalLibraryOut();
-        expandedLibrary.animate().alpha(1f).translationX(0f).scaleX(1f).scaleY(1f)
+        expandedLibrary.animate().alpha(1f).translationX(0f)
                 .setDuration(LIBRARY_ENTER_TRANSITION_MS)
                 .withEndAction(() -> {
                     setNormalLibraryVisibility(View.GONE);
@@ -5359,12 +5374,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         libraryTransitionRunning = true;
         setNormalLibraryVisibility(View.VISIBLE);
         prepareCarouselReturnPosition();
-        int transitionToken = libraryTransitionCoordinator.beginTransition(
-                libraryTransitionGameId);
-        createGridToCarouselGhosts();
-        root.post(() -> animateLibraryTransitionGhosts(
-                transitionToken, appRow, false));
-        prepareNormalLibraryForEntrance();
+        libraryTransitionCoordinator.beginTransition(libraryTransitionGameId);
+        resetNormalLibraryTransforms();
         expandedLibrary.animate().alpha(0f).translationX(dp(28))
                 .setDuration(LIBRARY_EXIT_TRANSITION_MS)
                 .withEndAction(() -> {
@@ -5374,8 +5385,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     expandedLibrary.setScaleX(1f);
                     expandedLibrary.setScaleY(1f);
                     releaseExpandedGrid();
+                    libraryTransitionRunning = false;
+                    revealNormalLibraryAfterTransition();
                 }).start();
-        animateNormalLibraryIn();
     }
 
     private void setNormalLibraryVisibility(int visibility) {
@@ -5385,32 +5397,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         selectedGameMetadata.setVisibility(visibility);
         debugLibrarySpacer.setVisibility(visibility);
         controllerScroll.setVisibility(visibility);
-    }
-
-    private void animateNormalLibraryOut() {
-        for (View view : normalLibraryViews()) {
-            view.animate().alpha(0f).translationX(-dp(18)).setDuration(150L).start();
-        }
-    }
-
-    private void prepareNormalLibraryForEntrance() {
-        for (View view : normalLibraryViews()) {
-            view.setAlpha(0f);
-            view.setTranslationX(-dp(22));
-        }
-    }
-
-    private void animateNormalLibraryIn() {
-        final List<View> views = normalLibraryViews();
-        for (int index = 0; index < views.size(); index++) {
-            View view = views.get(index);
-            view.animate().alpha(1f).translationX(0f).setStartDelay(index * 14L)
-                    .setDuration(220L).start();
-        }
-        appScroll.animate().withEndAction(() -> {
-            libraryTransitionRunning = false;
-            revealNormalLibraryAfterTransition();
-        }).start();
     }
 
     private List<View> normalLibraryViews() {
@@ -5430,43 +5416,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             view.animate().setStartDelay(0L);
             view.setAlpha(1f);
             view.setTranslationX(0f);
-        }
-    }
-
-    private void staggerExpandedGridEntrance() {
-        if (reducedMotion || expandedGrid == null) return;
-        List<View> cards = new ArrayList<>();
-        int targetIndex = -1;
-        for (int index = 0; index < expandedGrid.getChildCount(); index++) {
-            View card = expandedGrid.getChildAt(index);
-            Object tag = card.getTag();
-            if (!(tag instanceof String) || !((String) tag).startsWith("playnite:")) continue;
-            cards.add(card);
-            if (("playnite:" + libraryTransitionGameId).equals(tag)) {
-                targetIndex = cards.size() - 1;
-            }
-        }
-        if (cards.isEmpty()) return;
-        int columns = Math.max(1, expandedGridColumns());
-        int totalRows = (cards.size() + columns - 1) / columns;
-        int targetRow = Math.max(0, targetIndex) / columns;
-        int firstAnimatedRow = Math.max(0,
-                Math.min(targetRow - EXPANDED_VISIBLE_ROWS / 2,
-                        totalRows - EXPANDED_VISIBLE_ROWS));
-        int lastAnimatedRow = Math.min(totalRows,
-                firstAnimatedRow + EXPANDED_VISIBLE_ROWS);
-        int firstAnimatedCard = firstAnimatedRow * columns;
-        int lastAnimatedCard = Math.min(cards.size(), lastAnimatedRow * columns);
-        for (int index = firstAnimatedCard; index < lastAnimatedCard; index++) {
-            View card = cards.get(index);
-            float targetAlpha = card.getAlpha();
-            int distance = targetIndex >= 0 ? Math.abs(index - targetIndex) : index;
-            card.animate().cancel();
-            card.setAlpha(0f);
-            card.setTranslationY(dp(11));
-            card.animate().alpha(targetAlpha).translationY(0f)
-                    .setStartDelay(Math.min(165L, 70L + distance * 16L))
-                    .setDuration(220L).start();
         }
     }
 
