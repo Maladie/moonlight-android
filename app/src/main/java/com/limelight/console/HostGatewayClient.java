@@ -938,9 +938,10 @@ final class HostGatewayClient {
             response = request(connection,
                     "/api/v1/playnite/game/stop", "POST", body, 30_000);
         }
-        if (!response.optBoolean("ok", false)) {
+        if (!response.optBoolean("ok", false)
+                || !response.optBoolean("accepted", true)) {
             throw new GatewayException(response.optString("error",
-                    "The game could not be stopped."), 0);
+                    response.optString("reason", "The game could not be stopped.")), 0);
         }
     }
 

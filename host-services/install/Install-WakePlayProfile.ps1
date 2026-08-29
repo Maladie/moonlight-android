@@ -121,6 +121,27 @@ function Set-ConfigValue {
     $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $Path -Encoding UTF8
 }
 
+function Ensure-MoonWakerStreamTarget {
+    param([int]$Port)
+    $endpoint = "http://127.0.0.1:$Port/apps/stream/ensure"
+    $lastError = $null
+    $deadline = (Get-Date).AddSeconds(15)
+    do {
+        try {
+            $result = Invoke-RestMethod -Uri $endpoint -Method Post `
+                -ContentType "application/json" -Body "{}" -TimeoutSec 2
+            if ($result.ok -and [string]$result.name -eq "MoonWaker Stream") {
+                Write-Host "MoonWaker Stream target is ready." -ForegroundColor Green
+                return
+            }
+        } catch {
+            $lastError = $_.Exception.Message
+        }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $deadline)
+    Write-Warning "MoonWaker Stream target could not be ensured; legacy launch targets remain available. $lastError"
+}
+
 function Initialize-DiscordConfig {
     param([string]$Directory, [string]$ConfigPath, [int]$Port)
     if (-not $NonInteractiveConfiguration) {
@@ -398,6 +419,7 @@ if (-not $SkipStart) {
         & $gatewayStart -GatewayDirectory $GatewayDirectory
     }
     & (Join-Path $profileRoot "Start-MoonWakerProfileBridge.ps1") -ProfileRoot $profileRoot -ProfileId $ProfileId
+    if (-not $SkipVibepollo) { Ensure-MoonWakerStreamTarget $VibepolloPort }
 }
 
 # Never leak installer-provided secrets into Bridge child processes.

@@ -134,6 +134,34 @@ public class LaunchTransitionControllerTest {
     }
 
     @Test
+    public void lateReadinessAfterTimeoutRequiresExplicitReveal() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        controller.timedOut("transition-1", "uncertain");
+        controller.gatewayConnected("transition-1", HOST);
+        controller.targetWindowReady("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME);
+        transportReady(controller);
+
+        assertEquals(LaunchTransitionState.TIMED_OUT, controller.snapshot().state);
+        assertFalse(controller.snapshot().revealAuthorized);
+        assertTrue(controller.snapshot().manualRevealAvailable);
+    }
+
+    @Test
+    public void lateReadinessAfterErrorCannotRevealStream() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        controller.error("transition-1", "failed");
+        controller.gatewayConnected("transition-1", HOST);
+        controller.targetWindowReady("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME);
+        transportReady(controller);
+
+        assertEquals(LaunchTransitionState.ERROR, controller.snapshot().state);
+        assertFalse(controller.snapshot().revealAuthorized);
+        assertFalse(controller.snapshot().manualRevealAvailable);
+    }
+
+    @Test
     public void explicitRevealIsAvailableAfterTransportButBeforeHostReadiness() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         controller.showStreamAnyway("transition-1");
@@ -208,11 +236,18 @@ public class LaunchTransitionControllerTest {
     }
 
     @Test
-    public void existingGameConnectionNeedsOnlyTransportAndKeepsGameIdentity() {
+    public void existingGameConnectionRevalidatesTargetAndKeepsGameIdentity() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME_CONNECTION);
 
         transportReady(controller);
 
+        assertFalse(controller.snapshot().revealAuthorized);
+        controller.gatewayConnected("transition-1", HOST);
+        controller.targetProcessRunning("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME);
+        controller.targetWindowReady("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME);
+        controller.videoFrameRendered("transition-1");
         assertTrue(controller.snapshot().revealAuthorized);
         controller.revealCompleted("transition-1");
         assertEquals(LaunchTransitionState.GAME_RUNNING, controller.snapshot().state);
@@ -253,7 +288,7 @@ public class LaunchTransitionControllerTest {
     }
 
     @Test
-    public void lostWindowKeepsConfirmedFrameAvailableForManualReveal() {
+    public void lostWindowRequiresFreshFrameBeforeManualReveal() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         controller.gatewayConnected("transition-1", HOST);
         controller.targetWindowReady("transition-1", HOST,
@@ -264,9 +299,34 @@ public class LaunchTransitionControllerTest {
                 LaunchTransitionType.GAME, GAME, "Windows sign-in");
 
         assertFalse(controller.snapshot().revealAuthorized);
+        assertFalse(controller.snapshot().manualRevealAvailable);
+        controller.showStreamAnyway("transition-1");
+        assertFalse(controller.snapshot().revealAuthorized);
+
+        controller.videoFrameRendered("transition-1");
         assertTrue(controller.snapshot().manualRevealAvailable);
+        assertFalse(controller.snapshot().revealAuthorized);
         controller.showStreamAnyway("transition-1");
         assertTrue(controller.snapshot().revealAuthorized);
+    }
+
+    @Test
+    public void explicitRevealKeepsTheSameTransitionVisibleAfterAnotherLostWindowSample() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        controller.gatewayConnected("transition-1", HOST);
+        transportReady(controller);
+        controller.targetWindowLost("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME, "launcher");
+        controller.videoFrameRendered("transition-1");
+        controller.showStreamAnyway("transition-1");
+        controller.revealCompleted("transition-1");
+
+        controller.targetWindowLost("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME, "repeated launcher sample");
+
+        assertFalse(controller.snapshot().overlayVisible);
+        assertFalse(controller.snapshot().inputBlocked);
+        assertFalse(controller.snapshot().manualRevealAvailable);
     }
 
     @Test
@@ -392,5 +452,40 @@ public class LaunchTransitionControllerTest {
         assertTrue(recreated.snapshot().overlayVisible);
         assertTrue(recreated.snapshot().inputBlocked);
         assertFalse(recreated.snapshot().operationAuthorized);
+    }
+
+    @Test
+    public void failedCloseRestoresRevealedStreamAndInput() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        transportReady(controller);
+        controller.gatewayConnected("transition-1", HOST);
+        controller.targetWindowReady("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME);
+        controller.videoFrameRendered("transition-1");
+        controller.revealCompleted("transition-1");
+
+        controller.closingStream("transition-1");
+        assertTrue(controller.snapshot().overlayVisible);
+        assertTrue(controller.snapshot().inputBlocked);
+
+        assertTrue(controller.streamClosingFailed("transition-1", "stop failed"));
+        LaunchTransitionSnapshot restored = controller.snapshot();
+        assertEquals(LaunchTransitionState.GAME_RUNNING, restored.state);
+        assertFalse(restored.overlayVisible);
+        assertFalse(restored.inputBlocked);
+    }
+
+    @Test
+    public void failedCloseDuringLaunchKeepsPrivacyAndInputGatesClosed() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+
+        controller.closingStream("transition-1");
+        assertFalse(controller.streamClosingFailed("transition-1", "stop failed"));
+
+        LaunchTransitionSnapshot failed = controller.snapshot();
+        assertEquals(LaunchTransitionState.ERROR, failed.state);
+        assertTrue(failed.overlayVisible);
+        assertTrue(failed.inputBlocked);
+        assertEquals("stop failed", failed.detail);
     }
 }

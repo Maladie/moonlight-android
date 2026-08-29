@@ -89,7 +89,6 @@ if (Test-Path -LiteralPath (Join-Path $GatewayDirectory "gateway.json")) {
 }
 New-Item -ItemType Directory -Path $InstallDirectory, $sourceDirectory, $profileAgentDirectory, `
     $controlDirectory, $toolsDirectory, $installScripts -Force | Out-Null
-Copy-Item -LiteralPath $versionSource -Destination (Join-Path $InstallDirectory "version.json") -Force
 
 Copy-Item -LiteralPath (Join-Path $bridgeSource "discord") `
     -Destination $sourceDirectory -Recurse -Force
@@ -153,6 +152,7 @@ if (Test-Path -LiteralPath $controlExe) {
     $shortcut.Save()
 }
 
+Copy-Item -LiteralPath $versionSource -Destination (Join-Path $InstallDirectory "version.json") -Force
 Write-Host "Wake & Play host components installed in $InstallDirectory" -ForegroundColor Green
 Write-Host "Next, run install\Install-WakePlayProfile.ps1 as each target Windows user."
 Write-Host "Gateway configuration: $(Join-Path $GatewayDirectory 'gateway.json')"

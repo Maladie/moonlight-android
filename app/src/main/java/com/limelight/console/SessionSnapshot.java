@@ -10,7 +10,8 @@ final class SessionSnapshot {
         ACTIVE,
         SUSPENDED,
         RECONNECT_REQUIRED,
-        TERMINATING
+        TERMINATING,
+        UNCERTAIN
     }
 
     final String hostId;

@@ -2,6 +2,12 @@ package com.limelight.utils;
 
 import org.junit.Test;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 
@@ -19,5 +25,22 @@ public class SessionResumeManagerTest {
 
         assertFalse(first.isEmpty());
         assertEquals(first, second);
+    }
+
+    @Test public void reconnectDoesNotRestartProviderGame() {
+        assertEquals("GAME_CONNECTION", SessionResumeManager.reconnectTransitionType("GAME"));
+        assertEquals("PLAYNITE", SessionResumeManager.reconnectTransitionType("PLAYNITE"));
+    }
+
+    @Test public void reconnectPersistsExactNeutralTargetIdentity() throws IOException {
+        Path source = Paths.get("src/main/java/com/limelight/utils/SessionResumeManager.java");
+        if (!Files.exists(source)) source = Paths.get(
+                "app/src/main/java/com/limelight/utils/SessionResumeManager.java");
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+
+        assertEquals(2, text.split(
+                "gameIntent.getStringExtra\\(Game.EXTRA_STREAM_TARGET_NAME\\)", -1).length);
+        assertEquals(2, text.split(
+                "Game.EXTRA_NEUTRAL_STREAM_TARGET", -1).length - 1);
     }
 }

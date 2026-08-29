@@ -116,7 +116,7 @@ final class PlayniteLibraryOrdering {
 
     private static long activityEpoch(PlayniteLibraryGame game,
                                       Map<String, Long> localActivity) {
-        long playnite = activityEpoch(game.lastActivity);
+        long playnite = game.activityEpoch;
         if (localActivity == null) return playnite;
         Long local = localActivity.get(game.playniteGameId);
         return local == null ? playnite : Math.max(playnite, local);

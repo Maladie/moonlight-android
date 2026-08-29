@@ -8,6 +8,10 @@ import java.util.Locale;
 
 /** Resolves explicit mappings and exact, unique names emitted by Vibepollo's Playnite sync. */
 final class PlayniteTargetResolver {
+    static final String MOONWAKER_STREAM_NAME = "MoonWaker Stream";
+    static final String MOONWAKER_STREAM_UUID =
+            "6d6f6f6e-7761-4b65-9273-747265616d00";
+
     static PlayniteDashboardItem resolve(String hostUuid, PlayniteLibraryGame game,
                                          List<NvApp> apps,
                                          PlayniteLaunchTargetStore store) {
@@ -22,25 +26,30 @@ final class PlayniteTargetResolver {
             return new PlayniteDashboardItem(game, null, "",
                     PlayniteDashboardItem.MappingState.NOT_INSTALLED);
         }
-        if (isDirectProvider(game)) {
-            NvApp desktop = appListAuthoritative ? resolveProviderStream(apps) : null;
-            if (desktop != null) {
+        if (isManagedGame(game)) {
+            NvApp stream = appListAuthoritative ? resolveNeutralStream(apps) : null;
+            if (stream == null && isDirectProvider(game) && appListAuthoritative) {
+                stream = resolveLegacyProviderStream(apps);
+            }
+            if (stream != null) {
                 if (store != null) {
-                    store.setGameTarget(hostUuid, game.playniteGameId, desktop.getAppId());
+                    store.setGameTarget(hostUuid, game.playniteGameId, stream.getAppId());
                 }
-                return new PlayniteDashboardItem(game, desktop.getAppId(), desktop.getAppName(),
+                return new PlayniteDashboardItem(game, stream.getAppId(), stream.getAppName(),
                         PlayniteDashboardItem.MappingState.MAPPED);
             }
             Integer saved = store != null ? store.gameTarget(hostUuid, game.playniteGameId) : null;
             if (saved != null && !appListAuthoritative) {
-                return new PlayniteDashboardItem(game, saved, "Desktop",
+                return new PlayniteDashboardItem(game, saved, game.name,
                         PlayniteDashboardItem.MappingState.MAPPED);
             }
-            if (saved != null && store != null) {
+            if (isDirectProvider(game) && saved != null && store != null) {
                 store.clearGameTarget(hostUuid, game.playniteGameId);
             }
-            return new PlayniteDashboardItem(game, null, "",
-                    PlayniteDashboardItem.MappingState.MISSING);
+            if (isDirectProvider(game)) {
+                return new PlayniteDashboardItem(game, null, "",
+                        PlayniteDashboardItem.MappingState.MISSING);
+            }
         }
         if (appListAuthoritative) {
             NvApp synchronizedApp = findByUuid(apps, streamIdentity(game));
@@ -107,8 +116,8 @@ final class PlayniteTargetResolver {
 
     static NvApp resolveInstallationStream(String hostUuid, List<NvApp> apps,
                                            PlayniteLaunchTargetStore store) {
-        List<NvApp> desktop = exactName(apps, "Desktop");
-        NvApp neutral = preferredEquivalent(desktop);
+        NvApp neutral = resolveNeutralStream(apps);
+        if (neutral == null) neutral = resolveLegacyProviderStream(apps);
         return neutral != null ? neutral
                 : resolvePlayniteFullscreen(hostUuid, apps, store);
     }
@@ -135,8 +144,10 @@ final class PlayniteTargetResolver {
     static NvApp launchTarget(PlayniteDashboardItem item, List<NvApp> apps,
                               boolean hostOnline) {
         if (item == null) return null;
+        NvApp neutral = resolveNeutralStream(apps);
+        if (neutral != null && isManagedGame(item.game)) return neutral;
         if (isDirectProvider(item.game)) {
-            NvApp desktop = resolveProviderStream(apps);
+            NvApp desktop = resolveLegacyProviderStream(apps);
             if (desktop != null) return desktop;
             if (item.sunshineAppId == null || hostOnline) return null;
             return new NvApp("Desktop", item.sunshineAppId, false);
@@ -167,6 +178,27 @@ final class PlayniteTargetResolver {
     }
 
     static NvApp resolveProviderStream(List<NvApp> apps) {
+        NvApp neutral = resolveNeutralStream(apps);
+        return neutral != null ? neutral : resolveLegacyProviderStream(apps);
+    }
+
+    static NvApp resolveNeutralStream(List<NvApp> apps) {
+        NvApp candidate = preferredEquivalent(exactName(apps, MOONWAKER_STREAM_NAME));
+        return isNeutralStream(candidate) ? candidate : null;
+    }
+
+    static boolean isNeutralStream(NvApp app) {
+        return app != null && normalize(MOONWAKER_STREAM_NAME).equals(
+                normalize(app.getAppName()))
+                && MOONWAKER_STREAM_UUID.equals(normalizeUuid(app.getAppUuid()));
+    }
+
+    static boolean isDirectProviderGameId(String gameId) {
+        String normalized = normalize(gameId);
+        return normalized.startsWith("steam:") || normalized.startsWith("epic:");
+    }
+
+    static NvApp resolveLegacyProviderStream(List<NvApp> apps) {
         return preferredEquivalent(exactName(apps, "Desktop"));
     }
 
@@ -204,6 +236,10 @@ final class PlayniteTargetResolver {
 
     private static boolean isDirectProvider(PlayniteLibraryGame game) {
         return game != null && ("steam".equals(game.provider) || "epic".equals(game.provider));
+    }
+
+    private static boolean isManagedGame(PlayniteLibraryGame game) {
+        return game != null && (isDirectProvider(game) || "playnite".equals(game.provider));
     }
 
     private static String normalizeUuid(String value) {

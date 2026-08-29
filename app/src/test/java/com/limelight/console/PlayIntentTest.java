@@ -45,6 +45,13 @@ public class PlayIntentTest {
         assertTrue(intent.sunshineAppId == 0);
     }
 
+    @Test public void playniteGameCarriesItsPerGameStreamSettingsKey() {
+        PlayIntent intent = PlayIntent.playniteGame(
+                "host", 42, "Game", false, "game", "game", "settings:game");
+
+        assertEquals("settings:game", intent.quickLaunchId);
+    }
+
     @Test public void directSunshineTargetMatchesDespitePlayniteIdentity() {
         PlayIntent intent = PlayIntent.sunshineApp("host", 42, "App", false, "");
 

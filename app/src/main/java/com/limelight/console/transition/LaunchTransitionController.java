@@ -22,6 +22,7 @@ public final class LaunchTransitionController {
     private boolean operationAuthorized;
     private boolean revealAuthorized;
     private boolean manualRevealAvailable;
+    private boolean manualRevealOverride;
     private boolean revealCompleted;
     private boolean surfaceReady;
     private boolean streamConnected;
@@ -30,7 +31,9 @@ public final class LaunchTransitionController {
     private boolean gatewayReady;
     private boolean targetProcessRunning;
     private boolean targetWindowReady;
+    private boolean streamWasRevealedBeforeClosing;
     private boolean uncertain;
+    private LaunchTransitionState terminalFailureState;
     private String detail = "";
 
     public LaunchTransitionController(Listener listener) {
@@ -51,17 +54,18 @@ public final class LaunchTransitionController {
         operationAuthorized = false;
         revealAuthorized = false;
         manualRevealAvailable = false;
+        manualRevealOverride = false;
         revealCompleted = false;
         surfaceReady = false;
         streamConnected = false;
         videoFrameReady = false;
         inputReady = false;
-        boolean targetAlreadyRunning = next.type == LaunchTransitionType.GENERIC
-                || next.type == LaunchTransitionType.GAME_CONNECTION;
+        boolean targetAlreadyRunning = next.type == LaunchTransitionType.GENERIC;
         gatewayReady = targetAlreadyRunning;
         targetProcessRunning = targetAlreadyRunning;
         targetWindowReady = targetAlreadyRunning;
         uncertain = false;
+        terminalFailureState = null;
         detail = "";
         return publish();
     }
@@ -132,6 +136,7 @@ public final class LaunchTransitionController {
             inputBlocked = true;
             revealAuthorized = false;
             manualRevealAvailable = false;
+            manualRevealOverride = false;
             revealCompleted = false;
             targetProcessRunning = false;
             targetWindowReady = false;
@@ -183,16 +188,25 @@ public final class LaunchTransitionController {
                                               LaunchTransitionType kind,
                                               String gameId, String reason) {
         if (!acceptTarget(transitionId, hostId, kind, gameId)) return;
+        targetWindowReady = false;
+        videoFrameReady = false;
+        detail = reason == null ? "" : reason;
+        state = kind == LaunchTransitionType.GAME
+                ? LaunchTransitionState.GAME_WINDOW_STABILIZING
+                : LaunchTransitionState.PLAYNITE_FULLSCREEN_STARTING;
+        if (manualRevealOverride && revealCompleted) {
+            overlayVisible = false;
+            inputBlocked = false;
+            revealAuthorized = false;
+            manualRevealAvailable = false;
+            publish();
+            return;
+        }
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
         manualRevealAvailable = false;
         revealCompleted = false;
-        targetWindowReady = false;
-        detail = reason == null ? "" : reason;
-        state = kind == LaunchTransitionType.GAME
-                ? LaunchTransitionState.GAME_WINDOW_STABILIZING
-                : LaunchTransitionState.PLAYNITE_FULLSCREEN_STARTING;
         evaluateReady();
     }
 
@@ -253,6 +267,9 @@ public final class LaunchTransitionController {
 
     public synchronized void closingStream(String transitionId) {
         if (!accept(transitionId, null)) return;
+        if (state != LaunchTransitionState.CLOSING_STREAM) {
+            streamWasRevealedBeforeClosing = revealCompleted;
+        }
         overlayVisible = true;
         inputBlocked = true;
         revealAuthorized = false;
@@ -260,6 +277,32 @@ public final class LaunchTransitionController {
         revealCompleted = false;
         state = LaunchTransitionState.CLOSING_STREAM;
         publish();
+    }
+
+    public synchronized boolean streamClosingFailed(String transitionId, String reason) {
+        if (!accept(transitionId, null)) return false;
+        revealAuthorized = false;
+        manualRevealAvailable = false;
+        if (streamWasRevealedBeforeClosing) {
+            overlayVisible = false;
+            inputBlocked = false;
+            revealCompleted = true;
+            state = currentTarget == LaunchTransitionType.GAME
+                    || currentTarget == LaunchTransitionType.GAME_CONNECTION
+                    ? LaunchTransitionState.GAME_RUNNING
+                    : currentTarget == LaunchTransitionType.PLAYNITE
+                    ? LaunchTransitionState.PLAYNITE_FULLSCREEN_READY
+                    : LaunchTransitionState.IDLE;
+        } else {
+            overlayVisible = true;
+            inputBlocked = true;
+            revealCompleted = false;
+            state = LaunchTransitionState.ERROR;
+            terminalFailureState = LaunchTransitionState.ERROR;
+            detail = reason == null ? "" : reason;
+        }
+        publish();
+        return streamWasRevealedBeforeClosing;
     }
 
     public synchronized void returningToDashboard(String transitionId) {
@@ -276,6 +319,7 @@ public final class LaunchTransitionController {
         revealAuthorized = false;
         manualRevealAvailable = false;
         uncertain = true;
+        terminalFailureState = LaunchTransitionState.TIMED_OUT;
         detail = reason == null ? "" : reason;
         publish();
     }
@@ -287,6 +331,7 @@ public final class LaunchTransitionController {
         inputBlocked = true;
         revealAuthorized = false;
         manualRevealAvailable = false;
+        terminalFailureState = LaunchTransitionState.ERROR;
         detail = reason == null ? "" : reason;
         publish();
     }
@@ -302,6 +347,8 @@ public final class LaunchTransitionController {
 
     public synchronized void showStreamAnyway(String transitionId) {
         if (!accept(transitionId, null) || (!manualRevealAvailable && !uncertain)) return;
+        terminalFailureState = null;
+        manualRevealOverride = true;
         revealAuthorized = true;
         manualRevealAvailable = false;
         publish();
@@ -334,7 +381,9 @@ public final class LaunchTransitionController {
     private boolean acceptTarget(String transitionId, String hostId,
                                  LaunchTransitionType kind, String gameId) {
         if (!accept(transitionId, hostId) || kind == LaunchTransitionType.GENERIC) return false;
-        if (kind != currentTarget) return false;
+        if (kind != currentTarget
+                && !(currentTarget == LaunchTransitionType.GAME_CONNECTION
+                && kind == LaunchTransitionType.GAME)) return false;
         if (kind == LaunchTransitionType.GAME) {
             return !currentGameId.isEmpty()
                     && currentGameId.equals(normalizedGameId(gameId));
@@ -349,10 +398,19 @@ public final class LaunchTransitionController {
     private void evaluateReady() {
         boolean transportReady = surfaceReady && streamConnected && videoFrameReady && inputReady;
         boolean targetReady = gatewayReady && targetProcessRunning && targetWindowReady;
+        if (terminalFailureState != null) {
+            state = terminalFailureState;
+            manualRevealAvailable = uncertain && transportReady;
+            publish();
+            return;
+        }
         if (transportReady && targetReady && !revealAuthorized) {
             manualRevealAvailable = false;
             revealAuthorized = true;
-            if (currentTarget == LaunchTransitionType.GAME) state = LaunchTransitionState.GAME_READY;
+            if (currentTarget == LaunchTransitionType.GAME
+                    || currentTarget == LaunchTransitionType.GAME_CONNECTION) {
+                state = LaunchTransitionState.GAME_READY;
+            }
             else if (currentTarget == LaunchTransitionType.PLAYNITE) {
                 state = LaunchTransitionState.PLAYNITE_FULLSCREEN_READY;
             }

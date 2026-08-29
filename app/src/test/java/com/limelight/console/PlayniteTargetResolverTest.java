@@ -49,17 +49,46 @@ public class PlayniteTargetResolverTest {
         assertNull(item.sunshineAppId);
     }
 
-    @Test public void directProviderUsesNeutralDesktopInsteadOfPerGameTarget() {
+    @Test public void directProviderPrefersMoonWakerStreamOverLegacyTargets() {
         PlayniteLibraryGame providerGame = providerGame("epic:Salt", "Celeste", "epic");
         NvApp stalePerGame = app("Celeste", 9, "epic:Salt", "sha256:cover");
         NvApp desktop = app("Desktop", 8, "desktop", "default");
+        NvApp neutral = app("MoonWaker Stream", 11,
+                PlayniteTargetResolver.MOONWAKER_STREAM_UUID, "default");
 
         PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host", providerGame,
-                Arrays.asList(stalePerGame, desktop), null);
+                Arrays.asList(stalePerGame, desktop, neutral), null);
 
         assertEquals(PlayniteDashboardItem.MappingState.MAPPED, item.mappingState);
+        assertEquals(Integer.valueOf(11), item.sunshineAppId);
+        assertEquals("MoonWaker Stream", item.sunshineAppName);
+    }
+
+    @Test public void directProviderFallsBackToDesktopOnOlderHost() {
+        PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host",
+                providerGame("steam:289070", "Civilization VI", "steam"),
+                Collections.singletonList(app("Desktop", 8, "desktop", "default")), null);
+
         assertEquals(Integer.valueOf(8), item.sunshineAppId);
         assertEquals("Desktop", item.sunshineAppName);
+    }
+
+    @Test public void nativePlayniteUsesNeutralTargetWithoutMatchingGameTitle() {
+        PlayniteDashboardItem item = PlayniteTargetResolver.resolve("host", game("My Game"),
+                Arrays.asList(new NvApp("My Game", 9, false),
+                        app("MoonWaker Stream", 11,
+                                PlayniteTargetResolver.MOONWAKER_STREAM_UUID,
+                                "default")), null);
+
+        assertEquals(Integer.valueOf(11), item.sunshineAppId);
+        assertEquals("MoonWaker Stream", item.sunshineAppName);
+    }
+
+    @Test public void manualNameCollisionIsNotAValidNeutralTarget() {
+        NvApp collision = app("MoonWaker Stream", 11, "manual", "default");
+
+        assertNull(PlayniteTargetResolver.resolveNeutralStream(
+                Collections.singletonList(collision)));
     }
 
     @Test public void directProviderLaunchRefreshesToCurrentDesktop() {

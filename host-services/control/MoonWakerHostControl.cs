@@ -617,7 +617,9 @@ namespace MoonWaker.HostControl
                             steamDiagnosticPath, profile, "child_started", process.Id);
                         Task<string> stdout = elevated ? null : process.StandardOutput.ReadToEndAsync();
                         Task<string> stderr = elevated ? null : process.StandardError.ReadToEndAsync();
-                        int timeout = action == "ConnectEpic" ? 900000 : 30000;
+                        int timeout = action == "ConnectEpic" ? 900000 :
+                            action == "RecoverAll" ? 90000 :
+                            action.EndsWith("Gateway", StringComparison.Ordinal) ? 60000 : 30000;
                         if (!process.WaitForExit(timeout))
                         {
                             if (hasSteamApiKey) WriteSteamConfigurationDiagnostic(

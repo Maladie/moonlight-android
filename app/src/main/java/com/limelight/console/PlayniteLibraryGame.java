@@ -11,6 +11,7 @@ final class PlayniteLibraryGame {
     final boolean hidden;
     final long playtimeSeconds;
     final String lastActivity;
+    final long activityEpoch;
     final String coverKey;
     final String backgroundKey;
     final String description;
@@ -134,6 +135,7 @@ final class PlayniteLibraryGame {
         this.hidden = hidden;
         this.playtimeSeconds = Math.max(0L, playtimeSeconds);
         this.lastActivity = text(lastActivity);
+        this.activityEpoch = PlayniteLibraryOrdering.activityEpoch(this.lastActivity);
         this.coverKey = text(coverKey);
         this.backgroundKey = text(backgroundKey);
         this.description = descriptionText(description);

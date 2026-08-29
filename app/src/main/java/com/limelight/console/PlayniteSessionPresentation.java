@@ -64,14 +64,6 @@ final class PlayniteSessionPresentation {
         }
         if (appMatches.size() == 1) {
             selected = SessionSnapshot.normalize(appMatches.get(0).stableId());
-        } else if (appMatches.size() > 1) {
-            String previous = SessionSnapshot.normalize(previouslySelectedGameId);
-            for (PlayniteDashboardItem item : appMatches) {
-                if (previous.equals(SessionSnapshot.normalize(item.stableId()))) {
-                    selected = previous;
-                    break;
-                }
-            }
         }
         return new Projection(snapshot, selected);
     }

@@ -77,14 +77,14 @@ public class PlayniteSessionPresentationTest {
         assertEquals("game-b", projection.resumeGameId);
     }
 
-    @Test public void previousSelectionDisambiguatesSharedSunshineTarget() {
+    @Test public void previousSelectionDoesNotGuessSharedSunshineTarget() {
         PlayniteSessionPresentation.Projection projection =
                 PlayniteSessionPresentation.project(
                         snapshot(SessionSnapshot.State.ACTIVE, 42, ""),
                         Arrays.asList(item("game-a", 42), item("game-b", 42)),
                         "GAME-B");
 
-        assertEquals("game-b", projection.resumeGameId);
+        assertEquals("", projection.resumeGameId);
     }
 
     @Test public void ambiguousSharedSunshineTargetWithoutSelectionStaysUnselected() {

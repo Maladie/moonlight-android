@@ -26,6 +26,7 @@ final class SessionStateResolver {
         final boolean hostSleepRequested;
         final boolean hostSleepObserved;
         boolean hostOnline;
+        String bridgeGameState;
 
         Observations(String hostId, int runningGameAppId, String resolvedPlayniteGameId,
                      RetainedStreamSessionCoordinator.Snapshot retained,
@@ -81,10 +82,18 @@ final class SessionStateResolver {
             this.hostSleepRequested = hostSleepRequested;
             this.hostSleepObserved = hostSleepObserved;
             this.hostOnline = false;
+            this.bridgeGameState = this.resolvedPlayniteGameId.isEmpty()
+                    ? "" : "running";
         }
     }
 
     SessionSnapshot resolve(Observations facts) {
+        String bridgeState = SessionSnapshot.normalize(facts.bridgeGameState);
+        boolean bridgeRunning = "running".equals(bridgeState)
+                && !facts.resolvedPlayniteGameId.isEmpty();
+        boolean bridgeIdle = "idle".equals(bridgeState);
+        boolean bridgeUncertain = !bridgeState.isEmpty()
+                && !bridgeRunning && !bridgeIdle;
         boolean retainedMatches = facts.hostId.equals(facts.retainedHostId)
                 && (facts.runningGameAppId == 0
                 || facts.retainedAppId == 0
@@ -102,7 +111,7 @@ final class SessionStateResolver {
         boolean sleepRequested = sleepMatches && facts.hostSleepRequested;
         boolean sleepObserved = sleepRequested && facts.hostSleepObserved;
 
-        if (retainedMatches && facts.retainedState
+        if (facts.hostId.equals(facts.retainedHostId) && facts.retainedState
                 == RetainedStreamSessionCoordinator.State.TERMINATING) {
             return snapshot(facts, SessionSnapshot.State.TERMINATING,
                     facts.retainedAppId, facts.retainedPlayniteGameId, false,
@@ -110,15 +119,22 @@ final class SessionStateResolver {
                     sleepRequested, sleepObserved);
         }
 
+        if (facts.hostOnline && bridgeUncertain) {
+            return snapshot(facts, SessionSnapshot.State.UNCERTAIN,
+                    facts.runningGameAppId, facts.resolvedPlayniteGameId, false,
+                    explicitSuspension, suspensionSleepObserved,
+                    sleepRequested, sleepObserved);
+        }
+
         boolean retainedLive = retainedMatches && (facts.retainedState
                 == RetainedStreamSessionCoordinator.State.HOME_LIVE
                 || facts.retainedState == RetainedStreamSessionCoordinator.State.PARKED_LIVE);
-        if (facts.recentlyEnded && !retainedLive) {
+        if (facts.recentlyEnded && !retainedLive && !bridgeRunning) {
             return snapshot(facts, SessionSnapshot.State.NONE, 0, "", false,
                     false, false, sleepRequested, sleepObserved);
         }
 
-        if (explicitSuspension && !retainedLive
+        if (explicitSuspension && !retainedLive && !bridgeRunning && !bridgeIdle
                 && (facts.runningGameAppId == 0
                 || facts.runningGameAppId == facts.suspendedAppId)) {
             return snapshot(facts, SessionSnapshot.State.SUSPENDED,
@@ -127,13 +143,16 @@ final class SessionStateResolver {
         }
 
         boolean hostLive = facts.hostOnline && facts.runningGameAppId != 0;
-        if (retainedLive || hostLive) {
+        boolean bridgeLive = facts.hostOnline && bridgeRunning;
+        if (retainedLive || hostLive || bridgeLive) {
             int appId = retainedLive && facts.retainedAppId != 0
                     ? facts.retainedAppId : facts.runningGameAppId;
-            String gameId = facts.resolvedPlayniteGameId;
-            if (gameId.isEmpty() && retainedLive) gameId = facts.retainedPlayniteGameId;
+            String gameId = bridgeRunning ? facts.resolvedPlayniteGameId : "";
+            if (gameId.isEmpty() && retainedLive && !bridgeIdle) {
+                gameId = facts.retainedPlayniteGameId;
+            }
             if (gameId.isEmpty() && suspendedMatches && facts.suspendedResumedAt > 0L
-                    && facts.suspendedAppId == appId) {
+                    && facts.suspendedAppId == appId && !bridgeIdle) {
                 gameId = facts.suspendedPlayniteGameId;
             }
             return snapshot(facts, SessionSnapshot.State.ACTIVE, appId, gameId,
@@ -142,7 +161,7 @@ final class SessionStateResolver {
         }
 
 
-        if (explicitSuspension) {
+        if (explicitSuspension && !bridgeIdle) {
             return snapshot(facts, SessionSnapshot.State.SUSPENDED,
                     facts.suspendedAppId, facts.suspendedPlayniteGameId, false,
                     true, suspensionSleepObserved, sleepRequested, sleepObserved);
@@ -152,9 +171,10 @@ final class SessionStateResolver {
                 == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED;
         if (retainedReconnect || pendingMatches) {
             int appId = retainedReconnect ? facts.retainedAppId : facts.pendingResumeAppId;
-            String gameId = retainedReconnect ? facts.retainedPlayniteGameId : "";
+            String gameId = retainedReconnect && !bridgeIdle
+                    ? facts.retainedPlayniteGameId : "";
             if (gameId.isEmpty() && suspendedMatches && facts.suspendedResumedAt > 0L
-                    && facts.suspendedAppId == appId) {
+                    && facts.suspendedAppId == appId && !bridgeIdle) {
                 gameId = facts.suspendedPlayniteGameId;
             }
             return snapshot(facts, SessionSnapshot.State.RECONNECT_REQUIRED,

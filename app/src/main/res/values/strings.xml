@@ -373,6 +373,11 @@
     <string name="console_background_stream_minutes">%1$d minutes</string>
     <string name="console_background_stream_never">No limit</string>
     <string name="overlay_menu_quit_session">Quit Session</string>
+    <string name="overlay_menu_end_game">End game</string>
+    <string name="overlay_menu_end_game_confirmation">The game will be ended, but the MoonWaker stream session will remain active.</string>
+    <string name="overlay_menu_end_game_confirm">End game</string>
+    <string name="overlay_menu_end_game_failed_title">Could not end the game</string>
+    <string name="overlay_menu_end_game_failed">The active game could not be confirmed or stopped. The stream remains active.</string>
     <string name="overlay_menu_suspend_session">Suspend game and sleep PC</string>
     <string name="overlay_menu_suspend_confirmation">The game will remain running while the PC sleeps. You can resume it from this host later.</string>
     <string name="overlay_menu_suspend_confirm">Suspend</string>
@@ -937,6 +942,7 @@
         <item>Checking whether reality is deterministic…</item>
         <item>Compiling the prophecy…</item>
         <item>Reserving a table at the tavern beyond the Moon…</item>
+        <item>Did you know that the scientific name for the guinea pig is Cavia Porcellus?</item>
     </string-array>
     <string name="console_stream_initializing">Initializing MoonWaker streaming pipeline…</string>
     <string name="console_stream_preparing">Preparing stream…</string>
@@ -1055,9 +1061,12 @@
     <string name="playnite_data_current">Playnite library up to date</string>
     <string name="playnite_card_description">%1$s. %2$s. %3$s</string>
     <string name="playnite_source">Source: %1$s</string>
+    <string name="playnite_stream_settings">Game streaming settings</string>
     <string name="transition_preparing_session">Preparing the computer and stream</string>
     <string name="transition_connecting_stream">Establishing picture, sound, and controls</string>
+    <string name="transition_connecting_stream_and_starting_game">Establishing the stream and starting the game</string>
     <string name="transition_starting_playnite">Stream ready — starting Playnite</string>
+    <string name="transition_checking_game_launch_service">Checking the game launch service</string>
     <string name="transition_waiting_fullscreen">Playnite is running — waiting for its window</string>
     <string name="transition_starting_game">Stream ready — starting the game</string>
     <string name="transition_verifying_readiness">Game is running — waiting for its window</string>
@@ -1077,9 +1086,13 @@
     <string name="transition_waiting_playnite_return">Waiting for Playnite to return</string>
     <string name="transition_closing_session">Closing session</string>
     <string name="console_previous_session_close_failed">The previous host session could not be closed. Try again after it disappears from the active session indicator.</string>
+    <string name="console_session_uncertain_title">Session status is still being verified</string>
+    <string name="console_session_uncertain_details">MoonWaker has not yet confirmed which game is running. Wait a moment and try again. No game or stream was started or stopped.</string>
     <string name="console_terminate_session_title">End the active session?</string>
     <string name="console_terminate_session_details">This closes the running game or application on the host. It is different from disconnecting, which leaves the session running.</string>
     <string name="console_terminate_session_request">Ending the host session…</string>
+    <string name="console_status_closing_stream">Closing stream…</string>
+    <string name="console_checking_host">Checking host availability…</string>
     <string name="console_terminate_session_success">The host session was ended.</string>
     <string name="console_terminate_session_failed">The host did not end the session.</string>
     <string name="transition_gateway_unavailable">Gateway unavailable</string>
@@ -1093,6 +1106,8 @@
     <string name="transition_launcher_interaction_required">The game launcher needs your attention. Reveal the stream to continue, or go back to end it.</string>
     <string name="transition_host_session_locked">The Windows session is locked. Choose Reveal now, then enter the Windows password.</string>
     <string name="transition_stream_display_not_configured">The streamed display is not configured on the host</string>
+    <string name="transition_target_wrong_display">The game moved outside the streamed display. Restoring the correct display…</string>
+    <string name="console_provider_stop_waiting_for_process">The game is still starting and has no process that can be closed yet. Wait a moment and try again.</string>
     <string name="transition_step_pending">○  %1$s — pending</string>
     <string name="transition_step_active">●  %1$s — active</string>
     <string name="transition_step_complete">✓  %1$s — complete</string>

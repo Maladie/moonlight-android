@@ -790,6 +790,119 @@ function Get-NormalizedAppName {
     return (([string]$Value).Trim() -replace '\s+', ' ').ToLowerInvariant()
 }
 
+function Get-MoonWakerStreamMatches {
+    param([object[]]$Apps)
+    $matches = @()
+    for ($index = 0; $index -lt $Apps.Count; $index++) {
+        $app = $Apps[$index]
+        if ([string](Get-PropertyValue $app @("moonwaker-managed") "") -ne "stream") {
+            continue
+        }
+        $remoteIndex = [int](Get-PropertyValue $app @("index") $index)
+        $matches += [pscustomobject]@{ app = $app; index = $remoteIndex }
+    }
+    return @($matches)
+}
+
+function Test-MoonWakerStreamCommandFree {
+    param($App)
+    foreach ($field in @(
+        "cmd", "prep-cmd", "state-cmd", "detached",
+        "playnite-id", "playnite_id", "playnite-managed", "playnite-source"
+    )) {
+        $value = Get-PropertyValue $App @($field) $null
+        if ($null -eq $value) { continue }
+        if ($value -is [string] -and [string]::IsNullOrWhiteSpace($value)) { continue }
+        if ($value -is [Collections.ICollection] -and $value.Count -eq 0) { continue }
+        return $false
+    }
+    return $true
+}
+
+function New-MoonWakerStreamResult {
+    param($Match, [bool]$Created, [bool]$Updated)
+    $numericId = 0L
+    [void][long]::TryParse([string](Get-PropertyValue $Match.app @("id") "0"), [ref]$numericId)
+    return [pscustomobject]@{
+        ok = $true; created = $Created; updated = $Updated
+        uuid = [string](Get-PropertyValue $Match.app @("uuid") "")
+        app_id = $numericId; index = [int]$Match.index
+        name = [string](Get-PropertyValue $Match.app @("name") "")
+    }
+}
+
+function Ensure-MoonWakerStream {
+    $name = "MoonWaker Stream"
+    $uuid = "6d6f6f6e-7761-4b65-9273-747265616d00"
+    $apps = @(Get-VibepolloApps)
+    $reserved = @($apps | Where-Object {
+        [string](Get-PropertyValue $_ @("uuid") "") -eq $uuid
+    })
+    if ($reserved.Count -gt 1) {
+        throw "Multiple applications already use the reserved MoonWaker Stream UUID"
+    }
+    if ($reserved.Count -eq 1 -and
+        [string](Get-PropertyValue $reserved[0] @("moonwaker-managed") "") -ne "stream") {
+        throw "An unmanaged application already uses the reserved MoonWaker Stream UUID"
+    }
+    $managed = @(Get-MoonWakerStreamMatches $apps)
+    if ($managed.Count -gt 1) {
+        throw "Multiple managed MoonWaker Stream applications were found"
+    }
+    if ($managed.Count -eq 1) {
+        $match = $managed[0]
+        if (-not (Test-MoonWakerStreamCommandFree $match.app)) {
+            throw "The managed MoonWaker Stream application contains manual commands or hooks"
+        }
+        if ((Get-NormalizedAppName (Get-PropertyValue $match.app @("name") "")) -eq
+            (Get-NormalizedAppName $name) -and
+            [string](Get-PropertyValue $match.app @("uuid") "") -eq $uuid -and
+            [bool](Get-PropertyValue $match.app @("auto-detach") $false)) {
+            return New-MoonWakerStreamResult $match $false $false
+        }
+        $payload = ConvertTo-RemoteJsonSafe $match.app
+        $payload["index"] = [int]$match.index
+        $created = $false
+    }
+    else {
+        $sameName = @($apps | Where-Object {
+            (Get-NormalizedAppName (Get-PropertyValue $_ @("name") "")) -eq
+                (Get-NormalizedAppName $name)
+        })
+        if ($sameName.Count -gt 1) {
+            throw "Multiple applications already use the MoonWaker Stream name"
+        }
+        if ($sameName.Count -eq 1) {
+            throw "An unmarked application already uses the MoonWaker Stream name"
+        }
+        else {
+            $payload = [ordered]@{ index = -1; name = $name; uuid = $uuid }
+            $created = $true
+        }
+    }
+    $payload["name"] = $name
+    $payload["uuid"] = $uuid
+    $payload["moonwaker-managed"] = "stream"
+    $payload["auto-detach"] = $true
+    [void](Invoke-VibepolloApi "/api/apps" POST $payload)
+    $script:CacheTime.Clear()
+    $script:SnapshotCache = $null
+    $deadline = (Get-Date).AddSeconds(6)
+    do {
+        Start-Sleep -Milliseconds 350
+        $matches = @(Get-MoonWakerStreamMatches @(Get-VibepolloApps))
+        if ($matches.Count -eq 1 -and
+            [string](Get-PropertyValue $matches[0].app @("uuid") "") -eq $uuid -and
+            (Get-NormalizedAppName (Get-PropertyValue $matches[0].app @("name") "")) -eq
+                (Get-NormalizedAppName $name) -and
+            (Test-MoonWakerStreamCommandFree $matches[0].app) -and
+            [bool](Get-PropertyValue $matches[0].app @("auto-detach") $false)) {
+            return New-MoonWakerStreamResult $matches[0] $created $true
+        }
+    } while ((Get-Date) -lt $deadline)
+    throw "Vibepollo did not return the ensured MoonWaker Stream application"
+}
+
 function Find-AppsByPlayniteId {
     param([object[]]$Apps, [string]$GameId)
     $matches = @()
@@ -1078,6 +1191,13 @@ if (-not $createdNew) { Write-BridgeLog "Another bridge instance is already runn
 $listener = [Net.Sockets.TcpListener]::new([Net.IPAddress]::Loopback, $script:ListenPort)
 $running = $true
 try {
+    try {
+        $ensuredStream = Ensure-MoonWakerStream
+        Write-BridgeLog "MoonWaker Stream target ready: $($ensuredStream.uuid)"
+    }
+    catch {
+        Write-BridgeLog "MoonWaker Stream target was not changed: $($_.Exception.Message)" "WARN"
+    }
     $listener.Start()
     Write-BridgeLog "Vibepollo Bridge started on http://127.0.0.1:$script:ListenPort; API=$script:BaseUrl"
     while ($running) {
@@ -1109,6 +1229,14 @@ try {
                         [pscustomobject]@{}
                     } else { $request.Body | ConvertFrom-Json }
                     $result = Ensure-PlayniteApp ([string]$body.playnite_game_id) ([string]$body.name)
+                    Send-JsonResponse $request.Stream $result $(if ($result.created) { 201 } else { 200 })
+                }
+                '^/apps/stream/ensure$' {
+                    if ($request.Method -ne "POST") {
+                        Send-JsonResponse $request.Stream ([pscustomobject]@{ ok = $false; error = "POST required" }) 405
+                        continue
+                    }
+                    $result = Ensure-MoonWakerStream
                     Send-JsonResponse $request.Stream $result $(if ($result.created) { 201 } else { 200 })
                 }
                 '^/apps/status$' {
