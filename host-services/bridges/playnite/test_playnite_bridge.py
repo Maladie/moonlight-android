@@ -2,10 +2,15 @@ import unittest
 import tempfile
 import ctypes
 import json
+import os
 import threading
 import time
 from pathlib import Path
 from unittest import mock
+from email.message import Message
+from types import SimpleNamespace
+
+import GameProviderBridge
 
 from PatchPlayniteConnector import (
     ARTWORK_LOOKUP_ANCHOR, ARTWORK_PAYLOAD_ANCHOR, PATCH_MARKER, PATCH_MARKER_V8,
@@ -17,7 +22,8 @@ from PatchPlayniteConnector import (
 from GameOperations import GameOperationsService, SteamProvider
 from OperationJournal import OperationJournal
 from GameProviderBridge import (
-    BridgeState, GAME_START_TIMEOUT, LAUNCHER_POSTCONDITION_TIMEOUT,
+    BridgeState, GAME_START_TIMEOUT, GameProviderHandler, LAUNCHER_POSTCONDITION_TIMEOUT,
+    ProviderDiagnostics,
     REQUIRED_GAME_STABLE_SAMPLES, REQUIRED_LAUNCHER_STABLE_SAMPLES,
     REQUIRED_STABLE_SAMPLES,
     STEAM_CANCELLATION_EVIDENCE_TIMEOUT,
@@ -3324,6 +3330,111 @@ class BridgeStateTest(unittest.TestCase):
         self.assertFalse(self.state.library[GAME_ID]["installed"])
         self.assertTrue(self.state.library[GAME_ID]["legendaryImportRequired"])
         dispatch.assert_called_once()
+
+class ProviderDiagnosticsTest(unittest.TestCase):
+    def test_publish_projection_preserves_domain_event_and_omits_traps(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            diagnostics = ProviderDiagnostics()
+            log_dir = Path(temporary) / "logs"
+            diagnostics.start(log_dir)
+            state = BridgeState(profile_id="living-room")
+            state.request_context.request_id = "request:42"
+            payload = {
+                "id": GAME_ID, "state": "running", "previous_state": "starting",
+                "reason": "target_window_ready", "kind": "launch", "ready": True,
+                "accepted": True, "requires_attention": False,
+                "name": "Secret title", "title": "Secret", "display": "DISPLAY1",
+                "path": r"C:\Private\game.exe", "process_id": 42, "hwnd": 77,
+                "nested": {"token": "secret"},
+            }
+            with mock.patch.object(GameProviderBridge, "DIAGNOSTICS", diagnostics), state.lock:
+                sequence = state.next_sequence
+                state._publish_locked("game-running", payload)
+            diagnostics.close()
+
+            self.assertEqual({"sequence": sequence, "event": "game-running",
+                              "timestamp": state.events[-1]["timestamp"], "payload": payload},
+                             state.events[-1])
+            entry = json.loads(next(log_dir.glob("provider-diagnostics.jsonl"))
+                               .read_text(encoding="utf-8").strip())
+            self.assertEqual(GAME_ID, entry["game_id"])
+            self.assertEqual("request:42", entry["request_id"])
+            self.assertEqual("target_window_ready", entry["reason"])
+            for forbidden in ("name", "title", "display", "path", "process_id",
+                              "hwnd", "nested"):
+                self.assertNotIn(forbidden, entry)
+
+    def test_request_context_is_inherited_then_cleared_and_invalid_ids_are_omitted(self):
+        state = BridgeState(profile_id="living-room")
+        handler = object.__new__(GameProviderHandler)
+        handler.server = SimpleNamespace(state=state)
+        handler.path = "/game/start?secret=value"
+        handler.headers = Message()
+        handler.headers["X-Request-Id"] = " request:42 "
+        recorder = mock.Mock()
+        with mock.patch.object(GameProviderBridge, "DIAGNOSTICS", recorder):
+            handler._begin_diagnostics("POST")
+            with state.lock:
+                state._publish_locked("game-running", {"id": GAME_ID})
+            self.assertEqual("request:42", recorder.lifecycle.call_args.args[3])
+            handler._response_status = 202
+            handler._finish_diagnostics()
+            self.assertFalse(hasattr(state.request_context, "request_id"))
+            for invalid in ("Bearer secret", None):
+                state.request_context.request_id = invalid
+                with state.lock:
+                    state._publish_locked("game-stopped", {"id": GAME_ID})
+                self.assertIn(recorder.lifecycle.call_args.args[3], ("Bearer secret", None))
+
+        with tempfile.TemporaryDirectory() as temporary:
+            diagnostics = ProviderDiagnostics()
+            diagnostics.start(Path(temporary))
+            diagnostics.lifecycle("game-stopped", 1, "default", None, {"id": GAME_ID})
+            diagnostics.lifecycle("game-stopped", 2, "default", "Bearer secret", {"id": GAME_ID})
+            diagnostics.close()
+            entries = [json.loads(line) for line in
+                       (Path(temporary) / "provider-diagnostics.jsonl").read_text(
+                           encoding="utf-8").splitlines()]
+            self.assertTrue(all("request_id" not in entry for entry in entries))
+
+    def test_writer_rotates_and_fails_open(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log_dir = root / "logs"
+            log_dir.mkdir()
+            old = time.time() - GameProviderBridge.DIAGNOSTIC_RETENTION_SECONDS - 1
+            for suffix in ("", ".1", ".secret", ".bak"):
+                path = log_dir / f"provider-diagnostics.jsonl{suffix}"
+                path.write_text("old", encoding="utf-8")
+                os.utime(path, (old, old))
+            retention = ProviderDiagnostics()
+            retention.start(log_dir)
+            retention.close()
+            self.assertFalse((log_dir / "provider-diagnostics.jsonl").exists())
+            self.assertFalse((log_dir / "provider-diagnostics.jsonl.1").exists())
+            self.assertTrue((log_dir / "provider-diagnostics.jsonl.secret").exists())
+            self.assertTrue((log_dir / "provider-diagnostics.jsonl.bak").exists())
+            (log_dir / "provider-diagnostics.jsonl.secret").unlink()
+            (log_dir / "provider-diagnostics.jsonl.bak").unlink()
+
+            with mock.patch.object(GameProviderBridge, "DIAGNOSTIC_MAX_BYTES", 1024):
+                diagnostics = ProviderDiagnostics()
+                diagnostics.start(log_dir)
+                for sequence in range(80):
+                    diagnostics.lifecycle("game-running", sequence, "p" * 256,
+                                          "request:42", {"id": GAME_ID, "state": "running"})
+                diagnostics.close()
+            files = list((root / "logs").glob("provider-diagnostics.jsonl*"))
+            self.assertGreater(len(files), 1)
+            self.assertLessEqual(len(files), 10)
+            occupied = root / "occupied"
+            occupied.write_text("x", encoding="utf-8")
+            diagnostics = ProviderDiagnostics()
+            diagnostics.start(occupied / "logs")
+            diagnostics.record("game-running")
+            diagnostics.close()
+            self.assertGreater(diagnostics.dropped, 0)
+
 
 if __name__ == "__main__":
     unittest.main()

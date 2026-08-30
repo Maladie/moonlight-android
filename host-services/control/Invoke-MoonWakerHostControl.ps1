@@ -5,13 +5,14 @@ param(
     [ValidateSet("Status", "StartGateway", "StopGateway", "RestartGateway", "PairGateway",
         "StartProfile", "StopProfile", "RestartProfile", "RecoverAll",
         "ConfigureSteamWebApi", "DisconnectSteam", "ConnectEpic", "DisconnectEpic",
-        "ClearDiscord", "ClearDiscordMachine", "RemoveProfile")]
+        "ClearDiscord", "ClearDiscordMachine", "RemoveProfile", "ExportDiagnostics")]
     [string]$Action,
     [ValidatePattern('^[A-Za-z0-9._-]{0,64}$')][string]$ProfileId = "",
     [switch]$RemoveMachineDiscordApplication,
     [switch]$SteamWebApiKeyFromStdin,
     [switch]$SteamWebApiKeyProtectedFromEnvironment,
     [string]$SteamWebApiDiagnosticPath = "",
+    [string]$DiagnosticsOutputDirectory = "",
     [string]$ResultPath = ""
 )
 
@@ -62,6 +63,125 @@ function Get-MoonWakerVersion {
         }
     } catch {
         return [ordered]@{ version = "unknown"; build = "unknown"; protocol_version = 0 }
+    }
+}
+
+function Copy-DiagnosticSeries([string]$SourceDirectory, [string]$BaseName,
+        [string]$DestinationDirectory) {
+    $pattern = '^' + [regex]::Escape($BaseName) + '(?:\.[0-9]+)?$'
+    try {
+        if (-not (Test-Path -LiteralPath $SourceDirectory -PathType Container -ErrorAction Stop)) {
+            return 0
+        }
+        $files = @(Get-ChildItem -LiteralPath $SourceDirectory -File -ErrorAction Stop |
+            Where-Object { $_.Name -match $pattern } | Sort-Object Name)
+    } catch { return 0 }
+    $copied = 0
+    foreach ($file in $files) {
+        if (($file.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+        $destination = Join-Path $DestinationDirectory $file.Name
+        $input = $null
+        $output = $null
+        try {
+            New-Item -ItemType Directory -Path $DestinationDirectory -Force | Out-Null
+            $sharing = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
+            $input = [IO.File]::Open($file.FullName, [IO.FileMode]::Open,
+                [IO.FileAccess]::Read, $sharing)
+            $output = [IO.File]::Open($destination, [IO.FileMode]::Create,
+                [IO.FileAccess]::Write, [IO.FileShare]::None)
+            $input.CopyTo($output)
+            $copied++
+        } catch {
+            Remove-Item -LiteralPath $destination -Force -ErrorAction SilentlyContinue
+        } finally {
+            if ($output) { $output.Dispose() }
+            if ($input) { $input.Dispose() }
+        }
+    }
+    return $copied
+}
+
+function Export-Diagnostics {
+    $gatewayDirectory = Get-GatewayDirectory
+    $config = $null
+    try {
+        $config = Get-Content -LiteralPath (Join-Path $gatewayDirectory "gateway.json") -Raw |
+            ConvertFrom-Json
+    } catch {}
+    $outputDirectory = $DiagnosticsOutputDirectory
+    if ([string]::IsNullOrWhiteSpace($outputDirectory)) {
+        foreach ($candidate in @([Environment]::GetFolderPath("DesktopDirectory"),
+                [Environment]::GetFolderPath("MyDocuments"), [IO.Path]::GetTempPath())) {
+            if (-not [string]::IsNullOrWhiteSpace($candidate) -and
+                (Test-Path -LiteralPath $candidate -PathType Container)) {
+                $outputDirectory = $candidate
+                break
+            }
+        }
+    }
+    $outputDirectory = [IO.Path]::GetFullPath($outputDirectory)
+    New-Item -ItemType Directory -Path $outputDirectory -Force | Out-Null
+
+    $tempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd('\')
+    $staging = Join-Path $tempRoot ("MoonWaker-Diagnostics-" + [guid]::NewGuid().ToString("N"))
+    $staging = [IO.Path]::GetFullPath($staging)
+    $stagingValid = $staging.StartsWith($tempRoot + [IO.Path]::DirectorySeparatorChar,
+        [StringComparison]::OrdinalIgnoreCase) -and
+        (Split-Path -Leaf $staging) -match '^MoonWaker-Diagnostics-[A-Fa-f0-9]{32}$'
+    if (-not $stagingValid) { throw "Unable to create a safe diagnostics staging directory." }
+
+    try {
+        New-Item -ItemType Directory -Path $staging -Force | Out-Null
+        $count = 0
+        $count += Copy-DiagnosticSeries $gatewayDirectory "gateway-supervisor.jsonl" `
+            (Join-Path $staging "gateway\supervisor")
+        $count += Copy-DiagnosticSeries (Join-Path $gatewayDirectory "logs") `
+            "gateway-diagnostics.jsonl" (Join-Path $staging "gateway\service")
+        if ($config -and $config.profiles) {
+            foreach ($property in $config.profiles.PSObject.Properties) {
+                $id = [regex]::Replace([string]$property.Name, '[^A-Za-z0-9._-]', '_')
+                if ([string]::IsNullOrWhiteSpace($id) -or $id -in @(".", "..")) {
+                    $id = "unknown"
+                }
+                $root = Get-ProfileRoot $property.Value ([string]$property.Name)
+                if ([string]::IsNullOrWhiteSpace($root)) { continue }
+                $profileDestination = Join-Path $staging ("profiles\" + $id)
+                $count += Copy-DiagnosticSeries $root "profile-bridge.jsonl" `
+                    (Join-Path $profileDestination "supervisor")
+                $count += Copy-DiagnosticSeries (Join-Path $root "playnite\logs") `
+                    "provider-diagnostics.jsonl" (Join-Path $profileDestination "provider")
+            }
+        }
+
+        $version = Get-MoonWakerVersion
+        $safeVersion = if ([string]$version.version -match '^[A-Za-z0-9._+-]{1,128}$') {
+            [string]$version.version
+        } else { "unknown" }
+        $safeBuild = if ([string]$version.build -match '^[A-Za-z0-9._+-]{1,128}$') {
+            [string]$version.build
+        } else { "unknown" }
+        $manifest = [ordered]@{
+            schema_version = 1
+            created_utc = [DateTime]::UtcNow.ToString("o")
+            version = $safeVersion
+            build = $safeBuild
+            protocol_version = [int]$version.protocol_version
+            file_count = $count
+        } | ConvertTo-Json -Compress
+        [IO.File]::WriteAllText((Join-Path $staging "manifest.json"), $manifest,
+            [Text.UTF8Encoding]::new($false))
+        $name = "MoonWaker-Diagnostics-{0}-{1}.zip" -f `
+            [DateTime]::UtcNow.ToString("yyyyMMdd-HHmmss-fff"),
+            [guid]::NewGuid().ToString("N").Substring(0, 8)
+        $archive = Join-Path $outputDirectory $name
+        Add-Type -AssemblyName System.IO.Compression.FileSystem
+        [IO.Compression.ZipFile]::CreateFromDirectory($staging, $archive,
+            [IO.Compression.CompressionLevel]::Optimal, $false)
+        return [ordered]@{ ok = $true; path = $archive; files = $count }
+    } finally {
+        if ($stagingValid -and (Test-Path -LiteralPath $staging)) {
+            Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
@@ -673,6 +793,7 @@ try {
         "ClearDiscord" { Clear-DiscordData $ProfileId; [ordered]@{ ok = $true } }
         "ClearDiscordMachine" { $RemoveMachineDiscordApplication = $true; Clear-DiscordData $ProfileId; [ordered]@{ ok = $true } }
         "RemoveProfile" { Remove-Profile $ProfileId; [ordered]@{ ok = $true } }
+        "ExportDiagnostics" { Export-Diagnostics }
     }
     $json = $result | ConvertTo-Json -Depth 12 -Compress
     if ($ResultPath) { Set-Content -LiteralPath $ResultPath -Value $json -Encoding UTF8 }

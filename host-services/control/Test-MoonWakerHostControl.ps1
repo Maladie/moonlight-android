@@ -99,6 +99,78 @@ try {
         throw "The diagnostic log contains secret material."
     }
 
+    New-Item -ItemType Directory -Path (Join-Path $gateway "logs"),
+        (Join-Path $profile "playnite\logs") -Force | Out-Null
+    $diagnosticFiles = @{
+        (Join-Path $gateway "gateway-supervisor.jsonl") = '{"event":"supervisor.started"}'
+        (Join-Path $gateway "gateway-supervisor.jsonl.1") = '{"event":"supervisor.stopped"}'
+        (Join-Path $gateway "logs\gateway-diagnostics.jsonl") = '{"event":"request.failed"}'
+        (Join-Path $gateway "logs\gateway-diagnostics.jsonl.1") = '{"event":"request.started"}'
+        (Join-Path $profile "profile-bridge.jsonl") = '{"event":"component.exited"}'
+        (Join-Path $profile "profile-bridge.jsonl.2") = '{"event":"supervisor.started"}'
+        (Join-Path $profile "playnite\logs\provider-diagnostics.jsonl") = '{"event":"lifecycle"}'
+        (Join-Path $profile "playnite\logs\provider-diagnostics.jsonl.3") = '{"event":"request.failed"}'
+    }
+    foreach ($entry in $diagnosticFiles.GetEnumerator()) {
+        [IO.File]::WriteAllText($entry.Key, $entry.Value, [Text.UTF8Encoding]::new($false))
+    }
+    Set-Content -LiteralPath (Join-Path $gateway "gateway-supervisor.jsonl.secret") `
+        -Value "SECRET-MATERIAL"
+    Set-Content -LiteralPath (Join-Path $profile "playnite\logs\provider-diagnostics.jsonl.bak") `
+        -Value "SECRET-MATERIAL"
+    Set-Content -LiteralPath (Join-Path $profile "private-config.json") -Value "SECRET-MATERIAL"
+    $exportDirectory = Join-Path $root "exports"
+    & $scriptPath -Action ExportDiagnostics -DiagnosticsOutputDirectory $exportDirectory `
+        -ResultPath $resultPath | Out-Null
+    $export = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+    if (-not $export.ok -or $export.files -ne 8 -or
+        -not (Test-Path -LiteralPath $export.path -PathType Leaf)) {
+        throw "Diagnostic export did not return the expected archive."
+    }
+    Add-Type -AssemblyName System.IO.Compression.FileSystem
+    $archive = [IO.Compression.ZipFile]::OpenRead([string]$export.path)
+    try {
+        $names = @($archive.Entries | ForEach-Object { $_.FullName.Replace('\', '/') })
+        $expected = @(
+            "gateway/supervisor/gateway-supervisor.jsonl",
+            "gateway/supervisor/gateway-supervisor.jsonl.1",
+            "gateway/service/gateway-diagnostics.jsonl",
+            "gateway/service/gateway-diagnostics.jsonl.1",
+            "profiles/default/supervisor/profile-bridge.jsonl",
+            "profiles/default/supervisor/profile-bridge.jsonl.2",
+            "profiles/default/provider/provider-diagnostics.jsonl",
+            "profiles/default/provider/provider-diagnostics.jsonl.3",
+            "manifest.json")
+        foreach ($name in $expected) {
+            if ($names -notcontains $name) { throw "Missing diagnostic archive entry '$name'." }
+        }
+        if ($names.Count -ne $expected.Count) {
+            throw "Diagnostic archive contains unexpected entries."
+        }
+        if (@($names | Where-Object {
+                $_ -match 'secret|config|\.bak|^[A-Za-z]:|^[\\/]|(^|/)\.\.(/|$)'
+            }).Count) {
+            throw "Diagnostic archive contains a forbidden entry."
+        }
+        $manifestEntry = @($archive.Entries | Where-Object FullName -eq "manifest.json")[0]
+        $reader = [IO.StreamReader]::new($manifestEntry.Open())
+        try { $manifest = $reader.ReadToEnd() | ConvertFrom-Json } finally { $reader.Dispose() }
+        if ($manifest.schema_version -ne 1 -or $manifest.file_count -ne 8 -or
+            $manifest.version -ne "test" -or $manifest.build -ne "test" -or
+            $manifest.PSObject.Properties["path"] -or
+            $manifest.PSObject.Properties["profiles"]) {
+            throw "Diagnostic manifest contains unexpected data."
+        }
+        foreach ($entry in @($archive.Entries | Where-Object { $_.Length -gt 0 })) {
+            $reader = [IO.StreamReader]::new($entry.Open())
+            try {
+                if ($reader.ReadToEnd().Contains("SECRET-MATERIAL")) {
+                    throw "Diagnostic archive contains secret material."
+                }
+            } finally { $reader.Dispose() }
+        }
+    } finally { $archive.Dispose() }
+
     & $scriptPath -Action Status -ResultPath $resultPath | Out-Null
     $status = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
     $current = @($status.profiles | Where-Object id -eq "default")[0]
@@ -154,6 +226,7 @@ try { $listener.Start(); while ($true) { Start-Sleep -Seconds 1 } } finally { $l
     Stop-Process -Id $listenerProcess.Id -Force
     $listenerProcess = $null
     Write-Output "Host Control Steam configuration diagnostic test passed."
+    Write-Output "Host Control diagnostic export test passed."
     Write-Output "Host Control ownership and correlated Gateway stop tests passed."
 } finally {
     if ($listenerProcess -and -not $listenerProcess.HasExited) {

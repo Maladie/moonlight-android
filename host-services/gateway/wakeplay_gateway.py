@@ -6,16 +6,22 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
+import logging.handlers
 import os
+import queue
 import re
 import secrets
 import ssl
 import subprocess
 import threading
 import time
+import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -38,6 +44,16 @@ GAME_RECORD_ID_PATTERN = re.compile(
     r"^(?:steam:[0-9]+|epic:[A-Za-z0-9_-]+|playnite:[0-9A-Fa-f]{8}-"
     r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$")
 PLAYNITE_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{0,128}$")
+DIAGNOSTIC_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._:$-]{1,256}$")
+DIAGNOSTIC_ROUTE_PATTERN = re.compile(r"^/[A-Za-z0-9._:{}/-]{0,255}$")
+DIAGNOSTIC_MAX_BYTES = 2 * 1024 * 1024
+DIAGNOSTIC_BACKUP_COUNT = 9
+DIAGNOSTIC_QUEUE_SIZE = 512
+DIAGNOSTIC_RETENTION_SECONDS = 7 * 24 * 60 * 60
+DIAGNOSTIC_FIELDS = {
+    "method", "route", "request_id", "profile_id", "status",
+    "http_status", "duration_ms", "error_type",
+}
 
 
 def compact_json(value: Any) -> bytes:
@@ -46,6 +62,149 @@ def compact_json(value: Any) -> bytes:
 
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def diagnostic_route(target: str) -> str:
+    route = target.split("?", 1)[0].split("#", 1)[0]
+    return route if DIAGNOSTIC_ROUTE_PATTERN.fullmatch(route) else ""
+
+
+class _DropQueueHandler(logging.handlers.QueueHandler):
+    def __init__(self, records: queue.Queue, owner: "GatewayDiagnostics") -> None:
+        super().__init__(records)
+        self.owner = owner
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        try:
+            self.queue.put_nowait(record)
+        except (queue.Full, OSError):
+            self.owner.dropped += 1
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
+        self.owner.dropped += 1
+
+
+class _FailOpenRotatingFileHandler(logging.handlers.RotatingFileHandler):
+    def __init__(self, filename: Path, owner: "GatewayDiagnostics") -> None:
+        self.owner = owner
+        super().__init__(filename, maxBytes=DIAGNOSTIC_MAX_BYTES,
+                         backupCount=DIAGNOSTIC_BACKUP_COUNT,
+                         encoding="utf-8", delay=True)
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
+        self.owner.dropped += 1
+
+
+class GatewayDiagnostics:
+    def __init__(self) -> None:
+        self.dropped = 0
+        self.run_id = uuid.uuid4().hex
+        self.started = time.monotonic()
+        self._logger: logging.Logger | None = None
+        self._listener: logging.handlers.QueueListener | None = None
+        self._records: queue.Queue | None = None
+
+    def start(self, log_dir: Path) -> None:
+        if self._listener is not None:
+            return
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            cutoff = time.time() - DIAGNOSTIC_RETENTION_SECONDS
+            for path in log_dir.glob("gateway-diagnostics.jsonl*"):
+                if not re.fullmatch(r"gateway-diagnostics\.jsonl(?:\.\d+)?", path.name):
+                    continue
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink()
+                except OSError:
+                    self.dropped += 1
+            records: queue.Queue = queue.Queue(maxsize=DIAGNOSTIC_QUEUE_SIZE)
+            output = _FailOpenRotatingFileHandler(
+                log_dir / "gateway-diagnostics.jsonl", self)
+            output.setFormatter(logging.Formatter("%(message)s"))
+            logger = logging.Logger(f"moonwaker.gateway.{self.run_id}", logging.DEBUG)
+            logger.propagate = False
+            logger.addHandler(_DropQueueHandler(records, self))
+            listener = logging.handlers.QueueListener(records, output)
+            listener.start()
+            self._records = records
+            self._logger = logger
+            self._listener = listener
+        except (OSError, RuntimeError, ValueError):
+            self.dropped += 1
+
+    def close(self) -> None:
+        listener, records = self._listener, self._records
+        self._listener = None
+        self._logger = None
+        self._records = None
+        if listener is None or records is None:
+            return
+        try:
+            records.join()
+            listener.stop()
+            for handler in listener.handlers:
+                handler.close()
+        except (OSError, RuntimeError, queue.Full):
+            self.dropped += 1
+
+    def record(self, event: str, level: str = "INFO", *,
+               error: BaseException | None = None, include_frames: bool = False,
+               **fields: Any) -> None:
+        logger = self._logger
+        if logger is None:
+            return
+        try:
+            if not DIAGNOSTIC_TOKEN_PATTERN.fullmatch(event):
+                self.dropped += 1
+                return
+            entry: dict[str, Any] = {
+                "v": 1,
+                "ts": datetime.now(timezone.utc).isoformat(
+                    timespec="milliseconds").replace("+00:00", "Z"),
+                "mono_ms": int((time.monotonic() - self.started) * 1000),
+                "level": level if level in {"DEBUG", "INFO", "WARN", "ERROR"} else "INFO",
+                "component": "host.gateway",
+                "event": event,
+                "run_id": self.run_id,
+            }
+            for key, value in fields.items():
+                if key not in DIAGNOSTIC_FIELDS:
+                    continue
+                if isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    entry[key] = value
+                elif isinstance(value, str):
+                    if key == "route" and DIAGNOSTIC_ROUTE_PATTERN.fullmatch(value):
+                        entry[key] = value
+                    elif key != "route" and DIAGNOSTIC_TOKEN_PATTERN.fullmatch(value):
+                        entry[key] = value
+            if error is not None:
+                error_type = f"{type(error).__module__}.{type(error).__qualname__}"
+                if DIAGNOSTIC_TOKEN_PATTERN.fullmatch(error_type):
+                    entry["error_type"] = error_type
+                if include_frames:
+                    entry["frames"] = self._safe_frames(error)
+            logger.log({"DEBUG": logging.DEBUG, "WARN": logging.WARNING,
+                        "ERROR": logging.ERROR}.get(entry["level"], logging.INFO),
+                       json.dumps(entry, ensure_ascii=False, separators=(",", ":")))
+        except Exception:
+            self.dropped += 1
+
+    @staticmethod
+    def _safe_frames(error: BaseException) -> list[dict[str, Any]]:
+        frames = []
+        for frame in traceback.extract_tb(error.__traceback__, limit=16):
+            filename = Path(frame.filename).name[:120]
+            function = frame.name[:120]
+            if not re.fullmatch(r"[A-Za-z0-9_.-]+", filename):
+                filename = "unknown"
+            if not re.fullmatch(r"[A-Za-z0-9_.$<>-]+", function):
+                function = "unknown"
+            frames.append({"file": filename, "function": function, "line": frame.lineno})
+        return frames
+
+
+DIAGNOSTICS = GatewayDiagnostics()
 
 
 class GatewayState:
@@ -286,6 +445,13 @@ class GatewayState:
     def profile_id(self) -> str:
         return str(getattr(self.request_context, "profile_id", "default"))
 
+    def loopback_headers(self, content_type: str | None = None) -> dict[str, str]:
+        headers = {"Content-Type": content_type} if content_type else {}
+        request_id = getattr(self.request_context, "request_id", "")
+        if isinstance(request_id, str) and REQUEST_ID_PATTERN.fullmatch(request_id):
+            headers["X-Request-Id"] = request_id
+        return headers
+
     def bridge_url(self, name: str, path: str) -> str:
         profile = self.config.get("profiles", {}).get(self.profile_id, {})
         base = str(profile.get(f"{name}_bridge", "")).rstrip("/")
@@ -297,7 +463,8 @@ class GatewayState:
 
     def proxy(self, name: str, path: str, timeout: float = 2.5) -> tuple[bool, Any]:
         try:
-            request = urllib.request.Request(self.bridge_url(name, path), method="GET")
+            request = urllib.request.Request(
+                self.bridge_url(name, path), headers=self.loopback_headers(), method="GET")
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 raw = response.read(1024 * 1024).decode("utf-8", errors="replace")
                 content_type = response.headers.get_content_type()
@@ -314,7 +481,8 @@ class GatewayState:
     def proxy_bytes(self, name: str, path: str, timeout: float = 8.0) \
             -> tuple[int, bytes, str]:
         try:
-            request = urllib.request.Request(self.bridge_url(name, path), method="GET")
+            request = urllib.request.Request(
+                self.bridge_url(name, path), headers=self.loopback_headers(), method="GET")
             with urllib.request.urlopen(request, timeout=timeout) as response:
                 length = int(response.headers.get("Content-Length", "0") or 0)
                 if length < 1 or length > 8 * 1024 * 1024:
@@ -338,7 +506,7 @@ class GatewayState:
             request = urllib.request.Request(
                 self.bridge_url(name, path),
                 data=compact_json(body),
-                headers={"Content-Type": "application/json; charset=utf-8"},
+                headers=self.loopback_headers("application/json; charset=utf-8"),
                 method="POST",
             )
             with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -975,9 +1143,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
         return self.server.state  # type: ignore[attr-defined]
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        print(f"{self.log_date_time_string()} {self.client_address[0]} {fmt % args}", flush=True)
+        pass
 
     def send_json(self, status: int, value: Any) -> None:
+        self._response_status = int(status)
         body = compact_json(value)
         self.send_response(int(status))
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -988,6 +1157,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def send_binary(self, status: int, body: bytes, content_type: str) -> None:
+        self._response_status = int(status)
         self.send_response(int(status))
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -1024,13 +1194,67 @@ class GatewayHandler(BaseHTTPRequestHandler):
         return self.state.select_profile(
             self.headers.get("X-WakePlay-Profile", "default"), record_use=True)
 
+    def _begin_diagnostics(self, method: str) -> None:
+        self._diagnostic_method = method
+        self._diagnostic_route = diagnostic_route(self.path)
+        self._diagnostic_started = time.monotonic()
+        self._diagnostic_error: BaseException | None = None
+        self._diagnostic_unexpected = False
+        self._response_status = 0
+        for key in ("request_id", "profile_id"):
+            if hasattr(self.state.request_context, key):
+                delattr(self.state.request_context, key)
+        request_id = (self.headers.get("X-Request-Id", "") or "").strip()
+        if REQUEST_ID_PATTERN.fullmatch(request_id):
+            self.state.request_context.request_id = request_id
+        else:
+            request_id = ""
+        if method == "POST":
+            DIAGNOSTICS.record("request.started", method=method,
+                               route=self._diagnostic_route, request_id=request_id)
+
+    def _finish_diagnostics(self) -> None:
+        try:
+            status = self._response_status
+            failed = self._diagnostic_error is not None or status <= 0 or status >= 400
+            if self._diagnostic_method == "POST" or failed:
+                fields: dict[str, Any] = {
+                    "method": self._diagnostic_method,
+                    "route": self._diagnostic_route,
+                    "status": "failed" if failed else "completed",
+                    "http_status": status if status > 0 else None,
+                    "duration_ms": max(0, int(
+                        (time.monotonic() - self._diagnostic_started) * 1000)),
+                    "request_id": str(getattr(
+                        self.state.request_context, "request_id", "")),
+                    "profile_id": str(getattr(
+                        self.state.request_context, "profile_id", "")),
+                }
+                DIAGNOSTICS.record(
+                    "request.failed" if failed else "request.completed",
+                    level="ERROR" if self._diagnostic_unexpected else
+                    ("WARN" if failed else "INFO"),
+                    error=self._diagnostic_error,
+                    include_frames=self._diagnostic_unexpected,
+                    **fields)
+        finally:
+            for key in ("request_id", "profile_id"):
+                if hasattr(self.state.request_context, key):
+                    delattr(self.state.request_context, key)
+
     def do_GET(self) -> None:  # noqa: N802
+        self._begin_diagnostics("GET")
         try:
             self._do_GET()
         except (ValueError, json.JSONDecodeError) as error:
+            self._diagnostic_error = error
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
         except Exception as error:
+            self._diagnostic_error = error
+            self._diagnostic_unexpected = True
             self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(error)})
+        finally:
+            self._finish_diagnostics()
 
     def _do_GET(self) -> None:
         target = urllib.parse.urlsplit(self.path)
@@ -1106,6 +1330,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found."})
 
     def do_POST(self) -> None:  # noqa: N802
+        self._begin_diagnostics("POST")
         try:
             path = urllib.parse.urlsplit(self.path).path
             if path == f"{API_PREFIX}/pair":
@@ -1219,11 +1444,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found."})
         except PermissionError as error:
+            self._diagnostic_error = error
             self.send_json(HTTPStatus.FORBIDDEN, {"error": str(error)})
         except (ValueError, json.JSONDecodeError) as error:
+            self._diagnostic_error = error
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
         except Exception as error:  # keep the gateway alive on malformed upstream responses
+            self._diagnostic_error = error
+            self._diagnostic_unexpected = True
             self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(error)})
+        finally:
+            self._finish_diagnostics()
 
 
 class GatewayServer(ThreadingHTTPServer):
@@ -1243,7 +1474,9 @@ def main() -> None:
     parser.add_argument("--pairing-code", default=os.environ.get("WAKEPLAY_PAIRING_CODE"))
     args = parser.parse_args()
 
-    state = GatewayState(Path(args.config), args.pairing_code)
+    config_path = Path(args.config)
+    DIAGNOSTICS.start(config_path.resolve().parent / "logs")
+    state = GatewayState(config_path, args.pairing_code)
     server = GatewayServer((str(state.config["listen_host"]), int(state.config["listen_port"])), state)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2
@@ -1258,6 +1491,7 @@ def main() -> None:
         pass
     finally:
         server.server_close()
+        DIAGNOSTICS.close()
 
 
 if __name__ == "__main__":

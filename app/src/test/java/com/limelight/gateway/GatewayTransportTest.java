@@ -21,8 +21,12 @@ public class GatewayTransportTest {
     private static final GatewayConnection CONNECTION = new GatewayConnection(
             "https://host:8785", "secret", FINGERPRINT, "profile-1");
 
-    @Test public void getHeadersContainAuthenticationWithoutPostHeaders() {
-        GatewayTransport transport = new GatewayTransport(() -> "unused");
+    @Test public void getHeadersContainAuthenticationAndOneRequestIdWithoutPostHeaders() {
+        AtomicInteger calls = new AtomicInteger();
+        GatewayTransport transport = new GatewayTransport(() -> {
+            calls.incrementAndGet();
+            return "get-request";
+        });
 
         Map<String, String> headers =
                 transport.buildRequestHeaders(CONNECTION, false, false);
@@ -32,7 +36,8 @@ public class GatewayTransportTest {
         assertEquals("Bearer secret", headers.get("Authorization"));
         assertEquals("profile-1", headers.get("X-WakePlay-Profile"));
         assertFalse(headers.containsKey("Content-Type"));
-        assertFalse(headers.containsKey("X-Request-Id"));
+        assertEquals("get-request", headers.get("X-Request-Id"));
+        assertEquals(1, calls.get());
     }
 
     @Test public void postHeadersContainOneDeterministicRequestId() {
@@ -61,8 +66,9 @@ public class GatewayTransportTest {
             return "generated";
         });
 
+        String requestId = transport.effectiveRequestId("suspend-123");
         Map<String, String> headers = transport.buildRequestHeaders(
-                CONNECTION, true, false, "suspend-123");
+                CONNECTION, true, false, requestId);
 
         assertEquals("suspend-123", headers.get("X-Request-Id"));
         assertEquals(0, calls.get());
@@ -79,23 +85,45 @@ public class GatewayTransportTest {
         }
     }
 
-    @Test public void callerSuppliedRequestIdIsValidated() {
+    @Test public void callerSuppliedRequestIdIsValidatedWithoutGeneratingAnother() throws Exception {
+        AtomicInteger calls = new AtomicInteger();
+        GatewayTransport transport = new GatewayTransport(() -> {
+            calls.incrementAndGet();
+            return "generated";
+        });
         try {
-            GatewayTransport.requireRequestId("bad request id");
+            transport.postJson(CONNECTION, "/api/v1/system/suspend-session", new JSONObject(),
+                    "bad request id", 1_000);
             fail("Expected IllegalArgumentException");
         } catch (IllegalArgumentException expected) {
             // Expected.
         }
+        assertEquals(0, calls.get());
     }
 
     @Test public void pairingHeadersOmitAuthenticationAndProfile() {
-        GatewayTransport transport = new GatewayTransport(() -> "pair-request");
+        AtomicInteger calls = new AtomicInteger();
+        GatewayTransport transport = new GatewayTransport(() -> {
+            calls.incrementAndGet();
+            return "pair-request";
+        });
 
         Map<String, String> headers = transport.buildRequestHeaders(null, true, true);
 
         assertEquals("pair-request", headers.get("X-Request-Id"));
         assertFalse(headers.containsKey("Authorization"));
         assertFalse(headers.containsKey("X-WakePlay-Profile"));
+        assertEquals(1, calls.get());
+    }
+
+    @Test public void diagnosticRouteRemovesQueryAndFragmentWithoutExposingValues() {
+        String path = "/api/v1/library?token=secret#private";
+
+        String route = GatewayTransport.diagnosticRoute(path);
+
+        assertEquals("/api/v1/library", route);
+        assertFalse(route.contains("secret"));
+        assertFalse(route.contains("private"));
     }
 
     @Test public void normalizedFingerprintsMatchButChangedPinDoesNot() {

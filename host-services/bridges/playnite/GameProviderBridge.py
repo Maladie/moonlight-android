@@ -7,6 +7,8 @@ import argparse
 import ctypes
 import html
 import json
+import logging
+import logging.handlers
 import mimetypes
 import ntpath
 import os
@@ -15,10 +17,13 @@ import re
 import subprocess
 import threading
 import time
+import traceback
 import urllib.parse
 import urllib.request
+import uuid
 from collections import deque
 from ctypes import wintypes
+from datetime import datetime, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -35,6 +40,16 @@ PLAYNITE_ID_PATTERN = re.compile(
 GAME_ID_PATTERN = re.compile(
     r"^(?:steam:[0-9]+|epic:[A-Za-z0-9_-]+|(?:playnite:)?[0-9A-Fa-f]{8}-"
     r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$")
+REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+DIAGNOSTIC_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._:$-]{1,256}$")
+DIAGNOSTIC_ROUTE_PATTERN = re.compile(r"^/[A-Za-z0-9._:{}/-]{0,255}$")
+DIAGNOSTIC_MAX_BYTES = 2 * 1024 * 1024
+DIAGNOSTIC_BACKUP_COUNT = 9
+DIAGNOSTIC_RETENTION_SECONDS = 7 * 24 * 60 * 60
+DIAGNOSTIC_FIELDS = {"method", "route", "request_id", "profile_id", "status",
+                     "http_status", "duration_ms", "sequence", "game_id", "state",
+                     "previous_state", "reason", "kind", "operation", "operation_state",
+                     "ready", "requires_attention", "accepted"}
 MAX_BODY_BYTES = 16 * 1024
 MAX_ARTWORK_BYTES = 8 * 1024 * 1024
 MAX_ACTIVE_GAME_TRACE_BYTES = 16 * 1024
@@ -62,6 +77,155 @@ INSTALLER_EXCLUDED_IMAGES = PLAYNITE_UI_IMAGES | {
     "explorer.exe", "searchhost.exe", "searchapp.exe", "shellexperiencehost.exe",
     "startmenuexperiencehost.exe", "textinputhost.exe", "lockapp.exe",
 }
+
+
+def diagnostic_route(target: str) -> str:
+    route = target.split("?", 1)[0].split("#", 1)[0]
+    return route if DIAGNOSTIC_ROUTE_PATTERN.fullmatch(route) else ""
+
+
+class _DiagnosticQueueHandler(logging.handlers.QueueHandler):
+    def __init__(self, records: queue.Queue, owner: "ProviderDiagnostics") -> None:
+        super().__init__(records)
+        self.owner = owner
+
+    def enqueue(self, record: logging.LogRecord) -> None:
+        try:
+            self.queue.put_nowait(record)
+        except (queue.Full, OSError):
+            self.owner.dropped += 1
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
+        self.owner.dropped += 1
+
+
+class _DiagnosticFileHandler(logging.handlers.RotatingFileHandler):
+    def __init__(self, filename: Path, owner: "ProviderDiagnostics") -> None:
+        self.owner = owner
+        super().__init__(filename, maxBytes=DIAGNOSTIC_MAX_BYTES,
+                         backupCount=DIAGNOSTIC_BACKUP_COUNT,
+                         encoding="utf-8", delay=True)
+
+    def handleError(self, record: logging.LogRecord) -> None:  # noqa: N802
+        self.owner.dropped += 1
+
+
+class ProviderDiagnostics:
+    def __init__(self) -> None:
+        self.dropped = 0
+        self.run_id = uuid.uuid4().hex
+        self.started = time.monotonic()
+        self.logger = self.listener = self.records = None
+
+    def start(self, log_dir: Path) -> None:
+        if self.listener is not None:
+            return
+        try:
+            log_dir.mkdir(parents=True, exist_ok=True)
+            cutoff = time.time() - DIAGNOSTIC_RETENTION_SECONDS
+            for path in log_dir.glob("provider-diagnostics.jsonl*"):
+                if not re.fullmatch(r"provider-diagnostics\.jsonl(?:\.\d+)?", path.name):
+                    continue
+                try:
+                    if path.stat().st_mtime < cutoff:
+                        path.unlink()
+                except OSError:
+                    self.dropped += 1
+            records = queue.Queue(maxsize=512)
+            output = _DiagnosticFileHandler(log_dir / "provider-diagnostics.jsonl", self)
+            output.setFormatter(logging.Formatter("%(message)s"))
+            logger = logging.Logger(f"moonwaker.provider.{self.run_id}", logging.DEBUG)
+            logger.propagate = False
+            logger.addHandler(_DiagnosticQueueHandler(records, self))
+            listener = logging.handlers.QueueListener(records, output)
+            listener.start()
+            self.records, self.logger, self.listener = records, logger, listener
+        except (OSError, RuntimeError, ValueError):
+            self.dropped += 1
+
+    def close(self) -> None:
+        listener, records = self.listener, self.records
+        self.listener = self.logger = self.records = None
+        if listener is None or records is None:
+            return
+        try:
+            records.join()
+            listener.stop()
+            for handler in listener.handlers:
+                handler.close()
+        except (OSError, RuntimeError, queue.Full):
+            self.dropped += 1
+
+    def record(self, event: str, level: str = "INFO", *,
+               error: BaseException | None = None, frames: bool = False,
+               **fields: Any) -> None:
+        if self.logger is None:
+            return
+        try:
+            if not DIAGNOSTIC_TOKEN_PATTERN.fullmatch(event):
+                return
+            entry: dict[str, Any] = {
+                "v": 1, "ts": datetime.now(timezone.utc).isoformat(
+                    timespec="milliseconds").replace("+00:00", "Z"),
+                "mono_ms": int((time.monotonic() - self.started) * 1000),
+                "level": level if level in {"INFO", "WARN", "ERROR"} else "INFO",
+                "component": "host.game-provider", "event": event, "run_id": self.run_id}
+            for key, value in fields.items():
+                if key not in DIAGNOSTIC_FIELDS:
+                    continue
+                if key in {"ready", "requires_attention", "accepted"} and \
+                        isinstance(value, bool):
+                    entry[key] = value
+                elif key in {"http_status", "duration_ms", "sequence"} and \
+                        isinstance(value, int) and not isinstance(value, bool) and value >= 0:
+                    entry[key] = value
+                elif isinstance(value, str) and ((key == "route" and
+                        DIAGNOSTIC_ROUTE_PATTERN.fullmatch(value)) or
+                        (key != "route" and DIAGNOSTIC_TOKEN_PATTERN.fullmatch(value))):
+                    entry[key] = value
+            if error is not None:
+                error_type = f"{type(error).__module__}.{type(error).__qualname__}"
+                if DIAGNOSTIC_TOKEN_PATTERN.fullmatch(error_type):
+                    entry["error_type"] = error_type
+                if frames:
+                    entry["frames"] = self._safe_frames(error)
+            self.logger.info(json.dumps(entry, ensure_ascii=False, separators=(",", ":")))
+        except Exception:
+            self.dropped += 1
+
+    def lifecycle(self, event: str, sequence: int, profile_id: str,
+                  request_id: Any, payload: dict[str, Any]) -> None:
+        if self.logger is None:
+            return
+        fields: dict[str, Any] = {"sequence": sequence, "profile_id": profile_id}
+        if isinstance(request_id, str) and REQUEST_ID_PATTERN.fullmatch(request_id):
+            fields["request_id"] = request_id
+        game_id = payload.get("game_id", payload.get("id"))
+        if isinstance(game_id, str) and GAME_ID_PATTERN.fullmatch(game_id):
+            fields["game_id"] = game_id
+        for key in ("state", "previous_state", "reason", "kind", "operation",
+                    "operation_state"):
+            value = payload.get(key)
+            if isinstance(value, str) and DIAGNOSTIC_TOKEN_PATTERN.fullmatch(value):
+                fields[key] = value
+        for key in ("ready", "requires_attention", "accepted"):
+            if isinstance(payload.get(key), bool):
+                fields[key] = payload[key]
+        self.record(event, **fields)
+
+    @staticmethod
+    def _safe_frames(error: BaseException) -> list[dict[str, Any]]:
+        result = []
+        for frame in traceback.extract_tb(error.__traceback__, limit=16):
+            filename, function = Path(frame.filename).name[:120], frame.name[:120]
+            result.append({"file": filename if re.fullmatch(r"[A-Za-z0-9_.-]+", filename)
+                           else "unknown", "function": function if re.fullmatch(
+                               r"[A-Za-z0-9_.$<>-]+", function) else "unknown",
+                           "line": frame.lineno})
+        return result
+
+
+DIAGNOSTICS = ProviderDiagnostics()
 
 
 class StreamDisplayResolver:
@@ -1141,6 +1305,7 @@ class BridgeState:
         self.clock = clock or time.time
         self.operation_audit = operation_audit
         self.profile_id = str(profile_id).strip()
+        self.request_context = threading.local()
         self.stop_timeout = max(0.01, float(stop_timeout))
         self.events_changed = threading.Condition(self.lock)
         self.connected = False
@@ -1886,6 +2051,8 @@ class BridgeState:
         self.next_sequence += 1
         self.events.append(event)
         self.events_changed.notify_all()
+        DIAGNOSTICS.lifecycle(name, event["sequence"], self.profile_id,
+                              getattr(self.request_context, "request_id", None), payload)
 
     def _advance_library_revision_locked(self) -> None:
         try:
@@ -3966,9 +4133,10 @@ class GameProviderHandler(BaseHTTPRequestHandler):
         return self.server.state  # type: ignore[attr-defined]
 
     def log_message(self, fmt: str, *args: Any) -> None:
-        print(f"{self.log_date_time_string()} {fmt % args}", flush=True)
+        pass
 
     def send_json(self, status: int, value: Any) -> None:
+        self._response_status = int(status)
         body = compact_json(value)
         self.send_response(int(status))
         self.send_header("Content-Type", "application/json; charset=utf-8")
@@ -3978,6 +4146,7 @@ class GameProviderHandler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def send_binary(self, status: int, body: bytes, content_type: str) -> None:
+        self._response_status = int(status)
         self.send_response(int(status))
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
@@ -3995,7 +4164,44 @@ class GameProviderHandler(BaseHTTPRequestHandler):
             raise ValueError("JSON object expected.")
         return value
 
+    def _begin_diagnostics(self, method: str) -> None:
+        self._diagnostic_method, self._diagnostic_started = method, time.monotonic()
+        self._diagnostic_route = diagnostic_route(self.path)
+        self._diagnostic_error, self._diagnostic_unexpected, self._response_status = None, False, 0
+        if hasattr(self.state.request_context, "request_id"):
+            del self.state.request_context.request_id
+        request_id = (self.headers.get("X-Request-Id", "") or "").strip()
+        if REQUEST_ID_PATTERN.fullmatch(request_id):
+            self.state.request_context.request_id = request_id
+        else:
+            request_id = ""
+        if method == "POST":
+            DIAGNOSTICS.record("request.started", method=method,
+                               route=self._diagnostic_route, request_id=request_id,
+                               profile_id=self.state.profile_id)
+
+    def _finish_diagnostics(self) -> None:
+        try:
+            status = self._response_status
+            failed = self._diagnostic_error is not None or status <= 0 or status >= 400
+            if self._diagnostic_method == "POST" or failed:
+                DIAGNOSTICS.record(
+                    "request.failed" if failed else "request.completed",
+                    level="ERROR" if self._diagnostic_unexpected else
+                    ("WARN" if failed else "INFO"), error=self._diagnostic_error,
+                    frames=self._diagnostic_unexpected, method=self._diagnostic_method,
+                    route=self._diagnostic_route,
+                    request_id=getattr(self.state.request_context, "request_id", ""),
+                    profile_id=self.state.profile_id,
+                    status="failed" if failed else "completed",
+                    http_status=status if status > 0 else None,
+                    duration_ms=max(0, int((time.monotonic() - self._diagnostic_started) * 1000)))
+        finally:
+            if hasattr(self.state.request_context, "request_id"):
+                del self.state.request_context.request_id
+
     def do_GET(self) -> None:  # noqa: N802
+        self._begin_diagnostics("GET")
         try:
             target = urllib.parse.urlsplit(self.path)
             query = urllib.parse.parse_qs(target.query)
@@ -4036,13 +4242,19 @@ class GameProviderHandler(BaseHTTPRequestHandler):
             else:
                 self.send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found."})
         except FileNotFoundError as error:
+            self._diagnostic_error = error
             self.send_json(HTTPStatus.NOT_FOUND, {"error": str(error)})
         except (ValueError, json.JSONDecodeError) as error:
+            self._diagnostic_error = error
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
         except Exception as error:
+            self._diagnostic_error, self._diagnostic_unexpected = error, True
             self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"error": str(error)})
+        finally:
+            self._finish_diagnostics()
 
     def do_POST(self) -> None:  # noqa: N802
+        self._begin_diagnostics("POST")
         try:
             body = self.read_json()
             path = urllib.parse.urlsplit(self.path).path
@@ -4071,11 +4283,16 @@ class GameProviderHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(HTTPStatus.ACCEPTED, {"ok": True, **result})
         except ConnectionError as error:
+            self._diagnostic_error = error
             self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": str(error)})
         except (ValueError, json.JSONDecodeError) as error:
+            self._diagnostic_error = error
             self.send_json(HTTPStatus.BAD_REQUEST, {"ok": False, "error": str(error)})
         except Exception as error:
+            self._diagnostic_error, self._diagnostic_unexpected = error, True
             self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR, {"ok": False, "error": str(error)})
+        finally:
+            self._finish_diagnostics()
 
 
 class GameProviderServer(ThreadingHTTPServer):
@@ -4114,6 +4331,7 @@ def main() -> None:
     parser.add_argument("--config", default="config.json")
     args = parser.parse_args()
     config_path = Path(args.config).resolve()
+    DIAGNOSTICS.start(config_path.parent / "logs")
     config = json.loads(config_path.read_text(encoding="utf-8-sig"))
     listen_host = str(config.get("listen_host", "127.0.0.1"))
     if listen_host not in {"127.0.0.1", "localhost"}:
@@ -4174,6 +4392,7 @@ def main() -> None:
     finally:
         pipe.stopping.set()
         server.server_close()
+        DIAGNOSTICS.close()
 
 
 if __name__ == "__main__":

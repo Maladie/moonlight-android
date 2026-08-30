@@ -1,11 +1,18 @@
 import json
 import os
+import tempfile
 import time
 import unittest
 import urllib.parse
+from email.message import Message
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
-from wakeplay_gateway import GatewayState, sha256_text
+import wakeplay_gateway
+from wakeplay_gateway import (
+    GatewayDiagnostics, GatewayHandler, GatewayState, diagnostic_route, sha256_text,
+)
 
 
 class GatewayStateTest(unittest.TestCase):
@@ -700,6 +707,176 @@ class GatewayStateTest(unittest.TestCase):
             state.playnite_events("../../logs")
         with self.assertRaises(ValueError):
             state.playnite_events("11", "../../wrong")
+
+
+class GatewayDiagnosticsTest(unittest.TestCase):
+    @staticmethod
+    def read_entries(log_dir):
+        entries = []
+        for path in log_dir.glob("gateway-diagnostics.jsonl*"):
+            entries.extend(json.loads(line) for line in
+                           path.read_text(encoding="utf-8").splitlines())
+        return entries
+
+    def test_writer_schema_allowlist_and_safe_exception_frames(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            log_dir = Path(temporary) / "logs"
+            diagnostics = GatewayDiagnostics()
+            diagnostics.start(log_dir)
+            diagnostics.record(
+                "request.failed", level="ERROR", method="POST",
+                route="/api/v1/game/{id}", request_id="req:42",
+                profile_id="living-room", status="failed", http_status=500,
+                duration_ms=12, reason="Bearer secret", Authorization="token")
+            try:
+                raise RuntimeError("Bearer secret from C:/private/config.json")
+            except RuntimeError as error:
+                diagnostics.record("request.failed", level="ERROR", error=error,
+                                   include_frames=True, route="https://host/api?token=secret",
+                                   request_id="Bearer secret")
+            diagnostics.close()
+
+            entries = self.read_entries(log_dir)
+            first = entries[0]
+            self.assertEqual(1, first["v"])
+            self.assertEqual("host.gateway", first["component"])
+            self.assertEqual("req:42", first["request_id"])
+            self.assertEqual("/api/v1/game/{id}", first["route"])
+            self.assertTrue(first["ts"].endswith("Z"))
+            self.assertNotIn("reason", first)
+            self.assertNotIn("Authorization", first)
+            serialized = json.dumps(entries)
+            self.assertNotIn("Bearer secret", serialized)
+            self.assertNotIn("C:/private", serialized)
+            self.assertNotIn("route", entries[1])
+            self.assertNotIn("request_id", entries[1])
+            self.assertEqual("test_gateway.py", entries[1]["frames"][-1]["file"])
+            self.assertLessEqual(len(entries[1]["frames"]), 16)
+
+    def test_route_sanitizer_removes_query_and_rejects_unsafe_targets(self):
+        self.assertEqual("/api/v1/library", diagnostic_route(
+            "/api/v1/library?cursor=secret#fragment"))
+        self.assertEqual("", diagnostic_route("https://host/api/v1/library?token=secret"))
+        self.assertEqual("", diagnostic_route("/api/v1/bad path"))
+
+    def test_writer_rotates_and_fails_open(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            log_dir = root / "logs"
+            log_dir.mkdir()
+            old = time.time() - wakeplay_gateway.DIAGNOSTIC_RETENTION_SECONDS - 1
+            for suffix in ("", ".1", ".secret", ".bak"):
+                path = log_dir / f"gateway-diagnostics.jsonl{suffix}"
+                path.write_text("old", encoding="utf-8")
+                os.utime(path, (old, old))
+            retention = GatewayDiagnostics()
+            retention.start(log_dir)
+            retention.close()
+            self.assertFalse((log_dir / "gateway-diagnostics.jsonl").exists())
+            self.assertFalse((log_dir / "gateway-diagnostics.jsonl.1").exists())
+            self.assertTrue((log_dir / "gateway-diagnostics.jsonl.secret").exists())
+            self.assertTrue((log_dir / "gateway-diagnostics.jsonl.bak").exists())
+            (log_dir / "gateway-diagnostics.jsonl.secret").unlink()
+            (log_dir / "gateway-diagnostics.jsonl.bak").unlink()
+
+            with mock.patch.object(wakeplay_gateway, "DIAGNOSTIC_MAX_BYTES", 1024):
+                diagnostics = GatewayDiagnostics()
+                diagnostics.start(log_dir)
+                for index in range(80):
+                    diagnostics.record(
+                        "request.completed", method="POST", route="/api/v1/game/start",
+                        request_id=f"request-{index}", profile_id="p" * 256,
+                        status="completed", http_status=200, duration_ms=index)
+                diagnostics.close()
+            files = list((root / "logs").glob("gateway-diagnostics.jsonl*"))
+            self.assertGreater(len(files), 1)
+            self.assertLessEqual(len(files), 10)
+
+            unavailable = root / "not-a-directory"
+            unavailable.write_text("occupied", encoding="utf-8")
+            diagnostics = GatewayDiagnostics()
+            diagnostics.start(unavailable / "logs")
+            diagnostics.record("request.completed", status="completed")
+            diagnostics.close()
+            self.assertGreater(diagnostics.dropped, 0)
+
+    def test_request_envelope_emits_expected_outcomes_and_clears_context(self):
+        state = SimpleNamespace(request_context=__import__("threading").local())
+        handler = object.__new__(GatewayHandler)
+        handler.server = SimpleNamespace(state=state)
+        handler.path = "/api/v1/game/start?token=secret"
+        handler.headers = Message()
+        handler.headers["X-Request-Id"] = "  request:42  "
+        recorder = mock.Mock()
+        with mock.patch.object(wakeplay_gateway, "DIAGNOSTICS", recorder):
+            handler._begin_diagnostics("POST")
+            state.request_context.profile_id = "living-room"
+            handler._response_status = 202
+            handler._finish_diagnostics()
+
+            self.assertEqual(["request.started", "request.completed"],
+                             [call.args[0] for call in recorder.record.call_args_list])
+            self.assertEqual("request:42",
+                             recorder.record.call_args_list[0].kwargs["request_id"])
+            completed = recorder.record.call_args_list[-1].kwargs
+            self.assertEqual("/api/v1/game/start", completed["route"])
+            self.assertEqual("request:42", completed["request_id"])
+            self.assertEqual("living-room", completed["profile_id"])
+            self.assertFalse(hasattr(state.request_context, "request_id"))
+            self.assertFalse(hasattr(state.request_context, "profile_id"))
+
+            recorder.reset_mock()
+            handler._begin_diagnostics("GET")
+            handler._response_status = 404
+            handler._finish_diagnostics()
+            self.assertEqual(["request.failed"],
+                             [call.args[0] for call in recorder.record.call_args_list])
+
+            recorder.reset_mock()
+            handler._begin_diagnostics("POST")
+            handler._finish_diagnostics()
+            self.assertEqual("request.failed", recorder.record.call_args_list[-1].args[0])
+            self.assertIsNone(
+                recorder.record.call_args_list[-1].kwargs["http_status"])
+
+    def test_loopback_proxy_propagates_only_valid_request_id(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            config_path = Path(temporary) / "gateway.json"
+            config_path.write_text(json.dumps({
+                "certificate": "cert.pem", "private_key": "key.pem", "clients": [],
+            }), encoding="utf-8")
+            state = GatewayState(config_path, None)
+            captured = []
+
+            class Response:
+                headers = Message()
+                headers["Content-Type"] = "application/json"
+
+                def __enter__(self):
+                    return self
+
+                def __exit__(self, *_args):
+                    return False
+
+                def read(self, _limit):
+                    return b"{}"
+
+            def open_request(request, timeout):
+                captured.append((request, timeout))
+                return Response()
+
+            with mock.patch.object(wakeplay_gateway.urllib.request, "urlopen",
+                                   side_effect=open_request):
+                for request_id in ("request:42", "Bearer secret", "", None):
+                    state.request_context.request_id = request_id
+                    state.proxy_json("playnite", "/health", {})
+
+            headers = [dict((key.lower(), value) for key, value in
+                            request.header_items()) for request, _timeout in captured]
+            self.assertEqual("request:42", headers[0]["x-request-id"])
+            self.assertNotIn("x-request-id", headers[1])
+            self.assertNotIn("x-request-id", headers[2])
+            self.assertNotIn("x-request-id", headers[3])
 
 
 if __name__ == "__main__":
