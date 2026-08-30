@@ -32,9 +32,11 @@ import com.limelight.LimeLog;
 import com.limelight.PcView;
 import com.limelight.R;
 import com.limelight.binding.video.MediaCodecHelper;
+import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.UiHelper;
 
+import java.io.OutputStream;
 import java.lang.reflect.Method;
 import java.util.Arrays;
 
@@ -123,6 +125,7 @@ public class StreamSettings extends Activity {
     }
 
     public static class SettingsFragment extends PreferenceFragment {
+        private static final int CREATE_DIAGNOSTICS_DOCUMENT = 1;
         private int nativeResolutionStartIndex = Integer.MAX_VALUE;
         private boolean nativeFramerateShown = false;
 
@@ -699,6 +702,39 @@ public class StreamSettings extends Activity {
                     }
                 });
             }
+
+            Preference diagnosticsPref = findPreference("export_diagnostics");
+            diagnosticsPref.setOnPreferenceClickListener(preference -> {
+                Intent intent = new Intent(Intent.ACTION_CREATE_DOCUMENT);
+                intent.addCategory(Intent.CATEGORY_OPENABLE);
+                intent.setType("application/x-ndjson");
+                intent.putExtra(Intent.EXTRA_TITLE, "moonwaker-diagnostics.jsonl");
+                startActivityForResult(intent, CREATE_DIAGNOSTICS_DOCUMENT);
+                return true;
+            });
+        }
+
+        @Override
+        public void onActivityResult(int requestCode, int resultCode, Intent data) {
+            super.onActivityResult(requestCode, resultCode, data);
+            if (requestCode != CREATE_DIAGNOSTICS_DOCUMENT || resultCode != Activity.RESULT_OK
+                    || data == null || data.getData() == null) return;
+            Activity activity = getActivity();
+            if (activity == null) return;
+            Context context = activity.getApplicationContext();
+            android.net.Uri target = data.getData();
+            new Thread(() -> {
+                boolean success = false;
+                try (OutputStream output =
+                             context.getContentResolver().openOutputStream(target, "wt")) {
+                    if (output != null) success = MoonWakerDiagnostics.exportTo(output);
+                } catch (Exception ignored) { }
+                boolean exported = success;
+                new Handler(context.getMainLooper()).post(() -> Toast.makeText(context,
+                        exported ? R.string.diagnostics_export_succeeded
+                                : R.string.diagnostics_export_failed,
+                        Toast.LENGTH_LONG).show());
+            }, "MoonWaker-Diagnostics-Export").start();
         }
     }
 }

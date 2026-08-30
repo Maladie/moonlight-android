@@ -1,5 +1,6 @@
 package com.limelight.console;
 
+import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
 
 import java.io.IOException;
@@ -184,19 +185,32 @@ final class GameOperationsController {
         if (closed) return;
         final long token = ++nextToken;
         latestFocusToken = token;
-        executor.execute(() -> {
-            boolean success;
-            try {
-                gateway.focusInstallation(connection, gameId);
-                success = true;
-            } catch (IOException | RuntimeException error) {
-                success = false;
-            }
-            final boolean result = success;
-            dispatcher.post(() -> {
-                if (!closed && token == latestFocusToken) callback.onResult(result);
+        diagnostic("INFO", "game_operation.requested", token, null, gameId, "FOCUS");
+        try {
+            executor.execute(() -> {
+                boolean success;
+                try {
+                    gateway.focusInstallation(connection, gameId);
+                    success = true;
+                    diagnostic("INFO", "game_operation.request_accepted",
+                            token, null, gameId, "FOCUS");
+                } catch (IOException | RuntimeException error) {
+                    success = false;
+                    diagnostic("WARN", "game_operation.request_failed",
+                            token, null, gameId, "FOCUS",
+                            "error_type", error.getClass().getName());
+                }
+                final boolean result = success;
+                dispatcher.post(() -> {
+                    if (!closed && token == latestFocusToken) callback.onResult(result);
+                });
             });
-        });
+        } catch (RuntimeException error) {
+            diagnostic("ERROR", "game_operation.execution_failed",
+                    token, null, gameId, "FOCUS",
+                    "error_type", error.getClass().getName());
+            throw error;
+        }
     }
 
     Presentation presentation(String hostId, PlayniteLibraryGame game) {
@@ -295,6 +309,9 @@ final class GameOperationsController {
             if (game == null) continue;
             if (local.kind == Kind.UNINSTALL) {
                 if (!game.installed) {
+                    diagnostic("INFO", "game_operation.reconciled", local.token,
+                            key.hostId, key.gameId, local.kind.name(),
+                            "status", ObservationType.UNINSTALL_CONFIRMED_BY_SNAPSHOT.name());
                     observations.add(new Observation(
                             ObservationType.UNINSTALL_CONFIRMED_BY_SNAPSHOT,
                             key, local, game));
@@ -303,12 +320,18 @@ final class GameOperationsController {
                 continue;
             }
             if (game.installed) {
+                diagnostic("INFO", "game_operation.reconciled", local.token,
+                        key.hostId, key.gameId, local.kind.name(),
+                        "status", ObservationType.INSTALL_CONFIRMED_BY_SNAPSHOT.name());
                 observations.add(new Observation(
                         ObservationType.INSTALL_CONFIRMED_BY_SNAPSHOT, key, local, game));
                 reconciled.add(key);
             } else if (hostInstallActive(game, local)) {
                 local.installActivityObserved = true;
             } else if (local.installActivityObserved) {
+                diagnostic("WARN", "game_operation.reconciled", local.token,
+                        key.hostId, key.gameId, local.kind.name(), "status",
+                        ObservationType.INSTALL_NO_LONGER_ACTIVE_AFTER_OBSERVED_ACTIVITY.name());
                 observations.add(new Observation(
                         ObservationType.INSTALL_NO_LONGER_ACTIVE_AFTER_OBSERVED_ACTIVITY,
                         key, local, game));
@@ -338,23 +361,48 @@ final class GameOperationsController {
         Key key = new Key(hostId, game.playniteGameId);
         Pending local = new Pending(kind, game.name, ++nextToken);
         pending.put(key, local);
-        executor.execute(() -> {
-            boolean success;
-            try {
-                if (kind == Kind.INSTALL) gateway.install(connection, game.playniteGameId);
-                else gateway.uninstall(connection, game.playniteGameId);
-                success = true;
-            } catch (IOException | RuntimeException error) {
-                success = false;
-            }
-            final boolean result = success;
-            dispatcher.post(() -> {
-                if (closed || !isCurrent(key, kind, local.token)) return;
-                if (!result) pending.remove(key);
-                callback.onResult(result);
+        diagnostic("INFO", "game_operation.requested", local.token,
+                key.hostId, key.gameId, kind.name());
+        try {
+            executor.execute(() -> {
+                boolean success;
+                try {
+                    if (kind == Kind.INSTALL) gateway.install(connection, game.playniteGameId);
+                    else gateway.uninstall(connection, game.playniteGameId);
+                    success = true;
+                    diagnostic("INFO", "game_operation.request_accepted", local.token,
+                            key.hostId, key.gameId, kind.name());
+                } catch (IOException | RuntimeException error) {
+                    success = false;
+                    diagnostic("WARN", "game_operation.request_failed", local.token,
+                            key.hostId, key.gameId, kind.name(),
+                            "error_type", error.getClass().getName());
+                }
+                final boolean result = success;
+                dispatcher.post(() -> {
+                    if (closed || !isCurrent(key, kind, local.token)) return;
+                    if (!result) pending.remove(key);
+                    callback.onResult(result);
+                });
             });
-        });
+        } catch (RuntimeException error) {
+            diagnostic("ERROR", "game_operation.execution_failed", local.token,
+                    key.hostId, key.gameId, kind.name(),
+                    "error_type", error.getClass().getName());
+            throw error;
+        }
         return presentation(hostId, game);
+    }
+
+    private static void diagnostic(String level, String event, long operationId,
+                                   String hostId, String gameId, String kind,
+                                   Object... fields) {
+        Object[] values = new Object[fields.length + 8];
+        Object[] base = {"operation_id", operationId, "host_id", hostId,
+                "game_id", gameId, "kind", kind};
+        System.arraycopy(base, 0, values, 0, base.length);
+        System.arraycopy(fields, 0, values, base.length, fields.length);
+        MoonWakerDiagnostics.record(level, "android.game-operations", event, values);
     }
 
     private boolean isCurrent(Key key, Kind kind, long token) {

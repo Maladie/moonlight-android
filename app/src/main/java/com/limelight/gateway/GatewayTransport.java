@@ -2,6 +2,8 @@ package com.limelight.gateway;
 
 import android.annotation.SuppressLint;
 
+import com.limelight.diagnostics.MoonWakerDiagnostics;
+
 import org.json.JSONException;
 import org.json.JSONObject;
 
@@ -20,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.TimeUnit;
 import java.util.function.Supplier;
 
 import javax.net.ssl.HostnameVerifier;
@@ -73,19 +76,22 @@ public final class GatewayTransport {
         return requestJson(connection.endpoint(), path, body != null ? body : new JSONObject(),
                 readTimeoutMs, connection,
                 new GatewayTrustManager(connection.certificateSha256(), false),
-                requireRequestId(requestId));
+                requestId);
     }
 
     public byte[] getBinary(GatewayConnection connection, String path, String accept,
                             int readTimeoutMs) throws IOException {
+        String requestId = effectiveRequestId(null);
+        long startedNanos = System.nanoTime();
         HttpsURLConnection http = null;
+        int status = 0;
         try {
             http = open(connection.endpoint(), path,
                     new GatewayTrustManager(connection.certificateSha256(), false), readTimeoutMs);
             http.setRequestMethod("GET");
-            applyHeaders(http, buildRequestHeaders(connection, false, false));
+            applyHeaders(http, buildRequestHeaders(connection, false, false, requestId));
             http.setRequestProperty("Accept", accept);
-            int status = http.getResponseCode();
+            status = http.getResponseCode();
             if (status < HttpURLConnection.HTTP_OK || status >= 300) {
                 InputStream error = http.getErrorStream();
                 byte[] raw = error != null ? readAndClose(error, JSON_LIMIT) : new byte[0];
@@ -94,7 +100,14 @@ public final class GatewayTransport {
             InputStream input = http.getInputStream();
             return input != null ? readAndClose(input, BINARY_LIMIT) : new byte[0];
         } catch (GeneralSecurityException error) {
-            throw new IOException("Unable to initialize gateway TLS.", error);
+            IOException wrapped = new IOException("Unable to initialize gateway TLS.", error);
+            recordRequest("request.failed", "GET", path, requestId, connection,
+                    status, startedNanos, wrapped);
+            throw wrapped;
+        } catch (IOException | RuntimeException error) {
+            recordRequest("request.failed", "GET", path, requestId, connection,
+                    status, startedNanos, error);
+            throw error;
         } finally {
             if (http != null) http.disconnect();
         }
@@ -109,15 +122,12 @@ public final class GatewayTransport {
         JSONObject response = requestJson(endpoint, path, body != null ? body : new JSONObject(),
                 readTimeoutMs, null, trustManager, null);
         String fingerprint = trustManager.seenFingerprint;
-        if (fingerprint == null || fingerprint.isEmpty()) {
-            throw new GatewayException("The gateway did not present a certificate.", 0);
-        }
         return new PairingResponse(response, fingerprint);
     }
 
     Map<String, String> buildRequestHeaders(GatewayConnection connection, boolean post,
                                             boolean pairing) {
-        return buildRequestHeaders(connection, post, pairing, null);
+        return buildRequestHeaders(connection, post, pairing, effectiveRequestId(null));
     }
 
     Map<String, String> buildRequestHeaders(GatewayConnection connection, boolean post,
@@ -131,9 +141,8 @@ public final class GatewayTransport {
         }
         if (post) {
             headers.put("Content-Type", "application/json; charset=utf-8");
-            headers.put("X-Request-Id", requestId == null
-                    ? requestIds.get() : requireRequestId(requestId));
         }
+        headers.put("X-Request-Id", requestId);
         return headers;
     }
 
@@ -191,13 +200,21 @@ public final class GatewayTransport {
                                    int readTimeoutMs, GatewayConnection connection,
                                    GatewayTrustManager trustManager, String requestId)
             throws IOException {
+        String effectiveRequestId = effectiveRequestId(requestId);
+        boolean post = body != null;
+        String method = post ? "POST" : "GET";
+        long startedNanos = System.nanoTime();
+        if (post) {
+            recordRequest("request.started", method, path, effectiveRequestId, connection,
+                    0, startedNanos, null);
+        }
         HttpsURLConnection http = null;
+        int status = 0;
         try {
             http = open(endpoint, path, trustManager, readTimeoutMs);
-            boolean post = body != null;
-            http.setRequestMethod(post ? "POST" : "GET");
+            http.setRequestMethod(method);
             applyHeaders(http, buildRequestHeaders(
-                    connection, post, connection == null, requestId));
+                    connection, post, connection == null, effectiveRequestId));
             if (post) {
                 byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
                 http.setDoOutput(true);
@@ -206,15 +223,62 @@ public final class GatewayTransport {
                     output.write(payload);
                 }
             }
-            int status = http.getResponseCode();
+            status = http.getResponseCode();
             InputStream input = status >= 400 ? http.getErrorStream() : http.getInputStream();
             byte[] raw = input != null ? readAndClose(input, JSON_LIMIT) : new byte[0];
-            return decodeJsonResponse(status, raw);
+            JSONObject response = decodeJsonResponse(status, raw);
+            if (connection == null
+                    && (trustManager.seenFingerprint == null
+                    || trustManager.seenFingerprint.isEmpty())) {
+                throw new GatewayException("The gateway did not present a certificate.", 0);
+            }
+            if (post) {
+                recordRequest("request.completed", method, path, effectiveRequestId, connection,
+                        status, startedNanos, null);
+            }
+            return response;
         } catch (GeneralSecurityException error) {
-            throw new IOException("Unable to initialize gateway TLS.", error);
+            IOException wrapped = new IOException("Unable to initialize gateway TLS.", error);
+            recordRequest("request.failed", method, path, effectiveRequestId, connection,
+                    status, startedNanos, wrapped);
+            throw wrapped;
+        } catch (IOException | RuntimeException error) {
+            recordRequest("request.failed", method, path, effectiveRequestId, connection,
+                    status, startedNanos, error);
+            throw error;
         } finally {
             if (http != null) http.disconnect();
         }
+    }
+
+    String effectiveRequestId(String requestId) {
+        return requireRequestId(requestId == null ? requestIds.get() : requestId);
+    }
+
+    static String diagnosticRoute(String path) {
+        if (path == null) return "";
+        int end = path.length();
+        int query = path.indexOf('?');
+        int fragment = path.indexOf('#');
+        if (query >= 0) end = Math.min(end, query);
+        if (fragment >= 0) end = Math.min(end, fragment);
+        return path.substring(0, end);
+    }
+
+    private static void recordRequest(String event, String method, String path,
+                                      String requestId, GatewayConnection connection,
+                                      int httpStatus, long startedNanos, Throwable error) {
+        MoonWakerDiagnostics.record(error == null ? "INFO" : "ERROR",
+                "android.gateway", event,
+                "method", method,
+                "route", diagnosticRoute(path),
+                "request_id", requestId,
+                "profile_id", connection == null ? null : connection.profileId(),
+                "status", event.substring("request.".length()),
+                "http_status", httpStatus > 0 ? httpStatus : null,
+                "duration_ms", Math.max(0L, TimeUnit.NANOSECONDS.toMillis(
+                        System.nanoTime() - startedNanos)),
+                "error_type", error == null ? null : error.getClass().getName());
     }
 
     static String requireRequestId(String requestId) {

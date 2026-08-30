@@ -1,5 +1,7 @@
 package com.limelight.stream;
 
+import com.limelight.diagnostics.MoonWakerDiagnostics;
+
 import java.lang.ref.WeakReference;
 
 /**
@@ -104,7 +106,7 @@ public final class RetainedStreamSessionCoordinator {
         hostId = retainedHostId == null ? "" : retainedHostId;
         appId = retainedAppId;
         playniteGameId = retainedPlayniteGameId == null ? "" : retainedPlayniteGameId;
-        state = State.HOME_LIVE;
+        setStateLocked(State.HOME_LIVE);
     }
 
     public static synchronized Snapshot snapshot() {
@@ -130,14 +132,14 @@ public final class RetainedStreamSessionCoordinator {
             capturedId = streamSessionId;
             owner = controller.get();
             if (owner == null) {
-                state = State.RECONNECT_REQUIRED;
+                setStateLocked(State.RECONNECT_REQUIRED);
                 return false;
             }
         }
         boolean parked = owner.parkRetainedTransport();
         synchronized (RetainedStreamSessionCoordinator.class) {
             if (!matches(capturedId) || state != State.HOME_LIVE) return false;
-            state = parked ? State.PARKED_LIVE : State.RECONNECT_REQUIRED;
+            setStateLocked(parked ? State.PARKED_LIVE : State.RECONNECT_REQUIRED);
             if (!parked) controller.clear();
         }
         return parked;
@@ -146,13 +148,13 @@ public final class RetainedStreamSessionCoordinator {
     public static synchronized void markParked(String expectedStreamSessionId) {
         if (!matches(expectedStreamSessionId)) return;
         if (state == State.HOME_LIVE || state == State.PARKED_LIVE) {
-            state = State.PARKED_LIVE;
+            setStateLocked(State.PARKED_LIVE);
         }
     }
 
     public static synchronized void markReconnectRequired(String expectedStreamSessionId) {
         if (!matches(expectedStreamSessionId)) return;
-        if (state != State.TERMINATING) state = State.RECONNECT_REQUIRED;
+        if (state != State.TERMINATING) setStateLocked(State.RECONNECT_REQUIRED);
         controller.clear();
         switchOwner = null;
         switchSessionId = "";
@@ -167,7 +169,7 @@ public final class RetainedStreamSessionCoordinator {
                 || !playniteGameId.equalsIgnoreCase(normalize(expectedGameId))) {
             return false;
         }
-        state = State.RECONNECT_REQUIRED;
+        setStateLocked(State.RECONNECT_REQUIRED);
         return true;
     }
 
@@ -187,7 +189,7 @@ public final class RetainedStreamSessionCoordinator {
         hostId = terminatingHostId == null ? "" : terminatingHostId;
         appId = terminatingAppId;
         playniteGameId = terminatingGameId == null ? "" : terminatingGameId;
-        state = State.TERMINATING;
+        setStateLocked(State.TERMINATING);
         return true;
     }
 
@@ -308,7 +310,7 @@ public final class RetainedStreamSessionCoordinator {
             hostId = expectedHost;
             appId = expectedAppId;
             playniteGameId = "";
-            state = State.HOME_LIVE;
+            setStateLocked(State.HOME_LIVE);
             return true;
         }
         return clearOwnedGame(expectedOwner, sessionId, expectedHost,
@@ -330,7 +332,7 @@ public final class RetainedStreamSessionCoordinator {
             if (owner == null) {
                 return TerminationResult.NO_CONTROLLER;
             }
-            state = State.TERMINATING;
+            setStateLocked(State.TERMINATING);
         }
         owner.terminateRetainedSession(success -> {
             boolean current;
@@ -340,7 +342,7 @@ public final class RetainedStreamSessionCoordinator {
                     if (success) {
                         clearLocked();
                     } else {
-                        state = previousState;
+                        setStateLocked(previousState);
                         controller = new WeakReference<>(owner);
                     }
                 }
@@ -361,7 +363,7 @@ public final class RetainedStreamSessionCoordinator {
     }
 
     private static void clearLocked() {
-        state = State.NONE;
+        setStateLocked(State.NONE);
         controller.clear();
         streamSessionId = "";
         hostId = "";
@@ -380,7 +382,7 @@ public final class RetainedStreamSessionCoordinator {
         Controller owner = controller.get();
         if (owner != null && owner.isRetainedTransportLive()) return owner;
         if (state == State.HOME_LIVE || state == State.PARKED_LIVE) {
-            state = State.RECONNECT_REQUIRED;
+            setStateLocked(State.RECONNECT_REQUIRED);
             controller.clear();
             switchOwner = null;
             switchSessionId = "";
@@ -390,5 +392,20 @@ public final class RetainedStreamSessionCoordinator {
 
     private static String normalize(String value) {
         return value == null ? "" : value.trim();
+    }
+
+    private static void setStateLocked(State next) {
+        if (state == next) return;
+        State previous = state;
+        state = next;
+        MoonWakerDiagnostics.record("INFO", "android.retained-stream",
+                "retained_stream.state_changed",
+                "from", previous.name(),
+                "to", next.name(),
+                "state", next.name(),
+                "stream_session_id", streamSessionId,
+                "host_id", hostId,
+                "app_id", appId,
+                "game_id", playniteGameId);
     }
 }

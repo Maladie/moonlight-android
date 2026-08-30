@@ -11,7 +11,10 @@ $ProfileRoot = [IO.Path]::GetFullPath($ProfileRoot)
 $statePath = Join-Path $ProfileRoot "profile-bridge-state.json"
 $stopPath = Join-Path $ProfileRoot "profile-bridge-stop"
 $manualStopPath = Join-Path $ProfileRoot "profile-bridge-manually-stopped"
-$logPath = Join-Path $ProfileRoot "profile-bridge.log"
+$diagnosticPath = Join-Path $ProfileRoot "profile-bridge.jsonl"
+$diagnosticClock = [Diagnostics.Stopwatch]::StartNew()
+$diagnosticRunId = [Guid]::NewGuid().ToString("N")
+$diagnosticMaxBytes = 2MB
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -replace '[^A-Za-z0-9]', '_'
 $mutex = [Threading.Mutex]::new($false, "Local\MoonWakerProfileBridge_${sid}_$ProfileId")
 $ownsMutex = $false
@@ -25,9 +28,35 @@ function Get-ExpectedProfileOwner {
     } catch { return "" }
 }
 
-function Write-AgentLog([string]$Message) {
-    $line = "{0:o} {1}" -f [DateTimeOffset]::Now, $Message
-    Add-Content -LiteralPath $logPath -Value $line -Encoding UTF8
+function Initialize-AgentDiagnostics {
+    try {
+        Get-ChildItem -LiteralPath $ProfileRoot -Filter "profile-bridge.jsonl*" -File |
+            Where-Object Name -Match '^profile-bridge\.jsonl(?:\.\d+)?$' |
+            Where-Object LastWriteTimeUtc -lt ([DateTime]::UtcNow.AddDays(-7)) |
+            Remove-Item -Force -ErrorAction SilentlyContinue
+    } catch {}
+}
+function Write-AgentDiagnosticEvent([string]$Event, [hashtable]$Fields = @{}, [Exception]$Exception = $null) {
+    try {
+        if ($Event -notmatch '^[A-Za-z0-9._:$-]{1,256}$') { return }
+        $record = [ordered]@{ v = 1; ts = [DateTime]::UtcNow.ToString("o"); mono_ms = [long]$diagnosticClock.ElapsedMilliseconds; level = if ($Exception) { "ERROR" } else { "INFO" }; component = "host.profile-supervisor"; event = $Event; run_id = $diagnosticRunId }
+        foreach ($key in @("profile_id", "child_component", "pid", "exit_code", "restart_count", "status")) {
+            $value = $Fields[$key]
+            if ($key -eq "child_component" -and $value -in @("discord", "vibepollo", "playnite")) { $record[$key] = $value }
+            elseif ($key -ne "child_component" -and (($value -is [int] -or $value -is [long]) -or
+                (($value -is [string]) -and $value -match '^[A-Za-z0-9._:$-]{1,256}$'))) { $record[$key] = $value }
+        }
+        if ($Exception -and $Exception.GetType().FullName -match '^[A-Za-z0-9._+$-]{1,256}$') { $record.error_type = $Exception.GetType().FullName }
+        $line = $record | ConvertTo-Json -Compress
+        $lineBytes = [Text.Encoding]::UTF8.GetByteCount($line + [Environment]::NewLine)
+        if ((Test-Path -LiteralPath $diagnosticPath) -and
+            ((Get-Item -LiteralPath $diagnosticPath).Length + $lineBytes -gt $diagnosticMaxBytes)) {
+            Remove-Item -LiteralPath "$diagnosticPath.2" -Force -ErrorAction SilentlyContinue
+            if (Test-Path -LiteralPath "$diagnosticPath.1") { Move-Item -LiteralPath "$diagnosticPath.1" -Destination "$diagnosticPath.2" -Force }
+            Move-Item -LiteralPath $diagnosticPath -Destination "$diagnosticPath.1" -Force
+        }
+        Add-Content -LiteralPath $diagnosticPath -Encoding UTF8 -Value $line
+    } catch {}
 }
 
 function Start-HiddenProcess([string]$FileName, [string]$Arguments, [string]$WorkingDirectory = "") {
@@ -73,7 +102,7 @@ function Start-Component([string]$Name) {
             -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -First 1
         if ($owner) {
             if (Test-ComponentHealth $Name $true) {
-                Write-AgentLog "$Name already owns its configured port with the expected identity; adopting PID $owner."
+                Write-AgentDiagnosticEvent "component.adopted" @{ profile_id = $ProfileId; child_component = $Name; pid = [int]$owner; status = "running" }
                 return Get-Process -Id $owner -ErrorAction SilentlyContinue
             }
             if ($Name -eq "playnite") {
@@ -83,15 +112,15 @@ function Start-Component([string]$Name) {
                     -not [string]::IsNullOrWhiteSpace([string]$health.version)
                 if ($health -and ([string]$health.component -in @("game-provider", "playnite") -or
                     $legacyBridgeIdentity)) {
-                    Write-AgentLog "Stopping stale Game Provider Bridge PID $owner (version/profile mismatch)."
+                    Write-AgentDiagnosticEvent "stale_component.stopped" @{ profile_id = $ProfileId; child_component = $Name; pid = [int]$owner; status = "stale" }
                     Stop-Process -Id $owner -Force -ErrorAction Stop
                     Start-Sleep -Milliseconds 250
                 } else {
-                    Write-AgentLog "Refusing to adopt unknown process PID $owner on the Playnite port."
+                    Write-AgentDiagnosticEvent "adoption_refused" @{ profile_id = $ProfileId; child_component = $Name; pid = [int]$owner; status = "unknown_identity" }
                     return $null
                 }
             } else {
-                Write-AgentLog "Refusing to adopt unhealthy $Name process PID $owner."
+                Write-AgentDiagnosticEvent "adoption_refused" @{ profile_id = $ProfileId; child_component = $Name; pid = [int]$owner; status = "unhealthy" }
                 return Get-Process -Id $owner -ErrorAction SilentlyContinue
             }
         }
@@ -145,10 +174,10 @@ function Test-ComponentHealth([string]$Name, [bool]$RequireIdentity = $false) {
 }
 
 function Restart-Component([string]$Name, [Diagnostics.Process]$Process) {
-    Write-AgentLog "$Name failed its health check; restarting."
+    Write-AgentDiagnosticEvent "health_check.failed" @{ profile_id = $ProfileId; child_component = $Name; status = "restarting" }
     try { if ($null -ne $Process -and -not $Process.HasExited) { Stop-Process -Id $Process.Id -Force } } catch {}
     Start-Sleep -Milliseconds 500
-    try { $children[$Name] = Start-Component $Name } catch { Write-AgentLog "Restart failed for \${Name}: $($_.Exception.Message)" }
+    try { $children[$Name] = Start-Component $Name } catch { Write-AgentDiagnosticEvent "component.restart_failed" @{ profile_id = $ProfileId; child_component = $Name; status = "failed" } $_.Exception }
 }
 
 function Stop-Components {
@@ -158,7 +187,7 @@ function Stop-Components {
         @{ name = "playnite"; script = "Stop-PlayniteBridge.ps1" })) {
         $stopScript = Join-Path (Join-Path $ProfileRoot $entry.name) $entry.script
         if (Test-Path -LiteralPath $stopScript) {
-            try { & $stopScript | Out-Null } catch { Write-AgentLog "Graceful stop failed for $($entry.name): $($_.Exception.Message)" }
+            try { & $stopScript | Out-Null } catch { Write-AgentDiagnosticEvent "component.graceful_stop_failed" @{ profile_id = $ProfileId; child_component = $entry.name; status = "failed" } $_.Exception }
         }
     }
     Start-Sleep -Milliseconds 500
@@ -167,11 +196,12 @@ function Stop-Components {
     }
 }
 
+Initialize-AgentDiagnostics
 $expectedOwner = Get-ExpectedProfileOwner
 $currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
 if (-not [string]::IsNullOrWhiteSpace($expectedOwner) -and
     -not $expectedOwner.Equals($currentUser, [StringComparison]::OrdinalIgnoreCase)) {
-    Write-AgentLog "Profile Bridge refused to run under $currentUser; this profile belongs to $expectedOwner."
+    Write-AgentDiagnosticEvent "wrong_user" @{ profile_id = $ProfileId; status = "refused" }
     Write-State "wrong_user"
     exit 1
 }
@@ -180,14 +210,14 @@ try {
     try { $ownsMutex = $mutex.WaitOne(0, $false) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
     if (-not $ownsMutex) { exit 0 }
     if (Test-Path -LiteralPath $manualStopPath) {
-        Write-AgentLog "Profile Bridge remains stopped because the user stopped it manually."
+        Write-AgentDiagnosticEvent "manual_stop_observed" @{ profile_id = $ProfileId; status = "manually_stopped" }
         Write-State "manually_stopped"
         exit 0
     }
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
-    Write-AgentLog "Profile Bridge supervisor started for $ProfileId."
+    Write-AgentDiagnosticEvent "supervisor.started" @{ profile_id = $ProfileId; status = "running" }
     foreach ($name in @("discord", "vibepollo", "playnite")) {
-        try { $children[$name] = Start-Component $name } catch { Write-AgentLog "Start failed for ${name}: $($_.Exception.Message)" }
+        try { $children[$name] = Start-Component $name } catch { Write-AgentDiagnosticEvent "component.start_failed" @{ profile_id = $ProfileId; child_component = $name; status = "failed" } $_.Exception }
     }
     Write-State "running"
     $healthTick = 0
@@ -195,9 +225,9 @@ try {
         foreach ($name in @("discord", "vibepollo", "playnite")) {
             $process = $children[$name]
             if ($null -ne $process -and $process.HasExited) {
-                Write-AgentLog "$name exited with code $($process.ExitCode); restarting."
+                Write-AgentDiagnosticEvent "component.exited" @{ profile_id = $ProfileId; child_component = $name; exit_code = [int]$process.ExitCode; status = "restarting" }
                 Start-Sleep -Milliseconds 750
-                try { $children[$name] = Start-Component $name } catch { Write-AgentLog "Restart failed for ${name}: $($_.Exception.Message)" }
+                try { $children[$name] = Start-Component $name } catch { Write-AgentDiagnosticEvent "component.restart_failed" @{ profile_id = $ProfileId; child_component = $name; status = "failed" } $_.Exception }
             } elseif ($null -eq $process) {
                 try { $children[$name] = Start-Component $name } catch {}
             }
@@ -226,8 +256,9 @@ try {
     Write-State "stopping"
     Stop-Components
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
-    Write-State $(if (Test-Path -LiteralPath $manualStopPath) { "manually_stopped" } else { "stopped" })
-    Write-AgentLog "Profile Bridge supervisor stopped."
+    $finalStatus = if (Test-Path -LiteralPath $manualStopPath) { "manually_stopped" } else { "stopped" }
+    Write-State $finalStatus
+    Write-AgentDiagnosticEvent "supervisor.stopped" @{ profile_id = $ProfileId; status = $finalStatus }
     if ($ownsMutex) { try { $mutex.ReleaseMutex() } catch {} }
     $mutex.Dispose()
 }

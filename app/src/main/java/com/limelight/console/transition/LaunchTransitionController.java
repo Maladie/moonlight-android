@@ -1,5 +1,7 @@
 package com.limelight.console.transition;
 
+import com.limelight.diagnostics.MoonWakerDiagnostics;
+
 import java.util.Objects;
 
 /**
@@ -35,6 +37,9 @@ public final class LaunchTransitionController {
     private boolean uncertain;
     private LaunchTransitionState terminalFailureState;
     private String detail = "";
+    private String diagnosticSignature = "";
+    private String diagnosticTransitionId = "";
+    private LaunchTransitionState diagnosticState = LaunchTransitionState.IDLE;
 
     public LaunchTransitionController(Listener listener) {
         this.listener = listener;
@@ -430,6 +435,38 @@ public final class LaunchTransitionController {
             activeStep = stepForState(state);
         }
         LaunchTransitionSnapshot value = snapshotValue();
+        LaunchTransitionType publishedTarget = currentTarget;
+        String publishedGameId = currentGameId;
+        String nextSignature = value.spec.id + '|' + value.state + '|' + value.step + '|'
+                + value.overlayVisible + '|' + value.inputBlocked + '|'
+                + value.operationAuthorized + '|' + value.revealAuthorized + '|'
+                + value.manualRevealAvailable + '|' + value.uncertain + '|' + value.detail;
+        if (!nextSignature.equals(diagnosticSignature)) {
+            LaunchTransitionState previous = value.spec.id.equals(diagnosticTransitionId)
+                    ? diagnosticState : LaunchTransitionState.IDLE;
+            diagnosticSignature = nextSignature;
+            diagnosticTransitionId = value.spec.id;
+            diagnosticState = value.state;
+            MoonWakerDiagnostics.record(
+                    value.state == LaunchTransitionState.ERROR
+                            || value.state == LaunchTransitionState.TIMED_OUT ? "WARN" : "INFO",
+                    "android.launch-transition", "launch_transition.changed",
+                    "transition_id", value.spec.id,
+                    "host_id", value.spec.hostId,
+                    "game_id", publishedGameId,
+                    "kind", publishedTarget.name(),
+                    "from", previous.name(),
+                    "to", value.state.name(),
+                    "state", value.state.name(),
+                    "stage", value.step,
+                    "overlay_visible", value.overlayVisible,
+                    "input_blocked", value.inputBlocked,
+                    "operation_authorized", value.operationAuthorized,
+                    "reveal_authorized", value.revealAuthorized,
+                    "manual_reveal_available", value.manualRevealAvailable,
+                    "uncertain", value.uncertain,
+                    "reason", value.detail);
+        }
         if (listener != null) listener.onTransitionChanged(value);
         return value;
     }

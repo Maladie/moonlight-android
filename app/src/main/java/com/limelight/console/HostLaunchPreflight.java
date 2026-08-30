@@ -1,5 +1,6 @@
 package com.limelight.console;
 
+import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.nvstream.http.NvApp;
 
 import java.io.IOException;
@@ -182,6 +183,45 @@ final class HostLaunchPreflight {
     }
 
     Result run(Request request, BooleanSupplier cancelled, Progress progress) {
+        long started = System.nanoTime();
+        Stage[] currentStage = {null};
+        MoonWakerDiagnostics.record("INFO", "android.host-preflight", "preflight.started",
+                "host_id", request.hostId, "game_id", request.gameId,
+                "app_id", request.appId, "kind", request.kind.name(),
+                "operation", request.action.name());
+        Progress tracedProgress = stage -> {
+            currentStage[0] = stage;
+            MoonWakerDiagnostics.record("INFO", "android.host-preflight",
+                    "preflight.stage", "host_id", request.hostId,
+                    "game_id", request.gameId, "app_id", request.appId,
+                    "kind", request.kind.name(), "operation", request.action.name(),
+                    "stage", stage.name());
+            progress.onStage(stage);
+        };
+        try {
+            Result result = runInternal(request, cancelled, tracedProgress);
+            Stage terminalStage = result.failure != null ? result.failure.stage : currentStage[0];
+            String reason = result.failure != null ? result.failure.reason.name()
+                    : result.status.name();
+            MoonWakerDiagnostics.record(
+                    result.status == Status.FAILED ? "WARN" : "INFO",
+                    "android.host-preflight", "preflight." +
+                            result.status.name().toLowerCase(java.util.Locale.ROOT),
+                    "host_id", request.hostId, "game_id", request.gameId,
+                    "app_id", request.appId, "kind", request.kind.name(),
+                    "operation", request.action.name(), "status", result.status.name(),
+                    "stage", terminalStage == null ? "" : terminalStage.name(),
+                    "reason", reason, "duration_ms", Math.max(0L,
+                            java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(
+                                    System.nanoTime() - started)));
+            return result;
+        } catch (RuntimeException error) {
+            recordException(request, currentStage[0], error);
+            throw error;
+        }
+    }
+
+    private Result runInternal(Request request, BooleanSupplier cancelled, Progress progress) {
         if (cancelled.getAsBoolean()) return Result.cancelled();
         progress.onStage(Stage.NETWORK_READY);
         if (!network.awaitReady(request.hostId, request.action, cancelled)) {
@@ -197,7 +237,9 @@ final class HostLaunchPreflight {
             try {
                 profile = gateway.selectedProfile(request.hostId);
             } catch (IOException | RuntimeException unavailable) {
-                return cancelled.getAsBoolean() ? Result.cancelled()
+                boolean wasCancelled = cancelled.getAsBoolean();
+                if (!wasCancelled) recordException(request, Stage.GATEWAY_READY, unavailable);
+                return wasCancelled ? Result.cancelled()
                         : Result.failed(Stage.GATEWAY_READY,
                         FailureReason.GATEWAY_UNAVAILABLE);
             }
@@ -226,7 +268,9 @@ final class HostLaunchPreflight {
         try {
             apps = sunshine.refreshApps(request.hostId);
         } catch (IOException | RuntimeException unavailable) {
-            return cancelled.getAsBoolean() ? Result.cancelled()
+            boolean wasCancelled = cancelled.getAsBoolean();
+            if (!wasCancelled) recordException(request, Stage.TARGET_READY, unavailable);
+            return wasCancelled ? Result.cancelled()
                     : Result.failed(Stage.TARGET_READY,
                     FailureReason.TARGET_UNAVAILABLE);
         }
@@ -264,13 +308,23 @@ final class HostLaunchPreflight {
         try {
             ensured = gateway.ensureTarget(request.hostId, request.gameId, request.appName);
         } catch (IOException | RuntimeException unavailable) {
-            return cancelled.getAsBoolean() ? Result.cancelled()
+            boolean wasCancelled = cancelled.getAsBoolean();
+            if (!wasCancelled) recordException(request, Stage.VIBEPOLLO_READY, unavailable);
+            return wasCancelled ? Result.cancelled()
                     : Result.failed(Stage.VIBEPOLLO_READY,
                     FailureReason.VIBEPOLLO_UNAVAILABLE);
         }
         if (cancelled.getAsBoolean()) return Result.cancelled();
         progress.onStage(Stage.TARGET_READY);
         return awaitEnsuredTarget(request, ensured, cancelled);
+    }
+
+    private static void recordException(Request request, Stage stage, Exception error) {
+        MoonWakerDiagnostics.record("WARN", "android.host-preflight", "preflight.exception",
+                "host_id", request.hostId, "game_id", request.gameId,
+                "app_id", request.appId, "kind", request.kind.name(),
+                "operation", request.action.name(), "stage", stage == null ? "" : stage.name(),
+                "error_type", error.getClass().getName());
     }
 
     private Result awaitEnsuredTarget(Request request, EnsuredTarget ensured,

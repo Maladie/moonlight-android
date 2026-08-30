@@ -332,6 +332,10 @@
             android:title="@string/title_enable_post_stream_toast"
             android:summary="@string/summary_enable_post_stream_toast"
             android:defaultValue="false"/>
+        <Preference
+            android:key="export_diagnostics"
+            android:title="@string/title_export_diagnostics"
+            android:summary="@string/summary_export_diagnostics" />
     </PreferenceCategory>
     <!--PreferenceCategory android:title="@string/category_help"
         android:key="category_help">

@@ -96,7 +96,10 @@ namespace MoonWaker.HostControl
             Button pair = AddActionButton(gatewayPanel, "Sparuj TV", 802, 27, delegate { PairGateway(); }, 142);
             pair.BackColor = accent;
             pair.FlatAppearance.BorderSize = 0;
-            AddActionButton(gatewayPanel, "Napraw wszystko", 430, 74, delegate { RunAction("RecoverAll", null); }, 514);
+            AddActionButton(gatewayPanel, "Napraw wszystko", 430, 74,
+                delegate { RunAction("RecoverAll", null); }, 250);
+            AddActionButton(gatewayPanel, "Eksportuj diagnostykę", 688, 74,
+                delegate { ExportDiagnostics(); }, 256);
             activeProfile.SetBounds(430, 122, 510, 25);
             activeProfile.ForeColor = muted;
             gatewayPanel.Controls.Add(activeProfile);
@@ -550,6 +553,27 @@ namespace MoonWaker.HostControl
             catch (Exception ex) { MessageBox.Show(this, ex.Message, "MoonWaker Host Control", MessageBoxButtons.OK, MessageBoxIcon.Error); }
         }
 
+        private async void ExportDiagnostics()
+        {
+            try
+            {
+                footer.Text = "Eksportuję diagnostykę…";
+                Dictionary<string, object> result = await RunControlAsync(
+                    "ExportDiagnostics", null, false);
+                if (!IsOk(result)) throw new InvalidOperationException(
+                    GetText(result, "error", "Nie udało się wyeksportować diagnostyki."));
+                MessageBox.Show(this, "Pakiet diagnostyczny zapisano w:\n\n" +
+                    GetText(result, "path", ""), "MoonWaker Host Control",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "MoonWaker Host Control",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally { RefreshStatus(); }
+        }
+
         private void ClearDiscord()
         {
             string id = SelectedProfileId();
@@ -618,6 +642,7 @@ namespace MoonWaker.HostControl
                         Task<string> stdout = elevated ? null : process.StandardOutput.ReadToEndAsync();
                         Task<string> stderr = elevated ? null : process.StandardError.ReadToEndAsync();
                         int timeout = action == "ConnectEpic" ? 900000 :
+                            action == "ExportDiagnostics" ? 120000 :
                             action == "RecoverAll" ? 90000 :
                             action.EndsWith("Gateway", StringComparison.Ordinal) ? 60000 : 30000;
                         if (!process.WaitForExit(timeout))
