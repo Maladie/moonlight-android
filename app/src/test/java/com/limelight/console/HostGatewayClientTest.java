@@ -134,4 +134,22 @@ public class HostGatewayClientTest {
 
         assertTrue(profiles.find("default").playniteConnectorConnected);
     }
+
+    @Test public void gameStartRejectionPreservesTopLevelAndNestedReasons() throws Exception {
+        assertEquals("launcher_interaction_required",
+                HostGatewayClient.gameStartRejectionReason(new JSONObject()
+                        .put("accepted", false)
+                        .put("reason", "launcher_interaction_required")));
+        assertEquals("host_session_locked",
+                HostGatewayClient.gameStartRejectionReason(new JSONObject()
+                        .put("result", new JSONObject()
+                                .put("accepted", false)
+                                .put("reason", "host_session_locked"))));
+    }
+
+    @Test public void acceptedGameStartHasNoRejectionReason() throws Exception {
+        assertEquals("", HostGatewayClient.gameStartRejectionReason(new JSONObject()
+                .put("accepted", true)
+                .put("result", new JSONObject().put("accepted", true))));
+    }
 }

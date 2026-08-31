@@ -2,6 +2,7 @@ package com.limelight.console;
 
 import com.limelight.console.transition.LaunchTransitionType;
 import com.limelight.nvstream.http.NvApp;
+import com.limelight.stream.RetainedStreamSessionCoordinator;
 
 import org.junit.Test;
 
@@ -12,11 +13,267 @@ import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class SessionOrchestratorTest {
+    @Test public void savedPairAllowsOnePreparationButNotOrdinaryPlay() {
+        Fake effects = new Fake();
+        effects.paired = false;
+        effects.knownPreparationPair = true;
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        assertTrue(orchestrator.prepareHost("host") > 0L);
+        assertEquals(1, effects.prepareCalls);
+        assertEquals(1, effects.preparedLaunches);
+        orchestrator.play(game());
+        assertEquals(SessionOrchestrator.Rejection.UNPAIRED, effects.rejection);
+        assertEquals(0, effects.launches);
+    }
+
+    @Test public void warmUpGameClickHandsOffBeforeWorkerCompletes() {
+        Fake effects = new Fake();
+        effects.deferLoading = true;
+        QueuedExecutor worker = new QueuedExecutor();
+        QueuedDispatcher main = new QueuedDispatcher();
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+
+        orchestrator.prepareHost("host");
+        orchestrator.play(game());
+
+        assertEquals(1, effects.loadings);
+        assertEquals(0, effects.readiness);
+        worker.runNext();
+        main.runNext();
+        assertEquals(0, effects.preparedLaunches);
+        effects.opaqueCallbacks.remove().run();
+        main.runNext();
+        assertEquals(1, effects.preparedLaunches);
+        assertEquals("game", effects.preparedGame.playniteGameId);
+        assertEquals(effects.prepareRequest, effects.preparedLaunchRequest);
+    }
+
+    @Test public void readyWarmUpWithoutSelectionLaunchesImmediatelyOnce() {
+        Fake effects = new Fake();
+        QueuedExecutor worker = new QueuedExecutor();
+        QueuedDispatcher main = new QueuedDispatcher();
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+
+        orchestrator.prepareHost("host");
+        worker.runNext();
+        main.runNext();
+
+        assertEquals(1, effects.preparedLaunches);
+        assertNull(effects.preparedGame);
+        orchestrator.play(game());
+        assertEquals(1, effects.preparedLaunches);
+        assertEquals(1, effects.loadings);
+    }
+
+    @Test public void queuedReadyThenClickWaitsForOpaqueAndCannotDoubleLaunch() {
+        Fake effects = new Fake();
+        effects.deferLoading = true;
+        QueuedExecutor worker = new QueuedExecutor();
+        QueuedDispatcher main = new QueuedDispatcher();
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+
+        orchestrator.prepareHost("host");
+        worker.runNext();
+        orchestrator.play(game());
+        main.runNext();
+        assertEquals(0, effects.preparedLaunches);
+
+        effects.opaqueCallbacks.remove().run();
+        main.runNext();
+        assertEquals(1, effects.preparedLaunches);
+        main.runAll();
+        assertEquals(1, effects.preparedLaunches);
+    }
+
+    @Test public void handoffKeepsThePreparationGenerationCurrent() {
+        Fake effects = new Fake();
+        effects.deferLoading = true;
+        QueuedExecutor worker = new QueuedExecutor();
+        QueuedDispatcher main = new QueuedDispatcher();
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+
+        orchestrator.prepareHost("host");
+        orchestrator.play(game());
+        worker.runNext();
+        main.runAll();
+        effects.opaqueCallbacks.remove().run();
+        main.runNext();
+
+        assertEquals(1L, effects.prepareRequest);
+        assertEquals(1L, effects.preparedLaunchRequest);
+    }
+
+    @Test public void ordinaryPlayAdvancesGenerationAfterPreparedLaunch() {
+        Fake effects = new Fake();
+        SessionOrchestrator orchestrator = orchestrator(effects);
+
+        orchestrator.prepareHost("host");
+        assertEquals(1L, effects.prepareRequest);
+        orchestrator.play(game());
+        orchestrator.prepareHost("host");
+
+        assertEquals(3L, effects.prepareRequest);
+    }
+
+    @Test public void cancelledClosedAndStalePreparationResultsNeverLaunch() {
+        for (int action = 0; action < 3; action++) {
+            Fake effects = new Fake();
+            QueuedExecutor worker = new QueuedExecutor();
+            QueuedDispatcher main = new QueuedDispatcher();
+            SessionOrchestrator orchestrator = new SessionOrchestrator(
+                    effects, worker, main);
+            orchestrator.prepareHost("host");
+            worker.runNext();
+            if (action == 0) orchestrator.cancel();
+            else if (action == 1) orchestrator.close();
+            else orchestrator.prepareHost("host");
+
+            main.runNext();
+
+            assertEquals(0, effects.preparedLaunches);
+        }
+    }
+
+    @Test public void noLaunchPreparationClearsHandoffAndOrdinaryPlayContinues() {
+        Fake effects = new Fake();
+        effects.preparedWarmUp = null;
+        QueuedExecutor worker = new QueuedExecutor();
+        QueuedDispatcher main = new QueuedDispatcher();
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+
+        orchestrator.prepareHost("host");
+        worker.runNext();
+        main.runNext();
+        orchestrator.play(game());
+
+        assertEquals(1, effects.loadings);
+        assertEquals(0, effects.preparedLaunches);
+        assertEquals(1, worker.size());
+    }
+
+    @Test public void failedPreparationAfterGameHandoffShowsErrorAndRetryUsesGame() {
+        Fake effects = new Fake();
+        effects.preparedWarmUp = null;
+        QueuedExecutor worker = new QueuedExecutor();
+        QueuedDispatcher main = new QueuedDispatcher();
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+
+        orchestrator.prepareHost("host");
+        orchestrator.play(game());
+        worker.runNext();
+        main.runAll();
+
+        assertEquals(1, effects.preparationFailures);
+        orchestrator.retry();
+        assertEquals(2, effects.loadings);
+        assertEquals(1, worker.size());
+    }
+
+    @Test public void preparationQueryAndCancelAreScopedToHost() {
+        Fake effects = new Fake();
+        QueuedExecutor worker = new QueuedExecutor();
+        QueuedDispatcher main = new QueuedDispatcher();
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+
+        assertTrue(orchestrator.prepareHost("host") > 0L);
+        assertTrue(orchestrator.hasPreparationForHost("host"));
+        assertFalse(orchestrator.cancelPreparation("other"));
+        assertTrue(orchestrator.hasPreparationForHost("host"));
+        assertTrue(orchestrator.cancelPreparation("host"));
+        assertFalse(orchestrator.hasPreparationForHost("host"));
+    }
+
+    @Test public void differentHostPlayDoesNotHandoffToWarmUp() {
+        Fake effects = new Fake();
+        QueuedExecutor worker = new QueuedExecutor();
+        QueuedDispatcher main = new QueuedDispatcher();
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, worker, main);
+
+        orchestrator.prepareHost("host");
+        orchestrator.play(PlayIntent.playniteGame(
+                "other", 42, "Game", false, "game", "game"));
+        worker.runNext();
+        main.runAll();
+
+        assertEquals(1, effects.loadings);
+        assertEquals(0, effects.preparedLaunches);
+        assertTrue(effects.prepareCancelled.getAsBoolean());
+    }
+
+    @Test public void unavailableOrUnpairedHostNeverStartsPreparationWorker() {
+        for (boolean unavailable : new boolean[] { true, false }) {
+            Fake effects = new Fake();
+            effects.available = !unavailable;
+            effects.paired = unavailable;
+
+            assertEquals(0L, orchestrator(effects).prepareHost("host"));
+            assertEquals(0, effects.prepareCalls);
+        }
+    }
+
+    @Test public void retainedAndPreparingNoLaunchResultsDoNotLeaveHandoffWaiting() {
+        for (SessionSnapshot.State state : new SessionSnapshot.State[] {
+                SessionSnapshot.State.ACTIVE,
+                SessionSnapshot.State.PREPARING }) {
+            Fake effects = new Fake();
+            effects.snapshot = snapshot(state, 42, "");
+            effects.preparedWarmUp = null;
+            SessionOrchestrator orchestrator = orchestrator(effects);
+
+            orchestrator.prepareHost("host");
+            effects.snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+            orchestrator.play(game());
+
+            assertEquals(1, effects.loadings);
+            assertEquals(0, effects.preparedLaunches);
+        }
+    }
+
+    @Test public void warmUpWakeDecisionUsesLocalBridgeAndMoonlightEvidence() {
+        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
+                RetainedStreamSessionCoordinator.State.HOME_LIVE, false,
+                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
+        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
+                RetainedStreamSessionCoordinator.State.PARKED_LIVE, false,
+                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
+        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
+                RetainedStreamSessionCoordinator.State.PREPARING, false,
+                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
+        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
+                RetainedStreamSessionCoordinator.State.TERMINATING, false,
+                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
+        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
+                RetainedStreamSessionCoordinator.State.NONE, true,
+                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
+        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
+                RetainedStreamSessionCoordinator.State.NONE, false,
+                com.limelight.nvstream.http.ComputerDetails.State.ONLINE));
+        assertFalse(SessionOrchestrator.shouldSendWarmUpWake(
+                RetainedStreamSessionCoordinator.State.NONE, false,
+                com.limelight.nvstream.http.ComputerDetails.State.UNKNOWN));
+        assertTrue(SessionOrchestrator.shouldSendWarmUpWake(
+                RetainedStreamSessionCoordinator.State.NONE, false,
+                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
+        assertTrue(SessionOrchestrator.shouldSendWarmUpWake(
+                RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
+                false, com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
+    }
+
+    @Test public void warmUpWakeDecisionIsPureAndDoesNotOwnSendState() {
+        assertTrue(SessionOrchestrator.shouldSendWarmUpWake(
+                RetainedStreamSessionCoordinator.State.NONE, false,
+                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
+        assertTrue(SessionOrchestrator.shouldSendWarmUpWake(
+                RetainedStreamSessionCoordinator.State.NONE, false,
+                com.limelight.nvstream.http.ComputerDetails.State.OFFLINE));
+    }
+
     @Test public void matchingRetainedTargetReturnsWithoutReadinessOrLaunch() {
         Fake effects = new Fake();
         effects.snapshot = new SessionSnapshot("host", SessionSnapshot.State.ACTIVE, 42,
@@ -139,6 +396,22 @@ public class SessionOrchestratorTest {
         assertEquals(1, effects.closes);
         assertEquals(1, effects.returned);
         assertEquals(0, effects.launches);
+        assertEquals(0, effects.refreshes);
+        assertEquals(0, effects.uncertainFailures);
+    }
+
+    @Test public void preparingObservedGameStillRequiresFreshExactBridgeState() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "old");
+        effects.canSwitch = true;
+        effects.closeResult = SessionOrchestrator.CloseResult.REUSED;
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.refreshes);
+        assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED,
+                effects.preflightAction);
+        assertEquals(1, effects.returned);
     }
 
     @Test public void retainedNeutralStreamLaunchesManagedGameWithoutClosingTransport() {
@@ -152,6 +425,23 @@ public class SessionOrchestratorTest {
         assertNull(effects.confirmation);
         assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED,
                 effects.preflightAction);
+        assertEquals(1, effects.returned);
+        assertEquals(0, effects.launches);
+    }
+
+    @Test public void preparingWarmUpUsesOpaqueRetainedSwitchWithoutFreshLaunch() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "");
+        effects.canSwitch = true;
+        effects.closeResult = SessionOrchestrator.CloseResult.REUSED;
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.loadings);
+        assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED,
+                effects.preflightAction);
+        assertEquals(Boolean.FALSE, effects.allowDestructiveCloseSeen);
+        assertEquals(1, effects.closes);
         assertEquals(1, effects.returned);
         assertEquals(0, effects.launches);
     }
@@ -448,7 +738,9 @@ public class SessionOrchestratorTest {
     }
 
     private static final class Fake implements SessionOrchestrator.Effects {
+        boolean available = true;
         boolean paired = true;
+        boolean knownPreparationPair;
         SessionSnapshot snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
         SessionOrchestrator.Rejection rejection;
         Runnable confirmation;
@@ -467,6 +759,18 @@ public class SessionOrchestratorTest {
         Boolean firstAllowDestructiveCloseSeen;
         Boolean allowDestructiveCloseSeen;
         String lastCloseFailure;
+        boolean deferLoading;
+        final Queue<Runnable> opaqueCallbacks = new ArrayDeque<>();
+        SessionOrchestrator.PreparedWarmUp preparedWarmUp =
+                new SessionOrchestrator.PreparedWarmUp(
+                        new NvApp("MoonWaker Stream", 77, false), "", null, false);
+        BooleanSupplier prepareCancelled = () -> false;
+        long prepareRequest;
+        int preparedLaunches;
+        long preparedLaunchRequest;
+        PlayIntent preparedGame;
+        int prepareCalls;
+        int preparationFailures;
 
         int returned;
         int reconnects;
@@ -482,8 +786,11 @@ public class SessionOrchestratorTest {
         String launchedSourceSuspendId;
         boolean launchedOwnsFreshSunshineSession;
 
-        @Override public boolean isAvailable() { return true; }
+        @Override public boolean isAvailable() { return available; }
         @Override public boolean isPaired(String hostId) { return paired; }
+        @Override public boolean canPrepareHost(String hostId) {
+            return paired || knownPreparationPair;
+        }
         @Override public SessionSnapshot resolve(String hostId) { return snapshot; }
         @Override public void returnToRetainedStream() { returned++; }
         @Override public void reconnectSavedSession() { reconnects++; }
@@ -499,8 +806,24 @@ public class SessionOrchestratorTest {
         @Override public void showLoading(PlayIntent intent, LaunchTransitionType type,
                                           Runnable opaqueFrameReady) {
             loadings++;
-            opaqueFrameReady.run();
+            if (deferLoading) opaqueCallbacks.add(opaqueFrameReady);
+            else opaqueFrameReady.run();
         }
+        @Override public SessionOrchestrator.PreparedWarmUp prepareHost(
+                PlayIntent intent, long request, BooleanSupplier cancelled) {
+            prepareCalls++;
+            prepareRequest = request;
+            prepareCancelled = cancelled;
+            return preparedWarmUp;
+        }
+        @Override public void launchPreparedHost(
+                SessionOrchestrator.PreparedWarmUp prepared,
+                PlayIntent pendingGame, long request) {
+            preparedLaunches++;
+            preparedLaunchRequest = request;
+            preparedGame = pendingGame;
+        }
+        @Override public void preparationFailed() { preparationFailures++; }
         @Override public void refreshSession(
                 PlayIntent intent, BooleanSupplier cancelled,
                 Consumer<Boolean> completion) {
@@ -554,5 +877,21 @@ public class SessionOrchestratorTest {
         @Override public void previousSessionCloseFailed(String reason) {
             lastCloseFailure = reason;
         }
+    }
+
+    private static final class QueuedExecutor implements Executor {
+        final Queue<Runnable> actions = new ArrayDeque<>();
+
+        @Override public void execute(Runnable action) { actions.add(action); }
+        void runNext() { actions.remove().run(); }
+        int size() { return actions.size(); }
+    }
+
+    private static final class QueuedDispatcher implements SessionOrchestrator.Dispatcher {
+        final Queue<Runnable> actions = new ArrayDeque<>();
+
+        @Override public void post(Runnable action) { actions.add(action); }
+        void runNext() { actions.remove().run(); }
+        void runAll() { while (!actions.isEmpty()) runNext(); }
     }
 }

@@ -14,7 +14,7 @@ import java.util.Set;
  * Additive MoonWaker view of Wake & Play's host-keyed Gateway preference schema.
  * It never logs or exposes credentials to UI text.
  */
-final class HostGatewayStore {
+public final class HostGatewayStore {
     private static final String PREFS = "host_gateway_connections";
     static final String DEFAULT_DISCORD_PROFILE_ID = "default";
     private final SharedPreferences preferences;
@@ -34,7 +34,7 @@ final class HostGatewayStore {
         }
     }
 
-    HostGatewayStore(Context context) {
+    public HostGatewayStore(Context context) {
         preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
 
@@ -54,7 +54,7 @@ final class HostGatewayStore {
         }
     }
 
-    GatewayConnection loadForHost(String hostUuid, String activeHost) {
+    public GatewayConnection loadForHost(String hostUuid, String activeHost) {
         GatewayConnection stored = load(hostUuid);
         if (stored == null || activeHost == null || activeHost.trim().isEmpty()) return stored;
         try {

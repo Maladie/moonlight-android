@@ -4,9 +4,9 @@ import com.limelight.console.transition.LaunchTransitionType;
 
 import java.util.Objects;
 
-/** Immutable destination selected by the user. */
+/** Immutable session destination. */
 final class PlayIntent {
-    enum Kind { SUNSHINE_APP, PLAYNITE_GAME, PLAYNITE_FULLSCREEN }
+    enum Kind { SUNSHINE_APP, PLAYNITE_GAME, PLAYNITE_FULLSCREEN, AUTO_WARM_UP }
 
     final String hostId;
     final Kind kind;
@@ -29,7 +29,8 @@ final class PlayIntent {
         this.quickLaunchId = quickLaunchId == null ? "" : quickLaunchId.trim();
         this.loadingArtworkGameId = loadingArtworkGameId == null
                 ? "" : loadingArtworkGameId.trim();
-        boolean targetMayBePrepared = kind == Kind.PLAYNITE_GAME && sunshineAppId == 0;
+        boolean targetMayBePrepared = (kind == Kind.PLAYNITE_GAME
+                || kind == Kind.AUTO_WARM_UP) && sunshineAppId == 0;
         if (this.hostId.isEmpty() || (sunshineAppId <= 0 && !targetMayBePrepared)
                 || this.appName.isEmpty()) {
             throw new IllegalArgumentException("Host, Sunshine app ID, and app name are required");
@@ -74,6 +75,12 @@ final class PlayIntent {
                 hdrSupported, "", "", "" );
     }
 
+    static PlayIntent autoWarmUp(String hostId) {
+        return new PlayIntent(hostId, Kind.AUTO_WARM_UP, 0,
+                PlayniteTargetResolver.MOONWAKER_STREAM_NAME,
+                false, "", "", "");
+    }
+
     String transitionGameId() {
         return kind == Kind.PLAYNITE_GAME ? playniteGameId : "";
     }
@@ -98,6 +105,8 @@ final class PlayIntent {
             case PLAYNITE_FULLSCREEN:
                 return sunshineAppId == currentAppId
                         && SessionSnapshot.normalize(currentGameId).isEmpty();
+            case AUTO_WARM_UP:
+                return false;
             default:
                 return sunshineAppId == currentAppId;
         }

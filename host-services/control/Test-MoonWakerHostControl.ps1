@@ -178,6 +178,11 @@ try {
     if (-not $current.current_user -or $foreign.current_user) {
         throw "Host Control did not correlate profiles with their Windows owner."
     }
+    if ($status.microphone.ready -or $status.microphone.reason -ne "worker_missing" -or
+        $status.microphone.PSObject.Properties["path"] -or
+        $status.microphone.PSObject.Properties["error"]) {
+        throw "Host Control did not return the expected safe microphone readiness."
+    }
 
     $listenerScript = Join-Path $root "listener.ps1"
     @'

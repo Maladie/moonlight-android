@@ -8,6 +8,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
+import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.OutputStream;
@@ -23,6 +24,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.function.Supplier;
 
 import javax.net.ssl.HostnameVerifier;
@@ -110,6 +112,64 @@ public final class GatewayTransport {
             throw error;
         } finally {
             if (http != null) http.disconnect();
+        }
+    }
+
+    public MicrophoneStream openMicrophoneStream(GatewayConnection connection,
+                                                  String sessionId) throws IOException {
+        String requestId = effectiveRequestId(null);
+        HttpsURLConnection http = null;
+        try {
+            http = open(connection.endpoint(), "/api/v1/microphone/stream",
+                    new GatewayTrustManager(connection.certificateSha256(), false), 6_000);
+            http.setRequestMethod("POST");
+            applyHeaders(http, buildRequestHeaders(connection, false, false, requestId));
+            http.setRequestProperty("Content-Type",
+                    "application/vnd.moonwaker.microphone-pcm;" +
+                            "format=s16le;rate=48000;channels=1");
+            http.setRequestProperty("X-Microphone-Session-Id", requireRequestId(sessionId));
+            http.setDoOutput(true);
+            http.setChunkedStreamingMode(1920);
+            return new MicrophoneStream(http, http.getOutputStream());
+        } catch (GeneralSecurityException error) {
+            if (http != null) http.disconnect();
+            throw new IOException("Unable to initialize gateway TLS.", error);
+        } catch (IOException | RuntimeException error) {
+            if (http != null) http.disconnect();
+            throw error;
+        }
+    }
+
+    public DiscordAudioStream openDiscordAudioStream(GatewayConnection connection)
+            throws IOException {
+        HttpsURLConnection http = null;
+        try {
+            http = open(connection.endpoint(), "/api/v1/discord/audio/stream",
+                    new GatewayTrustManager(connection.certificateSha256(), false), 20_000);
+            http.setRequestMethod("GET");
+            applyHeaders(http, buildRequestHeaders(connection, false, false,
+                    effectiveRequestId(null)));
+            http.setRequestProperty("Accept",
+                    "application/vnd.moonwaker.discord-audio-pcm;" +
+                            "format=s16le;rate=48000;channels=2");
+            int status = http.getResponseCode();
+            if (status < HttpURLConnection.HTTP_OK || status >= 300) {
+                InputStream error = http.getErrorStream();
+                byte[] raw = error == null ? new byte[0] : readAndClose(error, JSON_LIMIT);
+                decodeJsonResponse(status, raw);
+            }
+            String contentType = http.getHeaderField("Content-Type");
+            if (!"application/vnd.moonwaker.discord-audio-pcm;".concat(
+                    "format=s16le;rate=48000;channels=2").equalsIgnoreCase(contentType)) {
+                throw new IOException("Unsupported Discord audio format.");
+            }
+            return new DiscordAudioStream(http, http.getInputStream());
+        } catch (GeneralSecurityException error) {
+            if (http != null) http.disconnect();
+            throw new IOException("Unable to initialize gateway TLS.", error);
+        } catch (IOException | RuntimeException error) {
+            if (http != null) http.disconnect();
+            throw error;
         }
     }
 
@@ -289,6 +349,12 @@ public final class GatewayTransport {
         return value;
     }
 
+    static void requireMicrophoneFrame(byte[] frame) {
+        if (frame == null || frame.length != 1920) {
+            throw new IllegalArgumentException("A microphone frame must contain 1920 bytes");
+        }
+    }
+
     private static HttpsURLConnection open(String endpoint, String path,
                                            GatewayTrustManager trustManager, int readTimeoutMs)
             throws IOException, GeneralSecurityException {
@@ -342,6 +408,57 @@ public final class GatewayTransport {
 
         public String certificateSha256() {
             return certificateSha256;
+        }
+    }
+
+    public static final class MicrophoneStream implements Closeable {
+        private final HttpsURLConnection http;
+        private final OutputStream output;
+
+        private MicrophoneStream(HttpsURLConnection http, OutputStream output) {
+            this.http = http;
+            this.output = output;
+        }
+
+        public void writeFrame(byte[] frame) throws IOException {
+            requireMicrophoneFrame(frame);
+            output.write(frame);
+            output.flush();
+        }
+
+        @Override
+        public void close() throws IOException {
+            IOException failure = null;
+            try { output.close(); }
+            catch (IOException error) { failure = error; }
+            try {
+                int status = http.getResponseCode();
+                InputStream response = status >= 400 ? http.getErrorStream() : http.getInputStream();
+                byte[] raw = response == null ? new byte[0] : readAndClose(response, JSON_LIMIT);
+                decodeJsonResponse(status, raw);
+            } catch (IOException error) {
+                if (failure == null) failure = error;
+            } finally { http.disconnect(); }
+            if (failure != null) throw failure;
+        }
+    }
+
+    public static final class DiscordAudioStream implements Closeable {
+        private final HttpsURLConnection http;
+        private final InputStream input;
+        private final AtomicBoolean closed = new AtomicBoolean();
+
+        DiscordAudioStream(HttpsURLConnection http, InputStream input) {
+            this.http = http;
+            this.input = input;
+        }
+
+        public int read(byte[] frame, int offset, int length) throws IOException {
+            return input.read(frame, offset, length);
+        }
+
+        @Override public void close() throws IOException {
+            if (closed.compareAndSet(false, true)) http.disconnect();
         }
     }
 

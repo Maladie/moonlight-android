@@ -284,6 +284,33 @@ function Test-GatewayManualStop([string]$Directory) {
     return Test-Path -LiteralPath (Join-Path $Directory "gateway-manually-stopped")
 }
 
+function Get-MicrophoneReadiness([object]$Gateway, [string]$Directory) {
+    $name = if ($Gateway.PSObject.Properties["microphone_worker"]) {
+        [string]$Gateway.microphone_worker
+    } else { "MoonWakerMicrophoneWorker.exe" }
+    $worker = if ([IO.Path]::IsPathRooted($name)) { $name } else { Join-Path $Directory $name }
+    if (-not (Test-Path -LiteralPath $worker -PathType Leaf)) {
+        return [ordered]@{ ready = $false; reason = "worker_missing" }
+    }
+    $process = $null
+    try {
+        $start = [Diagnostics.ProcessStartInfo]::new($worker, "--probe")
+        $start.UseShellExecute = $false
+        $start.CreateNoWindow = $true
+        $start.RedirectStandardOutput = $true
+        $start.RedirectStandardError = $true
+        $process = [Diagnostics.Process]::Start($start)
+        if ($process.WaitForExit(3000) -and $process.ExitCode -eq 0) {
+            return [ordered]@{ ready = $true; reason = "ready" }
+        }
+        if (-not $process.HasExited) { try { $process.Kill() } catch {} }
+    } catch {} finally { if ($process) { $process.Dispose() } }
+    return [ordered]@{
+        ready = $false
+        reason = "steam_endpoint_missing_or_ambiguous_or_unsupported"
+    }
+}
+
 function Test-CurrentProfileOwner([object]$Entry) {
     if (-not $Entry -or -not $Entry.PSObject.Properties["owner"]) { return $true }
     $owner = [string]$Entry.owner
@@ -446,6 +473,7 @@ function Get-Status {
         legendary = [ordered]@{
             installed = -not [string]::IsNullOrWhiteSpace((Get-LegendaryExecutable))
         }
+        microphone = Get-MicrophoneReadiness $gateway $gatewayDirectory
         gateway = [ordered]@{
             installed = Test-Path -LiteralPath $configPath
             running = Test-TcpPort "127.0.0.1" $port

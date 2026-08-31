@@ -32,6 +32,33 @@ public class MoonWakerDiagnosticsTest {
         MoonWakerDiagnostics.resetForTests();
     }
 
+    @Test public void audioSnapshotsAllowOnlyExplicitNumericCountersNotSamplesOrSecrets() throws Exception {
+        MoonWakerDiagnostics.initialize(directory);
+        MoonWakerDiagnostics.record("INFO", "android.audio", "audio.snapshot",
+                "audio_buffers", 4L, "audio_nonzero_buffers", 2L,
+                "audio_samples_written", 1920L, "audio_volume", 1f,
+                "audio_play_head", 3000L, "audio_write_result", 960,
+                "audio_volume_result", 0, "audio_buffer_age_ms", 3L,
+                "audio_write_age_ms", 3L, "audio_renderer_id", 7,
+                "audio_track_state", 1, "audio_play_state", 3, "audio_session_id", 8,
+                "audio_raw_pcm", new short[] {1, 2}, "authorization", "Bearer secret",
+                "audio_unknown", 99);
+        MoonWakerDiagnostics.record("INFO", "android.audio", "audio.snapshot",
+                "audio_volume", "secret", "reason", "Bearer secret");
+        assertTrue(MoonWakerDiagnostics.flushForTests());
+        List<String> lines = Files.readAllLines(new File(directory, "events.jsonl").toPath(), StandardCharsets.UTF_8);
+        JSONObject record = new JSONObject(lines.get(0));
+        assertEquals(4, record.getLong("audio_buffers"));
+        assertEquals(1920, record.getLong("audio_samples_written"));
+        assertEquals(0, record.getInt("audio_volume_result"));
+        assertEquals(3, record.getLong("audio_write_age_ms"));
+        assertFalse(record.has("audio_raw_pcm"));
+        assertFalse(record.has("audio_unknown"));
+        assertFalse(record.has("authorization"));
+        assertFalse(new JSONObject(lines.get(1)).has("audio_volume"));
+        assertFalse(read(new File(directory, "events.jsonl")).contains("secret"));
+    }
+
     @Test public void recordRestrictsStringsAndKeepsPlannedCorrelationValues()
             throws Exception {
         MoonWakerDiagnostics.initialize(directory);

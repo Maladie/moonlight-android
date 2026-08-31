@@ -7,6 +7,7 @@ import java.util.Objects;
 final class SessionSnapshot {
     enum State {
         NONE,
+        PREPARING,
         ACTIVE,
         SUSPENDED,
         RECONNECT_REQUIRED,
@@ -22,6 +23,7 @@ final class SessionSnapshot {
     final boolean explicitSuspension;
     final boolean reconnectRequired;
     final boolean resumeAvailable;
+    final boolean neutralStreamTarget;
     final boolean suspensionSleepObserved;
     final boolean hostSleepRequested;
     final boolean hostSleepObserved;
@@ -33,7 +35,7 @@ final class SessionSnapshot {
                     boolean hostSleepRequested, boolean hostSleepObserved) {
         this(hostId, state, hostGameAppId, playniteGameId, retainedTransport,
                 explicitSuspension, suspensionSleepObserved, hostSleepRequested,
-                hostSleepObserved, "");
+                hostSleepObserved, "", false);
     }
 
     SessionSnapshot(String hostId, State state, int hostGameAppId,
@@ -41,6 +43,16 @@ final class SessionSnapshot {
                     boolean explicitSuspension, boolean suspensionSleepObserved,
                     boolean hostSleepRequested, boolean hostSleepObserved,
                     String suspendId) {
+        this(hostId, state, hostGameAppId, playniteGameId, retainedTransport,
+                explicitSuspension, suspensionSleepObserved, hostSleepRequested,
+                hostSleepObserved, suspendId, false);
+    }
+
+    SessionSnapshot(String hostId, State state, int hostGameAppId,
+                    String playniteGameId, boolean retainedTransport,
+                    boolean explicitSuspension, boolean suspensionSleepObserved,
+                    boolean hostSleepRequested, boolean hostSleepObserved,
+                    String suspendId, boolean neutralStreamTarget) {
         this.hostId = normalize(hostId);
         this.state = state;
         this.hostGameAppId = hostGameAppId;
@@ -48,8 +60,10 @@ final class SessionSnapshot {
         this.retainedTransport = retainedTransport;
         this.explicitSuspension = explicitSuspension;
         this.reconnectRequired = state == State.RECONNECT_REQUIRED;
-        this.resumeAvailable = state == State.ACTIVE || state == State.SUSPENDED
-                || state == State.RECONNECT_REQUIRED;
+        this.neutralStreamTarget = neutralStreamTarget;
+        this.resumeAvailable = (state == State.ACTIVE || state == State.SUSPENDED
+                || state == State.RECONNECT_REQUIRED)
+                && !(neutralStreamTarget && this.playniteGameId.isEmpty());
         this.suspensionSleepObserved = suspensionSleepObserved;
         this.hostSleepRequested = hostSleepRequested;
         this.hostSleepObserved = hostSleepObserved;
@@ -70,7 +84,7 @@ final class SessionSnapshot {
         return state + "|" + hostId + "|" + hostGameAppId + "|" + playniteGameId
                 + "|" + retainedTransport + "|" + explicitSuspension + "|"
                 + suspensionSleepObserved + "|" + hostSleepRequested + "|"
-                + hostSleepObserved + "|" + suspendId;
+                + hostSleepObserved + "|" + suspendId + "|" + neutralStreamTarget;
     }
 
     @Override public boolean equals(Object value) {
@@ -83,6 +97,7 @@ final class SessionSnapshot {
                 && suspensionSleepObserved == other.suspensionSleepObserved
                 && hostSleepRequested == other.hostSleepRequested
                 && hostSleepObserved == other.hostSleepObserved
+                && neutralStreamTarget == other.neutralStreamTarget
                 && hostId.equals(other.hostId) && state == other.state
                 && playniteGameId.equals(other.playniteGameId)
                 && suspendId.equals(other.suspendId);
@@ -91,7 +106,7 @@ final class SessionSnapshot {
     @Override public int hashCode() {
         return Objects.hash(hostId, state, hostGameAppId, playniteGameId,
                 retainedTransport, explicitSuspension, suspensionSleepObserved,
-                hostSleepRequested, hostSleepObserved, suspendId);
+                hostSleepRequested, hostSleepObserved, suspendId, neutralStreamTarget);
     }
 
     static String normalize(String value) {

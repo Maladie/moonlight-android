@@ -3,6 +3,8 @@
   "listen_port": 8785,
   "certificate": "gateway-cert.pem",
   "private_key": "gateway-key.pem",
+  "microphone_worker": "MoonWakerMicrophoneWorker.exe",
+  "discord_audio_worker": "MoonWakerDiscordAudioWorker.exe",
   "discord_bridge": "http://127.0.0.1:8765",
   "vibepollo_bridge": "http://127.0.0.1:8775",
   "playnite_bridge": "http://127.0.0.1:8780",

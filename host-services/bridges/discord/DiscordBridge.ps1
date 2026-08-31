@@ -1511,6 +1511,42 @@ function Get-QueryParameters {
     }
 }
 
+function Get-DiscordAudioCaptureTarget {
+    try {
+        $sessionId = (Get-Process -Id $PID -ErrorAction Stop).SessionId
+        $processes = @(Get-CimInstance Win32_Process -Filter "Name='Discord.exe'" -ErrorAction Stop |
+            Where-Object { [int]$_.SessionId -eq $sessionId })
+        $ids = @{}
+        foreach ($process in $processes) {
+            $ids[[uint32]$process.ProcessId] = $true
+        }
+        $roots = @($processes | Where-Object {
+            -not $ids.ContainsKey([uint32]$_.ParentProcessId)
+        })
+
+        if ($roots.Count -eq 1) {
+            return [pscustomobject]@{
+                ready = $true
+                reason = "ready"
+                pid = [uint32]$roots[0].ProcessId
+            }
+        }
+
+        return [pscustomobject]@{
+            ready = $false
+            reason = $(if ($roots.Count -eq 0) { "discord_process_missing" } else { "discord_process_ambiguous" })
+            pid = 0
+        }
+    }
+    catch {
+        return [pscustomobject]@{
+            ready = $false
+            reason = "discord_process_unavailable"
+            pid = 0
+        }
+    }
+}
+
 function Get-EndpointResponse {
     param([Parameter(Mandatory)][string]$Target)
 
@@ -1932,6 +1968,10 @@ function Get-EndpointResponse {
 
         "/audio-state" {
             return ConvertTo-CompactJson -Value (Get-AudioSnapshot)
+        }
+
+        "/audio-capture-target" {
+            return ConvertTo-CompactJson -Value (Get-DiscordAudioCaptureTarget)
         }
 
         "/system-audio-default" {

@@ -39,13 +39,13 @@ public class DiscordDmToastViewContractTest {
         assertEquals(412, placement.topMargin);
     }
 
-    @Test public void gamePlacementUsesLargestRemainingLeftStripWhenNeitherRegionFits() {
+    @Test public void gamePlacementKeepsFullCardOnScreenWhenNeitherRegionFits() {
         DiscordDmToastView.Placement placement = DiscordDmToastView.choosePlacement(
                 800, 1080, 200, 1000, true, 18, 12, 420, 220, 88);
 
-        assertEquals(170, placement.width);
-        assertEquals(612, placement.rightMargin);
-        assertEquals(18, placement.topMargin);
+        assertEquals(420, placement.width);
+        assertEquals(18, placement.rightMargin);
+        assertEquals(974, placement.topMargin);
     }
 
     @Test public void viewIsPassiveAnimatedAndAnnouncedOnceByContract() throws IOException {
@@ -90,10 +90,10 @@ public class DiscordDmToastViewContractTest {
         String polish = projectFile("src/main/res/values-pl/discord_dm_notification_strings.xml",
                 "app/src/main/res/values-pl/discord_dm_notification_strings.xml");
 
-        assertTrue(english.contains("%1$s sends a message"));
-        assertTrue(english.contains("new message or attachment"));
-        assertTrue(polish.contains("%1$s przesyła wiadomość"));
-        assertTrue(polish.contains("nowa wiadomość lub załącznik"));
+        assertTrue(english.contains("%1$s\\n“%2$s”"));
+        assertTrue(english.contains("%1$s\\nNew message or attachment"));
+        assertTrue(polish.contains("%1$s\\n„%2$s”"));
+        assertTrue(polish.contains("%1$s\\nNowa wiadomość lub załącznik"));
     }
 
     private static int occurrences(String value, String needle) {

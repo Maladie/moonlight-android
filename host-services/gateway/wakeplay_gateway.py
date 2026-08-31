@@ -33,6 +33,13 @@ PAIRING_LIFETIME_SECONDS = 10 * 60
 STREAM_PAIR_TICKET_LIFETIME_SECONDS = 60
 IDEMPOTENCY_LIFETIME_SECONDS = 2 * 60
 MAX_BODY_BYTES = 16 * 1024
+MICROPHONE_FRAME_BYTES = 1920
+MICROPHONE_MAX_CHUNK_BYTES = 8192
+MICROPHONE_IDLE_SECONDS = 5.0
+DISCORD_AUDIO_FRAME_BYTES = 3840
+DISCORD_AUDIO_CONTENT_TYPE = (
+    "application/vnd.moonwaker.discord-audio-pcm;"
+    "format=s16le;rate=48000;channels=2")
 DISCORD_ID_PATTERN = re.compile(r"^[0-9]{5,32}$")
 VIRTUALHERE_ADDRESS_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 AUDIO_DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:{}-]{1,220}$")
@@ -217,6 +224,8 @@ class GatewayState:
         self.config.setdefault("discord_bridge", "http://127.0.0.1:8765")
         self.config.setdefault("vibepollo_bridge", "http://127.0.0.1:8775")
         self.config.setdefault("playnite_bridge", "http://127.0.0.1:8780")
+        self.config.setdefault("microphone_worker", "MoonWakerMicrophoneWorker.exe")
+        self.config.setdefault("discord_audio_worker", "MoonWakerDiscordAudioWorker.exe")
         self.config.setdefault("profiles", {})
         self.config["profiles"].setdefault("default", {
             "discord_bridge": self.config["discord_bridge"],
@@ -231,6 +240,8 @@ class GatewayState:
         self.stream_pair_tickets: dict[str, dict[str, Any]] = {}
         self.idempotent_results: dict[str, tuple[float, int, Any]] = {}
         self.vibepollo_app_operations: dict[str, dict[str, Any]] = {}
+        self.microphone_streams: dict[str, str] = {}
+        self.discord_audio_streams: dict[str, str] = {}
         self.lock = threading.RLock()
         self.request_context = threading.local()
         self.runtime_status_path = self.config_path.with_name("runtime-status.json")
@@ -527,6 +538,8 @@ class GatewayState:
         vibepollo_ok, vibepollo = self.proxy("vibepollo", "/health", timeout=1.0)
         discord_ok, discord = self.proxy("discord", "/health", timeout=1.0)
         playnite_ok, playnite = self.proxy("playnite", "/health", timeout=1.0)
+        microphone = self.microphone_status()
+        discord_audio = self.discord_audio_status()
         virtualhere_ok, virtualhere = (False, {"error": "Discord Bridge is offline."})
         if discord_ok:
             virtualhere_ok, virtualhere = self.proxy(
@@ -550,8 +563,83 @@ class GatewayState:
                 },
                 "host_sleep": {"available": os.name == "nt"},
                 "session_suspend": {"available": os.name == "nt"},
+                "microphone": {
+                    **microphone,
+                    "format": "pcm_s16le",
+                    "sample_rate": 48000,
+                    "channels": 1,
+                    "frame_samples": 960,
+                },
+                "discord_audio": {
+                    **discord_audio,
+                    "format": "pcm_s16le",
+                    "sample_rate": 48000,
+                    "channels": 2,
+                    "frame_samples": 960,
+                },
             },
         }
+
+    def microphone_worker(self) -> Path:
+        return self.path_from_config("microphone_worker")
+
+    def discord_audio_worker(self) -> Path:
+        return self.path_from_config("discord_audio_worker")
+
+    def discord_audio_target(self) -> tuple[str, int]:
+        ok, target = self.proxy("discord", "/audio-capture-target", timeout=2.0)
+        if not ok or not isinstance(target, dict):
+            return "discord_unavailable", 0
+        reason = str(target.get("reason", ""))
+        if reason not in {
+                "ready", "discord_process_missing", "discord_process_ambiguous",
+                "discord_process_unavailable"}:
+            return "discord_unavailable", 0
+        process_id = target.get("pid", 0)
+        if reason == "ready" and isinstance(process_id, int) and 0 < process_id <= 0xFFFFFFFF:
+            return "ready", process_id
+        return reason if reason != "ready" else "discord_unavailable", 0
+
+    def discord_audio_status(self) -> dict[str, Any]:
+        worker = self.discord_audio_worker()
+        if not worker.is_file():
+            return {"available": False, "reason": "worker_missing"}
+        reason, process_id = self.discord_audio_target()
+        if reason != "ready":
+            return {"available": False, "reason": reason}
+        try:
+            result = subprocess.run(
+                [str(worker), "--probe", str(process_id)], stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=3.0,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.returncode == 0:
+                return {"available": True, "reason": "ready"}
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return {"available": False, "reason": "process_loopback_unsupported"}
+
+    def probe_microphone(self) -> bool:
+        return bool(self.microphone_status()["available"])
+
+    def microphone_status(self) -> dict[str, Any]:
+        worker = self.microphone_worker()
+        if not worker.is_file():
+            return {"available": False, "reason": "worker_missing"}
+        try:
+            result = subprocess.run(
+                [str(worker), "--probe"], stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                timeout=3.0,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if result.returncode == 0:
+                return {"available": True, "reason": "ready"}
+        except (OSError, subprocess.SubprocessError):
+            pass
+        return {"available": False,
+                "reason": "steam_endpoint_missing_or_ambiguous_or_unsupported"}
 
     @staticmethod
     def _sleep_windows(force: bool = False) -> None:
@@ -1088,6 +1176,15 @@ class GatewayState:
                 payload["game_id"] = self._playnite_game_id(body.get("game_id"))
             path = "/game/stop"
             timeout = 25.0
+        elif action == "game/stop-verified":
+            token = body.get("expected_process_token")
+            if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{64}", token):
+                raise ValueError("A valid expected process token is required.")
+            payload = {"force": False,
+                       "game_id": self._playnite_game_id(body.get("game_id")),
+                       "expected_process_token": token}
+            path = "/game/stop-verified"
+            timeout = 25.0
         elif action == "game/focus":
             payload = {}
             path = "/game/focus"
@@ -1104,7 +1201,7 @@ class GatewayState:
             return HTTPStatus.NOT_FOUND, {"error": "Unknown Playnite action."}
         ok, result = self.proxy_json("playnite", path, payload, timeout=timeout)
         accepted = not isinstance(result, dict) or bool(result.get("accepted", True))
-        if ok and action in {"game/start", "game/install", "game/uninstall", "game/stop"} \
+        if ok and action in {"game/start", "game/install", "game/uninstall", "game/stop", "game/stop-verified"} \
                 and not accepted:
             return HTTPStatus.OK, {
                 "ok": False,
@@ -1175,6 +1272,172 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if not isinstance(value, dict):
             raise ValueError("JSON object expected.")
         return value
+
+    def read_microphone_chunks(self, output: Any) -> None:
+        pending = bytearray()
+        self.connection.settimeout(MICROPHONE_IDLE_SECONDS)
+        while True:
+            line = self.rfile.readline(18)
+            if not line.endswith(b"\r\n") or len(line) > 17:
+                raise ValueError("Invalid microphone chunk header.")
+            token = line[:-2].split(b";", 1)[0]
+            if not token or not re.fullmatch(b"[0-9A-Fa-f]{1,8}", token):
+                raise ValueError("Invalid microphone chunk size.")
+            size = int(token, 16)
+            if size > MICROPHONE_MAX_CHUNK_BYTES:
+                raise ValueError("Microphone chunk is too large.")
+            if size == 0:
+                if self.rfile.read(2) != b"\r\n":
+                    raise ValueError("Invalid microphone stream terminator.")
+                break
+            data = self.rfile.read(size)
+            if len(data) != size or self.rfile.read(2) != b"\r\n":
+                raise ValueError("Truncated microphone chunk.")
+            pending.extend(data)
+            while len(pending) >= MICROPHONE_FRAME_BYTES:
+                if output.closed:
+                    raise BrokenPipeError("Microphone renderer stopped.")
+                output.write(pending[:MICROPHONE_FRAME_BYTES])
+                output.flush()
+                del pending[:MICROPHONE_FRAME_BYTES]
+        if pending:
+            raise ValueError("Partial microphone frame.")
+
+    def microphone_stream(self, profile_id: str) -> None:
+        if self.headers.get("Transfer-Encoding", "").lower() != "chunked":
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Chunked transfer encoding is required."})
+            return
+        if self.headers.get("Content-Type", "").lower() != (
+                "application/vnd.moonwaker.microphone-pcm;"
+                "format=s16le;rate=48000;channels=1"):
+            self.send_json(HTTPStatus.UNSUPPORTED_MEDIA_TYPE, {"error": "Unsupported microphone format."})
+            return
+        session_id = self.headers.get("X-Microphone-Session-Id", "").strip()
+        request_id = self.headers.get("X-Request-Id", "").strip()
+        if not REQUEST_ID_PATTERN.fullmatch(session_id) or not REQUEST_ID_PATTERN.fullmatch(request_id):
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": "Valid request and microphone session IDs are required."})
+            return
+        worker = self.state.microphone_worker()
+        if not worker.is_file():
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"error": "Microphone renderer is unavailable."})
+            return
+        with self.state.lock:
+            if profile_id in self.state.microphone_streams:
+                self.send_json(HTTPStatus.CONFLICT, {"error": "A microphone stream is already active."})
+                return
+            self.state.microphone_streams[profile_id] = session_id
+        process = None
+        try:
+            process = subprocess.Popen(
+                [str(worker), "--stream"], stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if process.stdin is None:
+                raise OSError("Microphone renderer pipe is unavailable.")
+            self.read_microphone_chunks(process.stdin)
+            process.stdin.close()
+            if process.wait(timeout=3.0) != 0:
+                raise OSError("Microphone renderer stopped.")
+            self.send_json(HTTPStatus.OK, {"ok": True})
+        finally:
+            try:
+                if process is not None:
+                    try:
+                        if process.stdin is not None and not process.stdin.closed:
+                            process.stdin.close()
+                    except OSError:
+                        pass
+                    if process.poll() is None:
+                        try:
+                            process.kill()
+                        except OSError:
+                            pass
+                        try:
+                            process.wait(timeout=2.0)
+                        except (OSError, subprocess.TimeoutExpired):
+                            pass
+            finally:
+                with self.state.lock:
+                    if self.state.microphone_streams.get(profile_id) == session_id:
+                        self.state.microphone_streams.pop(profile_id, None)
+
+    def discord_audio_stream(self, profile_id: str) -> None:
+        session_id = self.headers.get("X-Request-Id", "").strip()
+        if not REQUEST_ID_PATTERN.fullmatch(session_id):
+            self.send_json(HTTPStatus.BAD_REQUEST, {"error": "A valid request ID is required."})
+            return
+        worker = self.state.discord_audio_worker()
+        if not worker.is_file():
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE,
+                           {"error": "Discord audio is unavailable.", "reason": "worker_missing"})
+            return
+        reason, process_id = self.state.discord_audio_target()
+        if reason != "ready":
+            self.send_json(HTTPStatus.SERVICE_UNAVAILABLE,
+                           {"error": "Discord audio is unavailable.", "reason": reason})
+            return
+        with self.state.lock:
+            if profile_id in self.state.discord_audio_streams:
+                self.send_json(HTTPStatus.CONFLICT,
+                               {"error": "A Discord audio stream is already active."})
+                return
+            self.state.discord_audio_streams[profile_id] = session_id
+        process = None
+        try:
+            process = subprocess.Popen(
+                [str(worker), "--stream", str(process_id)], stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            if process.stdout is None:
+                raise OSError("Discord audio worker pipe is unavailable.")
+            self._response_status = int(HTTPStatus.OK)
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", DISCORD_AUDIO_CONTENT_TYPE)
+            self.send_header("Transfer-Encoding", "chunked")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            pending = bytearray()
+            while True:
+                data = process.stdout.read(DISCORD_AUDIO_FRAME_BYTES - len(pending))
+                if not data:
+                    break
+                pending.extend(data)
+                if len(pending) == DISCORD_AUDIO_FRAME_BYTES:
+                    self.wfile.write(f"{len(pending):X}\r\n".encode("ascii"))
+                    self.wfile.write(pending)
+                    self.wfile.write(b"\r\n")
+                    self.wfile.flush()
+                    pending.clear()
+            if not pending:
+                self.wfile.write(b"0\r\n\r\n")
+                self.wfile.flush()
+        except (BrokenPipeError, ConnectionError, OSError):
+            self.close_connection = True
+        finally:
+            try:
+                if process is not None:
+                    try:
+                        if process.stdout is not None:
+                            process.stdout.close()
+                    except OSError:
+                        pass
+                    if process.poll() is None:
+                        try:
+                            process.kill()
+                        except OSError:
+                            pass
+                        try:
+                            process.wait(timeout=2.0)
+                        except (OSError, subprocess.TimeoutExpired):
+                            pass
+            finally:
+                with self.state.lock:
+                    if self.state.discord_audio_streams.get(profile_id) == session_id:
+                        self.state.discord_audio_streams.pop(profile_id, None)
 
     def authenticated(self) -> bool:
         return self.authenticated_client() is not None
@@ -1296,6 +1559,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
         elif path == f"{API_PREFIX}/discord/audio":
             status, result = self.state.discord_audio()
             self.send_json(status, result)
+        elif path == f"{API_PREFIX}/discord/audio/stream":
+            self.discord_audio_stream(self.state.profile_id)
         elif path == f"{API_PREFIX}/virtualhere/state":
             status, result = self.state.virtualhere_state(
                 query.get("force", [""])[0].lower() == "true")
@@ -1342,6 +1607,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 return
             authenticated_client = self.authenticated_client()
             profile_id = self.select_profile()
+            if path == f"{API_PREFIX}/microphone/stream":
+                self.microphone_stream(profile_id)
+                return
             if path == f"{API_PREFIX}/vibepollo/pair/ticket":
                 self.read_json()
                 self.send_json(HTTPStatus.CREATED,
@@ -1427,7 +1695,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             playnite_prefix = f"{API_PREFIX}/playnite/"
             provider_action = path in {
                 f"{API_PREFIX}/game/start", f"{API_PREFIX}/game/install",
-                f"{API_PREFIX}/game/uninstall", f"{API_PREFIX}/game/stop"}
+                f"{API_PREFIX}/game/uninstall", f"{API_PREFIX}/game/stop",
+                f"{API_PREFIX}/game/stop-verified"}
             if path.startswith(playnite_prefix) or provider_action:
                 action = path[len(playnite_prefix):] if path.startswith(playnite_prefix) \
                     else path[len(API_PREFIX) + 1:]

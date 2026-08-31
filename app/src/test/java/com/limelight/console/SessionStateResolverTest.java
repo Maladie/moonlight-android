@@ -91,6 +91,42 @@ public class SessionStateResolverTest {
                 resolver.resolve(facts.build()).state);
     }
 
+    @Test public void preparingBeatsBridgeAndSuspendedResumeFacts() {
+        Facts facts = suspendedFacts();
+        facts.retainedState = RetainedStreamSessionCoordinator.State.PREPARING;
+        facts.retainedHost = "host";
+        facts.retainedApp = 42;
+        facts.retainedGame = "observed-game";
+        facts.resolvedGame = "other-game";
+        facts.bridgeState = "ambiguous";
+        facts.pending = true;
+        facts.pendingHost = "host";
+        facts.pendingApp = 42;
+
+        SessionSnapshot snapshot = resolver.resolve(facts.build());
+
+        assertEquals(SessionSnapshot.State.PREPARING, snapshot.state);
+        assertEquals(42, snapshot.hostGameAppId);
+        assertEquals("observed-game", snapshot.playniteGameId);
+        assertFalse(snapshot.retainedTransport);
+        assertFalse(snapshot.explicitSuspension);
+        assertFalse(snapshot.isResumeAvailable());
+    }
+
+    @Test public void neutralPreparingHasNoResumeIdentity() {
+        Facts facts = new Facts();
+        facts.retainedState = RetainedStreamSessionCoordinator.State.PREPARING;
+        facts.retainedHost = "host";
+        facts.retainedApp = 42;
+
+        SessionSnapshot snapshot = resolver.resolve(facts.build());
+
+        assertEquals(SessionSnapshot.State.PREPARING, snapshot.state);
+        assertEquals("", snapshot.playniteGameId);
+        assertFalse(snapshot.isResumeAvailable());
+        assertFalse(snapshot.matches("game", 42));
+    }
+
     @Test public void activePlayniteIdentityIsPreservedForSharedTargetDisambiguation() {
         Facts facts = new Facts();
         facts.runningApp = 42;
@@ -112,6 +148,53 @@ public class SessionStateResolverTest {
 
         assertEquals(SessionSnapshot.State.UNCERTAIN, snapshot.state);
         assertFalse(snapshot.isResumeAvailable());
+    }
+
+    @Test public void exactLiveRetainedTransportBeatsUnknownBridge() {
+        for (RetainedStreamSessionCoordinator.State state : new RetainedStreamSessionCoordinator.State[] {
+                RetainedStreamSessionCoordinator.State.HOME_LIVE,
+                RetainedStreamSessionCoordinator.State.PARKED_LIVE }) {
+            Facts facts = new Facts();
+            facts.retainedState = state;
+            facts.retainedHost = "host";
+            facts.retainedApp = 42;
+            facts.retainedGame = "game";
+            facts.bridgeState = "unknown";
+
+            SessionSnapshot snapshot = resolver.resolve(facts.build());
+
+            assertEquals(SessionSnapshot.State.ACTIVE, snapshot.state);
+            assertTrue(snapshot.retainedTransport);
+            assertEquals("game", snapshot.playniteGameId);
+        }
+    }
+
+    @Test public void unknownBridgeRemainsUncertainWithoutExactLiveOwner() {
+        Facts deadOwner = new Facts();
+        deadOwner.retainedState = RetainedStreamSessionCoordinator.State.HOME_LIVE;
+        deadOwner.retainedHost = "host";
+        deadOwner.retainedApp = 42;
+        deadOwner.retainedOwnerLive = false;
+        deadOwner.bridgeState = "unknown";
+        assertEquals(SessionSnapshot.State.UNCERTAIN,
+                resolver.resolve(deadOwner.build()).state);
+
+        Facts otherHost = new Facts();
+        otherHost.retainedState = RetainedStreamSessionCoordinator.State.PARKED_LIVE;
+        otherHost.retainedHost = "other";
+        otherHost.retainedApp = 42;
+        otherHost.bridgeState = "unknown";
+        assertEquals(SessionSnapshot.State.UNCERTAIN,
+                resolver.resolve(otherHost.build()).state);
+
+        Facts otherApp = new Facts();
+        otherApp.runningApp = 7;
+        otherApp.retainedState = RetainedStreamSessionCoordinator.State.HOME_LIVE;
+        otherApp.retainedHost = "host";
+        otherApp.retainedApp = 42;
+        otherApp.bridgeState = "unknown";
+        assertEquals(SessionSnapshot.State.UNCERTAIN,
+                resolver.resolve(otherApp.build()).state);
     }
 
     @Test public void bridgeRunningWithoutStreamCreatesGameOnlyActiveSession() {
@@ -314,6 +397,44 @@ public class SessionStateResolverTest {
         assertEquals(SessionSnapshot.State.SUSPENDED, first.state);
     }
 
+    @Test public void neutralSessionWithoutGameNeverOffersResume() {
+        for (RetainedStreamSessionCoordinator.State retainedState : new RetainedStreamSessionCoordinator.State[] {
+                RetainedStreamSessionCoordinator.State.HOME_LIVE,
+                RetainedStreamSessionCoordinator.State.PARKED_LIVE }) {
+            Facts facts = new Facts();
+            facts.retainedState = retainedState;
+            facts.retainedHost = "host";
+            facts.retainedApp = 42;
+            facts.neutralStreamTarget = true;
+            assertFalse(resolver.resolve(facts.build()).isResumeAvailable());
+        }
+
+        Facts sunshine = new Facts();
+        sunshine.runningApp = 42;
+        sunshine.neutralStreamTarget = true;
+        assertFalse(resolver.resolve(sunshine.build()).isResumeAvailable());
+
+        Facts reconnect = new Facts();
+        reconnect.pending = true;
+        reconnect.pendingHost = "host";
+        reconnect.pendingApp = 42;
+        reconnect.neutralStreamTarget = true;
+        assertFalse(resolver.resolve(reconnect.build()).isResumeAvailable());
+    }
+
+    @Test public void neutralTargetWithRealGameKeepsResumeIdentity() {
+        Facts facts = new Facts();
+        facts.runningApp = 42;
+        facts.resolvedGame = "game";
+        facts.bridgeState = "running";
+        facts.neutralStreamTarget = true;
+
+        SessionSnapshot snapshot = resolver.resolve(facts.build());
+
+        assertTrue(snapshot.isResumeAvailable());
+        assertEquals("game", snapshot.playniteGameId);
+    }
+
     private static Facts suspendedFacts() {
         Facts facts = new Facts();
         facts.suspendedHost = "host";
@@ -347,6 +468,8 @@ public class SessionStateResolverTest {
         boolean hostOnline = true;
         String bridgeState = "";
         String suspendedId = "";
+        boolean neutralStreamTarget;
+        boolean retainedOwnerLive = true;
 
         SessionStateResolver.Observations build() {
             SessionStateResolver.Observations observations =
@@ -359,6 +482,8 @@ public class SessionStateResolverTest {
             observations.bridgeGameState = bridgeState.isEmpty()
                     ? observations.bridgeGameState : bridgeState;
             observations.suspendedId = suspendedId;
+            observations.neutralStreamTarget = neutralStreamTarget;
+            observations.retainedOwnerLive = retainedOwnerLive;
             return observations;
         }
     }

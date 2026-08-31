@@ -3,6 +3,8 @@ package com.limelight.console;
 import com.limelight.console.transition.LaunchTransitionType;
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.nvstream.http.NvApp;
+import com.limelight.nvstream.http.ComputerDetails;
+import com.limelight.stream.RetainedStreamSessionCoordinator;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -14,9 +16,39 @@ final class SessionOrchestrator implements AutoCloseable {
     enum Rejection { INITIALIZING, UNPAIRED, TERMINATING }
     enum CloseResult { CLOSED, REUSED, CANCELLED, NEEDS_CONFIRMATION }
 
+    static final class PreparedWarmUp {
+        final NvApp target;
+        final String activeGameId;
+        final ComputerDetails host;
+        final boolean ownsFreshSunshineSession;
+
+        PreparedWarmUp(NvApp target, String activeGameId, ComputerDetails host,
+                       boolean ownsFreshSunshineSession) {
+            this.target = target;
+            this.activeGameId = SessionSnapshot.normalize(activeGameId);
+            this.host = host;
+            this.ownsFreshSunshineSession = ownsFreshSunshineSession;
+        }
+    }
+
+    private static final class Preparation {
+        final long request;
+        final String hostId;
+        PlayIntent pendingGame;
+        boolean opaqueReady;
+        PreparedWarmUp prepared;
+        boolean launchClaimed;
+
+        Preparation(long request, String hostId) {
+            this.request = request;
+            this.hostId = SessionSnapshot.normalize(hostId);
+        }
+    }
+
     interface Dispatcher { void post(Runnable action); }
     interface Effects {
         boolean isAvailable(); boolean isPaired(String hostId); SessionSnapshot resolve(String hostId);
+        default boolean canPrepareHost(String hostId) { return isPaired(hostId); }
         void returnToRetainedStream(); void reconnectSavedSession(); void reject(Rejection reason);
         void confirmReplacement(Runnable accepted);
         boolean canAttemptRetainedSwitch(PlayIntent intent);
@@ -32,6 +64,11 @@ final class SessionOrchestrator implements AutoCloseable {
         void preflightFailed(HostLaunchPreflight.Failure failure); void orchestrationFailed();
         void uncertainSessionFailed();
         void previousSessionCloseFailed(String reason);
+        PreparedWarmUp prepareHost(PlayIntent intent, long request,
+                                   BooleanSupplier cancelled);
+        void launchPreparedHost(PreparedWarmUp prepared,
+                                PlayIntent pendingGame, long request);
+        void preparationFailed();
     }
 
     private final Effects effects;
@@ -39,6 +76,7 @@ final class SessionOrchestrator implements AutoCloseable {
     private final Dispatcher dispatcher;
     private final AtomicLong generation = new AtomicLong();
     private PlayIntent lastIntent;
+    private volatile Preparation preparation;
     private volatile boolean closed;
 
     SessionOrchestrator(Effects effects, Executor executor, Dispatcher dispatcher) {
@@ -47,7 +85,19 @@ final class SessionOrchestrator implements AutoCloseable {
         this.dispatcher = dispatcher;
     }
 
+    static boolean shouldSendWarmUpWake(
+            RetainedStreamSessionCoordinator.State localState,
+            boolean bridgeResponded, ComputerDetails.State moonlightState) {
+        return localState != RetainedStreamSessionCoordinator.State.HOME_LIVE
+                && localState != RetainedStreamSessionCoordinator.State.PARKED_LIVE
+                && localState != RetainedStreamSessionCoordinator.State.PREPARING
+                && localState != RetainedStreamSessionCoordinator.State.TERMINATING
+                && !bridgeResponded
+                && moonlightState == ComputerDetails.State.OFFLINE;
+    }
+
     void play(PlayIntent intent) {
+        if (handoffPreparingGame(intent)) return;
         lastIntent = intent;
         long request = generation.incrementAndGet();
         if (closed) {
@@ -69,8 +119,56 @@ final class SessionOrchestrator implements AutoCloseable {
         evaluate(request, intent, false, false, false, null, 0);
     }
 
+    long prepareHost(String hostId) {
+        PlayIntent intent = PlayIntent.autoWarmUp(hostId);
+        long request = generation.incrementAndGet();
+        preparation = null;
+        if (closed) return 0L;
+        if (!effects.isAvailable()) {
+            return 0L;
+        }
+        if (!effects.canPrepareHost(intent.hostId)) {
+            return 0L;
+        }
+        Preparation pending = new Preparation(request, intent.hostId);
+        preparation = pending;
+        try {
+            executor.execute(() -> {
+                PreparedWarmUp prepared;
+                try {
+                    prepared = effects.prepareHost(
+                            intent, request, () -> !currentPreparation(pending));
+                } catch (RuntimeException error) {
+                    dispatcher.post(() -> failPreparation(pending));
+                    return;
+                }
+                dispatcher.post(() -> completePreparation(pending, prepared));
+            });
+        } catch (RuntimeException error) {
+            failPreparation(pending);
+            return 0L;
+        }
+        return request;
+    }
+
+    boolean cancelPreparation(String hostId) {
+        Preparation pending = preparation;
+        if (!currentPreparation(pending) || !pending.hostId.equals(
+                SessionSnapshot.normalize(hostId))) return false;
+        preparation = null;
+        generation.compareAndSet(pending.request, pending.request + 1L);
+        return true;
+    }
+
+    boolean hasPreparationForHost(String hostId) {
+        Preparation pending = preparation;
+        return currentPreparation(pending) && pending.hostId.equals(
+                SessionSnapshot.normalize(hostId));
+    }
+
     void cancel() {
         long cancelled = generation.getAndIncrement();
+        preparation = null;
         if (!closed && lastIntent != null) {
             diagnostic("INFO", "orchestration.cancelled", cancelled, lastIntent);
         }
@@ -80,6 +178,57 @@ final class SessionOrchestrator implements AutoCloseable {
         if (intent != null && !closed) play(intent);
     }
     @Override public void close() { closed = true; lastIntent = null; cancel(); }
+
+    private boolean handoffPreparingGame(PlayIntent intent) {
+        Preparation pending = preparation;
+        if (intent.kind != PlayIntent.Kind.PLAYNITE_GAME
+                || !currentPreparation(pending) || pending.launchClaimed
+                || !pending.hostId.equals(SessionSnapshot.normalize(intent.hostId))) {
+            return false;
+        }
+        if (pending.pendingGame != null) return true;
+        pending.pendingGame = intent;
+        lastIntent = intent;
+        effects.showLoading(intent, LaunchTransitionType.GAME, () ->
+                dispatcher.post(() -> {
+                    if (!currentPreparation(pending) || pending.launchClaimed) return;
+                    pending.opaqueReady = true;
+                    maybeLaunch(pending);
+                }));
+        return true;
+    }
+
+    private void completePreparation(Preparation pending, PreparedWarmUp prepared) {
+        if (!currentPreparation(pending)) return;
+        if (prepared == null || prepared.target == null) {
+            preparation = null;
+            if (pending.pendingGame != null) effects.preparationFailed();
+            return;
+        }
+        pending.prepared = prepared;
+        maybeLaunch(pending);
+    }
+
+    private void maybeLaunch(Preparation pending) {
+        if (!currentPreparation(pending) || pending.launchClaimed
+                || pending.prepared == null
+                || pending.pendingGame != null && !pending.opaqueReady) return;
+        pending.launchClaimed = true;
+        preparation = null;
+        effects.launchPreparedHost(
+                pending.prepared, pending.pendingGame, pending.request);
+    }
+
+    private void failPreparation(Preparation pending) {
+        if (!currentPreparation(pending)) return;
+        preparation = null;
+        effects.preparationFailed();
+    }
+
+    private boolean currentPreparation(Preparation pending) {
+        return pending != null && !closed && preparation == pending
+                && generation.get() == pending.request;
+    }
 
     private void evaluate(long request, PlayIntent intent, boolean replacementAuthorized,
                           boolean reuseOnly, boolean opaqueReady,
@@ -97,6 +246,38 @@ final class SessionOrchestrator implements AutoCloseable {
             diagnostic("WARN", "orchestration.rejected", request, intent,
                     "reason", Rejection.TERMINATING.name());
             effects.reject(Rejection.TERMINATING);
+            return;
+        }
+        if (snapshot.state == SessionSnapshot.State.PREPARING
+                && intent.kind == PlayIntent.Kind.PLAYNITE_GAME) {
+            if (!opaqueReady) {
+                awaitOpaque(request, intent, LaunchTransitionType.GAME,
+                        replacementAuthorized, reuseOnly, preparedTarget, pass);
+            } else if (!reuseOnly && snapshot.playniteGameId.isEmpty()) {
+                if (!effects.canAttemptRetainedSwitch(intent)) {
+                    effects.uncertainSessionFailed();
+                    return;
+                }
+                evaluate(request, intent, false, true,
+                        true, preparedTarget, pass + 1);
+            } else if (!reuseOnly) {
+                effects.refreshSession(intent, () -> !current(request), success ->
+                        dispatcher.post(() -> {
+                            if (!current(request)) return;
+                            if (!success || !effects.canAttemptRetainedSwitch(intent)) {
+                                effects.uncertainSessionFailed();
+                                return;
+                            }
+                            evaluate(request, intent, false, true,
+                                    true, preparedTarget, pass + 1);
+                        }));
+            } else if (preparedTarget == null) {
+                awaitPreflight(request, intent, false, true, pass,
+                        HostLaunchPreflight.Action.SWITCH_RETAINED);
+            } else {
+                closeCompetingSession(request, intent, preparedTarget,
+                        false, true, pass);
+            }
             return;
         }
         if (snapshot.state == SessionSnapshot.State.UNCERTAIN) {

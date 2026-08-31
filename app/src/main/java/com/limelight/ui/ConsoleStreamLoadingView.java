@@ -204,6 +204,20 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         this.actions = actions;
     }
 
+    public void showNeutralWarmUpAppearance() {
+        if (stopped) return;
+        defaultBackdrop.setVisibility(GONE);
+        defaultShade.setVisibility(GONE);
+        defaultContent.setVisibility(GONE);
+    }
+
+    public void showFullTransitionAppearance() {
+        if (stopped) return;
+        defaultBackdrop.setVisibility(VISIBLE);
+        defaultShade.setVisibility(VISIBLE);
+        defaultContent.setVisibility(VISIBLE);
+    }
+
     public void setSplashArtwork(String artworkPath) {
         if (stopped) return;
         if (splashArtworkView != null) {

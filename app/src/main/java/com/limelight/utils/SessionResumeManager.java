@@ -57,6 +57,7 @@ public final class SessionResumeManager {
         public final String hostUuid;
         public final int appId;
         public final String playniteGameId;
+        public final boolean neutralStreamTarget;
         public final boolean autoResume;
         public final long createdAt;
         public final long updatedAt;
@@ -71,6 +72,7 @@ public final class SessionResumeManager {
             this.hostUuid = hostUuid;
             this.appId = appId;
             this.playniteGameId = normalize(playniteGameId);
+            this.neutralStreamTarget = prefs.getBoolean(KEY_NEUTRAL_STREAM_TARGET, false);
             this.autoResume = autoResume;
             this.createdAt = createdAt;
             this.updatedAt = updatedAt;

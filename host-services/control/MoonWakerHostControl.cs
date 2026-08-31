@@ -11,9 +11,9 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.35.0")]
-[assembly: AssemblyFileVersion("0.7.35.0")]
-[assembly: AssemblyInformationalVersion("0.7.35+2026.08.28")]
+[assembly: AssemblyVersion("0.7.46.0")]
+[assembly: AssemblyFileVersion("0.7.46.0")]
+[assembly: AssemblyInformationalVersion("0.7.46+2026.08.30")]
 
 namespace MoonWaker.HostControl
 {
@@ -305,9 +305,15 @@ namespace MoonWaker.HostControl
             if (GetBool(gateway, "version_mismatch")) versionLine += "  ⚠ Różnica wersji";
             Dictionary<string, object> legendary = AsDictionary(result["legendary"]);
             legendaryInstalled = GetBool(legendary, "installed");
+            Dictionary<string, object> microphone = AsDictionary(result["microphone"]);
+            string microphoneReason = GetText(microphone, "reason", "worker_missing");
+            string microphoneStatus = microphoneReason == "ready" ? "gotowy"
+                : microphoneReason == "worker_missing" ? "brak renderera"
+                : "problem z endpointem Steam";
             gatewayDetails.Text = "Port " + GetText(gateway, "port", "—") + "  •  sparowane urządzenia: " +
                 GetText(gateway, "paired_clients", "0") + "\n" + versionLine + "\nLegendary: " +
-                (legendaryInstalled ? "zainstalowane" : "niezainstalowane");
+                (legendaryInstalled ? "jest" : "brak") +
+                "  •  Mikrofon: " + microphoneStatus;
             string active = GetText(result, "active_profile", "");
             activeProfile.Text = String.IsNullOrWhiteSpace(active) ? "Ostatnio używany profil: brak danych" : "Ostatnio używany profil: " + active;
 

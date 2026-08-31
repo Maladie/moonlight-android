@@ -99,6 +99,26 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(title.contains("messageView.setText(title.trim())"));
     }
 
+    @Test public void neutralWarmUpGateStaysOpaqueAndCanRestoreTransitionUi()
+            throws IOException {
+        String text = source();
+        String neutral = text.substring(text.indexOf(
+                        "public void showNeutralWarmUpAppearance()"),
+                text.indexOf("public void showFullTransitionAppearance()"));
+        String full = text.substring(text.indexOf(
+                        "public void showFullTransitionAppearance()"),
+                text.indexOf("public void setSplashArtwork("));
+
+        assertTrue(neutral.contains("defaultBackdrop.setVisibility(GONE)"));
+        assertTrue(neutral.contains("defaultShade.setVisibility(GONE)"));
+        assertTrue(neutral.contains("defaultContent.setVisibility(GONE)"));
+        assertFalse(neutral.contains("setAlpha("));
+        assertFalse(neutral.contains("ConsoleStreamLoadingView.this.setVisibility"));
+        assertTrue(full.contains("defaultBackdrop.setVisibility(VISIBLE)"));
+        assertTrue(full.contains("defaultShade.setVisibility(VISIBLE)"));
+        assertTrue(full.contains("defaultContent.setVisibility(VISIBLE)"));
+    }
+
     private static String source() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
         if (!Files.exists(source)) {

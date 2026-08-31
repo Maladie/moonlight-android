@@ -2,6 +2,7 @@ package com.limelight.console;
 
 import android.content.Context;
 
+import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
 
 import java.io.IOException;
@@ -106,7 +107,13 @@ public final class PlayniteTransitionGateway {
                                                     String activeHost) {
         GatewayConnection connection = new HostGatewayStore(context)
                 .loadForHost(hostId, activeHost);
-        return connection == null ? null : new PlayniteTransitionGateway(connection);
+        if (connection == null) {
+            MoonWakerDiagnostics.record("WARN", "android.playnite-transition",
+                    "gateway.connect_failed", "host_id", hostId,
+                    "reason", "connection_missing");
+            return null;
+        }
+        return new PlayniteTransitionGateway(connection);
     }
 
     public Snapshot snapshot() throws IOException {

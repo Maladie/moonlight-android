@@ -8,8 +8,10 @@ import android.media.AudioManager;
 import android.media.AudioTrack;
 import android.media.audiofx.AudioEffect;
 import android.os.Build;
+import android.os.SystemClock;
 
 import com.limelight.LimeLog;
+import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.nvstream.av.audio.AudioRenderer;
 import com.limelight.nvstream.jni.MoonBridge;
 
@@ -20,6 +22,10 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
     private AudioTrack track;
     private volatile float volume = 1f;
+    private volatile long buffersReceived, nonzeroBuffers, samplesWritten;
+    private volatile long lastBufferAt, lastSuccessfulWriteAt;
+    private volatile int lastWriteResult = Integer.MIN_VALUE;
+    private volatile int lastVolumeResult = Integer.MIN_VALUE;
 
     public AndroidAudioRenderer(Context context, boolean enableAudioFx) {
         this.context = context;
@@ -161,8 +167,9 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
             try {
                 track = createAudioTrack(channelConfig, sampleRate, bufferSize, lowLatency);
-                track.setVolume(volume);
+                lastVolumeResult = track.setVolume(volume);
                 track.play();
+                logAudioState("setup");
 
                 // Successfully created working AudioTrack. We're done here.
                 LimeLog.info("Audio track configuration: "+bufferSize+" "+lowLatency);
@@ -189,24 +196,33 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
     public void setVolume(float volume) {
         this.volume = Math.max(0f, Math.min(1f, volume));
+        lastVolumeResult = Integer.MIN_VALUE;
         AudioTrack current = track;
         if (current != null) {
             try {
-                current.setVolume(this.volume);
+                lastVolumeResult = current.setVolume(this.volume);
             } catch (IllegalStateException ignored) {
                 // The connection may have released the track while Home was closing.
             }
         }
+        logAudioState("volume");
     }
 
     @Override
     public void playDecodedAudio(short[] audioData) {
+        buffersReceived++;
+        if (containsNonzeroSample(audioData)) nonzeroBuffers++;
+        lastBufferAt = SystemClock.elapsedRealtime();
         // Only queue up to 40 ms of pending audio data in addition to what AudioTrack is buffering for us.
         if (MoonBridge.getPendingAudioDuration() < 40) {
             // This will block until the write is completed. That can cause a backlog
             // of pending audio data, so we do the above check to be able to bound
             // latency at 40 ms in that situation.
-            track.write(audioData, 0, audioData.length);
+            lastWriteResult = track.write(audioData, 0, audioData.length);
+            if (lastWriteResult > 0) {
+                samplesWritten += lastWriteResult;
+                lastSuccessfulWriteAt = SystemClock.elapsedRealtime();
+            }
         }
         else {
             LimeLog.info("Too much pending audio data: " + MoonBridge.getPendingAudioDuration() +" ms");
@@ -215,6 +231,7 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
     @Override
     public void start() {
+        logAudioState("start");
         if (enableAudioFx) {
             // Open an audio effect control session to allow equalizers to apply audio effects
             Intent i = new Intent(AudioEffect.ACTION_OPEN_AUDIO_EFFECT_CONTROL_SESSION);
@@ -227,6 +244,7 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
     @Override
     public void stop() {
+        logAudioState("stop");
         if (enableAudioFx) {
             // Close our audio effect control session when we're stopping
             Intent i = new Intent(AudioEffect.ACTION_CLOSE_AUDIO_EFFECT_CONTROL_SESSION);
@@ -238,10 +256,40 @@ public class AndroidAudioRenderer implements AudioRenderer {
 
     @Override
     public void cleanup() {
+        logAudioState("cleanup");
         // Immediately drop all pending data
         track.pause();
         track.flush();
 
         track.release();
+    }
+
+    static boolean containsNonzeroSample(short[] samples) {
+        for (short sample : samples) if (sample != 0) return true;
+        return false;
+    }
+
+    private void logAudioState(String reason) {
+        AudioTrack current = track;
+        int state = -1, playState = -1, session = -1;
+        long playHead = -1;
+        try {
+            if (current != null) {
+                state = current.getState();
+                playState = current.getPlayState();
+                session = current.getAudioSessionId();
+                playHead = current.getPlaybackHeadPosition() & 0xffffffffL;
+            }
+        } catch (IllegalStateException ignored) { }
+        long now = SystemClock.elapsedRealtime();
+        MoonWakerDiagnostics.record("INFO", "android.audio", "audio.snapshot",
+                "reason", reason, "audio_renderer_id", System.identityHashCode(this),
+                "audio_volume", volume, "audio_volume_result", lastVolumeResult,
+                "audio_track_state", state, "audio_play_state", playState,
+                "audio_session_id", session, "audio_play_head", playHead,
+                "audio_buffers", buffersReceived, "audio_nonzero_buffers", nonzeroBuffers,
+                "audio_samples_written", samplesWritten, "audio_write_result", lastWriteResult,
+                "audio_buffer_age_ms", lastBufferAt == 0 ? -1 : now - lastBufferAt,
+                "audio_write_age_ms", lastSuccessfulWriteAt == 0 ? -1 : now - lastSuccessfulWriteAt);
     }
 }

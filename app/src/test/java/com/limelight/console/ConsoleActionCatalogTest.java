@@ -6,6 +6,17 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ConsoleActionCatalogTest {
+    @Test public void preparationAcceptsSavedPairButNeverExplicitUnpaired() {
+        assertTrue(ConsoleActionCatalog.canPrepareHost(null, true));
+        assertFalse(ConsoleActionCatalog.canPrepareHost(null, false));
+        for (com.limelight.nvstream.http.PairingManager.PairState state
+                : com.limelight.nvstream.http.PairingManager.PairState.values()) {
+            boolean paired = state == com.limelight.nvstream.http.PairingManager.PairState.PAIRED;
+            org.junit.Assert.assertEquals(paired, ConsoleActionCatalog.canPrepareHost(state, true));
+            org.junit.Assert.assertEquals(paired, ConsoleActionCatalog.canPrepareHost(state, false));
+        }
+    }
+
     @Test
     public void offlineHostOnlyExposesOfflineActions() {
         assertTrue(host(ConsoleActionCatalog.HostCapability.WAKE,

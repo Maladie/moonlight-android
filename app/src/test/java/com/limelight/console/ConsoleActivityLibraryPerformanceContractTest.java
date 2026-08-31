@@ -65,6 +65,17 @@ public class ConsoleActivityLibraryPerformanceContractTest {
         assertTrue(render.contains("card.getParent() == expandedGrid"));
         assertTrue(render.contains("expandedGrid.removeView(discarded)"));
 
+        String reset = source.substring(source.indexOf(
+                        "private void renderExpandedLibraryFromStart("),
+                source.indexOf("private void renderPlayniteLibrary("));
+        assertTrue(reset.contains("removeCallbacks(expandedWindowWarmupRunnable)"));
+        assertTrue(reset.contains("expandedWindowWarmupPosted = false"));
+        assertTrue(reset.contains("pendingExpandedWindowWarmupIndex = -1"));
+        assertTrue(reset.contains("removeCallbacks(expandedFocusRestoreRunnable)"));
+        assertTrue(reset.contains("expandedGridWindowStartRow = 0"));
+        assertTrue(reset.contains("pendingExpandedFocusIndex = 0"));
+        assertTrue(reset.contains("requestExpandedFocusOnce(firstFocusableChild(expandedGrid))"));
+
         String boundary = source.substring(source.indexOf(
                         "private void scheduleExpandedBoundaryLoad("),
                 source.indexOf("private void scheduleExpandedWindowWarmup("));

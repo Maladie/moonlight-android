@@ -64,6 +64,20 @@
             android:title="@string/title_checkbox_enable_audiofx"
             android:summary="@string/summary_checkbox_enable_audiofx"
             android:defaultValue="false" />
+        <com.limelight.preferences.SeekBarPreference
+            android:key="seekbar_discord_audio_gain"
+            android:defaultValue="125"
+            android:max="200"
+            seekbar:min="50"
+            seekbar:step="5"
+            android:title="@string/title_discord_audio_gain"
+            android:summary="@string/summary_discord_audio_gain"
+            android:text="@string/suffix_seekbar_vibrate_fallback_strength" />
+        <CheckBoxPreference
+            android:key="checkbox_usb_microphone"
+            android:title="@string/title_checkbox_usb_microphone"
+            android:summary="@string/summary_checkbox_usb_microphone"
+            android:defaultValue="false" />
     </PreferenceCategory>
     <PreferenceCategory android:title="@string/category_gamepad_settings"
         android:key="category_gamepad_settings">

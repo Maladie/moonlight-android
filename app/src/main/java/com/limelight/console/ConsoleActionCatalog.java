@@ -104,4 +104,13 @@ final class ConsoleActionCatalog {
     static boolean isPaired(ComputerDetails host) {
         return host != null && host.pairState == PairingManager.PairState.PAIRED;
     }
+
+    static boolean canPrepareHost(ComputerDetails host) {
+        return host != null && canPrepareHost(host.pairState, host.serverCert != null);
+    }
+
+    static boolean canPrepareHost(PairingManager.PairState pairState, boolean savedCertificate) {
+        return pairState == PairingManager.PairState.PAIRED
+                || (pairState == null && savedCertificate);
+    }
 }

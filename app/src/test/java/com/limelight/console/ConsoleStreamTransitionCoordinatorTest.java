@@ -548,10 +548,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
         };
         ExecutorService executor = Executors.newSingleThreadExecutor();
         ExecutorService providerExecutor = Executors.newSingleThreadExecutor();
+        FakeCallbacks callbacks = new FakeCallbacks();
         ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
                 providerSpec, controller, gateway, executor, providerExecutor,
                 new FakeClock(), 0L, new InterruptingSleeper(),
-                (action, delay) -> { }, new FakeCallbacks());
+                (action, delay) -> { }, callbacks);
 
         coordinator.start();
         assertTrue(startEntered.await(2, TimeUnit.SECONDS));
@@ -563,6 +564,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(1, gateway.startGameCalls);
         assertEquals(1, gateway.stopGameCalls);
         assertEquals("steam:289070", gateway.stoppedGameId);
+        assertEquals(0, callbacks.providerStartAcceptedCalls);
         coordinator.close();
         providerExecutor.shutdownNow();
         assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS));
@@ -679,16 +681,30 @@ public class ConsoleStreamTransitionCoordinatorTest {
         FakeGateway gateway = new FakeGateway();
         gateway.snapshots.add(new IOException("stop observation"));
         gateway.startError = new IOException("launcher_interaction_required");
+        FakeCallbacks callbacks = new FakeCallbacks();
         ConsoleStreamTransitionCoordinator coordinator =
                 new ConsoleStreamTransitionCoordinator(
                         providerSpec, controller, gateway, new InlineExecutor(),
                         new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
-                        new FakeCallbacks());
+                        callbacks);
         coordinator.start();
         Thread.interrupted();
 
         assertEquals(LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED,
                 controller.snapshot().state);
+        assertEquals(0, callbacks.providerStartAcceptedCalls);
+        assertEquals(1, callbacks.providerStartFailedCalls);
+
+        controller.surfaceReady(providerSpec.id);
+        controller.streamConnected(providerSpec.id);
+        controller.videoFrameRendered(providerSpec.id);
+        assertEquals(LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED,
+                controller.snapshot().state);
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, callbacks.providerStartAcceptedCalls);
+
+        coordinator.cancel();
+        assertEquals(0, gateway.stopGameCalls);
     }
 
     @Test
@@ -1367,6 +1383,8 @@ public class ConsoleStreamTransitionCoordinatorTest {
         final List<String> attention = new ArrayList<>();
         String verification = "";
         int providerStopCalls;
+        int providerStartAcceptedCalls;
+        int providerStartFailedCalls;
         int cleanupCalls;
         boolean lastCleanupSuccess;
 
@@ -1393,6 +1411,13 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 String hostId, String gameId, String gameName) { attention.add(gameId); }
         @Override public void onProviderGameStopped(
                 String transitionId, String gameId) { providerStopCalls++; }
+        @Override public void onProviderGameStartAccepted(
+                String transitionId, String gameId) { providerStartAcceptedCalls++; }
+        @Override public void onProviderGameStartFailed(
+                String transitionId, String gameId,
+                ConsoleStreamTransitionCoordinator.ProviderStartFailure failure) {
+            providerStartFailedCalls++;
+        }
         @Override public void onProviderGameCleanupComplete(
                 String transitionId, String gameId, boolean success) {
             cleanupCalls++;

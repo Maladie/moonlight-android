@@ -16,6 +16,40 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNull;
 
 public class HostLaunchPreflightTest {
+    @Test public void verifiedSwitchTargetSkipsAppListButNotGatewayOrCancellation() {
+        Fake fake = new Fake();
+        fake.retainedTarget = app("MoonWaker Stream", 77, PlayniteTargetResolver.MOONWAKER_STREAM_UUID);
+        fake.refreshAction = () -> { throw new IllegalStateException("app list blocked by startup"); };
+        HostLaunchPreflight.Request request = HostLaunchPreflight.Request.from(
+                PlayIntent.playniteGame("host", 77, "Game", false, "steam:1", "game"),
+                HostLaunchPreflight.Action.SWITCH_RETAINED);
+        assertEquals(HostLaunchPreflight.Status.READY, fake.run(request, new AtomicBoolean()).status);
+        assertEquals(0, fake.refreshes);
+        assertEquals(1, fake.profileChecks);
+        fake.profile = null;
+        assertFailure(fake.run(request, new AtomicBoolean()), HostLaunchPreflight.Stage.GATEWAY_READY,
+                HostLaunchPreflight.FailureReason.GATEWAY_UNAVAILABLE);
+        assertEquals(1, fake.retainedChecks);
+        fake.profile = profile(true, true, true, true);
+        AtomicBoolean cancelled = new AtomicBoolean();
+        fake.retainedAction = () -> cancelled.set(true);
+        assertEquals(HostLaunchPreflight.Status.CANCELLED, fake.run(request, cancelled).status);
+    }
+
+    @Test public void launchAndReconnectStillRefreshEvenWhenRetainedTargetExists() {
+        for (HostLaunchPreflight.Action action : new HostLaunchPreflight.Action[] {
+                HostLaunchPreflight.Action.LAUNCH, HostLaunchPreflight.Action.RECONNECT}) {
+            Fake fake = new Fake();
+            fake.retainedTarget = app("MoonWaker Stream", 77, PlayniteTargetResolver.MOONWAKER_STREAM_UUID);
+            fake.apps.add(Collections.singletonList(fake.retainedTarget));
+            assertEquals(HostLaunchPreflight.Status.READY, fake.run(HostLaunchPreflight.Request.from(
+                    PlayIntent.playniteGame("host", 77, "Game", false, "steam:1", "game"), action),
+                    new AtomicBoolean()).status);
+            assertEquals(1, fake.refreshes);
+            assertEquals(0, fake.retainedChecks);
+        }
+    }
+
     @Test public void genericSunshineLaunchNeedsNoGatewayOrOptionalIntegration() {
         Fake fake = new Fake();
         fake.apps.add(Collections.singletonList(app("Discord", 42, "")));
@@ -42,6 +76,38 @@ public class HostLaunchPreflightTest {
         assertEquals(HostLaunchPreflight.Status.READY, result.status);
         assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED, fake.networkActionSeen);
         assertEquals(1, fake.profileChecks);
+    }
+
+    @Test public void warmUpUsesTheExistingNeutralTargetWithoutGatewayCalls() {
+        Fake fake = new Fake();
+        fake.apps.add(Arrays.asList(
+                app("Desktop", 8, "desktop"),
+                app("MoonWaker Stream", 77,
+                        PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
+
+        HostLaunchPreflight.Result result = fake.run(warmUp(), new AtomicBoolean());
+
+        assertEquals(HostLaunchPreflight.Status.READY, result.status);
+        assertEquals(77, result.target.getAppId());
+        assertEquals(HostLaunchPreflight.TargetResolution.EXISTING, result.resolution);
+        assertEquals(HostLaunchPreflight.Action.WARM_UP, fake.networkActionSeen);
+        assertEquals(0, fake.profileChecks);
+        assertEquals(0, fake.ensureCalls);
+        assertEquals(1, fake.refreshes);
+    }
+
+    @Test public void warmUpDoesNotCreateAMissingOrImposterNeutralTarget() {
+        Fake fake = new Fake();
+        fake.apps.add(Arrays.asList(
+                app("Desktop", 8, "desktop"),
+                app("MoonWaker Stream", 9, "manual")));
+
+        assertFailure(fake.run(warmUp(), new AtomicBoolean()),
+                HostLaunchPreflight.Stage.TARGET_READY,
+                HostLaunchPreflight.FailureReason.TARGET_UNAVAILABLE);
+        assertEquals(0, fake.profileChecks);
+        assertEquals(0, fake.ensureCalls);
+        assertEquals(1, fake.refreshes);
     }
 
     @Test public void playniteWithoutGatewayFailsAtGatewayStage() {
@@ -256,6 +322,11 @@ public class HostLaunchPreflightTest {
                 "host", 42, "Discord", false, ""), HostLaunchPreflight.Action.LAUNCH);
     }
 
+    private static HostLaunchPreflight.Request warmUp() {
+        return HostLaunchPreflight.Request.from(PlayIntent.autoWarmUp("host"),
+                HostLaunchPreflight.Action.WARM_UP);
+    }
+
     private static HostLaunchPreflight.Request game(int appId) {
         return HostLaunchPreflight.Request.from(PlayIntent.playniteGame(
                 "host", appId, "Game", false, "game", "game"),
@@ -294,6 +365,9 @@ public class HostLaunchPreflightTest {
         Runnable profileAction;
         Runnable ensureAction;
         Runnable refreshAction;
+        Runnable retainedAction;
+        NvApp retainedTarget;
+        int retainedChecks;
         HostLaunchPreflight.Action networkActionSeen;
         int profileChecks;
         int ensureCalls;
@@ -331,6 +405,12 @@ public class HostLaunchPreflightTest {
             refreshes++;
             if (refreshAction != null) refreshAction.run();
             return apps.isEmpty() ? Collections.emptyList() : apps.removeFirst();
+        }
+
+        @Override public NvApp verifiedRetainedTarget(HostLaunchPreflight.Request request) {
+            retainedChecks++;
+            if (retainedAction != null) retainedAction.run();
+            return retainedTarget;
         }
 
         @Override public long now() { return now; }

@@ -2,10 +2,35 @@ package com.limelight.console;
 
 import org.junit.Test;
 
+import java.io.IOException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
+
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class PlayniteTransitionGatewayTest {
+    @Test public void missingConnectionIsDiagnosedWithoutAddressOrCredentials()
+            throws IOException {
+        Path source = Paths.get(
+                "src/main/java/com/limelight/console/PlayniteTransitionGateway.java");
+        if (!Files.exists(source)) source = Paths.get(
+                "app/src/main/java/com/limelight/console/PlayniteTransitionGateway.java");
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String connect = text.substring(text.indexOf(
+                        "public static PlayniteTransitionGateway connect("),
+                text.indexOf("public Snapshot snapshot()"));
+
+        assertTrue(connect.contains("gateway.connect_failed"));
+        assertTrue(connect.contains("connection_missing"));
+        assertTrue(connect.contains("host_id"));
+        assertFalse(connect.contains("\"active_host\""));
+        assertFalse(connect.contains("authorization"));
+        assertFalse(connect.contains("token"));
+    }
+
     @Test public void suspendAcceptanceRequiresEchoedIdAndExactTarget() {
         PlayniteTransitionGateway.SuspendAcceptance acceptance =
                 new PlayniteTransitionGateway.SuspendAcceptance(

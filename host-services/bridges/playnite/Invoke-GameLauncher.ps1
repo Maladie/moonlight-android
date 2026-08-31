@@ -274,6 +274,11 @@ if ($AllowDefaultAction -and $matches.Count -eq 0) {
             ConvertTo-Json -Compress
         exit 0
     }
+    if ($DetectOnly) {
+        [pscustomobject]@{ recognized = $true; clicked = $false; reason = "launcher_action_detected" } |
+            ConvertTo-Json -Compress
+        exit 0
+    }
     $currentBounds = New-Object MoonWakerGameLauncherWindow+Rect
     if (-not [MoonWakerGameLauncherWindow]::GetWindowRect($handle, [ref]$currentBounds) -or
             $currentBounds.Left -ne $visual.WindowLeft -or $currentBounds.Top -ne $visual.WindowTop -or

@@ -38,7 +38,11 @@ public final class MoonWakerDiagnostics {
             "duration_ms", "http_status", "route", "method", "error_type", "milestone",
             "kind", "dropped", "app_id", "overlay_visible", "input_blocked",
             "operation_authorized", "reveal_authorized", "manual_reveal_available",
-            "uncertain", "orchestration_id", "operation_id"));
+            "uncertain", "orchestration_id", "operation_id",
+            "audio_renderer_id", "audio_volume", "audio_volume_result", "audio_track_state",
+            "audio_play_state", "audio_session_id", "audio_play_head", "audio_buffers",
+            "audio_nonzero_buffers", "audio_samples_written", "audio_write_result",
+            "audio_buffer_age_ms", "audio_write_age_ms"));
 
     private static Writer writer;
     private static File directory;
@@ -152,6 +156,7 @@ public final class MoonWakerDiagnostics {
             if (!(fields[index] instanceof String)) continue;
             String key = (String) fields[index];
             if (!ALLOWED_FIELDS.contains(key)) continue;
+            if (key.startsWith("audio_") && !(fields[index + 1] instanceof Number)) continue;
             Object value = safeValue(key, fields[index + 1]);
             if (value != null) record.put(key, value);
         }

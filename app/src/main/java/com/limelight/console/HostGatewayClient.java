@@ -339,13 +339,76 @@ final class HostGatewayClient {
         final String id;
         final String title;
         final int processId;
+        final RunningGames runningGames;
 
         PlayniteCurrentGame(String state, String id, String title, int processId) {
+            this(state, id, title, processId, null);
+        }
+
+        PlayniteCurrentGame(String state, String id, String title, int processId,
+                            RunningGames runningGames) {
             this.state = state;
             this.id = id;
             this.title = title;
             this.processId = processId;
+            this.runningGames = runningGames;
         }
+    }
+
+    static final class RunningGame {
+        final String gameId;
+        final int processId;
+        final String processToken;
+
+        RunningGame(String gameId, int processId, String processToken) {
+            this.gameId = gameId;
+            this.processId = processId;
+            this.processToken = processToken;
+        }
+    }
+
+    static final class RunningGames {
+        final List<RunningGame> games;
+        final String status;
+        final String revision;
+
+        RunningGames(List<RunningGame> games, String status, String revision) {
+            this.games = Collections.unmodifiableList(games);
+            this.status = status;
+            this.revision = revision;
+        }
+
+        RunningGame find(String gameId) {
+            if (!("complete".equals(status) || "partial".equals(status))
+                    || revision.isEmpty()) return null;
+            RunningGame match = null;
+            for (RunningGame game : games) {
+                if (!SessionSnapshot.normalize(game.gameId).equals(
+                        SessionSnapshot.normalize(gameId))) continue;
+                if (match != null) return null; // Ambiguous identity must not authorize a stop.
+                match = game;
+            }
+            return match;
+        }
+    }
+
+    static RunningGames parseRunningGames(JSONObject current) {
+        if (!current.has("running_games")) return null; // Older host: current-only contract.
+        List<RunningGame> games = new ArrayList<>();
+        JSONArray entries = current.optJSONArray("running_games");
+        if (entries != null) for (int i = 0; i < entries.length(); i++) {
+            JSONObject entry = entries.optJSONObject(i);
+            if (entry == null) continue;
+            String id = entry.optString("game_id", "").trim();
+            String token = entry.optString("process_token", "");
+            int pid = entry.optInt("process_id", 0);
+            if (isPlayniteId(id) && pid > 0 && token.matches("[0-9a-f]{64}")) {
+                games.add(new RunningGame(id, pid, token));
+            }
+        }
+        return new RunningGames(games, entries == null ? "unavailable"
+                : current.optString("running_scan_status", "unavailable"),
+                current.optString("running_scan_revision", ""));
     }
 
     static final class PlayniteEvent {
@@ -863,7 +926,8 @@ final class HostGatewayClient {
         if (current == null) current = new JSONObject();
         return new PlayniteCurrentGame(current.optString("state", "idle"),
                 current.optString("id", ""), current.optString("title", ""),
-                current.optInt("processId", current.optInt("process_id", 0)));
+                current.optInt("processId", current.optInt("process_id", 0)),
+                parseRunningGames(current));
     }
 
     PlayniteHealth getPlayniteHealth(GatewayConnection connection) throws IOException {
@@ -917,32 +981,78 @@ final class HostGatewayClient {
             throw new GatewayException(response.optString("error",
                     "The game could not be started."), 0);
         }
+        String rejection = gameStartRejectionReason(response);
+        if (!rejection.isEmpty()) throw new GatewayException(rejection, 0);
+    }
+
+    static String gameStartRejectionReason(JSONObject response) {
+        if (response == null) return "game_start_rejected";
+        if (response.has("accepted") && !response.optBoolean("accepted", true)) {
+            return response.optString("reason", "game_start_rejected");
+        }
+        JSONObject result = response.optJSONObject("result");
+        if (result != null && result.has("accepted")
+                && !result.optBoolean("accepted", true)) {
+            return result.optString("reason",
+                    response.optString("reason", "game_start_rejected"));
+        }
+        return "";
     }
 
     void stopGame(GatewayConnection connection, String gameId) throws IOException {
+        stopGame(connection, gameId, null);
+    }
+
+    boolean stopGame(GatewayConnection connection, String gameId, String processToken)
+            throws IOException {
+        JSONObject body = gameStopBody(gameId, processToken);
+        JSONObject response;
+        try {
+            response = request(connection,
+                    processToken == null ? "/api/v1/game/stop"
+                            : "/api/v1/game/stop-verified", "POST", body, 30_000);
+        } catch (GatewayException error) {
+            if (error.statusCode != 404 || processToken != null) throw error;
+            response = request(connection,
+                    "/api/v1/playnite/game/stop", "POST", body, 30_000);
+        }
+        return stoppedCurrent(response, gameId, processToken != null);
+    }
+
+    static JSONObject gameStopBody(String gameId, String processToken) throws IOException {
         if (!isPlayniteId(gameId)) {
             throw new IllegalArgumentException("Invalid game record ID");
+        }
+        if (processToken != null && !processToken.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("Invalid process token");
         }
         JSONObject body = new JSONObject();
         try {
             body.put("game_id", requestGameId(gameId));
+            if (processToken != null) body.put("expected_process_token", processToken);
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
-        JSONObject response;
-        try {
-            response = request(connection,
-                    "/api/v1/game/stop", "POST", body, 30_000);
-        } catch (GatewayException error) {
-            if (error.statusCode != 404) throw error;
-            response = request(connection,
-                    "/api/v1/playnite/game/stop", "POST", body, 30_000);
-        }
+        return body;
+    }
+
+    static boolean stoppedCurrent(JSONObject response, String gameId, boolean verified)
+            throws IOException {
         if (!response.optBoolean("ok", false)
                 || !response.optBoolean("accepted", true)) {
             throw new GatewayException(response.optString("error",
                     response.optString("reason", "The game could not be stopped.")), 0);
         }
+        if (!verified) return true;
+        JSONObject result = response.optJSONObject("result");
+        if (result == null) result = response;
+        if (!result.optBoolean("accepted", true)
+                || !SessionSnapshot.normalize(gameId).equals(
+                SessionSnapshot.normalize(result.optString("stopped_game_id", "")))
+                || !(result.opt("stopped_current") instanceof Boolean)) {
+            throw new GatewayException("game_stop_identity_unconfirmed", 0);
+        }
+        return result.optBoolean("stopped_current");
     }
 
     void installPlayniteGame(GatewayConnection connection, String gameId) throws IOException {

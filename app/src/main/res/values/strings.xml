@@ -168,6 +168,8 @@
     <string name="summary_audio_config_list">Enable 5.1 or 7.1 surround sound for home-theater systems</string>
     <string name="title_checkbox_enable_audiofx">Enable system equalizer support</string>
     <string name="summary_checkbox_enable_audiofx">Allows audio effects to function while streaming, but may increase audio latency</string>
+    <string name="title_discord_audio_gain">Discord volume</string>
+    <string name="summary_discord_audio_gain">Independent Discord volume on MoonWaker Home</string>
 
     <string name="category_gamepad_settings">Gamepad Settings</string>
     <string name="title_checkbox_multi_controller">Automatic gamepad presence detection</string>
@@ -436,6 +438,13 @@
     <string name="title_discord_leave_shortcut">Discord leave shortcut</string>
     <string name="summary_discord_shortcut">Used while the streaming overlay is open</string>
     <string name="discord_shortcut_none">None</string>
+    <string name="discord_shortcut_guide">Guide + %1$s</string>
+    <string name="discord_shortcut_guide_x">Guide + X / □</string>
+    <string name="discord_shortcut_guide_y">Guide + Y / △</string>
+    <string name="discord_shortcut_guide_l1">Guide + LB / L1</string>
+    <string name="discord_shortcut_guide_r1">Guide + RB / R1</string>
+    <string name="discord_shortcut_guide_l3">Guide + L3</string>
+    <string name="discord_shortcut_guide_r3">Guide + R3</string>
 
     <!-- Custom Commands Activity -->
     <string name="title_custom_commands">Custom Commands</string>
@@ -630,6 +639,8 @@
     <string name="console_sleep_host">Sleep host</string>
     <string name="console_host_online_details">This host is online. Select a connection or management action.</string>
     <string name="console_host_offline_details">This host is offline but remains available for Wake-on-LAN and management.</string>
+    <string name="console_auto_stream_warm_up">Automatic stream preparation</string>
+    <string name="console_auto_stream_warm_up_description">After you select this host, MoonWaker can wake it and prepare a stream in the background. This increases network and host resource usage.</string>
     <string name="console_pair_success">Host paired</string>
     <string name="console_gateway_pair_required">Pair this host Gateway before using remote sleep.</string>
     <string name="console_cancel">Cancel</string>
@@ -851,10 +862,8 @@
     <string name="console_action_leave_host">Leave host</string>
     <string name="console_wake_host">Wake host</string>
     <string name="console_unpair_host">Unpair host</string>
-    <string name="console_host_power_indicator">●  %1$s · %2$s</string>
-    <string name="console_host_power_focused_sleep">●  %1$s · Sleep</string>
-    <string name="console_host_power_focused_wake">●  %1$s · Wake</string>
-    <string name="console_host_power_waking">●  %1$s · Waking…</string>
+    <string name="console_host_status">●  %1$s\n%2$s</string>
+    <string name="console_host_status_description">%1$s. %2$s. Press Select to open host options.</string>
     <string name="console_host_power_wake_description">%1$s is offline. Press Select to wake the host.</string>
     <string name="console_host_waking_description">%1$s is waking. Please wait.</string>
     <string name="console_host_power_sleep_description">%1$s is online. Press Select to put the host to sleep.</string>
@@ -1064,6 +1073,10 @@
     <string name="playnite_server_error">Playnite gateway server error</string>
     <string name="playnite_data_current">Playnite library up to date</string>
     <string name="playnite_card_description">%1$s. %2$s. %3$s</string>
+    <string name="playnite_running_badge">RUNNING</string>
+    <string name="playnite_running_badge_description">%1$s is currently running</string>
+    <string name="playnite_end_game_success">The game has ended. Other games and the stream were not closed.</string>
+    <string name="playnite_end_game_confirmation">End this game? Other games and the stream will not be closed.</string>
     <string name="playnite_source">Source: %1$s</string>
     <string name="playnite_stream_settings">Game streaming settings</string>
     <string name="transition_preparing_session">Preparing the computer and stream</string>
@@ -1136,4 +1149,47 @@
     <string name="overlay_discord_chat_retrying">Retrying chat access…</string>
     <string name="overlay_discord_chat_in_use">Chat is open in another view</string>
     <string name="overlay_discord_chat_history_failed">Messages could not be loaded. Open the chat again to retry.</string>
+    <string name="console_warm_up_waking">Waking host</string>
+    <string name="console_warm_up_preparing">Preparing stream</string>
+    <string name="console_warm_up_ready">Stream ready</string>
+    <string name="console_warm_up_error">Stream preparation failed</string>
+    <string name="console_warm_up_fallback_details">Automatic stream preparation failed. Retry will launch the game normally. Cancel returns to the library.</string>
+    <string name="title_checkbox_usb_microphone">USB microphone streaming</string>
+    <string name="summary_checkbox_usb_microphone">Send one connected USB microphone to the selected PC whenever MoonWaker is running. Permission is requested when needed.</string>
+    <string name="usb_microphone_active">USB microphone streaming is active</string>
+    <string name="usb_microphone_unavailable">USB microphone streaming is unavailable. Check the USB input, Gateway, and Steam Streaming Microphone.</string>
+    <string name="usb_microphone_notification_channel">USB microphone streaming</string>
+    <string name="usb_microphone_notification_title">USB microphone to PC</string>
+    <string name="usb_microphone_notification_connecting">Connecting the USB microphone to the selected PC</string>
+    <string name="usb_microphone_notification_active">USB microphone is being sent to the selected PC</string>
+    <string name="usb_microphone_notification_reconnecting">Connection lost; reconnecting the USB microphone to the selected PC</string>
+    <string name="usb_microphone_notification_waiting_usb">Waiting for one USB microphone</string>
+    <string name="usb_microphone_notification_usb_multiple">More than one USB microphone is connected; only one is supported</string>
+    <string name="usb_microphone_notification_usb_unavailable">The connected USB microphone needs attention</string>
+    <string name="usb_microphone_notification_worker_missing">PC microphone renderer is unavailable; retrying</string>
+    <string name="usb_microphone_notification_host_unavailable">PC microphone service is unavailable; retrying</string>
+    <string name="usb_microphone_notification_steam_endpoint">Steam Streaming Microphone is missing or ambiguous; retrying</string>
+    <string name="usb_microphone_notification_stop">Stop</string>
+    <string name="usb_microphone_gateway_required">Select a host and pair its Gateway before enabling the USB microphone.</string>
+    <string name="usb_microphone_permission_required">Microphone permission is required. Enable it in Android settings before trying again.</string>
+    <string name="console_action_usb_microphone">USB microphone</string>
+    <string name="console_usb_microphone_description">USB microphone. %1$s</string>
+    <string name="console_usb_microphone_off">Off</string>
+    <string name="console_usb_microphone_connecting">Connecting to PC</string>
+    <string name="console_usb_microphone_active">Transmitting to PC</string>
+    <string name="console_usb_microphone_reconnecting">Gateway offline; reconnecting</string>
+    <string name="console_usb_microphone_waiting_usb">Waiting for one USB microphone</string>
+    <string name="console_usb_microphone_multiple">More than one USB microphone connected; only one is supported</string>
+    <string name="console_usb_microphone_usb_unavailable">USB microphone needs attention</string>
+    <string name="console_usb_microphone_gateway_required">Select a host and pair its Gateway</string>
+    <string name="console_usb_microphone_permission_required">Android microphone permission is required</string>
+    <string name="console_usb_microphone_unsupported">USB microphone streaming requires Android 6.0 or newer</string>
+    <string name="console_usb_microphone_worker_missing">PC microphone renderer is unavailable; retrying</string>
+    <string name="console_usb_microphone_host_unavailable">PC microphone service is unavailable; retrying</string>
+    <string name="console_usb_microphone_steam_endpoint">Steam Streaming Microphone is missing or ambiguous; retrying</string>
+    <string name="console_usb_microphone_panel_title">USB microphone to PC</string>
+    <string name="console_usb_microphone_panel_details">MoonWaker can keep one USB microphone connected to the selected PC outside game sessions.</string>
+    <string name="console_usb_microphone_stop">Stop microphone</string>
+    <string name="console_usb_microphone_retry">Retry now</string>
+    <string name="console_usb_microphone_settings">Open settings</string>
 </resources>

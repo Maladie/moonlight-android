@@ -19,6 +19,71 @@ import static org.junit.Assert.assertTrue;
 
 public class OverlayMenuViewTest {
     @Test
+    public void discordShortcutsRequireGuideAndFireOncePerGuidePress() {
+        int[] buttons = {
+                KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_BUTTON_Y,
+                KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_R1,
+                KeyEvent.KEYCODE_BUTTON_THUMBL, KeyEvent.KEYCODE_BUTTON_THUMBR
+        };
+        for (int button : buttons) {
+            OverlayMenuView.GuideShortcutLatch latch =
+                    new OverlayMenuView.GuideShortcutLatch();
+            assertEquals(OverlayMenuView.GuideShortcutLatch.NONE,
+                    latch.handle(KeyEvent.ACTION_DOWN, button, 0, button,
+                            KeyEvent.KEYCODE_UNKNOWN));
+            assertEquals(OverlayMenuView.GuideShortcutLatch.CONSUMED,
+                    latch.handle(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BUTTON_MODE, 0,
+                            button, KeyEvent.KEYCODE_UNKNOWN));
+            assertEquals(OverlayMenuView.GuideShortcutLatch.MUTE,
+                    latch.handle(KeyEvent.ACTION_DOWN, button, 0, button,
+                            KeyEvent.KEYCODE_UNKNOWN));
+            assertEquals(OverlayMenuView.GuideShortcutLatch.CONSUMED,
+                    latch.handle(KeyEvent.ACTION_DOWN, button, 1, button,
+                            KeyEvent.KEYCODE_UNKNOWN));
+            assertEquals(OverlayMenuView.GuideShortcutLatch.CONSUMED,
+                    latch.handle(KeyEvent.ACTION_UP, button, 0, button,
+                            KeyEvent.KEYCODE_UNKNOWN));
+            assertEquals(OverlayMenuView.GuideShortcutLatch.CONSUMED,
+                    latch.handle(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_BUTTON_MODE, 0,
+                            button, KeyEvent.KEYCODE_UNKNOWN));
+            assertEquals(OverlayMenuView.GuideShortcutLatch.NONE,
+                    latch.handle(KeyEvent.ACTION_DOWN, button, 0, button,
+                            KeyEvent.KEYCODE_UNKNOWN));
+        }
+    }
+
+    @Test
+    public void discordChordUsesRawKeysBeforeCommunityAndFaceButtonTranslation()
+            throws Exception {
+        String source = readProjectFile(
+                "src/main/java/com/limelight/ui/overlay/OverlayMenuView.java",
+                "app/src/main/java/com/limelight/ui/overlay/OverlayMenuView.java");
+        String dispatch = source.substring(source.indexOf("public boolean dispatchKeyEvent("),
+                source.indexOf("private boolean handleDiscordRailKey("));
+        assertTrue(dispatch.indexOf("discordShortcutChord.handle(")
+                < dispatch.indexOf("handleFlipFaceButtons(event.getKeyCode())"));
+        assertTrue(dispatch.indexOf("discordShortcutChord.handle(")
+                < dispatch.indexOf("if (overlayMode == OverlayMode.COMMUNITY)"));
+        assertFalse(dispatch.contains("keyCode == discordShortcutKeyCode(discordMuteShortcut)"));
+
+        String arrays = readProjectFile("src/main/res/values/arrays.xml",
+                "app/src/main/res/values/arrays.xml");
+        assertTrue(arrays.contains("@string/discord_shortcut_guide_x"));
+        assertTrue(arrays.contains("@string/discord_shortcut_guide_r3"));
+
+        OverlayMenuView.GuideShortcutLatch leave =
+                new OverlayMenuView.GuideShortcutLatch();
+        leave.handle(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BUTTON_MODE, 0,
+                KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_BUTTON_Y);
+        assertEquals(OverlayMenuView.GuideShortcutLatch.LEAVE,
+                leave.handle(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BUTTON_Y, 0,
+                        KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_BUTTON_Y));
+        leave.reset();
+        assertEquals(OverlayMenuView.GuideShortcutLatch.NONE,
+                leave.handle(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_BUTTON_Y, 0,
+                        KeyEvent.KEYCODE_BUTTON_X, KeyEvent.KEYCODE_BUTTON_Y));
+    }
+    @Test
     public void endGameIsASeparateConditionalActionFromQuitSession() throws Exception {
         Path source = Paths.get("src/main/java/com/limelight/ui/overlay/OverlayMenuView.java");
         if (!Files.exists(source)) source = Paths.get(

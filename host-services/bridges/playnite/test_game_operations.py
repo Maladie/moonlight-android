@@ -31,6 +31,58 @@ class GameOperationsTest(unittest.TestCase):
         self.assertEqual("playnite", self.service.provider_label(game))
         self.assertIs(self.generic, self.service.provider_for(game))
 
+    def test_nonsteam_preparation_precedes_dispatch_but_not_steam(self):
+        for name, provider in (("epic", self.epic), ("playnite", self.generic), ("steam", self.steam)):
+            calls = []
+            provider.launch = mock.Mock(side_effect=lambda *args, **kwargs: calls.append("launch") or {"accepted": True})
+            prepare = lambda: calls.append("prepare") or {"ready": True}
+            result = self.service.launch({"provider": name}, prepare_nonsteam=prepare,
+                                         launch_allowed=lambda: True)
+            self.assertTrue(result["accepted"])
+            self.assertEqual(["launch"] if name == "steam" else ["prepare", "launch"], calls)
+        # Provider validation can reject after preparation; it is not an isolation ACK.
+        self.epic.launch.return_value = {"accepted": False, "reason": "legendary_not_installed"}
+        self.epic.launch.side_effect = None
+        self.assertFalse(self.service.launch({"provider": "epic"}, prepare_nonsteam=prepare)["accepted"])
+
+    def test_failed_preparation_or_cancel_after_it_never_dispatches(self):
+        self.epic.launch = mock.Mock()
+        for ready, allowed, reason in ((False, True, "steam_process_ambiguous"),
+                                       (True, False, "launch_cancelled")):
+            result = self.service.launch({"provider": "epic"},
+                prepare_nonsteam=lambda: {"ready": ready, "reason": "steam_process_ambiguous"},
+                launch_allowed=lambda: allowed)
+            self.assertEqual(reason, result["reason"])
+        self.epic.launch.assert_not_called()
+
+    def test_cancel_during_epic_install_verification_prevents_actual_dispatch(self):
+        self.epic._legendary = mock.Mock(return_value=Path("C:/legendary.exe"))
+        self.epic._legendary_environment = mock.Mock(return_value={})
+        self.epic._resolve_legendary_app = mock.Mock(return_value="App")
+        self.epic.process_runner = mock.Mock()
+        entered, resume = threading.Event(), threading.Event()
+        allowed = True
+
+        def verify(_app):
+            entered.set()
+            if not resume.wait(2):
+                raise AssertionError("test did not release metadata query")
+            return True, {"install_directory": "C:/Game", "executable": "game.exe"}
+
+        self.epic._installed_legendary = verify
+        results = []
+        worker = threading.Thread(target=lambda: results.append(self.service.launch(
+            {"id": "epic:App", "provider": "epic"},
+            prepare_nonsteam=lambda: {"ready": True}, launch_allowed=lambda: allowed)))
+        worker.start()
+        self.assertTrue(entered.wait(2))
+        allowed = False
+        resume.set()
+        worker.join(2)
+        self.assertFalse(worker.is_alive())
+        self.assertEqual("launch_cancelled", results[0]["reason"])
+        self.epic.process_runner.assert_not_called()
+
     def test_epic_scan_requires_finished_egstore_state(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -245,7 +297,7 @@ class GameOperationsTest(unittest.TestCase):
             sender = mock.Mock()
             provider = SteamProvider(
                 roots=[root], root_resolver=lambda: root, command_runner=runner,
-                big_picture_preflight=preflight)
+                launch_preflight=preflight)
 
             result = provider.launch({
                 "id": "steam:224760", "provider": "steam",
@@ -261,6 +313,24 @@ class GameOperationsTest(unittest.TestCase):
             self.assertFalse(runner.call_args.kwargs["shell"])
             preflight.assert_called_once_with(provider)
             sender.assert_not_called()
+
+            # Busy is checked before probing the desktop; no second dispatch.
+            self.assertEqual("operation_busy", provider.launch({
+                "id": "steam:224760", "providerGameId": "224760"})["reason"])
+            self.assertEqual(1, runner.call_count)
+            preflight.assert_called_once_with(provider)
+            provider.process_registry.remove(provider.process_registry.get("launch-task"))
+            for reason in ("host_session_locked", "steam_launch_preflight_unavailable"):
+                preflight.return_value = {"ready": False, "reason": reason}
+                self.assertFalse(provider.launch({
+                    "id": "steam:224760", "providerGameId": "224760"})["accepted"])
+                self.assertEqual(1, runner.call_count)
+            preflight.return_value = {"ready": True}
+            self.assertFalse(provider.launch({"providerGameId": "invalid"})["accepted"])
+            self.assertFalse(provider.launch({"providerGameId": "999"})["accepted"])
+            executable.unlink()
+            self.assertFalse(provider.launch({"providerGameId": "224760"})["accepted"])
+            self.assertEqual(1, runner.call_count)
 
     def test_steam_console_log_is_not_launcher_surface_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -281,7 +351,7 @@ class GameOperationsTest(unittest.TestCase):
             provider = SteamProvider(
                 roots=[root], root_resolver=lambda: root,
                 command_runner=mock.Mock(return_value=process),
-                big_picture_preflight=mock.Mock(return_value={"ready": True}))
+                launch_preflight=mock.Mock(return_value={"ready": True}))
 
             provider.launch({
                 "id": "steam:224760", "provider": "steam",
