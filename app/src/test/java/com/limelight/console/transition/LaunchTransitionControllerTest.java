@@ -419,6 +419,23 @@ public class LaunchTransitionControllerTest {
     }
 
     @Test
+    public void rejectedLaunchKeepsInteractionAcrossLateTransportCallbacks() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        controller.launcherInteractionRequired("transition-1", HOST, GAME, "attention");
+        controller.surfaceReady("transition-1");
+        assertEquals(LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED,
+                controller.snapshot().state);
+        transportReady(controller);
+        controller.streamConnected("transition-1");
+        assertEquals(LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED,
+                controller.snapshot().state);
+        assertTrue(controller.snapshot().manualRevealAvailable);
+        assertFalse(controller.snapshot().revealAuthorized);
+        controller.showStreamAnyway("transition-1");
+        assertTrue(controller.snapshot().revealAuthorized);
+    }
+
+    @Test
     public void launcherInteractionRequiresExplicitRevealOrCancel() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         transportReady(controller);

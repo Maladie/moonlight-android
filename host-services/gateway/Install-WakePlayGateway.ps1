@@ -10,6 +10,8 @@ $sourceDirectory = $PSScriptRoot
 $versionSource = Join-Path (Split-Path -Parent $sourceDirectory) "version.json"
 $files = @(
     "wakeplay_gateway.py",
+    "MoonWakerMicrophoneWorker.exe",
+    "MoonWakerDiscordAudioWorker.exe",
     "Start-WakePlayGateway.ps1",
     "MoonWakerGatewaySupervisor.ps1",
     "Start-MoonWakerGateway.ps1",

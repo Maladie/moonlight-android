@@ -296,6 +296,7 @@ public class OverlayMenuView extends LinearLayout {
     private String discordError;
     private String discordMuteShortcut = "x";
     private String discordLeaveShortcut = "y";
+    private final GuideShortcutLatch discordShortcutChord = new GuideShortcutLatch();
     private DiscordGatewayClient.VoiceState discordVoice;
     private OverlayMenuButton discordMuteButton;
     private OverlayMenuButton discordLeaveButton;
@@ -2406,16 +2407,18 @@ public class OverlayMenuView extends LinearLayout {
         return "none";
     }
 
-    private static String discordShortcutLabel(String value) {
+    private String discordShortcutLabel(String value) {
+        String button;
         switch (normalizeDiscordShortcut(value)) {
-            case "x": return "X";
-            case "y": return "Y";
-            case "l1": return "LB";
-            case "r1": return "RB";
-            case "l3": return "L3";
-            case "r3": return "R3";
+            case "x": button = playStationButtons ? "□" : "X"; break;
+            case "y": button = playStationButtons ? "△" : "Y"; break;
+            case "l1": button = playStationButtons ? "L1" : "LB"; break;
+            case "r1": button = playStationButtons ? "R1" : "RB"; break;
+            case "l3": button = "L3"; break;
+            case "r3": button = "R3"; break;
             default: return "";
         }
+        return getContext().getString(R.string.discord_shortcut_guide, button);
     }
 
     private static int discordShortcutKeyCode(String value) {
@@ -2427,6 +2430,42 @@ public class OverlayMenuView extends LinearLayout {
             case "l3": return KeyEvent.KEYCODE_BUTTON_THUMBL;
             case "r3": return KeyEvent.KEYCODE_BUTTON_THUMBR;
             default: return KeyEvent.KEYCODE_UNKNOWN;
+        }
+    }
+
+    static final class GuideShortcutLatch {
+        static final int NONE = 0;
+        static final int CONSUMED = 1;
+        static final int MUTE = 2;
+        static final int LEAVE = 3;
+        private boolean guideDown;
+        private boolean triggered;
+
+        int handle(int action, int rawKeyCode, int repeatCount,
+                   int muteKeyCode, int leaveKeyCode) {
+            if (rawKeyCode == KeyEvent.KEYCODE_BUTTON_MODE) {
+                if (action == KeyEvent.ACTION_DOWN && repeatCount == 0) {
+                    guideDown = true;
+                    triggered = false;
+                } else if (action == KeyEvent.ACTION_UP) {
+                    reset();
+                }
+                return CONSUMED;
+            }
+            if (!guideDown || rawKeyCode == KeyEvent.KEYCODE_UNKNOWN
+                    || (rawKeyCode != muteKeyCode && rawKeyCode != leaveKeyCode)) {
+                return NONE;
+            }
+            if (action == KeyEvent.ACTION_DOWN && repeatCount == 0 && !triggered) {
+                triggered = true;
+                return rawKeyCode == muteKeyCode ? MUTE : LEAVE;
+            }
+            return CONSUMED;
+        }
+
+        void reset() {
+            guideDown = false;
+            triggered = false;
         }
     }
 
@@ -2532,6 +2571,17 @@ public class OverlayMenuView extends LinearLayout {
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
+        DiscordActionVoiceState shortcutVoice = discordActionVoiceState();
+        int chordAction = discordShortcutChord.handle(event.getAction(), event.getKeyCode(),
+                event.getRepeatCount(), shortcutVoice.connected
+                        ? discordShortcutKeyCode(discordMuteShortcut) : KeyEvent.KEYCODE_UNKNOWN,
+                shortcutVoice.connected
+                        ? discordShortcutKeyCode(discordLeaveShortcut) : KeyEvent.KEYCODE_UNKNOWN);
+        if (chordAction != GuideShortcutLatch.NONE) {
+            if (chordAction == GuideShortcutLatch.MUTE) activateDiscordMute();
+            else if (chordAction == GuideShortcutLatch.LEAVE) activateDiscordLeave();
+            return true;
+        }
         int keyCode = flipFaceButtons ? handleFlipFaceButtons(event.getKeyCode()) : event.getKeyCode();
         boolean chatKeyboardVisible = discordChatKeyboard != null
                 && discordChatKeyboard.getVisibility() == VISIBLE
@@ -2664,17 +2714,6 @@ public class OverlayMenuView extends LinearLayout {
             }
 
             if (handleDiscordRailKey(keyCode)) return true;
-
-            if (event.getRepeatCount() == 0 && discordVoice != null && discordVoice.connected) {
-                if (keyCode == discordShortcutKeyCode(discordMuteShortcut)) {
-                    activateDiscordMute();
-                    return true;
-                }
-                if (keyCode == discordShortcutKeyCode(discordLeaveShortcut)) {
-                    activateDiscordLeave();
-                    return true;
-                }
-            }
 
             switch (keyCode) {
                 case KeyEvent.KEYCODE_DPAD_LEFT:
@@ -3314,6 +3353,7 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     public void closeMenu() {
+        discordShortcutChord.reset();
         cancelCommunityChatKeyboardHold();
         overlayMode = OverlayMode.MENU;
         communityMotionDirection = KeyEvent.KEYCODE_UNKNOWN;
@@ -3368,6 +3408,7 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     public void show() {
+        discordShortcutChord.reset();
         communityCancelKeyDown = false;
         invalidateCommunityProjectionCache();
         buildMenu();

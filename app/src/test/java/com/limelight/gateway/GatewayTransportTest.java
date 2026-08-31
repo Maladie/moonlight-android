@@ -5,9 +5,15 @@ import org.junit.Test;
 
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
+import java.io.InputStream;
+import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
+import java.util.concurrent.CountDownLatch;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+
+import javax.net.ssl.HttpsURLConnection;
 
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
@@ -171,6 +177,39 @@ public class GatewayTransportTest {
         assertRejectedPath("/status");
     }
 
+    @Test public void microphoneFramesHaveOneFixedTwentyMillisecondShape() {
+        GatewayTransport.requireMicrophoneFrame(new byte[1920]);
+        try {
+            GatewayTransport.requireMicrophoneFrame(new byte[1919]);
+            fail("Expected IllegalArgumentException");
+        } catch (IllegalArgumentException expected) {
+            // Expected.
+        }
+    }
+
+    @Test public void discordAudioCloseAbortsOneConcurrentReadWithoutClosingItsInput()
+            throws Exception {
+        BlockingInputStream input = new BlockingInputStream();
+        DisconnectingHttpsConnection connection =
+                new DisconnectingHttpsConnection(input);
+        GatewayTransport.DiscordAudioStream stream =
+                new GatewayTransport.DiscordAudioStream(connection, input);
+        Thread reader = new Thread(() -> {
+            try { stream.read(new byte[1], 0, 1); }
+            catch (IOException ignored) { }
+        });
+
+        reader.start();
+        assertTrue(input.readStarted.await(2, TimeUnit.SECONDS));
+        stream.close();
+        stream.close();
+        reader.join(2_000L);
+
+        assertFalse(reader.isAlive());
+        assertEquals(1, connection.disconnects.get());
+        assertEquals(0, input.closes.get());
+    }
+
     private static void assertRejectedPath(String path) throws Exception {
         try {
             GatewayTransport.resolve("https://host:8785", path);
@@ -193,5 +232,54 @@ public class GatewayTransportTest {
 
     private interface ThrowingRunnable {
         void run() throws IOException;
+    }
+
+    private static final class BlockingInputStream extends InputStream {
+        final CountDownLatch readStarted = new CountDownLatch(1);
+        final CountDownLatch disconnected = new CountDownLatch(1);
+        final AtomicInteger closes = new AtomicInteger();
+
+        @Override public int read() throws IOException {
+            readStarted.countDown();
+            try {
+                if (!disconnected.await(2, TimeUnit.SECONDS)) {
+                    throw new IOException("Disconnect did not abort the read");
+                }
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                throw new IOException(interrupted);
+            }
+            return -1;
+        }
+
+        @Override public void close() {
+            closes.incrementAndGet();
+            disconnected.countDown();
+        }
+    }
+
+    private static final class DisconnectingHttpsConnection extends HttpsURLConnection {
+        final BlockingInputStream input;
+        final AtomicInteger disconnects = new AtomicInteger();
+
+        DisconnectingHttpsConnection(BlockingInputStream input) throws Exception {
+            super(new URL("https://host/audio"));
+            this.input = input;
+        }
+
+        @Override public void disconnect() {
+            disconnects.incrementAndGet();
+            input.disconnected.countDown();
+        }
+
+        @Override public boolean usingProxy() { return false; }
+        @Override public void connect() { }
+        @Override public String getCipherSuite() { return ""; }
+        @Override public java.security.cert.Certificate[] getLocalCertificates() {
+            return null;
+        }
+        @Override public java.security.cert.Certificate[] getServerCertificates() {
+            return null;
+        }
     }
 }

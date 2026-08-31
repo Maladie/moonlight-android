@@ -389,7 +389,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         logTimeline(startError == null ? "provider-start-complete"
                 : "provider-start-failed reason=" + timelineReason(startError));
         if (startError == null) {
-            setCurrentAttemptOwner();
+            if (!acceptProviderStart(actionEpoch)) return;
             callbacks.onProviderGameStartAccepted(
                     transitionSpec.id, transitionSpec.playniteGameId);
             if (isCurrent(actionEpoch)) {
@@ -822,16 +822,20 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         }
     }
 
+    private boolean acceptProviderStart(long actionEpoch) {
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            synchronized (this) {
+                if (!isCurrent(actionEpoch) || providerCleanupRequested) return false;
+                PROVIDER_OWNERS.put(providerOwnerKey(), new ProviderOwner(transitionSpec));
+                return true;
+            }
+        }
+    }
+
     private boolean mayStopCurrentAttempt() {
         synchronized (PROVIDER_OWNERS_LOCK) {
             ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
             return owner == null || owner.matches(transitionSpec);
-        }
-    }
-
-    private void setCurrentAttemptOwner() {
-        synchronized (PROVIDER_OWNERS_LOCK) {
-            PROVIDER_OWNERS.put(providerOwnerKey(), new ProviderOwner(transitionSpec));
         }
     }
 

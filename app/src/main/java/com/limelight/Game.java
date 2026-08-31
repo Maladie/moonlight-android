@@ -25,6 +25,7 @@ import com.limelight.console.DiscordDmToastView;
 import com.limelight.console.PlayniteTransitionGateway;
 import com.limelight.console.PlayniteIdentityResolutionPolicy;
 import com.limelight.discord.DiscordSocialClient;
+import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.console.transition.LaunchTransitionController;
 import com.limelight.console.transition.LaunchTransitionSnapshot;
 import com.limelight.console.transition.LaunchTransitionSpec;
@@ -128,6 +129,7 @@ import java.util.Locale;
 import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicReference;
 
 
 public class Game extends Activity implements SurfaceHolder.Callback,
@@ -179,6 +181,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private ConsoleStreamTransitionCoordinator transitionCoordinator;
     private boolean lastTransitionOverlayVisible = true;
     private boolean lastTransitionRevealAuthorized;
+    private final AtomicReference<String> armedVideoFrameTransitionId =
+            new AtomicReference<>("");
     private final Handler transitionUiHandler = new Handler(Looper.getMainLooper());
     private Runnable pendingAutomaticReveal;
     private boolean manualRevealRequested;
@@ -186,6 +190,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean providerStopInFlight;
     private boolean providerStopConfirmed;
     private boolean providerEndGameInFlight;
+    private boolean retainedDashboardReturnInFlight;
+    private String providerStartRejectedTransitionId = "";
     private volatile boolean wholeSessionTerminationInFlight;
     private final AtomicBoolean freshOwnedFailureCleanupInFlight = new AtomicBoolean();
     private RetainedSwitch retainedSwitch;
@@ -200,6 +206,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean autoEnterPip = false;
     private boolean surfaceCreated = false;
     private boolean attemptedConnection = false;
+    private long autoWarmUpAttempt;
+    private boolean autoWarmUpConvertedToGame;
+    private boolean autoWarmUpRetained;
+    private boolean parkWarmUpWhenConnected;
+    private final Object autoWarmUpGateLock = new Object();
+    private final AtomicBoolean autoWarmUpHomeFrameAccepted = new AtomicBoolean();
+    private final AtomicBoolean autoWarmUpTransportStopRequested = new AtomicBoolean();
     private boolean bitrateReconnectPending = false;
     private int runtimeBitrateKbps;
     private int suppressPipRefCount = 0;
@@ -307,6 +320,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_TRANSITION_PLAYNITE_GAME_ID =
             "ConsoleTransitionPlayniteGameId";
     public static final String EXTRA_TRANSITION_CREATED_AT = "ConsoleTransitionCreatedAt";
+    public static final String EXTRA_AUTO_WARM_UP_ATTEMPT = "AutoWarmUpAttempt";
     private static final String STATE_TRANSITION_REVEALED = "ConsoleTransitionRevealed";
     public static final String ACTION_QUIT_APP = "com.limelight.QUIT_STREAMING_APP";
 
@@ -321,6 +335,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 getIntent().getStringExtra(EXTRA_SOURCE_SUSPEND_ID));
         sourceSuspendPlayniteGameId = normalizeGameId(
                 getIntent().getStringExtra(EXTRA_SOURCE_SUSPEND_PLAYNITE_GAME_ID));
+        autoWarmUpAttempt = getIntent().getLongExtra(EXTRA_AUTO_WARM_UP_ATTEMPT, 0L);
 
         UiHelper.setLocale(this);
 
@@ -374,6 +389,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             boolean restoredRevealed = savedInstanceState != null
                     && savedInstanceState.getBoolean(STATE_TRANSITION_REVEALED, false);
             if (transitionSpec != null) {
+                if (hasAutoWarmUpTransportIdentity()) {
+                    LaunchTransitionType warmUpType = transitionSpec.playniteGameId.isEmpty()
+                            ? LaunchTransitionType.GENERIC
+                            : LaunchTransitionType.GAME_CONNECTION;
+                    transitionSpec = new LaunchTransitionSpec(
+                            transitionSpec.id, transitionSpec.hostId, warmUpType,
+                            transitionSpec.sunshineAppId, transitionSpec.playniteGameId,
+                            transitionSpec.createdAtMillis);
+                    getIntent().putExtra(EXTRA_TRANSITION_TYPE, warmUpType.name());
+                }
                 LaunchTransitionType recoveredType = recoveredTransitionType(
                         transitionSpec.type, restoredRevealed);
                 if (recoveredType != transitionSpec.type) {
@@ -393,8 +418,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_MESSAGE),
                     launchStartedAtMillis,
                     getIntent().getBooleanExtra(EXTRA_CONSOLE_REDUCED_MOTION, false));
-            consoleLoadingView.setSplashArtwork(
-                    getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_ARTWORK));
+            if (hasAutoWarmUpTransportIdentity()) {
+                consoleLoadingView.showNeutralWarmUpAppearance();
+            } else {
+                consoleLoadingView.setSplashArtwork(
+                        getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_ARTWORK));
+            }
             ((FrameLayout) findViewById(android.R.id.content)).addView(consoleLoadingView,
                     new FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
                             ViewGroup.LayoutParams.MATCH_PARENT));
@@ -416,6 +445,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }
 
                     @Override public void onShowStreamAnyway() {
+                        if (isOwnedHiddenAutoWarmUp()) return;
                         manualRevealRequested = true;
                         LaunchTransitionSnapshot snapshot = transitionController.snapshot();
                         LimeLog.info("Manual stream reveal requested transition="
@@ -837,13 +867,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // Register immediately so we cannot miss an already-created Surface.
             // surfaceChanged() still gates conn.start() on operationAuthorized.
             streamView.getHolder().addCallback(this);
-            consoleLoadingView.doAfterNextFrame(() -> {
-                if (isFinishing() || isDestroyed()) return;
-                transitionController.overlayRendered(transitionSpec.id);
-                logLaunchMilestone("opaque-overlay-rendered");
-                transitionCoordinator.start();
-                startConnectionIfReady(streamView.getHolder());
-            });
+            if (hasAutoWarmUpTransportIdentity()) {
+                if (!beginAutoWarmUpPreparing()) {
+                    finish();
+                    return;
+                }
+                openPreparingConsoleHome();
+            } else {
+                consoleLoadingView.doAfterNextFrame(() -> {
+                    if (isFinishing() || isDestroyed()) return;
+                    transitionController.overlayRendered(transitionSpec.id);
+                    logLaunchMilestone("opaque-overlay-rendered");
+                    transitionCoordinator.start();
+                    startConnectionIfReady(streamView.getHolder());
+                });
+            }
         } else {
             streamView.getHolder().addCallback(this);
         }
@@ -1400,11 +1438,32 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        boolean acceptedWithoutTransport = false;
+        synchronized (autoWarmUpGateLock) {
+            if (!autoWarmUpHomeFrameAccepted.get()) {
+                cancelUnstartedAutoWarmUp(false);
+            } else if (!connecting && !connected
+                    && isExactAutoWarmUpPreparing(
+                    RetainedStreamSessionCoordinator.snapshot())) {
+                acceptedWithoutTransport = markAutoWarmUpReconnectRequired(
+                        "activity_destroyed_before_transport");
+            }
+        }
+        if (acceptedWithoutTransport) {
+            SessionResumeManager.save(this, getIntent(), streamSessionId);
+            BackgroundStreamService.transportLost(this, streamSessionId);
+        }
         if (hasOwnRetainedSession()
                 && (connecting || connected)) {
             backgroundStreamParked = false;
             SessionResumeManager.save(this, getIntent(), streamSessionId);
-            RetainedStreamSessionCoordinator.markReconnectRequired(streamSessionId);
+            RetainedStreamSessionCoordinator.Snapshot retained =
+                    RetainedStreamSessionCoordinator.snapshot();
+            if (retained.state == RetainedStreamSessionCoordinator.State.PREPARING) {
+                markAutoWarmUpReconnectRequired("activity_destroyed");
+            } else {
+                RetainedStreamSessionCoordinator.markReconnectRequired(streamSessionId);
+            }
             BackgroundStreamService.transportLost(this, streamSessionId);
             stopConnection();
         }
@@ -1518,8 +1577,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         boolean returningFromStreamHome = streamHomeVisible;
         if (streamHomeVisible) {
             streamHomeVisible = false;
-            if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
-            if (controllerHandler != null) controllerHandler.enableSensors();
+            if (streamAudioRenderer != null) {
+                streamAudioRenderer.setVolume(isOwnedHiddenAutoWarmUp() ? 0f : 1f);
+            }
+            if (controllerHandler != null) {
+                if (isOwnedHiddenAutoWarmUp()) {
+                    controllerHandler.setInputSuppressed(true);
+                }
+                else controllerHandler.enableSensors();
+            }
             if (connected) {
                 hideSystemUi(50);
                 streamView.post(streamView::requestFocus);
@@ -1816,6 +1882,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void onBackPressed() {
+        if (returnRetainedObservationToDashboard()) return;
         if (connected && !streamHomeVisible && !isTransitionInputBlocked()) {
             openConsoleHome();
             return;
@@ -2901,6 +2968,68 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
+    public boolean parkPreparingTransport(
+            RetainedStreamSessionCoordinator.Snapshot preparing) {
+        if (!isExactAutoWarmUpPreparing(preparing)) return false;
+        synchronized (autoWarmUpGateLock) {
+            if (!autoWarmUpHomeFrameAccepted.get()) {
+                return cancelUnstartedAutoWarmUp(true);
+            }
+        }
+        if (BackgroundStreamPreferences.readMinutes(this) > 0) {
+            parkWarmUpWhenConnected = true;
+            return true;
+        }
+        if (!autoWarmUpTransportStopRequested.compareAndSet(false, true)) return true;
+        boolean marked = markAutoWarmUpReconnectRequired("background_park_disabled");
+        if (marked) {
+            SessionResumeManager.save(this, getIntent(), streamSessionId);
+            BackgroundStreamService.transportLost(this, streamSessionId);
+        }
+        stopConnection(() -> finish());
+        return true;
+    }
+
+    @Override
+    public boolean cancelPreparingTransport(
+            RetainedStreamSessionCoordinator.Snapshot preparing) {
+        if (!isExactAutoWarmUpPreparing(preparing)) return false;
+        synchronized (autoWarmUpGateLock) {
+            if (!autoWarmUpHomeFrameAccepted.get()) {
+                return cancelUnstartedAutoWarmUp(true);
+            }
+        }
+        if (!autoWarmUpTransportStopRequested.compareAndSet(false, true)) return true;
+        boolean converted = autoWarmUpConvertedToGame;
+        if (!markAutoWarmUpReconnectRequired("preparing_cancelled")) return false;
+        SessionResumeManager.save(this, getIntent(), streamSessionId);
+        BackgroundStreamService.transportLost(this, streamSessionId);
+        runOnUiThread(() -> {
+            if (converted && transitionCoordinator != null) transitionCoordinator.cancel();
+            stopConnection(() -> finish());
+        });
+        return true;
+    }
+
+    @Override
+    public boolean preparingHomeFrameSubmitted(
+            RetainedStreamSessionCoordinator.Snapshot preparing) {
+        synchronized (autoWarmUpGateLock) {
+            if (!isExactAutoWarmUpPreparing(preparing)
+                    || autoWarmUpTransportStopRequested.get()
+                    || isFinishing() || isDestroyed()
+                    || !autoWarmUpHomeFrameAccepted.compareAndSet(false, true)) {
+                return false;
+            }
+            transitionController.overlayRendered(transitionSpec.id);
+            logLaunchMilestone("opaque-home-frame-submitted");
+            transitionCoordinator.start();
+            startConnectionIfReady(streamView.getHolder());
+            return true;
+        }
+    }
+
+    @Override
     public void terminateRetainedSession(
             RetainedStreamSessionCoordinator.TerminationCallback completion) {
         terminateWholeSessionVerified(completion == null
@@ -2918,14 +3047,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             RetainedStreamSessionCoordinator.SwitchCallback completion) {
         RetainedStreamSessionCoordinator.Snapshot retained =
                 RetainedStreamSessionCoordinator.snapshot();
-        boolean exact = retainedSwitch == null && connected && !backgroundStreamParked
+        boolean liveExact = retainedSwitch == null && connected && !backgroundStreamParked
                 && retained.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
                 && streamSessionId.equals(request.streamSessionId)
                 && retained.streamSessionId.equals(request.streamSessionId)
                 && request.hostId.equalsIgnoreCase(transitionSpec.hostId)
                 && request.appId == transitionSpec.sunshineAppId
                 && request.oldGameId.equalsIgnoreCase(transitionSpec.playniteGameId);
-        if (!exact || transitionCoordinator == null) {
+        boolean preparingExact = retainedSwitch == null
+                && isExactPreparingSwitchRequest(request, retained);
+        if ((!liveExact && !preparingExact) || transitionCoordinator == null) {
+            LimeLog.warning("Retained switch rejected transition="
+                    + (transitionSpec == null ? "" : transitionSpec.id)
+                    + " reason=not_eligible live=" + liveExact
+                    + " preparing=" + preparingExact
+                    + " coordinator=" + (transitionCoordinator != null));
             completion.complete(RetainedStreamSessionCoordinator.SwitchOutcome.FAILED,
                     "retained_switch_not_eligible");
             return;
@@ -2950,7 +3086,31 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     RetainedStreamSessionCoordinator.SwitchOutcome.CANCELLED, "");
             return;
         }
+        if (operation.request.preparing
+                && operation.oldSpec.type == LaunchTransitionType.GENERIC) {
+            operation.oldCoordinator.close();
+            beginNewRetainedGameAttempt(operation);
+            return;
+        }
+        if (!operation.request.preparing
+                && operation.oldSpec.type == LaunchTransitionType.GENERIC
+                && operation.request.oldGameId.isEmpty()) {
+            operation.oldCoordinator.close();
+            new Thread(() -> performRetainedProviderSwitch(operation),
+                    "MoonWaker-SwitchProviderGame").start();
+            return;
+        }
+        if (operation.request.preparing
+                && operation.oldSpec.type == LaunchTransitionType.GAME_CONNECTION
+                && !operation.request.oldGameId.isEmpty()
+                && operation.request.oldGameId.equalsIgnoreCase(
+                operation.request.newGameId)) {
+            adoptPreparingObservedGame(operation);
+            return;
+        }
         if (!operation.oldCoordinator.detachForSwitch()) {
+            LimeLog.warning("Retained switch rejected transition="
+                    + operation.oldSpec.id + " reason=provider_owner_changed");
             completeRetainedSwitch(operation,
                     RetainedStreamSessionCoordinator.SwitchOutcome.FAILED,
                     "retained_switch_owner_changed");
@@ -2997,6 +3157,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 operation.request.hostId, LaunchTransitionType.GAME_CONNECTION,
                 operation.request.appId, operation.request.oldGameId,
                 System.currentTimeMillis());
+        if (operation.request.preparing && !advancePreparingSwitch(
+                operation, operation.request.oldGameId, operation.request.oldGameId,
+                recovery.id)) {
+            abortStalePreparingSwitch(operation);
+            return;
+        }
         transitionSpec = recovery;
         updateRetainedTransitionIntent(recovery, operation.request.oldGameId,
                 operation.request.oldGameId.isEmpty()
@@ -3010,6 +3176,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         lastTransitionOverlayVisible = true;
         lastTransitionRevealAuthorized = false;
         transitionController.begin(recovery);
+        if (operation.request.preparing) {
+            autoWarmUpConvertedToGame = false;
+        }
         transitionController.overlayRendered(recovery.id);
         if (surfaceCreated && streamView.getHolder().getSurface() != null
                 && streamView.getHolder().getSurface().isValid()) {
@@ -3053,38 +3222,44 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void beginNewRetainedGameAttempt(RetainedSwitch operation) {
+        if (operation.request.cancelled.getAsBoolean()) {
+            completeRetainedSwitch(operation,
+                    RetainedStreamSessionCoordinator.SwitchOutcome.CANCELLED, "");
+            return;
+        }
         if (transitionCoordinator != null) transitionCoordinator.close();
+        providerStartRejectedTransitionId = "";
         LaunchTransitionSpec next = LaunchTransitionSpec.create(
                 operation.request.hostId, LaunchTransitionType.GAME,
                 operation.request.appId, operation.request.newGameId,
                 System.currentTimeMillis());
-        operation.newSpec = next;
-        transitionSpec = next;
-        updateRetainedTransitionIntent(next, operation.request.newGameId,
-                operation.request.newGameName, operation.request.artworkPath);
-        streamEverRevealed = false;
-        cancelPendingAutomaticReveal();
-        manualRevealRequested = false;
-        transitionCancelInFlight = false;
-        providerStopInFlight = false;
-        providerStopConfirmed = false;
-        lastTransitionOverlayVisible = true;
-        lastTransitionRevealAuthorized = false;
-        transitionController.begin(next);
-        transitionController.overlayRendered(next.id);
-        if (surfaceCreated && streamView.getHolder().getSurface() != null
-                && streamView.getHolder().getSurface().isValid()) {
-            transitionController.surfaceReady(next.id);
+        if (operation.request.preparing && !advancePreparingSwitch(
+                operation, "", "", next.id)) {
+            abortStalePreparingSwitch(operation);
+            return;
         }
-        if (controllerHandler != null) transitionController.inputPipelineReady(next.id);
-        transitionCoordinator = createTransitionCoordinator();
-        operation.newCoordinator = transitionCoordinator;
-        transitionCoordinator.start();
-        if (connected) {
-            transitionController.streamConnected(next.id);
-            transitionCoordinator.onStreamConnected();
-        }
-        pollRetainedSwitchCancellation(operation);
+        ConsoleStreamTransitionCoordinator nextCoordinator =
+                createTransitionCoordinator(next);
+        consoleLoadingView.showOpaque();
+        consoleLoadingView.doAfterNextFrame(() -> {
+            if (!isCurrentRetainedSwitch(operation)
+                    || operation.request.cancelled.getAsBoolean()) {
+                nextCoordinator.close();
+                if (isCurrentRetainedSwitch(operation)) {
+                    recoverRetainedSwitch(operation,
+                            RetainedStreamSessionCoordinator.SwitchOutcome.CANCELLED, "");
+                }
+                return;
+            }
+            applyRetainedTransition(operation, next, nextCoordinator);
+            armNextVideoFrameForTransition(next.id, "retained-game-attempt");
+            transitionCoordinator.start();
+            if (connected) {
+                transitionController.streamConnected(next.id);
+                transitionCoordinator.onStreamConnected();
+            }
+            pollRetainedSwitchCancellation(operation);
+        });
     }
 
     private void pollRetainedSwitchCancellation(RetainedSwitch operation) {
@@ -3098,6 +3273,97 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 pollRetainedSwitchCancellation(operation);
             }
         }, 100L);
+    }
+
+    private void adoptPreparingObservedGame(RetainedSwitch operation) {
+        if (operation.request.cancelled.getAsBoolean()) {
+            completeRetainedSwitch(operation,
+                    RetainedStreamSessionCoordinator.SwitchOutcome.CANCELLED, "");
+            return;
+        }
+        LaunchTransitionSpec next = LaunchTransitionSpec.create(
+                operation.request.hostId, LaunchTransitionType.GAME_CONNECTION,
+                operation.request.appId, operation.request.newGameId,
+                System.currentTimeMillis());
+        ConsoleStreamTransitionCoordinator replacement =
+                createTransitionCoordinator(next);
+        if (!advancePreparingSwitch(operation, operation.request.oldGameId,
+                operation.request.oldGameId, next.id)) {
+            replacement.close();
+            abortStalePreparingSwitch(operation);
+            return;
+        }
+        if (!operation.oldCoordinator.transferProviderOwnershipTo(replacement)) {
+            boolean restored = RetainedStreamSessionCoordinator.updatePreparingSwitch(
+                    this, operation.request, next.id, operation.request.oldGameId,
+                    operation.request.oldGameId, operation.request.transitionId);
+            if (!restored) {
+                replacement.close();
+                abortStalePreparingSwitch(operation);
+                return;
+            }
+            replacement.close();
+            completeRetainedSwitch(operation,
+                    RetainedStreamSessionCoordinator.SwitchOutcome.FAILED,
+                    "retained_switch_owner_changed");
+            return;
+        }
+        operation.oldCoordinator.close();
+        applyRetainedTransition(operation, next, replacement);
+        replacement.start();
+        signalRetainedSwitchReuse(operation);
+        pollRetainedSwitchCancellation(operation);
+    }
+
+    private void applyRetainedTransition(
+            RetainedSwitch operation, LaunchTransitionSpec next,
+            ConsoleStreamTransitionCoordinator coordinator) {
+        consoleLoadingView.showFullTransitionAppearance();
+        operation.newSpec = next;
+        transitionSpec = next;
+        updateRetainedTransitionIntent(next, operation.request.newGameId,
+                operation.request.newGameName, operation.request.artworkPath);
+        streamEverRevealed = false;
+        cancelPendingAutomaticReveal();
+        manualRevealRequested = false;
+        transitionCancelInFlight = false;
+        providerStopInFlight = false;
+        providerStopConfirmed = false;
+        lastTransitionOverlayVisible = true;
+        lastTransitionRevealAuthorized = false;
+        transitionController.begin(next);
+        if (operation.request.preparing) autoWarmUpConvertedToGame = true;
+        else if (hasAutoWarmUpTransportIdentity()) clearAutoWarmUpIdentity();
+        transitionController.overlayRendered(next.id);
+        if (surfaceCreated && streamView.getHolder().getSurface() != null
+                && streamView.getHolder().getSurface().isValid()) {
+            transitionController.surfaceReady(next.id);
+        }
+        if (controllerHandler != null) transitionController.inputPipelineReady(next.id);
+        transitionCoordinator = coordinator;
+        operation.newCoordinator = coordinator;
+    }
+
+    private boolean advancePreparingSwitch(RetainedSwitch operation,
+                                            String expectedGameId,
+                                            String newGameId,
+                                            String newTransitionId) {
+        RetainedStreamSessionCoordinator.Snapshot preparing =
+                RetainedStreamSessionCoordinator.snapshot();
+        if (!isExactAutoWarmUpPreparing(preparing)) return false;
+        if (!RetainedStreamSessionCoordinator.updatePreparingSwitch(
+                this, operation.request, preparing.transitionId, expectedGameId,
+                newGameId, newTransitionId)) return false;
+        return true;
+    }
+
+    private void abortStalePreparingSwitch(RetainedSwitch operation) {
+        completeRetainedSwitch(operation,
+                RetainedStreamSessionCoordinator.SwitchOutcome.FAILED,
+                "retained_switch_session_changed");
+        if (autoWarmUpTransportStopRequested.compareAndSet(false, true)) {
+            stopConnection(() -> finish());
+        }
     }
 
     private void requestRetainedSwitchCancellation(RetainedSwitch operation) {
@@ -3267,18 +3533,38 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && !isFinishing() && !isDestroyed();
     }
 
+    private boolean isExactPreparingSwitchRequest(
+            RetainedStreamSessionCoordinator.SwitchRequest request,
+            RetainedStreamSessionCoordinator.Snapshot retained) {
+        return request.preparing
+                && retained.state == RetainedStreamSessionCoordinator.State.PREPARING
+                && streamSessionId.equals(request.streamSessionId)
+                && retained.streamSessionId.equals(request.streamSessionId)
+                && request.hostId.equalsIgnoreCase(retained.hostId)
+                && request.hostId.equalsIgnoreCase(transitionSpec.hostId)
+                && request.appId == retained.appId
+                && request.appId == transitionSpec.sunshineAppId
+                && request.oldGameId.equalsIgnoreCase(retained.playniteGameId)
+                && request.oldGameId.equalsIgnoreCase(transitionSpec.playniteGameId)
+                && request.transitionId.equals(retained.transitionId)
+                && request.attempt == retained.attempt
+                && request.attempt == autoWarmUpAttempt
+                && RetainedStreamSessionCoordinator.isPreparing(
+                this, request.streamSessionId, request.hostId, request.appId,
+                request.transitionId, request.attempt);
+    }
+
     private boolean updateRetainedGame(RetainedSwitch operation,
                                        String expectedGameId, String newGameId) {
-        if (RetainedStreamSessionCoordinator.updateGameIfMatches(
-                operation.request.streamSessionId, operation.request.hostId,
-                operation.request.appId, expectedGameId, newGameId)) return true;
         RetainedStreamSessionCoordinator.Snapshot retained =
                 RetainedStreamSessionCoordinator.snapshot();
-        return retained.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
-                && operation.request.streamSessionId.equals(retained.streamSessionId)
-                && operation.request.hostId.equalsIgnoreCase(retained.hostId)
-                && operation.request.appId == retained.appId
-                && newGameId.equalsIgnoreCase(retained.playniteGameId);
+        if (operation.request.preparing
+                && retained.state == RetainedStreamSessionCoordinator.State.PREPARING) {
+            return advancePreparingSwitch(operation, expectedGameId, newGameId,
+                    retained.transitionId);
+        }
+        return RetainedStreamSessionCoordinator.updateOwnedSwitchGame(
+                this, operation.request, expectedGameId, newGameId);
     }
 
     private void completeRetainedSwitch(RetainedSwitch operation,
@@ -3289,8 +3575,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (operation.consoleSignalled.compareAndSet(false, true)) {
             operation.completion.complete(outcome, error == null ? "" : error);
         } else {
-            RetainedStreamSessionCoordinator.finishSwitch(
-                    operation.request.streamSessionId, this);
+            finishRetainedSwitchLock(operation);
         }
     }
 
@@ -3304,8 +3589,19 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void finishRetainedSwitch(RetainedSwitch operation) {
         if (!operation.completed.compareAndSet(false, true)) return;
         if (retainedSwitch == operation) retainedSwitch = null;
-        RetainedStreamSessionCoordinator.finishSwitch(
-                operation.request.streamSessionId, this);
+        finishRetainedSwitchLock(operation);
+    }
+
+    private void finishRetainedSwitchLock(RetainedSwitch operation) {
+        if (operation.request.preparing) {
+            RetainedStreamSessionCoordinator.finishSwitch(
+                    operation.request.streamSessionId,
+                    operation.request.transitionId,
+                    operation.request.attempt, this);
+        } else {
+            RetainedStreamSessionCoordinator.finishSwitch(
+                    operation.request.streamSessionId, this);
+        }
     }
 
     private static final class RetainedSwitch {
@@ -3319,6 +3615,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         ConsoleStreamTransitionCoordinator newCoordinator;
         boolean cancelRequested;
         boolean startFailedCleanupPending;
+        boolean providerStartRejected;
         boolean retryRequested;
         boolean identityConflict;
 
@@ -3742,7 +4039,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void stageFailed(final String stage, final int portFlags, final int errorCode) {
-        if (cleanupUnrevealedProviderLaunch("stream-stage-failed:" + stage)) return;
+        if (cleanupUnrevealedProviderLaunch("stream-stage-failed:" + stage)
+                && !hasAutoWarmUpTransportIdentity()) return;
+        if (handleAutoWarmUpConnectionFailure()) return;
         // Perform a connection test if the failure could be due to a blocked port
         // This does network I/O, so don't do it on the main thread.
         final int portTestResult = MoonBridge.testClientConnectivity(ServerHelper.CONNECTION_TEST_SERVER, 443, portFlags);
@@ -3807,7 +4106,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         if (cleanupUnrevealedProviderLaunch(
-                "stream-terminated-before-reveal:" + errorCode)) return;
+                "stream-terminated-before-reveal:" + errorCode)
+                && !hasAutoWarmUpTransportIdentity()) return;
+        if (handleAutoWarmUpConnectionFailure()) return;
 
         if (hasOwnRetainedSession()) {
             runOnUiThread(() -> {
@@ -3946,6 +4247,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void connectionStarted() {
+        final boolean warmUpConnection = hasAutoWarmUpTransportIdentity();
         logLaunchMilestone("stream-connected");
         runOnUiThread(new Runnable() {
             @Override
@@ -3962,6 +4264,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     spinner = null;
                 }
 
+                boolean convertedWarmUp = autoWarmUpConvertedToGame;
+                if (warmUpConnection && !completeAutoWarmUpPreparing()) {
+                    if (autoWarmUpTransportStopRequested.compareAndSet(false, true)) {
+                        stopConnection(() -> finish());
+                    }
+                    return;
+                }
                 connected = true;
                 connecting = false;
                 SessionResumeManager.saveActive(Game.this, getIntent(), streamSessionId);
@@ -3984,7 +4293,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 h.postDelayed(new Runnable() {
                     @Override
                     public void run() {
-                        setInputGrabState(true);
+                        if (!isOwnedHiddenAutoWarmUp()) setInputGrabState(true);
                     }
                 }, 500);
 
@@ -4000,6 +4309,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 if (transitionController == null) showOverlayMenuHint();
 
                 if (transitionCoordinator != null) transitionCoordinator.onStreamConnected();
+                if (convertedWarmUp) reportSelectedGameLaunched();
+                if (parkWarmUpWhenConnected) {
+                    parkWarmUpWhenConnected = false;
+                    parkBackgroundStream();
+                }
             }
         });
 
@@ -4009,17 +4323,32 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         computer.uuid = Game.this.getIntent().getStringExtra(EXTRA_PC_UUID);
         ShortcutHelper shortcutHelper = new ShortcutHelper(this);
         shortcutHelper.reportComputerShortcutUsed(computer);
-        if (appName != null) {
+        if (appName != null && !warmUpConnection) {
             // This may be null if launched from the "Resume Session" PC context menu item
             shortcutHelper.reportGameLaunched(computer, app);
         }
     }
 
+    private void reportSelectedGameLaunched() {
+        if (appName == null) return;
+        new Thread(() -> {
+            ComputerDetails computer = new ComputerDetails();
+            computer.name = pcName;
+            computer.uuid = getIntent().getStringExtra(EXTRA_PC_UUID);
+            new ShortcutHelper(this).reportGameLaunched(computer, app);
+        }, "MoonWaker-ReportGameLaunched").start();
+    }
+
     private ConsoleStreamTransitionCoordinator createTransitionCoordinator() {
+        return createTransitionCoordinator(transitionSpec);
+    }
+
+    private ConsoleStreamTransitionCoordinator createTransitionCoordinator(
+            LaunchTransitionSpec spec) {
         PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                this, transitionSpec.hostId, getIntent().getStringExtra(EXTRA_HOST));
+                this, spec.hostId, getIntent().getStringExtra(EXTRA_HOST));
         return new ConsoleStreamTransitionCoordinator(
-                transitionSpec,
+                spec,
                 transitionController,
                 gateway,
                 (action, delayMs) -> transitionUiHandler.postDelayed(action, delayMs),
@@ -4150,6 +4479,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     @Override public void onProviderGameStartAccepted(
                             String transitionId, String gameId) {
                         runOnUiThread(() -> {
+                            if (transitionId.equals(providerStartRejectedTransitionId)) {
+                                providerStartRejectedTransitionId = "";
+                            }
                             RetainedSwitch operation = retainedSwitch;
                             if (operation == null || operation.newSpec == null
                                     || !operation.newSpec.id.equals(transitionId)
@@ -4175,20 +4507,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             String transitionId, String gameId,
                             ConsoleStreamTransitionCoordinator.ProviderStartFailure failure) {
                         runOnUiThread(() -> {
+                            boolean interactionRequired = failure
+                                    == ConsoleStreamTransitionCoordinator.ProviderStartFailure
+                                    .INTERACTION_REQUIRED;
+                            if (interactionRequired
+                                    && isExactProviderTransition(transitionId, gameId)) {
+                                providerStartRejectedTransitionId = transitionId;
+                                persistRejectedProviderTransitionAsNeutral();
+                            }
                             RetainedSwitch operation = retainedSwitch;
                             if (operation == null || operation.newSpec == null
                                     || !operation.newSpec.id.equals(transitionId)
                                     || !operation.request.newGameId.equalsIgnoreCase(gameId)
                                     || !isCurrentRetainedSwitch(operation)) return;
-                            if (failure == ConsoleStreamTransitionCoordinator
-                                    .ProviderStartFailure.INTERACTION_REQUIRED) {
-                                if (!updateRetainedGame(operation, "", gameId)) {
-                                    operation.identityConflict = true;
-                                    requestRetainedSwitchCancellation(operation);
-                                    return;
-                                }
-                                SessionResumeManager.saveActive(
-                                        Game.this, getIntent(), streamSessionId);
+                            if (interactionRequired) {
+                                operation.providerStartRejected = true;
                                 signalRetainedSwitchReuse(operation);
                             } else {
                                 operation.startFailedCleanupPending = true;
@@ -4222,7 +4555,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                             "retained_switch_session_changed");
                                     return;
                                 }
-                                if (!updateRetainedGame(operation, gameId, "")) {
+                                if (!operation.providerStartRejected
+                                        && !updateRetainedGame(operation, gameId, "")) {
                                     completeRetainedSwitch(operation,
                                             RetainedStreamSessionCoordinator.SwitchOutcome.FAILED,
                                             "retained_switch_session_changed");
@@ -4233,6 +4567,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                     operation.cancelRequested = false;
                                     operation.retryRequested = false;
                                     operation.startFailedCleanupPending = false;
+                                    operation.providerStartRejected = false;
                                     beginNewRetainedGameAttempt(operation);
                                     return;
                                 }
@@ -4304,10 +4639,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 transitionUiHandler.removeCallbacks(retainedRestoreWatchdog);
                 retainedRestoreWatchdog = null;
             }
-            if (transitionController != null) {
+            if (isOwnedHiddenAutoWarmUp()) {
+                if (consoleLoadingView != null) consoleLoadingView.showOpaque();
+            } else if (transitionController != null) {
                 transitionController.videoFrameRendered(transitionSpec.id);
-            } else if (consoleLoadingView != null) {
-                consoleLoadingView.revealStream();
+            } else {
+                if (consoleLoadingView != null) consoleLoadingView.revealStream();
+                streamEverRevealed = true;
             }
         });
     }
@@ -4321,7 +4659,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 || !transitionSpec.id.equals(snapshot.spec.id)
                 || consoleLoadingView == null) return;
         if (controllerHandler != null) {
-            controllerHandler.setInputSuppressed(snapshot.inputBlocked);
+            controllerHandler.setInputSuppressed(
+                    isOwnedHiddenAutoWarmUp() || snapshot.inputBlocked);
         }
         boolean shouldShowOpaque = shouldShowTransitionOverlay(
                 lastTransitionOverlayVisible, lastTransitionRevealAuthorized,
@@ -4329,15 +4668,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (shouldShowOpaque) consoleLoadingView.showOpaque();
         if (snapshot.overlayVisible) {
             consoleLoadingView.setStep(snapshot.step, transitionStatus(snapshot));
-            consoleLoadingView.setManualRevealAvailable(snapshot.manualRevealAvailable);
+            consoleLoadingView.setManualRevealAvailable(
+                    !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable);
             boolean waitingForPostTargetFrame = !snapshot.revealAuthorized
                     && (snapshot.state == LaunchTransitionState.GAME_READY
                     || snapshot.state == LaunchTransitionState.PLAYNITE_FULLSCREEN_READY);
-            if ((shouldShowOpaque || waitingForPostTargetFrame) && decoderRenderer != null
+            if (!isOwnedHiddenAutoWarmUp()
+                    && (shouldShowOpaque || waitingForPostTargetFrame) && decoderRenderer != null
                     && snapshot.state != LaunchTransitionState.CLOSING_STREAM
                     && snapshot.state != LaunchTransitionState.RETURNING_TO_DASHBOARD) {
-                decoderRenderer.requestNextFrameRendered(() ->
-                        transitionController.videoFrameRendered(transitionSpec.id));
+                armNextVideoFrameForTransition(snapshot.spec.id, "transition-gate");
             }
         }
         if (snapshot.state == LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED) {
@@ -4366,7 +4706,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             cancelPendingAutomaticReveal();
             if (!snapshot.overlayVisible) manualRevealRequested = false;
         }
-        if (snapshot.revealAuthorized && snapshot.overlayVisible) {
+        if (!isOwnedHiddenAutoWarmUp()
+                && snapshot.revealAuthorized && snapshot.overlayVisible) {
             if (!manualRevealRequested) {
                 scheduleAutomaticReveal();
             } else {
@@ -4400,22 +4741,27 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void revealTransitionNow() {
+        if (isOwnedHiddenAutoWarmUp()) return;
         cancelPendingAutomaticReveal();
         if (consoleLoadingView == null || transitionController == null
                 || transitionSpec == null) return;
         boolean manualReveal = manualRevealRequested;
         consoleLoadingView.revealStream(() -> {
             manualRevealRequested = false;
+            if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
             streamEverRevealed = true;
             if (manualReveal) {
                 LimeLog.info("Manual stream reveal completed transition="
                         + transitionSpec.id + " game="
                         + transitionSpec.playniteGameId);
             }
-            if (transitionCoordinator != null) {
+            boolean rejectedProviderStart = transitionSpec.id.equals(
+                    providerStartRejectedTransitionId);
+            if (!rejectedProviderStart && transitionCoordinator != null) {
                 transitionCoordinator.commitProviderLaunch();
             }
-            persistRevealedTransitionForRecovery();
+            if (rejectedProviderStart) persistRejectedProviderTransitionAsNeutral();
+            else persistRevealedTransitionForRecovery();
             transitionController.revealCompleted(transitionSpec.id);
             RetainedSwitch operation = retainedSwitch;
             if (operation != null && operation.newSpec != null
@@ -4432,6 +4778,28 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         getIntent().putExtra(EXTRA_TRANSITION_TYPE,
                 recoveredTransitionType(transitionSpec.type, true).name());
         SessionResumeManager.saveActive(this, getIntent(), streamSessionId);
+    }
+
+    private boolean isExactProviderTransition(String transitionId, String gameId) {
+        return transitionSpec != null
+                && transitionSpec.type == LaunchTransitionType.GAME
+                && transitionSpec.id.equals(transitionId)
+                && transitionSpec.playniteGameId.equalsIgnoreCase(gameId);
+    }
+
+    private void persistRejectedProviderTransitionAsNeutral() {
+        if (transitionSpec == null
+                || !transitionSpec.id.equals(providerStartRejectedTransitionId)) return;
+        getIntent().putExtra(EXTRA_TRANSITION_TYPE,
+                LaunchTransitionType.GAME_CONNECTION.name());
+        getIntent().putExtra(EXTRA_TRANSITION_PLAYNITE_GAME_ID, "");
+        if (connected) SessionResumeManager.saveActive(this, getIntent(), streamSessionId);
+    }
+
+    private String currentSessionGameId() {
+        return transitionSpec == null
+                || transitionSpec.id.equals(providerStartRejectedTransitionId)
+                ? "" : transitionSpec.playniteGameId;
     }
 
     static LaunchTransitionType recoveredTransitionType(
@@ -4565,6 +4933,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void cancelTransition() {
         if (transitionController == null || transitionCancelInFlight) return;
+        if (returnRetainedObservationToDashboard()) return;
         if (retainedSwitch != null) {
             requestRetainedSwitchCancellation(retainedSwitch);
             return;
@@ -4594,6 +4963,91 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         stopConnection(finishOnce);
     }
 
+    private boolean returnRetainedObservationToDashboard() {
+        if (retainedDashboardReturnInFlight) return true;
+        if (!isExactLiveRetainedObservation()) return false;
+        String transitionId = transitionSpec.id;
+        String gameId = transitionSpec.playniteGameId;
+        retainedDashboardReturnInFlight = true;
+        consoleLoadingView.showOpaque();
+        consoleLoadingView.doAfterNextFrame(() -> {
+            boolean exactForeground = isExactLiveRetainedObservation();
+            boolean openHome = shouldOpenRetainedObservationDashboard(
+                    transitionId, gameId,
+                    transitionSpec == null ? "" : transitionSpec.id,
+                    transitionSpec == null ? "" : transitionSpec.playniteGameId,
+                    exactForeground);
+            retainedDashboardReturnInFlight = false;
+            if (openHome) openConsoleHome();
+        });
+        return true;
+    }
+
+    private boolean isExactLiveRetainedObservation() {
+        RetainedStreamSessionCoordinator.Snapshot retained =
+                RetainedStreamSessionCoordinator.snapshot();
+        boolean exactOwner = transitionSpec != null
+                && RetainedStreamSessionCoordinator.ownsLiveOrParkedSession(
+                this, streamSessionId, transitionSpec.hostId,
+                transitionSpec.sunshineAppId, transitionSpec.playniteGameId);
+        return isForegroundRetainedObservation(
+                connected, streamHomeVisible, backgroundStreamParked,
+                transitionSpec == null ? null : transitionSpec.type,
+                transitionSpec == null ? "" : transitionSpec.playniteGameId,
+                retained.state, exactOwner);
+    }
+
+    static boolean isForegroundRetainedObservation(
+            boolean connected, boolean streamHomeVisible, boolean backgroundStreamParked,
+            LaunchTransitionType type, String gameId,
+            RetainedStreamSessionCoordinator.State retainedState, boolean exactOwner) {
+        return connected && !streamHomeVisible
+                && !backgroundStreamParked
+                && type == LaunchTransitionType.GAME_CONNECTION
+                && gameId != null && !gameId.isEmpty()
+                && retainedState == RetainedStreamSessionCoordinator.State.HOME_LIVE
+                && exactOwner;
+    }
+
+    static boolean shouldOpenRetainedObservationDashboard(
+            String scheduledTransitionId, String scheduledGameId,
+            String currentTransitionId, String currentGameId,
+            boolean exactForeground) {
+        return exactForeground && scheduledTransitionId != null
+                && scheduledTransitionId.equals(currentTransitionId)
+                && scheduledGameId != null
+                && scheduledGameId.equalsIgnoreCase(currentGameId);
+    }
+
+    private void armNextVideoFrameForTransition(String transitionId, String reason) {
+        if (decoderRenderer == null || transitionId == null || transitionId.isEmpty()
+                || transitionSpec == null || !transitionSpec.id.equals(transitionId)) return;
+        while (true) {
+            String armed = armedVideoFrameTransitionId.get();
+            if (transitionId.equals(armed)) return;
+            if (armedVideoFrameTransitionId.compareAndSet(armed, transitionId)) break;
+        }
+        MoonWakerDiagnostics.record("INFO", "android.video-frame",
+                "video_frame.armed", "transition_id", transitionId,
+                "reason", reason == null ? "" : reason);
+        decoderRenderer.requestNextFrameRendered(() -> runOnUiThread(() -> {
+            if (!armedVideoFrameTransitionId.compareAndSet(transitionId, "")) {
+                MoonWakerDiagnostics.record("INFO", "android.video-frame",
+                        "video_frame.stale", "transition_id", transitionId);
+                return;
+            }
+            if (transitionSpec == null || !transitionSpec.id.equals(transitionId)
+                    || transitionController == null) {
+                MoonWakerDiagnostics.record("INFO", "android.video-frame",
+                        "video_frame.stale", "transition_id", transitionId);
+                return;
+            }
+            MoonWakerDiagnostics.record("INFO", "android.video-frame",
+                    "video_frame.rendered", "transition_id", transitionId);
+            transitionController.videoFrameRendered(transitionId);
+        }));
+    }
+
     private void retryTransition() {
         if (transitionSpec == null) return;
         if (retainedSwitch != null && retainedSwitch.newSpec != null) {
@@ -4611,7 +5065,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         LaunchTransitionSpec next = LaunchTransitionSpec.create(
                 transitionSpec.hostId, transitionSpec.type, transitionSpec.sunshineAppId,
                 transitionSpec.playniteGameId, System.currentTimeMillis());
+        providerStartRejectedTransitionId = "";
         retry.putExtra(EXTRA_TRANSITION_ID, next.id);
+        retry.putExtra(EXTRA_TRANSITION_TYPE, next.type.name());
+        retry.putExtra(EXTRA_TRANSITION_PLAYNITE_GAME_ID, next.playniteGameId);
         retry.putExtra(EXTRA_TRANSITION_CREATED_AT, next.createdAtMillis);
         consoleLoadingView.showOpaque();
         consoleLoadingView.doAfterNextFrame(() -> {
@@ -4742,6 +5199,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && !transitionController.snapshot().operationAuthorized) {
             return;
         }
+        if (hasAutoWarmUpTransportIdentity()
+                && !isExactAutoWarmUpPreparing(
+                RetainedStreamSessionCoordinator.snapshot())) return;
         attemptedConnection = true;
 
         // Update GameManager state to indicate we're "loading" while connecting
@@ -4762,6 +5222,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         decoderRenderer.setRenderTarget(holder);
         streamAudioRenderer = new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx);
+        if (isOwnedHiddenAutoWarmUp()) streamAudioRenderer.setVolume(0f);
         connecting = true;
         logLaunchMilestone("stream-start-requested");
         conn.start(streamAudioRenderer, switchableVideoRenderer, Game.this);
@@ -5149,15 +5610,31 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void openConsoleHome() {
         if (!connected || streamHomeVisible) return;
         overlayMenuView.closeMenu();
-        streamHomeVisible = true;
+        String sessionGameId = currentSessionGameId();
         SessionResumeManager.save(this, getIntent(), streamSessionId);
         RetainedStreamSessionCoordinator.enterHome(this, streamSessionId,
                 getIntent().getStringExtra(EXTRA_PC_UUID),
                 getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID),
-                transitionSpec == null ? "" : transitionSpec.playniteGameId);
-        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(.12f);
+                sessionGameId);
+        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(0f);
         if (controllerHandler != null) controllerHandler.disableSensors();
 
+        launchConsoleHome(sessionGameId, false);
+    }
+
+    private void openPreparingConsoleHome() {
+        if (streamHomeVisible) return;
+        overlayMenuView.closeMenu();
+        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(0f);
+        if (controllerHandler != null) {
+            controllerHandler.setInputSuppressed(true);
+            controllerHandler.disableSensors();
+        }
+        launchConsoleHome(transitionSpec == null ? "" : transitionSpec.playniteGameId, true);
+    }
+
+    private void launchConsoleHome(String gameId, boolean preparing) {
+        streamHomeVisible = true;
         Intent home = new Intent(this, StreamHomeActivity.class);
         home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_HOME, true);
         home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_SESSION_ID, streamSessionId);
@@ -5166,9 +5643,28 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_APP_ID,
                 getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID));
         home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_PLAYNITE_GAME_ID,
-                transitionSpec == null ? "" : transitionSpec.playniteGameId);
+                gameId);
+        long warmUpAttempt = getIntent().getLongExtra(
+                ConsoleActivity.EXTRA_WARM_UP_ATTEMPT, 0L);
+        if (warmUpAttempt > 0L) {
+            home.putExtra(ConsoleActivity.EXTRA_WARM_UP_ATTEMPT, warmUpAttempt);
+            home.putExtra(ConsoleActivity.EXTRA_WARM_UP_TRANSITION_ID,
+                    transitionSpec == null ? "" : transitionSpec.id);
+            home.putExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_GAME_ID,
+                    getIntent().getStringExtra(
+                            ConsoleActivity.EXTRA_WARM_UP_PENDING_GAME_ID));
+            home.putExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_GAME_NAME,
+                    getIntent().getStringExtra(
+                            ConsoleActivity.EXTRA_WARM_UP_PENDING_GAME_NAME));
+            home.putExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_ARTWORK_ID,
+                    getIntent().getStringExtra(
+                            ConsoleActivity.EXTRA_WARM_UP_PENDING_ARTWORK_ID));
+            home.putExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_QUICK_LAUNCH,
+                    getIntent().getStringExtra(
+                            ConsoleActivity.EXTRA_WARM_UP_PENDING_QUICK_LAUNCH));
+        }
         startActivity(home);
-        overridePendingTransition(android.R.anim.fade_in, 0);
+        overridePendingTransition(preparing ? 0 : android.R.anim.fade_in, 0);
     }
 
     private void showOverlayMenuWithBattery() {
@@ -5531,6 +6027,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean hasOwnRetainedSession() {
         RetainedStreamSessionCoordinator.Snapshot retained =
                 RetainedStreamSessionCoordinator.snapshot();
+        if (retained.state == RetainedStreamSessionCoordinator.State.PREPARING) {
+            return isExactAutoWarmUpPreparing(retained);
+        }
         return streamSessionId.equals(retained.streamSessionId)
                 && retained.state != RetainedStreamSessionCoordinator.State.NONE
                 && retained.state != RetainedStreamSessionCoordinator.State.TERMINATING;
@@ -5543,6 +6042,132 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && (retained.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
                 || retained.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE)
                 && RetainedStreamSessionCoordinator.canResumeInstantly();
+    }
+
+    private boolean hasAutoWarmUpTransportIdentity() {
+        return autoWarmUpAttempt > 0L && transitionSpec != null;
+    }
+
+    private void clearAutoWarmUpIdentity() {
+        autoWarmUpAttempt = 0L;
+        autoWarmUpConvertedToGame = false;
+        autoWarmUpRetained = false;
+        Intent intent = getIntent();
+        intent.removeExtra(EXTRA_AUTO_WARM_UP_ATTEMPT);
+        intent.removeExtra(ConsoleActivity.EXTRA_WARM_UP_ATTEMPT);
+        intent.removeExtra(ConsoleActivity.EXTRA_WARM_UP_TRANSITION_ID);
+        intent.removeExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_GAME_ID);
+        intent.removeExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_GAME_NAME);
+        intent.removeExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_ARTWORK_ID);
+        intent.removeExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_QUICK_LAUNCH);
+    }
+
+    private boolean handleAutoWarmUpConnectionFailure() {
+        if (!hasAutoWarmUpTransportIdentity()) return false;
+        if (autoWarmUpTransportStopRequested.get()) return true;
+        if (autoWarmUpRetained && isOwnedHiddenAutoWarmUp()) {
+            return !autoWarmUpTransportStopRequested.compareAndSet(false, true);
+        }
+        RetainedStreamSessionCoordinator.Snapshot preparing =
+                RetainedStreamSessionCoordinator.snapshot();
+        boolean exact = isExactAutoWarmUpPreparing(preparing);
+        if (!autoWarmUpTransportStopRequested.compareAndSet(false, true)) return true;
+        if (exact && !markAutoWarmUpReconnectRequired("connection_failure")) exact = false;
+        boolean claimed = exact;
+        runOnUiThread(() -> {
+            displayedFailureDialog = true;
+            if (claimed) {
+                SessionResumeManager.save(this, getIntent(), streamSessionId);
+                BackgroundStreamService.transportLost(this, streamSessionId);
+            }
+            stopConnection(() -> finish());
+        });
+        return true;
+    }
+
+    private boolean beginAutoWarmUpPreparing() {
+        if (!hasAutoWarmUpTransportIdentity()) return false;
+        boolean begun = RetainedStreamSessionCoordinator.beginPreparing(
+                this, streamSessionId, autoWarmUpHostId(), autoWarmUpAppId(),
+                transitionSpec.playniteGameId, transitionSpec.id, autoWarmUpAttempt);
+        return begun;
+    }
+
+    private boolean cancelUnstartedAutoWarmUp(boolean finishActivity) {
+        synchronized (autoWarmUpGateLock) {
+            if (autoWarmUpHomeFrameAccepted.get()) return false;
+            autoWarmUpTransportStopRequested.set(true);
+            RetainedStreamSessionCoordinator.Snapshot preparing =
+                    RetainedStreamSessionCoordinator.snapshot();
+            boolean cancelled = isExactAutoWarmUpPreparing(preparing)
+                    && RetainedStreamSessionCoordinator.cancelPreparing(
+                    this, preparing.streamSessionId, preparing.hostId, preparing.appId,
+                    preparing.transitionId, preparing.attempt);
+            if (cancelled && finishActivity) runOnUiThread(this::finish);
+            return cancelled;
+        }
+    }
+
+    private boolean completeAutoWarmUpPreparing() {
+        RetainedStreamSessionCoordinator.Snapshot preparing =
+                RetainedStreamSessionCoordinator.snapshot();
+        boolean completed = isExactAutoWarmUpPreparing(preparing)
+                && RetainedStreamSessionCoordinator.completePreparing(
+                this, preparing.streamSessionId, preparing.hostId, preparing.appId,
+                preparing.transitionId, preparing.attempt);
+        if (completed && autoWarmUpConvertedToGame) {
+            clearAutoWarmUpIdentity();
+        } else if (completed) {
+            autoWarmUpRetained = true;
+        }
+        return completed;
+    }
+
+    private boolean markAutoWarmUpReconnectRequired(String reason) {
+        RetainedStreamSessionCoordinator.Snapshot preparing =
+                RetainedStreamSessionCoordinator.snapshot();
+        boolean marked = isExactAutoWarmUpPreparing(preparing)
+                && RetainedStreamSessionCoordinator.markPreparingReconnectRequired(
+                this, preparing.streamSessionId, preparing.hostId, preparing.appId,
+                preparing.transitionId, preparing.attempt);
+        if (marked) {
+            autoWarmUpRetained = false;
+            LimeLog.info("Auto warm-up terminal transition=" + preparing.transitionId
+                    + " attempt=" + preparing.attempt + " reason=" + reason);
+        }
+        return marked;
+    }
+
+    private boolean isOwnedHiddenAutoWarmUp() {
+        if (autoWarmUpConvertedToGame || !hasAutoWarmUpTransportIdentity()) return false;
+        if (isExactAutoWarmUpPreparing(
+                RetainedStreamSessionCoordinator.snapshot())) return true;
+        return autoWarmUpRetained
+                && RetainedStreamSessionCoordinator.ownsLiveOrParkedSession(
+                this, streamSessionId, autoWarmUpHostId(), autoWarmUpAppId(),
+                transitionSpec.playniteGameId);
+    }
+
+    private boolean isExactAutoWarmUpPreparing(
+            RetainedStreamSessionCoordinator.Snapshot preparing) {
+        return preparing != null && hasAutoWarmUpTransportIdentity()
+                && preparing.state == RetainedStreamSessionCoordinator.State.PREPARING
+                && streamSessionId.equals(preparing.streamSessionId)
+                && autoWarmUpHostId().equalsIgnoreCase(preparing.hostId)
+                && autoWarmUpAppId() == preparing.appId
+                && autoWarmUpAttempt == preparing.attempt
+                && RetainedStreamSessionCoordinator.isPreparing(
+                this, preparing.streamSessionId, preparing.hostId, preparing.appId,
+                preparing.transitionId, preparing.attempt);
+    }
+
+    private String autoWarmUpHostId() {
+        return normalizeOpaqueId(getIntent().getStringExtra(EXTRA_PC_UUID));
+    }
+
+    private int autoWarmUpAppId() {
+        return getIntent().getIntExtra(
+                EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
     }
 
     private static String normalizeOpaqueId(String value) {

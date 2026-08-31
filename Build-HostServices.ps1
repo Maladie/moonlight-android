@@ -38,6 +38,10 @@ try {
         Copy-Item -LiteralPath (Join-Path $hostServices $directory) `
             -Destination $payloadRoot -Recurse -Force
     }
+    & (Join-Path $hostServices "bridges\microphone\Build-MoonWakerMicrophoneWorker.ps1") `
+        -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
+    & (Join-Path $hostServices "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
+        -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
     & (Join-Path $hostServices "installer\Install-LegendaryPayload.ps1") `
         -TargetDirectory (Join-Path $payloadRoot "tools\legendary")
     Copy-Item -LiteralPath (Join-Path $hostServices "version.json") `

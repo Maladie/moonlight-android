@@ -33,9 +33,10 @@ public class PlayniteSessionPresentationTest {
                 projection.stateFor("game"));
     }
 
-    @Test public void noneAndTerminatingProjectAsReady() {
+    @Test public void noneTerminatingAndUncertainProjectAsReady() {
         for (SessionSnapshot.State state : Arrays.asList(
-                SessionSnapshot.State.NONE, SessionSnapshot.State.TERMINATING)) {
+                SessionSnapshot.State.NONE, SessionSnapshot.State.TERMINATING,
+                SessionSnapshot.State.UNCERTAIN)) {
             PlayniteSessionPresentation.Projection projection =
                     PlayniteSessionPresentation.project(snapshot(state, 42, "game"),
                             Collections.singletonList(item("game", 42)), "");
@@ -96,10 +97,40 @@ public class PlayniteSessionPresentationTest {
         assertEquals("", projection.resumeGameId);
     }
 
+    @Test public void neutralTargetWithoutGameNeverProjectsResume() {
+        for (SessionSnapshot.State state : Arrays.asList(
+                SessionSnapshot.State.ACTIVE,
+                SessionSnapshot.State.RECONNECT_REQUIRED)) {
+            PlayniteSessionPresentation.Projection projection =
+                    PlayniteSessionPresentation.project(
+                            snapshot(state, 42, "", true),
+                            Collections.singletonList(item("game", 42)), "");
+            assertEquals(PlayniteSessionPresentation.State.READY,
+                    projection.stateFor("game"));
+            assertEquals("", projection.resumeGameId);
+        }
+    }
+
+    @Test public void neutralTargetWithRealGameStillProjectsResume() {
+        PlayniteSessionPresentation.Projection projection =
+                PlayniteSessionPresentation.project(
+                        snapshot(SessionSnapshot.State.ACTIVE, 42, "game", true),
+                        Collections.singletonList(item("game", 42)), "");
+
+        assertEquals(PlayniteSessionPresentation.State.RESUME_ACTIVE,
+                projection.stateFor("game"));
+    }
+
     private static SessionSnapshot snapshot(SessionSnapshot.State state, int appId,
                                             String gameId) {
+        return snapshot(state, appId, gameId, false);
+    }
+
+    private static SessionSnapshot snapshot(SessionSnapshot.State state, int appId,
+                                            String gameId, boolean neutralStreamTarget) {
         return new SessionSnapshot("host", state, appId, gameId,
-                state == SessionSnapshot.State.ACTIVE, false, false, false, false);
+                state == SessionSnapshot.State.ACTIVE, false, false, false, false,
+                "", neutralStreamTarget);
     }
 
     private static PlayniteDashboardItem item(String gameId, int appId) {

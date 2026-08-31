@@ -94,10 +94,13 @@ class OperationProcessRegistry:
 
 class GenericPlayniteProvider:
     def launch(self, game: dict[str, Any], task_id: Hashable | None = None,
-               send_command: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
+               send_command: Callable[..., dict[str, Any]] | None = None,
+               launch_allowed: Callable[[], bool] | None = None) -> dict[str, Any]:
         if send_command is None:
             return {"accepted": False, "command": "launch", "provider": "playnite",
                     "reason": "playnite_connector_unavailable"}
+        if launch_allowed is not None and not launch_allowed():
+            return {"accepted": False, "command": "launch", "reason": "launch_cancelled"}
         return {**send_command("launch", id=str(game.get("playniteGameId")
                                                       or game.get("providerGameId")
                                                       or game.get("id") or "")),
@@ -150,7 +153,7 @@ class SteamProvider(GenericPlayniteProvider):
                  secret_reader: Callable[[Path], str] | None = None,
                  web_opener: Callable[..., Any] | None = None,
                  process_registry: OperationProcessRegistry | None = None,
-                 big_picture_preflight: Callable[["SteamProvider"], dict[str, Any]] | None = None) -> None:
+                 launch_preflight: Callable[["SteamProvider"], dict[str, Any]] | None = None) -> None:
         self.automation_path = automation_path
         self.roots = roots
         self.root_resolver = root_resolver
@@ -159,7 +162,7 @@ class SteamProvider(GenericPlayniteProvider):
         self.secret_reader = secret_reader or self._read_dpapi_secret
         self.web_opener = web_opener or urllib.request.urlopen
         self.process_registry = process_registry or OperationProcessRegistry()
-        self.big_picture_preflight = big_picture_preflight
+        self.launch_preflight = launch_preflight
         self._dispatch_reason = ""
 
     @staticmethod
@@ -449,20 +452,20 @@ class SteamProvider(GenericPlayniteProvider):
         if not snapshot.get("manifest_complete"):
             return {"accepted": False, "command": "launch", "provider": "steam",
                     "reason": "steam_game_not_installed"}
-        preflight = self.big_picture_preflight(self) if self.big_picture_preflight else {
-            "ready": False, "reason": "steam_big_picture_unavailable"}
-        if not preflight.get("ready"):
-            return {"accepted": False, "command": "launch", "provider": "steam",
-                    "requires_attention": preflight.get("reason") ==
-                    "launcher_interaction_required",
-                    "reason": str(preflight.get("reason") or
-                                  "steam_big_picture_unavailable")}
         arguments = [str(executable), f"steam://launch/{app_id}/Dialog"]
         game_id = str(game.get("id") or f"steam:{app_id}")
         task_id = task_id if task_id is not None else (game_id, "launch", time.time_ns())
         if self.process_registry.busy(game_id):
             return {"accepted": False, "command": "launch", "provider": "steam",
                     "reason": "operation_busy"}
+        preflight = self.launch_preflight(self) if self.launch_preflight else {
+            "ready": False, "reason": "steam_launch_preflight_unavailable"}
+        if not preflight.get("ready"):
+            return {"accepted": False, "command": "launch", "provider": "steam",
+                    "requires_attention": preflight.get("reason") in {
+                        "launcher_interaction_required", "host_session_locked"},
+                    "reason": str(preflight.get("reason") or
+                                  "steam_launch_preflight_unavailable")}
         try:
             process = self.command_runner(
                 arguments, cwd=str(executable.parent), shell=False,
@@ -970,7 +973,8 @@ class EpicProvider(GenericPlayniteProvider):
             "install_directory": str(trusted["install_directory"]),
         }
 
-    def launch(self, game: dict[str, Any], task_id: Hashable | None = None) -> dict[str, Any]:
+    def launch(self, game: dict[str, Any], task_id: Hashable | None = None,
+               launch_allowed: Callable[[], bool] | None = None) -> dict[str, Any]:
         executable, environment = self._legendary(), self._legendary_environment()
         if executable is None or environment is None:
             return {"accepted": False, "command": "launch", "provider": "epic",
@@ -998,6 +1002,8 @@ class EpicProvider(GenericPlayniteProvider):
                 return {"accepted": False, "command": "launch", "provider": "epic",
                         "requires_attention": False, "reason": "operation_busy",
                         "app_name": app_name}
+            if launch_allowed is not None and not launch_allowed():
+                return {"accepted": False, "command": "launch", "reason": "launch_cancelled"}
             try:
                 process = self.process_runner(
                     arguments, shell=False, env=environment, cwd=str(executable.parent),
@@ -1496,10 +1502,22 @@ class GameOperationsService:
         return self.provider_for(game).expected_launcher_images()
 
     def launch(self, game: dict[str, Any], task_id: Hashable | None = None,
-               send_command: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
+               send_command: Callable[..., dict[str, Any]] | None = None,
+               prepare_nonsteam: Callable[[], dict[str, Any]] | None = None,
+               launch_allowed: Callable[[], bool] | None = None) -> dict[str, Any]:
         provider = self.provider_for(game)
-        return provider.launch(game, task_id, send_command) \
-            if provider is self.generic else provider.launch(game, task_id)
+        if provider is not self.steam and prepare_nonsteam is not None:
+            prepared = prepare_nonsteam()
+            if not prepared.get("ready"):
+                return {"accepted": False, "command": "launch",
+                        "reason": str(prepared.get("reason") or "steam_close_request_failed")}
+        if launch_allowed is not None and not launch_allowed():
+            return {"accepted": False, "command": "launch", "reason": "launch_cancelled"}
+        if provider is self.generic:
+            return provider.launch(game, task_id, send_command, launch_allowed=launch_allowed)
+        if provider is self.epic:
+            return provider.launch(game, task_id, launch_allowed=launch_allowed)
+        return provider.launch(game, task_id)
 
     def sample_launch(self, game: dict[str, Any], task_id: Hashable) -> dict[str, Any] | None:
         provider = self.provider_for(game)

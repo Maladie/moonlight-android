@@ -39,6 +39,11 @@ per-profile Bridge when its credentials or runtime state differ.
 - `POST /api/v1/vibepollo/pair` - submits the pending Moonlight PIN through the
   selected profile Bridge and verifies the resulting client permissions.
 - `GET /api/v1/capabilities` - reports Gateway, selected profile and Bridges.
+- `POST /api/v1/microphone/stream` - one authenticated chunked stream of 48 kHz
+  mono PCM16 (960-sample frames) for the selected profile. It requires
+  `Content-Type: application/vnd.moonwaker.microphone-pcm;format=s16le;rate=48000;channels=1`,
+  `X-Request-Id`, and
+  `X-Microphone-Session-Id`.
 - `GET /api/v1/profiles` - lists safe profile names and Bridge health summaries.
 - `GET /api/v1/vibepollo/repair/status` - Vibepollo health summary.
 - `POST /api/v1/vibepollo/apps/ensure` - start idempotent creation or migration of a Playnite-backed Vibepollo app.
@@ -49,6 +54,10 @@ per-profile Bridge when its credentials or runtime state differ.
 - `GET /api/v1/discord/channels?guild_id=...` - allow-listed voice channels.
 - `GET /api/v1/discord/voice` - selected channel and voice state.
 - `GET /api/v1/discord/audio` - Windows and Discord audio state/devices.
+- `GET /api/v1/discord/audio/stream` - one authenticated, no-store chunked
+  downlink per selected profile. It carries 48 kHz stereo PCM16 in 960-sample
+  frames with
+  `Content-Type: application/vnd.moonwaker.discord-audio-pcm;format=s16le;rate=48000;channels=2`.
 - `POST /api/v1/discord/start` - starts Discord in the Bridge user session.
 - `POST /api/v1/discord/{connect|join|leave|mute|deafen}` - Discord action.
 - `POST /api/v1/discord/{user-volume|user-mute}` - participant control.
@@ -75,3 +84,15 @@ All endpoints except `hello` and `pair` require `Authorization: Bearer ...`.
 Mutating actions also require a unique `X-Request-Id`. Discord snowflakes,
 participant volume, audio device IDs and VirtualHere addresses are validated;
 Gateway never exposes a general-purpose Bridge proxy.
+
+Microphone availability is reported only when the packaged renderer can open
+exactly one active render endpoint whose invariant name contains
+`Steam Streaming Microphone`. Gateway starts that renderer only for an accepted
+stream, pipes bounded audio through stdin, and terminates it on EOF, timeout, or
+failure. It never changes the default Windows audio endpoint.
+
+Discord audio availability reports only stable reasons. The packaged worker
+captures the Discord process tree in the interactive Bridge session through
+Windows process-loopback audio. The private loopback Bridge target and its PID
+are never returned to LAN clients. A Discord restart ends the stream so the TV
+can reconnect to the new process.

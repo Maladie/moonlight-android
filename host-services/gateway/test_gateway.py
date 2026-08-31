@@ -1,5 +1,7 @@
+import io
 import json
 import os
+import re
 import tempfile
 import time
 import unittest
@@ -29,6 +31,20 @@ class GatewayStateTest(unittest.TestCase):
         self.config_path.with_name("pairing-code.json").unlink(missing_ok=True)
         self.config_path.with_name("runtime-status.json").unlink(missing_ok=True)
         self.config_path.with_name("gateway-runtime.json").unlink(missing_ok=True)
+
+    def test_gateway_installer_packages_microphone_worker(self):
+        installer = (Path(__file__).parent / "Install-WakePlayGateway.ps1").read_text(
+            encoding="utf-8-sig")
+        files = re.search(r"\$files\s*=\s*@\((.*?)\)", installer, re.DOTALL)
+        self.assertIsNotNone(files)
+        self.assertIn('"MoonWakerMicrophoneWorker.exe"', files.group(1))
+
+    def test_gateway_installer_packages_discord_audio_worker(self):
+        installer = (Path(__file__).parent / "Install-WakePlayGateway.ps1").read_text(
+            encoding="utf-8-sig")
+        files = re.search(r"\$files\s*=\s*@\((.*?)\)", installer, re.DOTALL)
+        self.assertIsNotNone(files)
+        self.assertIn('"MoonWakerDiscordAudioWorker.exe"', files.group(1))
 
     def test_pair_stores_only_token_hash(self):
         state = GatewayState(self.config_path, "123456")
@@ -109,6 +125,216 @@ class GatewayStateTest(unittest.TestCase):
         state.config["profiles"]["default"]["vibepollo_bridge"] = "http://192.0.2.2:8775"
         with self.assertRaises(ValueError):
             state.bridge_url("vibepollo", "/health")
+
+    def test_microphone_probe_is_fail_closed_and_uses_worker_probe(self):
+        state = GatewayState(self.config_path, None)
+        self.assertFalse(state.probe_microphone())
+        self.assertEqual(
+            {"available": False, "reason": "worker_missing"},
+            state.microphone_status())
+        worker = self.config_path.with_name("worker.exe")
+        worker.write_bytes(b"test")
+        self.addCleanup(worker.unlink)
+        state.config["microphone_worker"] = worker.name
+        with mock.patch.object(wakeplay_gateway.subprocess, "run") as run:
+            run.return_value.returncode = 0
+            self.assertTrue(state.probe_microphone())
+            self.assertEqual("ready", state.microphone_status()["reason"])
+            run.return_value.returncode = 1
+            self.assertEqual(
+                "steam_endpoint_missing_or_ambiguous_or_unsupported",
+                state.microphone_status()["reason"])
+        self.assertEqual([str(worker), "--probe"], run.call_args.args[0])
+
+    def test_microphone_capability_exposes_only_safe_status(self):
+        state = GatewayState(self.config_path, None)
+        with mock.patch.object(state, "proxy", return_value=(False, {})), \
+                mock.patch.object(state, "microphone_status", return_value={
+                    "available": False,
+                    "reason": "steam_endpoint_missing_or_ambiguous_or_unsupported",
+                }):
+            microphone = state.capabilities()["capabilities"]["microphone"]
+        self.assertEqual(False, microphone["available"])
+        self.assertEqual(
+            "steam_endpoint_missing_or_ambiguous_or_unsupported",
+            microphone["reason"])
+        self.assertNotIn("error", microphone)
+        self.assertNotIn("path", microphone)
+
+    def test_discord_audio_status_uses_private_target_and_exposes_safe_reason(self):
+        state = GatewayState(self.config_path, None)
+        worker = self.config_path.with_name("discord-audio-worker.exe")
+        worker.write_bytes(b"test")
+        self.addCleanup(worker.unlink)
+        state.config["discord_audio_worker"] = worker.name
+        state.proxy = mock.Mock(return_value=(True, {
+            "ready": True, "reason": "ready", "pid": 1234,
+        }))
+        with mock.patch.object(wakeplay_gateway.subprocess, "run") as run:
+            run.return_value.returncode = 0
+            self.assertEqual({"available": True, "reason": "ready"},
+                             state.discord_audio_status())
+        self.assertEqual([str(worker), "--probe", "1234"], run.call_args.args[0])
+        state.proxy.assert_called_with("discord", "/audio-capture-target", timeout=2.0)
+
+        state.proxy.return_value = (True, {
+            "ready": False, "reason": "discord_process_missing", "pid": 0,
+        })
+        status = state.discord_audio_status()
+        self.assertEqual({"available": False, "reason": "discord_process_missing"}, status)
+        self.assertNotIn("pid", status)
+
+    def test_discord_audio_stream_frames_and_always_releases_worker(self):
+        handler = object.__new__(GatewayHandler)
+        handler.headers = Message()
+        handler.headers["X-Request-Id"] = "request-1"
+        handler.wfile = io.BytesIO()
+        handler.close_connection = False
+        headers = []
+        handler.send_response = lambda status: headers.append(("status", int(status)))
+        handler.send_header = lambda name, value: headers.append((name, value))
+        handler.end_headers = lambda: None
+        state = SimpleNamespace(
+            lock=__import__("threading").RLock(), discord_audio_streams={},
+            discord_audio_worker=lambda: self.config_path,
+            discord_audio_target=lambda: ("ready", 1234),
+        )
+        handler.server = SimpleNamespace(state=state)
+        frame = b"x" * wakeplay_gateway.DISCORD_AUDIO_FRAME_BYTES
+        process = mock.Mock()
+        process.stdout = io.BytesIO(frame)
+        process.poll.return_value = None
+        with mock.patch.object(wakeplay_gateway.subprocess, "Popen", return_value=process):
+            handler.discord_audio_stream("default")
+
+        self.assertEqual({}, state.discord_audio_streams)
+        self.assertIn(("Content-Type", wakeplay_gateway.DISCORD_AUDIO_CONTENT_TYPE), headers)
+        self.assertIn(("Cache-Control", "no-store"), headers)
+        self.assertIn(("X-Content-Type-Options", "nosniff"), headers)
+        self.assertEqual(
+            f"{len(frame):X}\r\n".encode("ascii") + frame + b"\r\n0\r\n\r\n",
+            handler.wfile.getvalue())
+        process.kill.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=2.0)
+
+    def test_discord_audio_stream_rejects_second_profile_session(self):
+        handler = object.__new__(GatewayHandler)
+        handler.headers = Message()
+        handler.headers["X-Request-Id"] = "request-2"
+        state = SimpleNamespace(
+            lock=__import__("threading").RLock(),
+            discord_audio_streams={"default": "request-1"},
+            discord_audio_worker=lambda: self.config_path,
+            discord_audio_target=lambda: ("ready", 1234),
+        )
+        handler.server = SimpleNamespace(state=state)
+        responses = []
+        handler.send_json = lambda status, body: responses.append((status, body))
+
+        handler.discord_audio_stream("default")
+
+        self.assertEqual(409, responses[0][0])
+        self.assertEqual("request-1", state.discord_audio_streams["default"])
+
+    def test_discord_audio_silence_heartbeat_disconnect_releases_session(self):
+        class ClosedClient:
+            def write(self, _data):
+                raise BrokenPipeError("client closed")
+            def flush(self):
+                pass
+
+        handler = object.__new__(GatewayHandler)
+        handler.headers = Message()
+        handler.headers["X-Request-Id"] = "request-1"
+        handler.wfile = ClosedClient()
+        handler.close_connection = False
+        handler.send_response = lambda _status: None
+        handler.send_header = lambda _name, _value: None
+        handler.end_headers = lambda: None
+        state = SimpleNamespace(
+            lock=__import__("threading").RLock(), discord_audio_streams={},
+            discord_audio_worker=lambda: self.config_path,
+            discord_audio_target=lambda: ("ready", 1234),
+        )
+        handler.server = SimpleNamespace(state=state)
+        process = mock.Mock()
+        process.stdout = io.BytesIO(b"\0" * wakeplay_gateway.DISCORD_AUDIO_FRAME_BYTES)
+        process.poll.return_value = None
+        with mock.patch.object(wakeplay_gateway.subprocess, "Popen", return_value=process):
+            handler.discord_audio_stream("default")
+
+        self.assertTrue(handler.close_connection)
+        self.assertEqual({}, state.discord_audio_streams)
+        process.kill.assert_called_once_with()
+
+    def test_microphone_chunk_parser_frames_and_bounds_input(self):
+        handler = object.__new__(GatewayHandler)
+        handler.connection = SimpleNamespace(settimeout=lambda _value: None)
+        frame = b"x" * wakeplay_gateway.MICROPHONE_FRAME_BYTES
+        handler.rfile = io.BytesIO(b"780\r\n" + frame + b"\r\n0\r\n\r\nX")
+        output = io.BytesIO()
+        handler.read_microphone_chunks(output)
+        self.assertEqual(frame, output.getvalue())
+        self.assertEqual(b"X", handler.rfile.read())
+
+        handler.rfile = io.BytesIO(b"2001\r\n")
+        with self.assertRaisesRegex(ValueError, "too large"):
+            handler.read_microphone_chunks(io.BytesIO())
+
+        handler.rfile = io.BytesIO(b"1\r\nx\r\n0\r\n\r\n")
+        with self.assertRaisesRegex(ValueError, "Partial"):
+            handler.read_microphone_chunks(io.BytesIO())
+
+    def test_microphone_stream_rejects_second_profile_session_before_body(self):
+        handler = object.__new__(GatewayHandler)
+        handler.headers = Message()
+        handler.headers["Transfer-Encoding"] = "chunked"
+        handler.headers["Content-Type"] = (
+            "application/vnd.moonwaker.microphone-pcm;"
+            "format=s16le;rate=48000;channels=1")
+        handler.headers["X-Request-Id"] = "request-1"
+        handler.headers["X-Microphone-Session-Id"] = "session-2"
+        state = SimpleNamespace(
+            lock=__import__("threading").RLock(),
+            microphone_streams={"default": "session-1"},
+            microphone_worker=lambda: self.config_path,
+        )
+        handler.server = SimpleNamespace(state=state)
+        responses = []
+        handler.send_json = lambda status, body: responses.append((status, body))
+
+        handler.microphone_stream("default")
+
+        self.assertEqual(409, responses[0][0])
+        self.assertEqual("session-1", state.microphone_streams["default"])
+
+    def test_microphone_stream_parser_failure_always_releases_session_and_worker(self):
+        handler = object.__new__(GatewayHandler)
+        handler.headers = Message()
+        handler.headers["Transfer-Encoding"] = "chunked"
+        handler.headers["Content-Type"] = (
+            "application/vnd.moonwaker.microphone-pcm;"
+            "format=s16le;rate=48000;channels=1")
+        handler.headers["X-Request-Id"] = "request-1"
+        handler.headers["X-Microphone-Session-Id"] = "session-1"
+        handler.connection = SimpleNamespace(settimeout=lambda _value: None)
+        handler.rfile = io.BytesIO(b"invalid\r\n")
+        state = SimpleNamespace(
+            lock=__import__("threading").RLock(), microphone_streams={},
+            microphone_worker=lambda: self.config_path,
+        )
+        handler.server = SimpleNamespace(state=state)
+
+        process = mock.Mock()
+        process.stdin = io.BytesIO()
+        process.poll.return_value = None
+        with mock.patch.object(wakeplay_gateway.subprocess, "Popen", return_value=process):
+            with self.assertRaisesRegex(ValueError, "chunk size"):
+                handler.microphone_stream("default")
+
+        self.assertEqual({}, state.microphone_streams)
+        process.kill.assert_called_once_with()
+        process.wait.assert_called_once_with(timeout=2.0)
 
     def test_sleep_host_schedules_native_action_without_waiting(self):
         state = GatewayState(self.config_path, None)
@@ -678,6 +904,28 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertFalse(result["ok"])
         self.assertEqual("another_game_running", result["error"])
+
+    def test_verified_stop_has_named_route_required_token_and_no_legacy_fallback(self):
+        state = GatewayState(self.config_path, None)
+        state.proxy_json = mock.Mock(return_value=(True, {
+            "accepted": True, "stopped_game_id": "epic:Cowbird", "stopped_current": False}))
+        payload = {"game_id": "epic:Cowbird", "expected_process_token": "a" * 64}
+        status, result = state.playnite_action("game/stop-verified", payload)
+        self.assertEqual(200, status)
+        self.assertTrue(result["ok"])
+        state.proxy_json.assert_called_once_with(
+            "playnite", "/game/stop-verified", {"force": False, **payload}, timeout=25.0)
+        for bad in (None, "", "A" * 64, "a" * 63):
+            with self.assertRaises(ValueError):
+                state.playnite_action("game/stop-verified", {**payload, "expected_process_token": bad})
+        with self.assertRaises(ValueError):
+            state.playnite_action("game/stop-verified", {"expected_process_token": "a" * 64})
+        state.proxy_json.reset_mock()
+        state.proxy_json.return_value = (False, {"error": "Endpoint not found"})
+        status, result = state.playnite_action("game/stop-verified", payload)
+        self.assertFalse(result["ok"])
+        self.assertEqual(1, state.proxy_json.call_count)
+        self.assertEqual("/game/stop-verified", state.proxy_json.call_args.args[1])
 
     def test_playnite_focus_is_narrow_and_bodyless(self):
         state = GatewayState(self.config_path, None)

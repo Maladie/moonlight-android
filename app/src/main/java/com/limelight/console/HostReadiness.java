@@ -19,6 +19,49 @@ final class HostReadiness {
 
     private HostReadiness() {}
 
+    static ComputerDetails mergeFreshDetails(ComputerDetails known,
+                                              ComputerDetails fresh) {
+        ComputerDetails merged = new ComputerDetails(known);
+        merged.update(fresh);
+        return merged;
+    }
+
+    static ComputerDetails awaitAfterWakeDecision(
+            Supplier<ComputerDetails> currentHost,
+            ComputerDetails wakeTarget,
+            boolean sendWakeOnce,
+            BooleanSupplier cancelled,
+            Consumer<String> status,
+            String wakeStatus,
+            String waitingStatus) {
+        return awaitAfterWakeDecision(currentHost, wakeTarget, sendWakeOnce,
+                cancelled, status, wakeStatus, waitingStatus,
+                target -> {
+                    try {
+                        WakeOnLanSender.sendWolPacket(target);
+                    } catch (IOException ignored) { }
+                });
+    }
+
+    static ComputerDetails awaitAfterWakeDecision(
+            Supplier<ComputerDetails> currentHost,
+            ComputerDetails wakeTarget,
+            boolean sendWakeOnce,
+            BooleanSupplier cancelled,
+            Consumer<String> status,
+            String wakeStatus,
+            String waitingStatus,
+            Consumer<ComputerDetails> wakeSender) {
+        if (cancelled.getAsBoolean()) return null;
+        if (sendWakeOnce) {
+            status.accept(wakeStatus);
+            try {
+                wakeSender.accept(wakeTarget);
+            } catch (RuntimeException ignored) { }
+        }
+        return await(currentHost, null, cancelled, status, wakeStatus, waitingStatus);
+    }
+
     static ComputerDetails await(Supplier<ComputerDetails> currentHost,
                                  ComputerDetails wakeTarget,
                                  BooleanSupplier cancelled,
@@ -35,7 +78,7 @@ final class HostReadiness {
             }
 
             long now = System.currentTimeMillis();
-            if (now >= nextWake) {
+            if (wakeTarget != null && now >= nextWake) {
                 status.accept(wakeStatus);
                 try {
                     WakeOnLanSender.sendWolPacket(wakeTarget);

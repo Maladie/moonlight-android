@@ -10,6 +10,7 @@ import java.nio.file.Paths;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
 public class SessionResumeManagerTest {
     @Test public void processLossReconnectPreservesStoredStreamSessionId() {
@@ -42,5 +43,7 @@ public class SessionResumeManagerTest {
                 "gameIntent.getStringExtra\\(Game.EXTRA_STREAM_TARGET_NAME\\)", -1).length);
         assertEquals(2, text.split(
                 "Game.EXTRA_NEUTRAL_STREAM_TARGET", -1).length - 1);
+        assertTrue(text.contains("public final boolean neutralStreamTarget"));
+        assertTrue(text.contains("this.neutralStreamTarget = prefs.getBoolean("));
     }
 }

@@ -85,13 +85,19 @@ public final class LaunchTransitionController {
     public synchronized void surfaceReady(String transitionId) {
         if (!accept(transitionId, null)) return;
         surfaceReady = true;
-        if (!streamConnected) state = LaunchTransitionState.WAITING_FOR_VIDEO_SURFACE;
+        if (!streamConnected && state != LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED) {
+            state = LaunchTransitionState.WAITING_FOR_VIDEO_SURFACE;
+        }
         evaluateReady();
     }
 
     public synchronized void streamConnected(String transitionId) {
         if (!accept(transitionId, null)) return;
         streamConnected = true;
+        if (state == LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED) {
+            evaluateReady();
+            return;
+        }
         if (spec.type == LaunchTransitionType.PLAYNITE) {
             state = LaunchTransitionState.PLAYNITE_STARTING;
         } else if (spec.type == LaunchTransitionType.GAME) {

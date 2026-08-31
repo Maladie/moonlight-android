@@ -7,6 +7,7 @@ import java.util.concurrent.atomic.AtomicReference;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class RetainedStreamSessionCoordinatorTest {
@@ -21,10 +22,34 @@ public class RetainedStreamSessionCoordinatorTest {
         boolean live = true;
         RetainedStreamSessionCoordinator.TerminationCallback terminationCompletion;
         RetainedStreamSessionCoordinator.SwitchCallback switchCompletion;
+        RetainedStreamSessionCoordinator.SwitchRequest switchRequest;
+        RetainedStreamSessionCoordinator.Snapshot preparingPark;
+        RetainedStreamSessionCoordinator.Snapshot preparingCancel;
+        boolean preparingParkResult = true;
+        boolean preparingCancelResult = true;
+        int preparingCancels;
+        int submittedPreparingFrames;
+        boolean preparingFrameResult = true;
         int switches;
 
         @Override public boolean isRetainedTransportLive() { return live; }
         @Override public boolean parkRetainedTransport() { return parkResult; }
+        @Override public boolean parkPreparingTransport(
+                RetainedStreamSessionCoordinator.Snapshot preparing) {
+            preparingPark = preparing;
+            return preparingParkResult;
+        }
+        @Override public boolean cancelPreparingTransport(
+                RetainedStreamSessionCoordinator.Snapshot preparing) {
+            preparingCancel = preparing;
+            preparingCancels++;
+            return preparingCancelResult;
+        }
+        @Override public boolean preparingHomeFrameSubmitted(
+                RetainedStreamSessionCoordinator.Snapshot preparing) {
+            submittedPreparingFrames++;
+            return preparingFrameResult;
+        }
         @Override public void terminateRetainedSession(
                 RetainedStreamSessionCoordinator.TerminationCallback completion) {
             terminated = true;
@@ -37,12 +62,62 @@ public class RetainedStreamSessionCoordinatorTest {
                 RetainedStreamSessionCoordinator.SwitchRequest request,
                 RetainedStreamSessionCoordinator.SwitchCallback completion) {
             switches++;
+            switchRequest = request;
             switchCompletion = completion;
         }
     }
 
     @After public void reset() {
         RetainedStreamSessionCoordinator.clear();
+    }
+
+    @Test public void exactSwitchSnapshotRejectsStaleTokenAndDeadOwner() {
+        FakeController owner = new FakeController();
+        owner.live = false;
+        RetainedStreamSessionCoordinator.beginPreparing(owner, SESSION_A, "host", 7, "", "a", 1);
+        RetainedStreamSessionCoordinator.Snapshot preparing = RetainedStreamSessionCoordinator.snapshot();
+        assertTrue(RetainedStreamSessionCoordinator.canSwitchGame(preparing));
+        RetainedStreamSessionCoordinator.clear();
+        RetainedStreamSessionCoordinator.beginPreparing(owner, SESSION_A, "host", 7, "", "b", 2);
+        assertFalse(RetainedStreamSessionCoordinator.canSwitchGame(preparing));
+        RetainedStreamSessionCoordinator.clear();
+        RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A, "host", 7, "");
+        RetainedStreamSessionCoordinator.Snapshot home = RetainedStreamSessionCoordinator.snapshot();
+        assertFalse(RetainedStreamSessionCoordinator.canSwitchGame(home));
+        owner.live = true;
+        RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A, "host", 7, "");
+        home = RetainedStreamSessionCoordinator.snapshot();
+        assertTrue(RetainedStreamSessionCoordinator.canSwitchGame(home));
+        RetainedStreamSessionCoordinator.enterHome(owner, "other", "foreign", 8, "");
+        assertFalse(RetainedStreamSessionCoordinator.canSwitchGame(home));
+    }
+
+    @Test public void ownedSwitchCanPublishAcceptedGameButDashboardCannotPreclearIt() {
+        for (String oldGame : new String[] { "", "old" }) {
+            RetainedStreamSessionCoordinator.clear();
+            FakeController owner = new FakeController();
+            RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A, "host", 7, oldGame);
+            assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                    RetainedStreamSessionCoordinator.switchGame(
+                            "host", 7, "new", "New", "MoonWaker Stream", "",
+                            () -> false, null));
+            assertFalse(RetainedStreamSessionCoordinator.updateGameIfMatches(
+                    SESSION_A, "host", 7, oldGame, ""));
+            assertFalse(RetainedStreamSessionCoordinator.updateOwnedSwitchGame(
+                    new FakeController(), owner.switchRequest, oldGame, ""));
+            assertTrue(RetainedStreamSessionCoordinator.updateOwnedSwitchGame(
+                    owner, owner.switchRequest, oldGame, ""));
+            assertTrue(RetainedStreamSessionCoordinator.updateOwnedSwitchGame(
+                    owner, owner.switchRequest, "", "new"));
+            assertEquals("new", RetainedStreamSessionCoordinator.snapshot().playniteGameId);
+            assertEquals(1, owner.switches);
+            assertFalse(owner.terminated);
+            RetainedStreamSessionCoordinator.enterHome(
+                    new FakeController(), "session-b", "other", 8, "other-game");
+            assertFalse(RetainedStreamSessionCoordinator.updateOwnedSwitchGame(
+                    owner, owner.switchRequest, "new", ""));
+            assertEquals("other-game", RetainedStreamSessionCoordinator.snapshot().playniteGameId);
+        }
     }
 
     @Test public void homeParksAndRemainsInstantlyResumable() {
@@ -53,6 +128,104 @@ public class RetainedStreamSessionCoordinatorTest {
         assertEquals(RetainedStreamSessionCoordinator.State.PARKED_LIVE,
                 RetainedStreamSessionCoordinator.state());
         assertTrue(RetainedStreamSessionCoordinator.canResumeInstantly());
+        RetainedStreamSessionCoordinator.Snapshot parked =
+                RetainedStreamSessionCoordinator.snapshot();
+        assertTrue(RetainedStreamSessionCoordinator.canResumeInstantly(parked));
+
+        RetainedStreamSessionCoordinator.enterHome(
+                controller, "session-b", "other", 8, "other-game");
+        assertFalse(RetainedStreamSessionCoordinator.canResumeInstantly(parked));
+    }
+
+    @Test public void externalPreparingCancelCapturesTheExactOwnerAndToken() {
+        FakeController owner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 11L));
+        RetainedStreamSessionCoordinator.Snapshot expected =
+                RetainedStreamSessionCoordinator.snapshot();
+
+        assertTrue(RetainedStreamSessionCoordinator.cancelPreparing(expected));
+        assertEquals(1, owner.preparingCancels);
+        assertEquals(expected, owner.preparingCancel);
+        assertEquals(RetainedStreamSessionCoordinator.State.PREPARING,
+                RetainedStreamSessionCoordinator.state());
+    }
+
+    @Test public void submittedHomeFrameReachesOnlyTheExactPreparingOwner() {
+        FakeController owner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition-a", 11L));
+        RetainedStreamSessionCoordinator.Snapshot expected =
+                RetainedStreamSessionCoordinator.snapshot();
+
+        assertTrue(RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(expected));
+        assertEquals(1, owner.submittedPreparingFrames);
+        assertFalse(RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(expected));
+        assertEquals(1, owner.submittedPreparingFrames);
+        assertTrue(RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 11L));
+        assertFalse(RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 12L));
+        assertTrue(RetainedStreamSessionCoordinator.completePreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 11L));
+        assertTrue(RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 11L));
+        RetainedStreamSessionCoordinator.enterHome(
+                owner, SESSION_A, "host", 7, "game");
+        assertFalse(RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 11L));
+    }
+
+    @Test public void cancelledFrameClaimCannotBecomeAccepted() {
+        FakeController owner = new FakeController() {
+            @Override public boolean preparingHomeFrameSubmitted(
+                    RetainedStreamSessionCoordinator.Snapshot preparing) {
+                assertTrue(RetainedStreamSessionCoordinator.cancelPreparing(
+                        this, SESSION_A, "host", 7, "transition-a", 11L));
+                return true;
+            }
+        };
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition-a", 11L));
+        RetainedStreamSessionCoordinator.Snapshot expected =
+                RetainedStreamSessionCoordinator.snapshot();
+
+        assertFalse(RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(expected));
+        assertEquals(RetainedStreamSessionCoordinator.State.NONE,
+                RetainedStreamSessionCoordinator.state());
+        assertFalse(RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 11L));
+    }
+
+    @Test public void staleExternalCancelCannotReachANewerOwner() {
+        FakeController oldOwner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                oldOwner, SESSION_A, "host", 7, "", "transition-a", 11L));
+        RetainedStreamSessionCoordinator.Snapshot stale =
+                RetainedStreamSessionCoordinator.snapshot();
+        assertTrue(RetainedStreamSessionCoordinator.cancelPreparing(
+                oldOwner, SESSION_A, "host", 7, "transition-a", 11L));
+        FakeController newOwner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                newOwner, "session-b", "host", 7, "", "transition-b", 12L));
+
+        assertFalse(RetainedStreamSessionCoordinator.cancelPreparing(stale));
+        assertEquals(0, newOwner.preparingCancels);
+        assertEquals("session-b", RetainedStreamSessionCoordinator.snapshot().streamSessionId);
+    }
+
+    @Test public void externalCancelNeverClosesLiveOrParkedSessions() {
+        for (boolean parked : new boolean[] { false, true }) {
+            FakeController owner = new FakeController();
+            RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A, "host", 7, "");
+            if (parked) RetainedStreamSessionCoordinator.markParked(SESSION_A);
+            RetainedStreamSessionCoordinator.Snapshot live =
+                    RetainedStreamSessionCoordinator.snapshot();
+
+            assertFalse(RetainedStreamSessionCoordinator.cancelPreparing(live));
+            assertEquals(0, owner.preparingCancels);
+            RetainedStreamSessionCoordinator.clear();
+        }
     }
 
     @Test public void failedParkRequiresReconnect() {
@@ -155,6 +328,279 @@ public class RetainedStreamSessionCoordinatorTest {
         assertEquals("host", snapshot.hostId);
         assertEquals(7, snapshot.appId);
         assertEquals("game", snapshot.playniteGameId);
+    }
+
+    @Test public void preparingRequiresFullCorrelationAndIsNotResumeReady() {
+        FakeController owner = new FakeController();
+        FakeController staleOwner = new FakeController();
+
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition-a", 1L));
+        RetainedStreamSessionCoordinator.Snapshot snapshot =
+                RetainedStreamSessionCoordinator.snapshot();
+        assertEquals(RetainedStreamSessionCoordinator.State.PREPARING, snapshot.state);
+        assertEquals("game", snapshot.playniteGameId);
+        assertEquals("transition-a", snapshot.transitionId);
+        assertEquals(1L, snapshot.attempt);
+        assertFalse(RetainedStreamSessionCoordinator.canResumeInstantly());
+        assertTrue(RetainedStreamSessionCoordinator.parkForBackground(SESSION_A));
+        assertFalse(RetainedStreamSessionCoordinator.clearIfMatches(SESSION_A));
+        assertEquals(RetainedStreamSessionCoordinator.TerminationResult.NO_CONTROLLER,
+                RetainedStreamSessionCoordinator.terminate(SESSION_A, null));
+
+        assertFalse(RetainedStreamSessionCoordinator.completePreparing(
+                staleOwner, SESSION_A, "host", 7, "transition-a", 1L));
+        assertFalse(RetainedStreamSessionCoordinator.completePreparing(
+                owner, "stale-session", "host", 7, "transition-a", 1L));
+        assertFalse(RetainedStreamSessionCoordinator.completePreparing(
+                owner, SESSION_A, "stale-host", 7, "transition-a", 1L));
+        assertFalse(RetainedStreamSessionCoordinator.completePreparing(
+                owner, SESSION_A, "host", 8, "transition-a", 1L));
+        assertFalse(RetainedStreamSessionCoordinator.completePreparing(
+                owner, SESSION_A, "host", 7, "stale-transition", 1L));
+        assertFalse(RetainedStreamSessionCoordinator.completePreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 2L));
+        assertTrue(RetainedStreamSessionCoordinator.completePreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+        assertEquals(RetainedStreamSessionCoordinator.State.HOME_LIVE,
+                RetainedStreamSessionCoordinator.state());
+        assertEquals("", RetainedStreamSessionCoordinator.snapshot().transitionId);
+        assertEquals(0L, RetainedStreamSessionCoordinator.snapshot().attempt);
+        assertTrue(RetainedStreamSessionCoordinator.canResumeInstantly());
+    }
+
+    @Test public void preparingCancelOnlyClearsTheExactAttempt() {
+        FakeController owner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+
+        assertFalse(RetainedStreamSessionCoordinator.cancelPreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 2L));
+        assertTrue(RetainedStreamSessionCoordinator.cancelPreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-b", 2L));
+        assertFalse(RetainedStreamSessionCoordinator.cancelPreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+        assertTrue(RetainedStreamSessionCoordinator.isPreparing(
+                owner, SESSION_A, "host", 7, "transition-b", 2L));
+    }
+
+    @Test public void preparingParkDelegatesTheExactTokenWithoutChangingState() {
+        FakeController owner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition-a", 1L));
+
+        assertTrue(RetainedStreamSessionCoordinator.parkForBackground(SESSION_A));
+
+        assertEquals(RetainedStreamSessionCoordinator.State.PREPARING,
+                RetainedStreamSessionCoordinator.state());
+        assertEquals(SESSION_A, owner.preparingPark.streamSessionId);
+        assertEquals("host", owner.preparingPark.hostId);
+        assertEquals(7, owner.preparingPark.appId);
+        assertEquals("game", owner.preparingPark.playniteGameId);
+        assertEquals("transition-a", owner.preparingPark.transitionId);
+        assertEquals(1L, owner.preparingPark.attempt);
+    }
+
+    @Test public void preparingReconnectRequiresTheFullTokenAndRejectsLateCompletion() {
+        FakeController owner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+
+        assertFalse(RetainedStreamSessionCoordinator.markPreparingReconnectRequired(
+                owner, SESSION_A, "host", 7, "transition-a", 2L));
+        assertTrue(RetainedStreamSessionCoordinator.markPreparingReconnectRequired(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+
+        RetainedStreamSessionCoordinator.Snapshot snapshot =
+                RetainedStreamSessionCoordinator.snapshot();
+        assertEquals(RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
+                snapshot.state);
+        assertEquals("", snapshot.transitionId);
+        assertEquals(0L, snapshot.attempt);
+        assertFalse(RetainedStreamSessionCoordinator.completePreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+    }
+
+    @Test public void stalePreparingParkCannotMutateAReplacementAttempt() {
+        FakeController replacement = new FakeController();
+        FakeController owner = new FakeController() {
+            @Override public boolean parkPreparingTransport(
+                    RetainedStreamSessionCoordinator.Snapshot preparing) {
+                assertTrue(RetainedStreamSessionCoordinator.cancelPreparing(
+                        this, SESSION_A, "host", 7, "transition-a", 1L));
+                assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                        replacement, "session-b", "host", 7, "",
+                        "transition-b", 2L));
+                return true;
+            }
+        };
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+
+        assertTrue(RetainedStreamSessionCoordinator.parkForBackground(SESSION_A));
+
+        assertTrue(RetainedStreamSessionCoordinator.isPreparing(
+                replacement, "session-b", "host", 7, "transition-b", 2L));
+    }
+
+    @Test public void preparingSwitchCarriesItsTokenWithoutRequiringLiveTransport() {
+        FakeController owner = new FakeController();
+        owner.live = false;
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+
+        assertTrue(RetainedStreamSessionCoordinator.canSwitchGame("host", 7));
+        assertFalse(RetainedStreamSessionCoordinator.isPreparingSwitchOwned(
+                SESSION_A, "host", 7, "transition-a", 3L));
+        assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                RetainedStreamSessionCoordinator.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+        assertTrue(RetainedStreamSessionCoordinator.isPreparingSwitchOwned(
+                SESSION_A, "host", 7, "transition-a", 3L));
+        assertFalse(RetainedStreamSessionCoordinator.isPreparingSwitchOwned(
+                SESSION_A, "host", 7, "transition-a", 4L));
+        assertEquals(RetainedStreamSessionCoordinator.SwitchResult.NOT_ELIGIBLE,
+                RetainedStreamSessionCoordinator.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+        assertEquals(1, owner.switches);
+        assertTrue(owner.switchRequest.preparing);
+        assertEquals("old", owner.switchRequest.oldGameId);
+        assertEquals("transition-a", owner.switchRequest.transitionId);
+        assertEquals(3L, owner.switchRequest.attempt);
+        owner.switchCompletion.complete(
+                RetainedStreamSessionCoordinator.SwitchOutcome.REUSED, "");
+        assertTrue(RetainedStreamSessionCoordinator.isPreparingSwitchOwned(
+                SESSION_A, "host", 7, "transition-a", 3L));
+        assertFalse(RetainedStreamSessionCoordinator.finishSwitch(SESSION_A, owner));
+        assertTrue(RetainedStreamSessionCoordinator.finishSwitch(
+                SESSION_A, "transition-a", 3L, owner));
+        assertFalse(RetainedStreamSessionCoordinator.isPreparingSwitchOwned(
+                SESSION_A, "host", 7, "transition-a", 3L));
+    }
+
+    @Test public void stalePreparingSwitchCallbackCannotChangeANewerAttempt() {
+        FakeController owner = new FakeController();
+        AtomicReference<RetainedStreamSessionCoordinator.SwitchOutcome> outcome =
+                new AtomicReference<>();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+        assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                RetainedStreamSessionCoordinator.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, (result, error) -> outcome.set(result)));
+        RetainedStreamSessionCoordinator.SwitchCallback stale = owner.switchCompletion;
+        assertTrue(RetainedStreamSessionCoordinator.cancelPreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-b", 2L));
+
+        stale.complete(RetainedStreamSessionCoordinator.SwitchOutcome.FAILED, "stale");
+
+        assertTrue(RetainedStreamSessionCoordinator.isPreparing(
+                owner, SESSION_A, "host", 7, "transition-b", 2L));
+        assertTrue(RetainedStreamSessionCoordinator.canSwitchGame("host", 7));
+        assertNull(outcome.get());
+    }
+
+    @Test public void completedPreparingSwitchUsesTheExistingHomeFinish() {
+        FakeController owner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+        assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                RetainedStreamSessionCoordinator.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+        assertTrue(RetainedStreamSessionCoordinator.completePreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+
+        assertTrue(RetainedStreamSessionCoordinator.finishSwitch(SESSION_A, owner));
+    }
+
+    @Test public void reusedPreparingSwitchReleasesItsCapturedLockBeforeConnection() {
+        FakeController owner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                RetainedStreamSessionCoordinator.switchGame(
+                        "host", 7, "same", "Same", "MoonWaker Stream", "",
+                        () -> false, null));
+
+        owner.switchCompletion.complete(
+                RetainedStreamSessionCoordinator.SwitchOutcome.REUSED, "");
+        assertFalse(RetainedStreamSessionCoordinator.canSwitchGame("host", 7));
+        assertTrue(RetainedStreamSessionCoordinator.finishSwitch(
+                SESSION_A, "transition-a", 3L, owner));
+        assertTrue(RetainedStreamSessionCoordinator.canSwitchGame("host", 7));
+        assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                RetainedStreamSessionCoordinator.switchGame(
+                        "host", 7, "next", "Next", "MoonWaker Stream", "",
+                        () -> false, null));
+    }
+
+    @Test public void stalePreparingFinishCannotReleaseAReplacementSwitch() {
+        FakeController owner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-a", 1L));
+        assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                RetainedStreamSessionCoordinator.switchGame(
+                        "host", 7, "old", "Old", "MoonWaker Stream", "",
+                        () -> false, null));
+        assertTrue(RetainedStreamSessionCoordinator.cancelPreparing(
+                owner, SESSION_A, "host", 7, "transition-a", 1L));
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "", "transition-b", 2L));
+        assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                RetainedStreamSessionCoordinator.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+
+        assertFalse(RetainedStreamSessionCoordinator.finishSwitch(
+                SESSION_A, "transition-a", 1L, owner));
+        assertFalse(RetainedStreamSessionCoordinator.canSwitchGame("host", 7));
+        assertTrue(RetainedStreamSessionCoordinator.finishSwitch(
+                SESSION_A, "transition-b", 2L, owner));
+    }
+
+    @Test public void preparingSwitchUpdateRequiresTheFullCapturedToken() {
+        FakeController owner = new FakeController();
+        FakeController staleOwner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                RetainedStreamSessionCoordinator.switchGame(
+                        "host", 7, "new", "New", "MoonWaker Stream", "",
+                        () -> false, null));
+        RetainedStreamSessionCoordinator.SwitchRequest request = owner.switchRequest;
+
+        assertFalse(RetainedStreamSessionCoordinator.updatePreparingSwitch(
+                staleOwner, request, "transition-a", "old", "", "transition-b"));
+        assertFalse(RetainedStreamSessionCoordinator.updatePreparingSwitch(
+                owner, request, "stale", "old", "", "transition-b"));
+        assertFalse(RetainedStreamSessionCoordinator.updatePreparingSwitch(
+                owner, request, "transition-a", "other", "", "transition-b"));
+        assertTrue(RetainedStreamSessionCoordinator.updatePreparingSwitch(
+                owner, request, "transition-a", "old", "", "transition-b"));
+
+        RetainedStreamSessionCoordinator.Snapshot updated =
+                RetainedStreamSessionCoordinator.snapshot();
+        assertEquals(RetainedStreamSessionCoordinator.State.PREPARING, updated.state);
+        assertEquals("", updated.playniteGameId);
+        assertEquals("transition-b", updated.transitionId);
+        assertEquals(3L, updated.attempt);
+        assertFalse(RetainedStreamSessionCoordinator.updatePreparingSwitch(
+                owner, request, "transition-a", "", "new", "transition-c"));
+        assertTrue(RetainedStreamSessionCoordinator.cancelPreparing(
+                owner, SESSION_A, "host", 7, "transition-b", 3L));
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                staleOwner, SESSION_A, "host", 7, "", "transition-c", 4L));
+        assertFalse(RetainedStreamSessionCoordinator.updatePreparingSwitch(
+                owner, request, "transition-b", "", "new", "transition-d"));
+        assertTrue(RetainedStreamSessionCoordinator.isPreparing(
+                staleOwner, SESSION_A, "host", 7, "transition-c", 4L));
     }
 
     @Test public void repeatedTerminationDoesNotStartASecondRequest() {
@@ -368,12 +814,12 @@ public class RetainedStreamSessionCoordinatorTest {
         assertTrue(RetainedStreamSessionCoordinator.canSwitchGame("host", 7));
     }
 
-    @Test public void duplicateNaturalStopCannotReplaceTheSettledNeutralSession() {
+    @Test public void duplicateNaturalStopKeepsTheSettledNeutralSession() {
         FakeController controller = new FakeController();
         assertTrue(RetainedStreamSessionCoordinator.retainNeutralAfterGameStopped(
                 controller, SESSION_A, "host", 7, "old"));
 
-        assertFalse(RetainedStreamSessionCoordinator.retainNeutralAfterGameStopped(
+        assertTrue(RetainedStreamSessionCoordinator.retainNeutralAfterGameStopped(
                 controller, SESSION_A, "host", 7, "old"));
 
         RetainedStreamSessionCoordinator.Snapshot retained =
@@ -382,6 +828,20 @@ public class RetainedStreamSessionCoordinatorTest {
         assertEquals(SESSION_A, retained.streamSessionId);
         assertEquals("", retained.playniteGameId);
         assertTrue(RetainedStreamSessionCoordinator.canSwitchGame("host", 7));
+    }
+
+    @Test public void dashboardStopCanPreclearExactGameBeforeOwnerSettlesNeutral() {
+        FakeController controller = new FakeController();
+        RetainedStreamSessionCoordinator.enterHome(
+                controller, SESSION_A, "host", 7, "old");
+        assertTrue(RetainedStreamSessionCoordinator.updateGameIfMatches(
+                SESSION_A, "host", 7, "old", ""));
+
+        assertTrue(RetainedStreamSessionCoordinator.retainNeutralAfterGameStopped(
+                controller, SESSION_A, "host", 7, "old"));
+        assertFalse(RetainedStreamSessionCoordinator.retainNeutralAfterGameStopped(
+                new FakeController(), SESSION_A, "host", 7, "old"));
+        assertEquals("", RetainedStreamSessionCoordinator.snapshot().playniteGameId);
     }
 
     @Test public void parkedNaturalStopClearsOnlyTheExactGameAndKeepsParking() {

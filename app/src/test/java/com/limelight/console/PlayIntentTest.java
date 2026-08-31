@@ -45,6 +45,19 @@ public class PlayIntentTest {
         assertTrue(intent.sunshineAppId == 0);
     }
 
+    @Test public void autoWarmUpCarriesOnlyTheNeutralHostIntent() {
+        PlayIntent intent = PlayIntent.autoWarmUp(" HOST ");
+
+        assertEquals(PlayIntent.Kind.AUTO_WARM_UP, intent.kind);
+        assertEquals("HOST", intent.hostId);
+        assertEquals(0, intent.sunshineAppId);
+        assertEquals(PlayniteTargetResolver.MOONWAKER_STREAM_NAME, intent.appName);
+        assertEquals("", intent.playniteGameId);
+        assertFalse(intent.matches(snapshot("host", 0, "")));
+        assertEquals(LaunchTransitionType.GENERIC,
+                intent.transitionType(LaunchTransitionType.GENERIC));
+    }
+
     @Test public void playniteGameCarriesItsPerGameStreamSettingsKey() {
         PlayIntent intent = PlayIntent.playniteGame(
                 "host", 42, "Game", false, "game", "game", "settings:game");

@@ -3,6 +3,7 @@ package com.limelight;
 import org.junit.Test;
 
 import com.limelight.console.transition.LaunchTransitionType;
+import com.limelight.stream.RetainedStreamSessionCoordinator;
 
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
@@ -32,7 +33,7 @@ public class GameTransitionCancelContractTest {
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
         String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
         String method = text.substring(text.indexOf("private void cancelTransition()"),
-                text.indexOf("private void retryTransition()"));
+                text.indexOf("private boolean returnRetainedObservationToDashboard()"));
 
         assertFalse(method.contains("doAfterNextFrame"));
         assertTrue(method.contains("transitionCancelInFlight = true"));
@@ -162,6 +163,89 @@ public class GameTransitionCancelContractTest {
         assertFalse(listener.contains("setOnFrameRenderedListener(null"));
     }
 
+    @Test public void retainedGameAttemptArmsOneExactPostOpaqueFrameProof()
+            throws IOException {
+        String text = source();
+        String attempt = text.substring(text.indexOf(
+                        "private void beginNewRetainedGameAttempt("),
+                text.indexOf("private void pollRetainedSwitchCancellation("));
+        String arm = text.substring(text.indexOf(
+                        "private void armNextVideoFrameForTransition("),
+                text.indexOf("private void retryTransition()"));
+        String snapshot = text.substring(text.indexOf(
+                        "private void applyTransitionSnapshot("),
+                text.indexOf("private void scheduleAutomaticReveal()"));
+
+        assertTrue(attempt.indexOf("consoleLoadingView.showOpaque()")
+                < attempt.indexOf("consoleLoadingView.doAfterNextFrame("));
+        assertTrue(attempt.indexOf("consoleLoadingView.doAfterNextFrame(")
+                < attempt.indexOf("applyRetainedTransition(operation, next"));
+        assertTrue(attempt.indexOf("armNextVideoFrameForTransition(next.id")
+                < attempt.indexOf("transitionCoordinator.start()"));
+        assertTrue(text.contains("AtomicReference<String> armedVideoFrameTransitionId"));
+        assertTrue(arm.contains("transitionId.equals(armed)"));
+        assertTrue(arm.contains("compareAndSet(transitionId, \"\")"));
+        assertTrue(arm.indexOf("transitionSpec.id.equals(transitionId)")
+                < arm.indexOf("transitionController.videoFrameRendered(transitionId)"));
+        assertTrue(arm.contains("video_frame.armed"));
+        assertTrue(arm.contains("video_frame.rendered"));
+        assertTrue(arm.contains("video_frame.stale"));
+        assertTrue(snapshot.contains(
+                "armNextVideoFrameForTransition(snapshot.spec.id, \"transition-gate\")"));
+        assertFalse(snapshot.contains(
+                "transitionController.videoFrameRendered(transitionSpec.id)"));
+    }
+
+    @Test public void exactRetainedObservationCancelReturnsHomeWithoutStoppingAnything()
+            throws IOException {
+        String text = source();
+        String cancel = text.substring(text.indexOf("private void cancelTransition()"),
+                text.indexOf("private void retryTransition()"));
+        String retainedReturn = cancel.substring(cancel.indexOf(
+                        "private boolean returnRetainedObservationToDashboard()"),
+                cancel.indexOf("private void armNextVideoFrameForTransition("));
+        String eligibility = cancel.substring(cancel.indexOf(
+                        "private boolean isExactLiveRetainedObservation()"),
+                cancel.indexOf("private void armNextVideoFrameForTransition("));
+
+        assertTrue(cancel.indexOf("returnRetainedObservationToDashboard()")
+                < cancel.indexOf("transitionController.cancel("));
+        assertTrue(retainedReturn.indexOf("showOpaque()")
+                < retainedReturn.indexOf("doAfterNextFrame("));
+        assertTrue(retainedReturn.contains("if (retainedDashboardReturnInFlight) return true"));
+        assertTrue(retainedReturn.contains("openConsoleHome()"));
+        assertFalse(retainedReturn.contains("cancelTransition()"));
+        assertFalse(retainedReturn.contains("stopConnection"));
+        assertFalse(retainedReturn.contains("stopGame"));
+        assertFalse(retainedReturn.contains("quitApp"));
+        assertTrue(eligibility.contains("LaunchTransitionType.GAME_CONNECTION"));
+        assertTrue(eligibility.contains("ownsLiveOrParkedSession("));
+        String back = text.substring(text.indexOf("public void onBackPressed()"),
+                text.indexOf("public boolean handleKeyDown("));
+        assertTrue(back.contains("returnRetainedObservationToDashboard()"));
+    }
+
+    @Test public void retainedObservationDashboardReturnRequiresExactForegroundHomeLive() {
+        assertTrue(Game.isForegroundRetainedObservation(
+                true, false, false, LaunchTransitionType.GAME_CONNECTION, "game-a",
+                RetainedStreamSessionCoordinator.State.HOME_LIVE, true));
+        assertFalse(Game.isForegroundRetainedObservation(
+                true, false, false, LaunchTransitionType.GAME_CONNECTION, "game-a",
+                RetainedStreamSessionCoordinator.State.PARKED_LIVE, true));
+        assertFalse(Game.isForegroundRetainedObservation(
+                true, false, true, LaunchTransitionType.GAME_CONNECTION, "game-a",
+                RetainedStreamSessionCoordinator.State.HOME_LIVE, true));
+
+        assertTrue(Game.shouldOpenRetainedObservationDashboard(
+                "gc-a", "game-a", "gc-a", "game-a", true));
+        assertFalse(Game.shouldOpenRetainedObservationDashboard(
+                "gc-a", "game-a", "game-b", "game-b", true));
+        assertFalse(Game.shouldOpenRetainedObservationDashboard(
+                "gc-a", "game-a", "gc-b", "game-b", true));
+        assertFalse(Game.shouldOpenRetainedObservationDashboard(
+                "gc-a", "game-a", "gc-a", "game-a", false));
+    }
+
     @Test public void connectingStateMakesInFlightTransportStoppable() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
@@ -278,16 +362,19 @@ public class GameTransitionCancelContractTest {
         String text = source();
         String begin = text.substring(text.indexOf("private void beginNewRetainedGameAttempt("),
                 text.indexOf("private void pollRetainedSwitchCancellation("));
+        String setup = text.substring(text.indexOf("private void applyRetainedTransition("),
+                text.indexOf("private boolean advancePreparingSwitch("));
 
-        assertTrue(begin.contains("transitionController.begin(next)"));
+        assertTrue(setup.contains("transitionController.begin(next)"));
         assertTrue(begin.contains("transitionCoordinator.start()"));
         assertTrue(begin.contains("transitionCoordinator.onStreamConnected()"));
         assertTrue(begin.contains("transitionController.streamConnected(next.id)"));
-        assertFalse(begin.contains("videoFrameRendered"));
-        assertFalse(begin.contains("conn.start"));
-        assertFalse(begin.contains("conn.stop"));
-        assertFalse(begin.contains("quitApp"));
-        assertFalse(begin.contains("stopConnection"));
+        String reuse = begin + setup;
+        assertFalse(reuse.contains("videoFrameRendered"));
+        assertFalse(reuse.contains("conn.start"));
+        assertFalse(reuse.contains("conn.stop"));
+        assertFalse(reuse.contains("quitApp"));
+        assertFalse(reuse.contains("stopConnection"));
     }
 
     @Test public void providerCleanupIsDisarmedOnlyInsideRealRevealCompletion()
@@ -580,11 +667,10 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("@Override public void onInstallationVerified()", text.indexOf(
                         "@Override public void onProviderGameStartAccepted(")));
 
-        assertTrue(helper.contains("operation.request.streamSessionId.equals"));
-        assertTrue(helper.contains("operation.request.hostId.equalsIgnoreCase"));
-        assertTrue(helper.contains("operation.request.appId == retained.appId"));
-        assertTrue(helper.contains("newGameId.equalsIgnoreCase(retained.playniteGameId)"));
-        assertTrue(callbacks.split("if \\(!updateRetainedGame\\(", -1).length - 1 >= 4);
+        assertTrue(helper.contains("RetainedStreamSessionCoordinator.updateOwnedSwitchGame("));
+        assertTrue(helper.contains("this, operation.request, expectedGameId, newGameId"));
+        assertFalse(helper.contains("newGameId.equalsIgnoreCase(retained.playniteGameId)"));
+        assertTrue(callbacks.split("updateRetainedGame\\(", -1).length - 1 >= 3);
     }
 
     private static String source() throws IOException {

@@ -36,7 +36,7 @@ final class HostLaunchPreflight {
         TARGET_PROPAGATION_TIMEOUT
     }
 
-    enum Action { LAUNCH, RECONNECT, SWITCH_RETAINED }
+    enum Action { LAUNCH, RECONNECT, SWITCH_RETAINED, WARM_UP }
 
     enum TargetResolution { EXISTING, ENSURED }
 
@@ -56,6 +56,7 @@ final class HostLaunchPreflight {
 
     interface Sunshine {
         List<NvApp> refreshApps(String hostId) throws IOException;
+        default NvApp verifiedRetainedTarget(Request request) { return null; }
     }
 
     interface Clock {
@@ -264,6 +265,18 @@ final class HostLaunchPreflight {
             }
         }
 
+        if (request.action == Action.SWITCH_RETAINED) {
+            NvApp retainedTarget = sunshine.verifiedRetainedTarget(request);
+            if (cancelled.getAsBoolean()) return Result.cancelled();
+            if (retainedTarget != null) {
+                MoonWakerDiagnostics.record("INFO", "android.host-preflight",
+                        "preflight.retained_target_reused", "host_id", request.hostId,
+                        "app_id", retainedTarget.getAppId(), "game_id", request.gameId);
+                progress.onStage(Stage.TARGET_READY);
+                return Result.ready(retainedTarget, TargetResolution.EXISTING);
+            }
+        }
+
         List<NvApp> apps;
         try {
             apps = sunshine.refreshApps(request.hostId);
@@ -275,6 +288,15 @@ final class HostLaunchPreflight {
                     FailureReason.TARGET_UNAVAILABLE);
         }
         if (cancelled.getAsBoolean()) return Result.cancelled();
+        if (request.action == Action.WARM_UP) {
+            NvApp neutral = PlayniteTargetResolver.resolveNeutralStream(apps);
+            if (neutral == null) {
+                return Result.failed(Stage.TARGET_READY,
+                        FailureReason.TARGET_UNAVAILABLE);
+            }
+            progress.onStage(Stage.TARGET_READY);
+            return Result.ready(neutral, TargetResolution.EXISTING);
+        }
         if (request.isDirectProvider()) {
             NvApp desktop = PlayniteTargetResolver.resolveProviderStream(apps);
             if (desktop != null) {

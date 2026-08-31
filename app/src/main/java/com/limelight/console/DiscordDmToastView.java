@@ -340,12 +340,12 @@ public final class DiscordDmToastView extends FrameLayout
         int fullWidth = Math.min(maxWidth, Math.max(0, viewportWidth - edge * 2));
         if (!dockVisible) return new Placement(fullWidth, edge, edge);
         int leftWidth = Math.max(0, dockLeft - gap - edge);
-        int belowHeight = Math.max(0, viewportHeight - dockBottom - gap - edge);
-        if (leftWidth >= minWidth || belowHeight < toastHeight) {
+        if (leftWidth >= minWidth) {
             return new Placement(Math.min(maxWidth, leftWidth),
                     Math.max(edge, viewportWidth - dockLeft + gap), edge);
         }
-        return new Placement(fullWidth, edge, dockBottom + gap);
+        return new Placement(fullWidth, edge, Math.min(dockBottom + gap,
+                Math.max(edge, viewportHeight - edge - toastHeight)));
     }
 
     private GradientDrawable cardBackground() {

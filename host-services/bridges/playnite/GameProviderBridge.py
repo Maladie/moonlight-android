@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 import ctypes
+import hashlib
 import html
 import json
 import logging
@@ -301,9 +302,27 @@ class WindowProbe:
         self.user32 = None
         self.kernel32 = None
         self.dwmapi = None
+        self.advapi32 = None
         if os.name == "nt":
             self.user32 = ctypes.WinDLL("user32", use_last_error=True)
             self.kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            self.advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+            self.advapi32.OpenProcessToken.argtypes = [
+                wintypes.HANDLE, wintypes.DWORD, ctypes.POINTER(wintypes.HANDLE)]
+            self.advapi32.OpenProcessToken.restype = wintypes.BOOL
+            self.advapi32.GetTokenInformation.argtypes = [
+                wintypes.HANDLE, ctypes.c_int, wintypes.LPVOID, wintypes.DWORD,
+                ctypes.POINTER(wintypes.DWORD)]
+            self.advapi32.GetTokenInformation.restype = wintypes.BOOL
+            self.advapi32.ConvertSidToStringSidW.argtypes = [
+                wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
+            self.advapi32.ConvertSidToStringSidW.restype = wintypes.BOOL
+            self.kernel32.LocalFree.argtypes = [wintypes.HANDLE]
+            self.kernel32.LocalFree.restype = wintypes.HANDLE
+            self.kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+            self.kernel32.CloseHandle.restype = wintypes.BOOL
+            self.kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
+            self.kernel32.WaitForSingleObject.restype = wintypes.DWORD
             self.user32.GetForegroundWindow.restype = wintypes.HWND
             self.user32.OpenInputDesktop.argtypes = [
                 wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -389,7 +408,7 @@ class WindowProbe:
     def _process_image(self, process_id: int) -> str:
         return os.path.basename(self._process_path(process_id)).casefold()
 
-    def process_identity(self, process_id: int) -> dict[str, Any] | None:
+    def process_identity(self, process_id: int, include_owner: bool = False) -> dict[str, Any] | None:
         if not self.kernel32 or process_id <= 0:
             return None
         handle = self.kernel32.OpenProcess(
@@ -410,11 +429,129 @@ class WindowProbe:
                         ctypes.byref(kernel), ctypes.byref(user)):
                 return None
             started = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
-            return {
+            identity = {
                 "process_id": process_id,
                 "process_path": buffer.value,
                 "process_started_filetime": started,
             }
+            if include_owner:
+                owner = self._process_owner(handle)
+                if owner is None:
+                    return None
+                identity.update(owner)
+            return identity
+        finally:
+            self.kernel32.CloseHandle(handle)
+
+    def _process_owner(self, process_handle: Any) -> dict[str, Any] | None:
+        token = wintypes.HANDLE()
+        if not self.advapi32 or not self.advapi32.OpenProcessToken(
+                process_handle, 0x0008, ctypes.byref(token)):
+            return None
+        try:
+            size = wintypes.DWORD()
+            self.advapi32.GetTokenInformation(token, 1, None, 0, ctypes.byref(size))
+            if not size.value or size.value > 65536:
+                return None
+            user = ctypes.create_string_buffer(size.value)
+            session = wintypes.DWORD()
+            if not self.advapi32.GetTokenInformation(
+                    token, 1, user, size.value, ctypes.byref(size)) or \
+                    not self.advapi32.GetTokenInformation(
+                        token, 12, ctypes.byref(session), ctypes.sizeof(session), ctypes.byref(size)):
+                return None
+            sid = wintypes.LPWSTR()
+            if not self.advapi32.ConvertSidToStringSidW(
+                    ctypes.cast(user, ctypes.POINTER(ctypes.c_void_p))[0], ctypes.byref(sid)):
+                return None
+            try:
+                return {"user_sid": sid.value, "session_id": int(session.value)}
+            finally:
+                self.kernel32.LocalFree(ctypes.cast(sid, wintypes.HANDLE))
+        finally:
+            self.kernel32.CloseHandle(token)
+
+    def scan_running_processes(self) -> tuple[list[dict[str, Any]], str]:
+        own = self.process_identity(os.getpid(), include_owner=True)
+        if own is None or not self.user32:
+            return [], "unavailable"
+        snapshot = self.kernel32.CreateToolhelp32Snapshot(self.TH32CS_SNAPPROCESS, 0)
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+            return [], "unavailable"
+        visible_pids: set[int] = set()
+        callback_type = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+
+        def visit(hwnd: int, _value: int) -> bool:
+            if self.user32.IsWindowVisible(hwnd):
+                pid = wintypes.DWORD()
+                self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                visible_pids.add(int(pid.value))
+            return True
+
+        result: list[dict[str, Any]] = []
+        status = "complete"
+        deadline = time.monotonic() + 0.25
+        entry = self._process_entry()
+        try:
+            if not self.user32.EnumWindows(callback_type(visit), 0):
+                return [], "unavailable"
+            if not self.kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                return [], "unavailable"
+            while True:
+                pid = int(entry.th32ProcessID)
+                identity = self.process_identity(pid, include_owner=True) if pid > 4 else None
+                if identity is None:
+                    if pid > 4:
+                        status = "partial"
+                elif identity["user_sid"] == own["user_sid"] \
+                        and identity["session_id"] == own["session_id"]:
+                    identity["visible_window"] = pid in visible_pids
+                    result.append(identity)
+                if time.monotonic() >= deadline:
+                    return [], "unavailable"
+                if not self.kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    if ctypes.get_last_error() != 18:  # ERROR_NO_MORE_FILES
+                        return [], "unavailable"
+                    break
+            return result, status
+        finally:
+            self.kernel32.CloseHandle(snapshot)
+
+    def stop_verified_process(self, expected: dict[str, Any], timeout: float) -> bool:
+        if not self.kernel32 or not self.user32 or self.is_session_locked() \
+                or self.uac_consent_pending(fail_closed=True):
+            return False
+        pid = int(expected["process_id"])
+        handle = self.kernel32.OpenProcess(
+            self.PROCESS_QUERY_LIMITED_INFORMATION | 0x00100000, False, pid)
+        if not handle:
+            return False
+        try:
+            own = self.process_identity(os.getpid(), include_owner=True)
+            fresh = self.process_identity(pid, include_owner=True)
+            keys = ("process_id", "process_started_filetime", "user_sid", "session_id")
+            if own is None or fresh is None or any(fresh.get(key) != expected.get(key) for key in keys) \
+                    or fresh["user_sid"] != own["user_sid"] \
+                    or fresh["session_id"] != own["session_id"] \
+                    or ntpath.normcase(ntpath.normpath(fresh["process_path"])) != \
+                    ntpath.normcase(ntpath.normpath(expected["process_path"])):
+                return False
+            if self.kernel32.WaitForSingleObject(handle, 0) != 258:  # WAIT_TIMEOUT = alive
+                return False
+            windows = self._matching_windows(process_id=pid)
+            if not windows:
+                return False
+            posted = False
+            for hwnd in windows:
+                if self.kernel32.WaitForSingleObject(handle, 0) == 0:
+                    return posted
+                window_pid = wintypes.DWORD()
+                self.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(window_pid))
+                if int(window_pid.value) == pid \
+                        and self.kernel32.WaitForSingleObject(handle, 0) == 258:
+                    posted = bool(self.user32.PostMessageW(hwnd, self.WM_CLOSE, 0, 0)) or posted
+            return posted and self.kernel32.WaitForSingleObject(
+                handle, int(max(0, timeout) * 1000)) == 0
         finally:
             self.kernel32.CloseHandle(handle)
 
@@ -559,17 +696,19 @@ class WindowProbe:
             self.user32.CloseDesktop(desktop)
 
     @staticmethod
-    def uac_consent_pending() -> bool:
+    def uac_consent_pending(fail_closed: bool = False) -> bool:
         if os.name != "nt":
-            return False
+            return fail_closed
         try:
             result = subprocess.run([
                 "tasklist.exe", "/FI", "IMAGENAME eq consent.exe", "/NH", "/FO", "CSV",
             ], capture_output=True, text=True, timeout=2,
                 creationflags=subprocess.CREATE_NO_WINDOW, check=False)
-            return result.returncode == 0 and '"consent.exe"' in result.stdout.casefold()
+            if result.returncode != 0:
+                return fail_closed
+            return '"consent.exe"' in result.stdout.casefold()
         except (OSError, subprocess.SubprocessError):
-            return False
+            return fail_closed
 
     @staticmethod
     def is_playnite_ui_image(image_name: str) -> bool:
@@ -882,6 +1021,77 @@ class WindowProbe:
             return False
         display = str(window.get("display") or "")
         return not expected_display or display.casefold() == expected_display.casefold()
+
+    def prepare_steam_launch(self, provider: SteamProvider) -> dict[str, Any]:
+        # A direct AppID URI needs an interactive desktop, not a fullscreen launcher.
+        if self.is_session_locked() or self.uac_consent_pending(fail_closed=True) \
+                or self.is_session_locked():
+            return {"ready": False, "reason": "host_session_locked"}
+        if provider.executable() is None:
+            return {"ready": False, "reason": "steam_unavailable"}
+        return {"ready": True}
+
+    def close_steam_big_picture(self, provider: SteamProvider,
+                               dispatch_if_current: Callable[..., dict[str, Any]]) -> dict[str, Any]:
+        executable = provider.executable()
+        if executable is None:
+            return {"ready": True, "reason": "steam_not_installed"}
+        own = self.process_identity(os.getpid(), include_owner=True)
+        if not self.kernel32 or own is None:
+            return {"ready": False, "reason": "steam_process_probe_unavailable"}
+        expected_path = ntpath.normcase(ntpath.normpath(str(executable)))
+        snapshot = self.kernel32.CreateToolhelp32Snapshot(self.TH32CS_SNAPPROCESS, 0)
+        if not snapshot or snapshot == ctypes.c_void_p(-1).value:
+            return {"ready": False, "reason": "steam_process_probe_unavailable"}
+        matches = []
+        entry = self._process_entry()
+        try:
+            if not self.kernel32.Process32FirstW(snapshot, ctypes.byref(entry)):
+                return {"ready": False, "reason": "steam_process_probe_unavailable"}
+            while True:
+                # Only inspect Steam candidates, not the full running-game inventory.
+                if entry.szExeFile.casefold() == "steam.exe":
+                    identity = self.process_identity(int(entry.th32ProcessID), include_owner=True)
+                    if identity is None:
+                        return {"ready": False, "reason": "steam_process_probe_unavailable"}
+                    if identity["user_sid"] == own["user_sid"] \
+                            and identity["session_id"] == own["session_id"] \
+                            and ntpath.normcase(ntpath.normpath(identity["process_path"])) == expected_path:
+                        matches.append(identity)
+                if not self.kernel32.Process32NextW(snapshot, ctypes.byref(entry)):
+                    if ctypes.get_last_error() != 18:
+                        return {"ready": False, "reason": "steam_process_probe_unavailable"}
+                    break
+        finally:
+            self.kernel32.CloseHandle(snapshot)
+        if not matches:
+            return {"ready": True, "reason": "steam_not_running"}
+        if len(matches) != 1:
+            return {"ready": False, "reason": "steam_process_ambiguous"}
+        if self.is_session_locked() or self.uac_consent_pending(fail_closed=True):
+            return {"ready": False, "reason": "host_session_locked"}
+        expected = matches[0]
+
+        def dispatch() -> dict[str, Any]:
+            fresh = self.process_identity(expected["process_id"], include_owner=True)
+            keys = ("process_id", "process_started_filetime", "user_sid", "session_id")
+            if fresh is None or any(fresh.get(key) != expected.get(key) for key in keys) \
+                    or ntpath.normcase(ntpath.normpath(fresh["process_path"])) != expected_path:
+                return {"ready": False, "reason": "steam_process_identity_changed"}
+            try:
+                # No wait: dispatch is not an acknowledgement of BP closure/input isolation.
+                # A Steam exit between this check and Popen remains an EXE+URI TOCTOU limit.
+                provider.command_runner(
+                    [str(executable), "steam://close/bigpicture"],
+                    cwd=str(executable.parent), shell=False,
+                    stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            except (OSError, subprocess.SubprocessError):
+                return {"ready": False, "reason": "steam_close_request_failed"}
+            return {"ready": True, "reason": "steam_close_request_sent"}
+
+        return dispatch_if_current(dispatch)
 
     def ensure_steam_big_picture(self, provider: SteamProvider,
                                  expected_display: str,
@@ -1315,6 +1525,11 @@ class BridgeState:
         self.playnite_library: dict[str, dict[str, Any]] = {}
         self.library_staging: dict[str, dict[str, Any]] = {}
         self.library_revision = ""
+        self.running_process_probe: WindowProbe | None = None
+        self._running_games: list[dict[str, Any]] = []
+        self._running_scan_status = "unavailable"
+        self._running_scan_revision = ""
+        self._running_scan_at = 0.0
         self.snapshot_in_progress = False
         self.categories: list[dict[str, Any]] = []
         self.plugins: list[dict[str, Any]] = []
@@ -1346,6 +1561,7 @@ class BridgeState:
         self.graceful_close: Callable[[int], bool] | None = None
         self.show_fullscreen_action: Callable[[], dict[str, Any]] | None = None
         self.focus_game_action: Callable[[int, str, str], dict[str, Any]] | None = None
+        self.nonsteam_launch_preparation: Callable[..., dict[str, Any]] | None = None
         self.installation_baseline_action: Callable[[], dict[str, Any]] | None = None
         self.installation_probe_action: Callable[[dict[str, Any]], dict[str, Any]] | None = None
         self.focus_installation_action: Callable[[int], dict[str, Any]] | None = None
@@ -2264,6 +2480,8 @@ class BridgeState:
                             })
                     else:
                         self.current = {"state": "running", **status}
+                        self._native_reconciliation_confirmation = (
+                            playnite_id, int(status.get("processId") or status.get("process_id") or 0))
                         self.readiness = {
                             "ready": False,
                             "reason": "waiting_for_game_window",
@@ -2443,6 +2661,29 @@ class BridgeState:
                     "steam_direct_dispatched", game_id, token, game)
         return result
 
+    def _launch_provider(self, game: dict[str, Any], attempt: dict[str, Any],
+                         task_id: str | None = None,
+                         send_command: Callable[..., dict[str, Any]] | None = None) -> dict[str, Any]:
+        def allowed() -> bool:
+            with self.lock:
+                return self.current is attempt and self.current.get("state") == "starting"
+
+        def dispatch_if_current(action: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+            with self.lock:
+                if not allowed():
+                    return {"ready": False, "reason": "launch_cancelled"}
+                return action()
+
+        def prepare() -> dict[str, Any]:
+            if not allowed():
+                return {"ready": False, "reason": "launch_cancelled"}
+            if self.nonsteam_launch_preparation is None:
+                return {"ready": False, "reason": "steam_close_preparation_unavailable"}
+            return self.nonsteam_launch_preparation(dispatch_if_current)
+
+        return self.game_operations.launch(
+            game, task_id, send_command, prepare_nonsteam=prepare, launch_allowed=allowed)
+
     def start_game(self, game_id: Any) -> dict[str, Any]:
         normalized = self.resolve_game_id(game_id)
         with self.lock:
@@ -2523,11 +2764,12 @@ class BridgeState:
                     "stable_samples": 0,
                 }
                 self._last_window_signature = None
+                attempt = self.current
             try:
-                result = self.game_operations.launch(dict(game), task_id)
+                result = self._launch_provider(dict(game), attempt, task_id)
             except Exception:
                 with self.lock:
-                    if self.current.get("id") == normalized:
+                    if self.current is attempt:
                         if self.current.get("state") == "stopping":
                             self._complete_game_stop_locked()
                         elif self.current.get("state") == "starting":
@@ -2535,7 +2777,7 @@ class BridgeState:
                             self.readiness = previous_readiness
                 raise
             with self.lock:
-                if self.current.get("id") == normalized:
+                if self.current is attempt:
                     self.current.update({
                         "installDir": str(result.get("install_directory") or
                                           self.current.get("installDir") or ""),
@@ -2581,11 +2823,21 @@ class BridgeState:
             }
             self._publish_locked("game-starting", {"id": normalized})
             self._last_window_signature = None
+            attempt = self.current
         try:
-            return self.game_operations.launch(dict(game), send_command=self.send_command)
+            result = self._launch_provider(dict(game), attempt, send_command=self.send_command)
+            if not result.get("accepted"):
+                with self.lock:
+                    if self.current is attempt:
+                        if self.current.get("state") == "stopping":
+                            self._complete_game_stop_locked()
+                        elif self.current.get("state") == "starting":
+                            self.current = previous_current
+                            self.readiness = previous_readiness
+            return result
         except Exception:
             with self.lock:
-                if self.current.get("id") == normalized:
+                if self.current is attempt:
                     if self.current.get("state") == "stopping":
                         self._complete_game_stop_locked()
                     elif self.current.get("state") == "starting":
@@ -3422,16 +3674,177 @@ class BridgeState:
         close = self.graceful_close
         if process_id <= 0 or close is None:
             return False
-        if int(self.current.get("stopCloseRequestedPid") or 0) == process_id:
-            return True
+        requested_process_id = int(self.current.get("stopCloseRequestedPid") or 0)
+        if requested_process_id:
+            if requested_process_id == process_id:
+                return True
+            if self.current.get("stopTimedOut"):
+                return False
+        if self.current.get("stopCloseRetryArmed") \
+                and not self._exact_stop_process_matches_locked(process_id):
+            return False
         if not close(process_id):
             return False
         self.current["stopCloseRequestedPid"] = process_id
+        self.current.pop("stopCloseRetryArmed", None)
+        self.current.pop("stopTimedOut", None)
         self._publish_locked("game-stop-close-requested", {
             "id": str(self.current.get("id") or ""),
             "process_id": process_id,
         })
         return True
+
+    def _exact_stop_process_matches_locked(self, process_id: int) -> bool:
+        expected_path = self._normalized_process_path(
+            self.current.get("processPath"))
+        expected_started = int(self.current.get("processStartedFiletime") or 0)
+        identity_action = self._process_identity_action
+        identities_action = self._process_identities_action
+        if process_id <= 0 or not expected_path or expected_started <= 0 \
+                or identity_action is None or identities_action is None:
+            return False
+        try:
+            identity = identity_action(process_id)
+            observed = identities_action(expected_path)
+        except Exception:
+            return False
+        if identity is None or observed is None \
+                or self._normalized_process_path(identity.get("process_path")) != expected_path \
+                or int(identity.get("process_started_filetime") or 0) != expected_started:
+            return False
+        matches = [item for item in observed
+                   if self._normalized_process_path(item.get("process_path")) == expected_path
+                   and int(item.get("process_started_filetime") or 0) == expected_started]
+        return len(matches) == 1 \
+            and int(matches[0].get("process_id") or 0) == process_id
+
+    def _verified_running_games(self) -> tuple[list[dict[str, Any]], str, str]:
+        with self.lock:
+            games = [dict(game) for game in self.library.values()]
+            revision = self.library_revision
+            probe = self.running_process_probe
+            current = dict(self.current)
+            native_confirmation = self._native_reconciliation_confirmation if self.connected else None
+        if probe is None:
+            return [], "unavailable", revision
+        identities, status = probe.scan_running_processes()
+        exact_paths = set()
+        for game in games:
+            executable = str(game.get("exe") or game.get("executable") or "").strip()
+            if executable:
+                directory = str(game.get("installDir") or game.get("install_dir") or "")
+                exact_paths.add(self._normalized_process_path(
+                    executable if ntpath.isabs(executable) else ntpath.join(directory, executable)))
+        matches: dict[str, list[dict[str, Any]]] = {}
+        for identity in identities:
+            path = self._normalized_process_path(identity.get("process_path"))
+            if not identity.get("visible_window") and path not in exact_paths:
+                continue
+            image = ntpath.basename(path)
+            if image in INSTALLER_IMAGES | INSTALLER_EXCLUDED_IMAGES \
+                    or image in {"launcher.exe", "bootstrapper.exe", "werfault.exe"} \
+                    or image.startswith(("crashreport", "crashhandler", "unitycrashhandler", "unins")):
+                continue
+            candidates = [game for game in games
+                          if GAME_ID_PATTERN.fullmatch(str(game.get("id") or ""))
+                          and self._trace_path_matches_game({"process_path": path}, game)
+                          and (str(game.get("exe") or game.get("executable") or "").strip()
+                               or identity.get("visible_window"))]
+            if len(candidates) != 1:
+                if candidates:
+                    status = "partial"
+                continue
+            game_id = str(candidates[0]["id"])
+            if str(candidates[0].get("provider") or "playnite").casefold() == "playnite":
+                # A shared emulator executable cannot identify the loaded ROM. Only
+                # an exact connector-confirmed native game identity may fill this gap.
+                if current.get("id") != game_id or native_confirmation != (
+                        str(candidates[0].get("playniteGameId") or "").casefold(),
+                        identity.get("process_id")) \
+                        or int(current.get("processId") or 0) != identity.get("process_id") \
+                        or int(current.get("processStartedFiletime") or 0) != \
+                        identity.get("process_started_filetime"):
+                    status = "partial"
+                    continue
+            value = {**identity, "process_path": path, "game_id": game_id}
+            fingerprint = [self.profile_id, game_id, value.get("user_sid"),
+                           value.get("session_id"), value.get("process_id"), path,
+                           value.get("process_started_filetime")]
+            if not value.get("user_sid") or int(value.get("process_id") or 0) <= 0 \
+                    or int(value.get("process_started_filetime") or 0) <= 0:
+                status = "partial"
+                continue
+            value["process_token"] = hashlib.sha256(compact_json(fingerprint)).hexdigest()
+            matches.setdefault(game_id, []).append(value)
+        verified = []
+        for values in matches.values():
+            if len(values) == 1:
+                verified.extend(values)
+            else:
+                status = "partial"
+        return verified, status, revision
+
+    def refresh_running_games(self) -> None:
+        started = time.monotonic()
+        try:
+            games, status, revision = self._verified_running_games()
+        except Exception:
+            games, status, revision = [], "unavailable", ""
+        with self.lock:
+            if revision != self.library_revision:
+                return
+            self._running_games = [{key: game[key] for key in (
+                "game_id", "process_id", "process_token")} for game in games]
+            self._running_scan_status = status
+            self._running_scan_revision = revision
+            self._running_scan_at = time.monotonic()
+        elapsed = time.monotonic() - started
+        if elapsed > 0.2:
+            logging.warning("Running game scan took %.0fms (%s)", elapsed * 1000, status)
+
+    def current_snapshot(self) -> dict[str, Any]:
+        with self.lock:
+            fresh = self._running_scan_revision == self.library_revision \
+                and self._running_scan_at > 0 \
+                and time.monotonic() - self._running_scan_at <= 10.0
+            return {**self.current,
+                    "running_games": [dict(game) for game in self._running_games] if fresh else [],
+                    "running_scan_status": self._running_scan_status if fresh else "unavailable",
+                    "running_scan_revision": self._running_scan_revision if fresh else self.library_revision}
+
+    def _stop_verified_running_game(self, game_id: Any, token: Any) -> dict[str, Any]:
+        if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{64}", token) or not game_id:
+            raise ValueError("Invalid expected process token or game ID.")
+        normalized = self.resolve_game_id(game_id)
+        failed = {"accepted": False, "command": "stop", "force": False,
+                  "reason": "running_game_identity_changed"}
+        games, status, revision = self._verified_running_games()
+        expected = next((game for game in games if game["game_id"] == normalized
+                         and game["process_token"] == token), None)
+        if expected is None or status == "unavailable":
+            return failed
+        with self.lock:
+            if revision != self.library_revision or self.running_process_probe is None:
+                return failed
+            previous = dict(self.current)
+            probe = self.running_process_probe
+        # The native action checks identity again, and waits on the exact process handle.
+        if not probe.stop_verified_process(expected, min(self.stop_timeout, 20.0)):
+            return {**failed, "reason": "game_stop_unconfirmed"}
+        with self.lock:
+            keys = ("id", "processId", "processPath", "processStartedFiletime",
+                    "launchTaskId", "launchRequestedAt", "state")
+            stopped_current = previous.get("id") == normalized \
+                and int(previous.get("processId") or 0) == expected["process_id"] \
+                and self._normalized_process_path(previous.get("processPath")) == expected["process_path"] \
+                and int(previous.get("processStartedFiletime") or 0) == expected["process_started_filetime"] \
+                and all(self.current.get(key) == previous.get(key) for key in keys)
+            if stopped_current:
+                self._complete_game_stop_locked()
+            self._running_games = [game for game in self._running_games
+                                   if game["process_token"] != token]
+            return {"accepted": True, "command": "stop", "force": False,
+                    "stopped_game_id": normalized, "stopped_current": stopped_current}
 
     def stop_game(self, game_id: Any = "") -> dict[str, Any]:
         normalized = self.resolve_game_id(game_id) if game_id else ""
@@ -3480,12 +3893,17 @@ class BridgeState:
                             "reason": "game_stop_close_rejected"}
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
+                    self.current["stopTimedOut"] = True
                     process_id = int(self.current.get("processId") or
                                      self.current.get("process_id") or 0)
                     if process_id <= 0:
                         self._complete_game_stop_locked()
                         return {"accepted": True, "command": "stop", "force": False,
                                 "already_stopped": True}
+                    if int(self.current.get("stopCloseRequestedPid") or 0) == process_id \
+                            and self._exact_stop_process_matches_locked(process_id):
+                        self.current.pop("stopCloseRequestedPid", None)
+                        self.current["stopCloseRetryArmed"] = True
                     return {"accepted": False, "command": "stop", "force": False,
                             "reason": "game_stop_timeout"}
                 self.events_changed.wait(remaining)
@@ -3855,6 +4273,7 @@ class WindowReadinessWorker:
     def run(self) -> None:
         last_provider_probe_key = ""
         last_provider_probe_at = 0.0
+        last_running_scan = 0.0
         while True:
             resolved_display = self.display_resolver.resolve()
             if resolved_display:
@@ -3947,6 +4366,9 @@ class WindowReadinessWorker:
                         # Window inspection is advisory. A transient Win32 failure must
                         # never stop readiness or installation lifecycle monitoring.
                         pass
+            if time.monotonic() - last_running_scan >= 5.0:
+                self.state.refresh_running_games()
+                last_running_scan = time.monotonic()
             time.sleep(0.25)
 
 class WindowsPipeClient:
@@ -4230,8 +4652,7 @@ class GameProviderHandler(BaseHTTPRequestHandler):
                     query.get("kind", ["cover"])[0])
                 self.send_binary(HTTPStatus.OK, body, content_type)
             elif target.path == "/game/current":
-                with self.state.lock:
-                    self.send_json(HTTPStatus.OK, dict(self.state.current))
+                self.send_json(HTTPStatus.OK, self.state.current_snapshot())
             elif target.path == "/window/readiness":
                 with self.state.lock:
                     self.send_json(HTTPStatus.OK, dict(self.state.readiness))
@@ -4274,6 +4695,11 @@ class GameProviderHandler(BaseHTTPRequestHandler):
                 if bool(body.get("force", False)):
                     raise ValueError("Forced game termination is not exposed by this Bridge.")
                 result = self.state.stop_game(body.get("game_id", ""))
+            elif path == "/game/stop-verified":
+                if bool(body.get("force", False)):
+                    raise ValueError("Forced game termination is not exposed by this Bridge.")
+                result = self.state._stop_verified_running_game(
+                    body.get("game_id"), body.get("expected_process_token"))
             elif path == "/game/focus":
                 result = self.state.focus_game()
             elif path == "/playnite/show-fullscreen":
@@ -4362,10 +4788,12 @@ def main() -> None:
                             audit_path, event, payload),
                         profile_id=profile_root.name)
     window_probe = WindowProbe(game_operations)
+    state.running_process_probe = window_probe
     state.set_reconciliation_actions(
         window_probe.process_identity, window_probe.process_identities)
-    steam_provider.big_picture_preflight = lambda provider: \
-        window_probe.ensure_steam_big_picture(provider, state.expected_display)
+    steam_provider.launch_preflight = window_probe.prepare_steam_launch
+    state.nonsteam_launch_preparation = lambda dispatch: window_probe.close_steam_big_picture(
+        steam_provider, dispatch)
     ensure_playnite_desktop(str(config.get("playnite_desktop_executable", "")).strip())
     fullscreen_path = str(config.get("playnite_fullscreen_executable", "")).strip()
     display_resolver = StreamDisplayResolver(str(config.get("vibepollo_bridge", "")).strip())
