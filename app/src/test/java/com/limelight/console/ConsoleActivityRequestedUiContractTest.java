@@ -81,8 +81,11 @@ public class ConsoleActivityRequestedUiContractTest {
 
         assertTrue(sourceFilter.contains("if (!applied[0])"));
         assertTrue(sourceFilter.contains("anchor.post(anchor::requestFocus)"));
-        assertTrue(sourceFilter.contains("renderExpandedLibraryFromStart(host)"));
-        assertTrue(filter.contains("renderExpandedLibraryFromStart(host)"));
+        assertTrue(sourceFilter.contains("renderFilteredPlayniteLibraryFromStart(host)"));
+        assertTrue(sourceFilter.contains("stylePlayniteFilterOption(done, false, focused)"));
+        assertFalse(sourceFilter.contains("styleSourceFilterOption(done, false, focused)"));
+        assertTrue(filter.contains("renderFilteredPlayniteLibraryFromStart(host)"));
+        assertTrue(filter.contains("renderPlayniteLibrary(host, currentSunshineApps)"));
         assertTrue(sort.contains("renderExpandedLibraryFromStart(host)"));
         assertTrue(search.contains("renderExpandedLibraryFromStart(host)"));
         assertTrue(source.contains("if (!applied[0] && expandedSearchButton != null)"));

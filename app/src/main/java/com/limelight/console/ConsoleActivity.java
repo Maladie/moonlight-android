@@ -5493,7 +5493,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             playniteFilterPopup.dismiss();
         });
         done.setOnFocusChangeListener((view, focused) ->
-                styleSourceFilterOption(done, false, focused));
+                stylePlayniteFilterOption(done, false, focused));
         menu.addView(done, sourceFilterOptionParams(menu));
         refreshStyles.run();
 
@@ -5512,7 +5512,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return;
             }
             hostGatewayStore.setPlayniteLibrarySources(host.uuid, selected);
-            renderExpandedLibraryFromStart(host);
+            renderFilteredPlayniteLibraryFromStart(host);
         });
         int[] location = new int[2];
         anchor.getLocationOnScreen(location);
@@ -5683,7 +5683,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         hostGatewayStore.setPlayniteLibraryFilter(host.uuid, filter);
         if (playniteFilterPopup != null) playniteFilterPopup.dismiss();
         if (expandedLibraryMode) {
-            renderExpandedLibraryFromStart(host);
+            renderFilteredPlayniteLibraryFromStart(host);
         } else {
             renderPlayniteLibrary(host, currentSunshineApps);
             TextView target = installedFilterButton != null ? installedFilterButton : anchor;
@@ -5692,6 +5692,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void renderExpandedLibraryFromStart(ComputerDetails host) {
+        resetExpandedLibraryWindow();
+        renderExpandedLibrary(host);
+        requestExpandedFocusOnce(firstFocusableChild(expandedGrid));
+    }
+
+    private void renderFilteredPlayniteLibraryFromStart(ComputerDetails host) {
+        resetExpandedLibraryWindow();
+        renderPlayniteLibrary(host, currentSunshineApps);
+        requestExpandedFocusOnce(firstFocusableChild(expandedGrid));
+    }
+
+    private void resetExpandedLibraryWindow() {
         if (expandedWindowWarmupRunnable != null) {
             mainHandler.removeCallbacks(expandedWindowWarmupRunnable);
             expandedWindowWarmupRunnable = null;
@@ -5706,8 +5718,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         expandedFocusTransitionInProgress = false;
         expandedGridWindowStartRow = 0;
         pendingExpandedFocusIndex = 0;
-        renderExpandedLibrary(host);
-        requestExpandedFocusOnce(firstFocusableChild(expandedGrid));
     }
 
     private void renderPlayniteLibrary(ComputerDetails host, List<NvApp> apps) {

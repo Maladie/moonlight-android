@@ -33,15 +33,21 @@ Gateway responses. Local `appmanifest_*.acf` files remain the sole authority for
 Steam installation state and install directories. Epic ownership and install
 state come from `legendary list --json` and `legendary list-installed`.
 
-Playnite metadata is overlaid only for exact `(source, providerGameId)` matches.
-A matched Steam/Epic entry is not emitted twice, titles are never correlation
-keys, and an unavailable or incomplete provider retains only its last successful snapshot.
-Unmatched Playnite entries remain full Playnite-provider games, including GOG,
-emulators and manual entries.
+Steam descriptions and artwork references come from the public Store Browse
+response keyed by exact numeric AppID. Epic descriptions and artwork references
+come from each exact Legendary record's catalog metadata. Artwork is downloaded
+only when Android requests it and is then retained under the profile's
+`cache/provider-artwork` directory. The existing `library-cache.json` preserves
+the last successful direct metadata when a later provider refresh is offline.
 
-Steam playtime and last-played time come from the Steam ownership response;
-Playnite metadata cannot overwrite them. A manifest-only/offline refresh keeps
-the last known Steam usage until the next successful API refresh.
+Playnite records whose source is Steam or Epic are ignored; titles are never
+correlation keys and their metadata cannot overwrite the direct providers.
+Other Playnite entries remain full Playnite-provider games, including GOG,
+emulators and manual entries, with their Playnite metadata and artwork unchanged.
+
+Steam playtime and last-played time come from the Steam ownership response. A
+manifest-only/offline refresh keeps the last known Steam usage until the next
+successful API refresh.
 
 Epic playtime is owned by the profile Bridge in `library-cache.json`
 (`epic_playtime_seconds`). It imports available Playnite history once, then adds

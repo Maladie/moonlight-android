@@ -11,9 +11,9 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.46.0")]
-[assembly: AssemblyFileVersion("0.7.46.0")]
-[assembly: AssemblyInformationalVersion("0.7.46+2026.08.30")]
+[assembly: AssemblyVersion("0.7.57.0")]
+[assembly: AssemblyFileVersion("0.7.57.0")]
+[assembly: AssemblyInformationalVersion("0.7.57+2026.09.01")]
 
 namespace MoonWaker.HostInstaller
 {
@@ -34,8 +34,8 @@ namespace MoonWaker.HostInstaller
         private readonly TextBox profileId = new TextBox();
         private readonly TextBox profileName = new TextBox();
         private readonly CheckBox discord = new CheckBox();
-        private readonly CheckBox vibepollo = new CheckBox();
-        private readonly CheckBox playnite = new CheckBox();
+        private readonly Panel discordCard;
+        private readonly Panel discordCredentials;
         private readonly TextBox discordId = new TextBox();
         private readonly TextBox discordSecret = new TextBox();
         private readonly TextBox vibepolloUrl = new TextBox();
@@ -55,102 +55,161 @@ namespace MoonWaker.HostInstaller
         {
             payloadVersion = ReadPayloadVersion();
             Text = "MoonWaker Host Installer " + payloadVersion;
-            ClientSize = new Size(900, 760);
-            MinimumSize = new Size(820, 680);
+            AutoScaleDimensions = new SizeF(96F, 96F);
+            AutoScaleMode = AutoScaleMode.Dpi;
+            ClientSize = new Size(980, 780);
+            MinimumSize = new Size(990, 700);
             StartPosition = FormStartPosition.CenterScreen;
-            BackColor = Color.FromArgb(17, 20, 28);
+            BackColor = Color.FromArgb(13, 16, 23);
             ForeColor = Color.White;
             Font = new Font("Segoe UI", 9.5F);
+            DoubleBuffered = true;
             try { Icon = System.Drawing.Icon.ExtractAssociatedIcon(Application.ExecutablePath); } catch { }
 
-            Panel content = new Panel { Dock = DockStyle.Fill, AutoScroll = true };
+            FlowLayoutPanel content = new FlowLayoutPanel {
+                Dock = DockStyle.Fill,
+                AutoScroll = true,
+                FlowDirection = FlowDirection.TopDown,
+                WrapContents = false,
+                Padding = new Padding(24, 22, 24, 28),
+                BackColor = BackColor
+            };
             Controls.Add(content);
-            int y = 22;
-            AddLabel(content, "MOONWAKER HOST  " + payloadVersion, 28F, FontStyle.Bold, 28, y, 760, 42); y += 58;
-            AddLabel(content, "Wszystkie komponenty zostaną zainstalowane w jednym wybranym katalogu.",
-                10F, FontStyle.Regular, 30, y, 810, 28); y += 42;
 
-            AddLabel(content, "Katalog instalacji", 10F, FontStyle.Bold, 30, y, 300, 24); y += 24;
-            ConfigureTextBox(installPath, 30, y, 680, false);
+            Panel header = MakeCard(112, Color.FromArgb(116, 100, 255));
+            header.BackColor = Color.FromArgb(24, 29, 44);
+            AddLabel(header, "MOONWAKER HOST", 27F, FontStyle.Bold, 24, 18, 620, 44);
+            Label version = AddLabel(header, payloadVersion, 11F, FontStyle.Bold, 720, 26, 150, 28);
+            version.TextAlign = ContentAlignment.MiddleRight;
+            version.ForeColor = Color.FromArgb(180, 171, 255);
+            Label intro = AddLabel(header,
+                "Konfiguracja hosta, profilu Windows i integracji MoonWaker.",
+                10F, FontStyle.Regular, 26, 70, 830, 26);
+            intro.ForeColor = Color.FromArgb(188, 195, 210);
+            content.Controls.Add(header);
+
+            Panel locationCard = MakeCard(276, Color.FromArgb(75, 151, 255));
+            AddLabel(locationCard, "Instalacja na hoście", 14F, FontStyle.Bold, 24, 17, 500, 30);
+            Label locationInfo = AddLabel(locationCard,
+                "Komponenty wspólne i profile zostaną zapisane w jednym katalogu.",
+                9F, FontStyle.Regular, 24, 48, 850, 24);
+            locationInfo.ForeColor = Color.FromArgb(178, 186, 202);
+            AddLabel(locationCard, "Katalog instalacji", 9F, FontStyle.Regular, 24, 78, 280, 22);
+            ConfigureTextBox(installPath, 24, 100, 680, false);
             installPath.Text = DetectInstallDirectory();
-            content.Controls.Add(installPath);
-            Button browse = MakeButton("Wybierz…", 725, y, 125, 34);
+            locationCard.Controls.Add(installPath);
+            Button browse = MakeButton("Wybierz…", 720, 100, 156, 36);
             browse.Click += delegate { BrowseInstallDirectory(); };
-            content.Controls.Add(browse); y += 54;
-
-            ConfigureCheckBox(installMachine, "Zainstaluj/aktualizuj komponenty wspólne (wymaga administratora)", 30, y);
-            installMachine.Width = 780;
+            locationCard.Controls.Add(browse);
+            ConfigureCheckBox(installMachine,
+                "Zainstaluj lub zaktualizuj komponenty wspólne (wymaga administratora)",
+                24, 144);
+            installMachine.Width = 850;
             installMachine.Checked = SharedComponentsNeedUpdate(installPath.Text.Trim());
-            content.Controls.Add(installMachine); y += 45;
-            installationStatus.SetBounds(30, y, 810, 42);
-            installationStatus.ForeColor = Color.Gainsboro;
-            installationStatus.AutoEllipsis = true;
-            content.Controls.Add(installationStatus); y += 52;
+            locationCard.Controls.Add(installMachine);
+            installationStatus.SetBounds(24, 176, 852, 86);
+            installationStatus.ForeColor = Color.FromArgb(188, 195, 210);
+            installationStatus.AutoEllipsis = false;
+            installationStatus.UseMnemonic = false;
+            locationCard.Controls.Add(installationStatus);
+            content.Controls.Add(locationCard);
 
-            AddLabel(content, "Profil integracji", 14F, FontStyle.Bold, 30, y, 500, 30); y += 38;
-            AddLabel(content, "Identyfikator", 9F, FontStyle.Regular, 30, y, 180, 22);
-            AddLabel(content, "Nazwa", 9F, FontStyle.Regular, 330, y, 180, 22); y += 22;
-            ConfigureTextBox(profileId, 30, y, 270, false); profileId.Text = "default";
-            ConfigureTextBox(profileName, 330, y, 380, false); profileName.Text = Environment.UserName;
-            content.Controls.Add(profileId); content.Controls.Add(profileName); y += 55;
+            Panel profileCard = MakeCard(140, Color.FromArgb(68, 198, 142));
+            AddLabel(profileCard, "Profil integracji", 14F, FontStyle.Bold, 24, 17, 500, 30);
+            AddLabel(profileCard, "Identyfikator", 9F, FontStyle.Regular, 24, 57, 260, 22);
+            AddLabel(profileCard, "Nazwa profilu", 9F, FontStyle.Regular, 324, 57, 300, 22);
+            ConfigureTextBox(profileId, 24, 79, 280, false); profileId.Text = "default";
+            ConfigureTextBox(profileName, 324, 79, 552, false); profileName.Text = Environment.UserName;
+            profileCard.Controls.Add(profileId); profileCard.Controls.Add(profileName);
+            content.Controls.Add(profileCard);
 
-            AddLabel(content, "Komponenty", 14F, FontStyle.Bold, 30, y, 500, 30); y += 35;
-            ConfigureCheckBox(discord, "Discord Bridge", 30, y); discord.Checked = true;
-            ConfigureCheckBox(vibepollo, "Vibepollo Bridge", 270, y); vibepollo.Checked = true;
-            ConfigureCheckBox(playnite, "Game Provider Bridge", 530, y); playnite.Checked = true; y += 48;
-            content.Controls.Add(discord); content.Controls.Add(vibepollo); content.Controls.Add(playnite);
-            Label legendaryInfo = AddLabel(content,
-                "Legendary jest zawsze instalowane dla obsługi Epic. Konto podłączysz później w Host Control.",
-                9F, FontStyle.Regular, 30, y, 810, 38);
-            legendaryInfo.ForeColor = Color.Gainsboro;
-            y += 38;
+            discordCard = MakeCard(168, Color.FromArgb(88, 101, 242));
+            ConfigureCheckBox(discord, "Discord Bridge (opcjonalnie)", 24, 16);
+            discord.Font = new Font("Segoe UI", 13F, FontStyle.Bold);
+            discord.Width = 620;
+            discord.Checked = true;
+            discordCard.Controls.Add(discord);
+            discordCredentials = new Panel();
+            discordCredentials.SetBounds(24, 55, 852, 100);
+            Label discordInfo = AddLabel(discordCredentials,
+                "Pola możesz pozostawić puste, aby użyć wspólnej aplikacji Discord tego komputera.",
+                9F, FontStyle.Regular, 0, 0, 850, 24);
+            discordInfo.ForeColor = Color.FromArgb(178, 186, 202);
+            AddLabel(discordCredentials, "Client ID", 9F, FontStyle.Regular, 0, 29, 280, 22);
+            AddLabel(discordCredentials, "Client Secret", 9F, FontStyle.Regular, 320, 29, 300, 22);
+            ConfigureTextBox(discordId, 0, 51, 300, false);
+            ConfigureTextBox(discordSecret, 320, 51, 532, true);
+            discordCredentials.Controls.Add(discordId);
+            discordCredentials.Controls.Add(discordSecret);
+            discordCard.Controls.Add(discordCredentials);
+            content.Controls.Add(discordCard);
 
-            AddLabel(content, "Discord Client ID", 9F, FontStyle.Regular, 30, y, 260, 22);
-            AddLabel(content, "Discord Client Secret", 9F, FontStyle.Regular, 330, y, 300, 22); y += 22;
-            ConfigureTextBox(discordId, 30, y, 270, false);
-            ConfigureTextBox(discordSecret, 330, y, 380, true);
-            content.Controls.Add(discordId); content.Controls.Add(discordSecret); y += 55;
-
-            AddLabel(content, "Vibepollo API URL", 9F, FontStyle.Regular, 30, y, 280, 22);
-            AddLabel(content, "Istniejący token (opcjonalnie)", 9F, FontStyle.Regular, 430, y, 300, 22); y += 22;
-            ConfigureTextBox(vibepolloUrl, 30, y, 370, false); vibepolloUrl.Text = "https://127.0.0.1:47990";
-            ConfigureTextBox(vibepolloToken, 430, y, 280, true);
-            content.Controls.Add(vibepolloUrl); content.Controls.Add(vibepolloToken); y += 48;
-            ConfigureCheckBox(createVibepolloToken, "Utwórz/odnów token automatycznie", 30, y);
-            content.Controls.Add(createVibepolloToken);
+            Panel vibepolloCard = MakeCard(250, Color.FromArgb(255, 166, 76));
+            AddLabel(vibepolloCard, "Vibepollo", 14F, FontStyle.Bold, 24, 17, 500, 30);
+            Label vibepolloInfo = AddLabel(vibepolloCard,
+                "Wymagane połączenie z lokalnym API Sunshine/Vibepollo.",
+                9F, FontStyle.Regular, 24, 48, 850, 24);
+            vibepolloInfo.ForeColor = Color.FromArgb(178, 186, 202);
+            AddLabel(vibepolloCard, "API URL", 9F, FontStyle.Regular, 24, 77, 280, 22);
+            AddLabel(vibepolloCard, "Istniejący token", 9F, FontStyle.Regular, 424, 77, 300, 22);
+            ConfigureTextBox(vibepolloUrl, 24, 99, 380, false); vibepolloUrl.Text = "https://127.0.0.1:47990";
+            ConfigureTextBox(vibepolloToken, 424, 99, 452, true);
+            vibepolloCard.Controls.Add(vibepolloUrl); vibepolloCard.Controls.Add(vibepolloToken);
+            ConfigureCheckBox(createVibepolloToken, "Utwórz lub odnów token automatycznie", 24, 141);
+            vibepolloCard.Controls.Add(createVibepolloToken);
             createVibepolloToken.CheckedChanged += delegate {
                 UpdateTokenFields();
                 RefreshInstallationStatus();
-            }; y += 38;
-            AddLabel(content, "Login administratora Vibepollo", 9F, FontStyle.Regular, 30, y, 310, 22);
-            AddLabel(content, "Hasło", 9F, FontStyle.Regular, 430, y, 200, 22); y += 22;
-            ConfigureTextBox(vibepolloAdmin, 30, y, 370, false);
-            ConfigureTextBox(vibepolloPassword, 430, y, 280, true);
-            content.Controls.Add(vibepolloAdmin); content.Controls.Add(vibepolloPassword); y += 55;
+            };
+            AddLabel(vibepolloCard, "Login administratora", 9F, FontStyle.Regular, 24, 177, 300, 22);
+            AddLabel(vibepolloCard, "Hasło", 9F, FontStyle.Regular, 424, 177, 200, 22);
+            ConfigureTextBox(vibepolloAdmin, 24, 199, 380, false);
+            ConfigureTextBox(vibepolloPassword, 424, 199, 452, true);
+            vibepolloCard.Controls.Add(vibepolloAdmin); vibepolloCard.Controls.Add(vibepolloPassword);
+            content.Controls.Add(vibepolloCard);
 
-            AddLabel(content, "Katalog Playnite", 9F, FontStyle.Regular, 30, y, 280, 22); y += 22;
-            ConfigureTextBox(playnitePath, 30, y, 680, false); playnitePath.Text = FindPlaynite();
-            content.Controls.Add(playnitePath);
-            Button browsePlaynite = MakeButton("Wybierz…", 725, y, 125, 34);
+            Panel libraryCard = MakeCard(142, Color.FromArgb(232, 94, 137));
+            AddLabel(libraryCard, "Biblioteka gier", 14F, FontStyle.Bold, 24, 17, 500, 30);
+            Label libraryInfo = AddLabel(libraryCard,
+                "Steam i Epic działają bez Playnite. Katalog Playnite jest opcjonalny dla pozostałych źródeł.",
+                9F, FontStyle.Regular, 24, 48, 850, 24);
+            libraryInfo.ForeColor = Color.FromArgb(178, 186, 202);
+            ConfigureTextBox(playnitePath, 24, 83, 680, false); playnitePath.Text = FindPlaynite();
+            libraryCard.Controls.Add(playnitePath);
+            Button browsePlaynite = MakeButton("Wybierz…", 720, 83, 156, 36);
             browsePlaynite.Click += delegate { BrowseDirectory(playnitePath); };
-            content.Controls.Add(browsePlaynite); y += 58;
+            libraryCard.Controls.Add(browsePlaynite);
+            content.Controls.Add(libraryCard);
 
-            install = MakeButton("Zainstaluj / aktualizuj", 30, y, 250, 42);
+            Panel actionCard = MakeCard(300, Color.FromArgb(116, 100, 255));
+            install = MakeButton("Zainstaluj / aktualizuj", 24, 20, 270, 44);
+            install.BackColor = Color.FromArgb(116, 100, 255);
             install.Click += async delegate { await InstallAsync(); };
-            content.Controls.Add(install); y += 58;
-            log.SetBounds(30, y, 820, 140);
-            log.ReadOnly = true; log.BackColor = Color.FromArgb(12, 15, 21); log.ForeColor = Color.Gainsboro;
+            actionCard.Controls.Add(install);
+            AddLabel(actionCard, "Przebieg instalacji", 9F, FontStyle.Bold, 24, 78, 300, 22);
+            log.SetBounds(24, 104, 852, 172);
+            log.ReadOnly = true; log.BackColor = Color.FromArgb(11, 14, 20);
+            log.ForeColor = Color.FromArgb(204, 210, 222);
             log.BorderStyle = BorderStyle.FixedSingle;
-            content.Controls.Add(log); y += 165;
-            content.AutoScrollMinSize = new Size(0, y);
+            log.Font = new Font("Consolas", 9F);
+            log.WordWrap = false;
+            log.ScrollBars = RichTextBoxScrollBars.Both;
+            actionCard.Controls.Add(log);
+            content.Controls.Add(actionCard);
+            AcceptButton = install;
+
             installPath.TextChanged += delegate {
                 installMachine.Checked = SharedComponentsNeedUpdate(installPath.Text.Trim());
                 RefreshInstallationStatus();
             };
             profileId.TextChanged += delegate { RefreshInstallationStatus(); };
             installMachine.CheckedChanged += delegate { RefreshInstallationStatus(); };
-            discord.CheckedChanged += delegate { RefreshInstallationStatus(); };
+            discord.CheckedChanged += delegate {
+                UpdateDiscordFields();
+                RefreshInstallationStatus();
+            };
             installMachine.Checked = SharedComponentsNeedUpdate(installPath.Text.Trim());
+            UpdateDiscordFields();
             UpdateTokenFields();
             RefreshInstallationStatus();
         }
@@ -296,15 +355,15 @@ namespace MoonWaker.HostInstaller
                 if (installMachine.Checked) args.Add("-InitializeMachineData");
                 if (!String.IsNullOrWhiteSpace(playnitePath.Text)) args.Add("-PlayniteDirectory " + Quote(playnitePath.Text.Trim()));
                 if (!discord.Checked) args.Add("-SkipDiscord");
-                if (!vibepollo.Checked) args.Add("-SkipVibepollo");
-                if (!playnite.Checked) args.Add("-SkipPlaynite");
 
                 ProcessStartInfo info = new ProcessStartInfo("powershell.exe", String.Join(" ", args.ToArray()));
                 info.UseShellExecute = false; info.CreateNoWindow = true;
                 info.RedirectStandardOutput = true; info.RedirectStandardError = true;
                 info.StandardOutputEncoding = Encoding.UTF8; info.StandardErrorEncoding = Encoding.UTF8;
-                info.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_ID"] = discordId.Text.Trim();
-                info.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_SECRET"] = discordSecret.Text;
+                info.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_ID"] =
+                    discord.Checked ? discordId.Text.Trim() : "";
+                info.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_SECRET"] =
+                    discord.Checked ? discordSecret.Text : "";
                 info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_URL"] = vibepolloUrl.Text.Trim();
                 info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_TOKEN"] = vibepolloToken.Text;
                 info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_CREATE_TOKEN"] = createVibepolloToken.Checked ? "1" : "0";
@@ -456,7 +515,6 @@ namespace MoonWaker.HostInstaller
                 "Podaj oba pola Discorda albo pozostaw oba puste, aby użyć wspólnej aplikacji komputera.";
             if (createVibepolloToken.Checked && (String.IsNullOrWhiteSpace(vibepolloAdmin.Text) || String.IsNullOrWhiteSpace(vibepolloPassword.Text)))
                 return "Do automatycznego utworzenia tokena podaj login i hasło administratora Vibepollo.";
-            if (playnite.Checked && String.IsNullOrWhiteSpace(playnitePath.Text)) return "Wskaż katalog Playnite.";
             return null;
         }
 
@@ -476,6 +534,14 @@ namespace MoonWaker.HostInstaller
             vibepolloAdmin.Enabled = createVibepolloToken.Checked;
             vibepolloPassword.Enabled = createVibepolloToken.Checked;
             vibepolloToken.Enabled = !createVibepolloToken.Checked;
+        }
+
+        private void UpdateDiscordFields()
+        {
+            discordCredentials.Visible = discord.Checked;
+            discordCredentials.Enabled = discord.Checked;
+            discordCard.Height = discord.Checked ? 168 : 70;
+            if (discordCard.Parent != null) discordCard.Parent.PerformLayout();
         }
 
         private void RefreshInstallationStatus()
@@ -608,7 +674,9 @@ namespace MoonWaker.HostInstaller
             {
                 if (String.IsNullOrWhiteSpace(candidate)) return null;
                 string directory = Path.GetFullPath(candidate.Trim().Trim('"'));
-                return File.Exists(Path.Combine(directory, "Playnite.FullscreenApp.exe")) ? directory : null;
+                return File.Exists(Path.Combine(directory, "Playnite.FullscreenApp.exe")) &&
+                    File.Exists(Path.Combine(directory, "Extensions", "SunshinePlaynite",
+                        "SunshinePlaynite.psm1")) ? directory : null;
             }
             catch { return null; }
         }
@@ -655,17 +723,40 @@ namespace MoonWaker.HostInstaller
         }
         private void ConfigureCheckBox(CheckBox box, string text, int left, int top)
         {
-            box.Text = text; box.SetBounds(left, top, 240, 28); box.Checked = true;
+            box.Text = text; box.SetBounds(left, top, 600, 30); box.Checked = true;
             box.ForeColor = Color.White;
+            box.FlatStyle = FlatStyle.Flat;
+            box.FlatAppearance.BorderColor = Color.FromArgb(116, 100, 255);
+        }
+        private Panel MakeCard(int height, Color accentColor)
+        {
+            Panel card = new Panel {
+                Width = 900,
+                Height = height,
+                BackColor = Color.FromArgb(22, 27, 37),
+                Margin = new Padding(0, 0, 0, 14)
+            };
+            Panel accent = new Panel {
+                Dock = DockStyle.Left,
+                Width = 4,
+                BackColor = accentColor
+            };
+            card.Controls.Add(accent);
+            return card;
         }
         private Button MakeButton(string text, int left, int top, int width, int height)
         {
-            Button button = new Button { Text = text, FlatStyle = FlatStyle.Flat, BackColor = Color.FromArgb(68, 88, 120), ForeColor = Color.White };
-            button.FlatAppearance.BorderColor = Color.FromArgb(116, 100, 255); button.SetBounds(left, top, width, height); return button;
+            Button button = new Button { Text = text, FlatStyle = FlatStyle.Flat,
+                BackColor = Color.FromArgb(55, 67, 89), ForeColor = Color.White,
+                Cursor = Cursors.Hand };
+            button.FlatAppearance.BorderColor = Color.FromArgb(130, 117, 255);
+            button.FlatAppearance.MouseOverBackColor = Color.FromArgb(78, 89, 118);
+            button.SetBounds(left, top, width, height); return button;
         }
         private Label AddLabel(Control parent, string text, float size, FontStyle style, int left, int top, int width, int height)
         {
-            Label label = new Label { Text = text, Font = new Font("Segoe UI", size, style), ForeColor = Color.White, AutoEllipsis = true };
+            Label label = new Label { Text = text, Font = new Font("Segoe UI", size, style),
+                ForeColor = Color.White, AutoEllipsis = false, UseMnemonic = false };
             label.SetBounds(left, top, width, height); parent.Controls.Add(label);
             return label;
         }

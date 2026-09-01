@@ -87,6 +87,11 @@ function Stop-MoonWakerHostControlForUpdate {
 if (Test-Path -LiteralPath (Join-Path $GatewayDirectory "gateway.json")) {
     Stop-ExistingGatewayForUpdate $GatewayDirectory
 }
+$gatewayWorkerStopper = Join-Path $gatewaySource "Stop-MoonWakerGatewayWorkers.ps1"
+if (-not (Test-Path -LiteralPath $gatewayWorkerStopper)) {
+    throw "The MoonWaker package does not contain the Gateway worker stop script."
+}
+& $gatewayWorkerStopper -GatewayDirectory $GatewayDirectory
 New-Item -ItemType Directory -Path $InstallDirectory, $sourceDirectory, $profileAgentDirectory, `
     $controlDirectory, $toolsDirectory, $installScripts -Force | Out-Null
 

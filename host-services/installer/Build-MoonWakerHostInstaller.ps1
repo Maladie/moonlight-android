@@ -35,9 +35,12 @@ try {
     if ($LASTEXITCODE -ne 0 -or -not $tracked) {
         throw "Unable to enumerate the host payload."
     }
-    # The renamed provider entry point is a mandatory payload file.
-    $tracked = @($tracked) + "host-services/bridges/playnite/GameProviderBridge.py" |
-        Sort-Object -Unique
+    # Newly added mandatory payload files must also be available before the
+    # first commit that contains them.
+    $tracked = @($tracked) + @(
+        "host-services/bridges/playnite/GameProviderBridge.py",
+        "host-services/gateway/Stop-MoonWakerGatewayWorkers.ps1"
+    ) | Sort-Object -Unique
     foreach ($relative in $tracked) {
         if ($relative -match "(^|/)(dist|__pycache__)(/|$)" -or
                 $relative -match "\.pyc$") {
@@ -55,6 +58,14 @@ try {
     }
     & (Join-Path $PSScriptRoot "Install-LegendaryPayload.ps1") `
         -TargetDirectory (Join-Path $payloadHostServices "tools\legendary")
+
+    $payloadGateway = Join-Path $payloadHostServices "gateway"
+    & (Join-Path $payloadHostServices `
+        "bridges\microphone\Build-MoonWakerMicrophoneWorker.ps1") `
+        -OutputDirectory $payloadGateway | Out-Null
+    & (Join-Path $payloadHostServices `
+        "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
+        -OutputDirectory $payloadGateway | Out-Null
 
     & (Join-Path $payloadHostServices "control\Build-MoonWakerHostControl.ps1") `
         -OutputDirectory (Join-Path $payloadHostServices "control")
