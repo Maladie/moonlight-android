@@ -345,10 +345,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         synchronized (this) {
             if (!startsProviderGame() || gateway == null || providerStartRequested
                     || providerCleanupRequested || !isCurrent(actionEpoch)) return;
-            // Outside Steam, games may enumerate pads only at startup. The stream
-            // callback follows controller announcements, including during hidden warm-up.
-            if (!streamConnected && !transitionSpec.playniteGameId.toLowerCase(
-                    java.util.Locale.ROOT).startsWith("steam:")) return;
+            // Providers that enumerate pads only at game startup wait until the
+            // stream has announced controllers. The provider declares exceptions.
+            if (!streamConnected && !transitionSpec.startProviderBeforeStream) return;
             providerStartRequested = true;
         }
         try {
@@ -918,10 +917,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     }
 
     private static boolean isProviderRecordId(String value) {
-        if (value == null) return false;
-        String normalized = value.toLowerCase(java.util.Locale.ROOT);
-        return normalized.startsWith("steam:") || normalized.startsWith("epic:")
-                || normalized.startsWith("playnite:");
+        return value != null && value.matches(
+                "(?i)[a-z][a-z0-9_-]{1,31}:[A-Za-z0-9._-]{1,128}");
     }
 
     private void providerStartFailed(Exception error) {

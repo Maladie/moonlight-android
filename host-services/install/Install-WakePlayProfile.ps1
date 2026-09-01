@@ -6,7 +6,8 @@ param(
     [string]$ProfileName = "",
     [int]$DiscordPort = 8765,
     [int]$VibepolloPort = 8775,
-    [int]$PlaynitePort = 8780,
+    [int]$GameProviderPort = 0,
+    [int]$PlaynitePort = 0,
     [string]$InstallRoot = (Join-Path $env:LOCALAPPDATA "WakePlayHost\profiles"),
     [string]$GatewayConfigPath = "",
     [string]$GatewayDirectory = "",
@@ -21,6 +22,9 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$providerPort = if ($GameProviderPort) { $GameProviderPort } elseif ($PlaynitePort) {
+    $PlaynitePort
+} else { 8780 }
 $profileDisplayName = if ([string]::IsNullOrWhiteSpace($ProfileName)) {
     $ProfileId
 } else {
@@ -32,13 +36,13 @@ if ($profileDisplayName.Length -gt 80 -or $profileDisplayName -match '[\x00-\x1f
 
 if ($DiscordPort -lt 1024 -or $DiscordPort -gt 65535 -or
     $VibepolloPort -lt 1024 -or $VibepolloPort -gt 65535 -or
-    $PlaynitePort -lt 1024 -or $PlaynitePort -gt 65535) {
+    $providerPort -lt 1024 -or $providerPort -gt 65535) {
     throw "Bridge ports must be between 1024 and 65535."
 }
 $activePorts = @()
 if (-not $SkipDiscord) { $activePorts += $DiscordPort }
 if (-not $SkipVibepollo) { $activePorts += $VibepolloPort }
-if (-not $SkipPlaynite) { $activePorts += $PlaynitePort }
+$activePorts += $providerPort
 $uniqueActivePorts = @($activePorts | Select-Object -Unique)
 if ($uniqueActivePorts.Count -ne $activePorts.Count) {
     throw "Discord, Vibepollo and Game Provider Bridges must use different ports."
@@ -46,8 +50,9 @@ if ($uniqueActivePorts.Count -ne $activePorts.Count) {
 if ($ProfileId -ne "default" -and (
     (-not $SkipDiscord -and -not $PSBoundParameters.ContainsKey("DiscordPort")) -or
     (-not $SkipVibepollo -and -not $PSBoundParameters.ContainsKey("VibepolloPort")) -or
-    (-not $SkipPlaynite -and -not $PSBoundParameters.ContainsKey("PlaynitePort")))) {
-    throw "Additional profiles require explicit, unique -DiscordPort, -VibepolloPort and -PlaynitePort values."
+    (-not $PSBoundParameters.ContainsKey("GameProviderPort") -and
+        -not $PSBoundParameters.ContainsKey("PlaynitePort")))) {
+    throw "Additional profiles require explicit, unique Discord, Vibepollo and Game Provider ports."
 }
 
 $hostServicesRoot = Split-Path -Parent $PSScriptRoot
@@ -62,6 +67,10 @@ if (-not (Test-Path -LiteralPath $sourceRoot)) {
 $profileRoot = Join-Path $InstallRoot $ProfileId
 $hostVersionPath = Join-Path (Split-Path -Parent $InstallRoot) "version.json"
 New-Item -ItemType Directory -Path $profileRoot -Force | Out-Null
+$existingProfileStop = Join-Path $profileRoot "Stop-MoonWakerProfileBridge.ps1"
+if (Test-Path -LiteralPath $existingProfileStop -PathType Leaf) {
+    & $existingProfileStop -ProfileRoot $profileRoot
+}
 if (Test-Path -LiteralPath $hostVersionPath) {
     Copy-Item -LiteralPath $hostVersionPath -Destination (Join-Path $profileRoot "moonwaker-version.json") -Force
 }
@@ -77,9 +86,10 @@ if (-not (Test-Path -LiteralPath $agentSource)) {
 }
 
 function Install-BridgeFiles {
-    param([string]$Name, [string[]]$Files)
-    $source = Join-Path $sourceRoot $Name
-    $destination = Join-Path $profileRoot $Name
+    param([string]$SourceName, [string[]]$Files, [string]$DestinationName = "")
+    if ([string]::IsNullOrWhiteSpace($DestinationName)) { $DestinationName = $SourceName }
+    $source = Join-Path $sourceRoot $SourceName
+    $destination = Join-Path $profileRoot $DestinationName
     New-Item -ItemType Directory -Path $destination -Force | Out-Null
     foreach ($file in $Files) {
         Copy-Item -LiteralPath (Join-Path $source $file) -Destination $destination -Force
@@ -351,29 +361,35 @@ if (-not $SkipVibepollo) {
     Set-ConfigPort $vibepolloConfig "listen_port" $VibepolloPort
 }
 
-$playniteDirectory = $null
-if (-not $SkipPlaynite) {
-    Stop-InstalledBridge "playnite" "Stop-PlayniteBridge.ps1"
-    $playniteDirectory = Install-BridgeFiles "playnite" @(
-        "GameProviderBridge.py", "GameOperations.py", "OperationJournal.py",
-        "Confirm-SteamOperation.ps1", "Invoke-GameLauncher.ps1",
-        "config.example.json",
-        "Start-PlayniteBridge.ps1", "Stop-PlayniteBridge.ps1",
-        "PatchPlayniteConnector.py", "Install-WakePlayConnectorPatch.ps1", "README.md")
-    Remove-Item -LiteralPath (Join-Path $playniteDirectory "PlayniteBridge.py") `
-        -Force -ErrorAction SilentlyContinue
-    $playniteConfig = Join-Path $playniteDirectory "config.json"
-    if (-not (Test-Path -LiteralPath $playniteConfig)) {
-        Copy-Item -LiteralPath (Join-Path $playniteDirectory "config.example.json") `
-            -Destination $playniteConfig
-    }
-    Set-ConfigPort $playniteConfig "listen_port" $PlaynitePort
-    Set-ConfigValue $playniteConfig "vibepollo_bridge" `
-        $(if ($SkipVibepollo) { "" } else { "http://127.0.0.1:$VibepolloPort" })
-    Set-ConfigValue $playniteConfig "epic_legendary_enabled" $true
-    if ($null -eq (Get-Content -LiteralPath $playniteConfig -Raw | ConvertFrom-Json).PSObject.Properties["legendary_path"]) {
-        Set-ConfigValue $playniteConfig "legendary_path" ""
-    }
+$legacyProviderDirectory = Join-Path $profileRoot "playnite"
+$gameProviderDirectory = Join-Path $profileRoot "game-provider"
+Stop-InstalledBridge "game-provider" "Stop-PlayniteBridge.ps1"
+Stop-InstalledBridge "playnite" "Stop-PlayniteBridge.ps1"
+if (-not (Test-Path -LiteralPath $gameProviderDirectory) -and
+    (Test-Path -LiteralPath $legacyProviderDirectory)) {
+    Move-Item -LiteralPath $legacyProviderDirectory -Destination $gameProviderDirectory
+}
+$gameProviderDirectory = Install-BridgeFiles "playnite" @(
+    "GameProviderBridge.py", "GameOperations.py", "OperationJournal.py",
+    "Confirm-SteamOperation.ps1", "Invoke-GameLauncher.ps1",
+    "config.example.json", "Start-PlayniteBridge.ps1", "Stop-PlayniteBridge.ps1",
+    "PatchPlayniteConnector.py", "Install-WakePlayConnectorPatch.ps1", "README.md") `
+    "game-provider"
+Remove-Item -LiteralPath (Join-Path $gameProviderDirectory "PlayniteBridge.py") `
+    -Force -ErrorAction SilentlyContinue
+$gameProviderConfig = Join-Path $gameProviderDirectory "config.json"
+if (-not (Test-Path -LiteralPath $gameProviderConfig)) {
+    Copy-Item -LiteralPath (Join-Path $gameProviderDirectory "config.example.json") `
+        -Destination $gameProviderConfig
+}
+Set-ConfigPort $gameProviderConfig "listen_port" $providerPort
+Set-ConfigValue $gameProviderConfig "vibepollo_bridge" `
+    $(if ($SkipVibepollo) { "" } else { "http://127.0.0.1:$VibepolloPort" })
+Set-ConfigValue $gameProviderConfig "epic_legendary_enabled" $true
+Set-ConfigValue $gameProviderConfig "playnite_enabled" (-not $SkipPlaynite)
+if ($null -eq (Get-Content -LiteralPath $gameProviderConfig -Raw |
+        ConvertFrom-Json).PSObject.Properties["legendary_path"]) {
+    Set-ConfigValue $gameProviderConfig "legendary_path" ""
 }
 
 if (-not $SkipGatewayRegistration) {
@@ -388,7 +404,8 @@ if (-not $SkipGatewayRegistration) {
             profile_root = $profileRoot
             discord_bridge = if ($SkipDiscord) { "" } else { "http://127.0.0.1:$DiscordPort" }
             vibepollo_bridge = if ($SkipVibepollo) { "" } else { "http://127.0.0.1:$VibepolloPort" }
-            playnite_bridge = if ($SkipPlaynite) { "" } else { "http://127.0.0.1:$PlaynitePort" }
+            game_provider_bridge = "http://127.0.0.1:$providerPort"
+            playnite_bridge = "http://127.0.0.1:$providerPort"
         }
         if ($null -eq $gateway.profiles.PSObject.Properties[$ProfileId]) {
             $gateway.profiles | Add-Member -NotePropertyName $ProfileId -NotePropertyValue $entry
@@ -407,7 +424,8 @@ if (-not $SkipGatewayRegistration) {
             profile_root = $profileRoot
             discord_bridge = if ($SkipDiscord) { "" } else { "http://127.0.0.1:$DiscordPort" }
             vibepollo_bridge = if ($SkipVibepollo) { "" } else { "http://127.0.0.1:$VibepolloPort" }
-            playnite_bridge = if ($SkipPlaynite) { "" } else { "http://127.0.0.1:$PlaynitePort" }
+            game_provider_bridge = "http://127.0.0.1:$providerPort"
+            playnite_bridge = "http://127.0.0.1:$providerPort"
         } | ConvertTo-Json | Set-Content -LiteralPath $registrationPath -Encoding UTF8
         Write-Warning "Gateway configuration could not be updated: $($_.Exception.Message)"
         Write-Warning "Registration data was written to $registrationPath for an administrator."

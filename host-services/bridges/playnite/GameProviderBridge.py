@@ -40,7 +40,7 @@ from OperationJournal import ACTIVE_STATES, OperationJournal
 PLAYNITE_ID_PATTERN = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
 GAME_ID_PATTERN = re.compile(
-    r"^(?:steam:[0-9]+|epic:[A-Za-z0-9_-]+|(?:playnite:)?[0-9A-Fa-f]{8}-"
+    r"^(?:[a-z][a-z0-9_-]{1,31}:[A-Za-z0-9._-]{1,128}|[0-9A-Fa-f]{8}-"
     r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 DIAGNOSTIC_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._:$-]{1,256}$")
@@ -2167,7 +2167,10 @@ class BridgeState:
         result = str(value or "").strip()
         if not GAME_ID_PATTERN.fullmatch(result):
             raise ValueError("Invalid game record ID.")
-        return result if result.startswith("epic:") else result.lower()
+        if ":" in result:
+            provider, provider_id = result.split(":", 1)
+            return provider.casefold() + ":" + provider_id
+        return result.casefold()
 
     def resolve_game_id(self, value: Any) -> str:
         normalized = self.game_id(value)
@@ -2229,9 +2232,13 @@ class BridgeState:
                 self.provider_health.update({
                     str(key): dict(value) for key, value in providers.items()
                     if str(key) in self.provider_health and isinstance(value, dict)})
+                playnite_enabled = bool(getattr(self, "playnite_enabled", True))
                 self.provider_health["playnite"] = {
-                    "available": connected, "complete": True if connected else False,
-                    "reason": "" if connected else "playnite_connector_unavailable",
+                    "available": connected if playnite_enabled else False,
+                    "complete": connected if playnite_enabled else False,
+                    "reason": "" if connected and playnite_enabled else
+                    ("playnite_connector_unavailable" if playnite_enabled
+                     else "playnite_disabled"),
                 }
                 for game_id, game in self.library.items():
                     self._apply_installation_fields_locked(game_id, game)
@@ -3854,6 +3861,10 @@ class BridgeState:
         with self.lock:
             game_id = str(self.current.get("id") or "")
             game = self.library.get(game_id)
+            provider_capabilities = game.get("providerCapabilities") \
+                if isinstance(game, dict) else {}
+            if not isinstance(provider_capabilities, dict):
+                provider_capabilities = {}
             host_guide_allowed = (
                 not game_id and self.current.get("state") == "idle"
             ) or (game is not None and self.game_operations.provider_for(game)
@@ -3862,6 +3873,12 @@ class BridgeState:
                 and self._running_scan_at > 0 \
                 and time.monotonic() - self._running_scan_at <= 10.0
             return {**self.current,
+                    "requires_connector": bool(
+                        provider_capabilities.get("requiresConnector", False)),
+                    "stream_mode": str(
+                        provider_capabilities.get("streamMode") or "managed"),
+                    "start_before_stream": bool(
+                        provider_capabilities.get("startBeforeStream", False)),
                     "host_guide_allowed": host_guide_allowed,
                     "running_games": [dict(game) for game in self._running_games] if fresh else [],
                     "running_scan_status": self._running_scan_status if fresh else "unavailable",
@@ -4697,6 +4714,8 @@ class GameProviderHandler(BaseHTTPRequestHandler):
                         "component": "game-provider",
                         "compatibility_component": "playnite",
                         "profile_id": self.state.profile_id,
+                        "playnite_enabled": bool(getattr(
+                            self.state, "playnite_enabled", False)),
                         "connector_connected": self.state.connected,
                         "library_count": len(self.state.library),
                         "providers": dict(self.state.provider_health),
@@ -4853,6 +4872,13 @@ def main() -> None:
                         operation_audit=lambda event, payload: append_operation_audit(
                             audit_path, event, payload),
                         profile_id=profile_root.name)
+    playnite_enabled = bool(config.get("playnite_enabled", False))
+    state.playnite_enabled = playnite_enabled
+    if not playnite_enabled:
+        with state.lock:
+            state.provider_health["playnite"] = {
+                "available": False, "complete": False,
+                "reason": "playnite_disabled"}
     window_probe = WindowProbe(game_operations)
     state.running_process_probe = window_probe
     state.set_reconciliation_actions(
@@ -4861,7 +4887,9 @@ def main() -> None:
         provider, state.expected_display)
     state.nonsteam_launch_preparation = lambda dispatch: window_probe.close_steam_big_picture(
         steam_provider, dispatch)
-    ensure_playnite_desktop(str(config.get("playnite_desktop_executable", "")).strip())
+    if playnite_enabled:
+        ensure_playnite_desktop(str(
+            config.get("playnite_desktop_executable", "")).strip())
     fullscreen_path = str(config.get("playnite_fullscreen_executable", "")).strip()
     display_resolver = StreamDisplayResolver(str(config.get("vibepollo_bridge", "")).strip())
     state.set_window_actions(
@@ -4876,8 +4904,9 @@ def main() -> None:
     threading.Thread(
         target=WindowReadinessWorker(state, window_probe, display_resolver).run,
         name="PlayniteWindowReadiness", daemon=True).start()
-    pipe = WindowsPipeClient(state)
-    threading.Thread(target=pipe.run, name="PlaynitePipe", daemon=True).start()
+    pipe = WindowsPipeClient(state) if playnite_enabled else None
+    if pipe is not None:
+        threading.Thread(target=pipe.run, name="PlaynitePipe", daemon=True).start()
     server = GameProviderServer((listen_host, int(config.get("listen_port", 8780))), state)
     print(f"Game Provider Bridge listening on http://{listen_host}:{server.server_port}", flush=True)
     try:
@@ -4885,7 +4914,8 @@ def main() -> None:
     except KeyboardInterrupt:
         pass
     finally:
-        pipe.stopping.set()
+        if pipe is not None:
+            pipe.stopping.set()
         server.server_close()
         DIAGNOSTICS.close()
 

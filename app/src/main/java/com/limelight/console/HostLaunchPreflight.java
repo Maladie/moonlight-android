@@ -73,6 +73,8 @@ final class HostLaunchPreflight {
         final int appId;
         final String appName;
         final String gameId;
+        final boolean requiresConnector;
+        final boolean neutralStream;
         final Action action;
 
         private Request(PlayIntent intent, Action action) {
@@ -81,6 +83,8 @@ final class HostLaunchPreflight {
             this.appId = intent.sunshineAppId;
             this.appName = intent.appName;
             this.gameId = intent.playniteGameId;
+            this.requiresConnector = intent.requiresConnector;
+            this.neutralStream = intent.neutralStream;
             this.action = action;
         }
 
@@ -93,16 +97,11 @@ final class HostLaunchPreflight {
         }
 
         boolean requiresPlayniteConnector() {
-            if (!requiresPlaynite()) return false;
-            String normalized = gameId == null ? ""
-                    : gameId.toLowerCase(java.util.Locale.ROOT);
-            return !normalized.startsWith("steam:") && !normalized.startsWith("epic:");
+            return requiresPlaynite() && requiresConnector;
         }
 
         boolean isDirectProvider() {
-            String normalized = gameId == null ? ""
-                    : gameId.toLowerCase(java.util.Locale.ROOT);
-            return normalized.startsWith("steam:") || normalized.startsWith("epic:");
+            return requiresPlaynite() && neutralStream;
         }
     }
 

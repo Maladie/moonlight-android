@@ -25,6 +25,9 @@ final class PlayniteLibraryGame {
     final boolean canLaunch;
     final boolean canInstall;
     final boolean canUninstall;
+    final boolean requiresConnector;
+    final String streamMode;
+    final boolean startBeforeStream;
     final String genres;
     final boolean installRequiresAttention;
     final String installAttentionReason;
@@ -115,7 +118,8 @@ final class PlayniteLibraryGame {
                 vibepolloState, providerFrom(source), "",
                 isGuid(playniteGameId) ? playniteGameId : "",
                 sourceKey(source), text(source).isEmpty() ? "Playnite" : source,
-                true, true, true);
+                true, true, true, isGuid(playniteGameId),
+                isGuid(playniteGameId) ? "managed" : "neutral", false);
     }
 
     PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
@@ -127,7 +131,29 @@ final class PlayniteLibraryGame {
                         String operationState, int operationProgress, boolean uninstalling,
                         String vibepolloState, String provider, String providerGameId,
                         String metadataPlayniteGameId, String libraryKey, String libraryName,
-                        boolean canLaunch, boolean canInstall, boolean canUninstall) {
+                        boolean canLaunch, boolean canInstall, boolean canUninstall,
+                        boolean requiresConnector, String streamMode) {
+        this(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
+                lastActivity, coverKey, backgroundKey, description, playCount, source,
+                genres, installRequiresAttention, installAttentionReason, installWindowTitle,
+                installLauncher, operationState, operationProgress, uninstalling,
+                vibepolloState, provider, providerGameId, metadataPlayniteGameId,
+                libraryKey, libraryName, canLaunch, canInstall, canUninstall,
+                requiresConnector, streamMode, false);
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean installing, boolean hidden, long playtimeSeconds,
+                        String lastActivity, String coverKey, String backgroundKey,
+                        String description, int playCount, String source, String genres,
+                        boolean installRequiresAttention, String installAttentionReason,
+                        String installWindowTitle, String installLauncher,
+                        String operationState, int operationProgress, boolean uninstalling,
+                        String vibepolloState, String provider, String providerGameId,
+                        String metadataPlayniteGameId, String libraryKey, String libraryName,
+                        boolean canLaunch, boolean canInstall, boolean canUninstall,
+                        boolean requiresConnector, String streamMode,
+                        boolean startBeforeStream) {
         this.playniteGameId = playniteGameId;
         this.name = name;
         this.installed = installed;
@@ -150,6 +176,10 @@ final class PlayniteLibraryGame {
         this.canLaunch = canLaunch;
         this.canInstall = canInstall;
         this.canUninstall = canUninstall;
+        this.requiresConnector = requiresConnector;
+        this.streamMode = "neutral".equalsIgnoreCase(text(streamMode))
+                ? "neutral" : "managed";
+        this.startBeforeStream = startBeforeStream;
         this.genres = text(genres);
         this.installRequiresAttention = installRequiresAttention;
         this.installAttentionReason = text(installAttentionReason);
@@ -180,6 +210,9 @@ final class PlayniteLibraryGame {
                 libraryKey.equals(game.libraryKey) && libraryName.equals(game.libraryName) &&
                 canLaunch == game.canLaunch && canInstall == game.canInstall &&
                 canUninstall == game.canUninstall &&
+                requiresConnector == game.requiresConnector &&
+                streamMode.equals(game.streamMode) &&
+                startBeforeStream == game.startBeforeStream &&
                 installAttentionReason.equals(game.installAttentionReason) &&
                 installWindowTitle.equals(game.installWindowTitle) &&
                 installLauncher.equals(game.installLauncher) &&
@@ -193,8 +226,11 @@ final class PlayniteLibraryGame {
                 installRequiresAttention, installAttentionReason, installWindowTitle,
                 installLauncher, operationState, operationProgress, uninstalling,
                 vibepolloState, provider, providerGameId, metadataPlayniteGameId,
-                libraryKey, libraryName, canLaunch, canInstall, canUninstall);
+                libraryKey, libraryName, canLaunch, canInstall, canUninstall,
+                requiresConnector, streamMode, startBeforeStream);
     }
+
+    boolean usesNeutralStream() { return "neutral".equals(streamMode); }
 
     private static String text(String value) { return value == null ? "" : value.trim(); }
 
@@ -205,7 +241,7 @@ final class PlayniteLibraryGame {
 
     private static String providerFrom(String source) {
         String normalized = text(source).toLowerCase(java.util.Locale.ROOT);
-        return "steam".equals(normalized) || "epic".equals(normalized)
+        return normalized.matches("[a-z][a-z0-9_-]{1,31}")
                 ? normalized : "playnite";
     }
 

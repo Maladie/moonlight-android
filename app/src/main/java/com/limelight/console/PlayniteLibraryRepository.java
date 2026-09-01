@@ -126,7 +126,8 @@ final class PlayniteLibraryRepository {
                     game.operationProgress, game.uninstalling, game.vibepolloState,
                     game.provider, game.providerGameId, game.playniteGameId,
                     game.libraryKey, game.libraryName, game.canLaunch,
-                    game.canInstall, game.canUninstall));
+                    game.canInstall, game.canUninstall, game.requiresConnector,
+                    game.streamMode, game.startBeforeStream));
         }
         return new PlayniteLibraryCache.Entry(games, System.currentTimeMillis(),
                 pages.revision, pages.apiVersion);

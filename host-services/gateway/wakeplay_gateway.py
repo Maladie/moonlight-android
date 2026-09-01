@@ -48,8 +48,7 @@ REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 PLAYNITE_GAME_ID_PATTERN = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
 GAME_RECORD_ID_PATTERN = re.compile(
-    r"^(?:steam:[0-9]+|epic:[A-Za-z0-9_-]+|playnite:[0-9A-Fa-f]{8}-"
-    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$")
+    r"^[a-z][a-z0-9_-]{1,31}:[A-Za-z0-9._-]{1,128}$")
 PLAYNITE_CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{0,128}$")
 DIAGNOSTIC_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._:$-]{1,256}$")
 DIAGNOSTIC_ROUTE_PATTERN = re.compile(r"^/[A-Za-z0-9._:{}/-]{0,255}$")
@@ -223,15 +222,27 @@ class GatewayState:
         self.config.setdefault("listen_port", 8785)
         self.config.setdefault("discord_bridge", "http://127.0.0.1:8765")
         self.config.setdefault("vibepollo_bridge", "http://127.0.0.1:8775")
-        self.config.setdefault("playnite_bridge", "http://127.0.0.1:8780")
+        provider_bridge = str(self.config.get("game_provider_bridge") or
+                              self.config.get("playnite_bridge") or
+                              "http://127.0.0.1:8780")
+        self.config.setdefault("game_provider_bridge", provider_bridge)
+        self.config.setdefault("playnite_bridge", provider_bridge)
         self.config.setdefault("microphone_worker", "MoonWakerMicrophoneWorker.exe")
         self.config.setdefault("discord_audio_worker", "MoonWakerDiscordAudioWorker.exe")
         self.config.setdefault("profiles", {})
         self.config["profiles"].setdefault("default", {
             "discord_bridge": self.config["discord_bridge"],
             "vibepollo_bridge": self.config["vibepollo_bridge"],
+            "game_provider_bridge": self.config["game_provider_bridge"],
             "playnite_bridge": self.config["playnite_bridge"],
         })
+        for profile in self.config["profiles"].values():
+            if not isinstance(profile, dict):
+                continue
+            endpoint = str(profile.get("game_provider_bridge") or
+                           profile.get("playnite_bridge") or provider_bridge)
+            profile.setdefault("game_provider_bridge", endpoint)
+            profile.setdefault("playnite_bridge", endpoint)
         self.config.setdefault("clients", [])
         self.pairing_code_hash = sha256_text(pairing_code) if pairing_code else None
         self.pairing_expires_at = time.monotonic() + PAIRING_LIFETIME_SECONDS if pairing_code else 0.0
@@ -465,9 +476,15 @@ class GatewayState:
 
     def bridge_url(self, name: str, path: str) -> str:
         profile = self.config.get("profiles", {}).get(self.profile_id, {})
-        base = str(profile.get(f"{name}_bridge", "")).rstrip("/")
+        key = "game_provider_bridge" if name in {"game_provider", "playnite"} \
+            else f"{name}_bridge"
+        base = str(profile.get(key, "")).rstrip("/")
+        if not base and key == "game_provider_bridge":
+            base = str(profile.get("playnite_bridge", "")).rstrip("/")
         if not base and self.profile_id == "default":
-            base = str(self.config[f"{name}_bridge"]).rstrip("/")
+            base = str(self.config.get(key) or (
+                self.config.get("playnite_bridge")
+                if key == "game_provider_bridge" else "")).rstrip("/")
         if not base.startswith("http://127.0.0.1:") and not base.startswith("http://localhost:"):
             raise ValueError(f"{name} bridge must remain on loopback")
         return base + path
@@ -537,7 +554,7 @@ class GatewayState:
     def capabilities(self) -> dict[str, Any]:
         vibepollo_ok, vibepollo = self.proxy("vibepollo", "/health", timeout=1.0)
         discord_ok, discord = self.proxy("discord", "/health", timeout=1.0)
-        playnite_ok, playnite = self.proxy("playnite", "/health", timeout=1.0)
+        playnite_ok, playnite = self.proxy("game_provider", "/health", timeout=1.0)
         microphone = self.microphone_status()
         discord_audio = self.discord_audio_status()
         virtualhere_ok, virtualhere = (False, {"error": "Discord Bridge is offline."})
@@ -555,6 +572,7 @@ class GatewayState:
                 "vibepollo_fix": {"available": vibepollo_ok, "health": vibepollo},
                 "vibepollo_apps": {"available": vibepollo_ok, "health": vibepollo},
                 "vibepollo_pairing": {"available": vibepollo_ok, "health": vibepollo},
+                "game_provider": {"available": playnite_ok, "health": playnite},
                 "playnite": {"available": playnite_ok, "health": playnite},
                 "discord": {"available": discord_ok, "health": discord},
                 "virtualhere": {
@@ -728,7 +746,7 @@ class GatewayState:
                 discord = self.discord_status()
                 vibepollo_online, _ = self.proxy("vibepollo", "/health", timeout=1.0)
                 playnite_online, playnite_health = self.proxy(
-                    "playnite", "/health", timeout=1.0)
+                    "game_provider", "/health", timeout=1.0)
                 playnite_connector = playnite_online and bool(
                     playnite_health.get("connector_connected", False))
                 virtualhere_online = False
@@ -749,6 +767,7 @@ class GatewayState:
                     "discord_rpc_connected": discord["rpc_connected"],
                     "discord_authenticated": discord["authenticated"],
                     "vibepollo_bridge_online": vibepollo_online,
+                    "game_provider_bridge_online": playnite_online,
                     "playnite_bridge_online": playnite_online,
                     "playnite_connector_connected": playnite_connector,
                     "virtualhere_available": virtualhere_online,
@@ -1062,10 +1081,13 @@ class GatewayState:
         if not (PLAYNITE_GAME_ID_PATTERN.fullmatch(result)
                 or GAME_RECORD_ID_PATTERN.fullmatch(result)):
             raise ValueError("Invalid game record ID.")
-        return result if result.startswith("epic:") else result.lower()
+        if ":" in result:
+            provider, provider_id = result.split(":", 1)
+            return provider.lower() + ":" + provider_id
+        return result.lower()
 
     def playnite_health(self) -> tuple[int, Any]:
-        ok, result = self.proxy("playnite", "/health", timeout=1.5)
+        ok, result = self.proxy("game_provider", "/health", timeout=1.5)
         return (HTTPStatus.OK if ok else HTTPStatus.SERVICE_UNAVAILABLE), {
             "ok": ok,
             "bridge": result if ok and isinstance(result, dict) else {},
@@ -1084,7 +1106,7 @@ class GatewayState:
             "cursor": normalized_cursor,
             "limit": page_size,
         })
-        ok, result = self.proxy("playnite", path, timeout=8.0)
+        ok, result = self.proxy("game_provider", path, timeout=8.0)
         if ok and isinstance(result, dict):
             with self.lock:
                 operations = {key.split(":", 1)[1]: value.get("state", "")
@@ -1099,7 +1121,7 @@ class GatewayState:
             "ok": ok,
             "library": result if ok and isinstance(result, dict) else {},
             "error": "" if ok else self.upstream_error(
-                result, "Unable to load the Playnite library."),
+                result, "Unable to load the game library."),
         }
 
     def playnite_artwork(self, game_id: Any, kind: Any) -> tuple[int, bytes, str]:
@@ -1114,7 +1136,7 @@ class GatewayState:
             "game_id": normalized_id,
             "kind": normalized_kind,
         })
-        return self.proxy_bytes("playnite", path, timeout=8.0)
+        return self.proxy_bytes("game_provider", path, timeout=8.0)
 
     def playnite_state(self, resource: str) -> tuple[int, Any]:
         paths = {
@@ -1123,12 +1145,12 @@ class GatewayState:
         }
         if resource not in paths:
             return HTTPStatus.NOT_FOUND, {"error": "Unknown Playnite resource."}
-        ok, result = self.proxy("playnite", paths[resource], timeout=3.0)
+        ok, result = self.proxy("game_provider", paths[resource], timeout=3.0)
         return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), {
             "ok": ok,
             resource: result if ok and isinstance(result, dict) else {},
             "error": "" if ok else self.upstream_error(
-                result, "Unable to read Playnite state."),
+                result, "Unable to read game provider state."),
         }
 
     def playnite_events(self, after: Any, transition_id: Any = "") -> tuple[int, Any]:
@@ -1138,7 +1160,7 @@ class GatewayState:
         correlation = str(transition_id or "").strip()
         if len(correlation) > 128 or not re.fullmatch(r"[A-Za-z0-9._:-]*", correlation):
             raise ValueError("Invalid transition ID.")
-        ok, result = self.proxy("playnite", "/events?" + urllib.parse.urlencode({
+        ok, result = self.proxy("game_provider", "/events?" + urllib.parse.urlencode({
             "after": sequence,
         }), timeout=22.0)
         return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), {
@@ -1146,7 +1168,7 @@ class GatewayState:
             "transition_id": correlation,
             "events": result if ok and isinstance(result, dict) else {},
             "error": "" if ok else self.upstream_error(
-                result, "Unable to read Playnite lifecycle events."),
+                result, "Unable to read game lifecycle events."),
         }
 
     def playnite_action(self, action: str, body: dict[str, Any]) -> tuple[int, Any]:
@@ -1199,7 +1221,7 @@ class GatewayState:
             timeout = 5.0
         else:
             return HTTPStatus.NOT_FOUND, {"error": "Unknown Playnite action."}
-        ok, result = self.proxy_json("playnite", path, payload, timeout=timeout)
+        ok, result = self.proxy_json("game_provider", path, payload, timeout=timeout)
         accepted = not isinstance(result, dict) or bool(result.get("accepted", True))
         if ok and action in {"game/start", "game/install", "game/uninstall", "game/stop", "game/stop-verified"} \
                 and not accepted:
@@ -1207,14 +1229,14 @@ class GatewayState:
                 "ok": False,
                 "action": action,
                 "result": result,
-                "error": str(result.get("reason") or "Playnite action was rejected."),
+                "error": str(result.get("reason") or "Game provider action was rejected."),
             }
         return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), {
             "ok": ok,
             "action": action,
             "result": result if isinstance(result, dict) else {},
             "error": "" if ok else self.upstream_error(
-                result, "Playnite action failed."),
+                result, "Game provider action failed."),
         }
 
     def idempotent(self, key: str, operation) -> tuple[int, Any]:
@@ -1565,7 +1587,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
             status, result = self.state.virtualhere_state(
                 query.get("force", [""])[0].lower() == "true")
             self.send_json(status, result)
-        elif path == f"{API_PREFIX}/playnite/health":
+        elif path in {f"{API_PREFIX}/game-provider/health",
+                      f"{API_PREFIX}/playnite/health"}:
             status, result = self.state.playnite_health()
             self.send_json(status, result)
         elif path in {f"{API_PREFIX}/library",
@@ -1573,20 +1596,24 @@ class GatewayHandler(BaseHTTPRequestHandler):
             status, result = self.state.playnite_library(
                 query.get("cursor", [""])[0], query.get("limit", ["50"])[0])
             self.send_json(status, result)
-        elif path == f"{API_PREFIX}/playnite/artwork":
+        elif path in {f"{API_PREFIX}/artwork",
+                      f"{API_PREFIX}/playnite/artwork"}:
             status, body, content_type = self.state.playnite_artwork(
                 query.get("game_id", [""])[0], query.get("kind", ["cover"])[0])
             if status == HTTPStatus.OK:
                 self.send_binary(status, body, content_type)
             else:
-                self.send_json(status, {"error": "Playnite artwork is unavailable."})
-        elif path == f"{API_PREFIX}/playnite/game/current":
+                self.send_json(status, {"error": "Game artwork is unavailable."})
+        elif path in {f"{API_PREFIX}/game/current",
+                      f"{API_PREFIX}/playnite/game/current"}:
             status, result = self.state.playnite_state("current")
             self.send_json(status, result)
-        elif path == f"{API_PREFIX}/playnite/window/readiness":
+        elif path in {f"{API_PREFIX}/window/readiness",
+                      f"{API_PREFIX}/playnite/window/readiness"}:
             status, result = self.state.playnite_state("readiness")
             self.send_json(status, result)
-        elif path == f"{API_PREFIX}/playnite/events":
+        elif path in {f"{API_PREFIX}/game/events",
+                      f"{API_PREFIX}/playnite/events"}:
             status, result = self.state.playnite_events(
                 query.get("after", ["0"])[0],
                 query.get("transition_id", [""])[0])
@@ -1696,7 +1723,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
             provider_action = path in {
                 f"{API_PREFIX}/game/start", f"{API_PREFIX}/game/install",
                 f"{API_PREFIX}/game/uninstall", f"{API_PREFIX}/game/stop",
-                f"{API_PREFIX}/game/stop-verified"}
+                f"{API_PREFIX}/game/stop-verified", f"{API_PREFIX}/game/focus",
+                f"{API_PREFIX}/game/install/focus",
+                f"{API_PREFIX}/game/install/verify",
+                f"{API_PREFIX}/library/refresh"}
             if path.startswith(playnite_prefix) or provider_action:
                 action = path[len(playnite_prefix):] if path.startswith(playnite_prefix) \
                     else path[len(API_PREFIX) + 1:]
@@ -1707,7 +1737,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     return
                 body = self.read_json()
                 status, result = self.state.idempotent(
-                    f"{profile_id}:playnite:{request_id}",
+                    f"{profile_id}:game-provider:{request_id}",
                     lambda: self.state.playnite_action(action, body))
                 self.send_json(status, result)
                 return

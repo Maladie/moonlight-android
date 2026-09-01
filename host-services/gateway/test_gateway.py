@@ -708,7 +708,7 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
-        self.assertEqual("playnite", requests[0][0])
+        self.assertEqual("game_provider", requests[0][0])
         parsed = urllib.parse.urlsplit(requests[0][1])
         self.assertEqual("/library/list", parsed.path)
         self.assertEqual(["page:1"], urllib.parse.parse_qs(parsed.query)["cursor"])
@@ -746,7 +746,7 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
-        self.assertEqual(("playnite", "/game/start", {
+        self.assertEqual(("game_provider", "/game/start", {
             "game_id": "840317c9-b9a4-4f72-be8e-807414e36a9b",
         }, 22.0), requests[0])
         with self.assertRaises(ValueError):
@@ -764,7 +764,7 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
-        self.assertEqual(("playnite", "/game/install", {
+        self.assertEqual(("game_provider", "/game/install", {
             "game_id": "840317c9-b9a4-4f72-be8e-807414e36a9b",
         }, 15.0), requests[0])
 
@@ -829,7 +829,7 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
-        self.assertEqual(("playnite", "/installation/focus", {
+        self.assertEqual(("game_provider", "/installation/focus", {
             "game_id": "840317c9-b9a4-4f72-be8e-807414e36a9b",
         }, 6.0), requests[0])
 
@@ -846,7 +846,7 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
-        self.assertEqual(("playnite", "/installation/verify", {
+        self.assertEqual(("game_provider", "/installation/verify", {
             "game_id": "840317c9-b9a4-4f72-be8e-807414e36a9b",
         }, 8.0), requests[0])
 
@@ -862,7 +862,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
         self.assertEqual(
-            ("playnite", "/library/refresh", {}, 5.0), requests[0])
+            ("game_provider", "/library/refresh", {}, 5.0), requests[0])
 
     def test_playnite_stop_is_graceful_by_contract(self):
         state = GatewayState(self.config_path, None)
@@ -914,7 +914,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
         state.proxy_json.assert_called_once_with(
-            "playnite", "/game/stop-verified", {"force": False, **payload}, timeout=25.0)
+            "game_provider", "/game/stop-verified", {"force": False, **payload}, timeout=25.0)
         for bad in (None, "", "A" * 64, "a" * 63):
             with self.assertRaises(ValueError):
                 state.playnite_action("game/stop-verified", {**payload, "expected_process_token": bad})
@@ -937,7 +937,7 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
-        self.assertEqual(("playnite", "/game/focus", {}, 6.0), requests[0])
+        self.assertEqual(("game_provider", "/game/focus", {}, 6.0), requests[0])
 
     def test_playnite_events_sequence_is_allowlisted(self):
         state = GatewayState(self.config_path, None)

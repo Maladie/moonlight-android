@@ -9,6 +9,7 @@ New-Item -ItemType File -Path $stopPath -Force | Out-Null
 $stopScripts = @(
     (Join-Path $ProfileRoot "discord\Stop-DiscordBridge.ps1"),
     (Join-Path $ProfileRoot "vibepollo\Stop-VibepolloBridge.ps1"),
+    (Join-Path $ProfileRoot "game-provider\Stop-PlayniteBridge.ps1"),
     (Join-Path $ProfileRoot "playnite\Stop-PlayniteBridge.ps1"))
 foreach ($script in $stopScripts) {
     if (Test-Path -LiteralPath $script) { try { & $script | Out-Null } catch {} }
@@ -30,6 +31,7 @@ $stuck = @()
 foreach ($component in @(
     @{ name = "Discord"; directory = "discord"; config = "discord_bridge_config.json"; property = "port" },
     @{ name = "Vibepollo"; directory = "vibepollo"; config = "config.json"; property = "listen_port" },
+    @{ name = "Game Provider"; directory = "game-provider"; config = "config.json"; property = "listen_port" },
     @{ name = "Playnite"; directory = "playnite"; config = "config.json"; property = "listen_port" })) {
     $configPath = Join-Path (Join-Path $ProfileRoot $component.directory) $component.config
     if (-not (Test-Path -LiteralPath $configPath)) { continue }
@@ -42,7 +44,8 @@ foreach ($component in @(
             $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
             $commandLine = if ($process) { [string]$process.CommandLine } else { "" }
             $verifiedPlaynite = $false
-            if ($component.name -eq "Playnite" -and [string]::IsNullOrWhiteSpace($commandLine)) {
+            if ($component.name -in @("Game Provider", "Playnite") -and
+                [string]::IsNullOrWhiteSpace($commandLine)) {
                 try {
                     $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2
                     $verifiedPlaynite = [int]$health.pid -eq [int]$ownerPid -and

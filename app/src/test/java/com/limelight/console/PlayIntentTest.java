@@ -65,6 +65,16 @@ public class PlayIntentTest {
         assertEquals("settings:game", intent.quickLaunchId);
     }
 
+    @Test public void providerLaunchTimingComesFromDeclaredCapability() {
+        PlayIntent intent = PlayIntent.playniteGame(
+                "host", 42, "GOG Game", false, "gog:Some_Game", "gog:Some_Game",
+                "settings:gog", false, true, true);
+
+        assertTrue(intent.startBeforeStream);
+        assertFalse(intent.requiresConnector);
+        assertTrue(intent.neutralStream);
+    }
+
     @Test public void directSunshineTargetMatchesDespitePlayniteIdentity() {
         PlayIntent intent = PlayIntent.sunshineApp("host", 42, "App", false, "");
 

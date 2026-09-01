@@ -20,7 +20,7 @@ function Get-FreeTcpPort {
 }
 
 try {
-    New-Item -ItemType Directory -Path $control, $gateway, (Join-Path $profile "playnite"), `
+    New-Item -ItemType Directory -Path $control, $gateway, (Join-Path $profile "game-provider"), `
         $foreignProfile -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Invoke-MoonWakerHostControl.ps1") `
         -Destination (Join-Path $control "Invoke-MoonWakerHostControl.ps1")
@@ -37,7 +37,7 @@ try {
                 profile_root = $profile
                 discord_bridge = ""
                 vibepollo_bridge = ""
-                playnite_bridge = ""
+                game_provider_bridge = ""
             }
             foreign = [ordered]@{
                 name = "Foreign profile"
@@ -45,7 +45,7 @@ try {
                 profile_root = $foreignProfile
                 discord_bridge = ""
                 vibepollo_bridge = ""
-                playnite_bridge = ""
+                game_provider_bridge = ""
             }
         }
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $gateway "gateway.json") -Encoding UTF8
@@ -83,7 +83,7 @@ try {
         $diagnostic = Get-Content -LiteralPath $diagnosticPath -Raw -ErrorAction SilentlyContinue
         throw "Steam configuration did not complete: $($result.error). Diagnostic phases: $diagnostic"
     }
-    if (-not (Test-Path -LiteralPath (Join-Path $profile "playnite\steam-web-api-key.dpapi") -PathType Leaf)) {
+    if (-not (Test-Path -LiteralPath (Join-Path $profile "game-provider\steam-web-api-key.dpapi") -PathType Leaf)) {
         throw "The DPAPI-protected key file was not created."
     }
     $diagnostic = Get-Content -LiteralPath $diagnosticPath -Raw
@@ -100,7 +100,7 @@ try {
     }
 
     New-Item -ItemType Directory -Path (Join-Path $gateway "logs"),
-        (Join-Path $profile "playnite\logs") -Force | Out-Null
+        (Join-Path $profile "game-provider\logs") -Force | Out-Null
     $diagnosticFiles = @{
         (Join-Path $gateway "gateway-supervisor.jsonl") = '{"event":"supervisor.started"}'
         (Join-Path $gateway "gateway-supervisor.jsonl.1") = '{"event":"supervisor.stopped"}'
@@ -108,15 +108,15 @@ try {
         (Join-Path $gateway "logs\gateway-diagnostics.jsonl.1") = '{"event":"request.started"}'
         (Join-Path $profile "profile-bridge.jsonl") = '{"event":"component.exited"}'
         (Join-Path $profile "profile-bridge.jsonl.2") = '{"event":"supervisor.started"}'
-        (Join-Path $profile "playnite\logs\provider-diagnostics.jsonl") = '{"event":"lifecycle"}'
-        (Join-Path $profile "playnite\logs\provider-diagnostics.jsonl.3") = '{"event":"request.failed"}'
+        (Join-Path $profile "game-provider\logs\provider-diagnostics.jsonl") = '{"event":"lifecycle"}'
+        (Join-Path $profile "game-provider\logs\provider-diagnostics.jsonl.3") = '{"event":"request.failed"}'
     }
     foreach ($entry in $diagnosticFiles.GetEnumerator()) {
         [IO.File]::WriteAllText($entry.Key, $entry.Value, [Text.UTF8Encoding]::new($false))
     }
     Set-Content -LiteralPath (Join-Path $gateway "gateway-supervisor.jsonl.secret") `
         -Value "SECRET-MATERIAL"
-    Set-Content -LiteralPath (Join-Path $profile "playnite\logs\provider-diagnostics.jsonl.bak") `
+    Set-Content -LiteralPath (Join-Path $profile "game-provider\logs\provider-diagnostics.jsonl.bak") `
         -Value "SECRET-MATERIAL"
     Set-Content -LiteralPath (Join-Path $profile "private-config.json") -Value "SECRET-MATERIAL"
     $exportDirectory = Join-Path $root "exports"
