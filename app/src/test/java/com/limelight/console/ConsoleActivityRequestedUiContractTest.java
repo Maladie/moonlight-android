@@ -102,6 +102,33 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(menu.contains("R.string.console_auto_stream_warm_up_description"));
     }
 
+    @Test public void providerCapabilitiesSurviveWarmUpAndResume() throws IOException {
+        String source = consoleActivitySource();
+        String arm = source.substring(source.indexOf("private void armPendingWarmUpRelay()"),
+                source.indexOf("protected final void acceptPreparingHomeFrame()"));
+        String resume = source.substring(source.indexOf("private void resumeSession("),
+                source.indexOf("private String uniquePlayniteGameIdForRunningApp("));
+        String suspended = source.substring(source.indexOf("private void resumeSuspendedSession("),
+                source.indexOf("private void confirmTerminateSession("));
+        int warmUpStart = source.indexOf("private void applyWarmUpIntent(");
+        String warmUp = source.substring(warmUpStart,
+                source.indexOf("private void launchPreparedStream(", warmUpStart));
+        String restore = source.substring(source.indexOf("private PlayIntent providerGameIntent("),
+                source.indexOf("private static String playniteStreamSettingsKey("));
+
+        assertTrue(warmUp.contains("pendingGame.requiresConnector"));
+        assertTrue(warmUp.contains("pendingGame.neutralStream"));
+        assertTrue(warmUp.contains("pendingGame.startBeforeStream"));
+        assertTrue(arm.contains("EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR"));
+        assertTrue(arm.contains("EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM"));
+        assertTrue(arm.contains("EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM"));
+        assertTrue(resume.contains("providerGameIntent("));
+        assertTrue(suspended.contains("providerGameIntent("));
+        assertTrue(restore.contains("game.requiresConnector"));
+        assertTrue(restore.contains("game.usesNeutralStream()"));
+        assertTrue(restore.contains("game.startBeforeStream"));
+    }
+
     @Test public void incomingDiscordMessageAddsAReadableBlueIndicator() throws IOException {
         String source = consoleActivitySource();
 

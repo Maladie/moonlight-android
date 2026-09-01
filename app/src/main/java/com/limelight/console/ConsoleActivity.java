@@ -184,6 +184,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             "com.limelight.console.WARM_UP_PENDING_ARTWORK_ID";
     public static final String EXTRA_WARM_UP_PENDING_QUICK_LAUNCH =
             "com.limelight.console.WARM_UP_PENDING_QUICK_LAUNCH";
+    public static final String EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR =
+            "com.limelight.console.WARM_UP_PENDING_REQUIRES_CONNECTOR";
+    public static final String EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM =
+            "com.limelight.console.WARM_UP_PENDING_NEUTRAL_STREAM";
+    public static final String EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM =
+            "com.limelight.console.WARM_UP_PENDING_START_BEFORE_STREAM";
     // The console UI is a product feature and must be identical in debug and release builds.
     private static final boolean CONSOLE_UI_V2 = true;
     private static final String PREFS = "console_dashboard";
@@ -2428,10 +2434,24 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 EXTRA_WARM_UP_PENDING_GAME_ID));
         String gameName = getIntent().getStringExtra(EXTRA_WARM_UP_PENDING_GAME_NAME);
         if (gameId.isEmpty() || gameName == null || gameName.trim().isEmpty()) return;
-        pendingWarmUpRelay = PlayIntent.playniteGame(
-                retainedStreamHostId, retainedStreamAppId, gameName, false, gameId,
-                getIntent().getStringExtra(EXTRA_WARM_UP_PENDING_ARTWORK_ID),
-                getIntent().getStringExtra(EXTRA_WARM_UP_PENDING_QUICK_LAUNCH));
+        String artworkId = getIntent().getStringExtra(EXTRA_WARM_UP_PENDING_ARTWORK_ID);
+        String quickLaunchId = getIntent().getStringExtra(EXTRA_WARM_UP_PENDING_QUICK_LAUNCH);
+        if (getIntent().hasExtra(EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR)
+                && getIntent().hasExtra(EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM)
+                && getIntent().hasExtra(EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM)) {
+            pendingWarmUpRelay = PlayIntent.playniteGame(
+                    retainedStreamHostId, retainedStreamAppId, gameName, false, gameId,
+                    artworkId, quickLaunchId,
+                    getIntent().getBooleanExtra(
+                            EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR, true),
+                    getIntent().getBooleanExtra(EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM, false),
+                    getIntent().getBooleanExtra(
+                            EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM, false));
+        } else {
+            pendingWarmUpRelay = providerGameIntent(
+                    retainedStreamHostId, retainedStreamAppId, gameName, false, gameId,
+                    artworkId, quickLaunchId);
+        }
     }
 
     protected final void acceptPreparingHomeFrame() {
@@ -4136,9 +4156,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         PlayIntent intent = snapshot.playniteGameId.isEmpty()
                 ? PlayIntent.sunshineApp(host.uuid, running.getAppId(), running.getAppName(),
                 running.isHdrSupported(), "", loadingArtworkGameId)
-                : PlayIntent.playniteGame(host.uuid, running.getAppId(), running.getAppName(),
+                : providerGameIntent(host.uuid, running.getAppId(), running.getAppName(),
                 running.isHdrSupported(), snapshot.playniteGameId,
-                loadingArtworkGameId);
+                loadingArtworkGameId, "");
         sessionOrchestrator.play(intent);
     }
     private String uniquePlayniteGameIdForRunningApp(ComputerDetails host, NvApp app) {
@@ -4540,8 +4560,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         PlayIntent intent = suspended.playniteGameId.isEmpty()
                 ? PlayIntent.sunshineApp(host.uuid, target.getAppId(), target.getAppName(),
                 false, "", uniquePlayniteGameIdForRunningApp(host, target))
-                : PlayIntent.playniteGame(host.uuid, target.getAppId(), target.getAppName(),
-                false, suspended.playniteGameId, suspended.playniteGameId);
+                : providerGameIntent(host.uuid, target.getAppId(), target.getAppName(),
+                false, suspended.playniteGameId, suspended.playniteGameId, "");
         sessionOrchestrator.play(intent);
     }
     private void confirmTerminateSession(ComputerDetails host) {
@@ -9066,6 +9086,40 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 playniteStreamSettingsKey(host.uuid, game.playniteGameId)));
     }
 
+    private PlayIntent providerGameIntent(String hostUuid, int appId, String appName,
+                                          boolean hdrSupported, String gameId,
+                                          String loadingArtworkGameId,
+                                          String streamSettingsKey) {
+        PlayniteLibraryGame game = providerGameMetadata(hostUuid, gameId);
+        if (game == null) {
+            return PlayIntent.playniteGame(hostUuid, appId, appName, hdrSupported,
+                    gameId, loadingArtworkGameId, streamSettingsKey);
+        }
+        return PlayIntent.playniteGame(hostUuid, appId, appName, hdrSupported,
+                game.playniteGameId, loadingArtworkGameId, streamSettingsKey,
+                game.requiresConnector, game.usesNeutralStream(), game.startBeforeStream);
+    }
+
+    private PlayniteLibraryGame providerGameMetadata(String hostUuid, String gameId) {
+        if (normalizeId(hostUuid).equalsIgnoreCase(normalizeId(currentPlayniteHostUuid))) {
+            PlayniteLibraryGame current = findProviderGame(currentPlayniteGames, gameId);
+            if (current != null) return current;
+        }
+        PlayniteLibraryCache.Entry cached = playniteLibraryRepository == null
+                ? null : playniteLibraryRepository.cached(hostUuid);
+        return cached == null ? null : findProviderGame(cached.games, gameId);
+    }
+
+    static PlayniteLibraryGame findProviderGame(List<PlayniteLibraryGame> games,
+                                                 String gameId) {
+        String expected = normalizeId(gameId);
+        if (games == null || expected.isEmpty()) return null;
+        for (PlayniteLibraryGame game : games) {
+            if (game != null && game.playniteGameId.equalsIgnoreCase(expected)) return game;
+        }
+        return null;
+    }
+
     private static String playniteStreamSettingsKey(String hostUuid, String gameId) {
         return "playnite:" + normalizeId(hostUuid) + ":" + normalizeId(gameId);
     }
@@ -10303,6 +10357,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     pendingGame.loadingArtworkGameId);
             intent.putExtra(EXTRA_WARM_UP_PENDING_QUICK_LAUNCH,
                     pendingGame.quickLaunchId);
+            intent.putExtra(EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR,
+                    pendingGame.requiresConnector);
+            intent.putExtra(EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM,
+                    pendingGame.neutralStream);
+            intent.putExtra(EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM,
+                    pendingGame.startBeforeStream);
         }
     }
 

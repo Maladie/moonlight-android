@@ -1526,6 +1526,7 @@ class BridgeState:
         self.epic_playtime_seconds: dict[str, float] = {}
         self._epic_playtime_samples: dict[str, tuple[str, float]] = {}
         self.snapshot_in_progress = False
+        self.playnite_enabled = True
         self.categories: list[dict[str, Any]] = []
         self.plugins: list[dict[str, Any]] = []
         self.current: dict[str, Any] = {"state": "idle"}
@@ -2215,8 +2216,11 @@ class BridgeState:
 
     def _refresh_catalog(self) -> None:
         with self.lock:
-            playnite = [dict(game) for game in self.playnite_library.values()]
-            previous = {key: dict(value) for key, value in self.library.items()}
+            playnite_enabled = self.playnite_enabled
+            playnite = [dict(game) for game in self.playnite_library.values()] \
+                if playnite_enabled else []
+            previous = {key: dict(value) for key, value in self.library.items()
+                        if playnite_enabled or str(value.get("provider") or "") != "playnite"}
             connected = self.connected
         try:
             aggregated = self.game_operations.aggregate_catalog(playnite, previous)
@@ -2232,7 +2236,6 @@ class BridgeState:
                 self.provider_health.update({
                     str(key): dict(value) for key, value in providers.items()
                     if str(key) in self.provider_health and isinstance(value, dict)})
-                playnite_enabled = bool(getattr(self, "playnite_enabled", True))
                 self.provider_health["playnite"] = {
                     "available": connected if playnite_enabled else False,
                     "complete": connected if playnite_enabled else False,
@@ -2252,6 +2255,23 @@ class BridgeState:
                 if self.catalog_refresh_pending:
                     self.catalog_refresh_pending = False
                     self._schedule_catalog_refresh_locked()
+
+    def set_playnite_enabled(self, enabled: bool) -> None:
+        with self.lock:
+            self.playnite_enabled = bool(enabled)
+            if self.playnite_enabled:
+                return
+            self.playnite_library = {}
+            self.library_staging = {}
+            self.snapshot_in_progress = False
+            self.library = {key: value for key, value in self.library.items()
+                            if str(value.get("provider") or "") != "playnite"}
+            self.categories = []
+            self.plugins = []
+            self.provider_health["playnite"] = {
+                "available": False, "complete": False,
+                "reason": "playnite_disabled",
+            }
 
     def set_transport(self, connected: bool,
                       sender: Callable[[dict[str, Any]], None] | None,
@@ -4873,12 +4893,7 @@ def main() -> None:
                             audit_path, event, payload),
                         profile_id=profile_root.name)
     playnite_enabled = bool(config.get("playnite_enabled", False))
-    state.playnite_enabled = playnite_enabled
-    if not playnite_enabled:
-        with state.lock:
-            state.provider_health["playnite"] = {
-                "available": False, "complete": False,
-                "reason": "playnite_disabled"}
+    state.set_playnite_enabled(playnite_enabled)
     window_probe = WindowProbe(game_operations)
     state.running_process_probe = window_probe
     state.set_reconciliation_actions(
