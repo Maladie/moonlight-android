@@ -1712,6 +1712,45 @@ class BridgeStateTest(unittest.TestCase):
             self.assertEqual([{"id": "action"}], page["categories"])
             self.assertEqual([{"id": "steam"}], page["plugins"])
 
+    def test_disabled_playnite_drops_cached_connector_library(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            cache_path = Path(temporary) / "library-cache.json"
+            cache_path.write_text(json.dumps({
+                "version": 2,
+                "library": [
+                    {"id": "steam:289070", "name": "Civilization VI",
+                     "provider": "steam"},
+                    {"id": GAME_ID, "name": "Baba Is You", "provider": "playnite"},
+                ],
+                "playnite_library": [
+                    {"id": GAME_ID, "name": "Baba Is You", "source": "GOG"},
+                ],
+                "categories": [{"id": "action"}],
+                "plugins": [{"id": "gog"}],
+            }), encoding="utf-8")
+            operations = GameOperationsService(
+                OperationJournal(None), steam=SteamProvider(roots=[]))
+            state = BridgeState(cache_path=cache_path, game_operations=operations)
+            state.set_playnite_enabled(False)
+
+            def aggregate(playnite, previous):
+                self.assertEqual([], playnite)
+                self.assertEqual({"steam:289070"}, set(previous))
+                return {"library": previous, "providers": {}}
+
+            with mock.patch.object(
+                    state.game_operations, "aggregate_catalog", side_effect=aggregate):
+                state._refresh_catalog()
+
+            page = state.library_page("0", 10)
+            self.assertEqual(["steam:289070"], [game["id"] for game in page["games"]])
+            self.assertEqual([], page["categories"])
+            self.assertEqual([], page["plugins"])
+            self.assertEqual("playnite_disabled", page["providers"]["playnite"]["reason"])
+            saved = json.loads(cache_path.read_text(encoding="utf-8"))
+            self.assertEqual([], saved["playnite_library"])
+            self.assertEqual(["steam"], [game["provider"] for game in saved["library"]])
+
     def test_pending_installation_is_restored_from_operation_journal(self):
         with tempfile.TemporaryDirectory() as temporary:
             operation_path = Path(temporary) / "operations.sqlite3"
