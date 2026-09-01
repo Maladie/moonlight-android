@@ -1102,6 +1102,8 @@
     <string name="transition_game_failed">Game did not become ready</string>
     <string name="transition_waiting_playnite_return">Waiting for Playnite to return</string>
     <string name="transition_closing_session">Closing session</string>
+    <string name="transition_game_ended">Game ended</string>
+    <string name="transition_returning_library">Returning to the library…</string>
     <string name="console_previous_session_close_failed">The previous host session could not be closed. Try again after it disappears from the active session indicator.</string>
     <string name="console_session_uncertain_title">Session status is still being verified</string>
     <string name="console_session_uncertain_details">MoonWaker has not yet confirmed which game is running. Wait a moment and try again. No game or stream was started or stopped.</string>

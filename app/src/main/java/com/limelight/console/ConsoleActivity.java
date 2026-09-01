@@ -109,6 +109,7 @@ import com.limelight.utils.ShortcutHelper;
 import com.limelight.ui.OverridesView;
 import com.limelight.ui.ConsoleStreamLoadingView;
 import com.limelight.ui.LoadingArtworkPolicy;
+import com.limelight.ui.ArtworkImageView;
 import com.limelight.ui.ControllerGlyphs;
 import com.limelight.console.transition.LaunchTransitionSpec;
 import com.limelight.console.transition.LaunchTransitionType;
@@ -449,6 +450,37 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             };
     private static final ConcurrentHashMap<String, Object> playniteBitmapDecodeLocks =
             new ConcurrentHashMap<>();
+    private static volatile InitialLibraryPresentation initialLibraryPresentation;
+
+    private static final class InitialLibraryPresentation {
+        final String hostId;
+        final List<PlayniteLibraryGame> games;
+        final List<PlayniteDashboardItem> allItems;
+        final List<PlayniteDashboardItem> unfilteredItems;
+        final List<PlayniteDashboardItem> carouselItems;
+        final PlayniteSessionPresentation.Projection sessionProjection;
+        final String resumeGameId;
+        final String suspendedGameId;
+        final String sessionSignature;
+
+        InitialLibraryPresentation(String hostId, List<PlayniteLibraryGame> games,
+                                   List<PlayniteDashboardItem> allItems,
+                                   List<PlayniteDashboardItem> unfilteredItems,
+                                   List<PlayniteDashboardItem> carouselItems,
+                                   PlayniteSessionPresentation.Projection sessionProjection,
+                                   String resumeGameId, String suspendedGameId,
+                                   String sessionSignature) {
+            this.hostId = hostId;
+            this.games = games;
+            this.allItems = allItems;
+            this.unfilteredItems = unfilteredItems;
+            this.carouselItems = carouselItems;
+            this.sessionProjection = sessionProjection;
+            this.resumeGameId = resumeGameId;
+            this.suspendedGameId = suspendedGameId;
+            this.sessionSignature = sessionSignature;
+        }
+    }
     private String expandedSearchQuery = "";
     private final PlayniteLibraryQuery.Cache expandedLibraryQuery =
             new PlayniteLibraryQuery.Cache();
@@ -534,6 +566,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String initialLocalAppsHostId = "";
     private String initialLocalLibraryHostId = "";
     private boolean suppressInitialCarouselMotion;
+    private boolean deferInitialPlayniteRefresh;
     private PlayniteLibraryRepository.ErrorKind playniteLibraryError;
     private String currentPlayniteHostUuid;
     private int pendingConsoleUpdateChannels;
@@ -1444,6 +1477,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     protected final void completeInitialCarouselFrame() {
         suppressInitialCarouselMotion = false;
         libraryTransitionCoordinator.setReducedMotion(reducedMotion);
+        if (deferInitialPlayniteRefresh) {
+            deferInitialPlayniteRefresh = false;
+            scheduleNextPlayniteRefresh();
+        }
     }
 
     static boolean initialLocalPresentationReady(String selectedHostId,
@@ -1607,13 +1644,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         homeLayer = new FrameLayout(this);
         homeLayer.addView(new ConsoleBackdrop(this), match());
 
-        artworkBackdrop = new ImageView(this);
-        artworkBackdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        artworkBackdrop = new ArtworkImageView(this);
         artworkBackdrop.setAlpha(0f);
         homeLayer.addView(artworkBackdrop, match());
 
-        artworkBackdropNext = new ImageView(this);
-        artworkBackdropNext.setScaleType(ImageView.ScaleType.CENTER_CROP);
+        artworkBackdropNext = new ArtworkImageView(this);
         artworkBackdropNext.setAlpha(0f);
         homeLayer.addView(artworkBackdropNext, match());
 
@@ -1999,8 +2034,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private ImageView screenSaverImage() {
-        ImageView image = new ImageView(this);
-        image.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        ImageView image = new ArtworkImageView(this);
         image.setAlpha(0f);
         return image;
     }
@@ -3130,15 +3164,27 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 else if (!resolvedGameId.isEmpty()) {
                     activePlayniteGameIds.put(expectedHostId, resolvedGameId);
                 }
+                String acceptedGameId = activePlayniteGameIds.get(expectedHostId);
                 if (active && expectedHostId.equals(selectedHostUuid)
-                        && (freshnessRecovered
-                        || !Objects.equals(previous, activePlayniteGameIds.get(expectedHostId))
-                        || !Objects.equals(previousState, acceptedState))) {
+                        && runningGamePresentationChanged(previous, acceptedGameId,
+                        previousState, acceptedState, freshnessRecovered)) {
                     renderPlayniteLibrary(currentHost(expectedHostId), currentSunshineApps);
                 }
                 if (completion != null) completion.accept(true);
             });
         });
+    }
+
+    static boolean runningGamePresentationChanged(String previousGameId,
+                                                  String currentGameId,
+                                                  String previousState,
+                                                  String currentState,
+                                                  boolean freshnessRecovered) {
+        if (normalizeId(previousGameId).isEmpty()
+                && normalizeId(currentGameId).isEmpty()) return false;
+        return freshnessRecovered
+                || !Objects.equals(previousGameId, currentGameId)
+                || !Objects.equals(previousState, currentState);
     }
 
     private void invalidateActivePlayniteGameRequest(String hostId) {
@@ -4809,6 +4855,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (latestHost == null) return;
                 currentSunshineApps = Collections.unmodifiableList(new ArrayList<>(apps));
                 updateLaunchDesktopButton(latestHost, apps);
+                initialLocalAppsHostId = uuid;
+                if (requiresPreparedInitialCarouselFrame()) {
+                    settleInitialLocalPresentation(latestHost);
+                    return;
+                }
                 boolean playniteAvailable = !currentPlayniteGames.isEmpty() ||
                         hostGatewayStore.loadForHost(latestHost.uuid,
                                 latestHost.activeAddress != null ? latestHost.activeAddress.address : null) != null;
@@ -4818,8 +4869,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     renderApps(latestHost, apps);
                 }
                 if (!playniteAvailable) requestPendingInitialGameFocus(latestHost);
-                initialLocalAppsHostId = uuid;
-                settleInitialLocalPresentation(latestHost);
             }));
         });
     }
@@ -4887,11 +4936,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     currentPlayniteGames = cached.games;
                     playniteLibraryCached = true;
                     playniteLibraryCachedAt = cached.savedAt;
-                    renderPlayniteLibrary(currentHost(host.uuid), currentSunshineApps);
                 }
                 initialLocalLibraryHostId = host.uuid;
-                settleInitialLocalPresentation(currentHost(host.uuid));
-                requestPlayniteRefresh(currentHost(host.uuid), false);
+                ComputerDetails latestHost = currentHost(host.uuid);
+                if (requiresPreparedInitialCarouselFrame()) {
+                    settleInitialLocalPresentation(latestHost);
+                    deferInitialPlayniteRefresh = true;
+                } else if (cached != null) {
+                    renderPlayniteLibrary(latestHost, currentSunshineApps);
+                }
+                if (!deferInitialPlayniteRefresh) {
+                    requestPlayniteRefresh(latestHost, false);
+                }
             });
         });
     }
@@ -4903,7 +4959,33 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (currentPlayniteGames.isEmpty()) {
             renderApps(host, currentSunshineApps);
             requestPendingInitialGameFocus(host);
+        } else if (!restoreInitialLibraryPresentation(host)) {
+            renderPlayniteLibrary(host, currentSunshineApps);
         }
+    }
+
+    private boolean restoreInitialLibraryPresentation(ComputerDetails host) {
+        InitialLibraryPresentation cached = initialLibraryPresentation;
+        if (cached == null || !host.uuid.equals(cached.hostId)
+                || cached.games != currentPlayniteGames) return false;
+        allPlayniteItems = cached.allItems;
+        unfilteredPlayniteItems = cached.unfilteredItems;
+        playniteSessionProjection = cached.sessionProjection;
+        resumePlayniteGameId = cached.resumeGameId;
+        suspendedPlayniteGameId = cached.suspendedGameId;
+        applyPlayniteDiff(host, currentSunshineApps, cached.carouselItems,
+                "", "", false);
+        renderedCarouselSessionSignature = cached.sessionSignature;
+        if (CONSOLE_UI_V2 && !portraitLayout && !unfilteredPlayniteItems.isEmpty()) {
+            addFullLibraryCard();
+        }
+        renderedAppsSignature = null;
+        appsLabel.setText(getString(R.string.playnite_library,
+                host.name.toUpperCase(Locale.ROOT)));
+        updateHostSelector();
+        updatePlayniteLibraryStatus(host);
+        requestPendingInitialGameFocus(host);
+        return true;
     }
 
     private void requestPlayniteRefresh(ComputerDetails host, boolean manual) {
@@ -5725,6 +5807,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 host.name.toUpperCase(Locale.ROOT)));
         updateHostSelector();
         updatePlayniteLibraryStatus(host);
+        initialLibraryPresentation = new InitialLibraryPresentation(
+                host.uuid, currentPlayniteGames, allPlayniteItems,
+                unfilteredPlayniteItems, renderedPlayniteItems,
+                playniteSessionProjection, resumePlayniteGameId,
+                suspendedPlayniteGameId, renderedCarouselSessionSignature);
         if (pendingExpandedLibraryRestore && CONSOLE_UI_V2
                 && !unfilteredItems.isEmpty()) {
             if (!requiresPreparedInitialCarouselFrame()) {
@@ -7014,6 +7101,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 appRow.addView(card, Math.min(index, appRow.getChildCount()),
                         playniteCardSpacing());
             }
+            if (suppressInitialCarouselMotion) {
+                ImageView poster = (ImageView) findTaggedChild(
+                        (ViewGroup) card, "playnite.poster");
+                restoreCachedPlaynitePoster(host, item, poster);
+            }
         }
         renderedPlayniteItems = Collections.unmodifiableList(new ArrayList<>(items));
         String selection = PlayniteLibraryDiff.selectionAfter(focusedId, previousIndex, items);
@@ -7918,20 +8010,28 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (!item.game.backgroundKey.isEmpty()) {
                 File background = playniteArtworkCache.get(hostUuid, item.stableId(),
                         "background", item.game.backgroundKey);
-                if (background != null && background.isFile() && background.length() > 0) {
+                if (usableLoadingArtwork(background)) {
                     return background.getAbsolutePath();
                 }
             }
             if (!item.game.coverKey.isEmpty()) {
                 File cover = playniteArtworkCache.get(hostUuid, item.stableId(),
                         "cover", item.game.coverKey);
-                if (cover != null && cover.isFile() && cover.length() > 0) {
+                if (usableLoadingArtwork(cover)) {
                     return cover.getAbsolutePath();
                 }
             }
             return null;
         }
         return null;
+    }
+
+    private boolean usableLoadingArtwork(File file) {
+        if (file == null || !file.isFile() || file.length() == 0) return false;
+        BitmapFactory.Options bounds = new BitmapFactory.Options();
+        bounds.inJustDecodeBounds = true;
+        BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
+        return LoadingArtworkPolicy.canUseAsSplash(bounds.outWidth, bounds.outHeight);
     }
 
     private ArtworkResult fetchPlayniteArtwork(GatewayConnection connection,
@@ -8364,6 +8464,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         Toast.LENGTH_LONG).show();
             });
         });
+    }
+
+    private void restoreCachedPlaynitePoster(ComputerDetails host,
+                                             PlayniteDashboardItem item,
+                                             ImageView poster) {
+        if (host == null || poster == null) return;
+        PlayniteArtworkSpec spec = playniteCardArtworkSpec(item.game);
+        ArtworkResult cached = cachedPlayniteArtwork(host.uuid, item, spec);
+        if (cached == null) return;
+        Bitmap bitmap = playniteBitmapCache.get(playniteBitmapCacheKey(cached.file));
+        if (bitmap != null) {
+            applyPlayniteBitmap(poster, playniteArtworkTag(item), cached.kind, bitmap);
+        }
     }
 
     private void markExactPlayniteGameIdle(String hostId, int expectedAppId,
@@ -9189,17 +9302,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
         };
         mainHandler.postDelayed(pendingArtworkCommit,
-                reducedMotion ? 0L : ARTWORK_FOCUS_SETTLE_MS);
+                reducedMotion || suppressInitialCarouselMotion
+                        ? 0L : ARTWORK_FOCUS_SETTLE_MS);
     }
 
     private void showArtworkSettled(File file, Drawable preview, String artworkKey) {
         int token = artworkGeneration.incrementAndGet();
+        boolean immediate = reducedMotion || suppressInitialCarouselMotion;
         loadingArtworkKey = artworkKey;
         if (preview != null && !CONSOLE_UI_V2) {
             Drawable next = cloneDrawable(preview);
             Drawable current = artworkHero.getDrawable();
             artworkHero.animate().cancel();
-            if (current != null && !reducedMotion) {
+            if (current != null && !immediate) {
                 TransitionDrawable transition = new TransitionDrawable(
                         new Drawable[]{current, next});
                 transition.setCrossFadeEnabled(true);
@@ -9209,45 +9324,48 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 artworkHero.setImageDrawable(next);
             }
             artworkHero.animate().alpha(.72f)
-                    .setDuration(reducedMotion ? 0 : 180).start();
+                    .setDuration(immediate ? 0 : 180).start();
             artworkScrim.animate().cancel();
-            artworkScrim.animate().alpha(1f).setDuration(reducedMotion ? 0 : 180).start();
+            artworkScrim.animate().alpha(1f).setDuration(immediate ? 0 : 180).start();
         }
         executor.execute(() -> {
             if (token != artworkGeneration.get()) return;
-            Bitmap bitmap = decodeArtwork(file, CONSOLE_UI_V2 ? 1920 : 1200);
+            String bitmapKey = "backdrop:" + artworkKey;
+            Bitmap bitmap = playniteBitmapCache.get(bitmapKey);
+            if (bitmap == null) {
+                bitmap = decodeArtwork(file, CONSOLE_UI_V2 ? 1920 : 1200);
+                if (bitmap != null) playniteBitmapCache.put(bitmapKey, bitmap);
+            }
             if (token != artworkGeneration.get()) {
-                if (bitmap != null) bitmap.recycle();
                 return;
             }
-            int accent = sampleAccent(bitmap);
+            Bitmap readyBitmap = bitmap;
+            int accent = sampleAccent(readyBitmap);
             mainHandler.post(() -> {
-                if (token != artworkGeneration.get() || bitmap == null) {
-                    if (bitmap != null) bitmap.recycle();
+                if (token != artworkGeneration.get() || readyBitmap == null) {
                     if (artworkKey.equals(loadingArtworkKey)) loadingArtworkKey = null;
                     return;
                 }
                 loadingArtworkKey = null;
                 displayedArtworkKey = artworkKey;
                 glassAccent = accent;
-                updateArtworkReadability(bitmap);
+                updateArtworkReadability(readyBitmap);
                 ImageView outgoingBackdrop = artworkBackdrop;
                 ImageView incomingBackdrop = artworkBackdropNext;
                 outgoingBackdrop.animate().cancel();
                 incomingBackdrop.animate().cancel();
-                incomingBackdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
-                incomingBackdrop.setImageBitmap(bitmap);
-                incomingBackdrop.setAlpha(reducedMotion
+                incomingBackdrop.setImageBitmap(readyBitmap);
+                incomingBackdrop.setAlpha(immediate
                         ? (CONSOLE_UI_V2 ? .72f : .16f) : 0f);
                 if (!CONSOLE_UI_V2) {
                     // The preview and final hero have identical geometry. Replacing the
                     // preview avoids a soft double-image while retaining the tile-to-tile crossfade.
-                    artworkHero.setImageBitmap(bitmap);
+                    artworkHero.setImageBitmap(readyBitmap);
                     artworkHero.animate().alpha(.72f)
-                            .setDuration(reducedMotion ? 0 : 220).start();
+                            .setDuration(immediate ? 0 : 220).start();
                 }
                 float targetAlpha = CONSOLE_UI_V2 ? .72f : .16f;
-                if (reducedMotion) {
+                if (immediate) {
                     outgoingBackdrop.setAlpha(0f);
                     finishBackdropSwap(token, outgoingBackdrop, incomingBackdrop);
                 } else {
@@ -9259,7 +9377,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                     token, outgoingBackdrop, incomingBackdrop))
                             .start();
                 }
-                artworkScrim.animate().alpha(1f).setDuration(reducedMotion ? 0 : 220).start();
+                artworkScrim.animate().alpha(1f).setDuration(immediate ? 0 : 220).start();
                 View focused = getCurrentFocus();
                 if (focused != null && focused.getTag() instanceof String
                         && ((String) focused.getTag()).startsWith("app:")) {
@@ -9320,11 +9438,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         BitmapFactory.Options bounds = new BitmapFactory.Options();
         bounds.inJustDecodeBounds = true;
         BitmapFactory.decodeFile(file.getAbsolutePath(), bounds);
-        int sample = 1;
-        while (bounds.outWidth / sample > maxDimension
-                || bounds.outHeight / sample > maxDimension) sample *= 2;
         BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inSampleSize = Math.max(1, sample);
+        options.inSampleSize = LoadingArtworkPolicy.sampleSize(
+                bounds.outWidth, bounds.outHeight, maxDimension);
         return BitmapFactory.decodeFile(file.getAbsolutePath(), options);
     }
 

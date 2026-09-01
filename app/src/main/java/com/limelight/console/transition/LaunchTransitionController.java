@@ -107,7 +107,7 @@ public final class LaunchTransitionController {
     }
 
     public synchronized void videoFrameRendered(String transitionId) {
-        if (!accept(transitionId, null)) return;
+        if (!accept(transitionId, null) || rejectsLateTargetSignal()) return;
         videoFrameReady = true;
         evaluateReady();
     }
@@ -127,7 +127,8 @@ public final class LaunchTransitionController {
     public synchronized void targetProcessRunning(String transitionId, String hostId,
                                                   LaunchTransitionType kind,
                                                   String gameId) {
-        if (!acceptTarget(transitionId, hostId, kind, gameId)) return;
+        if (!acceptTarget(transitionId, hostId, kind, gameId)
+                || rejectsLateTargetSignal()) return;
         targetProcessRunning = true;
         state = kind == LaunchTransitionType.GAME
                 ? LaunchTransitionState.GAME_PROCESS_RUNNING
@@ -137,6 +138,7 @@ public final class LaunchTransitionController {
 
     public synchronized void targetStarting(String transitionId, String hostId,
                                             LaunchTransitionType kind, String gameId) {
+        if (rejectsLateTargetSignal()) return;
         if (kind == LaunchTransitionType.GAME
                 && accept(transitionId, hostId)
                 && currentTarget == LaunchTransitionType.PLAYNITE
@@ -168,7 +170,8 @@ public final class LaunchTransitionController {
     public synchronized void targetWindowStabilizing(String transitionId, String hostId,
                                                      LaunchTransitionType kind,
                                                      String gameId, String reason) {
-        if (!acceptTarget(transitionId, hostId, kind, gameId)) return;
+        if (!acceptTarget(transitionId, hostId, kind, gameId)
+                || rejectsLateTargetSignal()) return;
         targetWindowReady = false;
         detail = reason == null ? "" : reason;
         state = kind == LaunchTransitionType.GAME
@@ -180,7 +183,8 @@ public final class LaunchTransitionController {
     public synchronized void targetWindowReady(String transitionId, String hostId,
                                                LaunchTransitionType kind,
                                                String gameId) {
-        if (!acceptTarget(transitionId, hostId, kind, gameId)) return;
+        if (!acceptTarget(transitionId, hostId, kind, gameId)
+                || rejectsLateTargetSignal()) return;
         boolean newlyReady = !targetWindowReady;
         targetWindowReady = true;
         targetProcessRunning = true;
@@ -198,7 +202,8 @@ public final class LaunchTransitionController {
     public synchronized void targetWindowLost(String transitionId, String hostId,
                                               LaunchTransitionType kind,
                                               String gameId, String reason) {
-        if (!acceptTarget(transitionId, hostId, kind, gameId)) return;
+        if (!acceptTarget(transitionId, hostId, kind, gameId)
+                || rejectsLateTargetSignal()) return;
         targetWindowReady = false;
         videoFrameReady = false;
         detail = reason == null ? "" : reason;
@@ -402,11 +407,25 @@ public final class LaunchTransitionController {
         return true;
     }
 
+    private boolean rejectsLateTargetSignal() {
+        return state == LaunchTransitionState.GAME_STOPPING
+                || state == LaunchTransitionState.PLAYNITE_STOPPING
+                || state == LaunchTransitionState.CLOSING_STREAM
+                || state == LaunchTransitionState.RETURNING_TO_DASHBOARD;
+    }
+
     private static String normalizedGameId(String gameId) {
         return gameId == null ? "" : gameId.trim().toLowerCase();
     }
 
     private void evaluateReady() {
+        if (rejectsLateTargetSignal()
+                || state == LaunchTransitionState.PLAYNITE_RETURNING) {
+            manualRevealAvailable = false;
+            revealAuthorized = false;
+            publish();
+            return;
+        }
         boolean transportReady = surfaceReady && streamConnected && videoFrameReady && inputReady;
         boolean targetReady = gatewayReady && targetProcessRunning && targetWindowReady;
         if (terminalFailureState != null) {

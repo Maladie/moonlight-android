@@ -10,6 +10,7 @@ import html
 import json
 import logging
 import logging.handlers
+import math
 import mimetypes
 import ntpath
 import os
@@ -1022,14 +1023,19 @@ class WindowProbe:
         display = str(window.get("display") or "")
         return not expected_display or display.casefold() == expected_display.casefold()
 
-    def prepare_steam_launch(self, provider: SteamProvider) -> dict[str, Any]:
-        # A direct AppID URI needs an interactive desktop, not a fullscreen launcher.
+    def prepare_steam_launch(self, provider: SteamProvider,
+                             expected_display: str = "") -> dict[str, Any]:
         if self.is_session_locked() or self.uac_consent_pending(fail_closed=True) \
                 or self.is_session_locked():
             return {"ready": False, "reason": "host_session_locked"}
         if provider.executable() is None:
             return {"ready": False, "reason": "steam_unavailable"}
-        return {"ready": True}
+        result = self.ensure_steam_big_picture(provider, expected_display)
+        # Big Picture may take time to open; recheck before dispatching the game.
+        if result.get("ready") and (self.is_session_locked()
+                or self.uac_consent_pending(fail_closed=True) or self.is_session_locked()):
+            return {"ready": False, "reason": "host_session_locked"}
+        return result
 
     def close_steam_big_picture(self, provider: SteamProvider,
                                dispatch_if_current: Callable[..., dict[str, Any]]) -> dict[str, Any]:
@@ -1108,22 +1114,8 @@ class WindowProbe:
                     and self.fills_monitor(list(window.get("bounds") or []),
                                            list(window.get("monitor_bounds") or []))]
 
-        stable_signature: tuple[Any, ...] | None = None
-        stable_samples = 0
-        for sample_index in range(REQUIRED_STABLE_SAMPLES):
-            windows = qualifying()
-            signature = (windows[0].get("hwnd"), tuple(windows[0].get("bounds") or [])) \
-                if windows else None
-            stable_samples = stable_samples + 1 if signature == stable_signature \
-                and signature is not None else 1 if signature is not None else 0
-            stable_signature = signature
-            if stable_samples >= REQUIRED_STABLE_SAMPLES:
-                break
-            if sample_index + 1 < REQUIRED_STABLE_SAMPLES:
-                time.sleep(0.1)
-        if stable_samples >= REQUIRED_STABLE_SAMPLES:
-            return {"ready": True, "started": False}
-
+        # Always request Big Picture: a fullscreen desktop Steam window is not
+        # evidence that gamepad UI is active. Opening it again does not restart Steam.
         steam_running = self._exact_process_running(executable) or any(self._steam_window(
             window, executable.parent, "")
             for window in self.interactive_windows(True))
@@ -1530,6 +1522,9 @@ class BridgeState:
         self._running_scan_status = "unavailable"
         self._running_scan_revision = ""
         self._running_scan_at = 0.0
+        # Host-owned Epic totals live in the existing profile library cache.
+        self.epic_playtime_seconds: dict[str, float] = {}
+        self._epic_playtime_samples: dict[str, tuple[str, float]] = {}
         self.snapshot_in_progress = False
         self.categories: list[dict[str, Any]] = []
         self.plugins: list[dict[str, Any]] = []
@@ -1732,6 +1727,15 @@ class BridgeState:
                 normalized["id"] = game_id
                 library[game_id] = normalized
             self.library = library
+            cached_playtime = cached.get("epic_playtime_seconds")
+            if not isinstance(cached_playtime, dict):
+                cached_playtime = {}
+            self.epic_playtime_seconds = {
+                str(key): float(value)
+                for key, value in cached_playtime.items()
+                if re.fullmatch(r"epic:[A-Za-z0-9_-]+", str(key))
+                and isinstance(value, (int, float)) and math.isfinite(value) and value >= 0}
+            self._apply_epic_playtime_locked()
             playnite_values = cached.get("playnite_library") \
                 if cached.get("version") == 2 else cached.get("library")
             self.playnite_library = {}
@@ -2033,6 +2037,7 @@ class BridgeState:
             "saved_at": int(time.time()),
             "revision": self.library_revision,
             "library": list(self.library.values()),
+            "epic_playtime_seconds": dict(self.epic_playtime_seconds),
             "playnite_library": list(self.playnite_library.values()),
             "providers": dict(self.provider_health),
             "categories": list(self.categories),
@@ -2219,6 +2224,7 @@ class BridgeState:
                 library = aggregated.get("library") or {}
                 self.library = {str(key): dict(value) for key, value in library.items()
                                 if isinstance(value, dict) and GAME_ID_PATTERN.fullmatch(str(key))}
+                self._apply_epic_playtime_locked()
                 providers = aggregated.get("providers") or {}
                 self.provider_health.update({
                     str(key): dict(value) for key, value in providers.items()
@@ -3784,6 +3790,45 @@ class BridgeState:
                 status = "partial"
         return verified, status, revision
 
+    def _apply_epic_playtime_locked(self) -> None:
+        for game_id, game in self.library.items():
+            if game.get("provider") != "epic":
+                continue
+            # Import the old history once; later Playnite snapshots cannot reset it.
+            if game_id not in self.epic_playtime_seconds:
+                self.epic_playtime_seconds[game_id] = max(0, int(
+                    game.get("playtimeSeconds", int(game.get("playtimeMinutes") or 0) * 60)))
+            game["playtimeSeconds"] = int(self.epic_playtime_seconds[game_id])
+            game["playtimeMinutes"] = game["playtimeSeconds"] // 60
+
+    def _sample_epic_playtime_locked(self, games: list[dict[str, Any]], now: float) -> None:
+        self._apply_epic_playtime_locked()
+        samples = {}
+        publish = False
+        for running in games:
+            game_id = running["game_id"]
+            if (self.library.get(game_id) or {}).get("provider") != "epic":
+                continue
+            token = running["process_token"]
+            previous = self._epic_playtime_samples.get(game_id)
+            before = self.epic_playtime_seconds[game_id]
+            if previous is not None and previous[0] == token:
+                elapsed = now - previous[1]
+                # ponytail: sampled process lifetime, not active input time. Do not
+                # charge sleep, Bridge downtime or gaps in process verification.
+                if 0 < elapsed <= 15:
+                    self.epic_playtime_seconds[game_id] += elapsed
+            publish |= int(before // 60) != int(self.epic_playtime_seconds[game_id] // 60)
+            samples[game_id] = (token, now)
+        publish |= bool(self._epic_playtime_samples.keys() - samples.keys())
+        self._epic_playtime_samples = samples
+        self._apply_epic_playtime_locked()
+        if publish:
+            self._advance_library_revision_locked()
+            self._save_library_cache_locked()
+            self._publish_locked("library-updated", {
+                "count": len(self.library), "revision": self.library_revision})
+
     def refresh_running_games(self) -> None:
         started = time.monotonic()
         try:
@@ -3792,11 +3837,14 @@ class BridgeState:
             games, status, revision = [], "unavailable", ""
         with self.lock:
             if revision != self.library_revision:
+                self._epic_playtime_samples.clear()
                 return
+            self._sample_epic_playtime_locked(
+                games if status != "unavailable" else [], time.monotonic())
             self._running_games = [{key: game[key] for key in (
                 "game_id", "process_id", "process_token")} for game in games]
             self._running_scan_status = status
-            self._running_scan_revision = revision
+            self._running_scan_revision = self.library_revision
             self._running_scan_at = time.monotonic()
         elapsed = time.monotonic() - started
         if elapsed > 0.2:
@@ -3804,10 +3852,17 @@ class BridgeState:
 
     def current_snapshot(self) -> dict[str, Any]:
         with self.lock:
+            game_id = str(self.current.get("id") or "")
+            game = self.library.get(game_id)
+            host_guide_allowed = (
+                not game_id and self.current.get("state") == "idle"
+            ) or (game is not None and self.game_operations.provider_for(game)
+                  is self.game_operations.steam)
             fresh = self._running_scan_revision == self.library_revision \
                 and self._running_scan_at > 0 \
                 and time.monotonic() - self._running_scan_at <= 10.0
             return {**self.current,
+                    "host_guide_allowed": host_guide_allowed,
                     "running_games": [dict(game) for game in self._running_games] if fresh else [],
                     "running_scan_status": self._running_scan_status if fresh else "unavailable",
                     "running_scan_revision": self._running_scan_revision if fresh else self.library_revision}
@@ -4791,7 +4846,8 @@ def main() -> None:
     state.running_process_probe = window_probe
     state.set_reconciliation_actions(
         window_probe.process_identity, window_probe.process_identities)
-    steam_provider.launch_preflight = window_probe.prepare_steam_launch
+    steam_provider.launch_preflight = lambda provider: window_probe.prepare_steam_launch(
+        provider, state.expected_display)
     state.nonsteam_launch_preparation = lambda dispatch: window_probe.close_steam_big_picture(
         steam_provider, dispatch)
     ensure_playnite_desktop(str(config.get("playnite_desktop_executable", "")).strip())

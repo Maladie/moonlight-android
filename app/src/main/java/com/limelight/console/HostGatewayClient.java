@@ -340,6 +340,7 @@ final class HostGatewayClient {
         final String title;
         final int processId;
         final RunningGames runningGames;
+        final boolean hostGuideAllowed;
 
         PlayniteCurrentGame(String state, String id, String title, int processId) {
             this(state, id, title, processId, null);
@@ -347,11 +348,17 @@ final class HostGatewayClient {
 
         PlayniteCurrentGame(String state, String id, String title, int processId,
                             RunningGames runningGames) {
+            this(state, id, title, processId, runningGames, false);
+        }
+
+        PlayniteCurrentGame(String state, String id, String title, int processId,
+                            RunningGames runningGames, boolean hostGuideAllowed) {
             this.state = state;
             this.id = id;
             this.title = title;
             this.processId = processId;
             this.runningGames = runningGames;
+            this.hostGuideAllowed = hostGuideAllowed;
         }
     }
 
@@ -922,12 +929,16 @@ final class HostGatewayClient {
     PlayniteCurrentGame getPlayniteCurrentGame(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection, "/api/v1/playnite/game/current",
                 "GET", null, READ_TIMEOUT_MS);
+        return parseCurrentGame(response);
+    }
+
+    static PlayniteCurrentGame parseCurrentGame(JSONObject response) {
         JSONObject current = response.optJSONObject("current");
         if (current == null) current = new JSONObject();
         return new PlayniteCurrentGame(current.optString("state", "idle"),
                 current.optString("id", ""), current.optString("title", ""),
                 current.optInt("processId", current.optInt("process_id", 0)),
-                parseRunningGames(current));
+                parseRunningGames(current), current.optBoolean("host_guide_allowed", false));
     }
 
     PlayniteHealth getPlayniteHealth(GatewayConnection connection) throws IOException {

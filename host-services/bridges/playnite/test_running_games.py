@@ -40,6 +40,22 @@ class RunningGamesTest(unittest.TestCase):
         return next(game["process_token"] for game in self.state.current_snapshot()["running_games"]
                     if game["game_id"] == game_id)
 
+    def test_guide_policy_uses_current_provider_not_other_running_games_or_id_prefix(self):
+        self.state.refresh_running_games()
+        self.assertFalse(self.state.current_snapshot()["host_guide_allowed"])
+        self.state.current = {"state": "running", "id": "steam:1"}
+        self.assertTrue(self.state.current_snapshot()["host_guide_allowed"])
+        legacy_id = "11111111-2222-3333-4444-555555555555"
+        self.state.library[legacy_id] = {"id": legacy_id, "source": "Steam"}
+        self.state.current = {"state": "running", "id": legacy_id}
+        self.assertTrue(self.state.current_snapshot()["host_guide_allowed"])
+        self.state.library[legacy_id]["source"] = "Other"
+        self.assertFalse(self.state.current_snapshot()["host_guide_allowed"])
+        self.state.current = {"state": "running", "id": "steam:unknown"}
+        self.assertFalse(self.state.current_snapshot()["host_guide_allowed"])
+        self.state.current = {"state": "idle"}
+        self.assertTrue(self.state.current_snapshot()["host_guide_allowed"])
+
     def test_two_games_partial_inventory_and_noncurrent_stop_preserve_session(self):
         token = self.token()
         snapshot = self.state.current_snapshot()

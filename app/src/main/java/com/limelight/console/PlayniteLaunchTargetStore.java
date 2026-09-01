@@ -22,12 +22,15 @@ final class PlayniteLaunchTargetStore {
     void setGameTarget(String hostUuid, String gameId, int appId) {
         String key = gameKey(hostUuid, gameId);
         if (key == null || appId <= 0) return;
+        if (preferences.getInt(key, 0) == appId) return;
         preferences.edit().putInt(key, appId).apply();
     }
 
     void clearGameTarget(String hostUuid, String gameId) {
         String key = gameKey(hostUuid, gameId);
-        if (key != null) preferences.edit().remove(key).apply();
+        if (key != null && preferences.contains(key)) {
+            preferences.edit().remove(key).apply();
+        }
     }
 
     Integer playniteTarget(String hostUuid) {
@@ -38,11 +41,16 @@ final class PlayniteLaunchTargetStore {
 
     void setPlayniteTarget(String hostUuid, int appId) {
         if (!validHost(hostUuid) || appId <= 0) return;
-        preferences.edit().putInt(hostUuid + ".fullscreen", appId).apply();
+        String key = hostUuid + ".fullscreen";
+        if (preferences.getInt(key, 0) == appId) return;
+        preferences.edit().putInt(key, appId).apply();
     }
 
     void clearPlayniteTarget(String hostUuid) {
-        if (validHost(hostUuid)) preferences.edit().remove(hostUuid + ".fullscreen").apply();
+        String key = hostUuid + ".fullscreen";
+        if (validHost(hostUuid) && preferences.contains(key)) {
+            preferences.edit().remove(key).apply();
+        }
     }
 
     private static String gameKey(String hostUuid, String gameId) {

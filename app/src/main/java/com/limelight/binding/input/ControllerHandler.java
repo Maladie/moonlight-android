@@ -58,6 +58,12 @@ import java.util.Map;
 
 public class ControllerHandler implements InputManager.InputDeviceListener, UsbDriverListener {
 
+    private final ControllerGuidePolicy guidePolicy = new ControllerGuidePolicy();
+
+    public ControllerGuidePolicy getGuidePolicy() {
+        return guidePolicy;
+    }
+
     /**
      * Listener interface for physical controller button state changes.
      * Allows observers to react to gamepad input changes (e.g., update virtual controller visuals).
@@ -481,6 +487,50 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
 
     public boolean isInputSuppressed() {
         return inputSuppressed;
+    }
+
+    /** Announces attached pads with neutral state even while the privacy gate is closed. */
+    public void announceConnectedControllers() {
+        if (stopped) return;
+        for (int deviceId : InputDevice.getDeviceIds()) {
+            trackInputDeviceIfGamepad(InputDevice.getDevice(deviceId));
+        }
+        for (int i = 0; i < inputDeviceContexts.size(); i++) {
+            InputDeviceContext context = inputDeviceContexts.valueAt(i);
+            if (context.hasJoystickAxes) assignControllerNumberIfNeeded(context);
+        }
+        for (int i = 0; i < usbDeviceContexts.size(); i++) {
+            assignControllerNumberIfNeeded(usbDeviceContexts.valueAt(i));
+        }
+
+        // Arrival packets describe capabilities, but some games enumerate the virtual pad
+        // only after receiving its first input packet. Prime every assigned controller before
+        // a non-Steam game starts, even though the privacy gate still suppresses user input.
+        boolean[] primedControllers = new boolean[MAX_GAMEPADS];
+        for (int i = 0; i < inputDeviceContexts.size(); i++) {
+            InputDeviceContext context = inputDeviceContexts.valueAt(i);
+            if (context.hasJoystickAxes) primeControllerIfNeeded(context, primedControllers);
+        }
+        for (int i = 0; i < usbDeviceContexts.size(); i++) {
+            primeControllerIfNeeded(usbDeviceContexts.valueAt(i), primedControllers);
+        }
+        if (prefConfig.onscreenController) sendNeutralControllerInput((short) 0);
+    }
+
+    private void primeControllerIfNeeded(GenericControllerContext context,
+                                         boolean[] primedControllers) {
+        if (!context.assignedControllerNumber
+                || context.controllerNumber < 0
+                || context.controllerNumber >= primedControllers.length
+                || primedControllers[context.controllerNumber]) return;
+        primedControllers[context.controllerNumber] = true;
+        sendNeutralControllerInput(context.controllerNumber);
+    }
+
+    private void sendNeutralControllerInput(short controllerNumber) {
+        conn.sendControllerInput(controllerNumber, getActiveControllerMask(),
+                (short) 0, (byte) 0, (byte) 0,
+                (short) 0, (short) 0, (short) 0, (short) 0);
     }
 
     public void destroy() {
@@ -1550,7 +1600,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         }
         else {
             conn.sendControllerInput(controllerNumber, getActiveControllerMask(),
-                    inputMap,
+                    guidePolicy.filter(inputMap),
                     leftTrigger, rightTrigger,
                     leftStickX, leftStickY,
                     rightStickX, rightStickY);

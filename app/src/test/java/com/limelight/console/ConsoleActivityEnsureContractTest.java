@@ -13,13 +13,13 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ConsoleActivityEnsureContractTest {
-    @Test public void screenSaverShowsWholeArtworkWithoutUpscaling() throws IOException {
+    @Test public void screenSaverUsesSharedBoundedArtworkSizing() throws IOException {
         String source = consoleActivitySource();
         String method = source.substring(source.indexOf("private ImageView screenSaverImage()"),
                 source.indexOf("private void buildHostSelectionLayer"));
 
-        assertTrue(method.contains("ImageView.ScaleType.CENTER_INSIDE"));
-        assertFalse(method.contains("ImageView.ScaleType.CENTER_CROP"));
+        assertTrue(method.contains("new ArtworkImageView(this)"));
+        assertFalse(method.contains("setScaleType("));
     }
 
     @Test public void successfulEnsurePollsBeforeAnyRenderOfTheOldAppList() throws IOException {
@@ -318,8 +318,8 @@ public class ConsoleActivityEnsureContractTest {
         assertFalse(retry.contains("showHome()"));
         assertTrue(resolve.indexOf("boolean freshnessRecovered")
                 < resolve.indexOf("activePlayniteGameResolvedAt.put("));
-        assertTrue(resolve.contains("freshnessRecovered\n"
-                + "                        || !Objects.equals(previous"));
+        assertTrue(resolve.contains("runningGamePresentationChanged(previous"));
+        assertTrue(resolve.contains("previousState, acceptedState, freshnessRecovered"));
     }
 
     @Test public void warmUpCancelAndFailureRemainScopedAndInline() throws IOException {
@@ -513,6 +513,9 @@ public class ConsoleActivityEnsureContractTest {
         String settle = console.substring(console.indexOf(
                         "private void settleInitialLocalPresentation("),
                 console.indexOf("private void requestPlayniteRefresh("));
+        String localApps = console.substring(console.indexOf(
+                        "private void renderAppsAsync(ComputerDetails host, boolean focusApps)"),
+                console.indexOf("private void runLibraryUpdateWhenNavigationIdle("));
         String localLibrary = console.substring(console.indexOf(
                         "private void loadPlayniteForHost("),
                 console.indexOf("private void settleInitialLocalPresentation("));
@@ -540,7 +543,23 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(prepare.contains("return false;"));
         assertTrue(settle.contains("currentPlayniteGames.isEmpty()"));
         assertTrue(settle.contains("renderApps(host, currentSunshineApps)"));
+        assertTrue(settle.contains("renderPlayniteLibrary(host, currentSunshineApps)"));
+        assertTrue(settle.contains("restoreInitialLibraryPresentation(host)"));
         assertFalse(settle.contains("requestPlayniteRefresh("));
+        assertTrue(localApps.indexOf("initialLocalAppsHostId = uuid")
+                < localApps.indexOf("if (requiresPreparedInitialCarouselFrame())"));
+        assertTrue(localApps.indexOf("settleInitialLocalPresentation(latestHost)")
+                < localApps.indexOf("renderPlayniteLibrary(latestHost, apps)"));
+        assertTrue(localLibrary.contains("deferInitialPlayniteRefresh = true"));
+        assertTrue(localLibrary.contains("if (!deferInitialPlayniteRefresh)"));
+        assertTrue(console.contains("if (deferInitialPlayniteRefresh)"));
+        assertTrue(console.contains("scheduleNextPlayniteRefresh()"));
+        String restore = console.substring(console.indexOf(
+                        "private boolean restoreInitialLibraryPresentation("),
+                console.indexOf("private void requestPlayniteRefresh("));
+        assertTrue(restore.contains("cached.games != currentPlayniteGames"));
+        assertTrue(restore.contains("applyPlayniteDiff("));
+        assertFalse(restore.contains("PlayniteTargetResolver.resolve("));
         assertTrue(console.contains("suppressInitialCarouselMotion = true"));
         assertTrue(console.contains("suppressInitialCarouselMotion = false"));
         assertTrue(console.contains("if (suppressInitialCarouselMotion) return;"));

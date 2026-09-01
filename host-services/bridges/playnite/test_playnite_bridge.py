@@ -113,7 +113,7 @@ class WindowProbeTest(unittest.TestCase):
             "monitor_bounds": [0, 0, 1920, 1080],
         }
 
-    def test_big_picture_already_active_does_not_relaunch(self):
+    def test_fullscreen_steam_still_requests_big_picture_without_restart(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             (root / "steam.exe").touch()
@@ -125,13 +125,16 @@ class WindowProbeTest(unittest.TestCase):
             window = self._steam_big_picture_window(root)
             probe.interactive_windows = mock.Mock(return_value=[window])
 
-            result = probe.ensure_steam_big_picture(
-                provider, r"\\.\DISPLAY1", timeout=.1)
+            with mock.patch("GameProviderBridge.time.sleep"):
+                result = probe.ensure_steam_big_picture(
+                    provider, r"\\.\DISPLAY1", timeout=1)
 
             self.assertTrue(result["ready"])
-            self.assertFalse(result["started"])
+            self.assertTrue(result["started"])
             probe.interactive_windows.assert_called_with(True)
-            runner.assert_not_called()
+            self.assertEqual([str((root / "steam.exe").resolve()),
+                              "steam://open/bigpicture"], runner.call_args.args[0])
+            self.assertEqual(1, runner.call_count)
 
     def test_big_picture_visible_before_display_resolution_is_accepted(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -145,13 +148,15 @@ class WindowProbeTest(unittest.TestCase):
             probe.interactive_windows = mock.Mock(return_value=[
                 self._steam_big_picture_window(root)])
 
-            result = probe.ensure_steam_big_picture(provider, "", timeout=.1)
+            with mock.patch("GameProviderBridge.time.sleep"):
+                result = probe.ensure_steam_big_picture(provider, "", timeout=1)
 
             self.assertTrue(result["ready"])
-            self.assertFalse(result["started"])
-            runner.assert_not_called()
+            self.assertTrue(result["started"])
+            self.assertEqual([str((root / "steam.exe").resolve()),
+                              "steam://open/bigpicture"], runner.call_args.args[0])
 
-    def test_direct_steam_launch_does_not_wait_for_display_resolution(self):
+    def test_direct_steam_launch_opens_big_picture_before_game_with_unresolved_display(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             executable = root / "steam.exe"; executable.touch()
@@ -167,24 +172,50 @@ class WindowProbeTest(unittest.TestCase):
                 roots=[root], root_resolver=lambda: root, command_runner=runner)
             probe = WindowProbe(mock.Mock())
             probe.is_session_locked = mock.Mock(return_value=False)
-            probe.interactive_windows = mock.Mock(return_value=[
-                self._steam_big_picture_window(root)])
             probe.uac_consent_pending = mock.Mock(return_value=False)
             provider.launch_preflight = probe.prepare_steam_launch
+            window = self._steam_big_picture_window(root)
+            game = {"id": "steam:367520", "provider": "steam",
+                    "providerGameId": "367520"}
 
-            for windows in ([], [{"display": "other", "bounds": [0, 0, 800, 600]}]):
-                probe.interactive_windows = mock.Mock(return_value=windows)
-                result = provider.launch({
-                    "id": "steam:367520", "provider": "steam",
-                    "providerGameId": "367520",
-                }, "launch-task")
+            for running in (False, True):
+                runner.reset_mock()
+                probe._exact_process_running = mock.Mock(return_value=running)
+                # Cold start first probes existing windows; both paths then wait
+                # until Big Picture has remained fullscreen for three samples.
+                probe.interactive_windows = mock.Mock(side_effect=(
+                    [] if running else [[]]) + [[], [window], [window], [window]])
+                with mock.patch("GameProviderBridge.time.sleep"):
+                    result = provider.launch(game, "launch-task")
                 self.assertTrue(result["accepted"])
-                self.assertEqual([str(executable.resolve()),
-                                  "steam://launch/367520/Dialog"],
-                                 runner.call_args.args[0])
-                probe.interactive_windows.assert_not_called()
+                self.assertEqual([
+                    [str(executable.resolve()),
+                     "steam://open/bigpicture" if running else "-gamepadui"],
+                    [str(executable.resolve()), "steam://launch/367520/Dialog"],
+                ], [call.args[0] for call in runner.call_args_list])
                 provider.process_registry.remove(provider.process_registry.get("launch-task"))
-            self.assertEqual(2, runner.call_count)
+
+            runner.reset_mock()
+            probe.interactive_windows = mock.Mock(return_value=[])
+            with mock.patch("GameProviderBridge.time.monotonic", side_effect=[0, 20]):
+                result = provider.launch(game, "launch-task")
+            self.assertFalse(result["accepted"])
+            self.assertEqual("launcher_interaction_required", result["reason"])
+            self.assertTrue(result["requires_attention"])
+            self.assertEqual(1, runner.call_count)
+            self.assertEqual([str(executable.resolve()), "steam://open/bigpicture"],
+                             runner.call_args.args[0])
+
+    def test_steam_preflight_rechecks_session_after_big_picture_wait(self):
+        probe = WindowProbe(mock.Mock())
+        provider = mock.Mock()
+        probe.is_session_locked = mock.Mock(return_value=False)
+        probe.uac_consent_pending = mock.Mock(side_effect=[False, True])
+        probe.ensure_steam_big_picture = mock.Mock(return_value={"ready": True})
+
+        self.assertEqual({"ready": False, "reason": "host_session_locked"},
+                         probe.prepare_steam_launch(provider, r"\\.\DISPLAY1"))
+        probe.ensure_steam_big_picture.assert_called_once_with(provider, r"\\.\DISPLAY1")
 
     def test_direct_steam_preflight_rejects_locked_uac_and_unavailable_probe(self):
         provider = mock.Mock()
@@ -225,7 +256,7 @@ class WindowProbeTest(unittest.TestCase):
             probe.is_session_locked = mock.Mock(return_value=False)
             window = self._steam_big_picture_window(root)
             probe.interactive_windows = mock.Mock(side_effect=[
-                [], [], [], [], [window], [window], [window],
+                [], [], [window], [window], [window],
             ])
 
             with mock.patch("GameProviderBridge.time.sleep"):
@@ -256,7 +287,7 @@ class WindowProbeTest(unittest.TestCase):
             probe.is_session_locked = mock.Mock(return_value=False)
             window = self._steam_big_picture_window(root)
             probe.interactive_windows = mock.Mock(side_effect=[
-                [], [], [], [], [window], [window], [window],
+                [], [], [window], [window], [window],
             ])
 
             with mock.patch("GameProviderBridge.time.sleep"):
@@ -282,7 +313,7 @@ class WindowProbeTest(unittest.TestCase):
             probe._exact_process_running = mock.Mock(return_value=True)
             window = self._steam_big_picture_window(root)
             probe.interactive_windows = mock.Mock(side_effect=[
-                [], [], [], [window], [window], [window],
+                [], [window], [window], [window],
             ])
 
             with mock.patch("GameProviderBridge.time.sleep"):

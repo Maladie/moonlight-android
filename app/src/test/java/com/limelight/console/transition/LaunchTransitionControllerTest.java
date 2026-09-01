@@ -411,6 +411,31 @@ public class LaunchTransitionControllerTest {
     }
 
     @Test
+    public void lateRunningSignalsCannotReopenAStoppingGame() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        transportReady(controller);
+        controller.gatewayConnected("transition-1", HOST);
+        controller.targetWindowReady("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME);
+        controller.videoFrameRendered("transition-1");
+        controller.revealCompleted("transition-1");
+
+        controller.gameStopping("transition-1", HOST, GAME);
+        controller.targetProcessRunning("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME);
+        controller.targetWindowReady("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME);
+        controller.videoFrameRendered("transition-1");
+
+        LaunchTransitionSnapshot stopped = controller.snapshot();
+        assertEquals(LaunchTransitionState.GAME_STOPPING, stopped.state);
+        assertTrue(stopped.overlayVisible);
+        assertTrue(stopped.inputBlocked);
+        assertFalse(stopped.revealAuthorized);
+        assertFalse(stopped.manualRevealAvailable);
+    }
+
+    @Test
     public void differentGameCannotReplaceAnActiveGameWithoutPlayniteReturn() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         controller.targetStarting("transition-1", HOST,
