@@ -106,20 +106,26 @@ function Resolve-PlayniteInstall {
     if (-not [string]::IsNullOrWhiteSpace($PlayniteDirectory)) {
         return $PlayniteDirectory.Trim()
     }
+    $connectorPath = "Extensions\SunshinePlaynite\SunshinePlaynite.psm1"
     $process = Get-Process -Name "Playnite.DesktopApp", "Playnite.FullscreenApp" `
         -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($process -and $process.Path) { return Split-Path -Parent $process.Path }
+    if ($process -and $process.Path) {
+        $directory = Split-Path -Parent $process.Path
+        if (Test-Path -LiteralPath (Join-Path $directory $connectorPath)) { return $directory }
+    }
     $candidates = @(
         (Join-Path $env:LOCALAPPDATA "Playnite"),
         (Join-Path $env:ProgramFiles "Playnite"),
         $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} "Playnite" } else { "" })
     )
     foreach ($candidate in $candidates) {
-        if ($candidate -and (Test-Path -LiteralPath (Join-Path $candidate "Playnite.FullscreenApp.exe"))) {
+        if ($candidate -and
+            (Test-Path -LiteralPath (Join-Path $candidate "Playnite.FullscreenApp.exe")) -and
+            (Test-Path -LiteralPath (Join-Path $candidate $connectorPath))) {
             return $candidate
         }
     }
-    throw "Playnite was not detected. Start Playnite or choose its installation directory."
+    return ""
 }
 
 function Protect-MachineText {
@@ -358,7 +364,7 @@ if (-not $SkipVibepollo -and $env:MOONWAKER_VIBEPOLLO_CREATE_TOKEN -eq "1") {
     New-MoonWakerVibepolloToken
 }
 $resolvedPlaynite = if ($SkipPlaynite) { "" } else { Resolve-PlayniteInstall }
-if (-not $SkipPlaynite) {
+if (-not $SkipPlaynite -and -not [string]::IsNullOrWhiteSpace($resolvedPlaynite)) {
     $connector = Join-Path $resolvedPlaynite "Extensions\SunshinePlaynite\SunshinePlaynite.psm1"
     if (-not (Test-Path -LiteralPath $connector)) {
         throw "Sunshine Playnite Connector was not found in $resolvedPlaynite."
@@ -384,7 +390,7 @@ try {
         -SkipVibepollo:$SkipVibepollo -SkipPlaynite:$SkipPlaynite `
         -NonInteractiveConfiguration
 
-    if (-not $SkipPlaynite) {
+    if (-not $SkipPlaynite -and -not [string]::IsNullOrWhiteSpace($resolvedPlaynite)) {
         $installedPatch = Join-Path $profileRoot "playnite\Install-WakePlayConnectorPatch.ps1"
         $installedConfig = Join-Path $profileRoot "playnite\config.json"
         $playniteConfig = Get-Content -LiteralPath $installedConfig -Raw | ConvertFrom-Json

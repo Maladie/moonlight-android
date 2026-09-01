@@ -4295,9 +4295,17 @@ class BridgeState:
         value = next((str(game.get(field) or "").strip()
                       for field in fields[kind] if game.get(field)), "")
         if not value and kind == "background":
-            value = str(game.get("boxArtPath") or "").strip()
+            value = next((str(game.get(field) or "").strip()
+                          for field in fields["cover"] if game.get(field)), "")
         path = Path(value).expanduser()
-        if not value or not path.is_file():
+        if value and urllib.parse.urlparse(value).scheme == "https":
+            expected_version = str(game.get("artworkVersion") or "")
+            path = self.game_operations.artwork(game, kind)
+            with self.lock:
+                current = self.library.get(normalized) or {}
+                if str(current.get("artworkVersion") or "") != expected_version:
+                    raise FileNotFoundError("Artwork metadata changed during retrieval.")
+        elif not value or not path.is_file():
             raise FileNotFoundError("Artwork is unavailable for this game.")
         size = path.stat().st_size
         if size <= 0 or size > MAX_ARTWORK_BYTES:
@@ -4821,10 +4829,12 @@ def main() -> None:
     journal = OperationJournal(config_path.with_name("operations.sqlite3"))
     profile_root = config_path.parent.parent
     install_root = profile_root.parent.parent
+    provider_artwork_cache = profile_root / "cache" / "provider-artwork"
     legendary_path = str(config.get("legendary_path", "")).strip()
     steam_provider = SteamProvider(
         Path(__file__).with_name("Confirm-SteamOperation.ps1"),
-        api_key_path=config_path.with_name("steam-web-api-key.dpapi"))
+        api_key_path=config_path.with_name("steam-web-api-key.dpapi"),
+        artwork_cache_path=provider_artwork_cache)
     game_operations = GameOperationsService(
         journal,
         GenericPlayniteProvider(),
@@ -4833,7 +4843,8 @@ def main() -> None:
             legendary_path=Path(legendary_path) if legendary_path else install_root / "tools" / "legendary" / "legendary.exe",
             legendary_state_path=profile_root / "state" / "legendary",
             epic_install_root=Path(str(config.get("epic_install_root", "")).strip()) if str(config.get("epic_install_root", "")).strip() else None,
-            legendary_enabled=bool(config.get("epic_legendary_enabled", True))))
+            legendary_enabled=bool(config.get("epic_legendary_enabled", True)),
+            artwork_cache_path=provider_artwork_cache))
     audit_path = config_path.with_name("playnite-operation-audit.jsonl")
     state = BridgeState(expected_display, config_path.with_name("library-cache.json"),
                         config_path.parent.parent / "moonwaker-version.json",

@@ -729,13 +729,13 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     }
 
     private TextView action(String value) {
-        TextView view = text(value, 14, 0xFFE7F5FF, true);
+        TextView view = text(value, 13, 0xFFE7F5FF, true);
         view.setGravity(Gravity.CENTER);
         view.setFocusable(true);
         view.setClickable(true);
-        view.setMinWidth(dp(96));
-        view.setMinHeight(dp(48));
-        view.setPadding(dp(16), dp(8), dp(16), dp(8));
+        view.setMinWidth(dp(88));
+        view.setMinHeight(dp(44));
+        view.setPadding(dp(14), dp(6), dp(14), dp(6));
         view.setBackground(actionBackground(false));
         view.setOnFocusChangeListener((focusedView, focused) -> {
             focusedView.setBackground(actionBackground(focused));
@@ -839,7 +839,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
     private LinearLayout.LayoutParams actionParams() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(44));
         params.leftMargin = dp(6);
         params.rightMargin = dp(6);
         return params;

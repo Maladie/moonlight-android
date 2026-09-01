@@ -202,7 +202,7 @@ class GameOperationsTest(unittest.TestCase):
             runner.assert_not_called()
             sender.assert_not_called()
 
-    def test_aggregate_catalog_uses_exact_provider_ids_and_no_title_matching(self):
+    def test_aggregate_catalog_ignores_playnite_for_direct_providers(self):
         self.steam.catalog = mock.Mock(return_value={
             "available": True, "complete": True, "reason": "", "games": [{
                 "id": "steam:289070", "provider": "steam",
@@ -234,7 +234,8 @@ class GameOperationsTest(unittest.TestCase):
             [steam_overlay, epic_wrong_case, same_title_gog])["library"]
 
         self.assertEqual(3, len(result))
-        self.assertEqual(steam_overlay["id"], result["steam:289070"]["playniteGameId"])
+        self.assertNotIn("playniteGameId", result["steam:289070"])
+        self.assertNotIn("cover", result["steam:289070"])
         self.assertNotIn("cover", result["epic:CelesteApp"])
         self.assertEqual("playnite", result[same_title_gog["id"]]["provider"])
         self.assertEqual("gog", result[same_title_gog["id"]]["libraryKey"])
@@ -260,6 +261,29 @@ class GameOperationsTest(unittest.TestCase):
         self.assertEqual("steam", result["library"]["steam:10"]["provider"])
         self.assertEqual("offline", result["providers"]["steam"]["reason"])
 
+    def test_direct_metadata_cache_survives_provider_metadata_failure(self):
+        self.steam.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "reason": "", "games": [{
+                "id": "steam:10", "provider": "steam", "providerGameId": "10",
+                "name": "Counter-Strike",
+            }],
+        })
+        self.epic.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "reason": "", "games": [],
+        })
+        previous = {"steam:10": {
+            "id": "steam:10", "provider": "steam", "providerGameId": "10",
+            "name": "Counter-Strike", "metadataProvider": "steam",
+            "description": "Cached", "cover": "https://example.invalid/cover.jpg",
+            "artworkVersion": "cached-version",
+        }}
+
+        game = self.service.aggregate_catalog([], previous)["library"]["steam:10"]
+
+        self.assertEqual("Cached", game["description"])
+        self.assertEqual("cached-version", game["artworkVersion"])
+        self.assertEqual("steam", game["metadataProvider"])
+
     def test_incomplete_provider_snapshot_preserves_last_authoritative_record(self):
         self.steam.catalog = mock.Mock(return_value={
             "available": True, "complete": False,
@@ -281,7 +305,28 @@ class GameOperationsTest(unittest.TestCase):
         self.assertTrue(result["library"]["steam:10"]["installed"])
         self.assertFalse(result["providers"]["steam"]["complete"])
 
-    def test_steam_usage_survives_playnite_overlay_and_offline_manifest_refresh(self):
+    def test_incomplete_provider_snapshot_accepts_confirmed_installation(self):
+        self.steam.catalog = mock.Mock(return_value={
+            "available": True, "complete": False, "installationComplete": False,
+            "reason": "steam_manifest_scan_incomplete", "games": [{
+                "id": "steam:410110", "provider": "steam", "providerGameId": "410110",
+                "name": "12 is Better Than 6", "installed": True,
+            }],
+        })
+        self.epic.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "reason": "", "games": [],
+        })
+        previous = {"steam:410110": {
+            "id": "steam:410110", "provider": "steam", "providerGameId": "410110",
+            "name": "12 is Better Than 6", "installed": False, "installing": True,
+        }}
+
+        game = self.service.aggregate_catalog([], previous)["library"]["steam:410110"]
+
+        self.assertTrue(game["installed"])
+        self.assertNotIn("installing", game)
+
+    def test_steam_usage_ignores_playnite_and_survives_offline_manifest_refresh(self):
         game = {"id": "steam:10", "provider": "steam", "providerGameId": "10",
                 "playtimeMinutes": 120, "lastPlayed": "2026-08-31T10:00:00Z"}
         self.steam.catalog = mock.Mock(return_value={
@@ -294,7 +339,7 @@ class GameOperationsTest(unittest.TestCase):
         library = self.service.aggregate_catalog([metadata])["library"]
         self.assertEqual(120, library["steam:10"]["playtimeMinutes"])
         self.assertEqual(game["lastPlayed"], library["steam:10"]["lastPlayed"])
-        self.assertEqual("cover.jpg", library["steam:10"]["cover"])
+        self.assertNotIn("cover", library["steam:10"])
 
         self.steam.catalog.return_value = {
             "available": True, "complete": False, "installationComplete": True,
@@ -456,6 +501,103 @@ class GameOperationsTest(unittest.TestCase):
             self.assertTrue(result["installationComplete"])
             self.assertEqual("steam:410110", result["games"][0]["id"])
             self.assertTrue(result["games"][0]["installed"])
+
+    def test_steam_catalog_uses_store_metadata_and_caches_artwork_on_demand(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            steamapps = root / "steamapps"; steamapps.mkdir()
+            install = steamapps / "common" / "Portal 2"; install.mkdir(parents=True)
+            (steamapps / "appmanifest_620.acf").write_text(
+                '"AppState"\n{\n"appid" "620"\n"name" "Portal 2"\n'
+                '"StateFlags" "4"\n"installdir" "Portal 2"\n}', encoding="utf-8")
+            metadata = json.dumps({"response": {"store_items": [{
+                "appid": 620, "success": 1,
+                "assets": {
+                    "asset_url_format": "steam/apps/620/${FILENAME}?t=1",
+                    "main_capsule": "capsule_616x353.jpg",
+                    "library_capsule": "library_600x900.jpg",
+                    "library_hero": "library_hero.jpg",
+                },
+                "basic_info": {"short_description": "Co-op &amp; puzzles"},
+            }]}}).encode("utf-8")
+            image = b"\xff\xd8\xffimage"
+            image_requests = []
+
+            class Response:
+                def __init__(self, body, content_type="application/json"):
+                    self.body = body
+                    self.headers = {"Content-Type": content_type}
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+                def read(self, _limit): return self.body
+
+            def open_request(request, timeout):
+                if "IStoreBrowseService" in request.full_url:
+                    return Response(metadata)
+                image_requests.append(request.full_url)
+                return Response(image, "image/jpeg")
+
+            provider = SteamProvider(
+                roots=[root], root_resolver=lambda: root, web_opener=open_request,
+                artwork_cache_path=root / "provider-artwork")
+
+            game = provider.catalog()["games"][0]
+
+            self.assertEqual("steam", game["metadataProvider"])
+            self.assertEqual("Co-op & puzzles", game["description"])
+            self.assertIn("library_600x900.jpg", game["cover"])
+            self.assertIn("library_hero.jpg", game["background"])
+            first = provider.artwork(game, "cover")
+            second = provider.artwork(game, "cover")
+            self.assertEqual(first, second)
+            self.assertEqual(image, first.read_bytes())
+            self.assertEqual(1, len(image_requests))
+            with self.assertRaisesRegex(ValueError, "Invalid provider artwork"):
+                provider.artwork({
+                    **game, "cover": "https://127.0.0.1/private.png",
+                }, "cover")
+
+    def test_epic_catalog_uses_legendary_metadata_and_caches_artwork_on_demand(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            image = b"\x89PNG\r\n\x1a\nimage"
+
+            class Response:
+                headers = {"Content-Type": "image/png"}
+                def __enter__(self): return self
+                def __exit__(self, *_args): return False
+                def read(self, _limit): return image
+
+            provider = EpicProvider(
+                artwork_cache_path=root / "provider-artwork",
+                web_opener=lambda _request, timeout: Response())
+            provider._legendary_json = mock.Mock(side_effect=[
+                (True, [{
+                    "app_name": "ExactApp", "app_title": "Exact Game",
+                    "metadata": {
+                        "description": "An <b>Epic</b> game",
+                        "keyImages": [
+                            {"type": "DieselGameBox",
+                             "width": 2560, "height": 1440,
+                             "url": "https://cdn1.epicgames.com/background.png"},
+                            {"type": "DieselGameBoxTall",
+                             "width": 1200, "height": 1600,
+                             "url": "https://cdn1.epicgames.com/game-box-tall.png"},
+                        ],
+                    },
+                }]),
+                (True, []),
+            ])
+
+            game = provider.catalog()["games"][0]
+
+            self.assertEqual("epic", game["metadataProvider"])
+            self.assertEqual("An Epic game", game["description"])
+            self.assertEqual(
+                "https://cdn1.epicgames.com/game-box-tall.png", game["cover"])
+            self.assertEqual(
+                "https://cdn1.epicgames.com/background.png", game["background"])
+            self.assertEqual(image, provider.artwork(game, "background").read_bytes())
 
     def test_steam_catalog_reports_incomplete_local_manifest_discovery(self):
         with tempfile.TemporaryDirectory() as temporary:

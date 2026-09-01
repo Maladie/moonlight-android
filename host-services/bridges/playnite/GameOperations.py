@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import html
 import json
 import os
 import re
@@ -17,6 +19,100 @@ from pathlib import Path
 from typing import Any, Callable, Hashable
 
 from OperationJournal import OperationJournal
+
+
+MAX_PROVIDER_ARTWORK_BYTES = 8 * 1024 * 1024
+
+
+def _plain_description(value: Any) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return ""
+    text = re.sub(r"<(script|style)\b[^>]*>.*?</\1>", " ", text,
+                  flags=re.IGNORECASE | re.DOTALL)
+    text = re.sub(r"<br\s*/?>", "\n", text, flags=re.IGNORECASE)
+    text = re.sub(r"<[^>]+>", " ", text)
+    text = html.unescape(text)
+    text = re.sub(r"[ \t\r\f\v]+", " ", text)
+    text = re.sub(r" *\n *", "\n", text).strip()
+    return re.sub(r"\n{3,}", "\n\n", text)[:2000]
+
+
+class ProviderArtworkCache:
+    """On-demand cache for artwork referenced by trusted provider metadata."""
+
+    def __init__(self, root: Path, web_opener: Callable[..., Any]) -> None:
+        self.root = root
+        self.web_opener = web_opener
+
+    @staticmethod
+    def _allowed(provider: str, url: str) -> bool:
+        parsed = urllib.parse.urlparse(url)
+        try:
+            port = parsed.port
+        except ValueError:
+            return False
+        if parsed.scheme != "https" or parsed.username or parsed.password \
+                or port not in {None, 443}:
+            return False
+        host = str(parsed.hostname or "").casefold()
+        if provider == "steam":
+            return host == "shared.akamai.steamstatic.com"
+        return provider == "epic" and (
+            host.endswith(".epicgames.com")
+            or host.endswith(".unrealengine.com")
+        )
+
+    @staticmethod
+    def _image_extension(body: bytes, content_type: str) -> str:
+        normalized = content_type.split(";", 1)[0].strip().casefold()
+        if normalized in {"image/jpeg", "image/jpg"} and body.startswith(b"\xff\xd8"):
+            return ".jpg"
+        if normalized == "image/png" and body.startswith(b"\x89PNG\r\n\x1a\n"):
+            return ".png"
+        if normalized == "image/webp" and body.startswith(b"RIFF") \
+                and body[8:12] == b"WEBP":
+            return ".webp"
+        raise ValueError("Provider artwork response is not a supported image.")
+
+    def fetch(self, provider: str, game_id: str, kind: str, url: str) -> Path:
+        id_pattern = r"[0-9]+" if provider == "steam" else r"[A-Za-z0-9_-]+"
+        if not re.fullmatch(id_pattern, game_id) or kind not in {"cover", "background", "icon"} \
+                or not self._allowed(provider, url):
+            raise ValueError("Invalid provider artwork reference.")
+        digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:20]
+        directory = self.root / provider / game_id
+        for extension in (".jpg", ".png", ".webp"):
+            cached = directory / f"{kind}-{digest}{extension}"
+            try:
+                if 0 < cached.stat().st_size <= MAX_PROVIDER_ARTWORK_BYTES:
+                    return cached
+            except OSError:
+                pass
+        request = urllib.request.Request(
+            url, headers={"Accept": "image/webp,image/png,image/jpeg",
+                          "User-Agent": "MoonWakerHost/1"})
+        with self.web_opener(request, timeout=8) as response:
+            body = response.read(MAX_PROVIDER_ARTWORK_BYTES + 1)
+            headers = getattr(response, "headers", None)
+            content_type = str(headers.get("Content-Type") or "") if headers else ""
+        if not body or len(body) > MAX_PROVIDER_ARTWORK_BYTES:
+            raise ValueError("Provider artwork response has an unsupported size.")
+        extension = self._image_extension(body, content_type)
+        target = directory / f"{kind}-{digest}{extension}"
+        temporary = directory / f"{target.name}.{threading.get_ident()}.tmp"
+        directory.mkdir(parents=True, exist_ok=True)
+        try:
+            temporary.write_bytes(body)
+            os.replace(temporary, target)
+        finally:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+        # ponytail: old revisions are tiny and rare; prune only if real caches
+        # prove large enough to justify synchronization around concurrent reads.
+        return target
 
 
 @dataclass
@@ -153,6 +249,7 @@ class SteamProvider(GenericPlayniteProvider):
                  api_key_path: Path | None = None,
                  secret_reader: Callable[[Path], str] | None = None,
                  web_opener: Callable[..., Any] | None = None,
+                 artwork_cache_path: Path | None = None,
                  process_registry: OperationProcessRegistry | None = None,
                  launch_preflight: Callable[["SteamProvider"], dict[str, Any]] | None = None) -> None:
         self.automation_path = automation_path
@@ -162,9 +259,89 @@ class SteamProvider(GenericPlayniteProvider):
         self.api_key_path = api_key_path
         self.secret_reader = secret_reader or self._read_dpapi_secret
         self.web_opener = web_opener or urllib.request.urlopen
+        self.artwork_cache = ProviderArtworkCache(
+            artwork_cache_path, self.web_opener) if artwork_cache_path is not None else None
         self.process_registry = process_registry or OperationProcessRegistry()
         self.launch_preflight = launch_preflight
         self._dispatch_reason = ""
+
+    def _json_request(self, request: urllib.request.Request) -> Any:
+        with self.web_opener(request, timeout=8) as response:
+            body = response.read(8 * 1024 * 1024 + 1)
+        if len(body) > 8 * 1024 * 1024:
+            raise ValueError("response_too_large")
+        return json.loads(body.decode("utf-8"))
+
+    @staticmethod
+    def _steam_asset_url(assets: dict[str, Any], *names: str) -> str:
+        pattern = str(assets.get("asset_url_format") or "")
+        filename = next((str(assets.get(name) or "").strip()
+                         for name in names if assets.get(name)), "")
+        if not pattern.startswith("steam/apps/") or pattern.count("${FILENAME}") != 1 \
+                or not filename or ".." in filename or "\\" in filename \
+                or "://" in filename:
+            return ""
+        return "https://shared.akamai.steamstatic.com/store_item_assets/" + \
+            pattern.replace("${FILENAME}", filename)
+
+    def _enrich_store_metadata(self, games: list[dict[str, Any]]) -> None:
+        if self.artwork_cache is None:
+            return
+        by_id = {str(game.get("providerGameId") or ""): game for game in games}
+        app_ids = [app_id for app_id in by_id if re.fullmatch(r"[0-9]+", app_id)]
+        for offset in range(0, len(app_ids), 50):
+            request_payload = {
+                "ids": [{"appid": int(app_id)} for app_id in app_ids[offset:offset + 50]],
+                "context": {"language": "english", "country_code": "US"},
+                "data_request": {"include_assets": True, "include_basic_info": True},
+            }
+            query = urllib.parse.urlencode({
+                "input_json": json.dumps(request_payload, separators=(",", ":"))})
+            request = urllib.request.Request(
+                "https://api.steampowered.com/IStoreBrowseService/GetItems/v1/?" + query,
+                headers={"Accept": "application/json", "User-Agent": "MoonWakerHost/1"})
+            try:
+                payload = self._json_request(request)
+                items = payload.get("response", {}).get("store_items")
+                if not isinstance(items, list):
+                    continue
+            except Exception:
+                continue
+            for item in items:
+                if not isinstance(item, dict) or not item.get("success"):
+                    continue
+                game = by_id.get(str(item.get("appid") or ""))
+                if game is None:
+                    continue
+                assets = item.get("assets") if isinstance(item.get("assets"), dict) else {}
+                basic = item.get("basic_info") \
+                    if isinstance(item.get("basic_info"), dict) else {}
+                cover = self._steam_asset_url(
+                    assets, "library_capsule_2x", "library_capsule", "main_capsule",
+                    "hero_capsule", "header")
+                background = self._steam_asset_url(
+                    assets, "library_hero_2x", "library_hero", "page_background",
+                    "hero_capsule_2x", "hero_capsule")
+                description = _plain_description(basic.get("short_description"))
+                if description:
+                    game["description"] = description
+                if cover:
+                    game["cover"] = cover
+                if background:
+                    game["background"] = background
+                if cover or background or description:
+                    game["metadataProvider"] = "steam"
+                    game["artworkVersion"] = hashlib.sha256(
+                        f"{cover}\0{background}".encode("utf-8")).hexdigest()
+
+    def artwork(self, game: dict[str, Any], kind: str) -> Path:
+        if self.artwork_cache is None:
+            raise FileNotFoundError("Steam artwork cache is unavailable.")
+        url = str(game.get("background" if kind == "background" else "cover") or "")
+        if kind == "background" and not url:
+            url = str(game.get("cover") or "")
+        return self.artwork_cache.fetch(
+            "steam", str(game.get("providerGameId") or ""), kind, url)
 
     @staticmethod
     def _values(path: Path) -> dict[str, str] | None:
@@ -348,11 +525,13 @@ class SteamProvider(GenericPlayniteProvider):
         except Exception:
             api_key = ""
         if not re.fullmatch(r"[A-Fa-f0-9]{32}", api_key):
+            self._enrich_store_metadata(local_games)
             return {"available": bool(installed_snapshot["available"]),
                     "complete": False, "games": local_games,
                     "installationComplete": bool(installed_snapshot["complete"]),
                     "reason": "steam_api_key_missing"}
         if not re.fullmatch(r"7656[0-9]{13}", steam_id):
+            self._enrich_store_metadata(local_games)
             return {"available": bool(installed_snapshot["available"]),
                     "complete": False, "games": local_games,
                     "installationComplete": bool(installed_snapshot["complete"]),
@@ -365,15 +544,12 @@ class SteamProvider(GenericPlayniteProvider):
             "https://api.steampowered.com/IPlayerService/GetOwnedGames/v1/?" + query,
             headers={"Accept": "application/json", "User-Agent": "MoonWakerHost/1"})
         try:
-            with self.web_opener(request, timeout=8) as response:
-                body = response.read(8 * 1024 * 1024 + 1)
-            if len(body) > 8 * 1024 * 1024:
-                raise ValueError("response_too_large")
-            payload = json.loads(body.decode("utf-8"))
+            payload = self._json_request(request)
             owned = payload.get("response", {}).get("games")
             if not isinstance(owned, list):
                 raise ValueError("invalid_response")
         except Exception:
+            self._enrich_store_metadata(local_games)
             return {"available": bool(installed_snapshot["available"]),
                     "complete": False, "games": local_games,
                     "installationComplete": bool(installed_snapshot["complete"]),
@@ -399,6 +575,7 @@ class SteamProvider(GenericPlayniteProvider):
                                 timezone.utc).isoformat()
                                if item.get("rtime_last_played") else ""),
             })
+        self._enrich_store_metadata(games)
         complete = bool(installed_snapshot["available"] and
                         installed_snapshot["complete"])
         return {"available": True, "complete": complete, "games": games,
@@ -703,6 +880,8 @@ class EpicProvider(GenericPlayniteProvider):
                  legendary_enabled: bool = True,
                  command_runner: Callable[..., Any] | None = None,
                  process_runner: Callable[..., Any] | None = None,
+                 artwork_cache_path: Path | None = None,
+                 web_opener: Callable[..., Any] | None = None,
                  process_registry: OperationProcessRegistry | None = None) -> None:
         self.manifests = manifests
         self.legendary_path = legendary_path
@@ -711,7 +890,29 @@ class EpicProvider(GenericPlayniteProvider):
         self.legendary_enabled = legendary_enabled
         self.command_runner = command_runner or subprocess.run
         self.process_runner = process_runner or subprocess.Popen
+        self.artwork_cache = ProviderArtworkCache(
+            artwork_cache_path, web_opener or urllib.request.urlopen) \
+            if artwork_cache_path is not None else None
         self.process_registry = process_registry or OperationProcessRegistry()
+
+    @staticmethod
+    def _epic_image(metadata: dict[str, Any], *types: str) -> str:
+        images = metadata.get("keyImages")
+        if not isinstance(images, list):
+            return ""
+        by_type = {
+            str(image.get("type") or ""): str(image.get("url") or "").strip()
+            for image in images if isinstance(image, dict) and image.get("url")}
+        return next((by_type[kind] for kind in types if by_type.get(kind)), "")
+
+    def artwork(self, game: dict[str, Any], kind: str) -> Path:
+        if self.artwork_cache is None:
+            raise FileNotFoundError("Epic artwork cache is unavailable.")
+        url = str(game.get("background" if kind == "background" else "cover") or "")
+        if kind == "background" and not url:
+            url = str(game.get("cover") or "")
+        return self.artwork_cache.fetch(
+            "epic", str(game.get("providerGameId") or ""), kind, url)
 
     def directory(self) -> Path:
         return self.manifests or Path(os.environ.get("PROGRAMDATA", r"C:\ProgramData")) / \
@@ -948,20 +1149,41 @@ class EpicProvider(GenericPlayniteProvider):
             if not isinstance(item, dict):
                 continue
             app_name = self._app_name(item)
-            title = str(item.get("title") or item.get("app_title") or "").strip()
+            metadata = item.get("metadata") if isinstance(item.get("metadata"), dict) else {}
+            title = str(item.get("title") or item.get("app_title")
+                        or metadata.get("title") or "").strip()
             if not re.fullmatch(r"[A-Za-z0-9_-]+", app_name) or not title \
                     or app_name in seen:
                 continue
             seen.add(app_name)
             local = (installed.get("by_id") or {}).get(app_name) or {}
-            games.append({
+            cover = self._epic_image(
+                metadata, "DieselGameBoxTall", "OfferImageTall",
+                "DieselStoreFrontTall", "DieselGameBox", "OfferImageWide",
+                "DieselStoreFrontWide")
+            background = self._epic_image(
+                metadata, "DieselStoreFrontWide", "DieselGameBox", "OfferImageWide")
+            description = _plain_description(
+                metadata.get("description") or metadata.get("shortDescription"))
+            record = {
                 "id": f"epic:{app_name}", "provider": "epic",
                 "providerGameId": app_name, "libraryKey": "epic",
                 "libraryName": "Epic", "source": "Epic", "playniteGameId": "",
                 "capabilities": {"launch": True, "install": True, "uninstall": True},
                 "name": title, "installed": bool(local.get("installed")),
                 "installDir": str(local.get("install_directory") or ""),
-            })
+            }
+            if description:
+                record["description"] = description
+            if cover:
+                record["cover"] = cover
+            if background:
+                record["background"] = background
+            if cover or background or description:
+                record["metadataProvider"] = "epic"
+                record["artworkVersion"] = hashlib.sha256(
+                    f"{cover}\0{background}".encode("utf-8")).hexdigest()
+            games.append(record)
         return {"available": True, "complete": bool(installed.get("complete")),
                 "games": games, "reason": ""}
 
@@ -1551,6 +1773,12 @@ class GameOperationsService:
         provider_id = str(game.get("providerGameId") or "").strip()
         return (snapshot.get("by_id") or {}).get(provider_id) if provider_id else None
 
+    def artwork(self, game: dict[str, Any], kind: str) -> Path:
+        provider = self.provider_for(game)
+        if provider not in {self.steam, self.epic}:
+            raise FileNotFoundError("Direct provider artwork is unavailable.")
+        return provider.artwork(game, kind)
+
     @staticmethod
     def _playnite_source(game: dict[str, Any]) -> str:
         return str(game.get("source") or game.get("sourceName") or "").strip()
@@ -1577,20 +1805,6 @@ class GameOperationsService:
         })
         return record
 
-    @staticmethod
-    def _overlay(record: dict[str, Any], metadata: dict[str, Any]) -> None:
-        playnite_id = str(metadata.get("id") or "").strip().lower()
-        record["playniteGameId"] = playnite_id
-        for key in ("boxArtPath", "cover", "coverImage", "backgroundImagePath",
-                    "background", "backgroundImage", "iconPath", "icon",
-                    "description", "genres", "hidden", "favorite", "artworkVersion"):
-            if key in metadata and metadata.get(key) not in (None, "", []):
-                record[key] = metadata[key]
-        if record.get("provider") != "steam":
-            for key in ("playCount", "lastPlayed", "playtimeMinutes"):
-                if key in metadata:
-                    record[key] = metadata[key]
-
     def aggregate_catalog(self, playnite_games: list[dict[str, Any]],
                           previous: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
         previous = previous or {}
@@ -1612,35 +1826,32 @@ class GameOperationsService:
                     if str(game.get("provider") or "") == provider:
                         if snapshot.get("installationComplete"):
                             records.setdefault(game_id, dict(game))
-                        else:
+                        elif not records.get(game_id, {}).get("installed"):
                             records[game_id] = dict(game)
 
-        overlays: dict[tuple[str, str], dict[str, Any]] = {}
         standalone: list[dict[str, Any]] = []
         for game in playnite_games:
             if not isinstance(game, dict):
                 continue
             source = self._playnite_source(game).casefold()
-            provider_id = str(game.get("providerGameId") or "").strip()
-            if source == "steam" and re.fullmatch(r"[0-9]+", provider_id):
-                overlays[("steam", provider_id)] = game
-            elif source == "epic" and re.fullmatch(r"[A-Za-z0-9_-]+", provider_id):
-                overlays[("epic", provider_id)] = game
-            elif source not in {"steam", "epic"}:
+            if source not in {"steam", "epic"}:
                 playnite = self._playnite_record(game)
                 if playnite is not None:
                     standalone.append(playnite)
         for record in records.values():
+            old = previous.get(str(record["id"])) or {}
+            provider = str(record.get("provider") or "")
+            if old.get("metadataProvider") == provider:
+                for key in ("cover", "background", "description", "genres",
+                            "artworkVersion", "metadataProvider"):
+                    if record.get(key) in (None, "", []) \
+                            and old.get(key) not in (None, "", []):
+                        record[key] = old[key]
             if record.get("provider") == "steam" and "playtimeMinutes" not in record:
                 # A manifest-only/offline snapshot has no usage data, not zero usage.
-                old = previous.get(str(record["id"])) or {}
                 for key in ("playtimeMinutes", "lastPlayed"):
                     if key in old:
                         record[key] = old[key]
-            metadata = overlays.get((str(record.get("provider") or ""),
-                                     str(record.get("providerGameId") or "")))
-            if metadata is not None:
-                self._overlay(record, metadata)
         for record in standalone:
             records[record["id"]] = record
         return {"library": records, "providers": health}

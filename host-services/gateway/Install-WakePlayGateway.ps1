@@ -16,6 +16,7 @@ $files = @(
     "MoonWakerGatewaySupervisor.ps1",
     "Start-MoonWakerGateway.ps1",
     "Stop-MoonWakerGateway.ps1",
+    "Stop-MoonWakerGatewayWorkers.ps1",
     "gateway.example.json",
     "README.md"
 )

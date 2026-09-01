@@ -65,7 +65,7 @@ while ([DateTime]::UtcNow -lt $deadline) {
     $runningOwners = @($stoppedOwnerPids | Where-Object {
         Get-Process -Id $_ -ErrorAction SilentlyContinue
     })
-    if (-not $listener -and -not $supervisor -and $runningOwners.Count -eq 0) { return }
+    if (-not $listener -and -not $supervisor -and $runningOwners.Count -eq 0) { break }
     Start-Sleep -Milliseconds 200
 }
 if (@(Get-ListeningOwnerPids $port).Count -gt 0) {
@@ -79,4 +79,9 @@ $runningOwners = @($stoppedOwnerPids | Where-Object {
 })
 if ($runningOwners.Count -gt 0) {
     throw "MoonWaker Gateway process PID $($runningOwners -join ', ') did not stop."
+}
+
+$workerStopper = Join-Path $PSScriptRoot "Stop-MoonWakerGatewayWorkers.ps1"
+if (Test-Path -LiteralPath $workerStopper) {
+    & $workerStopper -GatewayDirectory $GatewayDirectory
 }
