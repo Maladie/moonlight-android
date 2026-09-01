@@ -516,6 +516,9 @@ class SteamProvider(GenericPlayniteProvider):
             "providerGameId": app_id, "libraryKey": "steam",
             "libraryName": "Steam", "source": "Steam", "playniteGameId": "",
             "capabilities": {"launch": True, "install": True, "uninstall": True},
+            "providerCapabilities": {
+                "requiresConnector": False, "streamMode": "neutral",
+                "startBeforeStream": True},
             "name": str(local.get("name") or f"Steam App {app_id}"),
             "installed": bool(local.get("installed")),
             "installDir": str(local.get("install_directory") or ""),
@@ -568,6 +571,9 @@ class SteamProvider(GenericPlayniteProvider):
                 "providerGameId": app_id, "libraryKey": "steam",
                 "libraryName": "Steam", "source": "Steam", "playniteGameId": "",
                 "capabilities": {"launch": True, "install": True, "uninstall": True},
+                "providerCapabilities": {
+                    "requiresConnector": False, "streamMode": "neutral",
+                    "startBeforeStream": True},
                 "name": name, "installed": bool(local.get("installed")),
                 "installDir": str(local.get("install_directory") or ""),
                 "playtimeMinutes": max(0, int(item.get("playtime_forever") or 0)),
@@ -1170,6 +1176,9 @@ class EpicProvider(GenericPlayniteProvider):
                 "providerGameId": app_name, "libraryKey": "epic",
                 "libraryName": "Epic", "source": "Epic", "playniteGameId": "",
                 "capabilities": {"launch": True, "install": True, "uninstall": True},
+                "providerCapabilities": {
+                    "requiresConnector": False, "streamMode": "neutral",
+                    "startBeforeStream": False},
                 "name": title, "installed": bool(local.get("installed")),
                 "installDir": str(local.get("install_directory") or ""),
             }
@@ -1800,6 +1809,9 @@ class GameOperationsService:
             "libraryKey": library_key,
             "libraryName": source or "Playnite",
             "capabilities": {"launch": True, "install": True, "uninstall": True},
+            "providerCapabilities": {
+                "requiresConnector": True, "streamMode": "managed",
+                "startBeforeStream": False},
             "installed": bool(game.get("installed") or game.get("isInstalled")),
             "installDir": str(game.get("installDir") or game.get("install_dir") or ""),
         })

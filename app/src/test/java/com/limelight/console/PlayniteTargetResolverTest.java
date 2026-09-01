@@ -229,6 +229,6 @@ public class PlayniteTargetResolverTest {
         return new PlayniteLibraryGame(id, name, true, false, false, 0, "", "", "",
                 "", 0, provider, "", false, "", "", "", "", -1, false, "",
                 provider, providerGameId, "11223344-5566-7788-99aa-bbccddeeff00",
-                provider, provider, true, true, true);
+                provider, provider, true, true, true, false, "neutral");
     }
 }

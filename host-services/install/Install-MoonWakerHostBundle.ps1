@@ -7,6 +7,7 @@ param(
     [int]$GatewayPort = 8785,
     [int]$DiscordPort = 0,
     [int]$VibepolloPort = 0,
+    [int]$GameProviderPort = 0,
     [int]$PlaynitePort = 0,
     [string]$InstallDirectory = "C:\Tools\WakePlayHost",
     [string]$PlayniteDirectory = "",
@@ -57,7 +58,9 @@ function Resolve-ProfilePorts {
         return @(
             $(if ($DiscordPort) { $DiscordPort } else { $defaults[0] }),
             $(if ($VibepolloPort) { $VibepolloPort } else { $defaults[1] }),
-            $(if ($PlaynitePort) { $PlaynitePort } else { $defaults[2] }))
+            $(if ($GameProviderPort) { $GameProviderPort } elseif ($PlaynitePort) {
+                $PlaynitePort
+            } else { $defaults[2] }))
     }
     $gateway = $null
     if (Test-Path -LiteralPath $ConfigPath) {
@@ -71,12 +74,18 @@ function Resolve-ProfilePorts {
         return @(
             $(if ($DiscordPort) { $DiscordPort } else { Get-PortFromEndpoint $entry "discord_bridge" }),
             $(if ($VibepolloPort) { $VibepolloPort } else { Get-PortFromEndpoint $entry "vibepollo_bridge" }),
-            $(if ($PlaynitePort) { $PlaynitePort } else { Get-PortFromEndpoint $entry "playnite_bridge" }))
+            $(if ($GameProviderPort) { $GameProviderPort } elseif ($PlaynitePort) {
+                $PlaynitePort
+            } else {
+                $port = Get-PortFromEndpoint $entry "game_provider_bridge"
+                if ($port) { $port } else { Get-PortFromEndpoint $entry "playnite_bridge" }
+            }))
     }
     $used = [Collections.Generic.HashSet[int]]::new()
     if ($gateway -and $gateway.profiles) {
         foreach ($property in $gateway.profiles.PSObject.Properties) {
-            foreach ($name in @("discord_bridge", "vibepollo_bridge", "playnite_bridge")) {
+            foreach ($name in @("discord_bridge", "vibepollo_bridge",
+                    "game_provider_bridge", "playnite_bridge")) {
                 $port = Get-PortFromEndpoint $property.Value $name
                 if ($port) { [void]$used.Add($port) }
             }
@@ -96,7 +105,9 @@ function Resolve-ProfilePorts {
             return @(
                 $(if ($DiscordPort) { $DiscordPort } else { $candidate[0] }),
                 $(if ($VibepolloPort) { $VibepolloPort } else { $candidate[1] }),
-                $(if ($PlaynitePort) { $PlaynitePort } else { $candidate[2] }))
+                $(if ($GameProviderPort) { $GameProviderPort } elseif ($PlaynitePort) {
+                    $PlaynitePort
+                } else { $candidate[2] }))
         }
     }
     throw "No free Bridge port set was found for the new profile."
@@ -106,26 +117,22 @@ function Resolve-PlayniteInstall {
     if (-not [string]::IsNullOrWhiteSpace($PlayniteDirectory)) {
         return $PlayniteDirectory.Trim()
     }
-    $connectorPath = "Extensions\SunshinePlaynite\SunshinePlaynite.psm1"
-    $process = Get-Process -Name "Playnite.DesktopApp", "Playnite.FullscreenApp" `
-        -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($process -and $process.Path) {
-        $directory = Split-Path -Parent $process.Path
-        if (Test-Path -LiteralPath (Join-Path $directory $connectorPath)) { return $directory }
-    }
-    $candidates = @(
-        (Join-Path $env:LOCALAPPDATA "Playnite"),
-        (Join-Path $env:ProgramFiles "Playnite"),
-        $(if (${env:ProgramFiles(x86)}) { Join-Path ${env:ProgramFiles(x86)} "Playnite" } else { "" })
-    )
-    foreach ($candidate in $candidates) {
-        if ($candidate -and
-            (Test-Path -LiteralPath (Join-Path $candidate "Playnite.FullscreenApp.exe")) -and
-            (Test-Path -LiteralPath (Join-Path $candidate $connectorPath))) {
-            return $candidate
-        }
-    }
     return ""
+}
+
+function Test-ExistingPlayniteConnection([string]$Root) {
+    foreach ($directory in @("game-provider", "playnite")) {
+        $path = Join-Path (Join-Path $Root $directory) "config.json"
+        try {
+            $config = Get-Content -LiteralPath $path -Raw | ConvertFrom-Json
+            if ($config.PSObject.Properties["playnite_enabled"] -and
+                [bool]$config.playnite_enabled) { return $true }
+            if (-not $config.PSObject.Properties["playnite_enabled"] -and
+                -not [string]::IsNullOrWhiteSpace(
+                    [string]$config.playnite_desktop_executable)) { return $true }
+        } catch {}
+    }
+    return $false
 }
 
 function Protect-MachineText {
@@ -364,7 +371,10 @@ if (-not $SkipVibepollo -and $env:MOONWAKER_VIBEPOLLO_CREATE_TOKEN -eq "1") {
     New-MoonWakerVibepolloToken
 }
 $resolvedPlaynite = if ($SkipPlaynite) { "" } else { Resolve-PlayniteInstall }
-if (-not $SkipPlaynite -and -not [string]::IsNullOrWhiteSpace($resolvedPlaynite)) {
+$playniteEnabled = -not $SkipPlaynite -and (
+    -not [string]::IsNullOrWhiteSpace($resolvedPlaynite) -or
+    (Test-ExistingPlayniteConnection $profileRoot))
+if ($playniteEnabled -and -not [string]::IsNullOrWhiteSpace($resolvedPlaynite)) {
     $connector = Join-Path $resolvedPlaynite "Extensions\SunshinePlaynite\SunshinePlaynite.psm1"
     if (-not (Test-Path -LiteralPath $connector)) {
         throw "Sunshine Playnite Connector was not found in $resolvedPlaynite."
@@ -384,15 +394,15 @@ try {
     Write-Host "Installing integration profile '$ProfileId'..."
     & $profileInstaller -ProfileId $ProfileId -ProfileName $ProfileName `
         -InstallRoot $profilesRoot `
-        -DiscordPort $ports[0] -VibepolloPort $ports[1] -PlaynitePort $ports[2] `
+        -DiscordPort $ports[0] -VibepolloPort $ports[1] -GameProviderPort $ports[2] `
         -GatewayConfigPath $gatewayConfig -SkipDiscord:$SkipDiscord `
         -GatewayDirectory $gatewayDirectory -HostControlExecutable (Join-Path $hostRoot "control\MoonWakerHostControl.exe") `
-        -SkipVibepollo:$SkipVibepollo -SkipPlaynite:$SkipPlaynite `
+        -SkipVibepollo:$SkipVibepollo -SkipPlaynite:(-not $playniteEnabled) `
         -NonInteractiveConfiguration
 
-    if (-not $SkipPlaynite -and -not [string]::IsNullOrWhiteSpace($resolvedPlaynite)) {
-        $installedPatch = Join-Path $profileRoot "playnite\Install-WakePlayConnectorPatch.ps1"
-        $installedConfig = Join-Path $profileRoot "playnite\config.json"
+    if ($playniteEnabled -and -not [string]::IsNullOrWhiteSpace($resolvedPlaynite)) {
+        $installedPatch = Join-Path $profileRoot "game-provider\Install-WakePlayConnectorPatch.ps1"
+        $installedConfig = Join-Path $profileRoot "game-provider\config.json"
         $playniteConfig = Get-Content -LiteralPath $installedConfig -Raw | ConvertFrom-Json
         foreach ($setting in @{
             playnite_desktop_executable = (Join-Path $resolvedPlaynite "Playnite.DesktopApp.exe")
@@ -404,6 +414,9 @@ try {
                 $playniteConfig.($setting.Key) = $setting.Value
             }
         }
+        if ($null -eq $playniteConfig.PSObject.Properties["playnite_enabled"]) {
+            $playniteConfig | Add-Member -NotePropertyName playnite_enabled -NotePropertyValue $true
+        } else { $playniteConfig.playnite_enabled = $true }
         $playniteConfig | ConvertTo-Json -Depth 20 |
             Set-Content -LiteralPath $installedConfig -Encoding UTF8
         Write-Host "Updating the installed Playnite Connector..."
@@ -448,7 +461,9 @@ try {
         install_directory = $hostRoot
         discord_port = if ($SkipDiscord) { 0 } else { $ports[0] }
         vibepollo_port = if ($SkipVibepollo) { 0 } else { $ports[1] }
-        playnite_port = if ($SkipPlaynite) { 0 } else { $ports[2] }
+        game_provider_port = $ports[2]
+        playnite_port = $ports[2]
+        playnite_enabled = $playniteEnabled
         restart_required = $false
         version = [string]$expectedVersion.version
         build = [string]$expectedVersion.build

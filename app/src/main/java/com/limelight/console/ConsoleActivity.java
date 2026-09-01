@@ -8669,7 +8669,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             NvApp target = PlayniteTargetResolver.launchTarget(item, apps,
                     ConsoleActionCatalog.isOnline(host));
             if (target != null) {
-                playPlayniteGame(host, target, item.game.playniteGameId, item.game.name);
+                playPlayniteGame(host, target, item.game);
                 return;
             }
         }
@@ -8677,14 +8677,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             NvApp fallback = PlayniteTargetResolver.launchTarget(item, apps,
                     ConsoleActionCatalog.isOnline(host));
             if (fallback != null) {
-                playPlayniteGame(host, fallback, item.game.playniteGameId, item.game.name);
+                playPlayniteGame(host, fallback, item.game);
                 return;
             }
         }
         if (item.mappingState == PlayniteDashboardItem.MappingState.MISSING) {
-            sessionOrchestrator.play(PlayIntent.playniteGame(
-                    host.uuid, 0, item.game.name, false,
-                    item.game.playniteGameId, item.game.playniteGameId,
+            sessionOrchestrator.play(PlayIntent.providerGame(
+                    host.uuid, 0, item.game.name, false, item.game,
                     playniteStreamSettingsKey(host.uuid, item.game.playniteGameId)));
             return;
         }
@@ -9059,12 +9058,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 uniquePlayniteGameIdForRunningApp(host, app)));
     }
 
-    private void playPlayniteGame(ComputerDetails host, NvApp app, String gameId,
-                                  String gameName) {
-        if (host == null || app == null) return;
-        sessionOrchestrator.play(PlayIntent.playniteGame(host.uuid, app.getAppId(),
-                gameName, app.isHdrSupported(), gameId, gameId,
-                playniteStreamSettingsKey(host.uuid, gameId)));
+    private void playPlayniteGame(ComputerDetails host, NvApp app,
+                                  PlayniteLibraryGame game) {
+        if (host == null || app == null || game == null) return;
+        sessionOrchestrator.play(PlayIntent.providerGame(host.uuid, app.getAppId(),
+                game.name, app.isHdrSupported(), game,
+                playniteStreamSettingsKey(host.uuid, game.playniteGameId)));
     }
 
     private static String playniteStreamSettingsKey(String hostUuid, String gameId) {
@@ -9944,14 +9943,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                             intent.playniteGameId, app.getAppId());
                 }
                 boolean legacySunshineLaunch = intent.kind == PlayIntent.Kind.PLAYNITE_GAME
-                        && !PlayniteTargetResolver.isDirectProviderGameId(
-                                intent.playniteGameId)
+                        && !intent.neutralStream
                         && !PlayniteTargetResolver.isNeutralStream(app);
                 LaunchTransitionType transitionType = legacySunshineLaunch
                         ? LaunchTransitionType.GAME_CONNECTION : intent.transitionType(type);
                 LaunchTransitionSpec transition = LaunchTransitionSpec.create(
                         intent.hostId, transitionType, app.getAppId(),
-                        intent.transitionGameId(), System.currentTimeMillis());
+                        intent.transitionGameId(), System.currentTimeMillis(),
+                        intent.startBeforeStream);
                 launchPreparedStream(host, app,
                         intent.quickLaunchId.isEmpty() ? null : intent.quickLaunchId,
                         transition, cachedLoadingArtworkPath(
@@ -10289,6 +10288,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         intent.putExtra(Game.EXTRA_TRANSITION_PLAYNITE_GAME_ID,
                 transition.playniteGameId);
         intent.putExtra(Game.EXTRA_TRANSITION_CREATED_AT, transition.createdAtMillis);
+        intent.putExtra(Game.EXTRA_TRANSITION_START_BEFORE_STREAM,
+                transition.startProviderBeforeStream);
         if (transition.playniteGameId.isEmpty()) {
             intent.putExtra(Game.EXTRA_APP_NAME,
                     PlayniteTargetResolver.MOONWAKER_STREAM_NAME);
@@ -10344,6 +10345,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         presentation.putString(Game.EXTRA_TRANSITION_PLAYNITE_GAME_ID,
                 transition.playniteGameId);
         presentation.putLong(Game.EXTRA_TRANSITION_CREATED_AT, transition.createdAtMillis);
+        presentation.putBoolean(Game.EXTRA_TRANSITION_START_BEFORE_STREAM,
+                transition.startProviderBeforeStream);
         presentation.putString(Game.EXTRA_STREAM_TARGET_NAME, app.getAppName());
         presentation.putBoolean(Game.EXTRA_NEUTRAL_STREAM_TARGET,
                 PlayniteTargetResolver.isNeutralStream(app));

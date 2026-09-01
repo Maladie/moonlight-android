@@ -146,7 +146,8 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(menu.contains("R.string.playnite_stream_settings"));
         assertTrue(menu.contains("AppStreamSettings.EXTRA_INHERIT_APP_SETTINGS"));
         assertTrue(menu.contains("playniteStreamSettingsKey(host.uuid, item.stableId())"));
-        assertTrue(launch.contains("playniteStreamSettingsKey(host.uuid, gameId)"));
+        assertTrue(launch.contains(
+                "playniteStreamSettingsKey(host.uuid, game.playniteGameId)"));
     }
 
     @Test public void exactRunningGameOwnsBadgeAndGameOnlyStopBeforeSessionStop()

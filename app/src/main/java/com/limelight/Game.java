@@ -320,6 +320,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_TRANSITION_PLAYNITE_GAME_ID =
             "ConsoleTransitionPlayniteGameId";
     public static final String EXTRA_TRANSITION_CREATED_AT = "ConsoleTransitionCreatedAt";
+    public static final String EXTRA_TRANSITION_START_BEFORE_STREAM =
+            "ConsoleTransitionStartBeforeStream";
     public static final String EXTRA_AUTO_WARM_UP_ATTEMPT = "AutoWarmUpAttempt";
     private static final String STATE_TRANSITION_REVEALED = "ConsoleTransitionRevealed";
     public static final String ACTION_QUIT_APP = "com.limelight.QUIT_STREAMING_APP";
@@ -396,7 +398,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     transitionSpec = new LaunchTransitionSpec(
                             transitionSpec.id, transitionSpec.hostId, warmUpType,
                             transitionSpec.sunshineAppId, transitionSpec.playniteGameId,
-                            transitionSpec.createdAtMillis);
+                            transitionSpec.createdAtMillis,
+                            transitionSpec.startProviderBeforeStream);
                     getIntent().putExtra(EXTRA_TRANSITION_TYPE, warmUpType.name());
                 }
                 LaunchTransitionType recoveredType = recoveredTransitionType(
@@ -405,7 +408,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     transitionSpec = new LaunchTransitionSpec(
                             transitionSpec.id, transitionSpec.hostId, recoveredType,
                             transitionSpec.sunshineAppId, transitionSpec.playniteGameId,
-                            transitionSpec.createdAtMillis);
+                            transitionSpec.createdAtMillis,
+                            transitionSpec.startProviderBeforeStream);
                     getIntent().putExtra(EXTRA_TRANSITION_TYPE, recoveredType.name());
                 }
                 streamEverRevealed = restoredRevealed;
@@ -920,7 +924,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID),
                     getIntent().getStringExtra(EXTRA_TRANSITION_PLAYNITE_GAME_ID),
                     getIntent().getLongExtra(EXTRA_TRANSITION_CREATED_AT,
-                            System.currentTimeMillis()));
+                            System.currentTimeMillis()),
+                    getIntent().getBooleanExtra(
+                            EXTRA_TRANSITION_START_BEFORE_STREAM, false));
         } catch (IllegalArgumentException invalidType) {
             return null;
         }
@@ -3517,6 +3523,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         getIntent().putExtra(EXTRA_TRANSITION_HOST_ID, spec.hostId);
         getIntent().putExtra(EXTRA_TRANSITION_PLAYNITE_GAME_ID, gameId);
         getIntent().putExtra(EXTRA_TRANSITION_CREATED_AT, spec.createdAtMillis);
+        getIntent().putExtra(EXTRA_TRANSITION_START_BEFORE_STREAM,
+                spec.startProviderBeforeStream);
         if (title != null && !title.trim().isEmpty()) {
             appName = title.trim();
             getIntent().putExtra(EXTRA_APP_NAME, appName);
@@ -5114,12 +5122,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         Intent retry = new Intent(getIntent());
         LaunchTransitionSpec next = LaunchTransitionSpec.create(
                 transitionSpec.hostId, transitionSpec.type, transitionSpec.sunshineAppId,
-                transitionSpec.playniteGameId, System.currentTimeMillis());
+                transitionSpec.playniteGameId, System.currentTimeMillis(),
+                transitionSpec.startProviderBeforeStream);
         providerStartRejectedTransitionId = "";
         retry.putExtra(EXTRA_TRANSITION_ID, next.id);
         retry.putExtra(EXTRA_TRANSITION_TYPE, next.type.name());
         retry.putExtra(EXTRA_TRANSITION_PLAYNITE_GAME_ID, next.playniteGameId);
         retry.putExtra(EXTRA_TRANSITION_CREATED_AT, next.createdAtMillis);
+        retry.putExtra(EXTRA_TRANSITION_START_BEFORE_STREAM,
+                next.startProviderBeforeStream);
         consoleLoadingView.showOpaque();
         consoleLoadingView.doAfterNextFrame(() -> {
             userInitiatedDisconnect = true;

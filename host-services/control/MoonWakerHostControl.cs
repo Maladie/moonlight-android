@@ -11,9 +11,9 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.57.0")]
-[assembly: AssemblyFileVersion("0.7.57.0")]
-[assembly: AssemblyInformationalVersion("0.7.57+2026.09.01")]
+[assembly: AssemblyVersion("0.7.58.0")]
+[assembly: AssemblyFileVersion("0.7.58.0")]
+[assembly: AssemblyInformationalVersion("0.7.58+2026.09.01")]
 
 namespace MoonWaker.HostControl
 {
@@ -40,8 +40,10 @@ namespace MoonWaker.HostControl
         private readonly Label activeProfile = new Label();
         private readonly Label steamConnectionState = new Label();
         private readonly Label epicConnectionState = new Label();
+        private readonly Label playniteConnectionState = new Label();
         private readonly Button steamConnectionButton;
         private readonly Button epicConnectionButton;
+        private readonly Button playniteConnectionButton;
         private readonly ListView profiles = new ListView();
         private readonly Label footer = new Label();
         private readonly Timer timer = new Timer();
@@ -114,26 +116,31 @@ namespace MoonWaker.HostControl
             connectionsPanel.Controls.Add(connectionsHint);
 
             Label steamTitle = MakeLabel("Steam", 10F, FontStyle.Bold, Color.White);
-            steamTitle.SetBounds(350, 18, 120, 22);
+            steamTitle.SetBounds(330, 18, 120, 22);
             connectionsPanel.Controls.Add(steamTitle);
-            steamConnectionState.SetBounds(350, 43, 180, 24);
+            steamConnectionState.SetBounds(330, 43, 180, 24);
             steamConnectionState.ForeColor = muted;
             connectionsPanel.Controls.Add(steamConnectionState);
-            steamConnectionButton = AddActionButton(connectionsPanel, "Connect Steam", 350, 74,
+            steamConnectionButton = AddActionButton(connectionsPanel, "Connect Steam", 330, 74,
                 delegate { SteamConnectionClicked(); }, 180);
 
             Label epicTitle = MakeLabel("Epic przez Legendary", 10F, FontStyle.Bold, Color.White);
-            epicTitle.SetBounds(570, 18, 190, 22);
+            epicTitle.SetBounds(530, 18, 190, 22);
             connectionsPanel.Controls.Add(epicTitle);
-            epicConnectionState.SetBounds(570, 43, 180, 24);
+            epicConnectionState.SetBounds(530, 43, 180, 24);
             epicConnectionState.ForeColor = muted;
             connectionsPanel.Controls.Add(epicConnectionState);
-            epicConnectionButton = AddActionButton(connectionsPanel, "Connect Epic", 570, 74,
+            epicConnectionButton = AddActionButton(connectionsPanel, "Connect Epic", 530, 74,
                 delegate { EpicConnectionClicked(); }, 180);
 
-            Label epicHint = MakeLabel("Bez synchronizacji z Epic Games Launcherem", 8.5F, FontStyle.Regular, muted);
-            epicHint.SetBounds(770, 80, 180, 32);
-            connectionsPanel.Controls.Add(epicHint);
+            Label playniteTitle = MakeLabel("Playnite (opcjonalnie)", 10F, FontStyle.Bold, Color.White);
+            playniteTitle.SetBounds(730, 18, 200, 22);
+            connectionsPanel.Controls.Add(playniteTitle);
+            playniteConnectionState.SetBounds(730, 43, 190, 24);
+            playniteConnectionState.ForeColor = muted;
+            connectionsPanel.Controls.Add(playniteConnectionState);
+            playniteConnectionButton = AddActionButton(connectionsPanel, "Connect Playnite", 730, 74,
+                delegate { PlayniteConnectionClicked(); }, 190);
 
             Panel profilePanel = NewPanel(34, 428, 972, 346);
             Controls.Add(profilePanel);
@@ -334,7 +341,7 @@ namespace MoonWaker.HostControl
                     row.SubItems.Add(ProcessStatus(profile, "supervisor"));
                     row.SubItems.Add(ProcessStatus(profile, "discord"));
                     row.SubItems.Add(ProcessStatus(profile, "vibepollo"));
-                    row.SubItems.Add(ProcessStatus(profile, "playnite"));
+                    row.SubItems.Add(ProcessStatus(profile, "game_provider"));
                     row.SubItems.Add(GetBool(profile, "last_used") ? "AKTYWNY" : "");
                     profiles.Items.Add(row);
                     if (id == selected) row.Selected = true;
@@ -381,29 +388,39 @@ namespace MoonWaker.HostControl
             {
                 steamConnectionState.Text = "Wybierz profil";
                 epicConnectionState.Text = "Wybierz profil";
+                playniteConnectionState.Text = "Wybierz profil";
                 steamConnectionState.ForeColor = muted;
                 epicConnectionState.ForeColor = muted;
+                playniteConnectionState.ForeColor = muted;
                 steamConnectionButton.Enabled = false;
                 epicConnectionButton.Enabled = false;
+                playniteConnectionButton.Enabled = false;
                 return;
             }
             bool available = GetBool(profile, "platform_controls_available");
             bool steamConnected = GetBool(profile, "steam_connected");
             bool epicConnected = GetBool(profile, "epic_connected");
+            bool playniteConnected = GetBool(profile, "playnite_connected");
             steamConnectionState.Text = steamConnected ? "POŁĄCZONO" : "NIEPOŁĄCZONO";
             epicConnectionState.Text = epicConnected ? "POŁĄCZONO" : "NIEPOŁĄCZONO";
+            playniteConnectionState.Text = playniteConnected ? "POŁĄCZONO" : "NIEPOŁĄCZONO";
             steamConnectionState.ForeColor = steamConnected
                 ? Color.FromArgb(129, 226, 169) : (available ? muted : Color.FromArgb(255, 170, 170));
             epicConnectionState.ForeColor = epicConnected
                 ? Color.FromArgb(129, 226, 169) : (available ? muted : Color.FromArgb(255, 170, 170));
+            playniteConnectionState.ForeColor = playniteConnected
+                ? Color.FromArgb(129, 226, 169) : (available ? muted : Color.FromArgb(255, 170, 170));
             steamConnectionButton.Text = steamConnected ? "Disconnect Steam" : "Connect Steam";
             epicConnectionButton.Text = epicConnected ? "Disconnect Epic" : "Connect Epic";
+            playniteConnectionButton.Text = playniteConnected ? "Disconnect Playnite" : "Connect Playnite";
             steamConnectionButton.Enabled = available;
             epicConnectionButton.Enabled = available && legendaryInstalled;
+            playniteConnectionButton.Enabled = available;
             if (!available)
             {
                 steamConnectionState.Text = "Zaloguj się na ten profil";
                 epicConnectionState.Text = "Zaloguj się na ten profil";
+                playniteConnectionState.Text = "Zaloguj się na ten profil";
             }
             else if (!legendaryInstalled)
             {
@@ -505,6 +522,45 @@ namespace MoonWaker.HostControl
                 RunPlatformAction("ConnectEpic", id, "Epic został połączony przez Legendary.");
         }
 
+        private async void PlayniteConnectionClicked()
+        {
+            string id = SelectedProfileId();
+            Dictionary<string, object> profile = SelectedProfile();
+            if (String.IsNullOrWhiteSpace(id) || profile == null) return;
+            if (GetBool(profile, "playnite_connected"))
+            {
+                if (MessageBox.Show(this,
+                        "Odłączyć opcjonalny katalog Playnite? Steam i Epic nadal będą działać bez zmian.",
+                        "Disconnect Playnite", MessageBoxButtons.YesNo,
+                        MessageBoxIcon.Warning) == DialogResult.Yes)
+                    RunPlatformAction("DisconnectPlaynite", id, "Playnite został odłączony.");
+                return;
+            }
+            using (FolderBrowserDialog dialog = new FolderBrowserDialog())
+            {
+                dialog.Description = "Wybierz katalog instalacji Playnite z zainstalowanym SunshinePlaynite Connector.";
+                dialog.ShowNewFolderButton = false;
+                if (dialog.ShowDialog(this) != DialogResult.OK) return;
+                try
+                {
+                    footer.Text = "Łączę opcjonalny katalog Playnite…";
+                    Dictionary<string, object> result = await RunControlAsync(
+                        "ConnectPlaynite", id, false, null, dialog.SelectedPath);
+                    if (!IsOk(result)) throw new InvalidOperationException(
+                        GetText(result, "error", "Nie udało się połączyć Playnite."));
+                    MessageBox.Show(this, "Playnite został połączony z profilem.",
+                        "MoonWaker Host Control", MessageBoxButtons.OK,
+                        MessageBoxIcon.Information);
+                }
+                catch (Exception ex)
+                {
+                    MessageBox.Show(this, ex.Message, "Playnite",
+                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                }
+                finally { RefreshStatus(); }
+            }
+        }
+
         private async void RunPlatformAction(string action, string profile, string successMessage)
         {
             try
@@ -604,11 +660,18 @@ namespace MoonWaker.HostControl
 
         private async Task<Dictionary<string, object>> RunControlAsync(string action, string profile, bool elevated)
         {
-            return await RunControlAsync(action, profile, elevated, null);
+            return await RunControlAsync(action, profile, elevated, null, null);
         }
 
         private async Task<Dictionary<string, object>> RunControlAsync(
             string action, string profile, bool elevated, string steamApiKey)
+        {
+            return await RunControlAsync(action, profile, elevated, steamApiKey, null);
+        }
+
+        private async Task<Dictionary<string, object>> RunControlAsync(
+            string action, string profile, bool elevated, string steamApiKey,
+            string playniteDirectory)
         {
             return await Task.Run(delegate
             {
@@ -620,6 +683,8 @@ namespace MoonWaker.HostControl
                     (String.IsNullOrWhiteSpace(profile) ? "" : " -ProfileId " + Quote(profile)) +
                     (hasSteamApiKey ? " -SteamWebApiKeyProtectedFromEnvironment" : "") +
                     (hasSteamApiKey ? " -SteamWebApiDiagnosticPath " + Quote(steamDiagnosticPath) : "") +
+                    (!String.IsNullOrWhiteSpace(playniteDirectory)
+                        ? " -PlayniteDirectory " + Quote(playniteDirectory) : "") +
                     " -ResultPath " + Quote(resultPath);
                 try
                 {
@@ -648,6 +713,7 @@ namespace MoonWaker.HostControl
                         Task<string> stdout = elevated ? null : process.StandardOutput.ReadToEndAsync();
                         Task<string> stderr = elevated ? null : process.StandardError.ReadToEndAsync();
                         int timeout = action == "ConnectEpic" ? 900000 :
+                            action == "ConnectPlaynite" ? 90000 :
                             action == "ExportDiagnostics" ? 120000 :
                             action == "RecoverAll" ? 90000 :
                             action.EndsWith("Gateway", StringComparison.Ordinal) ? 60000 : 30000;

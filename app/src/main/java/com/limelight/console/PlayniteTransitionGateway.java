@@ -132,7 +132,7 @@ public final class PlayniteTransitionGateway {
         HostGatewayClient.PlayniteReadiness readiness =
                 client.getPlayniteReadiness(connection);
         boolean connectorReady = health.connectorConnected
-                || current.id.startsWith("steam:") || current.id.startsWith("epic:");
+                || (!current.id.isEmpty() && !current.requiresConnector);
         return new Snapshot(true, connectorReady, current.state, current.id,
                 current.processId, readiness.ready, readiness.targetKind,
                 readiness.stableSamples, readiness.reason, current.hostGuideAllowed);

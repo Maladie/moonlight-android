@@ -6,6 +6,7 @@
   "epic_legendary_enabled": true,
   "legendary_path": "",
   "epic_install_root": "",
+  "playnite_enabled": false,
   "playnite_desktop_executable": "",
   "playnite_fullscreen_executable": ""
 }

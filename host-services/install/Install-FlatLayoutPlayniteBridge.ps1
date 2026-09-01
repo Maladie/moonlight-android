@@ -64,16 +64,26 @@ if ($PSCmdlet.ShouldProcess($BridgeDirectory, "Install profile-scoped Game Provi
     if ($null -eq $gateway.PSObject.Properties["playnite_bridge"]) {
         $gateway | Add-Member -NotePropertyName playnite_bridge -NotePropertyValue $endpoint
     } else { $gateway.playnite_bridge = $endpoint }
+    if ($null -eq $gateway.PSObject.Properties["game_provider_bridge"]) {
+        $gateway | Add-Member -NotePropertyName game_provider_bridge -NotePropertyValue $endpoint
+    } else { $gateway.game_provider_bridge = $endpoint }
     if ($null -eq $gateway.PSObject.Properties["profiles"]) {
         $gateway | Add-Member -NotePropertyName profiles -NotePropertyValue ([pscustomobject]@{})
     }
     if ($null -eq $gateway.profiles.PSObject.Properties["default"]) {
         $gateway.profiles | Add-Member -NotePropertyName default `
-            -NotePropertyValue ([pscustomobject]@{ playnite_bridge = $endpoint })
+            -NotePropertyValue ([pscustomobject]@{
+                game_provider_bridge = $endpoint
+                playnite_bridge = $endpoint
+            })
     } elseif ($null -eq $gateway.profiles.default.PSObject.Properties["playnite_bridge"]) {
         $gateway.profiles.default | Add-Member -NotePropertyName playnite_bridge `
             -NotePropertyValue $endpoint
     } else { $gateway.profiles.default.playnite_bridge = $endpoint }
+    if ($null -eq $gateway.profiles.default.PSObject.Properties["game_provider_bridge"]) {
+        $gateway.profiles.default | Add-Member -NotePropertyName game_provider_bridge `
+            -NotePropertyValue $endpoint
+    } else { $gateway.profiles.default.game_provider_bridge = $endpoint }
     $gateway | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $gatewayConfigPath -Encoding UTF8
 
     if (-not $SkipScheduledTask) {

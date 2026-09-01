@@ -5,6 +5,7 @@ param(
     [ValidateSet("Status", "StartGateway", "StopGateway", "RestartGateway", "PairGateway",
         "StartProfile", "StopProfile", "RestartProfile", "RecoverAll",
         "ConfigureSteamWebApi", "DisconnectSteam", "ConnectEpic", "DisconnectEpic",
+        "ConnectPlaynite", "DisconnectPlaynite",
         "ClearDiscord", "ClearDiscordMachine", "RemoveProfile", "ExportDiagnostics")]
     [string]$Action,
     [ValidatePattern('^[A-Za-z0-9._-]{0,64}$')][string]$ProfileId = "",
@@ -12,6 +13,7 @@ param(
     [switch]$SteamWebApiKeyFromStdin,
     [switch]$SteamWebApiKeyProtectedFromEnvironment,
     [string]$SteamWebApiDiagnosticPath = "",
+    [string]$PlayniteDirectory = "",
     [string]$DiagnosticsOutputDirectory = "",
     [string]$ResultPath = ""
 )
@@ -29,6 +31,15 @@ function Get-GatewayDirectory {
         if (Test-Path -LiteralPath (Join-Path $candidate "gateway.json")) { return $candidate }
     }
     return (Join-Path (Get-InstallRoot) "gateway")
+}
+
+function Get-GameProviderDirectory([string]$Root) {
+    if ([string]::IsNullOrWhiteSpace($Root)) { return "" }
+    $canonical = Join-Path $Root "game-provider"
+    if (Test-Path -LiteralPath $canonical -PathType Container) { return $canonical }
+    $legacy = Join-Path $Root "playnite"
+    if (Test-Path -LiteralPath $legacy -PathType Container) { return $legacy }
+    return $canonical
 }
 
 function Get-SteamWebApiDiagnosticPath {
@@ -148,7 +159,7 @@ function Export-Diagnostics {
                 $profileDestination = Join-Path $staging ("profiles\" + $id)
                 $count += Copy-DiagnosticSeries $root "profile-bridge.jsonl" `
                     (Join-Path $profileDestination "supervisor")
-                $count += Copy-DiagnosticSeries (Join-Path $root "playnite\logs") `
+                $count += Copy-DiagnosticSeries (Join-Path (Get-GameProviderDirectory $root) "logs") `
                     "provider-diagnostics.jsonl" (Join-Path $profileDestination "provider")
             }
         }
@@ -365,11 +376,22 @@ function Get-LegendaryExecutable {
 
 function Test-SteamConnection([string]$Root) {
     if ([string]::IsNullOrWhiteSpace($Root)) { return $false }
-    $path = Join-Path $Root "playnite\steam-web-api-key.dpapi"
+    $path = Join-Path (Get-GameProviderDirectory $Root) "steam-web-api-key.dpapi"
     if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { return $false }
     try {
         $protected = (Get-Content -LiteralPath $path -Raw).Trim()
         return (Unprotect-ForCurrentUser $protected) -match '^[A-Fa-f0-9]{32}$'
+    } catch { return $false }
+}
+
+function Test-PlayniteConnection([string]$Root) {
+    try {
+        $directory = Get-GameProviderDirectory $Root
+        $config = Get-Content -LiteralPath (Join-Path $directory "config.json") -Raw |
+            ConvertFrom-Json
+        return [bool]$config.playnite_enabled -and
+            (Test-Path -LiteralPath ([string]$config.playnite_desktop_executable) -PathType Leaf) -and
+            (Test-Path -LiteralPath ([string]$config.playnite_fullscreen_executable) -PathType Leaf)
     } catch { return $false }
 }
 
@@ -456,11 +478,24 @@ function Get-Status {
                 discord_pid = Get-ProfileProcessId $root "discord"
                 vibepollo = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth ([string]$entry.vibepollo_bridge) }
                 vibepollo_pid = Get-ProfileProcessId $root "vibepollo"
-                playnite = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth ([string]$entry.playnite_bridge) }
-                playnite_pid = Get-ProfileProcessId $root "playnite"
+                game_provider = if ($manuallyStopped) { "manually_stopped" } else {
+                    $endpoint = if ($entry.PSObject.Properties["game_provider_bridge"]) {
+                        [string]$entry.game_provider_bridge
+                    } else { [string]$entry.playnite_bridge }
+                    Test-HttpHealth $endpoint
+                }
+                game_provider_pid = Get-ProfileProcessId $root "game-provider"
+                playnite = if ($manuallyStopped) { "manually_stopped" } else {
+                    $endpoint = if ($entry.PSObject.Properties["game_provider_bridge"]) {
+                        [string]$entry.game_provider_bridge
+                    } else { [string]$entry.playnite_bridge }
+                    Test-HttpHealth $endpoint
+                }
+                playnite_pid = Get-ProfileProcessId $root "game-provider"
                 steam_web_api_configured = $steamConnected
                 steam_connected = $steamConnected
                 epic_connected = Test-LegendaryConnection $root
+                playnite_connected = Test-PlayniteConnection $root
                 platform_controls_available = Test-CurrentProfileOwner $entry
                 last_used = $runtime -and [string]$runtime.profile_id -eq $id
                 last_used_at = if ($runtime -and [string]$runtime.profile_id -eq $id) { [int64]$runtime.updated_at } else { 0 }
@@ -677,7 +712,7 @@ function Set-SteamWebApiKey([string]$Id, [switch]$FromStdin,
         }
         $phase = "key_validated"
         Write-SteamWebApiDiagnostic $Id $phase
-        $path = Join-Path $profile.root "playnite\steam-web-api-key.dpapi"
+        $path = Join-Path (Get-GameProviderDirectory $profile.root) "steam-web-api-key.dpapi"
         New-Item -ItemType Directory -Path (Split-Path -Parent $path) -Force | Out-Null
         $phase = "directory_ready"
         Write-SteamWebApiDiagnostic $Id $phase
@@ -711,7 +746,8 @@ function Disconnect-Steam([string]$Id) {
         [string]::IsNullOrWhiteSpace($profile.root)) {
         throw "Sign in to the Windows account that owns profile '$Id' to disconnect Steam."
     }
-    Remove-Item -LiteralPath (Join-Path $profile.root "playnite\steam-web-api-key.dpapi") `
+    Remove-Item -LiteralPath (Join-Path (Get-GameProviderDirectory $profile.root) `
+        "steam-web-api-key.dpapi") `
         -Force -ErrorAction SilentlyContinue
     return [ordered]@{ ok = $true; profile_id = $Id; connected = $false }
 }
@@ -768,6 +804,64 @@ function Disconnect-Epic([string]$Id) {
     return [ordered]@{ ok = $true; profile_id = $Id; connected = $false }
 }
 
+function Set-PlayniteConnection([string]$Id, [bool]$Enabled, [string]$Directory = "") {
+    $profile = Resolve-Profile $Id
+    if (-not (Test-CurrentProfileOwner $profile.entry) -or
+        [string]::IsNullOrWhiteSpace($profile.root)) {
+        throw "Sign in to the Windows account that owns profile '$Id' to change Playnite."
+    }
+    $providerDirectory = Get-GameProviderDirectory $profile.root
+    $configPath = Join-Path $providerDirectory "config.json"
+    if (-not (Test-Path -LiteralPath $configPath -PathType Leaf)) {
+        throw "Game Provider Bridge is missing. Update MoonWaker Host first."
+    }
+    $config = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    if ($Enabled) {
+        if ([string]::IsNullOrWhiteSpace($Directory)) {
+            throw "Select the Playnite installation directory."
+        }
+        $resolved = [IO.Path]::GetFullPath($Directory)
+        $desktop = Join-Path $resolved "Playnite.DesktopApp.exe"
+        $fullscreen = Join-Path $resolved "Playnite.FullscreenApp.exe"
+        $connector = Join-Path $resolved "Extensions\SunshinePlaynite\SunshinePlaynite.psm1"
+        foreach ($path in @($desktop, $fullscreen, $connector)) {
+            if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+                throw "The selected directory does not contain Playnite and SunshinePlaynite Connector."
+            }
+        }
+        foreach ($setting in @{
+            playnite_enabled = $true
+            playnite_desktop_executable = $desktop
+            playnite_fullscreen_executable = $fullscreen
+        }.GetEnumerator()) {
+            if ($null -eq $config.PSObject.Properties[$setting.Key]) {
+                $config | Add-Member -NotePropertyName $setting.Key -NotePropertyValue $setting.Value
+            } else { $config.($setting.Key) = $setting.Value }
+        }
+        $patch = Join-Path $providerDirectory "Install-WakePlayConnectorPatch.ps1"
+        if (-not (Test-Path -LiteralPath $patch -PathType Leaf)) {
+            throw "The installed Playnite connector patch is missing."
+        }
+        & $patch -PlayniteDirectory $resolved
+        $config | ConvertTo-Json -Depth 20 |
+            Set-Content -LiteralPath $configPath -Encoding UTF8
+    } else {
+        foreach ($setting in @{
+            playnite_enabled = $false
+            playnite_desktop_executable = ""
+            playnite_fullscreen_executable = ""
+        }.GetEnumerator()) {
+            if ($null -eq $config.PSObject.Properties[$setting.Key]) {
+                $config | Add-Member -NotePropertyName $setting.Key -NotePropertyValue $setting.Value
+            } else { $config.($setting.Key) = $setting.Value }
+        }
+        $config | ConvertTo-Json -Depth 20 |
+            Set-Content -LiteralPath $configPath -Encoding UTF8
+    }
+    Restart-Profile $Id
+    return [ordered]@{ ok = $true; profile_id = $Id; connected = $Enabled }
+}
+
 function Remove-Profile([string]$Id) {
     $profile = Resolve-Profile $Id
     if ([string]::IsNullOrWhiteSpace($profile.root)) { throw "This profile's files are not available in the current Windows session." }
@@ -818,6 +912,8 @@ try {
         "DisconnectSteam" { Disconnect-Steam $ProfileId }
         "ConnectEpic" { Connect-Epic $ProfileId }
         "DisconnectEpic" { Disconnect-Epic $ProfileId }
+        "ConnectPlaynite" { Set-PlayniteConnection $ProfileId $true $PlayniteDirectory }
+        "DisconnectPlaynite" { Set-PlayniteConnection $ProfileId $false }
         "ClearDiscord" { Clear-DiscordData $ProfileId; [ordered]@{ ok = $true } }
         "ClearDiscordMachine" { $RemoveMachineDiscordApplication = $true; Clear-DiscordData $ProfileId; [ordered]@{ ok = $true } }
         "RemoveProfile" { Remove-Profile $ProfileId; [ordered]@{ ok = $true } }

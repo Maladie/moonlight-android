@@ -11,9 +11,9 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.57.0")]
-[assembly: AssemblyFileVersion("0.7.57.0")]
-[assembly: AssemblyInformationalVersion("0.7.57+2026.09.01")]
+[assembly: AssemblyVersion("0.7.58.0")]
+[assembly: AssemblyFileVersion("0.7.58.0")]
+[assembly: AssemblyInformationalVersion("0.7.58+2026.09.01")]
 
 namespace MoonWaker.HostInstaller
 {
@@ -43,7 +43,6 @@ namespace MoonWaker.HostInstaller
         private readonly CheckBox createVibepolloToken = new CheckBox();
         private readonly TextBox vibepolloAdmin = new TextBox();
         private readonly TextBox vibepolloPassword = new TextBox();
-        private readonly TextBox playnitePath = new TextBox();
         private readonly CheckBox installMachine = new CheckBox();
         private readonly Label installationStatus = new Label();
         private readonly Button install = new Button();
@@ -167,19 +166,6 @@ namespace MoonWaker.HostInstaller
             ConfigureTextBox(vibepolloPassword, 424, 199, 452, true);
             vibepolloCard.Controls.Add(vibepolloAdmin); vibepolloCard.Controls.Add(vibepolloPassword);
             content.Controls.Add(vibepolloCard);
-
-            Panel libraryCard = MakeCard(142, Color.FromArgb(232, 94, 137));
-            AddLabel(libraryCard, "Biblioteka gier", 14F, FontStyle.Bold, 24, 17, 500, 30);
-            Label libraryInfo = AddLabel(libraryCard,
-                "Steam i Epic działają bez Playnite. Katalog Playnite jest opcjonalny dla pozostałych źródeł.",
-                9F, FontStyle.Regular, 24, 48, 850, 24);
-            libraryInfo.ForeColor = Color.FromArgb(178, 186, 202);
-            ConfigureTextBox(playnitePath, 24, 83, 680, false); playnitePath.Text = FindPlaynite();
-            libraryCard.Controls.Add(playnitePath);
-            Button browsePlaynite = MakeButton("Wybierz…", 720, 83, 156, 36);
-            browsePlaynite.Click += delegate { BrowseDirectory(playnitePath); };
-            libraryCard.Controls.Add(browsePlaynite);
-            content.Controls.Add(libraryCard);
 
             Panel actionCard = MakeCard(300, Color.FromArgb(116, 100, 255));
             install = MakeButton("Zainstaluj / aktualizuj", 24, 20, 270, 44);
@@ -353,7 +339,6 @@ namespace MoonWaker.HostInstaller
                 args.Add("-ProfileName " + Quote(profileName.Text.Trim()));
                 args.Add("-ProfileOnly");
                 if (installMachine.Checked) args.Add("-InitializeMachineData");
-                if (!String.IsNullOrWhiteSpace(playnitePath.Text)) args.Add("-PlayniteDirectory " + Quote(playnitePath.Text.Trim()));
                 if (!discord.Checked) args.Add("-SkipDiscord");
 
                 ProcessStartInfo info = new ProcessStartInfo("powershell.exe", String.Join(" ", args.ToArray()));
@@ -627,94 +612,6 @@ namespace MoonWaker.HostInstaller
             return String.IsNullOrWhiteSpace(version) ? "wersja nieznana" : version;
         }
 
-        private static string FindPlaynite()
-        {
-            string configured = Environment.GetEnvironmentVariable("MOONWAKER_PLAYNITE_DIRECTORY");
-            string found = ValidPlayniteDirectory(configured);
-            if (found != null) return found;
-            string[] candidates = {
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Playnite"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Playnite"),
-                Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Playnite") };
-            foreach (string candidate in candidates)
-            {
-                found = ValidPlayniteDirectory(candidate);
-                if (found != null) return found;
-            }
-            foreach (string candidate in RegistryPlayniteDirectories())
-            {
-                found = ValidPlayniteDirectory(candidate);
-                if (found != null) return found;
-            }
-            foreach (DriveInfo drive in DriveInfo.GetDrives())
-            {
-                try
-                {
-                    if (!drive.IsReady || drive.DriveType != DriveType.Fixed) continue;
-                    string[] locations = {
-                        Path.Combine(drive.RootDirectory.FullName, "Playnite"),
-                        Path.Combine(drive.RootDirectory.FullName, "Games", "Playnite"),
-                        Path.Combine(drive.RootDirectory.FullName, "Gry", "Playnite"),
-                        Path.Combine(drive.RootDirectory.FullName, "Program Files", "Playnite"),
-                        Path.Combine(drive.RootDirectory.FullName, "Program Files (x86)", "Playnite") };
-                    foreach (string candidate in locations)
-                    {
-                        found = ValidPlayniteDirectory(candidate);
-                        if (found != null) return found;
-                    }
-                }
-                catch { }
-            }
-            return "";
-        }
-
-        private static string ValidPlayniteDirectory(string candidate)
-        {
-            try
-            {
-                if (String.IsNullOrWhiteSpace(candidate)) return null;
-                string directory = Path.GetFullPath(candidate.Trim().Trim('"'));
-                return File.Exists(Path.Combine(directory, "Playnite.FullscreenApp.exe")) &&
-                    File.Exists(Path.Combine(directory, "Extensions", "SunshinePlaynite",
-                        "SunshinePlaynite.psm1")) ? directory : null;
-            }
-            catch { return null; }
-        }
-
-        private static IEnumerable<string> RegistryPlayniteDirectories()
-        {
-            List<string> results = new List<string>();
-            RegistryView[] views = { RegistryView.Registry64, RegistryView.Registry32 };
-            RegistryHive[] hives = { RegistryHive.CurrentUser, RegistryHive.LocalMachine };
-            foreach (RegistryHive hive in hives)
-            foreach (RegistryView view in views)
-            {
-                RegistryKey baseKey = null;
-                RegistryKey uninstall = null;
-                try
-                {
-                    baseKey = RegistryKey.OpenBaseKey(hive, view);
-                    uninstall = baseKey.OpenSubKey(@"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall");
-                    if (uninstall == null) continue;
-                    foreach (string keyName in uninstall.GetSubKeyNames())
-                    using (RegistryKey entry = uninstall.OpenSubKey(keyName))
-                    {
-                        if (entry == null) continue;
-                        string displayName = entry.GetValue("DisplayName") as string;
-                        if (String.IsNullOrWhiteSpace(displayName) ||
-                                displayName.IndexOf("Playnite", StringComparison.OrdinalIgnoreCase) < 0) continue;
-                        string installLocation = entry.GetValue("InstallLocation") as string;
-                        if (!String.IsNullOrWhiteSpace(installLocation)) results.Add(installLocation);
-                        string displayIcon = entry.GetValue("DisplayIcon") as string;
-                        if (!String.IsNullOrWhiteSpace(displayIcon))
-                            results.Add(Path.GetDirectoryName(displayIcon.Trim().Trim('"').Split(',')[0]));
-                    }
-                }
-                catch { }
-                finally { if (uninstall != null) uninstall.Dispose(); if (baseKey != null) baseKey.Dispose(); }
-            }
-            return results;
-        }
         private void ConfigureTextBox(TextBox box, int left, int top, int width, bool password)
         {
             box.SetBounds(left, top, width, 34); box.BorderStyle = BorderStyle.FixedSingle;

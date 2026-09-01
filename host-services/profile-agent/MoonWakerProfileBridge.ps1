@@ -42,7 +42,7 @@ function Write-AgentDiagnosticEvent([string]$Event, [hashtable]$Fields = @{}, [E
         $record = [ordered]@{ v = 1; ts = [DateTime]::UtcNow.ToString("o"); mono_ms = [long]$diagnosticClock.ElapsedMilliseconds; level = if ($Exception) { "ERROR" } else { "INFO" }; component = "host.profile-supervisor"; event = $Event; run_id = $diagnosticRunId }
         foreach ($key in @("profile_id", "child_component", "pid", "exit_code", "restart_count", "status")) {
             $value = $Fields[$key]
-            if ($key -eq "child_component" -and $value -in @("discord", "vibepollo", "playnite")) { $record[$key] = $value }
+            if ($key -eq "child_component" -and $value -in @("discord", "vibepollo", "game-provider")) { $record[$key] = $value }
             elseif ($key -ne "child_component" -and (($value -is [int] -or $value -is [long]) -or
                 (($value -is [string]) -and $value -match '^[A-Za-z0-9._:$-]{1,256}$'))) { $record[$key] = $value }
         }
@@ -72,7 +72,7 @@ function Start-HiddenProcess([string]$FileName, [string]$Arguments, [string]$Wor
 
 function Write-State([string]$Status) {
     $components = [ordered]@{}
-    foreach ($name in @("discord", "vibepollo", "playnite")) {
+    foreach ($name in @("discord", "vibepollo", "game-provider")) {
         $process = $children[$name]
         $components[$name] = [ordered]@{
             enabled = Test-Path -LiteralPath (Join-Path $ProfileRoot $name)
@@ -105,7 +105,7 @@ function Start-Component([string]$Name) {
                 Write-AgentDiagnosticEvent "component.adopted" @{ profile_id = $ProfileId; child_component = $Name; pid = [int]$owner; status = "running" }
                 return Get-Process -Id $owner -ErrorAction SilentlyContinue
             }
-            if ($Name -eq "playnite") {
+            if ($Name -eq "game-provider") {
                 $health = Get-ComponentHealth $Name
                 $legacyBridgeIdentity = $health -and [int]$health.pid -eq [int]$owner -and
                     $null -ne $health.connector_connected -and
@@ -163,7 +163,7 @@ function Get-ComponentHealth([string]$Name) {
 function Test-ComponentHealth([string]$Name, [bool]$RequireIdentity = $false) {
     $health = Get-ComponentHealth $Name
     if (-not $health) { return $false }
-    if ($Name -ne "playnite" -or -not $RequireIdentity) { return $true }
+    if ($Name -ne "game-provider" -or -not $RequireIdentity) { return $true }
     try {
         $expected = Get-Content -LiteralPath (Join-Path $ProfileRoot "moonwaker-version.json") -Raw |
             ConvertFrom-Json
@@ -184,7 +184,7 @@ function Stop-Components {
     foreach ($entry in @(
         @{ name = "discord"; script = "Stop-DiscordBridge.ps1" },
         @{ name = "vibepollo"; script = "Stop-VibepolloBridge.ps1" },
-        @{ name = "playnite"; script = "Stop-PlayniteBridge.ps1" })) {
+        @{ name = "game-provider"; script = "Stop-PlayniteBridge.ps1" })) {
         $stopScript = Join-Path (Join-Path $ProfileRoot $entry.name) $entry.script
         if (Test-Path -LiteralPath $stopScript) {
             try { & $stopScript | Out-Null } catch { Write-AgentDiagnosticEvent "component.graceful_stop_failed" @{ profile_id = $ProfileId; child_component = $entry.name; status = "failed" } $_.Exception }
@@ -216,13 +216,13 @@ try {
     }
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
     Write-AgentDiagnosticEvent "supervisor.started" @{ profile_id = $ProfileId; status = "running" }
-    foreach ($name in @("discord", "vibepollo", "playnite")) {
+    foreach ($name in @("discord", "vibepollo", "game-provider")) {
         try { $children[$name] = Start-Component $name } catch { Write-AgentDiagnosticEvent "component.start_failed" @{ profile_id = $ProfileId; child_component = $name; status = "failed" } $_.Exception }
     }
     Write-State "running"
     $healthTick = 0
     while (-not (Test-Path -LiteralPath $stopPath)) {
-        foreach ($name in @("discord", "vibepollo", "playnite")) {
+        foreach ($name in @("discord", "vibepollo", "game-provider")) {
             $process = $children[$name]
             if ($null -ne $process -and $process.HasExited) {
                 Write-AgentDiagnosticEvent "component.exited" @{ profile_id = $ProfileId; child_component = $name; exit_code = [int]$process.ExitCode; status = "restarting" }
@@ -235,7 +235,7 @@ try {
         $healthTick++
         if ($healthTick -ge 8) {
             $healthTick = 0
-            foreach ($name in @("discord", "vibepollo", "playnite")) {
+            foreach ($name in @("discord", "vibepollo", "game-provider")) {
                 $process = $children[$name]
                 # DiscordBridge deliberately handles AUTHORIZE synchronously while
                 # Discord displays its consent modal. It cannot answer /health in
@@ -244,7 +244,7 @@ try {
                 # recover a genuinely failed Bridge.
                 if ($name -eq "discord") { continue }
                 if ($null -ne $process -and -not $process.HasExited -and
-                    -not (Test-ComponentHealth $name ($name -eq "playnite"))) {
+                    -not (Test-ComponentHealth $name ($name -eq "game-provider"))) {
                     Restart-Component $name $process
                 }
             }

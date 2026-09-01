@@ -532,10 +532,10 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
-    public void steamRecordStartsExactlyOnceBeforeStreamConnect() {
+    public void declaredProviderCapabilityStartsExactlyOnceBeforeStreamConnect() {
         LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
                 "transition-provider", HOST, LaunchTransitionType.GAME, 42,
-                "steam:289070", 1_000L);
+                "gog:Some_Game", 1_000L, true);
         LaunchTransitionController controller = new LaunchTransitionController(null);
         controller.begin(providerSpec);
         controller.overlayRendered(providerSpec.id);
@@ -554,14 +554,14 @@ public class ConsoleStreamTransitionCoordinatorTest {
         coordinator.onStreamConnected();
 
         assertEquals(1, gateway.startGameCalls);
-        assertEquals("steam:289070", gateway.startedGameId);
+        assertEquals("gog:Some_Game", gateway.startedGameId);
     }
 
     @Test
     public void nonSteamLaunchWaitsForControllerTransportWithoutOpeningPrivacyGate() {
         for (String gameId : Arrays.asList("epic:Cowbird", "playnite:" + GAME)) {
             ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
-            LaunchTransitionSpec target = providerSpec("cold-" + gameId, gameId);
+            LaunchTransitionSpec target = providerSpec("cold-" + gameId, gameId, false);
             LaunchTransitionController controller = providerController(target);
             FakeGateway gateway = stoppingObservationGateway();
             ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
@@ -585,7 +585,8 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
     @Test
     public void cancelledColdNonSteamLaunchCannotStartOnLateConnection() {
-        LaunchTransitionSpec target = providerSpec("cold-cancel", "epic:Cowbird");
+        LaunchTransitionSpec target = providerSpec(
+                "cold-cancel", "epic:Cowbird", false);
         FakeGateway gateway = stoppingObservationGateway();
         ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
                 target, providerController(target), gateway, new InlineExecutor(), new FakeClock(),
@@ -604,7 +605,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void cancelledProviderStartIsCompensatedAfterItReturns() throws Exception {
         LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
                 "transition-provider", HOST, LaunchTransitionType.GAME, 42,
-                "steam:289070", 1_000L);
+                "steam:289070", 1_000L, true);
         LaunchTransitionController controller = new LaunchTransitionController(null);
         controller.begin(providerSpec);
         controller.overlayRendered(providerSpec.id);
@@ -656,7 +657,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void stoppedProviderStartFailureCannotMutateOldTransition() throws Exception {
         LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
                 "transition-provider", HOST, LaunchTransitionType.GAME, 42,
-                "steam:289070", 1_000L);
+                "steam:289070", 1_000L, true);
         LaunchTransitionController controller = new LaunchTransitionController(null);
         controller.begin(providerSpec);
         controller.overlayRendered(providerSpec.id);
@@ -694,7 +695,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void providerStartAndStreamConnectionCanProgressTogether() throws Exception {
         LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
                 "transition-provider", HOST, LaunchTransitionType.GAME, 42,
-                "steam:289070", 1_000L);
+                "steam:289070", 1_000L, true);
         LaunchTransitionController controller = new LaunchTransitionController(null);
         controller.begin(providerSpec);
         controller.overlayRendered(providerSpec.id);
@@ -755,7 +756,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     public void providerLauncherInteractionKeepsRevealChoiceAvailable() {
         LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
                 "transition-provider", HOST, LaunchTransitionType.GAME, 42,
-                "steam:289070", 1_000L);
+                "steam:289070", 1_000L, true);
         LaunchTransitionController controller = new LaunchTransitionController(null);
         controller.begin(providerSpec);
         controller.overlayRendered(providerSpec.id);
@@ -1251,8 +1252,14 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     private static LaunchTransitionSpec providerSpec(String transitionId, String gameId) {
+        return providerSpec(transitionId, gameId, true);
+    }
+
+    private static LaunchTransitionSpec providerSpec(String transitionId, String gameId,
+                                                     boolean startBeforeStream) {
         return new LaunchTransitionSpec(
-                transitionId, HOST, LaunchTransitionType.GAME, 42, gameId, 1_000L);
+                transitionId, HOST, LaunchTransitionType.GAME, 42, gameId, 1_000L,
+                startBeforeStream);
     }
 
     private static LaunchTransitionController providerController(LaunchTransitionSpec spec) {

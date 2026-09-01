@@ -193,11 +193,6 @@ final class PlayniteTargetResolver {
                 && MOONWAKER_STREAM_UUID.equals(normalizeUuid(app.getAppUuid()));
     }
 
-    static boolean isDirectProviderGameId(String gameId) {
-        String normalized = normalize(gameId);
-        return normalized.startsWith("steam:") || normalized.startsWith("epic:");
-    }
-
     static NvApp resolveLegacyProviderStream(List<NvApp> apps) {
         return preferredEquivalent(exactName(apps, "Desktop"));
     }
@@ -235,11 +230,11 @@ final class PlayniteTargetResolver {
     }
 
     private static boolean isDirectProvider(PlayniteLibraryGame game) {
-        return game != null && ("steam".equals(game.provider) || "epic".equals(game.provider));
+        return game != null && game.usesNeutralStream();
     }
 
     private static boolean isManagedGame(PlayniteLibraryGame game) {
-        return game != null && (isDirectProvider(game) || "playnite".equals(game.provider));
+        return game != null && !game.provider.isEmpty();
     }
 
     private static String normalizeUuid(String value) {

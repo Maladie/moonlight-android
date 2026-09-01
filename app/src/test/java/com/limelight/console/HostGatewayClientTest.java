@@ -10,14 +10,18 @@ import static org.junit.Assert.assertTrue;
 public class HostGatewayClientTest {
     @Test public void currentGameGuideDecisionComesFromHostAndDefaultsToBlocked() throws Exception {
         JSONObject current = new JSONObject().put("id", "legacy-steam-guid")
-                .put("state", "running").put("host_guide_allowed", true);
+                .put("state", "running").put("host_guide_allowed", true)
+                .put("requires_connector", false);
         JSONObject response = new JSONObject().put("current", current);
         assertTrue(HostGatewayClient.parseCurrentGame(response).hostGuideAllowed);
+        assertFalse(HostGatewayClient.parseCurrentGame(response).requiresConnector);
         current.put("host_guide_allowed", false);
         assertFalse(HostGatewayClient.parseCurrentGame(response).hostGuideAllowed);
         current.remove("host_guide_allowed");
+        current.remove("requires_connector");
         current.put("id", "steam:1");
         assertFalse(HostGatewayClient.parseCurrentGame(response).hostGuideAllowed);
+        assertTrue(HostGatewayClient.parseCurrentGame(response).requiresConnector);
     }
 
 
@@ -78,7 +82,10 @@ public class HostGatewayClientTest {
                 "\"11223344-5566-7788-99aa-bbccddeeff00\"," +
                 "\"libraryKey\":\"steam\",\"libraryName\":\"Steam\"," +
                 "\"capabilities\":{\"launch\":true,\"install\":false," +
-                "\"uninstall\":true},\"genres\":[\"Action\",\"RPG\"]," +
+                "\"uninstall\":true},\"providerCapabilities\":{" +
+                "\"requiresConnector\":false,\"streamMode\":\"neutral\"," +
+                "\"startBeforeStream\":true}," +
+                "\"genres\":[\"Action\",\"RPG\"]," +
                 "\"description\":\"Short overview\",\"playCount\":17," +
                 "\"installRequiresAttention\":true," +
                 "\"installAttentionReason\":\"launcher_prompt\"," +
@@ -98,6 +105,9 @@ public class HostGatewayClientTest {
         assertEquals("289070", parsed.games.get(0).providerGameId);
         assertEquals("steam", parsed.games.get(0).libraryKey);
         assertFalse(parsed.games.get(0).canInstall);
+        assertFalse(parsed.games.get(0).requiresConnector);
+        assertEquals("neutral", parsed.games.get(0).streamMode);
+        assertTrue(parsed.games.get(0).startBeforeStream);
         assertEquals("Action, RPG", parsed.games.get(0).genres);
         assertEquals("Short overview", parsed.games.get(0).description);
         assertEquals(17, parsed.games.get(0).playCount);
@@ -121,6 +131,24 @@ public class HostGatewayClientTest {
         assertEquals("epic:CelesteApp", parsed.games.get(0).id);
         assertEquals("CelesteApp", parsed.games.get(0).providerGameId);
         assertTrue(parsed.games.get(0).canLaunch);
+    }
+
+    @Test public void futureProviderUsesDeclaredCapabilitiesWithoutClientAllowlist()
+            throws Exception {
+        HostGatewayClient.PlayniteGame game = HostGatewayClient.parsePlayniteLibrary(
+                new JSONObject("{\"games\":[{\"id\":\"gog:Some_Game\"," +
+                        "\"name\":\"Some Game\",\"provider\":\"gog\"," +
+                        "\"providerGameId\":\"Some_Game\"," +
+                        "\"capabilities\":{\"launch\":true}," +
+                        "\"providerCapabilities\":{\"requiresConnector\":false," +
+                        "\"streamMode\":\"neutral\"," +
+                        "\"startBeforeStream\":true}}]}")).games.get(0);
+
+        assertEquals("gog", game.provider);
+        assertTrue(game.canLaunch);
+        assertFalse(game.requiresConnector);
+        assertEquals("neutral", game.streamMode);
+        assertTrue(game.startBeforeStream);
     }
 
     @Test public void legacyExternalGuidHasNoExecutableCapabilities() throws Exception {

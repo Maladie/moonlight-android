@@ -5,9 +5,11 @@ Epic/Legendary and Playnite providers. It also uses the existing `launcher`
 role exposed by the installed Sunshine Playnite Connector for Playnite IPC and
 never automates the Playnite UI with keystrokes.
 
-The installed profile directory, Gateway key `playnite_bridge`, legacy API
-paths and `Start/Stop-PlayniteBridge.ps1` names remain compatibility aliases for
-one migration cycle. They all start or address `GameProviderBridge.py`.
+New profiles install the service in `game-provider` and register the Gateway key
+`game_provider_bridge`. The old `playnite` directory, `playnite_bridge` key,
+legacy API paths and `Start/Stop-PlayniteBridge.ps1` names remain compatibility
+aliases for one migration cycle. They all start or address
+`GameProviderBridge.py`.
 
 The Bridge exposes one provider-neutral library, current-game state, readiness
 and lifecycle events to the authenticated host Gateway. Steam, Epic/Legendary
@@ -42,8 +44,10 @@ the last successful direct metadata when a later provider refresh is offline.
 
 Playnite records whose source is Steam or Epic are ignored; titles are never
 correlation keys and their metadata cannot overwrite the direct providers.
-Other Playnite entries remain full Playnite-provider games, including GOG,
-emulators and manual entries, with their Playnite metadata and artwork unchanged.
+Playnite is disabled by default and can be connected or disconnected per Windows
+profile in MoonWaker Host Control. Other Playnite entries then remain full
+Playnite-provider games, including GOG, emulators and manual entries, with their
+Playnite metadata and artwork unchanged.
 
 Steam playtime and last-played time come from the Steam ownership response. A
 manifest-only/offline refresh keeps the last known Steam usage until the next

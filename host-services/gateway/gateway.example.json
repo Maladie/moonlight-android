@@ -7,12 +7,14 @@
   "discord_audio_worker": "MoonWakerDiscordAudioWorker.exe",
   "discord_bridge": "http://127.0.0.1:8765",
   "vibepollo_bridge": "http://127.0.0.1:8775",
+  "game_provider_bridge": "http://127.0.0.1:8780",
   "playnite_bridge": "http://127.0.0.1:8780",
   "profiles": {
     "default": {
       "name": "Default",
       "discord_bridge": "http://127.0.0.1:8765",
       "vibepollo_bridge": "http://127.0.0.1:8775",
+      "game_provider_bridge": "http://127.0.0.1:8780",
       "playnite_bridge": "http://127.0.0.1:8780"
     }
   },

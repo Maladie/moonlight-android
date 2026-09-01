@@ -83,7 +83,7 @@ $script:SnapshotCacheTime = [datetime]::MinValue
 $script:DiagnosticsCache = $null
 $script:DiagnosticsCacheTime = [datetime]::MinValue
 $script:MoonWakerClientPermissions = 0x07001F00 # list, view, launch and all input devices
-$script:GameRecordIdPattern = '^(?:steam:[0-9]+|epic:[a-z0-9_-]+|playnite:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'
+$script:GameRecordIdPattern = '^(?:[a-z][a-z0-9_-]{1,31}:[a-z0-9._-]{1,128}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'
 
 function Invoke-VibepolloApi {
     param(
@@ -1007,7 +1007,7 @@ function Ensure-PlayniteApp {
         $normalizedName -match '[\x00-\x1f\x7f]') {
         throw "Invalid application name"
     }
-    $isProviderRecord = $normalizedId -match '^(?:steam:[0-9]+|epic:[a-z0-9_-]+)$'
+    $isProviderRecord = $normalizedId -match '^[a-z][a-z0-9_-]{1,31}:'
 
     $apps = @(Get-VibepolloApps)
     $existing = @(Find-AppsByPlayniteId $apps $normalizedId)

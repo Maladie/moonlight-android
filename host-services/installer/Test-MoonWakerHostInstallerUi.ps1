@@ -61,7 +61,7 @@ try {
     }
 
     $status = $formType.GetField("installationStatus", $flags).GetValue($form)
-    $status.Text = "Detected shared components v0.7.56; this installer contains v0.7.57. " +
+    $status.Text = "Detected shared components v0.7.56; this installer contains v0.7.58. " +
         "Updating shared components is required and will preserve existing profiles. " +
         "The Vibepollo token for this profile will be preserved when its field is empty. " +
         "To enable automatic client pairing and game permissions, select automatic token " +

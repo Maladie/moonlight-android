@@ -21,7 +21,8 @@ public class HostLaunchPreflightTest {
         fake.retainedTarget = app("MoonWaker Stream", 77, PlayniteTargetResolver.MOONWAKER_STREAM_UUID);
         fake.refreshAction = () -> { throw new IllegalStateException("app list blocked by startup"); };
         HostLaunchPreflight.Request request = HostLaunchPreflight.Request.from(
-                PlayIntent.playniteGame("host", 77, "Game", false, "steam:1", "game"),
+                PlayIntent.playniteGame("host", 77, "Game", false, "steam:1", "game",
+                        false, true),
                 HostLaunchPreflight.Action.SWITCH_RETAINED);
         assertEquals(HostLaunchPreflight.Status.READY, fake.run(request, new AtomicBoolean()).status);
         assertEquals(0, fake.refreshes);
@@ -43,7 +44,8 @@ public class HostLaunchPreflightTest {
             fake.retainedTarget = app("MoonWaker Stream", 77, PlayniteTargetResolver.MOONWAKER_STREAM_UUID);
             fake.apps.add(Collections.singletonList(fake.retainedTarget));
             assertEquals(HostLaunchPreflight.Status.READY, fake.run(HostLaunchPreflight.Request.from(
-                    PlayIntent.playniteGame("host", 77, "Game", false, "steam:1", "game"), action),
+                    PlayIntent.playniteGame("host", 77, "Game", false, "steam:1", "game",
+                            false, true), action),
                     new AtomicBoolean()).status);
             assertEquals(1, fake.refreshes);
             assertEquals(0, fake.retainedChecks);
@@ -202,6 +204,23 @@ public class HostLaunchPreflightTest {
         assertEquals(0, fake.ensureCalls);
     }
 
+    @Test public void neutralProviderCapabilityDoesNotDependOnKnownProviderPrefix() {
+        Fake fake = new Fake();
+        fake.profile = profile(true, true, false, true);
+        fake.apps.add(Collections.singletonList(app("MoonWaker Stream", 77,
+                PlayniteTargetResolver.MOONWAKER_STREAM_UUID)));
+        HostLaunchPreflight.Request request = HostLaunchPreflight.Request.from(
+                PlayIntent.playniteGame("host", 0, "GOG Game", false,
+                        "gog:Some_Game", "gog:Some_Game", false, true),
+                HostLaunchPreflight.Action.LAUNCH);
+
+        HostLaunchPreflight.Result result = fake.run(request, new AtomicBoolean());
+
+        assertEquals(HostLaunchPreflight.Status.READY, result.status);
+        assertEquals(77, result.target.getAppId());
+        assertEquals(0, fake.ensureCalls);
+    }
+
     @Test public void existingExactTargetDoesNotRequireVibepollo() {
         Fake fake = new Fake();
         fake.profile = profile(true, true, true, false);
@@ -335,7 +354,8 @@ public class HostLaunchPreflightTest {
 
     private static HostLaunchPreflight.Request providerGame(int appId) {
         return HostLaunchPreflight.Request.from(PlayIntent.playniteGame(
-                "host", appId, "Game", false, "steam:289070", "steam:289070"),
+                "host", appId, "Game", false, "steam:289070", "steam:289070",
+                false, true),
                 HostLaunchPreflight.Action.LAUNCH);
     }
 

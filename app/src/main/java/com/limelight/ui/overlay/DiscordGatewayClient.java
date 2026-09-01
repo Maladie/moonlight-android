@@ -187,7 +187,8 @@ public final class DiscordGatewayClient {
                         value.optBoolean("discord_rpc_connected", false),
                         value.optBoolean("discord_authenticated", false),
                         value.optBoolean("vibepollo_bridge_online", false),
-                        value.optBoolean("playnite_bridge_online", false),
+                        value.optBoolean("game_provider_bridge_online",
+                                value.optBoolean("playnite_bridge_online", false)),
                         value.optBoolean("virtualhere_available", false)));
             }
         }
