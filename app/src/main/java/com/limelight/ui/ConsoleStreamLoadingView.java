@@ -70,6 +70,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private final boolean reducedMotion;
     private int currentStep = 1;
     private boolean error;
+    private boolean closingPresentation;
     private boolean stopped;
     private boolean revealRequested;
     private int revealGeneration;
@@ -80,7 +81,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
     private final Runnable rotateMessage = new Runnable() {
         @Override public void run() {
-            if (stopped || error || getVisibility() != VISIBLE || messages.length == 0) {
+            if (stopped || error || closingPresentation
+                    || getVisibility() != VISIBLE || messages.length == 0) {
                 return;
             }
             int next;
@@ -95,7 +97,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             }
             messageView.animate().cancel();
             messageView.animate().alpha(0f).setDuration(160L).withEndAction(() -> {
-                if (stopped || error) return;
+                if (stopped || error || closingPresentation) return;
                 messageView.setText(nextMessage);
                 messageView.animate().alpha(1f).setDuration(240L).start();
             }).start();
@@ -213,9 +215,11 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
     public void showFullTransitionAppearance() {
         if (stopped) return;
+        closingPresentation = false;
         defaultBackdrop.setVisibility(VISIBLE);
         defaultShade.setVisibility(VISIBLE);
         defaultContent.setVisibility(VISIBLE);
+        stepsView.setVisibility(VISIBLE);
     }
 
     public void setSplashArtwork(String artworkPath) {
@@ -245,13 +249,9 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         BitmapFactory.decodeFile(path, bounds);
         if (!LoadingArtworkPolicy.canUseAsSplash(
                 bounds.outWidth, bounds.outHeight)) return null;
-        int sample = 1;
-        while (bounds.outWidth / (sample * 2) >= 1920
-                && bounds.outHeight / (sample * 2) >= 1080) {
-            sample *= 2;
-        }
         BitmapFactory.Options options = new BitmapFactory.Options();
-        options.inSampleSize = sample;
+        options.inSampleSize = LoadingArtworkPolicy.sampleSize(
+                bounds.outWidth, bounds.outHeight, 1920);
         options.inPreferredConfig = Bitmap.Config.ARGB_8888;
         return BitmapFactory.decodeFile(path, options);
     }
@@ -286,7 +286,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             handler.post(() -> setStage(stage));
             return;
         }
-        if (stopped) return;
+        if (stopped || closingPresentation) return;
         String friendly = friendlyStage(stage);
         statusView.setText(friendly);
         int step = progressForStage(stage);
@@ -298,7 +298,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             handler.post(() -> setStep(step, status));
             return;
         }
-        if (stopped) return;
+        if (stopped || closingPresentation) return;
         boolean resumingAfterError = error;
         currentStep = Math.max(1, Math.min(5, step));
         error = false;
@@ -329,7 +329,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             handler.post(() -> showError(title, details, allowShowAnyway));
             return;
         }
-        if (stopped) return;
+        if (stopped || closingPresentation) return;
         error = true;
         handler.removeCallbacks(rotateMessage);
         messageView.animate().cancel();
@@ -353,7 +353,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             handler.post(() -> showLauncherInteraction(title, details, allowReveal));
             return;
         }
-        if (stopped) return;
+        if (stopped || closingPresentation) return;
         error = true;
         handler.removeCallbacks(rotateMessage);
         messageView.animate().cancel();
@@ -392,6 +392,29 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
     }
 
+    /** Shows a passive privacy screen while an ended game returns to the library. */
+    public void showClosing(String title, String status) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(() -> showClosing(title, status));
+            return;
+        }
+        if (stopped) return;
+        error = false;
+        closingPresentation = true;
+        handler.removeCallbacks(rotateMessage);
+        messageView.animate().cancel();
+        messageView.setAlpha(1f);
+        messageView.setText(title);
+        statusView.setText(status);
+        statusView.setTextColor(0xFFB8C7D8);
+        activityView.setVisibility(VISIBLE);
+        stepsView.setVisibility(GONE);
+        retryView.setVisibility(GONE);
+        showAnywayView.setVisibility(GONE);
+        actionsRow.setVisibility(GONE);
+        sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+    }
+
     /**
      * Exposes a deliberate, DPAD-focusable opt-in after a real stream frame is
      * available, while game/Playnite readiness is still being verified.
@@ -426,6 +449,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         if (event.getAction() != KeyEvent.ACTION_DOWN || event.getRepeatCount() > 0) {
             return false;
         }
+        if (actionsRow.getVisibility() != VISIBLE) return isLoadingActionKey(keyCode);
         if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_BUTTON_B) {
             return cancelView.performClick();
         }
@@ -484,7 +508,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
             handler.post(() -> revealStream(afterReveal));
             return;
         }
-        if (stopped || revealRequested) return;
+        if (stopped || revealRequested || closingPresentation) return;
         revealRequested = true;
         int generation = ++revealGeneration;
         setStep(5, getContext().getString(R.string.transition_ready));
@@ -520,7 +544,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         setAlpha(1f);
         setVisibility(VISIBLE);
         bringToFront();
-        requestDefaultActionFocus();
+        if (!closingPresentation) requestDefaultActionFocus();
         if (!error) scheduleLoadingMessage(false);
     }
 
@@ -613,9 +637,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         }
         splashLayout = true;
 
-        ImageView artwork = new ImageView(getContext());
+        ImageView artwork = new ArtworkImageView(getContext());
         splashArtworkView = artwork;
-        artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
         artwork.setImageBitmap(bitmap);
         artwork.setAlpha(0f);
         addView(artwork, 1, match());
@@ -677,7 +700,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private void showSplashMessageImmediately() {
         handler.removeCallbacks(rotateMessage);
         messageView.animate().cancel();
-        if (stopped || error || messages.length == 0) return;
+        if (stopped || error || closingPresentation || messages.length == 0) return;
         int next;
         do {
             next = random.nextInt(messages.length);

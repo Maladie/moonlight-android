@@ -15,6 +15,16 @@ and Playnite are separate execution providers; Playnite entries use exact GUIDs,
 Steam exact numeric AppIDs, and Epic exact Legendary AppNames. Forced process
 termination is intentionally unavailable.
 
+Before dispatching a non-Steam game, the Bridge requests `steam://close/bigpicture`
+from the verified Steam process in the same Windows user session. Steam itself
+remains running. This is a close request, not an acknowledgement of input isolation.
+`/game/current` also returns `host_guide_allowed`, based on the current game's
+provider (not other running games). Android filters Guide from every outgoing
+controller packet for non-Steam games; local hold gestures and other buttons are
+unchanged. Managed sessions block Guide until a correlated host decision arrives,
+including after a retained game switch or reconnect. Install the matching Host
+update: older hosts without this field leave Guide blocked in managed sessions.
+
 Steam ownership comes from `IPlayerService/GetOwnedGames`; the active SteamID is
 read from the trusted local `loginusers.vdf`. Configure the Web API key for the
 profile with Host Control action `ConfigureSteamWebApi`. The key is stored with
@@ -28,6 +38,22 @@ A matched Steam/Epic entry is not emitted twice, titles are never correlation
 keys, and an unavailable or incomplete provider retains only its last successful snapshot.
 Unmatched Playnite entries remain full Playnite-provider games, including GOG,
 emulators and manual entries.
+
+Steam playtime and last-played time come from the Steam ownership response;
+Playnite metadata cannot overwrite them. A manifest-only/offline refresh keeps
+the last known Steam usage until the next successful API refresh.
+
+Epic playtime is owned by the profile Bridge in `library-cache.json`
+(`epic_playtime_seconds`). It imports available Playnite history once, then adds
+time between matching verified game-process samples, including games started
+outside MoonWaker. Catalog refreshes and Bridge restarts preserve the total.
+Steam and native Playnite games are not counted again. Samples are taken every
+five seconds; gaps longer than fifteen seconds, process changes and unavailable
+probes do not add time. Totals are saved on minute boundaries and when observation
+ends, so an abrupt Bridge exit can lose less than a minute. This measures process
+lifetime (including in-game pauses), not active input, and cannot recover Epic
+sessions missed while the Bridge was offline. Back up the profile library cache
+to retain this history when reinstalling the host.
 
 The readiness response is privacy-sensitive. `ready=false` means MoonWaker must
 keep its opaque loading surface visible. A timeout is not permission to reveal
@@ -69,10 +95,16 @@ operation becomes `attention_required` with `steam_operation_not_started`.
 Steam-owned-window UI Automation and verified visual confirmation remain
 available for prompts created by the direct operation.
 
-Direct Steam launch first verifies the local installed manifest, ensures a
-stable Big Picture window on the streamed monitor, and then invokes the exact
-Steam executable with `-applaunch <appid>`. A dispatch process exit is not launch
-success; the existing stable-window readiness probe remains authoritative.
+Direct Steam launch first verifies the local installed manifest and opens Big
+Picture (`steam://open/bigpicture` for running Steam, `-gamepadui` for a cold
+start). The request is sent even if a fullscreen Steam window already exists:
+window bounds alone cannot distinguish desktop Steam from Big Picture. After a
+stable fullscreen Steam window appears on the streamed monitor (or any monitor
+while stream display resolution is pending), the Bridge rechecks session/UAC
+safety and invokes the exact Steam executable with `steam://launch/<appid>/Dialog`.
+A timeout or unsafe session prevents game dispatch. A dispatch process exit is
+not launch success; the existing stable game-window readiness probe remains
+authoritative and still requires the resolved streamed monitor.
 
 Steam manifests and library directories remain authoritative for progress and
 completion. An incomplete library scan never proves uninstallation, and healthy

@@ -12,6 +12,7 @@ import time
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Hashable
 
@@ -341,7 +342,6 @@ class SteamProvider(GenericPlayniteProvider):
             "name": str(local.get("name") or f"Steam App {app_id}"),
             "installed": bool(local.get("installed")),
             "installDir": str(local.get("install_directory") or ""),
-            "playtimeMinutes": 0,
         } for app_id, local in installed.items()]
         try:
             api_key = self.secret_reader(self.api_key_path) if self.api_key_path else ""
@@ -395,6 +395,9 @@ class SteamProvider(GenericPlayniteProvider):
                 "name": name, "installed": bool(local.get("installed")),
                 "installDir": str(local.get("install_directory") or ""),
                 "playtimeMinutes": max(0, int(item.get("playtime_forever") or 0)),
+                "lastPlayed": (datetime.fromtimestamp(int(item["rtime_last_played"]),
+                                timezone.utc).isoformat()
+                               if item.get("rtime_last_played") else ""),
             })
         complete = bool(installed_snapshot["available"] and
                         installed_snapshot["complete"])
@@ -1580,10 +1583,13 @@ class GameOperationsService:
         record["playniteGameId"] = playnite_id
         for key in ("boxArtPath", "cover", "coverImage", "backgroundImagePath",
                     "background", "backgroundImage", "iconPath", "icon",
-                    "description", "genres", "playCount", "lastPlayed",
-                    "playtimeMinutes", "hidden", "favorite", "artworkVersion"):
+                    "description", "genres", "hidden", "favorite", "artworkVersion"):
             if key in metadata and metadata.get(key) not in (None, "", []):
                 record[key] = metadata[key]
+        if record.get("provider") != "steam":
+            for key in ("playCount", "lastPlayed", "playtimeMinutes"):
+                if key in metadata:
+                    record[key] = metadata[key]
 
     def aggregate_catalog(self, playnite_games: list[dict[str, Any]],
                           previous: dict[str, dict[str, Any]] | None = None) -> dict[str, Any]:
@@ -1625,6 +1631,12 @@ class GameOperationsService:
                 if playnite is not None:
                     standalone.append(playnite)
         for record in records.values():
+            if record.get("provider") == "steam" and "playtimeMinutes" not in record:
+                # A manifest-only/offline snapshot has no usage data, not zero usage.
+                old = previous.get(str(record["id"])) or {}
+                for key in ("playtimeMinutes", "lastPlayed"):
+                    if key in old:
+                        record[key] = old[key]
             metadata = overlays.get((str(record.get("provider") or ""),
                                      str(record.get("providerGameId") or "")))
             if metadata is not None:

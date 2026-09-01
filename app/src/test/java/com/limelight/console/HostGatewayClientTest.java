@@ -8,6 +8,18 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class HostGatewayClientTest {
+    @Test public void currentGameGuideDecisionComesFromHostAndDefaultsToBlocked() throws Exception {
+        JSONObject current = new JSONObject().put("id", "legacy-steam-guid")
+                .put("state", "running").put("host_guide_allowed", true);
+        JSONObject response = new JSONObject().put("current", current);
+        assertTrue(HostGatewayClient.parseCurrentGame(response).hostGuideAllowed);
+        current.put("host_guide_allowed", false);
+        assertFalse(HostGatewayClient.parseCurrentGame(response).hostGuideAllowed);
+        current.remove("host_guide_allowed");
+        current.put("id", "steam:1");
+        assertFalse(HostGatewayClient.parseCurrentGame(response).hostGuideAllowed);
+    }
+
 
     @Test
     public void gameplayPermissionsAllowLaunchAndInputsWithoutServerCommands() {

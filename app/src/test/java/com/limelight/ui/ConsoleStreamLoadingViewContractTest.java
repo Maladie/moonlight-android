@@ -39,6 +39,68 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(method.contains("actionsRow.setVisibility(GONE)"));
     }
 
+    @Test public void endedGameShowsPassiveClosingScreen() throws IOException {
+        String text = source();
+        String method = text.substring(text.indexOf("public void showClosing("),
+                text.indexOf("public void setManualRevealAvailable"));
+
+        assertTrue(method.contains("handler.removeCallbacks(rotateMessage)"));
+        assertTrue(method.contains("messageView.setText(title)"));
+        assertTrue(method.contains("statusView.setText(status)"));
+        assertTrue(method.contains("stepsView.setVisibility(GONE)"));
+        assertTrue(method.contains("showAnywayView.setVisibility(GONE)"));
+        assertTrue(method.contains("actionsRow.setVisibility(GONE)"));
+        assertFalse(method.contains("requestDefaultActionFocus"));
+        assertTrue(text.contains("if (stopped || error || closingPresentation) return"));
+
+        String setStage = text.substring(text.indexOf("public void setStage("),
+                text.indexOf("public void setStep("));
+        String setStep = text.substring(text.indexOf("public void setStep("),
+                text.indexOf("public String getCurrentMessage("));
+        String showError = text.substring(text.indexOf("public void showError(String title, String details)"),
+                text.indexOf("public void showLauncherInteraction("));
+        String launcherInteraction = text.substring(text.indexOf(
+                        "public void showLauncherInteraction("),
+                text.indexOf("public void showCancelling("));
+        String reveal = text.substring(text.indexOf("public void revealStream(Runnable"),
+                text.indexOf("public void showOpaque("));
+        assertTrue(setStage.contains("if (stopped || closingPresentation) return"));
+        assertTrue(setStep.contains("if (stopped || closingPresentation) return"));
+        assertFalse(setStep.contains("closingPresentation = false"));
+        assertTrue(showError.contains("if (stopped || closingPresentation) return"));
+        assertTrue(launcherInteraction.contains("if (stopped || closingPresentation) return"));
+        assertTrue(reveal.contains("stopped || revealRequested || closingPresentation"));
+
+        String beginNextLaunch = text.substring(text.indexOf(
+                        "public void showFullTransitionAppearance("),
+                text.indexOf("public void setSplashArtwork("));
+        assertTrue(beginNextLaunch.contains("closingPresentation = false"));
+        assertTrue(beginNextLaunch.contains("stepsView.setVisibility(VISIBLE)"));
+
+        String keys = text.substring(text.indexOf("public boolean handleControllerKey"),
+                text.indexOf("public boolean handleControllerMotion"));
+        assertTrue(keys.contains(
+                "if (actionsRow.getVisibility() != VISIBLE) return isLoadingActionKey(keyCode)"));
+    }
+
+    @Test public void gameEndBypassesLaunchStepsAndRevealActions() throws IOException {
+        String game = gameSource();
+        String apply = game.substring(game.indexOf("private void applyTransitionSnapshot"),
+                game.indexOf("static boolean shouldShowTransitionOverlay"));
+
+        assertTrue(apply.contains("if (usesClosingPresentation(snapshot))"));
+        assertTrue(apply.contains("consoleLoadingView.showClosing("));
+        assertTrue(apply.indexOf("consoleLoadingView.showClosing(")
+                < apply.indexOf("consoleLoadingView.setStep("));
+        assertTrue(apply.contains("R.string.transition_game_ended"));
+        assertTrue(apply.contains("R.string.transition_returning_library"));
+        String predicate = game.substring(game.indexOf(
+                        "private static boolean usesClosingPresentation"),
+                game.indexOf("static boolean shouldShowTransitionOverlay"));
+        assertTrue(predicate.contains("LaunchTransitionType.GAME_CONNECTION"));
+        assertTrue(predicate.contains("snapshot.spec.playniteGameId.isEmpty()"));
+    }
+
     @Test public void revealAvailabilityDoesNotStealFocus() throws IOException {
         String text = source();
         String method = text.substring(text.indexOf("public void setManualRevealAvailable"),
@@ -123,6 +185,14 @@ public class ConsoleStreamLoadingViewContractTest {
         Path source = Paths.get("src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
         if (!Files.exists(source)) {
             source = Paths.get("app/src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
+        }
+        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+    }
+
+    private static String gameSource() throws IOException {
+        Path source = Paths.get("src/main/java/com/limelight/Game.java");
+        if (!Files.exists(source)) {
+            source = Paths.get("app/src/main/java/com/limelight/Game.java");
         }
         return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
     }

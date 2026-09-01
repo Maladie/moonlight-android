@@ -49,8 +49,12 @@ public class ConsoleActivityLibraryPerformanceContractTest {
                         "private void showArtworkSettled("),
                 source.indexOf("private void finishBackdropSwap("));
         assertTrue(backdrop.indexOf("if (token != artworkGeneration.get()) return;")
-                < backdrop.indexOf("Bitmap bitmap = decodeArtwork"));
-        assertTrue(backdrop.contains("if (bitmap != null) bitmap.recycle()"));
+                < backdrop.indexOf("decodeArtwork(file"));
+        assertTrue(backdrop.contains("playniteBitmapCache.get(bitmapKey)"));
+        assertTrue(backdrop.contains("playniteBitmapCache.put(bitmapKey, bitmap)"));
+
+        String launchTargets = source("PlayniteLaunchTargetStore.java");
+        assertTrue(launchTargets.contains("preferences.getInt(key, 0) == appId"));
 
         String style = source.substring(source.indexOf("private void styleCard("),
                 source.indexOf("private void styleControllerPill("));

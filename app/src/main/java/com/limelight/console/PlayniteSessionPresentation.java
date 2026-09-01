@@ -43,7 +43,7 @@ final class PlayniteSessionPresentation {
         }
 
         String signature() {
-            return snapshot.signature() + "|" + resumeGameId + "|" + suspendedGameId;
+            return resumeGameId + "|" + suspendedGameId;
         }
     }
 

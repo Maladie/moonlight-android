@@ -69,6 +69,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         void onInstallationAttentionRequired(String hostId, String gameId, String gameName);
 
         default void onProviderGameStopped(String transitionId, String gameId) { }
+        default void onHostGuidePolicy(String transitionId, String gameId, boolean allowed) { }
         default void onProviderGameStartAccepted(String transitionId, String gameId) { }
         default void onProviderGameStartFailed(String transitionId, String gameId,
                                                ProviderStartFailure failure) { }
@@ -344,6 +345,10 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         synchronized (this) {
             if (!startsProviderGame() || gateway == null || providerStartRequested
                     || providerCleanupRequested || !isCurrent(actionEpoch)) return;
+            // Outside Steam, games may enumerate pads only at startup. The stream
+            // callback follows controller announcements, including during hidden warm-up.
+            if (!streamConnected && !transitionSpec.playniteGameId.toLowerCase(
+                    java.util.Locale.ROOT).startsWith("steam:")) return;
             providerStartRequested = true;
         }
         try {
@@ -568,11 +573,13 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                     context.gameWasRunning = true;
                 }
                 if (context.gameWasRunning
+                        && !context.gameStopNotified
                         && "idle".equalsIgnoreCase(snapshot.gameState)) {
                     transitionController.gameStopping(transitionSpec.id,
                             transitionSpec.hostId, transitionSpec.playniteGameId);
                     if (!isCurrent(runEpoch)) return;
                     context.gameWasRunning = false;
+                    context.gameStopNotified = true;
                     clearCurrentAttemptOwner();
                     callbacks.onProviderGameStopped(
                             transitionSpec.id, transitionSpec.playniteGameId);
@@ -625,6 +632,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
 
     private void applySnapshot(long runEpoch, PlayniteTransitionGateway.Snapshot snapshot) {
         if (!snapshot.gatewayReady || !isCurrent(runEpoch)) return;
+        // Queue the host decision before readiness can reopen input on the UI thread.
+        callbacks.onHostGuidePolicy(transitionSpec.id, snapshot.gameId, snapshot.hostGuideAllowed);
         transitionController.gatewayConnected(transitionSpec.id, transitionSpec.hostId);
         LaunchTransitionType kind = "game".equalsIgnoreCase(snapshot.targetKind)
                 ? LaunchTransitionType.GAME : LaunchTransitionType.PLAYNITE;
@@ -722,7 +731,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                         transitionSpec.id, transitionSpec.hostId, event.gameId);
                 context.gameWasRunning = false;
             }
-            if (transitionSpec.playniteGameId.equals(event.gameId) && isCurrent(runEpoch)) {
+            if (transitionSpec.playniteGameId.equals(event.gameId)
+                    && !context.gameStopNotified && isCurrent(runEpoch)) {
+                context.gameStopNotified = true;
                 clearCurrentAttemptOwner();
                 callbacks.onProviderGameStopped(
                         transitionSpec.id, transitionSpec.playniteGameId);
@@ -963,6 +974,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         int failures;
         boolean baselineEstablished;
         boolean gameWasRunning;
+        boolean gameStopNotified;
         boolean fullscreenRequested;
         boolean lockScreenPresented;
         boolean targetWindowReadyLogged;

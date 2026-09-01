@@ -27,10 +27,18 @@ public final class PlayniteTransitionGateway {
         public final String targetKind;
         public final int stableSamples;
         public final String reason;
+        public final boolean hostGuideAllowed;
 
         Snapshot(boolean gatewayReady, boolean connectorReady, String gameState,
                  String gameId, int processId, boolean windowReady, String targetKind,
                  int stableSamples, String reason) {
+            this(gatewayReady, connectorReady, gameState, gameId, processId, windowReady,
+                    targetKind, stableSamples, reason, false);
+        }
+
+        Snapshot(boolean gatewayReady, boolean connectorReady, String gameState,
+                 String gameId, int processId, boolean windowReady, String targetKind,
+                 int stableSamples, String reason, boolean hostGuideAllowed) {
             this.gatewayReady = gatewayReady;
             this.connectorReady = connectorReady;
             this.gameState = gameState;
@@ -40,6 +48,7 @@ public final class PlayniteTransitionGateway {
             this.targetKind = targetKind;
             this.stableSamples = stableSamples;
             this.reason = reason;
+            this.hostGuideAllowed = hostGuideAllowed;
         }
     }
 
@@ -126,7 +135,7 @@ public final class PlayniteTransitionGateway {
                 || current.id.startsWith("steam:") || current.id.startsWith("epic:");
         return new Snapshot(true, connectorReady, current.state, current.id,
                 current.processId, readiness.ready, readiness.targetKind,
-                readiness.stableSamples, readiness.reason);
+                readiness.stableSamples, readiness.reason, current.hostGuideAllowed);
     }
 
     public void startGame(String gameId) throws IOException {

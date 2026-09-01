@@ -797,6 +797,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 httpsPort, uniqueId, config,
                 PlatformBinding.getCryptoProvider(this), serverCert);
         controllerHandler = new ControllerHandler(this, conn, this, prefConfig);
+        updateGuidePolicyTransition();
         if (transitionController != null) {
             controllerHandler.setInputSuppressed(true);
             transitionController.inputPipelineReady(transitionSpec.id);
@@ -3175,6 +3176,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         transitionCancelInFlight = false;
         lastTransitionOverlayVisible = true;
         lastTransitionRevealAuthorized = false;
+        consoleLoadingView.showFullTransitionAppearance();
         transitionController.begin(recovery);
         if (operation.request.preparing) {
             autoWarmUpConvertedToGame = false;
@@ -3482,6 +3484,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         transitionCancelInFlight = false;
         lastTransitionOverlayVisible = true;
         lastTransitionRevealAuthorized = false;
+        consoleLoadingView.showFullTransitionAppearance();
         transitionController.begin(observation);
         transitionController.overlayRendered(observation.id);
         if (surfaceCreated && streamView.getHolder().getSurface() != null
@@ -4273,6 +4276,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 }
                 connected = true;
                 connecting = false;
+                // Register and prime pads before a cold provider launch without opening
+                // the input gate. Arrival packets alone carry capabilities, not input state.
+                controllerHandler.announceConnectedControllers();
                 SessionResumeManager.saveActive(Game.this, getIntent(), streamSessionId);
                 BackgroundStreamService.resumed(Game.this, streamSessionId);
                 if (!sourceSuspendId.isEmpty()) {
@@ -4353,6 +4359,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 gateway,
                 (action, delayMs) -> transitionUiHandler.postDelayed(action, delayMs),
                 new ConsoleStreamTransitionCoordinator.Callbacks() {
+                    @Override public void onHostGuidePolicy(
+                            String transitionId, String gameId, boolean allowed) {
+                        runOnUiThread(() -> {
+                            if (transitionSpec == null || !transitionSpec.id.equals(transitionId)
+                                    || controllerHandler == null) return;
+                            updateGuidePolicyTransition();
+                            controllerHandler.getGuidePolicy().observe(transitionId, gameId, allowed);
+                        });
+                    }
+
                     @Override public String gatewayUnavailableMessage() {
                         return getString(R.string.transition_gateway_unavailable);
                     }
@@ -4654,11 +4670,20 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(() -> applyTransitionSnapshot(snapshot));
     }
 
+    private void updateGuidePolicyTransition() {
+        if (controllerHandler == null) return;
+        controllerHandler.getGuidePolicy().begin(
+                transitionSpec == null ? "" : transitionSpec.id,
+                transitionSpec == null ? "" : transitionSpec.playniteGameId,
+                transitionSpec != null && transitionSpec.type != LaunchTransitionType.GENERIC);
+    }
+
     private void applyTransitionSnapshot(LaunchTransitionSnapshot snapshot) {
         if (transitionSpec == null || snapshot.spec == null
                 || !transitionSpec.id.equals(snapshot.spec.id)
                 || consoleLoadingView == null) return;
         if (controllerHandler != null) {
+            updateGuidePolicyTransition();
             controllerHandler.setInputSuppressed(
                     isOwnedHiddenAutoWarmUp() || snapshot.inputBlocked);
         }
@@ -4667,9 +4692,22 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 snapshot.overlayVisible, snapshot.revealAuthorized);
         if (shouldShowOpaque) consoleLoadingView.showOpaque();
         if (snapshot.overlayVisible) {
-            consoleLoadingView.setStep(snapshot.step, transitionStatus(snapshot));
-            consoleLoadingView.setManualRevealAvailable(
-                    !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable);
+            if (usesClosingPresentation(snapshot)) {
+                boolean gameEnded = snapshot.state == LaunchTransitionState.GAME_STOPPING
+                        || snapshot.state == LaunchTransitionState.PLAYNITE_RETURNING
+                        || snapshot.spec.type == LaunchTransitionType.GAME_CONNECTION
+                        && snapshot.spec.playniteGameId.isEmpty();
+                consoleLoadingView.showClosing(
+                        getString(gameEnded ? R.string.transition_game_ended
+                                : R.string.transition_closing_session),
+                        getString(snapshot.state == LaunchTransitionState.PLAYNITE_RETURNING
+                                ? R.string.transition_waiting_playnite_return
+                                : R.string.transition_returning_library));
+            } else {
+                consoleLoadingView.setStep(snapshot.step, transitionStatus(snapshot));
+                consoleLoadingView.setManualRevealAvailable(
+                        !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable);
+            }
             boolean waitingForPostTargetFrame = !snapshot.revealAuthorized
                     && (snapshot.state == LaunchTransitionState.GAME_READY
                     || snapshot.state == LaunchTransitionState.PLAYNITE_FULLSCREEN_READY);
@@ -4716,6 +4754,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         lastTransitionOverlayVisible = snapshot.overlayVisible;
         lastTransitionRevealAuthorized = snapshot.revealAuthorized;
+    }
+
+    private static boolean usesClosingPresentation(LaunchTransitionSnapshot snapshot) {
+        LaunchTransitionState state = snapshot.state;
+        return state == LaunchTransitionState.GAME_STOPPING
+                || state == LaunchTransitionState.PLAYNITE_RETURNING
+                || state == LaunchTransitionState.PLAYNITE_STOPPING
+                || state == LaunchTransitionState.CLOSING_STREAM
+                || state == LaunchTransitionState.RETURNING_TO_DASHBOARD
+                || snapshot.spec.type == LaunchTransitionType.GAME_CONNECTION
+                && snapshot.spec.playniteGameId.isEmpty();
     }
 
     static boolean shouldShowTransitionOverlay(boolean wasOverlayVisible,
@@ -5055,7 +5104,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             requestRetainedSwitchCancellation(retainedSwitch);
             return;
         }
-        if (transitionSpec.type == LaunchTransitionType.GAME_CONNECTION
+        if ((transitionSpec.type == LaunchTransitionType.GAME
+                || transitionSpec.type == LaunchTransitionType.GAME_CONNECTION)
                 && hasLiveRetainedTransport() && connected) {
             retryRetainedObservation();
             return;
@@ -5108,6 +5158,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         getIntent().putExtra(EXTRA_TRANSITION_TYPE, next.type.name());
         getIntent().putExtra(EXTRA_TRANSITION_CREATED_AT, next.createdAtMillis);
         SessionResumeManager.saveActive(this, getIntent(), streamSessionId);
+        consoleLoadingView.showFullTransitionAppearance();
         transitionController.begin(next);
         transitionCoordinator = replacement;
         consoleLoadingView.showOpaque();

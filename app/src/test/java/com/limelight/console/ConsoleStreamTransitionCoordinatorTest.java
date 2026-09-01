@@ -67,6 +67,25 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertFalse(harness.controller.snapshot().revealAuthorized);
     }
 
+    @Test public void hostGuideDecisionIsDeliveredBeforeReadinessAndTracksProviderChanges() {
+        FakeGateway gateway = gatewayWith(
+                new PlayniteTransitionGateway.Snapshot(true, true, "running", GAME, 42,
+                        true, "game", 4, "", true),
+                new PlayniteTransitionGateway.Snapshot(true, true, "running", GAME, 42,
+                        true, "game", 4, "", false));
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+        harness.callbacks.onGuidePolicy = () -> {
+            if (harness.callbacks.guideDecisions.size() == 1) {
+                assertFalse(harness.states.contains(LaunchTransitionState.GAME_READY));
+            }
+        };
+
+        harness.runObservation();
+
+        assertEquals(Arrays.asList("transition-1:" + GAME + ":true",
+                "transition-1:" + GAME + ":false"), harness.callbacks.guideDecisions);
+    }
+
     @Test
     public void failedHostLaunchStopsWaitingForReadinessImmediately() {
         FakeGateway gateway = gatewayWith(snapshot(true, true, "failed", GAME, 0,
@@ -251,6 +270,25 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(LaunchTransitionState.GAME_STOPPING,
                 harness.controller.snapshot().state);
         assertEquals(1, harness.callbacks.providerStopCalls);
+    }
+
+    @Test
+    public void staleRunningSignalAfterStopCannotNotifyGameStopTwice() {
+        FakeGateway gateway = gatewayWith(
+                snapshotReadyGame(),
+                snapshotReadyGame(),
+                snapshot(true, true, "idle", "", 0, true, "playnite", 0, ""));
+        gateway.events.add(events(1));
+        gateway.events.add(events(3,
+                event(2, "game-stopped", GAME, "Game"),
+                event(3, "game-running", GAME, "Game")));
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+
+        harness.runObservation();
+
+        assertEquals(1, harness.callbacks.providerStopCalls);
+        assertEquals(LaunchTransitionState.GAME_STOPPING,
+                harness.controller.snapshot().state);
     }
 
     @Test
@@ -494,7 +532,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
-    public void providerRecordStartsExactlyOnceBeforeStreamConnect() {
+    public void steamRecordStartsExactlyOnceBeforeStreamConnect() {
         LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
                 "transition-provider", HOST, LaunchTransitionType.GAME, 42,
                 "steam:289070", 1_000L);
@@ -517,6 +555,49 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         assertEquals(1, gateway.startGameCalls);
         assertEquals("steam:289070", gateway.startedGameId);
+    }
+
+    @Test
+    public void nonSteamLaunchWaitsForControllerTransportWithoutOpeningPrivacyGate() {
+        for (String gameId : Arrays.asList("epic:Cowbird", "playnite:" + GAME)) {
+            ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+            LaunchTransitionSpec target = providerSpec("cold-" + gameId, gameId);
+            LaunchTransitionController controller = providerController(target);
+            FakeGateway gateway = stoppingObservationGateway();
+            ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                    target, controller, gateway, new InlineExecutor(), new FakeClock(),
+                    new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
+
+            coordinator.start();
+            assertEquals(0, gateway.startGameCalls);
+            assertTrue(controller.snapshot().inputBlocked);
+            coordinator.onStreamConnected();
+            Thread.interrupted();
+            coordinator.onStreamConnected();
+
+            assertEquals(1, gateway.startGameCalls);
+            assertEquals(gameId, gateway.startedGameId);
+            assertTrue(controller.snapshot().inputBlocked);
+            assertFalse(controller.snapshot().revealAuthorized);
+            coordinator.close();
+        }
+    }
+
+    @Test
+    public void cancelledColdNonSteamLaunchCannotStartOnLateConnection() {
+        LaunchTransitionSpec target = providerSpec("cold-cancel", "epic:Cowbird");
+        FakeGateway gateway = stoppingObservationGateway();
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                target, providerController(target), gateway, new InlineExecutor(), new FakeClock(),
+                new InterruptingSleeper(), (action, delay) -> { }, new FakeCallbacks());
+
+        coordinator.start();
+        coordinator.cancel();
+        coordinator.onStreamConnected();
+
+        assertEquals(0, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+        coordinator.close();
     }
 
     @Test
@@ -1376,6 +1457,13 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
     private static final class FakeCallbacks
             implements ConsoleStreamTransitionCoordinator.Callbacks {
+        final List<String> guideDecisions = new ArrayList<>();
+        Runnable onGuidePolicy;
+        @Override public void onHostGuidePolicy(String transitionId, String gameId, boolean allowed) {
+            guideDecisions.add(transitionId + ":" + gameId + ":" + allowed);
+            if (onGuidePolicy != null) onGuidePolicy.run();
+        }
+
         final List<String> pending = new ArrayList<>();
         final List<String> completed = new ArrayList<>();
         final List<String> cancelled = new ArrayList<>();

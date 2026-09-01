@@ -281,6 +281,32 @@ class GameOperationsTest(unittest.TestCase):
         self.assertTrue(result["library"]["steam:10"]["installed"])
         self.assertFalse(result["providers"]["steam"]["complete"])
 
+    def test_steam_usage_survives_playnite_overlay_and_offline_manifest_refresh(self):
+        game = {"id": "steam:10", "provider": "steam", "providerGameId": "10",
+                "playtimeMinutes": 120, "lastPlayed": "2026-08-31T10:00:00Z"}
+        self.steam.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "games": [game]})
+        self.epic.catalog = mock.Mock(return_value={
+            "available": True, "complete": True, "games": []})
+        metadata = {"id": "44444444-4444-4444-4444-444444444444",
+                    "source": "Steam", "providerGameId": "10", "playtimeMinutes": 30,
+                    "lastPlayed": "2025-01-01", "cover": "cover.jpg"}
+        library = self.service.aggregate_catalog([metadata])["library"]
+        self.assertEqual(120, library["steam:10"]["playtimeMinutes"])
+        self.assertEqual(game["lastPlayed"], library["steam:10"]["lastPlayed"])
+        self.assertEqual("cover.jpg", library["steam:10"]["cover"])
+
+        self.steam.catalog.return_value = {
+            "available": True, "complete": False, "installationComplete": True,
+            "games": [{"id": "steam:10", "provider": "steam", "providerGameId": "10"}]}
+        offline = self.service.aggregate_catalog([metadata], library)["library"]
+        self.assertEqual(120, offline["steam:10"]["playtimeMinutes"])
+        # An authoritative zero must also win over Playnite and the cache.
+        self.steam.catalog.return_value = {
+            "available": True, "complete": True, "games": [{**game, "playtimeMinutes": 0}]}
+        self.assertEqual(0, self.service.aggregate_catalog([metadata], library)["library"]
+                         ["steam:10"]["playtimeMinutes"])
+
     def test_steam_launch_uses_authoritative_manifest_and_exact_process_contract(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

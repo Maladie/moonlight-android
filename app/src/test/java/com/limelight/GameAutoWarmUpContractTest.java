@@ -369,6 +369,30 @@ public class GameAutoWarmUpContractTest {
         assertTrue(retry.contains("retry.putExtra(EXTRA_TRANSITION_PLAYNITE_GAME_ID"));
     }
 
+    @Test public void retainedGameRetryKeepsTransportAndColdPadsArePrimed()
+            throws IOException {
+        String game = source();
+        String retry = between(game, "private void retryTransition()",
+                "private void retryRetainedObservation()");
+        assertTrue(retry.contains("transitionSpec.type == LaunchTransitionType.GAME"));
+        assertTrue(retry.indexOf("retryRetainedObservation()")
+                < retry.indexOf("stopConnection("));
+
+        Path controllerPath = Paths.get(
+                "src/main/java/com/limelight/binding/input/ControllerHandler.java");
+        if (!Files.exists(controllerPath)) {
+            controllerPath = Paths.get(
+                    "app/src/main/java/com/limelight/binding/input/ControllerHandler.java");
+        }
+        String controller = new String(Files.readAllBytes(controllerPath),
+                StandardCharsets.UTF_8);
+        String announce = between(controller, "public void announceConnectedControllers()",
+                "public void destroy()");
+        assertTrue(announce.contains("primeControllerIfNeeded"));
+        assertTrue(announce.contains("sendNeutralControllerInput"));
+        assertFalse(announce.contains("inputSuppressed = false"));
+    }
+
     private static String source() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) {

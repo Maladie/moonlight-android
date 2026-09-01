@@ -1066,6 +1066,8 @@
     <string name="transition_game_failed">Gra nie osiągnęła stanu gotowości</string>
     <string name="transition_waiting_playnite_return">Oczekiwanie na powrót Playnite</string>
     <string name="transition_closing_session">Zamykanie sesji</string>
+    <string name="transition_game_ended">Gra zakończona</string>
+    <string name="transition_returning_library">Powrót do biblioteki…</string>
     <string name="console_previous_session_close_failed">Nie udało się zamknąć poprzedniej sesji hosta. Spróbuj ponownie, gdy zniknie wskaźnik aktywnej sesji.</string>
     <string name="console_session_uncertain_title">Stan sesji jest jeszcze sprawdzany</string>
     <string name="console_session_uncertain_details">MoonWaker nie potwierdził jeszcze, która gra działa. Poczekaj chwilę i spróbuj ponownie. Żadna gra ani stream nie zostały uruchomione ani zatrzymane.</string>
