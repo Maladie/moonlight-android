@@ -1029,7 +1029,7 @@
     <string name="playnite_install_failed">Could not start installation of “%1$s”.</string>
     <string name="playnite_game_fallback_name">the selected game</string>
     <string name="playnite_launch_unavailable">Launch unavailable</string>
-    <string name="playnite_gateway_unavailable">Playnite gateway unavailable</string>
+    <string name="playnite_gateway_unavailable">MoonWaker game library service unavailable</string>
     <string name="playnite_cached_library">Cached library</string>
     <string name="playnite_cached_library_age">Cached library · updated %1$s</string>
     <string name="playnite_refreshing_library">Refreshing library</string>
@@ -1037,8 +1037,8 @@
     <string name="playnite_configure_gateway">Configure gateway</string>
     <string name="playnite_select_launch_target">Select Sunshine launch target</string>
     <string name="playnite_no_fullscreen_target">No Playnite Fullscreen target</string>
-    <string name="playnite_library">PLAYNITE LIBRARY · %1$s</string>
-    <string name="playnite_library_empty">The Playnite library is empty.</string>
+    <string name="playnite_library">GAME LIBRARY · %1$s</string>
+    <string name="playnite_library_empty">The game library is empty.</string>
     <string name="playnite_library_page">Page %1$d of %2$d</string>
     <string name="playnite_sort">Sort</string>
     <string name="playnite_sort_recent">Recently played</string>
@@ -1057,7 +1057,7 @@
     <string name="playnite_legend_reset">Reset</string>
     <string name="playnite_legend_search">Search</string>
     <string name="playnite_legend_back">Back</string>
-    <string name="playnite_no_installed_games">The Playnite library has no installed games.</string>
+    <string name="playnite_no_installed_games">The game library has no installed games.</string>
     <string name="playnite_launch_not_configured">Launch not configured</string>
     <string name="playnite_launch_via_playnite">Launches through Playnite</string>
     <string name="playnite_creating_vibepollo_app">Preparing the game in Vibepollo…</string>
@@ -1067,11 +1067,11 @@
     <string name="playnite_change_target">Change Sunshine launch target</string>
     <string name="playnite_clear_target">Clear launch target</string>
     <string name="playnite_fullscreen_target_details">Choose the Sunshine app that starts Playnite Fullscreen.</string>
-    <string name="playnite_gateway_not_configured">Pair the host gateway to load the Playnite library.</string>
-    <string name="playnite_timeout">Playnite gateway timed out</string>
-    <string name="playnite_invalid_response">Incompatible Playnite gateway response</string>
-    <string name="playnite_server_error">Playnite gateway server error</string>
-    <string name="playnite_data_current">Playnite library up to date</string>
+    <string name="playnite_gateway_not_configured">Pair the host gateway to load the game library.</string>
+    <string name="playnite_timeout">MoonWaker Host did not respond in time</string>
+    <string name="playnite_invalid_response">Incompatible response from MoonWaker Host</string>
+    <string name="playnite_server_error">MoonWaker Host game library error</string>
+    <string name="playnite_data_current">Game library up to date</string>
     <string name="playnite_card_description">%1$s. %2$s. %3$s</string>
     <string name="playnite_running_badge">RUNNING</string>
     <string name="playnite_running_badge_description">%1$s is currently running</string>
