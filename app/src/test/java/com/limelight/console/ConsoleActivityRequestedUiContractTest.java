@@ -31,6 +31,9 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(selector.contains("showHostSelectionOptions(host)"));
         assertTrue(menu.contains("R.string.overlay_menu_quit_session"));
         assertTrue(menu.contains("confirmTerminateSession(host)"));
+        assertTrue(menu.contains("R.string.console_hard_terminate_session"));
+        assertTrue(menu.contains("confirmHardTerminateSession(host)"));
+        assertTrue(menu.contains("online && paired && gatewayAvailable"));
     }
 
     @Test public void focusedHostRemainsAStableTwoLineStatusNotAPowerAction()

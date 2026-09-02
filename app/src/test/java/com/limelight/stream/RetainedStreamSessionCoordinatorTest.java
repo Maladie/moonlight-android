@@ -250,6 +250,19 @@ public class RetainedStreamSessionCoordinatorTest {
         assertFalse(RetainedStreamSessionCoordinator.canResumeInstantly());
     }
 
+    @Test public void hardResetClearsEvenPreparingStateOnlyForTheExactHost() {
+        FakeController controller = new FakeController();
+        RetainedStreamSessionCoordinator.beginPreparing(
+                controller, SESSION_A, "host", 7, "game", "transition", 1L);
+
+        assertFalse(RetainedStreamSessionCoordinator.hardResetIfHostMatches("other"));
+        assertEquals(RetainedStreamSessionCoordinator.State.PREPARING,
+                RetainedStreamSessionCoordinator.state());
+        assertTrue(RetainedStreamSessionCoordinator.hardResetIfHostMatches("HOST"));
+        assertEquals(RetainedStreamSessionCoordinator.State.NONE,
+                RetainedStreamSessionCoordinator.state());
+    }
+
     @Test public void lostOwnerFallsBackToReconnect() {
         RetainedStreamSessionCoordinator.enterHome(
                 new FakeController(), SESSION_A, "host", 7, "game");

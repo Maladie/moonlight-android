@@ -29,6 +29,7 @@ class RunningGamesTest(unittest.TestCase):
         self.probe = mock.Mock()
         self.probe.scan_running_processes.return_value = ([self.hk, self.batman], "partial")
         self.probe.stop_verified_process.return_value = True
+        self.probe.force_terminate_verified_process.return_value = True
         self.state.running_process_probe = self.probe
         self.state.current = {"state": "running", "id": "epic:Cowbird", "processId": 22,
                               "processPath": self.batman["process_path"],
@@ -137,6 +138,54 @@ class RunningGamesTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.state.stop_game("steam:1")  # legacy still cannot stop non-current
 
+    def test_hard_reset_force_stops_all_verified_games_and_resets_bridge_state(self):
+        result = self.state.hard_reset_session()
+
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["force"])
+        self.assertEqual(2, result["stopped_count"])
+        self.assertEqual({11, 22}, {
+            call.args[0]["process_id"]
+            for call in self.probe.force_terminate_verified_process.call_args_list
+        })
+        self.assertEqual("idle", self.state.current["state"])
+        self.assertEqual("session_hard_reset", self.state.readiness["reason"])
+        self.assertEqual([], self.state.current_snapshot()["running_games"])
+
+    def test_hard_reset_fails_closed_when_process_inventory_is_unavailable(self):
+        before = dict(self.state.current), dict(self.state.readiness)
+        self.probe.scan_running_processes.return_value = ([], "unavailable")
+
+        result = self.state.hard_reset_session()
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual("running_game_inventory_unavailable", result["reason"])
+        self.assertEqual(before, (self.state.current, self.state.readiness))
+        self.probe.force_terminate_verified_process.assert_not_called()
+
+    def test_hard_reset_recovers_exact_ambiguous_active_trace(self):
+        trace = {
+            "game_id": "playnite-game", "process_id": 33,
+            "process_path": r"C:\Games\Native\game.exe",
+            "process_started_filetime": 300,
+        }
+        self.state._active_game_trace = trace
+        self.state.current = {
+            "state": "ambiguous", "id": trace["game_id"],
+            "reason": "active_game_connector_mismatch",
+        }
+        self.probe.scan_running_processes.return_value = ([], "partial")
+        self.probe.process_identity.return_value = identity(
+            33, trace["process_path"], 300)
+
+        result = self.state.hard_reset_session()
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual(1, result["stopped_count"])
+        stopped = self.probe.force_terminate_verified_process.call_args.args[0]
+        self.assertEqual(33, stopped["process_id"])
+        self.assertEqual("idle", self.state.current["state"])
+
 
 class NativeRunningGamesTest(unittest.TestCase):
     def setUp(self):
@@ -166,6 +215,21 @@ class NativeRunningGamesTest(unittest.TestCase):
         self.probe.user32.PostMessageW.assert_not_called()
         self.probe.uac_consent_pending.return_value = True
         self.assertFalse(self.probe.stop_verified_process(self.expected, 0))
+
+    def test_force_termination_requires_exact_same_user_process_identity(self):
+        self.probe.process_identity.side_effect = [self.expected, self.expected]
+        self.probe.kernel32.WaitForSingleObject.side_effect = [258, 0]
+        self.probe.kernel32.TerminateProcess.return_value = True
+
+        self.assertTrue(self.probe.force_terminate_verified_process(self.expected))
+        self.probe.kernel32.TerminateProcess.assert_called_once()
+
+        self.probe.kernel32.TerminateProcess.reset_mock()
+        self.probe.process_identity.side_effect = [self.expected, {
+            **self.expected, "process_started_filetime": 101,
+        }]
+        self.assertFalse(self.probe.force_terminate_verified_process(self.expected))
+        self.probe.kernel32.TerminateProcess.assert_not_called()
 
     def test_scan_budget_and_enumeration_error_never_publish_partial_uniqueness(self):
         self.probe.kernel32.CreateToolhelp32Snapshot.return_value = 1

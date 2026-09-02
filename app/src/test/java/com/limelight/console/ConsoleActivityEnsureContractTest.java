@@ -569,11 +569,58 @@ public class ConsoleActivityEnsureContractTest {
         String create = streamHome.substring(streamHome.indexOf(
                         "protected void onCreate(Bundle state)"),
                 streamHome.indexOf("protected boolean useTransparentWarmUpStartingWindow()"));
-        assertTrue(create.indexOf("if (preparingHomeFrameAccepted || preparingRelayOwned)")
+        assertTrue(create.indexOf("if (attempt > 0L && (preparingHomeFrameAccepted"
+                        + " || preparingRelayOwned))")
                 < create.indexOf("registerFrameCommitCallback"));
         assertTrue(create.substring(create.indexOf(
-                "if (preparingHomeFrameAccepted || preparingRelayOwned)"),
+                "if (attempt > 0L && (preparingHomeFrameAccepted"
+                        + " || preparingRelayOwned))"),
                 create.indexOf("registerFrameCommitCallback")).contains("return;"));
+    }
+
+    @Test public void ordinaryRetainedHomeCommitsOnlyAReusedCarouselFrame()
+            throws IOException {
+        String console = consoleActivitySource();
+        String streamHome = streamHomeActivitySource();
+        String create = streamHome.substring(streamHome.indexOf(
+                        "protected void onCreate(Bundle state)"),
+                streamHome.indexOf("protected boolean useTransparentWarmUpStartingWindow()"));
+        String select = console.substring(console.indexOf(
+                        "private void selectHost(ComputerDetails host, boolean focusApps)"),
+                console.indexOf("private void cancelOwnedWarmUp("));
+        String restoreData = console.substring(console.indexOf(
+                        "private boolean restoreInitialLocalPresentationData("),
+                console.indexOf("private void loadPlayniteForHost("));
+        String localLibrary = console.substring(console.indexOf(
+                        "private void loadPlayniteForHost("),
+                console.indexOf("private void settleInitialLocalPresentation("));
+        String prepare = console.substring(console.indexOf(
+                        "protected final boolean prepareInitialCarouselFrame()"),
+                console.indexOf("protected final void completeInitialCarouselFrame()"));
+        String restoreArtwork = console.substring(console.indexOf(
+                        "private void restoreCachedPlaynitePoster("),
+                console.indexOf("private void resetInitialCarouselArtworkWarmup("));
+
+        assertTrue(create.contains(
+                "initialCarouselFramePending = exactRetainedSnapshot() != null"));
+        assertFalse(create.contains("if (attempt <= 0L) return;"));
+        assertTrue(create.contains("onInitialCarouselFrameSubmitted"));
+        assertTrue(streamHome.contains("return initialCarouselFramePending;"));
+        assertTrue(streamHome.contains("if (!initialCarouselFramePending)"
+                + " return super.dispatchKeyEvent"));
+        assertTrue(select.contains("restoreInitialLocalPresentationData(host)"));
+        assertTrue(select.indexOf("settleInitialLocalPresentation(host)")
+                < select.indexOf("renderAppsAsync(host, focusApps)"));
+        assertTrue(restoreData.contains("currentPlayniteGames = cached.games"));
+        assertTrue(restoreData.contains("currentSunshineApps = cached.sunshineApps"));
+        assertTrue(restoreData.contains("initialLocalAppsHostId = host.uuid"));
+        assertTrue(restoreData.contains("initialLocalLibraryHostId = host.uuid"));
+        assertTrue(localLibrary.contains(
+                "if (!requiresPreparedInitialCarouselFrame()) showCarouselLoadingGhosts()"));
+        assertTrue(prepare.contains("if (!initialCarouselArtworkLoads.isEmpty()) return false"));
+        assertTrue(restoreArtwork.contains("cachePlayniteBitmap(cached.file)"));
+        assertTrue(restoreArtwork.contains("appRow.postInvalidateOnAnimation()"));
+        assertFalse(restoreArtwork.contains("fetchPlayniteArtwork("));
     }
 
     @Test public void ownedPreparingRelayRecreationDoesNotKeepTheFrameInputGate()
@@ -585,8 +632,10 @@ public class ConsoleActivityEnsureContractTest {
 
         String source = streamHomeActivitySource();
         String recreation = source.substring(source.indexOf(
-                        "if (preparingHomeFrameAccepted || preparingRelayOwned)"),
-                source.indexOf("if (preparingSnapshot == null)"));
+                        "if (attempt > 0L && (preparingHomeFrameAccepted"
+                                + " || preparingRelayOwned))"),
+                source.indexOf("if (attempt > 0L && preparingSnapshot == null)"));
+        assertTrue(recreation.contains("initialCarouselFramePending = false"));
         assertTrue(recreation.contains("preparingHomeFramePending = false"));
         assertTrue(recreation.indexOf("completeInitialCarouselFrame()")
                 < recreation.indexOf("acceptPreparingHomeFrame()"));
@@ -596,9 +645,9 @@ public class ConsoleActivityEnsureContractTest {
         String input = source.substring(source.indexOf(
                         "public boolean dispatchKeyEvent("),
                 source.indexOf("public void onBackPressed()"));
-        assertTrue(input.contains("if (!preparingHomeFramePending) return super.dispatchKeyEvent"));
-        assertTrue(input.contains("preparingHomeFramePending || super.dispatchTouchEvent"));
-        assertTrue(input.contains("preparingHomeFramePending || super.dispatchGenericMotionEvent"));
+        assertTrue(input.contains("if (!initialCarouselFramePending) return super.dispatchKeyEvent"));
+        assertTrue(input.contains("initialCarouselFramePending || super.dispatchTouchEvent"));
+        assertTrue(input.contains("initialCarouselFramePending || super.dispatchGenericMotionEvent"));
     }
 
     @Test public void staleRetainedHomeCannotCreateAnExitSessionPrompt() throws IOException {

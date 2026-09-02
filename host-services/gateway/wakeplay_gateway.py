@@ -726,6 +726,30 @@ class GatewayState:
             },
         }
 
+    def hard_reset_session(self, body: dict[str, Any]) -> tuple[int, Any]:
+        if body.get("force") is not True:
+            raise ValueError("Explicit force confirmation is required.")
+        provider_ok, provider = self.proxy_json(
+            "game_provider", "/session/hard-reset", {"force": True}, timeout=12.0)
+        provider_accepted = provider_ok and isinstance(provider, dict) \
+            and bool(provider.get("accepted", False))
+        session_ok, _session = self.proxy(
+            "vibepollo", "/action/close-app", timeout=8.0)
+        if not provider_accepted:
+            return HTTPStatus.BAD_GATEWAY, {
+                "ok": False,
+                "accepted": False,
+                "error": self.upstream_error(
+                    provider, "Game Provider Bridge rejected the hard reset."),
+                "session_close_requested": session_ok,
+            }
+        return HTTPStatus.OK, {
+            "ok": True,
+            "accepted": True,
+            "stopped_game_count": int(provider.get("stopped_count") or 0),
+            "session_close_requested": session_ok,
+        }
+
     def profiles_summary(self) -> dict[str, Any]:
         original_profile = self.profile_id
         profiles = []
@@ -1669,6 +1693,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 status, result = self.state.idempotent(
                     f"session-suspend:{request_id}",
                     lambda: self.state.suspend_session(body, request_id))
+                self.send_json(status, result)
+                return
+            if path == f"{API_PREFIX}/session/hard-reset":
+                request_id = self.headers.get("X-Request-Id", "").strip()
+                if not request_id or len(request_id) > 128:
+                    self.send_json(HTTPStatus.BAD_REQUEST, {
+                        "error": "A valid X-Request-Id header is required."})
+                    return
+                body = self.read_json()
+                status, result = self.state.idempotent(
+                    f"{profile_id}:session-hard-reset:{request_id}",
+                    lambda: self.state.hard_reset_session(body))
                 self.send_json(status, result)
                 return
             if path == f"{API_PREFIX}/vibepollo/apps/ensure":

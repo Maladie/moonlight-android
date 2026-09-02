@@ -14,10 +14,12 @@ import GameProviderBridge
 
 from PatchPlayniteConnector import (
     ARTWORK_LOOKUP_ANCHOR, ARTWORK_PAYLOAD_ANCHOR, PATCH_MARKER, PATCH_MARKER_V8,
+    PATCH_MARKER_V16,
     INSTALL_EVENT_ANCHOR, INSTALL_READER_REPLACEMENT, INSTALL_UI_ANCHOR,
     INSTALL_UI_REPLACEMENT, INSTALLING_PAYLOAD_ANCHOR,
     READER_ANCHOR, SEND_BUILD_ANCHOR, SEND_PARAM_ANCHOR, SNAPSHOT_FUNCTION, STARTED_ANCHOR,
-    SOURCE_PAYLOAD_ANCHOR, STATUS_OBJECT_ANCHOR, STATUS_PARAM_ANCHOR, patch_text,
+    SOURCE_PAYLOAD_ANCHOR, STATUS_OBJECT_ANCHOR, STATUS_OBJECT_REPLACEMENT,
+    STATUS_PARAM_ANCHOR, patch_text,
 )
 from GameOperations import GameOperationsService, SteamProvider
 from OperationJournal import OperationJournal
@@ -3378,6 +3380,9 @@ class BridgeStateTest(unittest.TestCase):
         self.assertIn("Send-WakePlaySnapshotToLauncher", patched)
         self.assertIn("type = 'snapshotStart'", patched)
         self.assertIn("StartedProcessId", patched)
+        self.assertIn("$play.EmulatorId", patched)
+        self.assertIn("$PlayniteApi.Database.Emulators", patched)
+        self.assertIn("$instDir = [string]$emu.InstallDir", patched)
         self.assertIn("backgroundImagePath", patched)
         self.assertIn("description     = [string]$g.Description", patched)
         self.assertIn("playCount       = [int]$g.PlayCount", patched)
@@ -3395,6 +3400,17 @@ class BridgeStateTest(unittest.TestCase):
         second, changed_again = patch_text(patched)
         self.assertFalse(changed_again)
         self.assertEqual(patched, second)
+
+    def test_v16_connector_is_upgraded_with_emulator_window_identity(self):
+        source = PATCH_MARKER_V16 + "\n" + STATUS_OBJECT_REPLACEMENT
+
+        patched, changed = patch_text(source)
+
+        self.assertTrue(changed)
+        self.assertIn(PATCH_MARKER, patched)
+        self.assertNotIn(PATCH_MARKER_V16, patched)
+        self.assertIn("$play.EmulatorId", patched)
+        self.assertIn("$PlayniteApi.Database.Emulators", patched)
 
     def test_vibepollo_rebuilds_existing_direct_provider_target_from_allowlist(self):
         script = Path(__file__).parents[1] / "vibepollo" / "VibepolloBridge.ps1"
@@ -3457,6 +3473,7 @@ class BridgeStateTest(unittest.TestCase):
                                       + INSTALL_UI_REPLACEMENT + "\n"
                                       + INSTALL_READER_REPLACEMENT + "\n"
                                       + SOURCE_PAYLOAD_ANCHOR + "\n"
+                                      + STATUS_OBJECT_REPLACEMENT + "\n"
                                       + SNAPSHOT_FUNCTION)
         self.assertTrue(changed)
         self.assertIn(PATCH_MARKER, patched)

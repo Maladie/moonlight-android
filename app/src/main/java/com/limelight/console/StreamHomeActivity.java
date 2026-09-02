@@ -12,6 +12,7 @@ import com.limelight.stream.RetainedStreamSessionCoordinator;
 
 /** Translucent dashboard placed over Game so its stream surface remains alive. */
 public final class StreamHomeActivity extends ConsoleActivity {
+    private boolean initialCarouselFramePending;
     private boolean preparingHomeFramePending;
     private boolean preparingHomeFrameAccepted;
     private boolean preparingRelayOwned;
@@ -25,34 +26,37 @@ public final class StreamHomeActivity extends ConsoleActivity {
         preparingHomeFramePending = shouldAwaitPreparingFrame(
                 preparingSnapshot != null, preparingHomeFrameAccepted,
                 preparingRelayOwned);
+        initialCarouselFramePending = exactRetainedSnapshot() != null;
         super.onCreate(state);
         long attempt = getIntent().getLongExtra(EXTRA_WARM_UP_ATTEMPT, 0L);
-        if (attempt <= 0L) return;
-        if (preparingHomeFrameAccepted || preparingRelayOwned) {
+        if (attempt > 0L && (preparingHomeFrameAccepted || preparingRelayOwned)) {
+            initialCarouselFramePending = false;
             preparingHomeFramePending = false;
             completeInitialCarouselFrame();
             acceptPreparingHomeFrame();
             return;
         }
 
-        if (preparingSnapshot == null) {
+        if (attempt > 0L && preparingSnapshot == null) {
             RetainedStreamSessionCoordinator.State current =
                     RetainedStreamSessionCoordinator.state();
             if (current == RetainedStreamSessionCoordinator.State.NONE
                     || current == RetainedStreamSessionCoordinator.State.PREPARING) {
+                initialCarouselFramePending = false;
                 finish();
+                return;
             }
-            return;
         }
+        if (!initialCarouselFramePending) return;
         View content = findViewById(android.R.id.content);
-        Runnable submitted = this::onPreparingHomeFrameSubmitted;
+        Runnable submitted = this::onInitialCarouselFrameSubmitted;
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             content.getViewTreeObserver().registerFrameCommitCallback(submitted);
         }
         content.getViewTreeObserver().addOnPreDrawListener(
                 new ViewTreeObserver.OnPreDrawListener() {
                     @Override public boolean onPreDraw() {
-                        if (preparingHomeFramePending
+                        if (initialCarouselFramePending
                                 && (!hasResolvedInitialHostSelection()
                                 || !prepareInitialCarouselFrame())) return false;
                         if (content.getViewTreeObserver().isAlive()) {
@@ -74,7 +78,7 @@ public final class StreamHomeActivity extends ConsoleActivity {
 
     @Override
     protected boolean requiresPreparedInitialCarouselFrame() {
-        return preparingHomeFramePending;
+        return initialCarouselFramePending;
     }
 
     static boolean shouldAwaitPreparingFrame(boolean exactPreparing,
@@ -149,21 +153,45 @@ public final class StreamHomeActivity extends ConsoleActivity {
         return current;
     }
 
-    private void onPreparingHomeFrameSubmitted() {
-        if (!preparingHomeFramePending || isFinishing() || isDestroyed()) return;
-        if (!RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(
+    private RetainedStreamSessionCoordinator.Snapshot exactRetainedSnapshot() {
+        RetainedStreamSessionCoordinator.Snapshot current =
+                RetainedStreamSessionCoordinator.snapshot();
+        if (current.state != RetainedStreamSessionCoordinator.State.PREPARING
+                && current.state != RetainedStreamSessionCoordinator.State.HOME_LIVE
+                && current.state != RetainedStreamSessionCoordinator.State.PARKED_LIVE) {
+            return null;
+        }
+        String sessionId = normalize(getIntent().getStringExtra(
+                EXTRA_RETAINED_STREAM_SESSION_ID));
+        String hostId = normalize(getIntent().getStringExtra(
+                EXTRA_RETAINED_STREAM_HOST_ID));
+        String gameId = normalize(getIntent().getStringExtra(
+                EXTRA_RETAINED_STREAM_PLAYNITE_GAME_ID));
+        int appId = getIntent().getIntExtra(
+                EXTRA_RETAINED_STREAM_APP_ID, StreamConfiguration.INVALID_APP_ID);
+        return sessionId.equals(current.streamSessionId)
+                && hostId.equalsIgnoreCase(current.hostId)
+                && appId == current.appId
+                && gameId.equalsIgnoreCase(current.playniteGameId) ? current : null;
+    }
+
+    private void onInitialCarouselFrameSubmitted() {
+        if (!initialCarouselFramePending || isFinishing() || isDestroyed()) return;
+        if (preparingHomeFramePending
+                && !RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(
                 preparingSnapshot)) {
             finish();
             return;
         }
+        initialCarouselFramePending = false;
         preparingHomeFramePending = false;
         completeInitialCarouselFrame();
-        acceptPreparingHomeFrame();
+        if (preparingSnapshot != null) acceptPreparingHomeFrame();
     }
 
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
-        if (!preparingHomeFramePending) return super.dispatchKeyEvent(event);
+        if (!initialCarouselFramePending) return super.dispatchKeyEvent(event);
         if (event != null && event.getAction() == KeyEvent.ACTION_UP
                 && (event.getKeyCode() == KeyEvent.KEYCODE_BACK
                 || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B)) {
@@ -174,22 +202,25 @@ public final class StreamHomeActivity extends ConsoleActivity {
 
     @Override
     public boolean dispatchTouchEvent(MotionEvent event) {
-        return preparingHomeFramePending || super.dispatchTouchEvent(event);
+        return initialCarouselFramePending || super.dispatchTouchEvent(event);
     }
 
     @Override
     public boolean dispatchGenericMotionEvent(MotionEvent event) {
-        return preparingHomeFramePending || super.dispatchGenericMotionEvent(event);
+        return initialCarouselFramePending || super.dispatchGenericMotionEvent(event);
     }
 
     @Override
     public void onBackPressed() {
-        if (!preparingHomeFramePending) {
+        if (!initialCarouselFramePending) {
             super.onBackPressed();
             return;
         }
+        initialCarouselFramePending = false;
+        if (preparingHomeFramePending) {
+            RetainedStreamSessionCoordinator.cancelPreparing(preparingSnapshot);
+        }
         preparingHomeFramePending = false;
-        RetainedStreamSessionCoordinator.cancelPreparing(preparingSnapshot);
         finish();
     }
 
@@ -212,9 +243,12 @@ public final class StreamHomeActivity extends ConsoleActivity {
     }
 
     private void cancelUnsubmittedPreparingFrame() {
-        if (!preparingHomeFramePending || isChangingConfigurations()) return;
+        if (!initialCarouselFramePending || isChangingConfigurations()) return;
+        initialCarouselFramePending = false;
+        if (preparingHomeFramePending) {
+            RetainedStreamSessionCoordinator.cancelPreparing(preparingSnapshot);
+        }
         preparingHomeFramePending = false;
-        RetainedStreamSessionCoordinator.cancelPreparing(preparingSnapshot);
         finish();
     }
 
