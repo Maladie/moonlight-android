@@ -1034,6 +1034,22 @@ final class HostGatewayClient {
         stopGame(connection, gameId, null);
     }
 
+    void hardResetSession(GatewayConnection connection) throws IOException {
+        JSONObject body = new JSONObject();
+        try {
+            body.put("force", true);
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection,
+                "/api/v1/session/hard-reset", "POST", body, 25_000);
+        if (!response.optBoolean("ok", false)
+                || !response.optBoolean("accepted", false)) {
+            throw new GatewayException(response.optString("error",
+                    "The host session could not be hard-reset."), 0);
+        }
+    }
+
     boolean stopGame(GatewayConnection connection, String gameId, String processToken)
             throws IOException {
         JSONObject body = gameStopBody(gameId, processToken);

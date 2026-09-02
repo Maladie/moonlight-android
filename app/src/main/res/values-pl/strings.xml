@@ -1052,6 +1052,10 @@
     <string name="transition_starting_game">Stream gotowy — uruchamianie gry</string>
     <string name="transition_verifying_readiness">Gra działa — oczekiwanie na jej okno</string>
     <string name="transition_game_running_waiting_window">Gra działa — oczekiwanie na jej okno</string>
+    <string name="transition_waiting_game_identity">Playnite zgłosił uruchomienie gry — oczekiwanie na dane procesu</string>
+    <string name="transition_waiting_game_window">Gra działa — jej okno nie zostało jeszcze znalezione</string>
+    <string name="transition_game_window_not_fullscreen">Okno gry nie jest pełnoekranowe</string>
+    <string name="transition_game_window_not_foreground">Okno gry nie jest aktywne</string>
     <string name="transition_window_ready_waiting_frame">Okno gotowe — oczekiwanie na świeży obraz</string>
     <string name="transition_ready">Gotowe</string>
     <string name="transition_cancel">Anuluj uruchamianie</string>
@@ -1078,6 +1082,12 @@
     <string name="console_checking_host">Sprawdzanie dostępności hosta…</string>
     <string name="console_terminate_session_success">Sesja hosta została zakończona.</string>
     <string name="console_terminate_session_failed">Host nie zakończył sesji.</string>
+    <string name="console_hard_terminate_session">Twarde zamknięcie</string>
+    <string name="console_hard_terminate_session_title">Twardo zamknąć wszystko na tym hoście?</string>
+    <string name="console_hard_terminate_session_details">Ta operacja wymusi zamknięcie wszystkich procesów gier rozpoznanych przez MoonWakera, zakończy sesję streamingu oraz zresetuje stan sesji i Bridge’a. Niezapisany postęp w grach może zostać utracony.</string>
+    <string name="console_hard_terminate_session_request">Twarde zamykanie sesji hosta…</string>
+    <string name="console_hard_terminate_session_success">Gry, sesja streamingu i stan MoonWakera zostały zresetowane.</string>
+    <string name="console_hard_terminate_session_failed">Host nie zdołał wykonać twardego zamknięcia.</string>
     <string name="transition_gateway_unavailable">Gateway jest niedostępny</string>
     <string name="preflight_profile_unavailable">Wybrany profil integracji jest niedostępny.</string>
     <string name="preflight_playnite_offline">Game Provider Bridge jest offline.</string>

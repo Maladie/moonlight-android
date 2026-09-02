@@ -679,6 +679,13 @@ public final class RetainedStreamSessionCoordinator {
         return true;
     }
 
+    public static synchronized boolean hardResetIfHostMatches(String expectedHostId) {
+        String expected = normalize(expectedHostId);
+        if (expected.isEmpty() || !expected.equalsIgnoreCase(hostId)) return false;
+        clearLocked();
+        return true;
+    }
+
     static synchronized void clear() {
         clearLocked();
     }

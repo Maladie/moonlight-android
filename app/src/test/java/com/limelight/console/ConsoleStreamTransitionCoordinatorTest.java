@@ -226,6 +226,24 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(LaunchTransitionState.GAME_WINDOW_STABILIZING,
                 second.controller.snapshot().state);
         assertTrue(second.controller.snapshot().inputBlocked);
+        assertEquals("window not active", second.controller.snapshot().detail);
+    }
+
+    @Test
+    public void runningGameReportsTheSpecificReadinessBlocker() {
+        Harness identity = new Harness(LaunchTransitionType.GAME,
+                gatewayWith(snapshot(true, true, "running", GAME, 0,
+                        false, "game", 0, "waiting_for_game_identity")));
+        identity.runObservation();
+        assertEquals(LaunchTransitionState.GAME_PROCESS_RUNNING,
+                identity.controller.snapshot().state);
+        assertEquals("waiting for process details", identity.controller.snapshot().detail);
+
+        Harness fullscreen = new Harness(LaunchTransitionType.GAME,
+                gatewayWith(snapshot(true, true, "running", GAME, 42,
+                        false, "game", 0, "target_not_fullscreen")));
+        fullscreen.runObservation();
+        assertEquals("window not fullscreen", fullscreen.controller.snapshot().detail);
     }
 
     @Test
@@ -477,9 +495,9 @@ public class ConsoleStreamTransitionCoordinatorTest {
             }
         };
         ExecutorService executor = Executors.newSingleThreadExecutor();
-        LaunchTransitionController controller = started(LaunchTransitionType.GAME, null);
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME_CONNECTION, null);
         ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
-                spec(LaunchTransitionType.GAME), controller, gateway, executor,
+                spec(LaunchTransitionType.GAME_CONNECTION), controller, gateway, executor,
                 new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
                 new FakeCallbacks());
         LaunchTransitionState before = controller.snapshot().state;
@@ -558,8 +576,8 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
-    public void nonSteamLaunchWaitsForControllerTransportWithoutOpeningPrivacyGate() {
-        for (String gameId : Arrays.asList("epic:Cowbird", "playnite:" + GAME)) {
+    public void providerLaunchWaitsForControllerTransportWithoutOpeningPrivacyGate() {
+        for (String gameId : Arrays.asList("epic:Cowbird", "playnite:" + GAME, GAME)) {
             ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
             LaunchTransitionSpec target = providerSpec("cold-" + gameId, gameId, false);
             LaunchTransitionController controller = providerController(target);
@@ -1381,6 +1399,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         void runObservation() {
             coordinator.start();
+            coordinator.onStreamConnected();
             Thread.interrupted();
         }
     }
@@ -1488,6 +1507,14 @@ public class ConsoleStreamTransitionCoordinatorTest {
         @Override public String streamDisplayNotConfiguredMessage() { return "display missing"; }
         @Override public String targetWrongDisplayMessage() { return "wrong display"; }
         @Override public String readinessUnconfirmedMessage() { return "unconfirmed"; }
+        @Override public String gameIdentityPendingMessage() {
+            return "waiting for process details";
+        }
+        @Override public String gameWindowPendingMessage() { return "waiting for game window"; }
+        @Override public String gameWindowNotFullscreenMessage() {
+            return "window not fullscreen";
+        }
+        @Override public String gameWindowNotForegroundMessage() { return "window not active"; }
         @Override public String launcherInteractionRequiredMessage() { return "reveal launcher"; }
         @Override public String windowStabilizingMessage() { return "stabilizing"; }
         @Override public boolean isPendingInstallation(String hostId, String gameId) {

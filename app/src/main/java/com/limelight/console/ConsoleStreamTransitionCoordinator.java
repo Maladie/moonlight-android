@@ -58,6 +58,10 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         String streamDisplayNotConfiguredMessage();
         String targetWrongDisplayMessage();
         String readinessUnconfirmedMessage();
+        String gameIdentityPendingMessage();
+        String gameWindowPendingMessage();
+        String gameWindowNotFullscreenMessage();
+        String gameWindowNotForegroundMessage();
         String launcherInteractionRequiredMessage();
         String windowStabilizingMessage();
 
@@ -304,7 +308,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
 
     public boolean startsProviderGame() {
         return transitionSpec.type == LaunchTransitionType.GAME
-                && isProviderRecordId(transitionSpec.playniteGameId);
+                && !transitionSpec.playniteGameId.isEmpty();
     }
 
     public void onStreamConnected() {
@@ -660,9 +664,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         }
         boolean targetWasRunning = transitionController.snapshot().state
                 == LaunchTransitionState.GAME_RUNNING;
-        if (snapshot.processId > 0) {
+        boolean gameReportedRunning = kind == LaunchTransitionType.GAME
+                && "running".equalsIgnoreCase(snapshot.gameState);
+        if (snapshot.processId > 0 || gameReportedRunning) {
             transitionController.targetProcessRunning(
-                    transitionSpec.id, transitionSpec.hostId, kind, gameId);
+                    transitionSpec.id, transitionSpec.hostId, kind, gameId,
+                    snapshot.windowReady ? "" : readinessPendingMessage(snapshot.reason));
         }
         if (!snapshot.windowReady && isPrivacyGateFailure(snapshot.reason)) {
             transitionController.targetWindowLost(transitionSpec.id, transitionSpec.hostId,
@@ -771,6 +778,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         if ("target_on_wrong_display".equals(reason)) {
             return callbacks.targetWrongDisplayMessage();
         }
+        String pending = readinessPendingMessage(reason);
+        if (!pending.isEmpty()) return pending;
         return callbacks.readinessUnconfirmedMessage();
     }
 
@@ -780,7 +789,25 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 || "target_on_wrong_display".equals(reason)) {
             return readinessFailureMessage(reason);
         }
+        String pending = readinessPendingMessage(reason);
+        if (!pending.isEmpty()) return pending;
         return callbacks.windowStabilizingMessage();
+    }
+
+    private String readinessPendingMessage(String reason) {
+        if ("waiting_for_game_identity".equals(reason)) {
+            return callbacks.gameIdentityPendingMessage();
+        }
+        if ("waiting_for_game_window".equals(reason)) {
+            return callbacks.gameWindowPendingMessage();
+        }
+        if ("target_not_fullscreen".equals(reason)) {
+            return callbacks.gameWindowNotFullscreenMessage();
+        }
+        if ("target_not_foreground".equals(reason)) {
+            return callbacks.gameWindowNotForegroundMessage();
+        }
+        return "";
     }
 
     private static boolean isPrivacyGateFailure(String reason) {
@@ -914,11 +941,6 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 gateway.stopGame(gameId);
             }
         };
-    }
-
-    private static boolean isProviderRecordId(String value) {
-        return value != null && value.matches(
-                "(?i)[a-z][a-z0-9_-]{1,31}:[A-Za-z0-9._-]{1,128}");
     }
 
     private void providerStartFailed(Exception error) {

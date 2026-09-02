@@ -289,6 +289,7 @@ class WindowProbe:
     """Collects Win32 evidence; it never treats the desktop as a valid target."""
 
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+    PROCESS_TERMINATE = 0x0001
     MONITOR_DEFAULTTONEAREST = 2
     DWMWA_CLOAKED = 14
     DESKTOP_SWITCHDESKTOP = 0x0100
@@ -324,6 +325,8 @@ class WindowProbe:
             self.kernel32.CloseHandle.restype = wintypes.BOOL
             self.kernel32.WaitForSingleObject.argtypes = [wintypes.HANDLE, wintypes.DWORD]
             self.kernel32.WaitForSingleObject.restype = wintypes.DWORD
+            self.kernel32.TerminateProcess.argtypes = [wintypes.HANDLE, wintypes.UINT]
+            self.kernel32.TerminateProcess.restype = wintypes.BOOL
             self.user32.GetForegroundWindow.restype = wintypes.HWND
             self.user32.OpenInputDesktop.argtypes = [
                 wintypes.DWORD, wintypes.BOOL, wintypes.DWORD]
@@ -553,6 +556,35 @@ class WindowProbe:
                     posted = bool(self.user32.PostMessageW(hwnd, self.WM_CLOSE, 0, 0)) or posted
             return posted and self.kernel32.WaitForSingleObject(
                 handle, int(max(0, timeout) * 1000)) == 0
+        finally:
+            self.kernel32.CloseHandle(handle)
+
+    def force_terminate_verified_process(self, expected: dict[str, Any],
+                                         timeout: float = 5.0) -> bool:
+        if not self.kernel32:
+            return False
+        pid = int(expected["process_id"])
+        handle = self.kernel32.OpenProcess(
+            self.PROCESS_QUERY_LIMITED_INFORMATION | self.PROCESS_TERMINATE |
+            0x00100000, False, pid)
+        if not handle:
+            return False
+        try:
+            own = self.process_identity(os.getpid(), include_owner=True)
+            fresh = self.process_identity(pid, include_owner=True)
+            keys = ("process_id", "process_started_filetime")
+            if own is None or fresh is None \
+                    or any(fresh.get(key) != expected.get(key) for key in keys) \
+                    or fresh["user_sid"] != own["user_sid"] \
+                    or fresh["session_id"] != own["session_id"] \
+                    or ntpath.normcase(ntpath.normpath(fresh["process_path"])) != \
+                    ntpath.normcase(ntpath.normpath(expected["process_path"])):
+                return False
+            if self.kernel32.WaitForSingleObject(handle, 0) != 258:
+                return True
+            return bool(self.kernel32.TerminateProcess(handle, 1)) and \
+                self.kernel32.WaitForSingleObject(
+                    handle, int(max(0, timeout) * 1000)) == 0
         finally:
             self.kernel32.CloseHandle(handle)
 
@@ -3938,6 +3970,60 @@ class BridgeState:
             return {"accepted": True, "command": "stop", "force": False,
                     "stopped_game_id": normalized, "stopped_current": stopped_current}
 
+    def hard_reset_session(self) -> dict[str, Any]:
+        with self.events_changed:
+            games: list[dict[str, Any]] = []
+            status = "unavailable"
+            for _attempt in range(2):
+                games, status, _revision = self._verified_running_games()
+                if status != "unavailable":
+                    break
+            probe = self.running_process_probe
+            if probe is None or status == "unavailable":
+                return {"accepted": False, "command": "hard-reset", "force": True,
+                        "reason": "running_game_inventory_unavailable"}
+
+            candidate = self._active_game_trace or self.current
+            candidate_id = str(candidate.get("game_id") or candidate.get("id") or "")
+            candidate_path = self._normalized_process_path(
+                candidate.get("process_path") or candidate.get("processPath"))
+            candidate_pid = int(candidate.get("process_id") or candidate.get("processId") or 0)
+            candidate_started = int(candidate.get("process_started_filetime") or
+                                    candidate.get("processStartedFiletime") or 0)
+            if candidate_pid > 0 and candidate_path and candidate_started > 0 \
+                    and all(int(game["process_id"]) != candidate_pid for game in games):
+                fresh = probe.process_identity(candidate_pid, include_owner=True)
+                if fresh is not None \
+                        and self._normalized_process_path(fresh.get("process_path")) == candidate_path \
+                        and int(fresh.get("process_started_filetime") or 0) == candidate_started:
+                    games.append({**fresh, "process_path": candidate_path,
+                                  "game_id": candidate_id})
+
+            failed = []
+            stopped = []
+            for game in games:
+                game_id = str(game.get("game_id") or "")
+                if probe.force_terminate_verified_process(game):
+                    stopped.append(game_id)
+                else:
+                    failed.append(game_id)
+            if failed:
+                return {"accepted": False, "command": "hard-reset", "force": True,
+                        "reason": "forced_game_stop_failed",
+                        "stopped_count": len(stopped), "failed_count": len(failed)}
+
+            self._complete_game_stop_locked()
+            self.readiness["reason"] = "session_hard_reset"
+            self._running_games = []
+            self._running_scan_status = status
+            self._running_scan_revision = self.library_revision
+            self._running_scan_at = time.monotonic()
+            self._publish_locked("session-hard-reset", {
+                "stopped_count": len(stopped),
+            })
+            return {"accepted": True, "command": "hard-reset", "force": True,
+                    "stopped_count": len(stopped)}
+
     def stop_game(self, game_id: Any = "") -> dict[str, Any]:
         normalized = self.resolve_game_id(game_id) if game_id else ""
         deadline = time.monotonic() + self.stop_timeout
@@ -4802,6 +4888,10 @@ class GameProviderHandler(BaseHTTPRequestHandler):
                     raise ValueError("Forced game termination is not exposed by this Bridge.")
                 result = self.state._stop_verified_running_game(
                     body.get("game_id"), body.get("expected_process_token"))
+            elif path == "/session/hard-reset":
+                if body.get("force") is not True:
+                    raise ValueError("Explicit force confirmation is required.")
+                result = self.state.hard_reset_session()
             elif path == "/game/focus":
                 result = self.state.focus_game()
             elif path == "/playnite/show-fullscreen":

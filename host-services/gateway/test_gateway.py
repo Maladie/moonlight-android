@@ -876,6 +876,26 @@ class GatewayStateTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(("/game/stop", {"force": False}, 25.0), requests[0])
 
+    def test_session_hard_reset_is_explicit_and_closes_provider_before_stream(self):
+        state = GatewayState(self.config_path, None)
+        requests = []
+        state.proxy_json = lambda name, path, body, timeout=8.0: (
+            requests.append((name, path, body, timeout)) is None,
+            {"accepted": True, "stopped_count": 2})
+        state.proxy = lambda name, path, timeout=2.5: (
+            requests.append((name, path, timeout)) is None, {"ok": True})
+
+        status, result = state.hard_reset_session({"force": True})
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["accepted"])
+        self.assertEqual(2, result["stopped_game_count"])
+        self.assertEqual(("game_provider", "/session/hard-reset",
+                          {"force": True}, 12.0), requests[0])
+        self.assertEqual(("vibepollo", "/action/close-app", 8.0), requests[1])
+        with self.assertRaises(ValueError):
+            state.hard_reset_session({})
+
     def test_provider_neutral_stop_preserves_exact_game_identity(self):
         state = GatewayState(self.config_path, None)
         requests = []

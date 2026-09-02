@@ -23,7 +23,8 @@ PATCH_MARKER_V12 = "# WAKEPLAY-CONSOLE-BRIDGE-V12"
 PATCH_MARKER_V13 = "# WAKEPLAY-CONSOLE-BRIDGE-V13"
 PATCH_MARKER_V14 = "# WAKEPLAY-CONSOLE-BRIDGE-V14"
 PATCH_MARKER_V15 = "# WAKEPLAY-CONSOLE-BRIDGE-V15"
-PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V16"
+PATCH_MARKER_V16 = "# WAKEPLAY-CONSOLE-BRIDGE-V16"
+PATCH_MARKER = "# WAKEPLAY-CONSOLE-BRIDGE-V17"
 
 LAUNCH_PREP_ANCHOR = """          Register-SunshineLaunchedGame -Id $obj.id
           [UIBridge]::StartGameByGuidStringOnUIThread([string]$obj.id)"""
@@ -489,10 +490,52 @@ def add_snapshot_start(source: str) -> str:
     $plugins = @(Get-PlaynitePlugins)"""
     if anchor not in source:
         if "type = 'snapshotStart'" in source and PATCH_MARKER_V15 in source:
-            return source.replace(PATCH_MARKER_V15, PATCH_MARKER, 1)
+            return source.replace(PATCH_MARKER_V15, PATCH_MARKER_V16, 1)
         raise ValueError("Unsupported V15 connector; snapshot function is incomplete")
     return source.replace(anchor, replacement, 1).replace(
-        PATCH_MARKER_V15, PATCH_MARKER, 1)
+        PATCH_MARKER_V15, PATCH_MARKER_V16, 1)
+
+
+def add_emulator_install_directory_support(source: str) -> str:
+    if "$play.EmulatorId" in source and (
+            "$db.Emulators" in source or "$PlayniteApi.Database.Emulators" in source):
+        return source.replace(PATCH_MARKER_V16, PATCH_MARKER, 1)
+    anchor = STATUS_OBJECT_REPLACEMENT
+    replacement = r'''try {
+    $actions = $null
+    try { $actions = $Game.GameActions } catch {}
+    if ($actions -and $actions.Count -gt 0) {
+      $play = $actions | Where-Object { $_.IsPlayAction } | Select-Object -First 1
+      if (-not $play) { $play = $actions[0] }
+      if ($play) {
+        $isEmu = $false
+        try {
+          $type = $play.Type
+          if ($type -and ([string]$type -match 'Emulator')) { $isEmu = $true }
+        } catch {}
+        $emuId = ''
+        try { $emuId = [string]$play.EmulatorId } catch {}
+        if (-not $isEmu -and $emuId -and
+            ($emuId -notmatch '(?i)^0{8}-0{4}-0{4}-0{4}-0{12}$')) { $isEmu = $true }
+        if ($isEmu -and $PlayniteApi -and $emuId) {
+          try {
+            foreach ($emu in $PlayniteApi.Database.Emulators) {
+              if ([string]$emu.Id -and
+                  ([string]$emu.Id).Equals($emuId, [StringComparison]::OrdinalIgnoreCase)) {
+                if ($emu.InstallDir) { $instDir = [string]$emu.InstallDir }
+                break
+              }
+            }
+          } catch {}
+        }
+      }
+    }
+  } catch {}
+  ''' + STATUS_OBJECT_REPLACEMENT
+    if anchor not in source:
+        raise ValueError("Unsupported V16 connector; status payload is incomplete")
+    return source.replace(anchor, replacement, 1).replace(
+        PATCH_MARKER_V16, PATCH_MARKER, 1)
 
 
 def patch_text_v12(source: str) -> tuple[str, bool]:
@@ -585,21 +628,27 @@ def patch_text_v12(source: str) -> tuple[str, bool]:
 def patch_text(source: str) -> tuple[str, bool]:
     if PATCH_MARKER in source:
         return source, False
+    if PATCH_MARKER_V16 in source:
+        return add_emulator_install_directory_support(source), True
     if PATCH_MARKER_V15 in source:
-        return add_snapshot_start(source), True
+        return add_emulator_install_directory_support(add_snapshot_start(source)), True
     if PATCH_MARKER_V14 in source:
-        return add_snapshot_start(add_installing_state_cleanup(source)), True
+        return add_emulator_install_directory_support(
+            add_snapshot_start(add_installing_state_cleanup(source))), True
     if PATCH_MARKER_V13 in source:
-        return add_snapshot_start(add_installing_state_cleanup(
-            add_external_uninstall_completion_support(source))), True
+        return add_emulator_install_directory_support(add_snapshot_start(
+            add_installing_state_cleanup(
+                add_external_uninstall_completion_support(source)))), True
     if PATCH_MARKER_V12 in source:
-        return add_snapshot_start(add_installing_state_cleanup(
-            add_external_uninstall_completion_support(
-                add_provider_game_id_support(source)))), True
+        return add_emulator_install_directory_support(add_snapshot_start(
+            add_installing_state_cleanup(
+                add_external_uninstall_completion_support(
+                    add_provider_game_id_support(source))))), True
     patched, _changed = patch_text_v12(source)
-    return add_snapshot_start(add_installing_state_cleanup(
-        add_external_uninstall_completion_support(
-            add_provider_game_id_support(patched)))), True
+    return add_emulator_install_directory_support(add_snapshot_start(
+        add_installing_state_cleanup(
+            add_external_uninstall_completion_support(
+                add_provider_game_id_support(patched))))), True
 
 
 def patch_file(path: Path, apply: bool) -> str:

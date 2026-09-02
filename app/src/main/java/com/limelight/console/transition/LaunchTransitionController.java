@@ -127,9 +127,16 @@ public final class LaunchTransitionController {
     public synchronized void targetProcessRunning(String transitionId, String hostId,
                                                   LaunchTransitionType kind,
                                                   String gameId) {
+        targetProcessRunning(transitionId, hostId, kind, gameId, "");
+    }
+
+    public synchronized void targetProcessRunning(String transitionId, String hostId,
+                                                  LaunchTransitionType kind,
+                                                  String gameId, String reason) {
         if (!acceptTarget(transitionId, hostId, kind, gameId)
                 || rejectsLateTargetSignal()) return;
         targetProcessRunning = true;
+        detail = reason == null ? "" : reason;
         state = kind == LaunchTransitionType.GAME
                 ? LaunchTransitionState.GAME_PROCESS_RUNNING
                 : LaunchTransitionState.PLAYNITE_PROCESS_RUNNING;

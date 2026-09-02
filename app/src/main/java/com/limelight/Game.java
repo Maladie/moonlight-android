@@ -4397,6 +4397,22 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         return getString(R.string.transition_readiness_unconfirmed);
                     }
 
+                    @Override public String gameIdentityPendingMessage() {
+                        return getString(R.string.transition_waiting_game_identity);
+                    }
+
+                    @Override public String gameWindowPendingMessage() {
+                        return getString(R.string.transition_waiting_game_window);
+                    }
+
+                    @Override public String gameWindowNotFullscreenMessage() {
+                        return getString(R.string.transition_game_window_not_fullscreen);
+                    }
+
+                    @Override public String gameWindowNotForegroundMessage() {
+                        return getString(R.string.transition_game_window_not_foreground);
+                    }
+
                     @Override public String launcherInteractionRequiredMessage() {
                         return getString(R.string.transition_launcher_interaction_required);
                     }
@@ -4941,7 +4957,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             case GAME_STARTING:
                 return getString(R.string.transition_starting_game);
             case GAME_PROCESS_RUNNING:
-                return getString(R.string.transition_game_running_waiting_window);
+                return snapshot.detail.isEmpty()
+                        ? getString(R.string.transition_game_running_waiting_window)
+                        : snapshot.detail;
             case GAME_WINDOW_STABILIZING:
                 return snapshot.detail.isEmpty()
                         ? getString(R.string.transition_game_running_waiting_window)
