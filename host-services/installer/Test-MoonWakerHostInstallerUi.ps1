@@ -28,7 +28,7 @@ $resolvedInstaller = (Resolve-Path -LiteralPath $InstallerPath).Path
 $assembly = [Reflection.Assembly]::LoadFile($resolvedInstaller)
 $formType = $assembly.GetType("MoonWaker.HostInstaller.InstallerForm", $true)
 $form = [Activator]::CreateInstance($formType, $true)
-$flags = [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic
+$instanceFlags = [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic
 try {
     if ($form.AutoScaleMode -ne [Windows.Forms.AutoScaleMode]::Dpi) {
         throw "Installer form is not configured for DPI scaling."
@@ -39,52 +39,95 @@ try {
     $form.Show()
     [Windows.Forms.Application]::DoEvents()
 
-    $controls = @(Get-Descendants $form)
-    $obsolete = @($controls | Where-Object {
-        $_ -is [Windows.Forms.CheckBox] -and
-        $_.Text -in @("Vibepollo Bridge", "Game Provider Bridge")
-    })
-    if ($obsolete.Count) { throw "Obsolete required-Bridge checkboxes are still visible." }
+    $pages = $formType.GetField("pages", $instanceFlags).GetValue($form)
+    $steps = $formType.GetField("stepLabels", $instanceFlags).GetValue($form)
+    if ($pages.Count -ne 5 -or $steps.Count -ne 5) {
+        throw "Installer must expose exactly five guided steps."
+    }
+    $showPage = $formType.GetMethod("ShowPage", $instanceFlags)
+    $setLanguage = $formType.GetMethod("SetLanguage", $instanceFlags)
+    if ($null -eq $showPage -or $null -eq $setLanguage) {
+        throw "Wizard navigation methods are missing."
+    }
 
-    $discord = $formType.GetField("discord", $flags).GetValue($form)
-    $credentials = $formType.GetField("discordCredentials", $flags).GetValue($form)
-    $discordCard = $formType.GetField("discordCard", $flags).GetValue($form)
+    $setLanguage.Invoke($form, @(1)) | Out-Null
+    [Windows.Forms.Application]::DoEvents()
+    if (-not $form.Text.StartsWith("Instalator MoonWaker Host") -or
+        $steps[1].Text -ne "Sprawdzenie systemu") {
+        throw "Polish localization was not applied to the wizard shell."
+    }
+    $setLanguage.Invoke($form, @(0)) | Out-Null
+    [Windows.Forms.Application]::DoEvents()
+    if (-not $form.Text.StartsWith("MoonWaker Host Installer") -or
+        $steps[1].Text -ne "System check") {
+        throw "English localization was not applied to the wizard shell."
+    }
+
+    $automaticToken = $formType.GetField("createVibepolloToken", $instanceFlags).GetValue($form)
+    $admin = $formType.GetField("vibepolloAdmin", $instanceFlags).GetValue($form)
+    $token = $formType.GetField("vibepolloToken", $instanceFlags).GetValue($form)
+    $automaticToken.Checked = $true
+    [Windows.Forms.Application]::DoEvents()
+    if (-not $admin.Enabled -or $token.Enabled) {
+        throw "Automatic token mode did not select administrator credentials."
+    }
+    $automaticToken.Checked = $false
+    [Windows.Forms.Application]::DoEvents()
+    if ($admin.Enabled -or -not $token.Enabled) {
+        throw "Existing token mode did not select the token field."
+    }
+
+    $discord = $formType.GetField("discord", $instanceFlags).GetValue($form)
+    $discordCredentials = $formType.GetField("discordCredentials", $instanceFlags).GetValue($form)
+    $discordCard = $formType.GetField("discordCard", $instanceFlags).GetValue($form)
+    $showPage.Invoke($form, @(3)) | Out-Null
+    [Windows.Forms.Application]::DoEvents()
     $discord.Checked = $false
     [Windows.Forms.Application]::DoEvents()
-    if ($credentials.Visible -or $discordCard.Height -gt 80) {
-        throw "Discord credentials did not collapse after Discord Bridge was disabled."
+    if ($discordCredentials.Visible -or $discordCard.Height -gt 80) {
+        throw "Optional Discord settings did not collapse."
     }
     $discord.Checked = $true
     [Windows.Forms.Application]::DoEvents()
-    if (-not $credentials.Visible -or $discordCard.Height -lt 150) {
-        throw "Discord credentials did not return after Discord Bridge was enabled."
+    if (-not $discordCredentials.Visible -or $discordCard.Height -lt 150) {
+        throw "Optional Discord settings did not expand."
     }
 
-    $status = $formType.GetField("installationStatus", $flags).GetValue($form)
-    $status.Text = "Detected shared components v0.7.56; this installer contains v0.7.59. " +
-        "Updating shared components is required and will preserve existing profiles. " +
-        "The Vibepollo token for this profile will be preserved when its field is empty. " +
-        "To enable automatic client pairing and game permissions, select automatic token " +
-        "creation and enter the Vibepollo administrator credentials."
-    $preferred = $status.GetPreferredSize([Drawing.Size]::new($status.Width, 0))
-    if ($preferred.Height -gt $status.Height) {
-        throw "Installation status text needs $($preferred.Height) px but has $($status.Height) px."
+    $showPage.Invoke($form, @(1)) | Out-Null
+    $firmwarePanel = $formType.GetField("firmwarePanel", $instanceFlags).GetValue($form)
+    $updateSystemPageLayout = $formType.GetMethod("UpdateSystemPageLayout", $instanceFlags)
+    $firmwarePanel.Visible = $true
+    $updateSystemPageLayout.Invoke($form, @()) | Out-Null
+    [Windows.Forms.Application]::DoEvents()
+
+    $allControls = @(Get-Descendants $form)
+    $passwordBoxes = @($allControls | Where-Object {
+        $_ -is [Windows.Forms.TextBox] -and $_.UseSystemPasswordChar
+    })
+    if ($passwordBoxes.Count -lt 3) {
+        throw "Sensitive Vibepollo and Discord fields are not masked."
     }
 
-    $content = @($form.Controls | Where-Object { $_ -is [Windows.Forms.FlowLayoutPanel] })[0]
-    if ($content.HorizontalScroll.Visible) {
-        throw "Installer content requires horizontal scrolling at its default size."
+    $resolvedPreview = if ([string]::IsNullOrWhiteSpace($PreviewDirectory)) { "" } else {
+        [IO.Path]::GetFullPath($PreviewDirectory)
     }
-
-    if (-not [string]::IsNullOrWhiteSpace($PreviewDirectory)) {
-        $resolvedPreview = [IO.Path]::GetFullPath($PreviewDirectory)
-        New-Item -ItemType Directory -Path $resolvedPreview -Force | Out-Null
-        $content.AutoScrollPosition = [Drawing.Point]::Empty
+    if ($resolvedPreview) { New-Item -ItemType Directory -Path $resolvedPreview -Force | Out-Null }
+    for ($index = 0; $index -lt $pages.Count; $index++) {
+        $showPage.Invoke($form, @($index)) | Out-Null
         [Windows.Forms.Application]::DoEvents()
-        Save-Preview $form (Join-Path $resolvedPreview "installer-ui-top.png")
-        $content.AutoScrollPosition = [Drawing.Point]::new(0, $content.VerticalScroll.Maximum)
-        [Windows.Forms.Application]::DoEvents()
-        Save-Preview $form (Join-Path $resolvedPreview "installer-ui-bottom.png")
+        $visiblePages = @($pages | Where-Object { $_.Visible })
+        if ($visiblePages.Count -ne 1 -or $visiblePages[0] -ne $pages[$index]) {
+            throw "Wizard page $index is not the sole visible page."
+        }
+        if ($pages[$index].HorizontalScroll.Visible) {
+            throw "Wizard page $index requires horizontal scrolling at default size."
+        }
+        if ($pages[$index].VerticalScroll.Visible) {
+            throw "Wizard page $index requires vertical scrolling at default size."
+        }
+        if ($resolvedPreview) {
+            Save-Preview $form (Join-Path $resolvedPreview ("installer-step-{0}.png" -f ($index + 1)))
+        }
     }
 
     Write-Output "MoonWaker Host Installer UI test passed."
