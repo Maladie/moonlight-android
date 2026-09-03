@@ -336,6 +336,13 @@ final class DiscordPanelController {
         return !showAllGuilds;
     }
 
+    static int discordIndicatorColor(boolean bridgeOnline, boolean authenticated,
+                                     boolean rpcConnected, boolean voiceConnected) {
+        if (!bridgeOnline) return 0xFFFFB74D;
+        if (!authenticated || !rpcConnected) return 0xFFFF6B6B;
+        return voiceConnected ? 0xFF36B96C : 0xFF4DA3FF;
+    }
+
     private HostGatewayClient.DiscordGuild findGuild(List<HostGatewayClient.DiscordGuild> guilds,
                                                       String guildId) {
         for (HostGatewayClient.DiscordGuild guild : guilds) {

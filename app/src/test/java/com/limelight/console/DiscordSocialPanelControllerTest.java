@@ -91,6 +91,20 @@ public class DiscordSocialPanelControllerTest {
     }
 
     @Test
+    public void discordGlyphColorReflectsBridgeRpcAndVoiceState() {
+        assertEquals(0xFFFFB74D, DiscordPanelController.discordIndicatorColor(
+                false, false, false, false));
+        assertEquals(0xFFFF6B6B, DiscordPanelController.discordIndicatorColor(
+                true, false, false, false));
+        assertEquals(0xFFFF6B6B, DiscordPanelController.discordIndicatorColor(
+                true, true, false, false));
+        assertEquals(0xFF4DA3FF, DiscordPanelController.discordIndicatorColor(
+                true, true, true, false));
+        assertEquals(0xFF36B96C, DiscordPanelController.discordIndicatorColor(
+                true, true, true, true));
+    }
+
+    @Test
     public void joinedVoiceMustMatchTheRequestedChannel() {
         HostGatewayClient.DiscordVoice matching = new HostGatewayClient.DiscordVoice(
                 true, "12345", "Lobby", "67890", false, false, 1);

@@ -35,4 +35,11 @@ public class LoadingArtworkPolicyTest {
         assertEquals(1, LoadingArtworkPolicy.sampleSize(2560, 1440, 1920));
         assertEquals(2, LoadingArtworkPolicy.sampleSize(3840, 2160, 1920));
     }
+
+    @Test public void tileFillAllowsSmallCropButContainsVeryDifferentArtwork() {
+        assertTrue(LoadingArtworkPolicy.canFillWithModestCrop(600, 900, 92, 123));
+        assertTrue(LoadingArtworkPolicy.canFillWithModestCrop(1200, 1600, 92, 123));
+        assertTrue(LoadingArtworkPolicy.canFillWithModestCrop(1024, 1152, 92, 123));
+        assertFalse(LoadingArtworkPolicy.canFillWithModestCrop(1920, 1080, 92, 123));
+    }
 }

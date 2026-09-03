@@ -1062,8 +1062,10 @@ class WindowProbe:
             return {"ready": False, "reason": "host_session_locked"}
         if provider.executable() is None:
             return {"ready": False, "reason": "steam_unavailable"}
-        result = self.ensure_steam_big_picture(provider, expected_display)
-        # Big Picture may take time to open; recheck before dispatching the game.
+        result = self.ensure_steam_big_picture(provider, expected_display, timeout=1.0)
+        if result.get("reason") == "launcher_interaction_required":
+            result = {"ready": True, "reason": "steam_big_picture_unconfirmed"}
+        # The Steam UI request may race with a lock or UAC prompt; recheck before dispatch.
         if result.get("ready") and (self.is_session_locked()
                 or self.uac_consent_pending(fail_closed=True) or self.is_session_locked()):
             return {"ready": False, "reason": "host_session_locked"}
@@ -4407,6 +4409,7 @@ class BridgeState:
         fields = {
             "cover": ("boxArtPath", "cover", "coverImage"),
             "background": ("backgroundImagePath", "background", "backgroundImage"),
+            "hero": ("heroImagePath", "hero", "heroImage"),
             "icon": ("iconPath", "icon"),
         }
         if kind not in fields:
@@ -4420,6 +4423,9 @@ class BridgeState:
         if not value and kind == "background":
             value = next((str(game.get(field) or "").strip()
                           for field in fields["cover"] if game.get(field)), "")
+        elif not value and kind == "hero":
+            value = next((str(game.get(field) or "").strip()
+                          for field in fields["background"] if game.get(field)), "")
         path = Path(value).expanduser()
         if value and urllib.parse.urlparse(value).scheme == "https":
             expected_version = str(game.get("artworkVersion") or "")

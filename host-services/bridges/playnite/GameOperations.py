@@ -11,6 +11,7 @@ import stat
 import subprocess
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field
@@ -65,19 +66,19 @@ class ProviderArtworkCache:
 
     @staticmethod
     def _image_extension(body: bytes, content_type: str) -> str:
-        normalized = content_type.split(";", 1)[0].strip().casefold()
-        if normalized in {"image/jpeg", "image/jpg"} and body.startswith(b"\xff\xd8"):
+        if body.startswith(b"\xff\xd8"):
             return ".jpg"
-        if normalized == "image/png" and body.startswith(b"\x89PNG\r\n\x1a\n"):
+        if body.startswith(b"\x89PNG\r\n\x1a\n"):
             return ".png"
-        if normalized == "image/webp" and body.startswith(b"RIFF") \
+        if body.startswith(b"RIFF") \
                 and body[8:12] == b"WEBP":
             return ".webp"
         raise ValueError("Provider artwork response is not a supported image.")
 
     def fetch(self, provider: str, game_id: str, kind: str, url: str) -> Path:
         id_pattern = r"[0-9]+" if provider == "steam" else r"[A-Za-z0-9_-]+"
-        if not re.fullmatch(id_pattern, game_id) or kind not in {"cover", "background", "icon"} \
+        if not re.fullmatch(id_pattern, game_id) \
+                or kind not in {"cover", "background", "hero", "icon"} \
                 or not self._allowed(provider, url):
             raise ValueError("Invalid provider artwork reference.")
         digest = hashlib.sha256(url.encode("utf-8")).hexdigest()[:20]
@@ -284,6 +285,22 @@ class SteamProvider(GenericPlayniteProvider):
         return "https://shared.akamai.steamstatic.com/store_item_assets/" + \
             pattern.replace("${FILENAME}", filename)
 
+    @staticmethod
+    def _steam_page_background_url(assets: dict[str, Any], app_id: str) -> str:
+        path = str(assets.get("page_background_path") or "").strip()
+        match = re.fullmatch(r"app/([0-9]+)(\?t=[0-9]+)?", path)
+        if match is None or match.group(1) != app_id:
+            return ""
+        return "https://shared.akamai.steamstatic.com/store_item_assets/steam/apps/" + \
+            f"{app_id}/page_bg_raw.jpg{match.group(2) or ''}"
+
+    @classmethod
+    def _steam_background_url(cls, assets: dict[str, Any], app_id: str) -> str:
+        return cls._steam_asset_url(assets, "main_capsule_2x") or \
+            cls._steam_page_background_url(assets, app_id) or \
+            cls._steam_asset_url(assets, "main_capsule", "header_2x", "header",
+                                 "hero_capsule_2x", "hero_capsule")
+
     def _enrich_store_metadata(self, games: list[dict[str, Any]]) -> None:
         if self.artwork_cache is None:
             return
@@ -319,9 +336,11 @@ class SteamProvider(GenericPlayniteProvider):
                 cover = self._steam_asset_url(
                     assets, "library_capsule_2x", "library_capsule", "main_capsule",
                     "hero_capsule", "header")
-                background = self._steam_asset_url(
-                    assets, "library_hero_2x", "library_hero", "page_background",
-                    "hero_capsule_2x", "hero_capsule")
+                app_id = str(item.get("appid") or "")
+                background = self._steam_background_url(assets, app_id)
+                hero = self._steam_asset_url(
+                    assets, "library_hero_2x", "library_hero", "hero_capsule_2x",
+                    "hero_capsule", "page_background")
                 description = _plain_description(basic.get("short_description"))
                 if description:
                     game["description"] = description
@@ -329,19 +348,30 @@ class SteamProvider(GenericPlayniteProvider):
                     game["cover"] = cover
                 if background:
                     game["background"] = background
-                if cover or background or description:
+                if hero:
+                    game["hero"] = hero
+                if cover or background or hero or description:
                     game["metadataProvider"] = "steam"
                     game["artworkVersion"] = hashlib.sha256(
-                        f"{cover}\0{background}".encode("utf-8")).hexdigest()
+                        f"{cover}\0{background}\0{hero}".encode("utf-8")).hexdigest()
 
     def artwork(self, game: dict[str, Any], kind: str) -> Path:
         if self.artwork_cache is None:
             raise FileNotFoundError("Steam artwork cache is unavailable.")
-        url = str(game.get("background" if kind == "background" else "cover") or "")
+        url = str(game.get(kind) or "")
         if kind == "background" and not url:
             url = str(game.get("cover") or "")
-        return self.artwork_cache.fetch(
-            "steam", str(game.get("providerGameId") or ""), kind, url)
+        elif kind == "hero" and not url:
+            url = str(game.get("background") or "")
+        game_id = str(game.get("providerGameId") or "")
+        try:
+            return self.artwork_cache.fetch("steam", game_id, kind, url)
+        except urllib.error.HTTPError as error:
+            fallback = str(game.get("hero") or "")
+            if kind != "background" or error.code != 404 or not fallback:
+                raise
+            error.close()
+            return self.artwork_cache.fetch("steam", game_id, kind, fallback)
 
     @staticmethod
     def _values(path: Path) -> dict[str, str] | None:
@@ -914,9 +944,11 @@ class EpicProvider(GenericPlayniteProvider):
     def artwork(self, game: dict[str, Any], kind: str) -> Path:
         if self.artwork_cache is None:
             raise FileNotFoundError("Epic artwork cache is unavailable.")
-        url = str(game.get("background" if kind == "background" else "cover") or "")
+        url = str(game.get(kind) or "")
         if kind == "background" and not url:
             url = str(game.get("cover") or "")
+        elif kind == "hero" and not url:
+            url = str(game.get("background") or "")
         return self.artwork_cache.fetch(
             "epic", str(game.get("providerGameId") or ""), kind, url)
 
@@ -1168,7 +1200,10 @@ class EpicProvider(GenericPlayniteProvider):
                 "DieselStoreFrontTall", "DieselGameBox", "OfferImageWide",
                 "DieselStoreFrontWide")
             background = self._epic_image(
-                metadata, "DieselStoreFrontWide", "DieselGameBox", "OfferImageWide")
+                metadata, "OfferImageWide", "DieselGameBox", "DieselStoreFrontWide")
+            hero = self._epic_image(
+                metadata, "DieselStoreFrontWide", "DieselGameBoxWide",
+                "OfferImageWide", "DieselGameBox")
             description = _plain_description(
                 metadata.get("description") or metadata.get("shortDescription"))
             record = {
@@ -1188,10 +1223,12 @@ class EpicProvider(GenericPlayniteProvider):
                 record["cover"] = cover
             if background:
                 record["background"] = background
-            if cover or background or description:
+            if hero:
+                record["hero"] = hero
+            if cover or background or hero or description:
                 record["metadataProvider"] = "epic"
                 record["artworkVersion"] = hashlib.sha256(
-                    f"{cover}\0{background}".encode("utf-8")).hexdigest()
+                    f"{cover}\0{background}\0{hero}".encode("utf-8")).hexdigest()
             games.append(record)
         return {"available": True, "complete": bool(installed.get("complete")),
                 "games": games, "reason": ""}
@@ -1854,7 +1891,7 @@ class GameOperationsService:
             old = previous.get(str(record["id"])) or {}
             provider = str(record.get("provider") or "")
             if old.get("metadataProvider") == provider:
-                for key in ("cover", "background", "description", "genres",
+                for key in ("cover", "background", "hero", "description", "genres",
                             "artworkVersion", "metadataProvider"):
                     if record.get(key) in (None, "", []) \
                             and old.get(key) not in (None, "", []):

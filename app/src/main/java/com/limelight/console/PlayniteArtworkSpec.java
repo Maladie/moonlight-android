@@ -35,6 +35,15 @@ final class PlayniteArtworkSpec {
 
     static PlayniteArtworkSpec forScreenSaver(PlayniteLibraryGame game) {
         Objects.requireNonNull(game, "game");
+        return forLoadingCurtain(game);
+    }
+
+    static PlayniteArtworkSpec forLoadingCurtain(PlayniteLibraryGame game) {
+        Objects.requireNonNull(game, "game");
+        if (!game.heroKey.isEmpty()) {
+            return new PlayniteArtworkSpec("hero", game.heroKey,
+                    game.backgroundKey.isEmpty() ? "" : "background", game.backgroundKey);
+        }
         return game.backgroundKey.isEmpty()
                 ? new PlayniteArtworkSpec("", "", "", "")
                 : new PlayniteArtworkSpec("background", game.backgroundKey, "", "");

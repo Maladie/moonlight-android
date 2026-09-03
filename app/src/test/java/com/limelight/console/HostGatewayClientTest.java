@@ -107,7 +107,8 @@ public class HostGatewayClientTest {
                 "\"installWindowTitle\":\"Choose install location\"," +
                 "\"installLauncher\":\"steam.exe\"," +
                 "\"vibepollo_state\":\"preparing\"," +
-                "\"cover\":\"hash\"}]}" );
+                "\"cover\":\"cover-hash\",\"background\":\"background-hash\"," +
+                "\"hero\":\"hero-hash\"}]}" );
 
         HostGatewayClient.PlayniteLibrary parsed =
                 HostGatewayClient.parsePlayniteLibrary(library);
@@ -132,6 +133,9 @@ public class HostGatewayClientTest {
         assertEquals("Choose install location", parsed.games.get(0).installWindowTitle);
         assertEquals("steam.exe", parsed.games.get(0).installLauncher);
         assertEquals("preparing", parsed.games.get(0).vibepolloState);
+        assertEquals("cover-hash", parsed.games.get(0).cover);
+        assertEquals("background-hash", parsed.games.get(0).background);
+        assertEquals("hero-hash", parsed.games.get(0).hero);
         assertEquals("42", parsed.revision);
     }
 

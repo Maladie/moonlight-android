@@ -51,6 +51,7 @@ final class DiscordSocialPanelController {
         void backPanel();
         void requestCommunityDictation(long recipientId, long directMessageGeneration);
         void dismissCommunityForAuthorization();
+        void voiceChanged(HostGatewayClient.DiscordVoice voice);
         default void visiblePeerChanged(long peerId) { }
     }
 
@@ -635,6 +636,7 @@ final class DiscordSocialPanelController {
         final int expected = generation;
         source.joinChannel(channel, new DiscordPanelController.CommunityActionCallback() {
             @Override public void onComplete(HostGatewayClient.DiscordVoice verifiedVoice) {
+                ui.voiceChanged(verifiedVoice);
                 if (!visible || expected != generation) return;
                 joinedVoice = verifiedVoice;
                 joinedVoiceChannel = channel;
@@ -658,6 +660,7 @@ final class DiscordSocialPanelController {
     private void refreshVoice(final int expected) {
         source.requestVoice(new DiscordPanelController.CommunityVoiceCallback() {
             @Override public void onVoice(HostGatewayClient.DiscordVoice voice) {
+                ui.voiceChanged(voice);
                 if (!visible || expected != generation) return;
                 joinedVoice = voice;
                 joinedVoiceChannel = findVoiceChannel(voice);
@@ -702,6 +705,7 @@ final class DiscordSocialPanelController {
         final int expected = generation;
         source.voiceAction(action, new DiscordPanelController.CommunityVoiceCallback() {
             @Override public void onVoice(HostGatewayClient.DiscordVoice voice) {
+                ui.voiceChanged(voice);
                 if (!visible || expected != generation) return;
                 voiceBusy = false;
                 joinedVoice = voice;

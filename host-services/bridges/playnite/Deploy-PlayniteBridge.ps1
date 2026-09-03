@@ -10,7 +10,12 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $ProfileRoot = [IO.Path]::GetFullPath($ProfileRoot)
-$targetRoot = Join-Path $ProfileRoot "playnite"
+$componentName = if (Test-Path -LiteralPath (Join-Path $ProfileRoot "game-provider")) {
+    "game-provider"
+} else {
+    "playnite"
+}
+$targetRoot = Join-Path $ProfileRoot $componentName
 $statePath = Join-Path $ProfileRoot "profile-bridge-state.json"
 $configPath = Join-Path $targetRoot "config.json"
 $runtimeFiles = @(
@@ -36,7 +41,7 @@ $healthUri = "http://127.0.0.1:$port/health"
 
 function Get-ManagedBridgePid {
     $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
-    return [int]$state.components.playnite.pid
+    return [int]$state.components.$componentName.pid
 }
 
 function Get-BridgeHealth {

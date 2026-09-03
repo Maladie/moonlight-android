@@ -201,12 +201,11 @@ class WindowProbeTest(unittest.TestCase):
             probe.interactive_windows = mock.Mock(return_value=[])
             with mock.patch("GameProviderBridge.time.monotonic", side_effect=[0, 20]):
                 result = provider.launch(game, "launch-task")
-            self.assertFalse(result["accepted"])
-            self.assertEqual("launcher_interaction_required", result["reason"])
-            self.assertTrue(result["requires_attention"])
-            self.assertEqual(1, runner.call_count)
-            self.assertEqual([str(executable.resolve()), "steam://open/bigpicture"],
-                             runner.call_args.args[0])
+            self.assertTrue(result["accepted"])
+            self.assertEqual([
+                [str(executable.resolve()), "steam://open/bigpicture"],
+                [str(executable.resolve()), "steam://launch/367520/Dialog"],
+            ], [call.args[0] for call in runner.call_args_list])
 
     def test_steam_preflight_rechecks_session_after_big_picture_wait(self):
         probe = WindowProbe(mock.Mock())
@@ -217,7 +216,8 @@ class WindowProbeTest(unittest.TestCase):
 
         self.assertEqual({"ready": False, "reason": "host_session_locked"},
                          probe.prepare_steam_launch(provider, r"\\.\DISPLAY1"))
-        probe.ensure_steam_big_picture.assert_called_once_with(provider, r"\\.\DISPLAY1")
+        probe.ensure_steam_big_picture.assert_called_once_with(
+            provider, r"\\.\DISPLAY1", timeout=1.0)
 
     def test_direct_steam_preflight_rejects_locked_uac_and_unavailable_probe(self):
         provider = mock.Mock()
@@ -2844,6 +2844,28 @@ class BridgeStateTest(unittest.TestCase):
             self.assertEqual("image/jpeg", content_type)
             self.state.game_operations.artwork.assert_called_once_with(
                 self.state.library["steam:620"], "cover")
+        finally:
+            artwork_path.unlink(missing_ok=True)
+
+    def test_hero_artwork_uses_its_own_provider_asset(self):
+        with tempfile.NamedTemporaryFile(suffix=".jpg", delete=False) as artwork:
+            artwork.write(b"\xff\xd8\xffhero")
+            artwork_path = Path(artwork.name)
+        try:
+            self.state.library["steam:620"] = {
+                "id": "steam:620", "provider": "steam", "providerGameId": "620",
+                "background": "https://shared.akamai.steamstatic.com/page-bg.jpg",
+                "hero": "https://shared.akamai.steamstatic.com/library-hero.jpg",
+                "artworkVersion": "direct-version",
+            }
+            self.state.game_operations.artwork = mock.Mock(return_value=artwork_path)
+
+            body, content_type = self.state.artwork("steam:620", "hero")
+
+            self.assertTrue(body.startswith(b"\xff\xd8"))
+            self.assertEqual("image/jpeg", content_type)
+            self.state.game_operations.artwork.assert_called_once_with(
+                self.state.library["steam:620"], "hero")
         finally:
             artwork_path.unlink(missing_ok=True)
 

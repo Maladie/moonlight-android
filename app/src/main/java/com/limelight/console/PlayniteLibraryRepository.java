@@ -119,7 +119,7 @@ final class PlayniteLibraryRepository {
             games.add(new PlayniteLibraryGame(game.id, game.name,
                     game.installed, game.installing, game.hidden, game.playtimeSeconds,
                     game.lastPlayed,
-                    game.cover, game.background, game.description, game.playCount,
+                    game.cover, game.background, game.hero, game.description, game.playCount,
                     game.source, game.genres, game.installRequiresAttention,
                     game.installAttentionReason, game.installWindowTitle,
                     game.installLauncher, game.operationState,

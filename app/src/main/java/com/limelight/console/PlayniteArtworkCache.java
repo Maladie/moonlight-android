@@ -61,7 +61,8 @@ final class PlayniteArtworkCache {
     private static boolean valid(String hostUuid, String gameId, String kind) {
         return hostUuid != null && hostUuid.matches("[A-Za-z0-9._-]{1,128}") &&
                 HostGatewayClient.isPlayniteId(gameId) &&
-                ("cover".equals(kind) || "background".equals(kind) || "icon".equals(kind));
+                ("cover".equals(kind) || "background".equals(kind)
+                        || "hero".equals(kind) || "icon".equals(kind));
     }
 
     private static String digest(String value) {
