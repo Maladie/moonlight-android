@@ -39,7 +39,8 @@ try {
     # first commit that contains them.
     $tracked = @($tracked) + @(
         "host-services/bridges/playnite/GameProviderBridge.py",
-        "host-services/gateway/Stop-MoonWakerGatewayWorkers.ps1"
+        "host-services/gateway/Stop-MoonWakerGatewayWorkers.ps1",
+        "host-services/install/Prepare-MoonWakerHost.ps1"
     ) | Sort-Object -Unique
     foreach ($relative in $tracked) {
         if ($relative -match "(^|/)(dist|__pycache__)(/|$)" -or
@@ -103,6 +104,7 @@ try {
         "/resource:$(Join-Path $hostServicesRoot 'version.json'),MoonWaker.Version.json",
         "/reference:System.dll", "/reference:System.Core.dll",
         "/reference:System.Drawing.dll", "/reference:System.Windows.Forms.dll",
+        "/reference:System.Security.dll",
         "/reference:System.IO.Compression.dll",
         "/reference:System.IO.Compression.FileSystem.dll",
         (Join-Path $PSScriptRoot "MoonWakerHostInstaller.cs")
