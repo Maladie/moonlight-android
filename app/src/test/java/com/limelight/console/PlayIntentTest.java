@@ -113,6 +113,25 @@ public class PlayIntentTest {
         assertFalse(intent.matches(snapshot("host", 42, "game-b")));
     }
 
+    @Test public void calibrationCopyKeepsExactTargetAndAddsOnlyRuntimeSettings() {
+        PlayIntent original = PlayIntent.playniteGame(
+                "host", 42, "Game", true, "game-id", "art", "quick");
+
+        PlayIntent calibration = original.withCalibration(
+                "settings:game", 1920, 1080, 60, 20_000);
+
+        assertTrue(calibration.isCalibration());
+        assertEquals(original.kind, calibration.kind);
+        assertEquals(original.sunshineAppId, calibration.sunshineAppId);
+        assertEquals(original.playniteGameId, calibration.playniteGameId);
+        assertEquals(original.quickLaunchId, calibration.quickLaunchId);
+        assertEquals("settings:game", calibration.calibrationAppKey);
+        assertEquals(1920, calibration.runtimeWidth);
+        assertEquals(1080, calibration.runtimeHeight);
+        assertEquals(60, calibration.runtimeFps);
+        assertEquals(20_000, calibration.runtimeBitrateKbps);
+    }
+
     private static SessionSnapshot snapshot(String host, int appId, String gameId) {
         return new SessionSnapshot(host, SessionSnapshot.State.ACTIVE, appId, gameId,
                 false, false, false, false, false);

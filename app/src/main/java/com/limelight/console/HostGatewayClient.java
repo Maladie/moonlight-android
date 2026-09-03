@@ -19,6 +19,8 @@ final class HostGatewayClient {
     static final int DEFAULT_PORT = 8785;
     static final int REQUIRED_GAMEPLAY_PERMISSIONS = 0x07001F00;
     private static final int READ_TIMEOUT_MS = 5_000;
+    private static final int NETWORK_PROBE_BYTES = 8 * 1024 * 1024;
+    private static final long NETWORK_TARGET_NANOS = 8_000_000_000L;
     private final GatewayTransport transport = new GatewayTransport();
 
     static final class Pairing {
@@ -801,6 +803,37 @@ final class HostGatewayClient {
         JSONObject response = request(connection, "/api/v1/profiles", "GET",
                 null, 15_000);
         return parseIntegrationProfiles(response);
+    }
+
+    GatewayTransport.NetworkDownloadSample measureNetworkDownload(
+            GatewayConnection connection, int sizeBytes) throws IOException {
+        return measureNetworkDownload(connection, sizeBytes, 15_000);
+    }
+
+    GatewayTransport.NetworkDownloadSample measureAdaptiveNetworkDownload(
+            GatewayConnection connection) throws IOException {
+        GatewayTransport.NetworkDownloadSample probe = measureNetworkDownload(
+                connection, NETWORK_PROBE_BYTES, 15_000);
+        return measureNetworkDownload(connection,
+                adaptiveNetworkDownloadSize(probe.bytes, probe.elapsedNanos), 30_000);
+    }
+
+    static int adaptiveNetworkDownloadSize(long bytes, long elapsedNanos) {
+        if (bytes <= 0 || elapsedNanos <= 0) {
+            throw new IllegalArgumentException("Network sample must be positive");
+        }
+        double estimate = bytes * (double) NETWORK_TARGET_NANOS / elapsedNanos;
+        return (int) Math.round(Math.max(NETWORK_PROBE_BYTES,
+                Math.min(GatewayTransport.NETWORK_DOWNLOAD_MAX_BYTES, estimate)));
+    }
+
+    private GatewayTransport.NetworkDownloadSample measureNetworkDownload(
+            GatewayConnection connection, int sizeBytes, int readTimeoutMs) throws IOException {
+        try {
+            return transport.measureNetworkDownload(connection, sizeBytes, readTimeoutMs);
+        } catch (GatewayTransport.GatewayException error) {
+            throw mapException(error);
+        }
     }
 
     static IntegrationProfiles parseIntegrationProfiles(JSONObject response) {

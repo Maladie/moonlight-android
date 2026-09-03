@@ -45,6 +45,10 @@ per-profile Bridge when its credentials or runtime state differ.
   `X-Request-Id`, and
   `X-Microphone-Session-Id`.
 - `GET /api/v1/profiles` - lists safe profile names and Bridge health summaries.
+- `GET /api/v1/diagnostics/network/download?size=...` - authenticated, no-store
+  generated downlink bytes (8 MiB default, 512 MiB maximum), with one active
+  test per client/profile pair. Android uses an 8 MiB probe, then targets an
+  approximately eight-second second sample within those bounds.
 - `GET /api/v1/vibepollo/repair/status` - Vibepollo health summary.
 - `POST /api/v1/vibepollo/apps/ensure` - start idempotent creation or migration of a Playnite-backed Vibepollo app.
 - `GET /api/v1/vibepollo/apps/status?playnite_game_id=...` - read its host-owned preparation state.

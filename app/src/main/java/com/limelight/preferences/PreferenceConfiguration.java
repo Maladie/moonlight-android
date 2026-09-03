@@ -378,6 +378,22 @@ public class PreferenceConfiguration {
                 prefs.getString(FPS_PREF_STRING, DEFAULT_FPS));
     }
 
+    public static void applyStreamSettings(Context context, int width, int height, int fps,
+                                           int bitrateKbps) {
+        validateStreamSettings(width, height, fps, bitrateKbps);
+        PreferenceManager.getDefaultSharedPreferences(context).edit()
+                .putString(RESOLUTION_PREF_STRING, width + "x" + height)
+                .putString(FPS_PREF_STRING, Integer.toString(fps))
+                .putInt(BITRATE_PREF_STRING, bitrateKbps)
+                .apply();
+    }
+
+    static void validateStreamSettings(int width, int height, int fps, int bitrateKbps) {
+        if (width <= 0 || height <= 0 || fps <= 0 || bitrateKbps < 500) {
+            throw new IllegalArgumentException("Invalid stream settings");
+        }
+    }
+
     private static FormatOption getVideoFormatValue(Context context) {
         SharedPreferences prefs = PreferenceManager.getDefaultSharedPreferences(context);
 

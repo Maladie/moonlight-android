@@ -8,6 +8,21 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class HostGatewayClientTest {
+    @Test public void adaptiveNetworkDownloadTargetsEightSecondsAtEightyMegabits() {
+        assertEquals(80_000_000, HostGatewayClient.adaptiveNetworkDownloadSize(
+                8L * 1024 * 1024, 838_860_800L));
+    }
+
+    @Test public void adaptiveNetworkDownloadTargetsEightSecondsAtFiveHundredMegabits() {
+        assertEquals(500_000_000, HostGatewayClient.adaptiveNetworkDownloadSize(
+                8L * 1024 * 1024, 134_217_728L));
+    }
+
+    @Test public void adaptiveNetworkDownloadClampsFasterLinksToFiveHundredTwelveMebibytes() {
+        assertEquals(512 * 1024 * 1024, HostGatewayClient.adaptiveNetworkDownloadSize(
+                8L * 1024 * 1024, 67_108_864L));
+    }
+
     @Test public void currentGameGuideDecisionComesFromHostAndDefaultsToBlocked() throws Exception {
         JSONObject current = new JSONObject().put("id", "legacy-steam-guid")
                 .put("state", "running").put("host_guide_allowed", true)

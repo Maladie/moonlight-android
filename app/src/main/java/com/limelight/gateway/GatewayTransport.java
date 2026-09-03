@@ -11,6 +11,7 @@ import java.io.ByteArrayOutputStream;
 import java.io.Closeable;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -38,6 +39,7 @@ public final class GatewayTransport {
     private static final int CONNECT_TIMEOUT_MS = 2_500;
     private static final int JSON_LIMIT = 1024 * 1024;
     private static final int BINARY_LIMIT = 8 * 1024 * 1024;
+    public static final int NETWORK_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024;
 
     private static final HostnameVerifier PINNED_HOSTNAME_VERIFIER = (hostname, session) -> {
         // Identity is verified by the pinned certificate independently of a DHCP address
@@ -109,6 +111,55 @@ public final class GatewayTransport {
         } catch (IOException | RuntimeException error) {
             recordRequest("request.failed", "GET", path, requestId, connection,
                     status, startedNanos, error);
+            throw error;
+        } finally {
+            if (http != null) http.disconnect();
+        }
+    }
+
+    public NetworkDownloadSample measureNetworkDownload(GatewayConnection connection,
+                                                        int sizeBytes,
+                                                        int readTimeoutMs) throws IOException {
+        String path = networkDownloadPath(sizeBytes);
+        String requestId = effectiveRequestId(null);
+        long requestStartedNanos = System.nanoTime();
+        HttpsURLConnection http = null;
+        int status = 0;
+        try {
+            http = open(connection.endpoint(), path,
+                    new GatewayTrustManager(connection.certificateSha256(), false), readTimeoutMs);
+            http.setRequestMethod("GET");
+            http.setInstanceFollowRedirects(false);
+            applyHeaders(http, buildRequestHeaders(connection, false, false, requestId));
+            http.setRequestProperty("Accept", "application/octet-stream");
+            http.setRequestProperty("Accept-Encoding", "identity");
+            status = http.getResponseCode();
+            if (status < HttpURLConnection.HTTP_OK || status >= 300) {
+                InputStream error = http.getErrorStream();
+                byte[] raw = error != null ? readAndClose(error, JSON_LIMIT) : new byte[0];
+                decodeJsonResponse(status, raw);
+            }
+            if (!"identity".equalsIgnoreCase(http.getHeaderField("Content-Encoding"))) {
+                throw new IOException("Network download response must use identity encoding.");
+            }
+            if (!"application/octet-stream".equalsIgnoreCase(
+                    http.getHeaderField("Content-Type"))) {
+                throw new IOException("Unsupported network download response type.");
+            }
+            if (!Integer.toString(sizeBytes).equals(http.getHeaderField("Content-Length"))) {
+                throw new IOException("Unexpected network download response length.");
+            }
+            try (InputStream input = http.getInputStream()) {
+                return readNetworkDownload(input, sizeBytes, System::nanoTime);
+            }
+        } catch (GeneralSecurityException error) {
+            IOException wrapped = new IOException("Unable to initialize gateway TLS.", error);
+            recordRequest("request.failed", "GET", path, requestId, connection,
+                    status, requestStartedNanos, wrapped);
+            throw wrapped;
+        } catch (IOException | RuntimeException error) {
+            recordRequest("request.failed", "GET", path, requestId, connection,
+                    status, requestStartedNanos, error);
             throw error;
         } finally {
             if (http != null) http.disconnect();
@@ -234,6 +285,35 @@ public final class GatewayTransport {
         return output.toByteArray();
     }
 
+    static NetworkDownloadSample readNetworkDownload(InputStream input, int expectedBytes,
+                                                      NanoClock clock)
+            throws IOException {
+        byte[] buffer = new byte[64 * 1024];
+        long startedNanos = clock.nanoTime();
+        long total = 0;
+        int read;
+        while (true) {
+            if (Thread.currentThread().isInterrupted()) {
+                throw new InterruptedIOException("Network download interrupted.");
+            }
+            read = input.read(buffer);
+            if (read < 0) break;
+            total += read;
+            if (total > expectedBytes || total > NETWORK_DOWNLOAD_MAX_BYTES) {
+                throw new ResponseTooLargeException(expectedBytes);
+            }
+        }
+        long elapsedNanos = Math.max(1L, clock.nanoTime() - startedNanos);
+        if (total != expectedBytes) {
+            throw new IOException("Truncated network download response.");
+        }
+        return new NetworkDownloadSample(total, elapsedNanos);
+    }
+
+    interface NanoClock {
+        long nanoTime();
+    }
+
     static boolean fingerprintsMatch(String expected, String actual) {
         byte[] expectedBytes = GatewayConnection.normalizeFingerprint(expected)
                 .getBytes(StandardCharsets.US_ASCII);
@@ -254,6 +334,14 @@ public final class GatewayTransport {
             throw new IllegalArgumentException("Gateway endpoint must use HTTPS");
         }
         return new URL(normalizedEndpoint + path);
+    }
+
+    static String networkDownloadPath(int sizeBytes) {
+        if (sizeBytes <= 0 || sizeBytes > NETWORK_DOWNLOAD_MAX_BYTES) {
+            throw new IllegalArgumentException(
+                    "Network download size must be between 1 byte and 512 MiB");
+        }
+        return "/api/v1/diagnostics/network/download?size=" + sizeBytes;
     }
 
     private JSONObject requestJson(String endpoint, String path, JSONObject body,
@@ -408,6 +496,16 @@ public final class GatewayTransport {
 
         public String certificateSha256() {
             return certificateSha256;
+        }
+    }
+
+    public static final class NetworkDownloadSample {
+        public final long bytes;
+        public final long elapsedNanos;
+
+        private NetworkDownloadSample(long bytes, long elapsedNanos) {
+            this.bytes = bytes;
+            this.elapsedNanos = elapsedNanos;
         }
     }
 

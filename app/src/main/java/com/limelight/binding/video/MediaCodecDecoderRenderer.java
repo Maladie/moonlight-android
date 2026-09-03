@@ -21,6 +21,7 @@ import com.limelight.R;
 import com.limelight.nvstream.av.video.VideoDecoderRenderer;
 import com.limelight.nvstream.jni.MoonBridge;
 import com.limelight.preferences.PreferenceConfiguration;
+import com.limelight.stream.StreamingAutopilotCalibration;
 import com.limelight.utils.TrafficStatsHelper;
 
 import android.annotation.TargetApi;
@@ -43,6 +44,10 @@ import android.view.Surface;
 import android.view.SurfaceHolder;
 
 public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements Choreographer.FrameCallback {
+
+    public interface VideoStatsListener {
+        void onVideoStats(StreamingAutopilotCalibration.Sample sample);
+    }
 
     private static final boolean USE_FRAME_RENDER_TIME = false;
     private static final boolean FRAME_RENDER_TIME_ONLY = USE_FRAME_RENDER_TIME && false;
@@ -87,6 +92,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private final AtomicBoolean firstFrameReported = new AtomicBoolean();
     private final AtomicReference<Runnable> nextFrameRenderedCallback =
             new AtomicReference<>();
+    private volatile VideoStatsListener videoStatsListener;
 
     private static final int CR_MAX_TRIES = 10;
     private static final int CR_RECOVERY_TYPE_NONE = 0;
@@ -153,54 +159,13 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         return decoder;
     }
 
-    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
-    private boolean decoderCanMeetPerformancePoint(MediaCodecInfo.VideoCapabilities caps, PreferenceConfiguration prefs) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            MediaCodecInfo.VideoCapabilities.PerformancePoint targetPerfPoint = new MediaCodecInfo.VideoCapabilities.PerformancePoint(prefs.width, prefs.height, prefs.fps);
-            List<MediaCodecInfo.VideoCapabilities.PerformancePoint> perfPoints = caps.getSupportedPerformancePoints();
-            if (perfPoints != null) {
-                for (MediaCodecInfo.VideoCapabilities.PerformancePoint perfPoint : perfPoints) {
-                    // If we find a performance point that covers our target, we're good to go
-                    if (perfPoint.covers(targetPerfPoint)) {
-                        return true;
-                    }
-                }
-
-                // We had performance point data but none met the specified streaming settings
-                return false;
-            }
-
-            // Fall-through to try the Android M API if there's no performance point data
-        }
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            try {
-                // We'll ask the decoder what it can do for us at this resolution and see if our
-                // requested frame rate falls below or inside the range of achievable frame rates.
-                Range<Double> fpsRange = caps.getAchievableFrameRatesFor(prefs.width, prefs.height);
-                if (fpsRange != null) {
-                    return prefs.fps <= fpsRange.getUpper();
-                }
-
-                // Fall-through to try the Android L API if there's no performance point data
-            } catch (IllegalArgumentException e) {
-                // Video size not supported at any frame rate
-                return false;
-            }
-        }
-
-        // As a last resort, we will use areSizeAndRateSupported() which is explicitly NOT a
-        // performance metric, but it can work at least for the purpose of determining if
-        // the codec is going to die when given a stream with the specified settings.
-        return caps.areSizeAndRateSupported(prefs.width, prefs.height, prefs.fps);
-    }
-
     private boolean decoderCanMeetPerformancePointWithHevcAndNotAvc(MediaCodecInfo hevcDecoderInfo, MediaCodecInfo avcDecoderInfo, PreferenceConfiguration prefs) {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
             MediaCodecInfo.VideoCapabilities avcCaps = avcDecoderInfo.getCapabilitiesForType("video/avc").getVideoCapabilities();
             MediaCodecInfo.VideoCapabilities hevcCaps = hevcDecoderInfo.getCapabilitiesForType("video/hevc").getVideoCapabilities();
 
-            return !decoderCanMeetPerformancePoint(avcCaps, prefs) && decoderCanMeetPerformancePoint(hevcCaps, prefs);
+            return !MediaCodecHelper.decoderCanMeetPerformancePoint(avcCaps, prefs.width, prefs.height, prefs.fps) &&
+                    MediaCodecHelper.decoderCanMeetPerformancePoint(hevcCaps, prefs.width, prefs.height, prefs.fps);
         }
         else {
             // No performance data
@@ -213,7 +178,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             MediaCodecInfo.VideoCapabilities av1Caps = av1DecoderInfo.getCapabilitiesForType("video/av01").getVideoCapabilities();
             MediaCodecInfo.VideoCapabilities hevcCaps = hevcDecoderInfo.getCapabilitiesForType("video/hevc").getVideoCapabilities();
 
-            return !decoderCanMeetPerformancePoint(hevcCaps, prefs) && decoderCanMeetPerformancePoint(av1Caps, prefs);
+            return !MediaCodecHelper.decoderCanMeetPerformancePoint(hevcCaps, prefs.width, prefs.height, prefs.fps) &&
+                    MediaCodecHelper.decoderCanMeetPerformancePoint(av1Caps, prefs.width, prefs.height, prefs.fps);
         }
         else {
             // No performance data
@@ -226,7 +192,8 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             MediaCodecInfo.VideoCapabilities avcCaps = avcDecoderInfo.getCapabilitiesForType("video/avc").getVideoCapabilities();
             MediaCodecInfo.VideoCapabilities av1Caps = av1DecoderInfo.getCapabilitiesForType("video/av01").getVideoCapabilities();
 
-            return !decoderCanMeetPerformancePoint(avcCaps, prefs) && decoderCanMeetPerformancePoint(av1Caps, prefs);
+            return !MediaCodecHelper.decoderCanMeetPerformancePoint(avcCaps, prefs.width, prefs.height, prefs.fps) &&
+                    MediaCodecHelper.decoderCanMeetPerformancePoint(av1Caps, prefs.width, prefs.height, prefs.fps);
         }
         else {
             // No performance data
@@ -1478,6 +1445,37 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
 
         // Flip stats windows roughly every second
         if (SystemClock.uptimeMillis() >= activeWindowVideoStats.measurementStartTimestamp + 1000) {
+            long windowEndMs = SystemClock.uptimeMillis();
+            VideoStatsListener statsListener = videoStatsListener;
+            long rttInfo = statsListener != null || prefs.enablePerfOverlay
+                    ? MoonBridge.getEstimatedRttInfo() : 0;
+            if (statsListener != null) {
+                long elapsedMs = Math.max(1L,
+                        windowEndMs - activeWindowVideoStats.measurementStartTimestamp);
+                int received = activeWindowVideoStats.totalFramesReceived;
+                int sampleRttMs = rttInfo < 0 ? 0 : (int) (rttInfo >> 32);
+                int sampleRttVarianceMs = rttInfo < 0 ? 0 : (int) rttInfo;
+                double hostLatency = activeWindowVideoStats.framesWithHostProcessingLatency == 0
+                        ? 0 : (double) activeWindowVideoStats.totalHostProcessingLatency / 10
+                        / activeWindowVideoStats.framesWithHostProcessingLatency;
+                try {
+                    statsListener.onVideoStats(new StreamingAutopilotCalibration.Sample(
+                            activeWindowVideoStats.measurementStartTimestamp, windowEndMs,
+                            activeWindowVideoStats.totalFramesReceived * 1_000d / elapsedMs,
+                            activeWindowVideoStats.totalFramesRendered * 1_000d / elapsedMs,
+                            activeWindowVideoStats.totalFrames == 0 ? 0
+                                    : activeWindowVideoStats.framesLost * 100d
+                                    / activeWindowVideoStats.totalFrames,
+                            sampleRttMs, sampleRttVarianceMs,
+                            received == 0 ? 0
+                                    : (double) activeWindowVideoStats.decoderTimeMs / received,
+                            hostLatency, received == 0 ? 0
+                                    : (double) activeWindowVideoStats
+                                    .framesWithHostProcessingLatency / received));
+                } catch (RuntimeException error) {
+                    LimeLog.warning("Video stats listener failed: " + error.getMessage());
+                }
+            }
             if (prefs.enablePerfOverlay) {
                 VideoStats lastTwo = new VideoStats();
                 lastTwo.add(lastWindowVideoStats);
@@ -1496,8 +1494,6 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
                 }
 
                 float decodeTimeMs = (float)lastTwo.decoderTimeMs / lastTwo.totalFramesReceived;
-                long rttInfo = MoonBridge.getEstimatedRttInfo();
-
                 // Calculate FPS variance and apply exponential moving average for smoothing (only calculate when variance >= 1 FPS to ignore normal minor fluctuation)
                 float renderedFpsVariance = (fps.receivedFps > 0) ? (fps.renderedFps - fps.receivedFps) : 0;
                 float rawFpsVariance = (Math.abs(renderedFpsVariance) >= 1) ? renderedFpsVariance / fps.receivedFps * 100 : 0;
@@ -1883,6 +1879,10 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             return 0;
         }
         return (int)(globalVideoStats.totalTimeMs / globalVideoStats.totalFramesReceived);
+    }
+
+    public void setVideoStatsListener(VideoStatsListener listener) {
+        videoStatsListener = listener;
     }
 
     public int getAverageDecoderLatency() {
