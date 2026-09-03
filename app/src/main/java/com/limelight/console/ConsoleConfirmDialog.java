@@ -14,6 +14,9 @@ import android.view.WindowManager;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 
+import java.util.HashSet;
+import java.util.Set;
+
 /** Small controller-first MoonWaker confirmation card usable from the stream Activity. */
 public final class ConsoleConfirmDialog {
     private ConsoleConfirmDialog() {}
@@ -21,6 +24,23 @@ public final class ConsoleConfirmDialog {
     public static void show(Activity activity, CharSequence title, CharSequence message,
                             CharSequence cancelLabel, CharSequence confirmLabel,
                             Runnable onConfirm) {
+        show(activity, title, message, cancelLabel, confirmLabel, onConfirm,
+                0L, false, null);
+    }
+
+    public static Dialog show(Activity activity, CharSequence title, CharSequence message,
+                              CharSequence cancelLabel, CharSequence confirmLabel,
+                              Runnable onConfirm, long actionDelayMs,
+                              Runnable onDismiss) {
+        if (actionDelayMs < 0) throw new IllegalArgumentException("Negative action delay");
+        return show(activity, title, message, cancelLabel, confirmLabel, onConfirm,
+                actionDelayMs, true, onDismiss);
+    }
+
+    private static Dialog show(Activity activity, CharSequence title, CharSequence message,
+                               CharSequence cancelLabel, CharSequence confirmLabel,
+                               Runnable onConfirm, long actionDelayMs,
+                               boolean focusCancel, Runnable onDismiss) {
         Dialog dialog = new Dialog(activity);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
 
@@ -51,14 +71,34 @@ public final class ConsoleConfirmDialog {
         actions.addView(confirm, confirmParams);
         card.addView(actions, matchWrap());
 
-        cancel.setOnClickListener(view -> dialog.dismiss());
+        boolean delayed = actionDelayMs > 0;
+        boolean[] actionsEnabled = {!delayed};
+        Set<Integer> blockedKeys = new HashSet<>();
+        cancel.setEnabled(!delayed);
+        confirm.setEnabled(!delayed);
+        cancel.setAlpha(delayed ? .45f : 1f);
+        confirm.setAlpha(delayed ? .45f : 1f);
+        dialog.setCancelable(!delayed);
+        cancel.setOnClickListener(view -> {
+            if (actionsEnabled[0]) dialog.dismiss();
+        });
         confirm.setOnClickListener(view -> {
+            if (!actionsEnabled[0]) return;
             dialog.dismiss();
             if (onConfirm != null) onConfirm.run();
         });
+        if (onDismiss != null) dialog.setOnDismissListener(ignored -> onDismiss.run());
         dialog.setContentView(card);
         dialog.setCanceledOnTouchOutside(false);
         dialog.setOnKeyListener((ignored, keyCode, event) -> {
+            if (isActionKey(keyCode) && !actionsEnabled[0]) {
+                if (event.getAction() == KeyEvent.ACTION_DOWN) blockedKeys.add(keyCode);
+                return true;
+            }
+            if (blockedKeys.contains(keyCode)) {
+                if (event.getAction() == KeyEvent.ACTION_UP) blockedKeys.remove(keyCode);
+                return true;
+            }
             if (event.getAction() == KeyEvent.ACTION_UP
                     && (keyCode == KeyEvent.KEYCODE_BACK
                     || keyCode == KeyEvent.KEYCODE_BUTTON_B)) {
@@ -75,7 +115,30 @@ public final class ConsoleConfirmDialog {
             window.addFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND);
             window.setLayout(dp(activity, 720), ViewGroup.LayoutParams.WRAP_CONTENT);
         }
-        confirm.requestFocus();
+        if (delayed) {
+            card.postDelayed(() -> {
+                if (!dialog.isShowing()) return;
+                actionsEnabled[0] = true;
+                dialog.setCancelable(true);
+                cancel.setEnabled(true);
+                confirm.setEnabled(true);
+                cancel.setAlpha(1f);
+                confirm.setAlpha(1f);
+                cancel.requestFocus();
+            }, actionDelayMs);
+        } else if (focusCancel) {
+            cancel.requestFocus();
+        } else {
+            confirm.requestFocus();
+        }
+        return dialog;
+    }
+
+    private static boolean isActionKey(int keyCode) {
+        return keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_BUTTON_B
+                || keyCode == KeyEvent.KEYCODE_BUTTON_A
+                || keyCode == KeyEvent.KEYCODE_DPAD_CENTER
+                || keyCode == KeyEvent.KEYCODE_ENTER;
     }
 
     private static TextView action(Activity activity, CharSequence text, boolean primary) {

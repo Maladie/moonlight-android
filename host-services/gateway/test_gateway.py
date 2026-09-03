@@ -267,6 +267,92 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual({}, state.discord_audio_streams)
         process.kill.assert_called_once_with()
 
+    def test_network_download_streams_safe_default_with_identity_and_no_store(self):
+        class CountingClient:
+            def __init__(self):
+                self.bytes = 0
+                self.all_zero = True
+            def write(self, data):
+                self.bytes += len(data)
+                self.all_zero = self.all_zero and not any(data)
+            def flush(self):
+                pass
+
+        handler = object.__new__(GatewayHandler)
+        handler.wfile = CountingClient()
+        handler.close_connection = False
+        headers = []
+        handler.send_response = lambda status: headers.append(("status", int(status)))
+        handler.send_header = lambda name, value: headers.append((name, value))
+        handler.end_headers = lambda: None
+        state = SimpleNamespace(
+            lock=__import__("threading").RLock(), network_downloads=set())
+        handler.server = SimpleNamespace(state=state)
+
+        handler.network_download(None, "default", "client-1")
+
+        self.assertEqual(wakeplay_gateway.NETWORK_DOWNLOAD_DEFAULT_BYTES,
+                         handler.wfile.bytes)
+        self.assertTrue(handler.wfile.all_zero)
+        self.assertEqual(set(), state.network_downloads)
+        self.assertIn(("Content-Encoding", "identity"), headers)
+        self.assertIn(("Cache-Control", "no-store"), headers)
+        self.assertIn(("Content-Length", str(
+            wakeplay_gateway.NETWORK_DOWNLOAD_DEFAULT_BYTES)), headers)
+
+    def test_network_download_route_requires_gateway_authentication(self):
+        handler = object.__new__(GatewayHandler)
+        handler.path = "/api/v1/diagnostics/network/download?size=1024"
+        handler.headers = Message()
+        handler.server = SimpleNamespace(state=SimpleNamespace())
+        responses = []
+        handler.send_json = lambda status, body: responses.append((int(status), body))
+
+        handler._do_GET()
+
+        self.assertEqual(401, responses[0][0])
+
+    def test_network_download_rejects_oversize_and_concurrent_client_profile(self):
+        handler = object.__new__(GatewayHandler)
+        state = SimpleNamespace(
+            lock=__import__("threading").RLock(), network_downloads=set())
+        handler.server = SimpleNamespace(state=state)
+
+        with self.assertRaisesRegex(ValueError, "512 MiB"):
+            handler.network_download(
+                str(wakeplay_gateway.NETWORK_DOWNLOAD_MAX_BYTES + 1),
+                "default", "client-1")
+
+        state.network_downloads.add(("default", "client-1"))
+        responses = []
+        handler.send_json = lambda status, body: responses.append((int(status), body))
+        handler.network_download("1", "default", "client-1")
+
+        self.assertEqual(409, responses[0][0])
+        self.assertEqual({("default", "client-1")}, state.network_downloads)
+
+    def test_network_download_disconnect_releases_client_profile_slot(self):
+        class ClosedClient:
+            def write(self, _data):
+                raise BrokenPipeError("client closed")
+            def flush(self):
+                pass
+
+        handler = object.__new__(GatewayHandler)
+        handler.wfile = ClosedClient()
+        handler.close_connection = False
+        handler.send_response = lambda _status: None
+        handler.send_header = lambda _name, _value: None
+        handler.end_headers = lambda: None
+        state = SimpleNamespace(
+            lock=__import__("threading").RLock(), network_downloads=set())
+        handler.server = SimpleNamespace(state=state)
+
+        handler.network_download("1024", "default", "client-1")
+
+        self.assertTrue(handler.close_connection)
+        self.assertEqual(set(), state.network_downloads)
+
     def test_microphone_chunk_parser_frames_and_bounds_input(self):
         handler = object.__new__(GatewayHandler)
         handler.connection = SimpleNamespace(settimeout=lambda _value: None)

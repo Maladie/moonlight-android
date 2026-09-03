@@ -19,12 +19,29 @@ final class PlayIntent {
     final boolean requiresConnector;
     final boolean neutralStream;
     final boolean startBeforeStream;
+    final String calibrationAppKey;
+    final int runtimeWidth;
+    final int runtimeHeight;
+    final int runtimeFps;
+    final int runtimeBitrateKbps;
 
     private PlayIntent(String hostId, Kind kind, int sunshineAppId, String appName,
                        boolean hdrSupported, String playniteGameId,
                        String quickLaunchId, String loadingArtworkGameId,
                        boolean requiresConnector, boolean neutralStream,
                        boolean startBeforeStream) {
+        this(hostId, kind, sunshineAppId, appName, hdrSupported, playniteGameId,
+                quickLaunchId, loadingArtworkGameId, requiresConnector, neutralStream,
+                startBeforeStream, "", 0, 0, 0, 0);
+    }
+
+    private PlayIntent(String hostId, Kind kind, int sunshineAppId, String appName,
+                       boolean hdrSupported, String playniteGameId,
+                       String quickLaunchId, String loadingArtworkGameId,
+                       boolean requiresConnector, boolean neutralStream,
+                       boolean startBeforeStream, String calibrationAppKey,
+                       int runtimeWidth, int runtimeHeight, int runtimeFps,
+                       int runtimeBitrateKbps) {
         this.hostId = hostId == null ? "" : hostId.trim();
         this.kind = Objects.requireNonNull(kind, "kind");
         this.sunshineAppId = sunshineAppId;
@@ -37,6 +54,11 @@ final class PlayIntent {
         this.requiresConnector = requiresConnector;
         this.neutralStream = neutralStream;
         this.startBeforeStream = startBeforeStream;
+        this.calibrationAppKey = calibrationAppKey == null ? "" : calibrationAppKey.trim();
+        this.runtimeWidth = runtimeWidth;
+        this.runtimeHeight = runtimeHeight;
+        this.runtimeFps = runtimeFps;
+        this.runtimeBitrateKbps = runtimeBitrateKbps;
         boolean targetMayBePrepared = (kind == Kind.PLAYNITE_GAME
                 || kind == Kind.AUTO_WARM_UP) && sunshineAppId == 0;
         if (this.hostId.isEmpty() || (sunshineAppId <= 0 && !targetMayBePrepared)
@@ -48,6 +70,10 @@ final class PlayIntent {
         }
         if (kind != Kind.PLAYNITE_GAME && !this.playniteGameId.isEmpty()) {
             throw new IllegalArgumentException("Only Playnite game targets have a game ID");
+        }
+        if (!this.calibrationAppKey.isEmpty() && (runtimeWidth <= 0 || runtimeHeight <= 0
+                || runtimeFps <= 0 || runtimeBitrateKbps < 500)) {
+            throw new IllegalArgumentException("Calibration runtime settings are invalid");
         }
     }
 
@@ -124,6 +150,20 @@ final class PlayIntent {
         return new PlayIntent(hostId, Kind.AUTO_WARM_UP, 0,
                 PlayniteTargetResolver.MOONWAKER_STREAM_NAME,
                 false, "", "", "", false, true, false);
+    }
+
+    PlayIntent withCalibration(String appKey, int width, int height, int fps,
+                               int bitrateKbps) {
+        if (appKey == null || appKey.trim().isEmpty()) {
+            throw new IllegalArgumentException("Calibration app key is required");
+        }
+        return new PlayIntent(hostId, kind, sunshineAppId, appName, hdrSupported,
+                playniteGameId, quickLaunchId, loadingArtworkGameId, requiresConnector,
+                neutralStream, startBeforeStream, appKey, width, height, fps, bitrateKbps);
+    }
+
+    boolean isCalibration() {
+        return !calibrationAppKey.isEmpty();
     }
 
     String transitionGameId() {

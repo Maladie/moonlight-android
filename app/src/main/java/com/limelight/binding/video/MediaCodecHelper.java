@@ -11,6 +11,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.app.ActivityManager;
 import android.content.Context;
 import android.content.pm.ConfigurationInfo;
@@ -21,6 +22,7 @@ import android.media.MediaCodecInfo.CodecCapabilities;
 import android.media.MediaCodecInfo.CodecProfileLevel;
 import android.media.MediaFormat;
 import android.os.Build;
+import android.util.Range;
 
 import com.limelight.LimeLog;
 import com.limelight.preferences.PreferenceConfiguration;
@@ -435,6 +437,38 @@ public class MediaCodecHelper {
         }
 
         initialized = true;
+    }
+
+    @TargetApi(Build.VERSION_CODES.LOLLIPOP)
+    public static boolean decoderCanMeetPerformancePoint(MediaCodecInfo.VideoCapabilities caps,
+                                                          int width, int height, int fps) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            MediaCodecInfo.VideoCapabilities.PerformancePoint targetPerfPoint =
+                    new MediaCodecInfo.VideoCapabilities.PerformancePoint(width, height, fps);
+            List<MediaCodecInfo.VideoCapabilities.PerformancePoint> perfPoints =
+                    caps.getSupportedPerformancePoints();
+            if (perfPoints != null) {
+                for (MediaCodecInfo.VideoCapabilities.PerformancePoint perfPoint : perfPoints) {
+                    if (perfPoint.covers(targetPerfPoint)) {
+                        return true;
+                    }
+                }
+                return false;
+            }
+        }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            try {
+                Range<Double> fpsRange = caps.getAchievableFrameRatesFor(width, height);
+                if (fpsRange != null) {
+                    return fps <= fpsRange.getUpper();
+                }
+            } catch (IllegalArgumentException e) {
+                return false;
+            }
+        }
+
+        return caps.areSizeAndRateSupported(width, height, fps);
     }
 
     private static boolean isDecoderInList(List<String> decoderList, String decoderName) {

@@ -485,6 +485,12 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         inputSuppressed = suppressed;
     }
 
+    public void releaseAllControllerInputsAndSuppress() {
+        inputSuppressed = false;
+        releaseAllControllerInputs();
+        inputSuppressed = true;
+    }
+
     public boolean isInputSuppressed() {
         return inputSuppressed;
     }
@@ -531,6 +537,34 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
         conn.sendControllerInput(controllerNumber, getActiveControllerMask(),
                 (short) 0, (byte) 0, (byte) 0,
                 (short) 0, (short) 0, (short) 0, (short) 0);
+    }
+
+    private void releaseAllControllerInputs() {
+        for (int i = 0; i < inputDeviceContexts.size(); i++) {
+            resetControllerInput(inputDeviceContexts.valueAt(i));
+        }
+        for (int i = 0; i < usbDeviceContexts.size(); i++) {
+            resetControllerInput(usbDeviceContexts.valueAt(i));
+        }
+        resetControllerInput(defaultContext);
+
+        for (int i = 0; i < inputDeviceContexts.size(); i++) {
+            sendControllerInputPacket(inputDeviceContexts.valueAt(i));
+        }
+        for (int i = 0; i < usbDeviceContexts.size(); i++) {
+            sendControllerInputPacket(usbDeviceContexts.valueAt(i));
+        }
+        sendControllerInputPacket(defaultContext);
+    }
+
+    private static void resetControllerInput(GenericControllerContext context) {
+        context.inputMap = 0;
+        context.leftTrigger = 0;
+        context.rightTrigger = 0;
+        context.leftStickX = 0;
+        context.leftStickY = 0;
+        context.rightStickX = 0;
+        context.rightStickY = 0;
     }
 
     public void destroy() {
@@ -2663,30 +2697,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
                     selectDownTime = 0;
                     overlayTriggeredByRemoteBack = false;
 
-                    // Release ALL gamepad inputs for all controllers before opening menu
-                    // to ensure the host doesn't think any buttons/sticks are still pressed
-                    for (int i = 0; i < inputDeviceContexts.size(); i++) {
-                        InputDeviceContext context = inputDeviceContexts.valueAt(i);
-                        // Reset all button flags, triggers, and analog sticks to neutral
-                        context.inputMap = 0;
-                        context.leftTrigger = 0;
-                        context.rightTrigger = 0;
-                        context.leftStickX = 0;
-                        context.leftStickY = 0;
-                        context.rightStickX = 0;
-                        context.rightStickY = 0;
-                        sendControllerInputPacket(context);
-                    }
-
-                    // Also reset the default context
-                    defaultContext.inputMap = 0;
-                    defaultContext.leftTrigger = 0;
-                    defaultContext.rightTrigger = 0;
-                    defaultContext.leftStickX = 0;
-                    defaultContext.leftStickY = 0;
-                    defaultContext.rightStickX = 0;
-                    defaultContext.rightStickY = 0;
-                    sendControllerInputPacket(defaultContext);
+                    releaseAllControllerInputs();
 
                     if (pendingHoldAction == HoldAction.HOME) overlayMenuListener.onHomeShortcut();
                     else overlayMenuListener.onOverlayMenuOpen();

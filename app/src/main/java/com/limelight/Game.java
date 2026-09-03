@@ -58,6 +58,7 @@ import com.limelight.console.StreamHomeActivity;
 import com.limelight.stream.BackgroundStreamService;
 import com.limelight.stream.BackgroundStreamPreferences;
 import com.limelight.stream.RetainedStreamSessionCoordinator;
+import com.limelight.stream.StreamingAutopilotCalibration;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.ServerHelper;
 import com.limelight.utils.SessionResumeManager;
@@ -158,6 +159,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private static final int THREE_FINGER_TAP_THRESHOLD = 300;
     private static final long AUTOMATIC_REVEAL_DELAY_MS = 1200L;
     private static final long WHOLE_SESSION_QUIT_TIMEOUT_MS = 20_000L;
+    private static final long AUTOPILOT_RESULT_ACTION_DELAY_MS = 2_000L;
 
     private ControllerHandler controllerHandler;
     private KeyboardTranslator keyboardTranslator;
@@ -215,6 +217,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private final AtomicBoolean autoWarmUpTransportStopRequested = new AtomicBoolean();
     private boolean bitrateReconnectPending = false;
     private int runtimeBitrateKbps;
+    private volatile StreamingAutopilotCalibration autopilotCalibration;
+    private volatile boolean autopilotCalibrationArmed;
+    private boolean autopilotGameReadySeen;
+    private String autopilotCalibrationAppKey = "";
+    private int autopilotWidth;
+    private int autopilotHeight;
+    private int autopilotFps;
+    private int autopilotBitrateKbps;
+    private boolean autopilotProgressOverlayActive;
+    private int autopilotPreviousPerfVisibility;
+    private CharSequence autopilotPreviousPerfText;
+    private android.app.Dialog autopilotCalibrationDialog;
     private int suppressPipRefCount = 0;
     private String pcName;
     private String appName;
@@ -298,6 +312,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_SERVER_CERT = "ServerCert";
     public static final String EXTRA_QUICK_LAUNCH_APP_KEY = "QuickLaunchAppKey";
     public static final String EXTRA_APPLY_PREFERENCE_OVERRIDES = "ApplyPreferenceOverrides";
+    public static final String EXTRA_AUTOPILOT_CALIBRATION_APP_KEY =
+            "AutopilotCalibrationAppKey";
+    public static final String EXTRA_RUNTIME_WIDTH = "RuntimeWidth";
+    public static final String EXTRA_RUNTIME_HEIGHT = "RuntimeHeight";
+    public static final String EXTRA_RUNTIME_FPS = "RuntimeFps";
     public static final String EXTRA_RUNTIME_BITRATE_KBPS = "RuntimeBitrateKbps";
     public static final String EXTRA_STREAM_SESSION_ID = "StreamSessionId";
     public static final String EXTRA_STREAM_TARGET_NAME = "StreamTargetName";
@@ -482,7 +501,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         boolean applyPreferenceOverrides = Game.this.getIntent().getBooleanExtra(EXTRA_APPLY_PREFERENCE_OVERRIDES, true);
         prefConfig = AppPreferences.getEffectivePreferences(this, appKey, quickLaunchAppKey, applyPreferenceOverrides);
         int requestedRuntimeBitrate = Game.this.getIntent().getIntExtra(EXTRA_RUNTIME_BITRATE_KBPS, 0);
-        if (requestedRuntimeBitrate > 0) {
+        if (!initializeStreamingAutopilotCalibration(requestedRuntimeBitrate)
+                && requestedRuntimeBitrate > 0) {
             prefConfig.bitrate = Math.max(1000, Math.min(150000, requestedRuntimeBitrate));
         }
         runtimeBitrateKbps = prefConfig.bitrate;
@@ -893,7 +913,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private MediaCodecDecoderRenderer createDecoderRenderer() {
-        return new MediaCodecDecoderRenderer(
+        MediaCodecDecoderRenderer renderer = new MediaCodecDecoderRenderer(
                 this,
                 prefConfig,
                 new CrashListener() {
@@ -910,6 +930,173 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 decoderGlRenderer,
                 this,
                 this::onFirstVideoFrameRendered);
+        if (autopilotCalibration != null) {
+            renderer.setVideoStatsListener(this::onStreamingAutopilotVideoStats);
+        }
+        return renderer;
+    }
+
+    private boolean initializeStreamingAutopilotCalibration(int runtimeBitrateKbps) {
+        Intent intent = getIntent();
+        String appKey = intent.getStringExtra(EXTRA_AUTOPILOT_CALIBRATION_APP_KEY);
+        if (appKey == null || appKey.trim().isEmpty()) return false;
+
+        int width = intent.getIntExtra(EXTRA_RUNTIME_WIDTH, 0);
+        int height = intent.getIntExtra(EXTRA_RUNTIME_HEIGHT, 0);
+        int fps = intent.getIntExtra(EXTRA_RUNTIME_FPS, 0);
+        if (width <= 0 || height <= 0 || fps <= 0 || runtimeBitrateKbps < 500) {
+            LimeLog.warning("Ignoring invalid Streaming Autopilot calibration settings");
+            return false;
+        }
+
+        autopilotCalibrationAppKey = appKey.trim();
+        autopilotWidth = width;
+        autopilotHeight = height;
+        autopilotFps = fps;
+        autopilotBitrateKbps = runtimeBitrateKbps;
+        prefConfig.width = width;
+        prefConfig.height = height;
+        prefConfig.fps = fps;
+        prefConfig.bitrate = runtimeBitrateKbps;
+        autopilotCalibration = new StreamingAutopilotCalibration(fps);
+        return true;
+    }
+
+    private void onStreamingAutopilotVideoStats(
+            StreamingAutopilotCalibration.Sample sample) {
+        StreamingAutopilotCalibration calibration = autopilotCalibration;
+        if (calibration == null || !autopilotCalibrationArmed) return;
+        StreamingAutopilotCalibration.Progress progress = calibration.add(sample);
+        runOnUiThread(() -> {
+            if (autopilotCalibration != calibration || isFinishing() || isDestroyed()) return;
+            if (progress.phase == StreamingAutopilotCalibration.Phase.COMPLETE) {
+                showStreamingAutopilotCalibrationResult(calibration, progress.result);
+            } else {
+                updateStreamingAutopilotCalibrationProgress(progress);
+            }
+        });
+    }
+
+    private void maybeArmStreamingAutopilotCalibration() {
+        StreamingAutopilotCalibration calibration = autopilotCalibration;
+        if (calibration == null || autopilotCalibrationArmed || !streamEverRevealed) return;
+        boolean playniteGame = transitionSpec != null
+                && !transitionSpec.playniteGameId.isEmpty();
+        if (playniteGame && !autopilotGameReadySeen) return;
+
+        calibration.arm(SystemClock.uptimeMillis());
+        autopilotCalibrationArmed = true;
+        autopilotPreviousPerfVisibility = performanceOverlayView.getVisibility();
+        autopilotPreviousPerfText = performanceOverlayView.getText();
+        autopilotProgressOverlayActive = true;
+        performanceOverlayView.setVisibility(View.VISIBLE);
+        performanceOverlayView.setText(getString(
+                R.string.console_autopilot_calibration_progress_overlay,
+                getString(R.string.console_autopilot_calibration_warmup,
+                        0, StreamingAutopilotCalibration.WARMUP_MS / 1_000L)));
+    }
+
+    private void updateStreamingAutopilotCalibrationProgress(
+            StreamingAutopilotCalibration.Progress progress) {
+        if (!autopilotProgressOverlayActive) return;
+        long seconds = Math.min(progress.totalMs,
+                progress.completedMs + 999L) / 1_000L;
+        int message = progress.phase == StreamingAutopilotCalibration.Phase.WARMING_UP
+                ? R.string.console_autopilot_calibration_warmup
+                : R.string.console_autopilot_calibration_measuring;
+        performanceOverlayView.setText(getString(
+                R.string.console_autopilot_calibration_progress_overlay,
+                getString(message, seconds, progress.totalMs / 1_000L)));
+    }
+
+    private void showStreamingAutopilotCalibrationResult(
+            StreamingAutopilotCalibration completed,
+            StreamingAutopilotCalibration.Result result) {
+        if (autopilotCalibration != completed) return;
+        autopilotCalibration = null;
+        autopilotCalibrationArmed = false;
+        if (decoderRenderer != null) decoderRenderer.setVideoStatsListener(null);
+        restoreStreamingAutopilotProgressOverlay();
+
+        StreamingAutopilotCalibration.Adjustment adjusted =
+                StreamingAutopilotCalibration.adjustedSettings(
+                        autopilotWidth, autopilotHeight, autopilotFps,
+                        autopilotBitrateKbps, result);
+
+        String metrics = getString(R.string.console_autopilot_calibration_metrics,
+                result.receivedFps, result.renderedFps, result.frameLossPercent,
+                result.rttMs, result.rttVarianceMs, result.decoderLatencyMs,
+                result.hostProcessingLatencyMs,
+                result.hostProcessingReportedRatio * 100d);
+        String recommendation = getString(R.string.console_autopilot_stream_format,
+                adjusted.width, adjusted.height, adjusted.fps,
+                adjusted.bitrateKbps / 1_000d);
+        String message = metrics + "\n\n" + getString(
+                        result.passed
+                                ? R.string.console_autopilot_calibration_apply_summary
+                                : R.string.console_autopilot_calibration_conservative_summary,
+                        recommendation) + (result.passed ? "" : "\n\n"
+                        + getString(calibrationFailureMessage(result)));
+        boolean restoreInputGrab = grabbedInput;
+        boolean restoreInputSuppression = controllerHandler != null
+                && controllerHandler.isInputSuppressed();
+        setInputGrabState(false);
+        if (controllerHandler != null) {
+            controllerHandler.releaseAllControllerInputsAndSuppress();
+        }
+        autopilotCalibrationDialog = ConsoleConfirmDialog.show(this,
+                getString(result.passed
+                        ? R.string.console_autopilot_calibration_passed_title
+                        : R.string.console_autopilot_calibration_failed_title),
+                message, getString(R.string.console_autopilot_keep_current),
+                getString(R.string.console_autopilot_apply_calibrated),
+                () -> {
+                    AppPreferences.applyStreamSettings(Game.this,
+                            autopilotCalibrationAppKey, adjusted.width,
+                            adjusted.height, adjusted.fps,
+                            adjusted.bitrateKbps);
+                    Toast.makeText(Game.this,
+                            R.string.console_autopilot_calibration_applied,
+                            Toast.LENGTH_LONG).show();
+                }, AUTOPILOT_RESULT_ACTION_DELAY_MS, () -> {
+                    autopilotCalibrationDialog = null;
+                    if (controllerHandler != null) {
+                        controllerHandler.setInputSuppressed(restoreInputSuppression);
+                    }
+                    setInputGrabState(restoreInputGrab);
+                });
+    }
+
+    private static int calibrationFailureMessage(
+            StreamingAutopilotCalibration.Result result) {
+        if (result.lowerBitrateSuggested && result.lowerModeSuggested) {
+            return R.string.console_autopilot_calibration_lower_both;
+        }
+        if (result.lowerBitrateSuggested) {
+            return R.string.console_autopilot_calibration_lower_bitrate;
+        }
+        return R.string.console_autopilot_calibration_lower_mode;
+    }
+
+    private void cancelStreamingAutopilotCalibration() {
+        autopilotCalibration = null;
+        autopilotCalibrationArmed = false;
+        if (decoderRenderer != null) decoderRenderer.setVideoStatsListener(null);
+        runOnUiThread(() -> {
+            restoreStreamingAutopilotProgressOverlay();
+            if (autopilotCalibrationDialog != null) {
+                autopilotCalibrationDialog.dismiss();
+                autopilotCalibrationDialog = null;
+            }
+        });
+    }
+
+    private void restoreStreamingAutopilotProgressOverlay() {
+        if (!autopilotProgressOverlayActive || performanceOverlayView == null) return;
+        autopilotProgressOverlayActive = false;
+        performanceOverlayView.setText(autopilotPreviousPerfText);
+        performanceOverlayView.setVisibility(autopilotPreviousPerfVisibility);
+        autopilotPreviousPerfText = null;
     }
 
     private LaunchTransitionSpec readTransitionSpec() {
@@ -1445,6 +1632,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        cancelStreamingAutopilotCalibration();
         boolean acceptedWithoutTransport = false;
         synchronized (autoWarmUpGateLock) {
             if (!autoWarmUpHomeFrameAccepted.get()) {
@@ -1606,6 +1794,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onStop() {
         super.onStop();
+
+        cancelStreamingAutopilotCalibration();
 
         SpinnerDialog.closeDialogs(this);
         Dialog.closeDialogs();
@@ -4102,6 +4292,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void connectionTerminated(final int errorCode) {
+        cancelStreamingAutopilotCalibration();
         // An intentional bitrate reconnect is completed by the callback passed to
         // stopConnection(). Do not let the normal termination path finish this Activity
         // or display a transient connection error while the old transport is stopping.
@@ -4686,6 +4877,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             } else {
                 if (consoleLoadingView != null) consoleLoadingView.revealStream();
                 streamEverRevealed = true;
+                maybeArmStreamingAutopilotCalibration();
             }
         });
     }
@@ -4706,6 +4898,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (transitionSpec == null || snapshot.spec == null
                 || !transitionSpec.id.equals(snapshot.spec.id)
                 || consoleLoadingView == null) return;
+        if (snapshot.state == LaunchTransitionState.GAME_READY) {
+            autopilotGameReadySeen = true;
+        }
         if (controllerHandler != null) {
             updateGuidePolicyTransition();
             controllerHandler.setInputSuppressed(
@@ -4778,6 +4973,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         lastTransitionOverlayVisible = snapshot.overlayVisible;
         lastTransitionRevealAuthorized = snapshot.revealAuthorized;
+        maybeArmStreamingAutopilotCalibration();
     }
 
     private static boolean usesClosingPresentation(LaunchTransitionSnapshot snapshot) {
@@ -4823,6 +5019,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             manualRevealRequested = false;
             if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
             streamEverRevealed = true;
+            maybeArmStreamingAutopilotCalibration();
             if (manualReveal) {
                 LimeLog.info("Manual stream reveal completed transition="
                         + transitionSpec.id + " game="
@@ -5476,6 +5673,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
+                if (autopilotProgressOverlayActive) return;
                 performanceOverlayView.setText(text);
             }
         });

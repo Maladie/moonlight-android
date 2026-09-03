@@ -6,12 +6,14 @@ import org.junit.Test;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.InterruptedIOException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.Map;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 import javax.net.ssl.HttpsURLConnection;
 
@@ -167,6 +169,60 @@ public class GatewayTransportTest {
             fail("Expected ResponseTooLargeException");
         } catch (GatewayTransport.ResponseTooLargeException expected) {
             // Expected.
+        }
+    }
+
+    @Test public void networkDownloadCountsBytesAndRawElapsedTimeWithoutPayloadResult()
+            throws Exception {
+        AtomicLong clock = new AtomicLong(1_000L);
+
+        GatewayTransport.NetworkDownloadSample sample =
+                GatewayTransport.readNetworkDownload(
+                        new ByteArrayInputStream(new byte[96_000]), 96_000,
+                        () -> clock.getAndAdd(2_000_000L));
+
+        assertEquals(96_000L, sample.bytes);
+        assertEquals(2_000_000L, sample.elapsedNanos);
+    }
+
+    @Test public void networkDownloadPathIsFixedAndHardBounded() {
+        assertEquals("/api/v1/diagnostics/network/download?size=536870912",
+                GatewayTransport.networkDownloadPath(512 * 1024 * 1024));
+        try {
+            GatewayTransport.networkDownloadPath(512 * 1024 * 1024 + 1);
+            fail("Expected IllegalArgumentException");
+        } catch (IllegalArgumentException expected) {
+            // Expected.
+        }
+    }
+
+    @Test public void networkDownloadRejectsTruncatedAndOversizeBodies() throws Exception {
+        try {
+            GatewayTransport.readNetworkDownload(
+                    new ByteArrayInputStream(new byte[3]), 4, System::nanoTime);
+            fail("Expected truncated response failure");
+        } catch (IOException expected) {
+            assertTrue(expected.getMessage().contains("Truncated"));
+        }
+        try {
+            GatewayTransport.readNetworkDownload(
+                    new ByteArrayInputStream(new byte[5]), 4, System::nanoTime);
+            fail("Expected response bound failure");
+        } catch (GatewayTransport.ResponseTooLargeException expected) {
+            // Expected.
+        }
+    }
+
+    @Test public void networkDownloadStopsWhenWorkerIsInterrupted() throws Exception {
+        Thread.currentThread().interrupt();
+        try {
+            GatewayTransport.readNetworkDownload(
+                    new ByteArrayInputStream(new byte[4]), 4, System::nanoTime);
+            fail("Expected interrupted download failure");
+        } catch (InterruptedIOException expected) {
+            assertTrue(Thread.currentThread().isInterrupted());
+        } finally {
+            Thread.interrupted();
         }
     }
 

@@ -31,6 +31,7 @@ import android.graphics.drawable.StateListDrawable;
 import android.graphics.drawable.TransitionDrawable;
 import android.hardware.BatteryState;
 import android.hardware.input.InputManager;
+import android.net.ConnectivityManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
@@ -48,6 +49,7 @@ import android.text.format.DateUtils;
 import android.text.style.ForegroundColorSpan;
 import android.util.LruCache;
 import android.view.Gravity;
+import android.view.Display;
 import android.view.InputDevice;
 import android.view.KeyEvent;
 import android.view.MotionEvent;
@@ -95,6 +97,7 @@ import com.limelight.nvstream.wol.WakeOnLanSender;
 import com.limelight.preferences.AddComputerManually;
 import com.limelight.preferences.AppPreferences;
 import com.limelight.preferences.AppStreamSettings;
+import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
 import com.limelight.preferences.StreamSettings;
 import com.limelight.stream.BackgroundStreamPreferences;
@@ -445,6 +448,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String renderedControllerDevicesSignature;
     private Future<?> playniteRequest;
     private Future<?> playniteArtworkPrefetch;
+    private Future<?> streamingAutopilotTask;
+    private final AtomicInteger streamingAutopilotGeneration = new AtomicInteger();
     private String playniteArtworkPrefetchSignature;
     private final List<Future<?>> playniteArtworkPrefetchTasks =
             Collections.synchronizedList(new ArrayList<>());
@@ -1583,6 +1588,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     @Override
     protected void onDestroy() {
         pendingHostPreparation = null;
+        cancelStreamingAutopilot(false);
         if (root != null && root.getViewTreeObserver().isAlive()) {
             root.getViewTreeObserver().removeOnGlobalFocusChangeListener(
                     consoleFocusSoundListener);
@@ -4902,6 +4908,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean enteringHost = hostSelectionVisible;
         boolean changed = !host.uuid.equals(selectedHostUuid);
         if (changed) {
+            cancelStreamingAutopilot(false);
             cancelPlayniteArtworkPrefetch();
             cancelOwnedWarmUp(selectedHostUuid, true);
         }
@@ -8514,6 +8521,26 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
         actions.add(streamSettings);
 
+        TextView autopilot = panelAction(getString(R.string.console_streaming_autopilot_game));
+        boolean autopilotAvailable = ConsoleActionCatalog.isOnline(host)
+                && ConsoleActionCatalog.isPaired(host);
+        autopilot.setEnabled(autopilotAvailable);
+        autopilot.setAlpha(autopilotAvailable ? 1f : .42f);
+        autopilot.setOnClickListener(view -> {
+            NvApp target = PlayniteTargetResolver.findById(
+                    currentSunshineApps, item.sunshineAppId);
+            requestStreamingAutopilot(host,
+                    playniteStreamSettingsKey(host.uuid, item.stableId()),
+                    item.sunshineAppId == null ? null
+                            : host.uuid + ":" + item.sunshineAppId,
+                    item.game.name, PlayIntent.providerGame(host.uuid,
+                            item.sunshineAppId == null ? 0 : item.sunshineAppId,
+                            item.game.name, target != null && target.isHdrSupported(),
+                            item.game, playniteStreamSettingsKey(
+                                    host.uuid, item.stableId())));
+        });
+        actions.add(autopilot);
+
         boolean locallyHidden = locallyHiddenPlayniteGames(host.uuid)
                 .contains(item.game.playniteGameId);
         TextView visibility = panelAction(getString(locallyHidden
@@ -9360,6 +9387,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     intent.putExtra(AppStreamSettings.EXTRA_APP_NAME, app.getAppName());
                     startActivity(intent);
                 });
+        if (online && paired) {
+            resolved.add(ConsoleAction.enabled("app.streaming_autopilot",
+                    getString(R.string.console_streaming_autopilot_game), 0,
+                    ConsoleAction.Context.APPLICATION, false,
+                    () -> requestStreamingAutopilot(host,
+                            host.uuid + ":" + app.getAppId(), null, app.getAppName(),
+                            PlayIntent.sunshineApp(host.uuid, app.getAppId(),
+                                    app.getAppName(), app.isHdrSupported(), ""))));
+        }
         addAppAction(resolved, ConsoleActionCatalog.AppCapability.QUICK_ADD,
                 getString(R.string.applist_menu_add_quick_launch), online, paired, thisAppRunning,
                 anotherAppRunning, quickLaunch, isHidden, hasArtwork, shortcutsSupported,
@@ -10183,7 +10219,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         sourceSuspendId, intent.playniteGameId,
                         ownsFreshSunshineSession
                                 && transitionType == LaunchTransitionType.GAME
-                                && PlayniteTargetResolver.isNeutralStream(app));
+                                && PlayniteTargetResolver.isNeutralStream(app), intent);
             }
 
             @Override public SessionOrchestrator.PreparedWarmUp prepareHost(
@@ -10454,7 +10490,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                       boolean ownsFreshSunshineSession) {
         launchPreparedStream(host, app, quickLaunchKey, transition, loadingArtworkPath,
                 sourceSuspendId, sourceSuspendPlayniteGameId,
-                ownsFreshSunshineSession, 0L, null, true);
+                ownsFreshSunshineSession, 0L, null, true, null);
+    }
+
+    private void launchPreparedStream(ComputerDetails host, NvApp app,
+                                      String quickLaunchKey,
+                                      LaunchTransitionSpec transition,
+                                      String loadingArtworkPath,
+                                      String sourceSuspendId,
+                                      String sourceSuspendPlayniteGameId,
+                                      boolean ownsFreshSunshineSession,
+                                      PlayIntent playIntent) {
+        launchPreparedStream(host, app, quickLaunchKey, transition, loadingArtworkPath,
+                sourceSuspendId, sourceSuspendPlayniteGameId,
+                ownsFreshSunshineSession, 0L, null, true, playIntent);
     }
 
     private void launchPreparedWarmUp(SessionOrchestrator.PreparedWarmUp prepared,
@@ -10497,7 +10546,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ? suspended.suspendId : "";
         launchPreparedStream(prepared.host, prepared.target, null, transition, null,
                 sourceSuspendId, sourceSuspendId.isEmpty() ? "" : suspended.playniteGameId,
-                prepared.ownsFreshSunshineSession, request, pendingGame, false);
+                prepared.ownsFreshSunshineSession, request, pendingGame, false, null);
     }
 
     private void applyWarmUpIntent(Intent intent, LaunchTransitionSpec transition,
@@ -10546,7 +10595,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                       boolean ownsFreshSunshineSession,
                                       long warmUpAttempt,
                                       PlayIntent pendingWarmUpGame,
-                                      boolean recordHistory) {
+                                      boolean recordHistory,
+                                      PlayIntent playIntent) {
         long playedAt = System.currentTimeMillis();
         if (recordHistory) {
             SharedPreferences.Editor history = preferences.edit()
@@ -10583,6 +10633,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 PlayniteTargetResolver.isNeutralStream(app));
         presentation.putBoolean(Game.EXTRA_FRESH_SUNSHINE_SESSION_OWNER,
                 ownsFreshSunshineSession);
+        if (playIntent != null && playIntent.isCalibration()) {
+            presentation.putString(Game.EXTRA_AUTOPILOT_CALIBRATION_APP_KEY,
+                    playIntent.calibrationAppKey);
+            presentation.putInt(Game.EXTRA_RUNTIME_WIDTH, playIntent.runtimeWidth);
+            presentation.putInt(Game.EXTRA_RUNTIME_HEIGHT, playIntent.runtimeHeight);
+            presentation.putInt(Game.EXTRA_RUNTIME_FPS, playIntent.runtimeFps);
+            presentation.putInt(Game.EXTRA_RUNTIME_BITRATE_KBPS,
+                    playIntent.runtimeBitrateKbps);
+        }
         if (warmUpAttempt > 0L) {
             presentation.putLong(Game.EXTRA_AUTO_WARM_UP_ATTEMPT, warmUpAttempt);
             presentation.putLong(EXTRA_WARM_UP_ATTEMPT, warmUpAttempt);
@@ -11084,6 +11143,252 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
+    private void requestStreamingAutopilot(ComputerDetails requestedHost, String appKey,
+                                           String inheritedAppKey, String targetName,
+                                           PlayIntent calibrationIntent) {
+        ComputerDetails host = requestedHost == null ? null : currentHost(requestedHost.uuid);
+        if (!ConsoleActionCatalog.isOnline(host) || !ConsoleActionCatalog.isPaired(host)
+                || host.activeAddress == null || managerBinder == null) {
+            consoleFeedback.notify(ConsoleUiFeedback.Kind.ERROR,
+                    getString(R.string.console_autopilot_unavailable));
+            return;
+        }
+        if (calibrationIntent != null && hasStreamingAutopilotCalibrationSession(host)) {
+            consoleFeedback.notify(ConsoleUiFeedback.Kind.ERROR,
+                    getString(R.string.console_autopilot_calibration_session_active));
+            return;
+        }
+        if (preferences.getBoolean(OverridesView.PREF_OVERRIDES_ENABLED, false)
+                && preferences.getInt(OverridesView.PREF_BITRATE_OVERRIDE, 0) > 0) {
+            consoleFeedback.notify(ConsoleUiFeedback.Kind.ERROR,
+                    getString(R.string.console_autopilot_bitrate_override_active));
+            return;
+        }
+        GatewayConnection gateway = hostGatewayStore.loadForHost(
+                host.uuid, host.activeAddress.address);
+        if (gateway != null && resolveSessionSnapshot(host).hasActiveSession()) {
+            consoleFeedback.notify(ConsoleUiFeedback.Kind.INFO,
+                    getString(R.string.console_autopilot_active_stream_fallback));
+            beginStreamingAutopilot(host, appKey, inheritedAppKey, targetName,
+                    calibrationIntent, null);
+            return;
+        }
+        if (gateway != null && isAutopilotNetworkMetered()) {
+            TextView fallback = panelAction(
+                    getString(R.string.console_autopilot_skip_network_test));
+            fallback.setOnClickListener(view -> beginStreamingAutopilot(
+                    host, appKey, inheritedAppKey, targetName, calibrationIntent, null));
+            TextView measure = panelAction(getString(R.string.console_autopilot_measure));
+            measure.setOnClickListener(view -> beginStreamingAutopilot(
+                    host, appKey, inheritedAppKey, targetName, calibrationIntent, gateway));
+            showSidePanel(getString(R.string.console_options_section_streaming),
+                    getString(R.string.console_autopilot_metered_title),
+                    getString(R.string.console_autopilot_metered_details),
+                    fallback, measure);
+            return;
+        }
+        beginStreamingAutopilot(host, appKey, inheritedAppKey, targetName,
+                calibrationIntent, gateway);
+    }
+
+    private boolean hasStreamingAutopilotCalibrationSession(ComputerDetails host) {
+        return resolveSessionSnapshot(host).state != SessionSnapshot.State.NONE
+                || RetainedStreamSessionCoordinator.state()
+                != RetainedStreamSessionCoordinator.State.NONE;
+    }
+
+    private boolean isAutopilotNetworkMetered() {
+        ConnectivityManager connectivity = (ConnectivityManager) getSystemService(
+                Context.CONNECTIVITY_SERVICE);
+        return connectivity != null && connectivity.isActiveNetworkMetered();
+    }
+
+    private void beginStreamingAutopilot(ComputerDetails requestedHost, String appKey,
+                                         String inheritedAppKey, String targetName,
+                                         PlayIntent calibrationIntent,
+                                         GatewayConnection gateway) {
+        ComputerDetails current = currentHost(requestedHost.uuid);
+        if (current == null || current.activeAddress == null || managerBinder == null
+                || selectedHostUuid == null
+                || !current.uuid.equalsIgnoreCase(selectedHostUuid)) {
+            consoleFeedback.notify(ConsoleUiFeedback.Kind.ERROR,
+                    getString(R.string.console_autopilot_unavailable));
+            return;
+        }
+
+        cancelStreamingAutopilot(false);
+        int generation = streamingAutopilotGeneration.incrementAndGet();
+        String hostUuid = current.uuid;
+        ComputerDetails host = new ComputerDetails(current);
+        String uniqueId = managerBinder.getUniqueId();
+        Display display = getWindowManager().getDefaultDisplay();
+        String glRenderer = GlPreferences.readPreferences(this).glRenderer;
+
+        TextView cancel = panelAction(getString(R.string.console_cancel));
+        cancel.setOnClickListener(view -> {
+            cancelStreamingAutopilot(true);
+            hideSidePanel();
+        });
+        showSidePanel(getString(R.string.console_options_section_streaming),
+                getString(R.string.console_autopilot_analyzing_title),
+                getString(R.string.console_autopilot_analyzing_details), cancel);
+
+        streamingAutopilotTask = executor.submit(() -> {
+            try {
+                NvHTTP http = new NvHTTP(ServerHelper.getCurrentAddressFromComputer(host),
+                        host.httpsPort, uniqueId, host.serverCert,
+                        PlatformBinding.getCryptoProvider(this));
+                String serverInfo = http.getServerInfo(true);
+                StreamingAutopilotController.Analysis analysis =
+                        StreamingAutopilotController.analyze(this, display, glRenderer,
+                                http, serverInfo, gateway);
+                if (Thread.currentThread().isInterrupted()) return;
+                mainHandler.post(() -> {
+                    if (generation != streamingAutopilotGeneration.get()) return;
+                    streamingAutopilotTask = null;
+                    if (!isStreamingAutopilotRequestCurrent(generation, hostUuid)) return;
+                    showStreamingAutopilotPreview(generation, hostUuid, appKey,
+                            inheritedAppKey, targetName, calibrationIntent, analysis);
+                });
+            } catch (IOException | XmlPullParserException | RuntimeException error) {
+                if (Thread.currentThread().isInterrupted()) return;
+                mainHandler.post(() -> {
+                    if (generation != streamingAutopilotGeneration.get()) return;
+                    streamingAutopilotTask = null;
+                    if (!isStreamingAutopilotRequestCurrent(generation, hostUuid)) return;
+                    showStreamingAutopilotError(error);
+                });
+            }
+        });
+    }
+
+    private boolean isStreamingAutopilotRequestCurrent(int generation, String hostUuid) {
+        return generation == streamingAutopilotGeneration.get() && active
+                && !isFinishing() && !isDestroyed() && selectedHostUuid != null
+                && hostUuid.equalsIgnoreCase(selectedHostUuid);
+    }
+
+    private void showStreamingAutopilotPreview(int generation, String hostUuid,
+                                               String appKey, String inheritedAppKey,
+                                               String targetName,
+                                               PlayIntent calibrationIntent,
+                                               StreamingAutopilotController.Analysis analysis) {
+        if (!analysis.recommendation.isPresent()) {
+            TextView close = panelAction(getString(R.string.console_close));
+            close.setOnClickListener(view -> hideSidePanel());
+            showSidePanel(getString(R.string.console_options_section_streaming),
+                    getString(R.string.console_autopilot_no_recommendation_title),
+                    getString(R.string.console_autopilot_no_recommendation_details,
+                            streamingAutopilotNetworkSummary(analysis)), close);
+            return;
+        }
+
+        PreferenceConfiguration current;
+        if (appKey == null) {
+            current = PreferenceConfiguration.readPreferences(this);
+        } else if (inheritedAppKey != null) {
+            current = AppPreferences.getEffectivePreferences(
+                    this, inheritedAppKey, appKey, false);
+        } else {
+            current = AppPreferences.getEffectivePreferences(this, appKey, null, false);
+        }
+        com.limelight.stream.StreamingAutopilot.Recommendation recommendation =
+                analysis.recommendation.get();
+        String currentSummary = getString(R.string.console_autopilot_stream_format,
+                current.width, current.height, current.fps, current.bitrate / 1000d);
+        String recommendedSummary = getString(R.string.console_autopilot_stream_format,
+                recommendation.width, recommendation.height, recommendation.fps,
+                recommendation.bitrateKbps / 1000d);
+        String confidence = getString(recommendation.confidence
+                == com.limelight.stream.StreamingAutopilot.Confidence.HIGH
+                ? R.string.console_autopilot_confidence_high
+                : R.string.console_autopilot_confidence_low);
+
+        TextView cancel = panelAction(getString(R.string.console_cancel));
+        cancel.setOnClickListener(view -> hideSidePanel());
+        TextView apply = panelAction(getString(calibrationIntent != null
+                ? R.string.console_autopilot_start_calibration : appKey == null
+                ? R.string.console_autopilot_apply_global
+                : R.string.console_autopilot_apply_game));
+        apply.setOnClickListener(view -> {
+            if (!isStreamingAutopilotRequestCurrent(generation, hostUuid)) {
+                showStreamingAutopilotError(
+                        new IllegalStateException(getString(R.string.console_autopilot_stale)));
+                return;
+            }
+            try {
+                if (calibrationIntent != null) {
+                    ComputerDetails host = currentHost(hostUuid);
+                    if (host == null || hasStreamingAutopilotCalibrationSession(host)) {
+                        throw new IllegalStateException(getString(
+                                R.string.console_autopilot_calibration_session_active));
+                    }
+                    hideSidePanel();
+                    sessionOrchestrator.play(calibrationIntent.withCalibration(
+                            appKey, recommendation.width, recommendation.height,
+                            recommendation.fps, recommendation.bitrateKbps));
+                    return;
+                } else if (appKey == null) {
+                    StreamingAutopilotController.applyGlobal(this, analysis);
+                } else {
+                    StreamingAutopilotController.applyForApp(this, appKey, analysis);
+                }
+                hideSidePanel();
+                consoleFeedback.notify(ConsoleUiFeedback.Kind.SUCCESS,
+                        getString(R.string.console_autopilot_applied));
+            } catch (RuntimeException error) {
+                showStreamingAutopilotError(error);
+            }
+        });
+        showScrollableDetailsSidePanel(getString(R.string.console_options_section_streaming),
+                getString(R.string.console_autopilot_preview_title),
+                getString(calibrationIntent == null
+                                ? R.string.console_autopilot_preview_details
+                                : R.string.console_autopilot_calibration_preview_details,
+                        targetName,
+                        currentSummary, recommendedSummary, confidence,
+                        streamingAutopilotNetworkSummary(analysis)), cancel, apply);
+    }
+
+    private String streamingAutopilotNetworkSummary(
+            StreamingAutopilotController.Analysis analysis) {
+        switch (analysis.networkStatus) {
+            case MEASURED:
+                return getString(R.string.console_autopilot_network_measured,
+                        analysis.goodputKbps.getAsLong() / 1000d,
+                        analysis.safeBitrateKbps.getAsInt() / 1000d);
+            case FAILED:
+                return getString(R.string.console_autopilot_network_failed);
+            case TOO_SLOW:
+                return getString(R.string.console_autopilot_network_too_slow,
+                        analysis.goodputKbps.getAsLong() / 1000d);
+            case UNAVAILABLE:
+            default:
+                return getString(R.string.console_autopilot_network_unavailable);
+        }
+    }
+
+    private void showStreamingAutopilotError(Throwable error) {
+        String detail = error == null || TextUtils.isEmpty(error.getMessage())
+                ? getString(R.string.console_autopilot_error_unknown) : error.getMessage();
+        TextView close = panelAction(getString(R.string.console_close));
+        close.setOnClickListener(view -> hideSidePanel());
+        showSidePanel(getString(R.string.console_options_section_streaming),
+                getString(R.string.console_autopilot_error_title),
+                getString(R.string.console_autopilot_error_details, detail), close);
+    }
+
+    private void cancelStreamingAutopilot(boolean notify) {
+        streamingAutopilotGeneration.incrementAndGet();
+        Future<?> task = streamingAutopilotTask;
+        streamingAutopilotTask = null;
+        if (task != null) task.cancel(true);
+        if (notify && consoleFeedback != null && !isFinishing() && !isDestroyed()) {
+            consoleFeedback.notify(ConsoleUiFeedback.Kind.INFO,
+                    getString(R.string.console_autopilot_cancelled));
+        }
+    }
+
     private void showOptionsPanel() {
         LinearLayout sounds = settingsToggle(
                 getString(R.string.console_ui_sounds_label), uiSoundsEnabled);
@@ -11134,11 +11439,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 R.string.console_screen_saver_timeout, screenSaverTimeoutLabel()));
         screenSaver.setTag("options.screen_saver_timeout");
         TextView settings = panelAction(getString(R.string.console_streaming_settings));
+        TextView autopilot = panelAction(getString(R.string.console_streaming_autopilot_global));
         TextView overrides = panelAction(getString(R.string.console_options_overrides));
         TextView integrations = panelAction(getString(R.string.console_host_integrations));
         ComputerDetails selectedHost = hosts.get(selectedHostUuid);
         integrations.setEnabled(selectedHost != null);
         integrations.setAlpha(selectedHost != null ? 1f : .45f);
+        boolean autopilotAvailable = ConsoleActionCatalog.isOnline(selectedHost)
+                && ConsoleActionCatalog.isPaired(selectedHost);
+        autopilot.setEnabled(autopilotAvailable);
+        autopilot.setAlpha(autopilotAvailable ? 1f : .45f);
         TextView readme = panelAction(getString(R.string.console_options_readme));
         sounds.setOnClickListener(v -> {
             uiSoundsEnabled = !uiSoundsEnabled;
@@ -11184,6 +11494,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             hideSidePanel();
             startActivity(new Intent(this, StreamSettings.class));
         });
+        autopilot.setOnClickListener(v -> requestStreamingAutopilot(
+                currentHost(selectedHostUuid), null, null,
+                getString(R.string.console_autopilot_global_target), null));
         overrides.setOnClickListener(v -> showOverridesPanel());
         integrations.setOnClickListener(v -> {
             ComputerDetails host = hosts.get(selectedHostUuid);
@@ -11203,7 +11516,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 settingsSectionHeader(R.string.console_options_section_host),
                 autoLogin, integrations,
                 settingsSectionHeader(R.string.console_options_section_streaming),
-                backgroundStream, settings, overrides,
+                backgroundStream, autopilot, settings, overrides,
                 settingsSectionHeader(R.string.console_options_section_tv), screenSaver,
                 settingsSectionHeader(R.string.console_options_section_help), readme);
     }
@@ -12031,6 +12344,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void handlePanelBack() {
+        if (streamingAutopilotTask != null) cancelStreamingAutopilot(false);
         if (discordSocialPanelController != null && discordSocialPanelController.prepareForPanelBack()) return;
         if (!panelHistory.isEmpty()) {
             PanelSnapshot snapshot = panelHistory.pop();

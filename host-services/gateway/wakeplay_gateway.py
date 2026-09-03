@@ -40,6 +40,9 @@ DISCORD_AUDIO_FRAME_BYTES = 3840
 DISCORD_AUDIO_CONTENT_TYPE = (
     "application/vnd.moonwaker.discord-audio-pcm;"
     "format=s16le;rate=48000;channels=2")
+NETWORK_DOWNLOAD_DEFAULT_BYTES = 8 * 1024 * 1024
+NETWORK_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024
+NETWORK_DOWNLOAD_CHUNK_BYTES = 64 * 1024
 DISCORD_ID_PATTERN = re.compile(r"^[0-9]{5,32}$")
 VIRTUALHERE_ADDRESS_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 AUDIO_DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:{}-]{1,220}$")
@@ -253,6 +256,7 @@ class GatewayState:
         self.vibepollo_app_operations: dict[str, dict[str, Any]] = {}
         self.microphone_streams: dict[str, str] = {}
         self.discord_audio_streams: dict[str, str] = {}
+        self.network_downloads: set[tuple[str, str]] = set()
         self.lock = threading.RLock()
         self.request_context = threading.local()
         self.runtime_status_path = self.config_path.with_name("runtime-status.json")
@@ -1485,6 +1489,46 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     if self.state.discord_audio_streams.get(profile_id) == session_id:
                         self.state.discord_audio_streams.pop(profile_id, None)
 
+    def network_download(self, size_value: str | None,
+                         profile_id: str, client_id: str) -> None:
+        raw_size = str(NETWORK_DOWNLOAD_DEFAULT_BYTES) if size_value is None else size_value
+        if not re.fullmatch(r"[0-9]{1,9}", raw_size):
+            raise ValueError("Invalid network download size.")
+        size = int(raw_size)
+        if size <= 0 or size > NETWORK_DOWNLOAD_MAX_BYTES:
+            raise ValueError("Network download size must be between 1 byte and 512 MiB.")
+
+        slot = (profile_id, client_id)
+        with self.state.lock:
+            if slot in self.state.network_downloads:
+                self.send_json(HTTPStatus.CONFLICT, {
+                    "error": "A network download test is already active for this client profile."
+                })
+                return
+            self.state.network_downloads.add(slot)
+        try:
+            self._response_status = int(HTTPStatus.OK)
+            self.send_response(HTTPStatus.OK)
+            self.send_header("Content-Type", "application/octet-stream")
+            self.send_header("Content-Length", str(size))
+            self.send_header("Content-Encoding", "identity")
+            self.send_header("Cache-Control", "no-store")
+            self.send_header("X-Content-Type-Options", "nosniff")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            chunk = bytes(min(size, NETWORK_DOWNLOAD_CHUNK_BYTES))
+            remaining = size
+            while remaining:
+                count = min(remaining, len(chunk))
+                self.wfile.write(chunk if count == len(chunk) else chunk[:count])
+                remaining -= count
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionError, OSError):
+            self.close_connection = True
+        finally:
+            with self.state.lock:
+                self.state.network_downloads.discard(slot)
+
     def authenticated(self) -> bool:
         return self.authenticated_client() is not None
 
@@ -1580,8 +1624,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
         if path == f"{API_PREFIX}/profiles":
             self.send_json(HTTPStatus.OK, self.state.profiles_summary())
             return
-        self.select_profile()
-        if path == f"{API_PREFIX}/capabilities":
+        profile_id = self.select_profile()
+        if path == f"{API_PREFIX}/diagnostics/network/download":
+            client = self.authenticated_client() or {}
+            client_id = str(client.get("id") or client.get("token_sha256") or "")
+            self.network_download(query.get("size", [None])[0], profile_id, client_id)
+        elif path == f"{API_PREFIX}/capabilities":
             self.send_json(HTTPStatus.OK, self.state.capabilities())
         elif path == f"{API_PREFIX}/vibepollo/repair/status":
             status, result = self.state.vibepollo_status()

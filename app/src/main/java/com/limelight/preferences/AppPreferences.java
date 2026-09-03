@@ -91,6 +91,20 @@ public class AppPreferences {
         }
     }
 
+    public static void applyStreamSettings(Context context, String appKey, int width, int height,
+                                           int fps, int bitrateKbps) {
+        saveAppSettings(context, appKey, copyWithStreamSettings(
+                getAppSettings(context, appKey), width, height, fps, bitrateKbps));
+    }
+
+    static AppSettings copyWithStreamSettings(AppSettings current, int width, int height, int fps,
+                                              int bitrateKbps) {
+        PreferenceConfiguration.validateStreamSettings(width, height, fps, bitrateKbps);
+        return new AppSettings(width + "x" + height, fps, current.framePacing, bitrateKbps,
+                current.actualDisplayRefreshRate, current.enableHdr, current.enablePerfOverlay,
+                false);
+    }
+
     private static int getFramePacingValue(String framePacingString) {
         if (framePacingString == null) {
             return PreferenceConfiguration.FRAME_PACING_MIN_LATENCY;
