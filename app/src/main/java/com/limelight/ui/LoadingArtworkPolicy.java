@@ -14,10 +14,19 @@ public final class LoadingArtworkPolicy {
         if (width <= 0 || height <= 0 || screenWidth <= 0 || screenHeight <= 0) return 1f;
         float fit = Math.min((float) screenWidth / width, (float) screenHeight / height);
         float fill = Math.max((float) screenWidth / width, (float) screenHeight / height);
-        // ponytail: allow at most 15% cropping for landscape art; no content-aware cropping.
-        boolean modestCrop = width > height && fit / fill >= .85f;
+        // ponytail: allow at most 16% cropping; no content-aware cropping.
+        boolean modestCrop = width > height
+                && canFillWithModestCrop(width, height, screenWidth, screenHeight);
         float maximum = canUseAsSplash(width, height) ? 2f : 1f;
         return Math.min(modestCrop ? fill : fit, maximum);
+    }
+
+    public static boolean canFillWithModestCrop(int width, int height,
+                                                 int targetWidth, int targetHeight) {
+        if (width <= 0 || height <= 0 || targetWidth <= 0 || targetHeight <= 0) return false;
+        float fit = Math.min((float) targetWidth / width, (float) targetHeight / height);
+        float fill = Math.max((float) targetWidth / width, (float) targetHeight / height);
+        return fit / fill >= .84f;
     }
 
     public static int sampleSize(int width, int height, int targetDimension) {

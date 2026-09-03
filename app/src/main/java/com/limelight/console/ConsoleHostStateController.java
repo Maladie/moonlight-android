@@ -13,6 +13,7 @@ final class ConsoleHostStateController {
 
     private final Clock clock;
     private final Map<String, Long> waking = new LinkedHashMap<>();
+    private final Map<String, ComputerDetails.State> lastConfirmed = new LinkedHashMap<>();
 
     ConsoleHostStateController(Clock clock) {
         this.clock = clock;
@@ -32,9 +33,26 @@ final class ConsoleHostStateController {
         return true;
     }
 
+    void remember(String hostUuid, ComputerDetails.State state) {
+        if (hostUuid == null || hostUuid.isEmpty() || state == null
+                || state == ComputerDetails.State.UNKNOWN) return;
+        lastConfirmed.put(hostUuid, state);
+    }
+
     boolean observe(ComputerDetails host) {
-        return host != null && host.state == ComputerDetails.State.ONLINE
-                && waking.remove(host.uuid) != null;
+        return observe(host, true);
+    }
+
+    boolean observe(ComputerDetails host, boolean fresh) {
+        if (host == null) return false;
+        if (fresh) {
+            remember(host.uuid, host.state);
+            return host.state == ComputerDetails.State.ONLINE
+                    && waking.remove(host.uuid) != null;
+        }
+        ComputerDetails.State remembered = lastConfirmed.get(host.uuid);
+        if (remembered != null) host.state = remembered;
+        return false;
     }
 
     boolean isWaking(String hostUuid) {

@@ -815,6 +815,9 @@ class GatewayStateTest(unittest.TestCase):
         parsed = urllib.parse.urlsplit(requests[0][1])
         self.assertEqual("/artwork", parsed.path)
         self.assertEqual(["cover"], urllib.parse.parse_qs(parsed.query)["kind"])
+        state.playnite_artwork("steam:367520", "hero")
+        hero = urllib.parse.urlsplit(requests[1][1])
+        self.assertEqual(["hero"], urllib.parse.parse_qs(hero.query)["kind"])
         with self.assertRaises(ValueError):
             state.playnite_artwork("../../secret", "cover")
         with self.assertRaises(ValueError):

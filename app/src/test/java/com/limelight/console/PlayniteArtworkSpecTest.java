@@ -49,8 +49,27 @@ public class PlayniteArtworkSpecTest {
         assertFalse(PlayniteArtworkSpec.forScreenSaver(game("cover", "")).available());
     }
 
+    @Test public void loadingCurtainPrefersDedicatedHeroAndFallsBackToBackground() {
+        PlayniteArtworkSpec spec = PlayniteArtworkSpec.forLoadingCurtain(
+                game("cover", "background", "hero"));
+
+        assertEquals("hero", spec.kind);
+        assertEquals("hero", spec.version);
+        assertEquals("background", spec.fallbackKind);
+        assertEquals("background", spec.fallbackVersion);
+        assertFalse(PlayniteArtworkSpec.forLoadingCurtain(game("cover", "", ""))
+                .available());
+    }
+
     private static PlayniteLibraryGame game(String cover, String background) {
         return new PlayniteLibraryGame("00000001-0000-0000-0000-000000000000",
                 "Game", true, false, 0, "", cover, background, "Playnite");
+    }
+
+    private static PlayniteLibraryGame game(String cover, String background, String hero) {
+        return new PlayniteLibraryGame("steam:620", "Game", true, false, false,
+                0, "", cover, background, hero, "", 0, "Steam", "", false,
+                "", "", "", "", -1, false, "", "steam", "620", "",
+                "steam", "Steam", true, true, true, false, "neutral", false);
     }
 }

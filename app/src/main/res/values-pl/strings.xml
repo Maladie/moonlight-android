@@ -561,7 +561,7 @@
     <string name="console_pair_discovered_host">Sparuj wykryty host</string>
     <string name="console_pair_discovered_host_named">Sparuj wykryty host %1$s</string>
     <string name="console_action_quick_launch">Szybkie uruchamianie</string>
-    <string name="console_action_stream_settings">Ustawienia streamingu</string>
+    <string name="console_action_stream_settings">Opcje</string>
     <string name="console_action_hidden_apps">Ukryte aplikacje</string>
     <string name="console_action_discord">Discord</string>
     <string name="console_refresh">Odśwież stan i bibliotekę</string>
@@ -826,7 +826,7 @@
     <string name="console_action_leave_host">Opuść host</string>
     <string name="console_wake_host">Obudź hosta</string>
     <string name="console_unpair_host">Odparuj hosta</string>
-    <string name="console_host_status">●  %1$s\n%2$s</string>
+    <string name="console_host_status">%1$s\n%2$s</string>
     <string name="console_host_status_description">%1$s. %2$s. Naciśnij Wybierz, aby otworzyć opcje hosta.</string>
     <string name="console_host_power_wake_description">%1$s jest offline. Wciśnij Wybierz, aby obudzić hosta.</string>
     <string name="console_host_waking_description">Trwa wybudzanie hosta %1$s. Zaczekaj.</string>
@@ -958,6 +958,8 @@
     <string name="playnite_full_library">Pełna biblioteka</string>
     <string name="playnite_full_library_hint">Pokaż wszystkie gry w przewijanej siatce</string>
     <string name="playnite_selected_game_facts">Ostatnio grana: %1$s\nCzas w grze: %2$s</string>
+    <string name="playnite_last_played_pill">Ostatnio: %1$s</string>
+    <string name="playnite_playtime_pill">%1$s</string>
     <string name="playnite_description_unavailable">Opis gry nie jest jeszcze dostępny.</string>
     <string name="playnite_playtime">Czas gry</string>
     <string name="playnite_never_played">Nie grano</string>

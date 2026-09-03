@@ -3,6 +3,7 @@ import subprocess
 import tempfile
 import threading
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -515,8 +516,10 @@ class GameOperationsTest(unittest.TestCase):
                 "assets": {
                     "asset_url_format": "steam/apps/620/${FILENAME}?t=1",
                     "main_capsule": "capsule_616x353.jpg",
+                    "main_capsule_2x": "capsule_616x353_2x.jpg",
                     "library_capsule": "library_600x900.jpg",
                     "library_hero": "library_hero.jpg",
+                    "page_background_path": "app/620?t=1",
                 },
                 "basic_info": {"short_description": "Co-op &amp; puzzles"},
             }]}}).encode("utf-8")
@@ -535,7 +538,9 @@ class GameOperationsTest(unittest.TestCase):
                 if "IStoreBrowseService" in request.full_url:
                     return Response(metadata)
                 image_requests.append(request.full_url)
-                return Response(image, "image/jpeg")
+                return Response(image, "application/octet-stream"
+                                if "capsule_616x353_2x" in request.full_url
+                                else "image/jpeg")
 
             provider = SteamProvider(
                 roots=[root], root_resolver=lambda: root, web_opener=open_request,
@@ -546,16 +551,56 @@ class GameOperationsTest(unittest.TestCase):
             self.assertEqual("steam", game["metadataProvider"])
             self.assertEqual("Co-op & puzzles", game["description"])
             self.assertIn("library_600x900.jpg", game["cover"])
-            self.assertIn("library_hero.jpg", game["background"])
+            self.assertIn("capsule_616x353_2x.jpg", game["background"])
+            self.assertIn("library_hero.jpg", game["hero"])
+            self.assertIn("page_bg_raw.jpg?t=1", SteamProvider._steam_page_background_url(
+                {"page_background_path": "app/620?t=1"}, "620"))
             first = provider.artwork(game, "cover")
             second = provider.artwork(game, "cover")
             self.assertEqual(first, second)
             self.assertEqual(image, first.read_bytes())
-            self.assertEqual(1, len(image_requests))
+            self.assertEqual(image, provider.artwork(game, "background").read_bytes())
+            self.assertEqual(2, len(image_requests))
             with self.assertRaisesRegex(ValueError, "Invalid provider artwork"):
                 provider.artwork({
                     **game, "cover": "https://127.0.0.1/private.png",
                 }, "cover")
+
+    def test_steam_page_background_precedes_low_resolution_capsule(self):
+        assets = {
+            "asset_url_format": "steam/apps/620/${FILENAME}?t=1",
+            "main_capsule": "capsule_616x353.jpg",
+            "page_background_path": "app/620?t=1",
+        }
+
+        background = SteamProvider._steam_background_url(assets, "620")
+
+        self.assertIn("page_bg_raw.jpg", background)
+        self.assertNotIn("capsule_616x353.jpg", background)
+
+        image = b"\xff\xd8\xffhero"
+
+        class Response:
+            headers = {"Content-Type": "image/jpeg"}
+            def __enter__(self): return self
+            def __exit__(self, *_args): return False
+            def read(self, _limit): return image
+
+        def open_request(request, timeout):
+            if "page_bg_raw.jpg" in request.full_url:
+                raise urllib.error.HTTPError(
+                    request.full_url, 404, "Not Found", None, None)
+            return Response()
+
+        with tempfile.TemporaryDirectory() as temporary:
+            provider = SteamProvider(
+                web_opener=open_request, artwork_cache_path=Path(temporary))
+            resolved = provider.artwork({
+                "providerGameId": "620",
+                "background": background,
+                "hero": "https://shared.akamai.steamstatic.com/steam/apps/620/library_hero.jpg",
+            }, "background")
+            self.assertEqual(image, resolved.read_bytes())
 
     def test_epic_catalog_uses_legendary_metadata_and_caches_artwork_on_demand(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -580,6 +625,12 @@ class GameOperationsTest(unittest.TestCase):
                             {"type": "DieselGameBox",
                              "width": 2560, "height": 1440,
                              "url": "https://cdn1.epicgames.com/background.png"},
+                            {"type": "OfferImageWide",
+                             "width": 2560, "height": 1440,
+                             "url": "https://cdn1.epicgames.com/dashboard.png"},
+                            {"type": "DieselStoreFrontWide",
+                             "width": 2560, "height": 1440,
+                             "url": "https://cdn1.epicgames.com/hero.png"},
                             {"type": "DieselGameBoxTall",
                              "width": 1200, "height": 1600,
                              "url": "https://cdn1.epicgames.com/game-box-tall.png"},
@@ -596,8 +647,11 @@ class GameOperationsTest(unittest.TestCase):
             self.assertEqual(
                 "https://cdn1.epicgames.com/game-box-tall.png", game["cover"])
             self.assertEqual(
-                "https://cdn1.epicgames.com/background.png", game["background"])
+                "https://cdn1.epicgames.com/dashboard.png", game["background"])
+            self.assertEqual(
+                "https://cdn1.epicgames.com/hero.png", game["hero"])
             self.assertEqual(image, provider.artwork(game, "background").read_bytes())
+            self.assertEqual(image, provider.artwork(game, "hero").read_bytes())
 
     def test_steam_catalog_reports_incomplete_local_manifest_discovery(self):
         with tempfile.TemporaryDirectory() as temporary:

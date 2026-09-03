@@ -18,6 +18,7 @@ public class ConsoleActivityRequestedUiContractTest {
                 source.indexOf("private ImageButton addQuickAction("));
 
         assertFalse(source.contains("launchPlayniteButton"));
+        assertFalse(source.contains("launchDesktopButton"));
         assertFalse(quickActions.contains("global.quick_launch"));
     }
 
@@ -34,6 +35,8 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(menu.contains("R.string.console_hard_terminate_session"));
         assertTrue(menu.contains("confirmHardTerminateSession(host)"));
         assertTrue(menu.contains("online && paired && gatewayAvailable"));
+        assertTrue(menu.contains("R.string.console_launch_desktop"));
+        assertTrue(menu.contains("launchDesktopSession(host)"));
     }
 
     @Test public void focusedHostRemainsAStableTwoLineStatusNotAPowerAction()
@@ -51,21 +54,128 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(label.contains("R.string.console_host_status"));
         assertFalse(label.contains("console_host_power_focused_sleep"));
         assertFalse(label.contains("console_host_power_focused_wake"));
+        assertTrue(selector.contains("hostSelector.setTextSize(11)"));
+        assertTrue(selector.contains("hostSelector.setMinHeight(dp(36))"));
+        assertTrue(label.contains("hostIcon.setTint(stateColor)"));
+        assertTrue(label.contains("hostIcon.setBounds(0, 0, dp(24), dp(24))"));
+        assertTrue(label.contains("hostSelector.setCompoundDrawables(hostIcon"));
+        assertFalse(label.contains("BulletSpan"));
+        assertFalse(resource("values/strings.xml").contains(
+                "name=\"console_host_status\">●"));
         assertTrue(update.contains("R.string.console_host_status_description"));
         assertFalse(update.contains("console_host_power_sleep_description"));
     }
 
-    @Test public void compactCardsLeaveRoomForStateAndInstallProgress() throws IOException {
+    @Test public void compactCardsOverlayConsistentStateAndInstallProgress() throws IOException {
         String source = consoleActivitySource();
         String card = source.substring(source.indexOf("private View playniteCard("),
                 source.indexOf("private LinearLayout.LayoutParams matchLinearWidth("));
+        String binding = source.substring(source.indexOf("private void bindPlayniteCard("),
+                source.indexOf("private void schedulePlayniteSelectionSave("));
         String state = source.substring(source.indexOf("private String playniteStateChipLabel("),
                 source.indexOf("private void stylePlayniteStateChip("));
+        String stateStyle = source.substring(source.indexOf("private void stylePlayniteStateChip("),
+                source.indexOf("private boolean isVibepolloEnsureInFlight("));
         String expanded = source.substring(source.indexOf("expandedGameDescription = text("),
                 source.indexOf("details.addView(expandedGameTitle"));
 
-        assertTrue(card.contains("stateParams.topMargin = dp(5)"));
+        assertTrue(card.contains("debugCarousel ? CAROUSEL_CARD_HEIGHT_DP : 190"));
+        assertTrue(card.contains("state.setTag(\"playnite.state\")"));
+        assertTrue(card.contains("Gravity.TOP | Gravity.END"));
+        assertTrue(card.contains("playnite.install.progress"));
+        assertTrue(card.contains("expandedCard ? CAROUSEL_FOCUSED_CARD_HEIGHT_DP"));
+        assertTrue(card.contains("new int[]{0x00000000, 0xE6000000}"));
+        assertTrue(card.contains("copy.setVisibility(expandedCard"));
+        assertTrue(card.contains("shine.setTag(\"playnite.shine\")"));
+        assertTrue(card.contains("new int[]{0x00FFFFFF, 0x5CFFFFFF, 0x00FFFFFF}"));
+        assertTrue(binding.contains("installProgress.setVisibility(installing"));
+        assertTrue(binding.contains("installProgress.setProgress(operation.progress)"));
+        assertTrue(binding.contains("playniteCardAlpha(item, operation"));
+        assertTrue(source.contains("return focused || resumeSession ? 1f : .93f"));
+        assertTrue(source.contains("ordinaryReady && !focused ? .48f : 1f"));
+        assertTrue(source.contains(
+                "state.setVisibility(homeCarousel && ordinaryReady ? View.GONE : View.VISIBLE)"));
+        assertTrue(source.contains("isDescendant(appRow, state)"));
+        assertTrue(binding.contains("colors.setSaturation(.25f)"));
+        assertTrue(binding.contains("backdrop.setColorFilter(muted)"));
+        assertTrue(stateStyle.contains("fill = 0xE014241B"));
+        assertTrue(stateStyle.contains("state.setShadowLayer"));
         assertTrue(state.contains("CONSOLE_UI_V2 ? operation.progress + \"%\""));
+        assertTrue(state.contains("CONSOLE_UI_V2 ? \"\""));
+        assertTrue(source.contains("params.height = dp(123)"));
+        assertTrue(source.contains("* 131)"));
+        assertTrue(source.contains("homeContent.setPadding(dp(54), dp(14), dp(54), dp(24))"));
+        assertTrue(source.contains("headerParams.bottomMargin = dp(28)"));
+        assertTrue(source.contains("titleParams.topMargin = dp(103)"));
+        assertTrue(source.contains("hintParams.topMargin = dp(66)"));
+        assertTrue(source.contains("ViewGroup.LayoutParams.WRAP_CONTENT, dp(28)"));
+        assertTrue(source.contains("Gravity.TOP | Gravity.START"));
+        assertTrue(source.contains("positionQuickActionHint(button)"));
+        assertTrue(source.contains("R.dimen.console_space_s"));
+        assertTrue(source.contains("new int[]{0x6004070B, 0x3404070B, 0x1404070B, 0x0004070B}"));
+        assertTrue(source.contains("ARTWORK_FOCUS_SETTLE_MS = 420L"));
+        assertTrue(source.contains("ARTWORK_CROSSFADE_MS = 560L"));
+        assertTrue(source.contains("halo.setShape(GradientDrawable.OVAL)"));
+        assertTrue(source.contains("disc.setShape(GradientDrawable.OVAL)"));
+        assertTrue(source.contains("animateScale(button, focused ? 1.10f : 1f)"));
+        assertTrue(source.contains("resizeHomeCarouselCard(card, focused)"));
+        assertTrue(source.contains("LayoutTransition.CHANGING"));
+        assertTrue(source.contains("CAROUSEL_CARD_WIDTH_DP = 66"));
+        assertTrue(source.contains("CAROUSEL_FOCUSED_CARD_WIDTH_DP = 92"));
+        assertTrue(source.contains("available - focusedGrowth"));
+        assertTrue(source.contains("return Math.max(1, slots + 3)"));
+        assertTrue(source.contains(
+                "if (item.game.installed && included.add(item.stableId())) result.add(item)"));
+        assertTrue(source.contains("CAROUSEL_PREVIOUS_CARD_COUNT"));
+        assertTrue(source.contains("shine.postDelayed(this, 7_000L)"));
+        assertTrue(source.contains("shine.postDelayed(animation, 2_200L)"));
+        assertTrue(source.contains("setPadding(dp(16), dp(6), dp(16), dp(6))"));
+        assertTrue(source.contains("selectedGameSource = new ImageView(this)"));
+        assertTrue(source.contains("new LinearLayout.LayoutParams(dp(18), dp(18))"));
+        assertTrue(source.contains("View carousel = carouselStage != null ? carouselStage"));
+        assertTrue(source.contains("carousel.setVisibility(visibility)"));
+        assertTrue(source.contains("selectedGameTitleRow.setVisibility(View.VISIBLE)"));
+        assertTrue(source.contains("positionCarouselMetadata(card)"));
+        assertTrue(source.contains("appRow.setGravity(Gravity.TOP)"));
+        assertTrue(source.contains("appScroll.setClipChildren(true)"));
+        assertTrue(source.contains("view.setClipBounds(new Rect(0, 0"));
+        assertTrue(source.contains("int endPadding = Math.max(0, right - left - dp(92))"));
+        assertTrue(source.contains("appScroll.setOnScrollChangeListener"));
+        assertTrue(source.contains("card.setPivotY(homeCarousel ? 0f"));
+        assertTrue(source.contains("focused && !homeCarousel ? -dp(2) : 0f"));
+        assertTrue(card.contains("poster.setScaleType(ImageView.ScaleType.FIT_CENTER)"));
+        assertTrue(source.contains("LoadingArtworkPolicy.canFillWithModestCrop("));
+        assertTrue(source.contains("modestTileCrop || landscape && !CONSOLE_UI_V2"));
+        assertTrue(source.contains("dp(CAROUSEL_FOCUSED_CARD_WIDTH_DP) + dp(8)"));
+        assertTrue(source.contains("card.getParent() != appRow || !card.hasFocus()"));
+        assertTrue(source.contains("tile.getLeft() - (homeCarousel ? previousCards"));
+        assertTrue(source.contains("selectedGameLastPlayedPill = metadataPill()"));
+        assertTrue(source.contains("selectedGamePlaytimePill = metadataPill()"));
+        assertTrue(source.contains("R.drawable.ic_console_clock"));
+        assertTrue(source.contains("selectedGamePlaytimePill.setCompoundDrawablePadding(dp(5))"));
+        assertTrue(source.contains("ViewGroup.LayoutParams.WRAP_CONTENT, dp(24)"));
+        assertTrue(source.contains("selectedGameMetadata.setPadding(dp(8), dp(8), dp(12), dp(8))"));
+        assertTrue(source.contains("descriptionParams.topMargin = dp(8)"));
+        assertTrue(source.contains("TextView pill = text(\"\", 10"));
+        assertTrue(source.contains("pill.setMinHeight(dp(24))"));
+        assertTrue(source.contains("quickActionHint = text(\"\", 12"));
+        assertTrue(source.contains("+ (discord ? dp(14) : 0)"));
+        assertTrue(resource("drawable/ic_console_discord.xml").contains(
+                "android:fillColor=\"#FF9FAAB2\""));
+        assertTrue(source.contains("? \"?\" : controller.percentage + \"%\","));
+        assertTrue(source.contains("11, batteryColor, true"));
+        assertTrue(source.contains("libraryTransitionCoordinator.beginTransition(\"__library__\")"));
+        assertTrue(source.contains("libraryTransitionCoordinator.beginTransition(\"\")"));
+        assertTrue(source.contains("!isDescendant(expandedGrid, focus)"));
+        assertTrue(source.contains(
+                "selectedGameTitleRow.setVisibility(View.INVISIBLE)"));
+        assertTrue(source.contains(
+                "getString(R.string.playnite_full_library), \"\", \"\")"));
+        assertTrue(resource("values/strings.xml").contains("playnite_playtime_pill"));
+        assertTrue(resource("values-pl/strings.xml").contains("playnite_last_played_pill"));
+        assertTrue(resource("values-pl/strings.xml").contains(
+                "name=\"console_action_stream_settings\">Opcje<"));
+        assertTrue(source.contains("params.rightMargin = dp(16)"));
         assertTrue(expanded.contains("expandedGameDescription.setPadding(0, 0, 0, dp(20))"));
     }
 
@@ -136,9 +246,42 @@ public class ConsoleActivityRequestedUiContractTest {
         String source = consoleActivitySource();
 
         assertTrue(source.contains("setDiscordNotificationPending(true)"));
-        assertTrue(source.contains("dotPaint.setColor(0xFF3B82F6)"));
+        assertTrue(source.contains("notificationPaint.setColor(0xFF3B82F6)"));
         assertTrue(source.contains("canvas.drawCircle("));
         assertTrue(source.contains("R.string.overlay_discord_unread"));
+    }
+
+    @Test public void discordUsesAWhiteGlyphWithASeparateStatusDot()
+            throws IOException {
+        String source = consoleActivitySource();
+        String style = source.substring(source.indexOf("private void styleQuickAction("),
+                source.indexOf("private void animateScale("));
+        String action = source.substring(source.indexOf("private ImageButton addQuickAction("),
+                source.indexOf("private void positionQuickActionHint("));
+
+        assertTrue(source.contains("hostGatewayClient.getDiscordVoice(connection, true)"));
+        assertTrue(source.contains("applyDiscordVoiceIndicator(voice)"));
+        assertTrue(source.contains("DiscordPanelController.discordIndicatorColor("));
+        assertTrue(style.contains("disc.setColor(0xFFF4F6F7)"));
+        assertTrue(style.contains("discord ? 0xFFF4F6F7 : tint"));
+        assertTrue(action.contains("statusPaint.setColor(discordIndicatorColor)"));
+        assertTrue(action.contains("getWidth() - dp(10), getHeight() - dp(10)"));
+        assertTrue(action.contains("dp(3), statusPaint"));
+        assertFalse(style.contains("styleDiscordGlyph"));
+        assertFalse(style.contains("outline.setTint"));
+    }
+
+    @Test public void carouselMetadataStopsAtTheScreenMidpointOnTv() throws IOException {
+        String source = consoleActivitySource();
+        String metadata = source.substring(source.indexOf(
+                        "selectedGameMetadata = new LinearLayout(this)"),
+                source.indexOf("debugLibrarySpacer = new View(this)"));
+
+        assertTrue(metadata.contains(
+                "portraitLayout ? ViewGroup.LayoutParams.MATCH_PARENT : dp(430)"));
+        assertTrue(metadata.contains("selectedGameDescription.setMaxLines(6)"));
+        assertTrue(metadata.contains(
+                "dp(showCarouselGameDescription ? 140 : 36)"));
     }
 
     @Test public void guineaPigFactExistsInEnglishAndPolishLoadingMessages() throws IOException {
@@ -148,7 +291,29 @@ public class ConsoleActivityRequestedUiContractTest {
                 "Czy wiesz, że naukowa nazwa świnki morskiej to Cavia Porcellus?"));
     }
 
-    @Test public void everyPlayniteCardBindsARealSourceIconInsteadOfLetters() throws IOException {
+    @Test public void dashboardAndLoadingCurtainUseDifferentArtworkPresentation()
+            throws IOException {
+        String source = consoleActivitySource();
+        String ui = source.substring(source.indexOf("private FrameLayout buildUi()"),
+                source.indexOf("private void deferSecondaryLayersAfterFirstLayout("));
+        String loading = source.substring(source.indexOf(
+                        "private String cachedLoadingArtworkPath("),
+                source.indexOf("private ArtworkResult fetchPlayniteArtwork("));
+
+        assertTrue(ui.contains("artworkBackdrop = new ImageView(this)"));
+        assertTrue(ui.contains("artworkBackdrop.setScaleType(ImageView.ScaleType.CENTER_CROP)"));
+        assertTrue(ui.contains("artworkBackdropNext = new ImageView(this)"));
+        assertTrue(ui.contains("artworkBackdropNext.setScaleType(ImageView.ScaleType.CENTER_CROP)"));
+        assertTrue(loading.contains("PlayniteArtworkSpec.forLoadingCurtain(item.game)"));
+        assertFalse(loading.contains("item.game.coverKey"));
+        assertFalse(loading.contains("\"cover\""));
+        assertTrue(loading.contains("bounds.outWidth > bounds.outHeight"));
+        assertTrue(source("src/main/java/com/limelight/console/PlayniteArtworkCache.java",
+                "app/src/main/java/com/limelight/console/PlayniteArtworkCache.java")
+                .contains("\"hero\".equals(kind)"));
+    }
+
+    @Test public void sourceMovesBesideCarouselTitleAndOntoGridArtwork() throws IOException {
         String source = consoleActivitySource();
         String card = source.substring(source.indexOf("private View playniteCard("),
                 source.indexOf("private LinearLayout.LayoutParams playniteCardSpacing("));
@@ -157,12 +322,15 @@ public class ConsoleActivityRequestedUiContractTest {
 
         assertTrue(card.contains("ImageView source = new ImageView(this)"));
         assertTrue(card.contains("source.setTag(\"playnite.source\")"));
+        assertTrue(card.contains("copy.addView(source, new LinearLayout.LayoutParams(dp(18), dp(18)))"));
+        assertTrue(card.contains("copy.setVisibility(expandedCard"));
+        assertTrue(binding.contains("int sourceIcon = playniteSourceIcon(sourceKey)"));
         assertTrue(binding.contains("source.setImageResource(sourceIcon)"));
-        assertTrue(binding.contains("R.drawable.ic_source_steam"));
-        assertTrue(binding.contains("R.drawable.ic_source_epic_games"));
-        assertTrue(binding.contains("R.drawable.ic_source_playnite"));
-        assertTrue(binding.contains("default: return 0"));
-        assertFalse(binding.contains("PlayniteLibrarySources.badge(sourceKey)"));
+        assertTrue(source.contains("R.drawable.ic_source_steam"));
+        assertTrue(source.contains("R.drawable.ic_source_epic_games"));
+        assertTrue(source.contains("R.drawable.ic_source_playnite"));
+        assertTrue(source.contains("selectedGameSource.setImageResource(sourceIcon)"));
+        assertTrue(source.contains("selectedGameSource.setContentDescription(getString("));
         assertTrue(binding.contains("R.string.playnite_source"));
     }
 
@@ -193,7 +361,7 @@ public class ConsoleActivityRequestedUiContractTest {
                 source.indexOf("private void showPlayniteGameDetails("));
 
         assertTrue(card.contains("running.setTag(\"playnite.running\")"));
-        assertTrue(card.contains("Gravity.BOTTOM | Gravity.START"));
+        assertTrue(card.contains("Gravity.TOP | Gravity.START"));
         assertTrue(binding.contains("running.setVisibility(runningSession"));
         assertTrue(binding.contains("R.string.playnite_running_badge_description"));
         assertTrue(source.contains("private boolean isFreshExactRunningManagedGame("));

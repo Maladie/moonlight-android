@@ -1158,7 +1158,7 @@ class GatewayState:
         if not (PLAYNITE_GAME_ID_PATTERN.fullmatch(normalized_id)
                 or GAME_RECORD_ID_PATTERN.fullmatch(normalized_id)):
             raise ValueError("Invalid game record ID.")
-        if normalized_kind not in {"cover", "background", "icon"}:
+        if normalized_kind not in {"cover", "background", "hero", "icon"}:
             raise ValueError("Invalid artwork kind.")
         path = "/artwork?" + urllib.parse.urlencode({
             "game_id": normalized_id,

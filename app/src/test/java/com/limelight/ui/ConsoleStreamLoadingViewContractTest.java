@@ -158,6 +158,9 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(artwork.contains("splashArtworkView.setVisibility(GONE)"));
         assertTrue(apply.contains("splashArtworkView.setVisibility(VISIBLE)"));
         assertTrue(apply.contains("splashArtworkView.setImageBitmap(bitmap)"));
+        assertTrue(apply.contains("artwork.setScaleType(ImageView.ScaleType.CENTER_CROP)"));
+        assertTrue(apply.contains("Math.round(screenWidth / 3.1f)"));
+        assertTrue(apply.contains("Gravity.CENTER"));
         assertTrue(title.contains("messageView.setText(title.trim())"));
     }
 

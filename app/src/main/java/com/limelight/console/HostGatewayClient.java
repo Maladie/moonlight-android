@@ -108,6 +108,7 @@ final class HostGatewayClient {
         final boolean favorite;
         final String cover;
         final String background;
+        final String hero;
         final String lastPlayed;
         final String description;
         final int playCount;
@@ -242,6 +243,28 @@ final class HostGatewayClient {
                      boolean canLaunch, boolean canInstall, boolean canUninstall,
                      boolean requiresConnector, String streamMode,
                      boolean startBeforeStream) {
+            this(id, name, installed, installing, hidden, favorite, cover, background,
+                    "", lastPlayed, description, playCount, source, genres,
+                    artworkVersion, playtimeSeconds, installRequiresAttention,
+                    installAttentionReason, installWindowTitle, installLauncher,
+                    operationState, operationProgress, uninstalling, vibepolloState,
+                    provider, providerGameId, playniteGameId, libraryKey, libraryName,
+                    canLaunch, canInstall, canUninstall, requiresConnector, streamMode,
+                    startBeforeStream);
+        }
+
+        PlayniteGame(String id, String name, boolean installed, boolean installing,
+                     boolean hidden, boolean favorite, String cover, String background,
+                     String hero, String lastPlayed, String description, int playCount,
+                     String source, String genres, String artworkVersion,
+                     long playtimeSeconds, boolean installRequiresAttention,
+                     String installAttentionReason, String installWindowTitle,
+                     String installLauncher, String operationState, int operationProgress,
+                     boolean uninstalling, String vibepolloState, String provider,
+                     String providerGameId, String playniteGameId, String libraryKey,
+                     String libraryName, boolean canLaunch, boolean canInstall,
+                     boolean canUninstall, boolean requiresConnector, String streamMode,
+                     boolean startBeforeStream) {
             this.id = id;
             this.name = name;
             this.installed = installed;
@@ -250,6 +273,7 @@ final class HostGatewayClient {
             this.favorite = favorite;
             this.cover = cover;
             this.background = background;
+            this.hero = hero == null ? "" : hero;
             this.lastPlayed = lastPlayed;
             this.description = description;
             this.playCount = Math.max(0, playCount);
@@ -964,7 +988,8 @@ final class HostGatewayClient {
     byte[] getPlayniteArtwork(GatewayConnection connection, String gameId, String kind)
             throws IOException {
         if (!isPlayniteId(gameId)) throw new IllegalArgumentException("Invalid game record ID");
-        if (!"cover".equals(kind) && !"background".equals(kind) && !"icon".equals(kind)) {
+        if (!"cover".equals(kind) && !"background".equals(kind)
+                && !"hero".equals(kind) && !"icon".equals(kind)) {
             throw new IllegalArgumentException("Invalid Playnite artwork kind");
         }
         try {
@@ -1304,6 +1329,8 @@ final class HostGatewayClient {
                         firstText(value, "cover", "coverImage", "cover_image", "boxArtPath"),
                         firstText(value, "background", "backgroundImage", "background_image",
                                 "backgroundImagePath"),
+                        firstText(value, "hero", "heroImage", "hero_image",
+                                "heroImagePath"),
                         firstText(value, "lastPlayed", "last_played", "lastActivity"),
                         firstText(value, "description", "overview", "summary"),
                         Math.max(0, value.has("playCount")

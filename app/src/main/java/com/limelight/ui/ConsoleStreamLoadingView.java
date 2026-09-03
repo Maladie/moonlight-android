@@ -637,11 +637,17 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         }
         splashLayout = true;
 
-        ImageView artwork = new ArtworkImageView(getContext());
+        ImageView artwork = new ImageView(getContext());
         splashArtworkView = artwork;
+        artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
         artwork.setImageBitmap(bitmap);
         artwork.setAlpha(0f);
-        addView(artwork, 1, match());
+        int screenWidth = getResources().getDisplayMetrics().widthPixels;
+        int screenHeight = getResources().getDisplayMetrics().heightPixels;
+        LayoutParams panorama = new LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
+                Math.min(screenHeight, Math.max(1, Math.round(screenWidth / 3.1f))),
+                Gravity.CENTER);
+        addView(artwork, 1, panorama);
 
         View readability = new View(getContext());
         GradientDrawable scrim = new GradientDrawable(

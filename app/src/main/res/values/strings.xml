@@ -597,7 +597,7 @@
     <string name="console_pair_discovered_host">Pair discovered host</string>
     <string name="console_pair_discovered_host_named">Pair discovered host %1$s</string>
     <string name="console_action_quick_launch">Quick Launch</string>
-    <string name="console_action_stream_settings">Streaming settings</string>
+    <string name="console_action_stream_settings">Options</string>
     <string name="console_action_hidden_apps">Hidden applications</string>
     <string name="console_action_discord">Discord</string>
     <string name="console_refresh">Refresh status and library</string>
@@ -862,7 +862,7 @@
     <string name="console_action_leave_host">Leave host</string>
     <string name="console_wake_host">Wake host</string>
     <string name="console_unpair_host">Unpair host</string>
-    <string name="console_host_status">●  %1$s\n%2$s</string>
+    <string name="console_host_status">%1$s\n%2$s</string>
     <string name="console_host_status_description">%1$s. %2$s. Press Select to open host options.</string>
     <string name="console_host_power_wake_description">%1$s is offline. Press Select to wake the host.</string>
     <string name="console_host_waking_description">%1$s is waking. Please wait.</string>
@@ -1042,6 +1042,8 @@
     <string name="playnite_full_library">Full library</string>
     <string name="playnite_full_library_hint">Show every game in a scrollable grid</string>
     <string name="playnite_selected_game_facts">Last played: %1$s\nTime played: %2$s</string>
+    <string name="playnite_last_played_pill">Last played: %1$s</string>
+    <string name="playnite_playtime_pill">%1$s</string>
     <string name="playnite_description_unavailable">No game description is available yet.</string>
     <string name="playnite_playtime">Playtime</string>
     <string name="playnite_never_played">Never played</string>

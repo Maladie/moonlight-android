@@ -14,6 +14,7 @@ final class PlayniteLibraryGame {
     final long activityEpoch;
     final String coverKey;
     final String backgroundKey;
+    final String heroKey;
     final String description;
     final int playCount;
     final String source;
@@ -154,6 +155,28 @@ final class PlayniteLibraryGame {
                         boolean canLaunch, boolean canInstall, boolean canUninstall,
                         boolean requiresConnector, String streamMode,
                         boolean startBeforeStream) {
+        this(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
+                lastActivity, coverKey, backgroundKey, "", description,
+                playCount, source, genres, installRequiresAttention,
+                installAttentionReason, installWindowTitle, installLauncher,
+                operationState, operationProgress, uninstalling, vibepolloState,
+                provider, providerGameId, metadataPlayniteGameId, libraryKey,
+                libraryName, canLaunch, canInstall, canUninstall, requiresConnector,
+                streamMode, startBeforeStream);
+    }
+
+    PlayniteLibraryGame(String playniteGameId, String name, boolean installed,
+                        boolean installing, boolean hidden, long playtimeSeconds,
+                        String lastActivity, String coverKey, String backgroundKey,
+                        String heroKey, String description, int playCount, String source,
+                        String genres, boolean installRequiresAttention,
+                        String installAttentionReason, String installWindowTitle,
+                        String installLauncher, String operationState, int operationProgress,
+                        boolean uninstalling, String vibepolloState, String provider,
+                        String providerGameId, String metadataPlayniteGameId,
+                        String libraryKey, String libraryName, boolean canLaunch,
+                        boolean canInstall, boolean canUninstall, boolean requiresConnector,
+                        String streamMode, boolean startBeforeStream) {
         this.playniteGameId = playniteGameId;
         this.name = name;
         this.installed = installed;
@@ -164,6 +187,7 @@ final class PlayniteLibraryGame {
         this.activityEpoch = PlayniteLibraryOrdering.activityEpoch(this.lastActivity);
         this.coverKey = text(coverKey);
         this.backgroundKey = text(backgroundKey);
+        this.heroKey = text(heroKey);
         this.description = descriptionText(description);
         this.playCount = Math.max(0, playCount);
         this.source = text(source);
@@ -203,6 +227,7 @@ final class PlayniteLibraryGame {
                 playniteGameId.equals(game.playniteGameId) && name.equals(game.name) &&
                 lastActivity.equals(game.lastActivity) && coverKey.equals(game.coverKey) &&
                 backgroundKey.equals(game.backgroundKey) &&
+                heroKey.equals(game.heroKey) &&
                 description.equals(game.description) && playCount == game.playCount &&
                 source.equals(game.source) && genres.equals(game.genres) &&
                 provider.equals(game.provider) && providerGameId.equals(game.providerGameId) &&
@@ -222,7 +247,8 @@ final class PlayniteLibraryGame {
 
     @Override public int hashCode() {
         return Objects.hash(playniteGameId, name, installed, installing, hidden, playtimeSeconds,
-                lastActivity, coverKey, backgroundKey, description, playCount, source, genres,
+                lastActivity, coverKey, backgroundKey, heroKey, description, playCount,
+                source, genres,
                 installRequiresAttention, installAttentionReason, installWindowTitle,
                 installLauncher, operationState, operationProgress, uninstalling,
                 vibepolloState, provider, providerGameId, metadataPlayniteGameId,
