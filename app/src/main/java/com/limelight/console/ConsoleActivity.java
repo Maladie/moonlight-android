@@ -44,7 +44,10 @@ import android.provider.Settings;
 import android.speech.RecognizerIntent;
 import android.text.TextUtils;
 import android.text.InputType;
+import android.text.SpannableString;
+import android.text.Spanned;
 import android.text.format.DateUtils;
+import android.text.style.RelativeSizeSpan;
 import android.util.LruCache;
 import android.view.Gravity;
 import android.view.Display;
@@ -229,6 +232,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final int CAROUSEL_PREVIOUS_CARD_COUNT = 2;
     private static final long PLAYNITE_SELECTION_SAVE_DELAY_MS = 350L;
     private static final long LIBRARY_UPDATE_NAVIGATION_IDLE_MS = 180L;
+    private static final long WINDOWS_PROFILE_SWITCH_TIMEOUT_MS = 2 * 60_000L;
+    private static final long PIN_INVALID_FEEDBACK_MS = 1_200L;
     private static final String PREF_SCREEN_SAVER_SECONDS = "screen_saver_seconds";
     private static final String PREF_SCREEN_SAVER_MINUTES_LEGACY = "screen_saver_minutes";
     private static final String PREF_LAST_CONFIRMED_HOST_STATE = "last_confirmed_host_state.";
@@ -248,6 +253,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final AtomicInteger appListRenderGeneration = new AtomicInteger();
     private final AtomicInteger playniteArtworkGeneration = new AtomicInteger();
     private final AtomicInteger profileGeneration = new AtomicInteger();
+    private final AtomicInteger profileGateGeneration = new AtomicInteger();
+    private final AtomicInteger hostProfileRefreshGeneration = new AtomicInteger();
+    private final Map<String, Integer> hostProfileRefreshGenerations =
+            new ConcurrentHashMap<>();
+    private final Set<String> hostProfileRefreshInFlight = ConcurrentHashMap.newKeySet();
+    private volatile WindowsProfileSwitchAttempt windowsProfileSwitchAttempt;
     private final SessionStateResolver sessionStateResolver = new SessionStateResolver();
     private final Map<String, ComputerDetails> hosts = new LinkedHashMap<>();
     private final Set<String> newlyDiscoveredHosts = new LinkedHashSet<>();
@@ -315,6 +326,40 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String pendingHostPreparation;
     private boolean hostSelectionLongPressConsumed;
     private String autoLoginHostUuid;
+    private String profileGateHostUuid;
+    private final ConsolePinEntry pinEntry = new ConsolePinEntry();
+    private String pinProfileId;
+    private boolean pinFocusApps;
+    private boolean pinPrepareHost;
+    private boolean pinCompleteHostEntry;
+    private boolean pinSubmitting;
+    private long pinCooldownUntil;
+    private boolean pinSecureFlagAdded;
+    private boolean hasLastControllerInput;
+    private boolean lastControllerPlayStation;
+    private boolean lastInputWasController;
+
+    static final class WindowsProfileSwitchAttempt {
+        final String hostId;
+        final String profileId;
+        final String requestId;
+        final GatewayConnection connection;
+        volatile String attemptId = "";
+        volatile boolean cancelled;
+
+        WindowsProfileSwitchAttempt(String hostId, String profileId, String requestId,
+                                    GatewayConnection connection) {
+            this.hostId = hostId;
+            this.profileId = profileId;
+            this.requestId = requestId;
+            this.connection = connection;
+        }
+
+        boolean matches(String hostId, String profileId, String requestId) {
+            return !cancelled && this.hostId.equals(hostId)
+                    && this.profileId.equals(profileId) && this.requestId.equals(requestId);
+        }
+    }
 
     private FrameLayout root;
     private DiscordDmToastView discordDmToastView;
@@ -348,6 +393,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     };
     private FrameLayout homeLayer;
     private FrameLayout hostSelectionLayer;
+    private ConsoleProfileGateView profileGateView;
+    private ConsolePinEntryView pinEntryView;
     private HorizontalScrollView hostSelectionScroll;
     private LinearLayout hostSelectionRow;
     private LinearLayout hostSelectionLegend;
@@ -1129,7 +1176,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         startPolling();
         ComputerDetails selected = hosts.get(selectedHostUuid);
-        if (selected != null) {
+        if (selected != null && !hostSelectionVisible && profileGateHostUuid == null) {
             if (appListPoller == null) startAppListPoller(selected);
             if (!renderedPlayniteItems.isEmpty()) {
                 schedulePlayniteArtworkPrefetch(selected, renderedPlayniteItems);
@@ -1149,7 +1196,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             homeLayer.setVisibility(hostSelectionVisible ? View.GONE : View.VISIBLE);
         }
         if (hostSelectionLayer != null) {
-            hostSelectionLayer.setVisibility(hostSelectionVisible ? View.VISIBLE : View.GONE);
+            hostSelectionLayer.setVisibility(hostSelectionVisible
+                    && profileGateHostUuid == null ? View.VISIBLE : View.GONE);
+        }
+        if (profileGateView != null && profileGateHostUuid != null) {
+            profileGateView.setVisibility(pinProfileId == null ? View.VISIBLE : View.GONE);
+            if (pinProfileId == null) profileGateView.bringToFront();
+        }
+        if (pinEntryView != null && pinProfileId != null) {
+            pinEntryView.setVisibility(View.VISIBLE);
+            pinEntryView.bringToFront();
         }
         hideSystemUi();
         resetScreenSaverTimer();
@@ -1161,6 +1217,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     @Override
     public boolean dispatchKeyEvent(KeyEvent event) {
         if (event != null) {
+            InputDevice inputDevice = event.getDevice();
+            if (inputDevice != null && isGamepad(inputDevice)) {
+                hasLastControllerInput = true;
+                lastInputWasController = true;
+                lastControllerPlayStation = ControllerGlyphs.isPlayStation(inputDevice);
+                if (pinEntryView != null && pinProfileId != null) {
+                    pinEntryView.setPlayStationButtons(lastControllerPlayStation);
+                    pinEntryView.setControllerInputMode(true);
+                }
+            } else if (inputDevice != null) {
+                lastInputWasController = false;
+                if (pinEntryView != null && pinProfileId != null) {
+                    pinEntryView.setControllerInputMode(false);
+                }
+            }
             if (screenSaverVisible) {
                 if (event.getAction() == KeyEvent.ACTION_DOWN) {
                     screenSaverDismissKeyCode = event.getKeyCode();
@@ -1179,6 +1250,32 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     && isDirectionalNavigationKey(event.getKeyCode())) {
                 lastDirectionalNavigationAt = event.getEventTime();
             }
+        }
+        if (pinProfileId != null && event != null) {
+            int sources = event.getSource();
+            InputDevice device = event.getDevice();
+            if (device != null) sources |= device.getSources();
+            boolean blocked = pinSubmitting
+                    || SystemClock.elapsedRealtime() < pinCooldownUntil;
+            ConsolePinEntry.Action action = blocked
+                    ? pinEntry.handleBlocked(event.getAction(), event.getKeyCode(), sources)
+                    : pinEntry.handle(event.getAction(), event.getKeyCode(), sources);
+            if (action != ConsolePinEntry.Action.IGNORED) {
+                if (action == ConsolePinEntry.Action.CHANGED) renderPinEntry("");
+                else if (action == ConsolePinEntry.Action.SUBMIT) submitProfilePin();
+                else if (action == ConsolePinEntry.Action.BACK) {
+                    ComputerDetails host = currentHost(profileGateHostUuid);
+                    if (host != null) showProfileGate(host, pinFocusApps, pinPrepareHost);
+                }
+                return true;
+            }
+        }
+        if (profileGateHostUuid != null && event != null
+                && event.getAction() == KeyEvent.ACTION_UP
+                && (event.getKeyCode() == KeyEvent.KEYCODE_BACK
+                || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B)) {
+            closeProfileGate();
+            return true;
         }
         if (discordDmShortcut != null && discordDmShortcut.handle(event)) return true;
         if (libraryTransitionRunning && event != null
@@ -1510,11 +1607,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 expandedGridScroll.scrollTo(0, desired);
             }
         } else {
-            View target = initialGameFocusTarget(host);
+            View target = firstFocusableChild(appRow);
             if (target != null) target.requestFocus();
-            int restored = preferences.getInt("app_scroll." + host.uuid, 0);
-            if (portraitLayout) appVerticalScroll.scrollTo(0, restored);
-            else appScroll.scrollTo(restored, 0);
+            if (portraitLayout) appVerticalScroll.scrollTo(0, 0);
+            else appScroll.scrollTo(0, 0);
         }
         return true;
     }
@@ -1553,6 +1649,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     @Override
     protected void onPause() {
         pendingHostPreparation = null;
+        if (pinProfileId != null) {
+            profileGateGeneration.incrementAndGet();
+            pinEntry.clear();
+            pinSubmitting = false;
+            pinCooldownUntil = 0L;
+            renderPinEntry("");
+        }
+        cancelWindowsProfileSwitch(false);
         microphoneStatePreferences.unregisterOnSharedPreferenceChangeListener(
                 microphoneStateListener);
         flushPendingPlayniteSelection();
@@ -1614,6 +1718,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     @Override
     protected void onDestroy() {
         pendingHostPreparation = null;
+        pinEntry.clear();
+        clearPinEntry();
         cancelStreamingAutopilot(false);
         if (root != null && root.getViewTreeObserver().isAlive()) {
             root.getViewTreeObserver().removeOnGlobalFocusChangeListener(
@@ -1643,7 +1749,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     @Override
     public void onBackPressed() {
-        if (sideDialog != null && sideDialog.isShowing()) {
+        if (pinProfileId != null) {
+            ComputerDetails host = currentHost(profileGateHostUuid);
+            if (host != null) showProfileGate(host, pinFocusApps, pinPrepareHost);
+            else closeProfileGate();
+        } else if (profileGateHostUuid != null) {
+            closeProfileGate();
+        } else if (sideDialog != null && sideDialog.isShowing()) {
             handlePanelBack();
         } else if (loadingLayer != null && loadingLayer.getVisibility() == View.VISIBLE) {
             cancelCurrentPreparation();
@@ -1831,7 +1943,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        if (CONSOLE_UI_V2) headerParams.bottomMargin = dp(28);
+        if (CONSOLE_UI_V2) headerParams.bottomMargin = 0;
         homeContent.addView(header, headerParams);
         if (CONSOLE_UI_V2) {
             quickActionHint = text("", 12, Color.WHITE, false);
@@ -2032,20 +2144,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             debugLibraryActions.addView(new View(this), new LinearLayout.LayoutParams(
                     0, 1, 1f));
             libraryHeader.removeView(playniteLibraryStatus);
-            playniteLibraryStatus.setTextSize(9);
-            if (carouselStage != null) {
-                playniteLibraryStatus.setMaxLines(2);
-                FrameLayout.LayoutParams statusParams = new FrameLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT,
-                        ViewGroup.LayoutParams.WRAP_CONTENT,
-                        Gravity.BOTTOM | Gravity.START);
-                statusParams.leftMargin = dp(8);
-                statusParams.rightMargin = dp(8);
-                statusParams.bottomMargin = dp(2);
-                carouselStage.addView(playniteLibraryStatus, statusParams);
-            } else {
-                debugLibraryActions.addView(playniteLibraryStatus, wrapLinear());
-            }
+            playniteLibraryStatus.setTextSize(11);
+            playniteLibraryStatus.setMaxLines(2);
+            playniteLibraryStatus.setMinHeight(dp(18));
+            playniteLibraryStatus.setShadowLayer(dp(2), 0, dp(1), 0xE0000000);
+            LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
+                    ViewGroup.LayoutParams.MATCH_PARENT,
+                    ViewGroup.LayoutParams.WRAP_CONTENT);
+            statusParams.topMargin = dp(16);
+            statusParams.bottomMargin = dp(12);
+            homeContent.addView(playniteLibraryStatus, 1, statusParams);
             LinearLayout.LayoutParams actionParams = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.MATCH_PARENT, dp(50));
             actionParams.topMargin = dp(5);
@@ -2054,23 +2162,25 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
             selectedGameMetadata = new LinearLayout(this);
             selectedGameMetadata.setOrientation(LinearLayout.VERTICAL);
-            selectedGameMetadata.setPadding(dp(8), dp(8), dp(12), dp(8));
+            selectedGameMetadata.setPadding(dp(portraitLayout ? 8 : 62),
+                    dp(8), dp(12), dp(8));
             selectedGameMetadata.setBackground(new GradientDrawable(
                     GradientDrawable.Orientation.LEFT_RIGHT,
-                    new int[]{0x6004070B, 0x3404070B, 0x1404070B, 0x0004070B}));
+                    new int[]{0x0004070B, 0x6004070B, 0x6004070B,
+                            0x3404070B, 0x0004070B}));
             selectedGameTitleRow = horizontalRow();
             selectedGameTitleRow.setGravity(Gravity.CENTER_VERTICAL);
             selectedGameSource = new ImageView(this);
             selectedGameSource.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
             selectedGameTitleRow.addView(selectedGameSource,
-                    new LinearLayout.LayoutParams(dp(18), dp(18)));
-            selectedGameTitle = text("", 17, Color.WHITE, true);
+                    new LinearLayout.LayoutParams(dp(22), dp(22)));
+            selectedGameTitle = text("", 19, Color.WHITE, true);
             selectedGameTitle.setSingleLine(true);
             selectedGameTitle.setEllipsize(TextUtils.TruncateAt.END);
             selectedGameTitle.setShadowLayer(dp(2), 0, dp(1), 0xE0000000);
             LinearLayout.LayoutParams selectedTitleParams = new LinearLayout.LayoutParams(
                     0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-            selectedTitleParams.leftMargin = dp(6);
+            selectedTitleParams.leftMargin = dp(CAROUSEL_CARD_GAP_DP);
             selectedGameTitleRow.addView(selectedGameTitle, selectedTitleParams);
             selectedGameTitleRow.setVisibility(View.INVISIBLE);
             selectedGameFacts = text("", 11, 0xFFB8C9DC, false);
@@ -2087,10 +2197,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                             ViewGroup.LayoutParams.WRAP_CONTENT, dp(24)));
             LinearLayout.LayoutParams playtimePillParams = new LinearLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, dp(24));
-            playtimePillParams.leftMargin = dp(8);
+            playtimePillParams.leftMargin = dp(12);
             selectedGameFactsRow.addView(selectedGamePlaytimePill, playtimePillParams);
             selectedGameDescription = text("", 11, 0xFFD2D9E2, false);
             selectedGameDescription.setShadowLayer(dp(2), 0, dp(1), 0xE0000000);
+            selectedGameDescription.setLineSpacing(0, 1.25f);
             selectedGameDescription.setMaxLines(6);
             selectedGameDescription.setEllipsize(TextUtils.TruncateAt.END);
             selectedGameDescription.setVisibility(
@@ -2112,8 +2223,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 selectedGameMetadata.addView(selectedGameTitleRow, 0, matchLinearWidth());
             }
             LinearLayout.LayoutParams metadataParams = new LinearLayout.LayoutParams(
-                    portraitLayout ? ViewGroup.LayoutParams.MATCH_PARENT : dp(430),
+                    portraitLayout ? ViewGroup.LayoutParams.MATCH_PARENT : dp(484),
                     dp(showCarouselGameDescription ? 140 : 36));
+            if (!portraitLayout) metadataParams.leftMargin = -dp(54);
             metadataParams.topMargin = dp(4);
             homeContent.addView(selectedGameMetadata, metadataParams);
 
@@ -2162,6 +2274,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void buildSecondaryLayers(FrameLayout container) {
         buildHostSelectionLayer(container);
+        profileGateView = new ConsoleProfileGateView(this);
+        container.addView(profileGateView, match());
+        pinEntryView = new ConsolePinEntryView(this);
+        container.addView(pinEntryView, match());
         buildSidePanel();
         buildLoadingLayer(container);
         buildScreenSaverLayer(container);
@@ -2234,7 +2350,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
 
         TextView subtitle = text(getString(R.string.console_host_selection_subtitle),
-                11, 0xFFB8C0CD, false);
+                15, 0xFFB8C0CD, false);
         subtitle.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams subtitleParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -2255,12 +2371,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         hostSelectionScroll.addView(hostSelectionRow, new HorizontalScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(176));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(236));
         rowParams.topMargin = dp(18);
         content.addView(hostSelectionScroll, rowParams);
 
         FrameLayout.LayoutParams contentParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(250), Gravity.CENTER);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(330), Gravity.CENTER);
         contentParams.leftMargin = dp(34);
         contentParams.rightMargin = dp(34);
         hostSelectionLayer.addView(content, contentParams);
@@ -2307,8 +2423,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         ComputerDetails automatic = autoLoginHostUuid == null || autoLoginHostUuid.isEmpty()
                 ? null : hosts.get(autoLoginHostUuid);
         if (automatic != null) {
-            selectHost(automatic, false);
-            prepareSelectedHost(automatic);
+            resolveProfileGate(automatic, false, true);
         } else {
             showHostSelection(selectedHostUuid);
         }
@@ -2316,6 +2431,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void showHostSelection(String focusUuid) {
         pendingHostPreparation = null;
+        profileGateGeneration.incrementAndGet();
+        clearPinEntry();
+        profileGateHostUuid = null;
+        if (profileGateView != null) profileGateView.setVisibility(View.GONE);
         hostSelectionVisible = true;
         if (consoleAudioEngine != null) {
             consoleAudioEngine.setHostSelectionVisible(true);
@@ -2330,6 +2449,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (homeLayer != null) homeLayer.setVisibility(View.GONE);
         if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.VISIBLE);
         renderHostSelection();
+        refreshVisibleHostProfiles();
         requestHostSelectionFocus();
     }
 
@@ -2363,7 +2483,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private LinearLayout.LayoutParams hostSelectionTileParams() {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(112), dp(160));
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(156), dp(220));
         params.leftMargin = dp(7);
         params.rightMargin = dp(7);
         return params;
@@ -2377,18 +2497,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         plus.setGravity(Gravity.CENTER);
         avatar.addView(plus, match());
         styleHostSelectionAvatar(avatar, false, true);
-        tile.addView(avatar, new LinearLayout.LayoutParams(dp(78), dp(78)));
+        tile.addView(avatar, new LinearLayout.LayoutParams(dp(92), dp(92)));
         TextView label = text(getString(R.string.console_add_host_short),
-                10, Color.WHITE, false);
+                14, Color.WHITE, false);
         label.setGravity(Gravity.CENTER);
         LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(28));
-        labelParams.topMargin = dp(7);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        labelParams.topMargin = dp(10);
         tile.addView(label, labelParams);
-        TextView hint = text("", 8, 0xFFC8D0DB, false);
+        TextView hint = text("", 12, 0xFFC8D0DB, false);
         hint.setGravity(Gravity.CENTER);
         tile.addView(hint, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(22)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
         tile.setOnClickListener(view -> showAddHostPanel());
         tile.setOnFocusChangeListener((view, focused) -> {
             styleHostSelectionAvatar(avatar, focused, true);
@@ -2408,43 +2528,48 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
         artwork.setAlpha(.88f);
         FrameLayout.LayoutParams artworkParams = new FrameLayout.LayoutParams(
-                dp(70), dp(70), Gravity.CENTER);
+                dp(84), dp(84), Gravity.CENTER);
         avatar.addView(artwork, artworkParams);
         TextView initials = text(hostInitials(host.name), 14, Color.WHITE, true);
         initials.setGravity(Gravity.CENTER);
         initials.setShadowLayer(dp(3), 0f, dp(1), 0xE0000000);
         avatar.addView(initials, match());
         styleHostSelectionAvatar(avatar, false, false);
-        tile.addView(avatar, new LinearLayout.LayoutParams(dp(78), dp(78)));
+        tile.addView(avatar, new LinearLayout.LayoutParams(dp(92), dp(92)));
 
-        TextView name = text(host.name, 10, Color.WHITE, false);
+        TextView name = text(host.name, 14, Color.WHITE, false);
         name.setGravity(Gravity.CENTER);
         name.setSingleLine(true);
         name.setEllipsize(TextUtils.TruncateAt.END);
         LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(24));
-        nameParams.topMargin = dp(5);
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
+        nameParams.topMargin = dp(10);
         tile.addView(name, nameParams);
 
         LinearLayout statusRow = new LinearLayout(this);
         statusRow.setOrientation(LinearLayout.HORIZONTAL);
         statusRow.setGravity(Gravity.CENTER);
+        statusRow.setTranslationY(-dp(4));
         View dot = new View(this);
         statusRow.addView(dot, new LinearLayout.LayoutParams(dp(6), dp(6)));
-        TextView status = text("", 8, 0xFFC7CED8, false);
+        TextView status = text("", 12, 0xFFC7CED8, false);
         LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(20));
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(30));
         statusParams.leftMargin = dp(4);
         statusRow.addView(status, statusParams);
         tile.addView(statusRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(20)));
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
 
         TextView options = text(getString(R.string.console_host_options_hint),
-                8, 0xFFDCE3ED, false);
+                12, 0xFFDCE3ED, false);
         options.setGravity(Gravity.CENTER);
+        options.setCompoundDrawablesWithIntrinsicBounds(
+                R.drawable.ic_overlay_window_menu, 0, 0, 0);
+        options.setCompoundDrawablePadding(dp(2));
+        options.setTranslationY(-dp(4));
         options.setVisibility(View.INVISIBLE);
         tile.addView(options, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(22)));
+                ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)));
 
         HostSelectionTile views = new HostSelectionTile(tile, avatar, dot, status, options);
         hostSelectionTiles.put(host.uuid, views);
@@ -2543,20 +2668,280 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void activateHostFromSelection(String uuid) {
         ComputerDetails host = hosts.get(uuid);
         if (host == null) return;
-        if (SuspendedSessionStore.load(this, host.uuid,
-                selectedProfileId(host.uuid)) != null) {
-            newlyDiscoveredHosts.remove(uuid);
-            selectHost(host, true);
-            prepareSelectedHost(host);
-            return;
-        }
         if (host.pairState != PairingManager.PairState.PAIRED) {
             pairHost(host);
             return;
         }
-        newlyDiscoveredHosts.remove(uuid);
-        selectHost(host, true);
-        prepareSelectedHost(host);
+        resolveProfileGate(host, true, true);
+    }
+
+    private void resolveProfileGate(ComputerDetails host, boolean focusApps,
+                                    boolean prepareHost) {
+        if (host == null) return;
+        int token = profileGateGeneration.incrementAndGet();
+        profileGateHostUuid = host.uuid;
+        stopAppListPoller();
+        cancelPlayniteRequest();
+        mainHandler.removeCallbacks(playniteRefreshCycle);
+        String address = host.activeAddress == null ? null : host.activeAddress.address;
+        GatewayConnection connection = hostGatewayStore.loadForHost(host.uuid, address);
+        if (connection == null) {
+            resolveProfileGate(host, focusApps, prepareHost, token);
+            return;
+        }
+        executor.execute(() -> {
+            HostGatewayClient.IntegrationProfiles profiles = null;
+            try {
+                profiles = hostGatewayClient.getIntegrationProfiles(connection);
+            } catch (IOException | RuntimeException unavailable) {
+                // The last authorized profile cache remains usable while Gateway is unavailable.
+            }
+            HostGatewayClient.IntegrationProfiles result = profiles;
+            mainHandler.post(() -> {
+                if (token != profileGateGeneration.get()) return;
+                ComputerDetails current = currentHost(host.uuid);
+                if (current == null) return;
+                if (result != null) hostGatewayStore.saveProfiles(host.uuid, result);
+                resolveProfileGate(current, focusApps, prepareHost, token);
+            });
+        });
+    }
+
+    private void resolveProfileGate(ComputerDetails host, boolean focusApps,
+                                    boolean prepareHost, int token) {
+        if (token != profileGateGeneration.get()) return;
+        HostGatewayStore.ProfileGate gate = hostGatewayStore.profileGate(host.uuid);
+        if (gate.clearAutomatic) {
+            hostGatewayStore.setAutomaticIntegrationProfileId(host.uuid, "");
+        }
+        if (gate.showGate) {
+            showProfileGate(host, focusApps, prepareHost);
+            return;
+        }
+        if (gate.profile != null) {
+            if (gate.profile.pinRequired) {
+                showPinEntry(host, gate.profile, focusApps, prepareHost, true);
+                return;
+            }
+            changeSelectedProfile(host, gate.profile.id);
+        }
+        enterHostAfterProfileGate(host, focusApps, prepareHost);
+    }
+
+    private void showProfileGate(ComputerDetails host, boolean focusApps,
+                                 boolean prepareHost) {
+        clearPinEntry();
+        HostGatewayStore.ProfileSelection selection =
+                hostGatewayStore.profileSelection(host.uuid);
+        profileGateHostUuid = host.uuid;
+        hostSelectionVisible = false;
+        hostSelectionFocusUuid = host.uuid;
+        if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.GONE);
+        if (homeLayer != null) homeLayer.setVisibility(View.GONE);
+        profileGateView.show(host.name, selection.profiles,
+                hostGatewayStore.automaticIntegrationProfileId(host.uuid),
+                new ConsoleProfileGateView.Listener() {
+                    @Override public void onProfileSelected(String profileId) {
+                        if (!host.uuid.equals(profileGateHostUuid)) return;
+                        HostGatewayClient.IntegrationProfile profile =
+                                profileForGate(host.uuid, profileId);
+                        if (profile == null) return;
+                        if (profile.pinRequired) {
+                            showPinEntry(host, profile, focusApps, prepareHost, true);
+                        } else {
+                            changeSelectedProfile(host, profileId);
+                            enterHostAfterProfileGate(
+                                    currentHost(host.uuid), focusApps, prepareHost);
+                        }
+                    }
+
+                    @Override public void onAutomaticProfileToggled(String profileId) {
+                        if (!host.uuid.equals(profileGateHostUuid)) return;
+                        HostGatewayClient.IntegrationProfile profile =
+                                profileForGate(host.uuid, profileId);
+                        if (profile == null || profile.pinRequired) return;
+                        String automatic = hostGatewayStore.automaticIntegrationProfileId(
+                                host.uuid);
+                        hostGatewayStore.setAutomaticIntegrationProfileId(host.uuid,
+                                profileId.equals(automatic) ? "" : profileId);
+                        showProfileGate(host, focusApps, prepareHost);
+                    }
+                });
+        profileGateView.bringToFront();
+    }
+
+    private HostGatewayClient.IntegrationProfile profileForGate(
+            String hostId, String profileId) {
+        for (HostGatewayClient.IntegrationProfile profile
+                : hostGatewayStore.profileSelection(hostId).profiles) {
+            if (profile.id.equals(profileId)) return profile;
+        }
+        return null;
+    }
+
+    private void showPinEntry(ComputerDetails host,
+                              HostGatewayClient.IntegrationProfile profile,
+                              boolean focusApps, boolean prepareHost,
+                              boolean completeHostEntry) {
+        profileGateGeneration.incrementAndGet();
+        clearPinEntry();
+        profileGateHostUuid = host.uuid;
+        pinProfileId = profile.id;
+        pinFocusApps = focusApps;
+        pinPrepareHost = prepareHost;
+        pinCompleteHostEntry = completeHostEntry;
+        if ((getWindow().getAttributes().flags & WindowManager.LayoutParams.FLAG_SECURE) == 0) {
+            getWindow().addFlags(WindowManager.LayoutParams.FLAG_SECURE);
+            pinSecureFlagAdded = true;
+        }
+        if (profileGateView != null) profileGateView.setVisibility(View.GONE);
+        boolean playStationButtons = hasLastControllerInput
+                ? lastControllerPlayStation : ControllerGlyphs.hasPlayStationController();
+        pinEntryView.show(host.name, profile, playStationButtons,
+                lastInputWasController && hasLastControllerInput, digit -> {
+            if (pinProfileId == null || pinSubmitting
+                    || SystemClock.elapsedRealtime() < pinCooldownUntil) return;
+            ConsolePinEntry.Action action = pinEntry.appendDigit(digit);
+            renderPinEntry("");
+            if (action == ConsolePinEntry.Action.SUBMIT) submitProfilePin();
+        });
+        renderPinEntry("");
+        pinEntryView.bringToFront();
+    }
+
+    private void submitProfilePin() {
+        if (pinProfileId == null || pinSubmitting || pinEntry.length() != 4) return;
+        long now = SystemClock.elapsedRealtime();
+        if (now < pinCooldownUntil) {
+            renderPinCooldown();
+            return;
+        }
+        String hostId = profileGateHostUuid;
+        String profileId = pinProfileId;
+        int token = profileGateGeneration.get();
+        String pin = pinEntry.takeAndClear();
+        pinSubmitting = true;
+        renderPinEntry("");
+        ComputerDetails host = currentHost(hostId);
+        String address = host == null || host.activeAddress == null
+                ? null : host.activeAddress.address;
+        GatewayConnection connection = hostGatewayStore.loadForHost(
+                hostId, address, profileId);
+        executor.execute(() -> {
+            HostGatewayClient.GatewayException gatewayError = null;
+            IOException transportError = null;
+            try {
+                if (connection == null) throw new IOException("Gateway unavailable");
+                hostGatewayClient.verifyProfilePin(connection, pin);
+            } catch (HostGatewayClient.GatewayException error) {
+                gatewayError = error;
+            } catch (IOException error) {
+                transportError = error;
+            }
+            HostGatewayClient.GatewayException resultError = gatewayError;
+            IOException resultTransportError = transportError;
+            mainHandler.post(() -> finishProfilePinVerification(
+                    hostId, profileId, token, resultError, resultTransportError));
+        });
+    }
+
+    private void finishProfilePinVerification(String hostId, String profileId, int token,
+                                              HostGatewayClient.GatewayException gatewayError,
+                                              IOException transportError) {
+        if (!ConsolePinEntry.matchesResult(token, hostId, profileId,
+                profileGateGeneration.get(), profileGateHostUuid, pinProfileId)) return;
+        pinSubmitting = false;
+        pinEntry.clear();
+        if (gatewayError == null && transportError == null) {
+            ComputerDetails host = currentHost(hostId);
+            HostGatewayClient.IntegrationProfile profile =
+                    profileForGate(hostId, profileId);
+            if (host == null || profile == null || !profile.pinRequired) return;
+            if (pinCompleteHostEntry) {
+                changeSelectedProfile(host, profileId);
+                enterHostAfterProfileGate(host, pinFocusApps, pinPrepareHost);
+            } else {
+                profileGateGeneration.incrementAndGet();
+                clearPinEntry();
+                profileGateHostUuid = null;
+                applySelectedProfile(host, profileId);
+            }
+            return;
+        }
+        String reason = gatewayError == null ? "" : gatewayError.getMessage();
+        int seconds = ConsolePinEntry.retryDelaySeconds(reason,
+                gatewayError == null ? 0 : gatewayError.retryAfterSeconds);
+        if (seconds > 0) {
+            pinCooldownUntil = SystemClock.elapsedRealtime() + seconds * 1_000L;
+            if ("invalid_pin".equals(reason)) {
+                renderPinEntry(getString(R.string.console_pin_invalid));
+                mainHandler.postDelayed(() -> {
+                    if (token == profileGateGeneration.get()
+                            && profileId.equals(pinProfileId)) renderPinCooldown();
+                }, PIN_INVALID_FEEDBACK_MS);
+            } else {
+                renderPinCooldown();
+            }
+        } else {
+            renderPinEntry(getString(R.string.console_pin_failed));
+        }
+    }
+
+    private void renderPinCooldown() {
+        long remaining = Math.max(0L, pinCooldownUntil - SystemClock.elapsedRealtime());
+        if (remaining == 0L) {
+            pinCooldownUntil = 0L;
+            renderPinEntry("");
+            return;
+        }
+        int seconds = (int) ((remaining + 999L) / 1_000L);
+        renderPinEntry(getString(R.string.console_pin_cooldown, seconds));
+        int token = profileGateGeneration.get();
+        String profileId = pinProfileId;
+        mainHandler.postDelayed(() -> {
+            if (token == profileGateGeneration.get()
+                    && profileId != null && profileId.equals(pinProfileId)) {
+                renderPinCooldown();
+            }
+        }, Math.min(1_000L, remaining));
+    }
+
+    private void renderPinEntry(String message) {
+        if (pinEntryView != null && pinProfileId != null) {
+            pinEntryView.render(pinEntry.length(), message, !pinSubmitting
+                    && SystemClock.elapsedRealtime() >= pinCooldownUntil);
+        }
+    }
+
+    private void clearPinEntry() {
+        pinEntry.clear();
+        pinProfileId = null;
+        pinSubmitting = false;
+        pinCooldownUntil = 0L;
+        pinCompleteHostEntry = false;
+        if (pinEntryView != null) pinEntryView.setVisibility(View.GONE);
+        if (pinSecureFlagAdded) {
+            getWindow().clearFlags(WindowManager.LayoutParams.FLAG_SECURE);
+            pinSecureFlagAdded = false;
+        }
+    }
+
+    private void enterHostAfterProfileGate(ComputerDetails host, boolean focusApps,
+                                           boolean prepareHost) {
+        if (host == null) return;
+        profileGateGeneration.incrementAndGet();
+        clearPinEntry();
+        profileGateHostUuid = null;
+        if (profileGateView != null) profileGateView.setVisibility(View.GONE);
+        newlyDiscoveredHosts.remove(host.uuid);
+        selectHost(host, focusApps);
+        if (prepareHost) prepareSelectedHost(host);
+    }
+
+    private void closeProfileGate() {
+        String hostId = profileGateHostUuid;
+        clearPinEntry();
+        showHostSelection(hostId);
     }
 
     private void prepareSelectedHost(ComputerDetails host) {
@@ -2725,7 +3110,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         expandedGameFacts = text("", 12, 0xFFB8C9DC, false);
         expandedGameFacts.setMaxLines(3);
         expandedGameDescription = text("", 12, 0xFFE0E5EA, false);
-        expandedGameDescription.setLineSpacing(dp(1), 1f);
+        expandedGameDescription.setLineSpacing(0, 1.25f);
         expandedGameDescription.setPadding(0, 0, 0, dp(20));
         details.addView(expandedGameTitle, matchLinearWidth());
         LinearLayout.LayoutParams expandedFactsParams = matchLinearWidth();
@@ -2934,14 +3319,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         addLegendSeparator(hostSelectionLegend, 18, 9);
         TextView button = controllerGlyph(glyph, 23);
         hostSelectionLegend.addView(button, new LinearLayout.LayoutParams(dp(23), dp(23)));
-        addLegendDescription(hostSelectionLegend, label, 9, 5);
+        addLegendDescription(hostSelectionLegend, label, 13, 5);
     }
 
     private void addHostSelectionLegendTextItem(String glyph, String label) {
         addLegendSeparator(hostSelectionLegend, 18, 9);
         hostSelectionLegend.addView(legendTextButton(glyph),
                 new LinearLayout.LayoutParams(dp(23), dp(23)));
-        addLegendDescription(hostSelectionLegend, label, 9, 5);
+        addLegendDescription(hostSelectionLegend, label, 13, 5);
     }
 
     private void addNavigationLegendItem(String glyph, String label) {
@@ -2963,7 +3348,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private TextView legendTextButton(String glyph) {
-        TextView button = text(glyph, 8, Color.WHITE, true);
+        TextView button = text(glyph, 12, Color.WHITE, true);
         button.setGravity(Gravity.CENTER);
         GradientDrawable background = new GradientDrawable();
         background.setShape(GradientDrawable.OVAL);
@@ -3084,7 +3469,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         refreshDiscordIndicator();
         wireHomeFocusNavigation();
         ComputerDetails selected = hosts.get(selectedHostUuid);
-        if (!hostSelectionVisible && selected != null
+        if (!hostSelectionVisible && profileGateHostUuid == null && selected != null
                 && appRow != null && appRow.getChildCount() <= 1) {
             selectHost(selected, false);
         }
@@ -3166,7 +3551,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (selection == null || selection.selected == null
                 || !selection.showSelector) {
             profileSelector.setVisibility(View.GONE);
-            if (selection != null && selection.selected != null) {
+            if (selection != null && selection.selected != null
+                    && !selection.selected.pinRequired) {
                 hostGatewayStore.setSelectedIntegrationProfileId(
                         host.uuid, selection.selected.id);
             }
@@ -3204,10 +3590,32 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void selectProfile(ComputerDetails host, String profileId) {
-        if (host == null) return;
-        String previous = selectedProfileId(host.uuid);
+        HostGatewayClient.IntegrationProfile profile =
+                profileForGate(host == null ? null : host.uuid, profileId);
+        if (profile == null) return;
+        if (profile.pinRequired) {
+            profileGateHostUuid = host.uuid;
+            showPinEntry(host, profile, true, false, false);
+            return;
+        }
+        applySelectedProfile(host, profileId);
+    }
+
+    private void applySelectedProfile(ComputerDetails host, String profileId) {
+        if (!changeSelectedProfile(host, profileId)) return;
+        currentSunshineApps = loadApps(host);
+        updateHostSelector();
+        refreshHostProfiles(host);
+        refreshDiscordIndicator();
+        loadPlayniteForHost(host);
+        resolveActivePlayniteGame(host, host.runningGameId != 0);
+    }
+
+    private boolean changeSelectedProfile(ComputerDetails host, String profileId) {
+        if (host == null) return false;
         String selected = GatewayConnection.normalizeProfileId(profileId);
-        if (selected.equals(previous)) return;
+        if (selected.equals(selectedProfileId(host.uuid))) return false;
+        cancelWindowsProfileSwitch(false);
         if (sessionOrchestrator != null) sessionOrchestrator.cancel();
         hostGatewayStore.setSelectedIntegrationProfileId(host.uuid, selected);
         profileGeneration.incrementAndGet();
@@ -3217,14 +3625,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         gameOperationsController = new GameOperationsController(
                 hostGatewayClient, executor, mainHandler::post);
         currentPlayniteGames = Collections.emptyList();
-        currentSunshineApps = loadApps(host);
+        currentSunshineApps = Collections.emptyList();
         currentPlayniteHostUuid = null;
         renderedAppsSignature = null;
-        updateHostSelector();
-        refreshHostProfiles(host);
-        refreshDiscordIndicator();
-        loadPlayniteForHost(host);
-        resolveActivePlayniteGame(host, host.runningGameId != 0);
+        return true;
     }
 
     private void refreshHostProfiles(ComputerDetails host) {
@@ -3252,6 +3656,51 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     selectProfile(currentHost(hostId), selection.selected.id);
                 } else {
                     updateProfileSelector(currentHost(hostId));
+                    updateHostPowerLabel();
+                    updateHostSelectionTile(currentHost(hostId));
+                }
+            });
+        });
+    }
+
+    private void refreshVisibleHostProfiles() {
+        int generation = hostProfileRefreshGeneration.incrementAndGet();
+        for (ComputerDetails host : hosts.values()) {
+            if (!newlyDiscoveredHosts.contains(host.uuid)) {
+                hostProfileRefreshGenerations.put(host.uuid, generation);
+                refreshVisibleHostProfile(host, generation);
+            }
+        }
+    }
+
+    private void refreshVisibleHostProfile(ComputerDetails host, int generation) {
+        if (host == null || host.state != ComputerDetails.State.ONLINE
+                || host.pairState != PairingManager.PairState.PAIRED) return;
+        String address = host.activeAddress == null ? null : host.activeAddress.address;
+        GatewayConnection connection = hostGatewayStore.loadForHost(host.uuid, address);
+        if (connection == null || !hostProfileRefreshInFlight.add(host.uuid)) return;
+        String hostId = host.uuid;
+        executor.execute(() -> {
+            HostGatewayClient.IntegrationProfiles profiles = null;
+            try {
+                profiles = hostGatewayClient.getIntegrationProfiles(connection);
+            } catch (IOException | RuntimeException unavailable) {
+                // Keep the last cached presentation when this read-only refresh is unavailable.
+            }
+            HostGatewayClient.IntegrationProfiles result = profiles;
+            mainHandler.post(() -> {
+                hostProfileRefreshInFlight.remove(hostId);
+                Integer latest = hostProfileRefreshGenerations.get(hostId);
+                if (latest == null || latest != generation || !hostSelectionVisible) {
+                    if (latest != null && hostSelectionVisible) {
+                        refreshVisibleHostProfile(hosts.get(hostId), latest);
+                    }
+                    return;
+                }
+                ComputerDetails current = hosts.get(hostId);
+                if (result != null && current != null) {
+                    hostGatewayStore.saveProfiles(hostId, result);
+                    updateHostSelectionTile(current);
                 }
             });
         });
@@ -3681,6 +4130,29 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (localWarmUp && warmUpStatus == WARM_UP_ERROR) {
             return getString(R.string.console_warm_up_error);
         }
+        ConsoleHostPresentation.Profile profile = consoleProfile(host);
+        if (state == ConsoleHostPresentation.State.ONLINE
+                || state == ConsoleHostPresentation.State.PROFILE_ATTENTION) {
+            switch (profile.state) {
+                case ACTIVE:
+                    return getString(R.string.console_profile_status_active,
+                            profile.selectedName);
+                case OTHER_AUTHORIZED_ACTIVE:
+                    return getString(R.string.console_profile_status_other_named,
+                            profile.selectedName, profile.activeName);
+                case OTHER_ACTIVE:
+                    return getString(R.string.console_profile_status_other,
+                            profile.selectedName);
+                case SIGN_IN_REQUIRED:
+                    return getString(R.string.console_profile_status_sign_in,
+                            profile.selectedName);
+                case UNKNOWN:
+                    return getString(R.string.console_profile_status_unknown,
+                            profile.selectedName);
+                default:
+                    break;
+            }
+        }
         switch (state) {
             case WAKING:
                 return getString(R.string.console_status_waking);
@@ -3725,8 +4197,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     : ConsoleHostPresentation.State.ASLEEP;
         }
         ConsoleHostPresentation.State state = hostStateController.state(host);
-        return state == ConsoleHostPresentation.State.ACTIVE_SESSION
-                ? ConsoleHostPresentation.State.ONLINE : state;
+        if (state == ConsoleHostPresentation.State.ACTIVE_SESSION) {
+            state = ConsoleHostPresentation.State.ONLINE;
+        }
+        return ConsoleHostPresentation.withProfile(state, consoleProfile(host));
+    }
+
+    private ConsoleHostPresentation.Profile consoleProfile(ComputerDetails host) {
+        return ConsoleHostPresentation.profile(host == null || hostGatewayStore == null
+                ? null : hostGatewayStore.profileSelection(host.uuid));
     }
 
     private String findAppName(ComputerDetails host, int appId) {
@@ -3808,6 +4287,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         boolean gatewayAvailable = hostGatewayStore.loadForHost(host.uuid, address) != null;
         boolean canSleep = online && gatewayAvailable;
+        HostGatewayStore.ProfileSelection profileSelection =
+                hostGatewayStore.profileSelection(host.uuid);
+        HostGatewayClient.IntegrationProfile selectedProfile = profileSelection.selected;
+        HostGatewayClient.IntegrationProfile activeProfile =
+                activeAuthorizedProfile(profileSelection);
 
         TextView wake = hostSelectionMenuAction(getString(R.string.console_wake_host),
                 !terminating && ConsoleHostPresentation.canWake(host)
@@ -3823,6 +4307,29 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             hideSidePanel();
             launchDesktopSession(host);
         });
+        TextView profiles = hostSelectionMenuAction(
+                getString(R.string.console_choose_moonwaker_profile), true);
+        profiles.setOnClickListener(view -> showProfileSelection(host));
+        TextView alignProfile = activeProfile == null || selectedProfile == null
+                || activeProfile.id.equals(selectedProfile.id) ? null
+                : hostSelectionMenuAction(getString(
+                R.string.console_use_profile_in_moonwaker, activeProfile.name), true);
+        if (alignProfile != null) {
+            alignProfile.setOnClickListener(view -> {
+                selectProfile(host, activeProfile.id);
+                hideSidePanel();
+            });
+        }
+        boolean switchVisible = selectedProfile != null
+                && !"active".equals(selectedProfile.sessionState);
+        TextView switchProfile = switchVisible ? hostSelectionMenuAction(getString(
+                R.string.console_switch_windows_profile, selectedProfile.name),
+                online && gatewayAvailable && selectedProfile.remoteSignIn
+                        && windowsProfileSwitchAttempt == null) : null;
+        if (switchProfile != null) {
+            switchProfile.setOnClickListener(view ->
+                    confirmWindowsProfileSwitch(host, selectedProfile));
+        }
         LinearLayout warmUp = settingsToggle(
                 getString(R.string.console_auto_stream_warm_up), autoWarmUp);
         warmUp.setOnClickListener(view -> {
@@ -3853,11 +4360,214 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 online && paired && gatewayAvailable);
         hardTerminate.setTextColor(hardTerminate.isEnabled() ? 0xFFFF6F61 : 0x88FF6F61);
         hardTerminate.setOnClickListener(view -> confirmHardTerminateSession(host));
+        List<View> actions = new ArrayList<>();
+        actions.add(wake);
+        actions.add(desktop);
+        if (alignProfile != null) actions.add(alignProfile);
+        if (switchProfile != null) actions.add(switchProfile);
+        if (profileSelection.showSelector) actions.add(profiles);
+        actions.add(warmUp);
+        actions.add(terminate);
+        actions.add(hardTerminate);
+        actions.add(unpair);
+        actions.add(test);
+        actions.add(sleep);
         showSidePanel(getString(R.string.console_host_eyebrow), host.name,
                 getString(online ? R.string.console_host_online_details
                         : R.string.console_host_offline_details) + "\n\n"
                         + getString(R.string.console_auto_stream_warm_up_description),
-                wake, desktop, warmUp, terminate, hardTerminate, unpair, test, sleep);
+                actions.toArray(new View[0]));
+    }
+
+    static HostGatewayClient.IntegrationProfile activeAuthorizedProfile(
+            HostGatewayStore.ProfileSelection selection) {
+        if (selection == null) return null;
+        for (HostGatewayClient.IntegrationProfile profile : selection.profiles) {
+            if ("active".equals(profile.sessionState)) return profile;
+        }
+        return null;
+    }
+
+    private void confirmWindowsProfileSwitch(ComputerDetails host,
+                                             HostGatewayClient.IntegrationProfile profile) {
+        TextView cancel = panelAction(getString(R.string.console_cancel));
+        TextView switchProfile = panelAction(getString(
+                R.string.console_switch_windows_profile_confirm, profile.name));
+        switchProfile.setTextColor(0xFFFFB74D);
+        cancel.setOnClickListener(view -> handlePanelBack());
+        switchProfile.setOnClickListener(view -> {
+            hideSidePanel();
+            requestWindowsProfileSwitch(host, profile);
+        });
+        showSidePanel(getString(R.string.console_profile_eyebrow),
+                getString(R.string.console_switch_windows_profile_title, profile.name),
+                getString(R.string.console_switch_windows_profile_details),
+                cancel, switchProfile);
+    }
+
+    private void requestWindowsProfileSwitch(ComputerDetails host,
+                                             HostGatewayClient.IntegrationProfile profile) {
+        if (host == null || profile == null || !profile.id.equals(selectedProfileId(host.uuid))) {
+            return;
+        }
+        String address = host.activeAddress == null ? null : host.activeAddress.address;
+        GatewayConnection connection = hostGatewayStore.loadForHost(
+                host.uuid, address, profile.id);
+        if (connection == null) return;
+        cancelWindowsProfileSwitch(false);
+        WindowsProfileSwitchAttempt attempt = new WindowsProfileSwitchAttempt(
+                host.uuid, profile.id, "android-switch-" + UUID.randomUUID(), connection);
+        windowsProfileSwitchAttempt = attempt;
+
+        TextView cancel = panelAction(getString(R.string.console_cancel));
+        cancel.setOnClickListener(view -> {
+            hideSidePanel();
+            cancelWindowsProfileSwitch(true);
+        });
+        showSidePanel(getString(R.string.console_profile_eyebrow),
+                getString(R.string.console_switch_windows_profile_progress, profile.name),
+                getString(R.string.console_switch_windows_profile_progress_details), cancel);
+        executor.execute(() -> runWindowsProfileSwitch(attempt));
+    }
+
+    private void runWindowsProfileSwitch(WindowsProfileSwitchAttempt attempt) {
+        HostGatewayClient.WindowsSession session;
+        try {
+            session = hostGatewayClient.switchWindowsSession(
+                    attempt.connection, attempt.requestId);
+        } catch (IOException | RuntimeException unavailable) {
+            finishWindowsProfileSwitch(attempt,
+                    new HostGatewayClient.WindowsSession("failed", "gateway_unavailable", "", 1_000));
+            return;
+        }
+        attempt.attemptId = session.attemptId;
+        if (!isCurrentWindowsProfileSwitch(attempt)) {
+            cancelWindowsProfileSwitchAttempt(attempt);
+            return;
+        }
+        long deadline = SystemClock.elapsedRealtime() + WINDOWS_PROFILE_SWITCH_TIMEOUT_MS;
+        while (canPollWindowsProfileSwitch(session)
+                && isCurrentWindowsProfileSwitch(attempt)
+                && SystemClock.elapsedRealtime() < deadline) {
+            try {
+                Thread.sleep(Math.max(250L, Math.min(3_000L, session.retryAfterMs)));
+                if (!isCurrentWindowsProfileSwitch(attempt)) break;
+                session = hostGatewayClient.getWindowsSessionStatus(
+                        attempt.connection, attempt.requestId, attempt.attemptId);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+                break;
+            } catch (IOException | RuntimeException unavailable) {
+                // Retry the same bounded, request-correlated status poll.
+            }
+        }
+        if (!isCurrentWindowsProfileSwitch(attempt)) {
+            cancelWindowsProfileSwitchAttempt(attempt);
+            return;
+        }
+        if (canPollWindowsProfileSwitch(session)) {
+            cancelWindowsProfileSwitchAttempt(attempt);
+            session = new HostGatewayClient.WindowsSession(
+                    "failed", "switch_timeout", attempt.attemptId, 1_000);
+        }
+        finishWindowsProfileSwitch(attempt, session);
+    }
+
+    static boolean canPollWindowsProfileSwitch(HostGatewayClient.WindowsSession session) {
+        if (session == null || session.attemptId.isEmpty()) return false;
+        switch (session.state) {
+            case "pending":
+            case "credential_available":
+            case "credential_issued":
+            case "credential_acquired":
+            case "credential_submitted":
+            case "sign_in_requested":
+            case "session_starting":
+                return true;
+            default:
+                return false;
+        }
+    }
+
+    static boolean windowsProfileSwitchNeedsAttention(
+            HostGatewayClient.WindowsSession session) {
+        return session != null && ("attention_required".equals(session.state)
+                || "credential_missing".equals(session.reason));
+    }
+
+    private boolean isCurrentWindowsProfileSwitch(WindowsProfileSwitchAttempt attempt) {
+        return windowsProfileSwitchAttempt == attempt && attempt.matches(
+                attempt.hostId, selectedProfileId(attempt.hostId), attempt.requestId);
+    }
+
+    private void finishWindowsProfileSwitch(WindowsProfileSwitchAttempt attempt,
+                                            HostGatewayClient.WindowsSession session) {
+        mainHandler.post(() -> {
+            if (!isCurrentWindowsProfileSwitch(attempt)) return;
+            windowsProfileSwitchAttempt = null;
+            refreshWindowsProfileStatus(attempt.hostId);
+            hideSidePanel();
+            int message = "ready".equals(session.state)
+                    ? R.string.console_switch_windows_profile_success
+                    : windowsProfileSwitchNeedsAttention(session)
+                    ? R.string.console_switch_windows_profile_attention
+                    : "cancelled".equals(session.state)
+                    ? R.string.console_switch_windows_profile_cancelled
+                    : R.string.console_switch_windows_profile_failed;
+            ConsoleUiFeedback.makeText(this, message, Toast.LENGTH_LONG).show();
+        });
+    }
+
+    private void cancelWindowsProfileSwitch(boolean userVisible) {
+        WindowsProfileSwitchAttempt attempt = windowsProfileSwitchAttempt;
+        if (attempt == null) return;
+        windowsProfileSwitchAttempt = null;
+        attempt.cancelled = true;
+        if (!attempt.attemptId.isEmpty()) {
+            executor.execute(() -> cancelWindowsProfileSwitchAttempt(attempt));
+        }
+        refreshWindowsProfileStatus(attempt.hostId);
+        if (userVisible) {
+            ConsoleUiFeedback.makeText(this,
+                    R.string.console_switch_windows_profile_cancelled,
+                    Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private void cancelWindowsProfileSwitchAttempt(WindowsProfileSwitchAttempt attempt) {
+        if (attempt.attemptId.isEmpty()) return;
+        try {
+            hostGatewayClient.cancelWindowsSession(attempt.connection,
+                    attempt.requestId, attempt.attemptId);
+        } catch (IOException | RuntimeException ignored) {
+            // Best effort: the Login Broker expires the exact bound attempt.
+        }
+    }
+
+    private void refreshWindowsProfileStatus(String hostId) {
+        ComputerDetails host = hosts.get(hostId);
+        if (host == null) return;
+        String address = host.activeAddress == null ? null : host.activeAddress.address;
+        GatewayConnection connection = hostGatewayStore.loadForHost(hostId, address);
+        if (connection == null) return;
+        executor.execute(() -> {
+            HostGatewayClient.IntegrationProfiles profiles;
+            try {
+                profiles = hostGatewayClient.getIntegrationProfiles(connection);
+            } catch (IOException | RuntimeException unavailable) {
+                return;
+            }
+            mainHandler.post(() -> {
+                ComputerDetails current = hosts.get(hostId);
+                if (current == null) return;
+                hostGatewayStore.saveProfiles(hostId, profiles);
+                updateHostSelectionTile(current);
+                if (hostId.equals(selectedHostUuid)) {
+                    updateProfileSelector(current);
+                    updateHostPowerLabel();
+                }
+            });
+        });
     }
 
     private TextView hostSelectionMenuAction(String label, boolean enabled) {
@@ -4186,7 +4896,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     @Override protected void onDraw(Canvas canvas) {
                         super.onDraw(canvas);
                         statusPaint.setColor(discordIndicatorColor);
-                        canvas.drawCircle(getWidth() - dp(10), getHeight() - dp(10),
+                        canvas.drawCircle(getWidth() / 2f + dp(10),
+                                getHeight() / 2f + dp(10),
                                 dp(3), statusPaint);
                         if (discordNotificationPending) {
                             canvas.drawCircle(getWidth() - dp(10), dp(10), dp(4),
@@ -4674,7 +5385,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             ConsoleUiFeedback.makeText(this, R.string.console_pair_host_success,
                     Toast.LENGTH_SHORT).show();
             invalidateHostStateAsync(host.uuid);
-            selectHost(host, true);
+            resolveProfileGate(host, true, false);
         });
     }
 
@@ -4751,7 +5462,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                     ConsoleUiFeedback.makeText(this, R.string.console_pair_success, Toast.LENGTH_SHORT).show();
                     invalidateHostStateAsync(host.uuid);
-                    selectHost(host, true);
+                    resolveProfileGate(host, true, false);
                 }
             });
         });
@@ -5337,6 +6048,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean enteringHost = hostSelectionVisible;
         boolean changed = !host.uuid.equals(selectedHostUuid);
         if (changed) {
+            cancelWindowsProfileSwitch(false);
             cancelStreamingAutopilot(false);
             cancelPlayniteArtworkPrefetch();
             cancelOwnedWarmUp(selectedHostUuid, true);
@@ -5514,7 +6226,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void loadPlayniteForHost(ComputerDetails host) {
-        if (host == null) return;
+        if (host == null || profileGateHostUuid != null) return;
         HostProfileKey requestKey = selectedProfileKey(host.uuid);
         if (host.uuid.equals(currentPlayniteHostUuid) && !currentPlayniteGames.isEmpty()) {
             requestPlayniteRefresh(host, false);
@@ -5596,7 +6308,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void requestPlayniteRefresh(ComputerDetails host, boolean manual) {
-        if (!active || host == null || !host.uuid.equals(selectedHostUuid)) return;
+        if (!active || profileGateHostUuid != null || host == null
+                || !host.uuid.equals(selectedHostUuid)) return;
         HostProfileKey requestKey = selectedProfileKey(host.uuid);
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         GatewayConnection connection =
@@ -5827,11 +6540,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 || libraryStatus == ConsoleLibraryStatus.State.REFRESHING;
         playniteLibraryStatus.setText(hiddenBackgroundStatus ? "" : status);
         playniteLibraryStatus.setVisibility(
-                hiddenBackgroundStatus ? View.GONE : View.VISIBLE);
+                hiddenBackgroundStatus ? View.INVISIBLE : View.VISIBLE);
         updateLibraryActionVisibility();
         int color = ConsoleLibraryStatus.isError(libraryStatus)
                 ? 0xFFFFB74D : libraryStatus == ConsoleLibraryStatus.State.CACHED
-                ? 0xFFB8C9DC : 0xFF8790A8;
+                ? 0xFFB8C9DC : 0xFFC8D2DC;
         playniteLibraryStatus.setTextColor(color);
         if (expandedCacheStatus != null) {
             boolean showExpandedStatus = !playniteInitialLoadPending
@@ -6458,54 +7171,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void requestPendingInitialGameFocus(ComputerDetails host) {
         if (!pendingInitialGameFocus || hostSelectionVisible || host == null || appRow == null
                 || !host.uuid.equals(selectedHostUuid)) return;
-        View target = initialGameFocusTarget(host);
+        View target = firstFocusableChild(appRow);
         if (target == null) return;
         pendingInitialGameFocus = false;
         View resolved = target;
         resolved.post(resolved::requestFocus);
-    }
-
-    private View initialGameFocusTarget(ComputerDetails host) {
-        View target = null;
-        if (!resumePlayniteGameId.isEmpty()) {
-            target = directChildWithTag(appRow, "playnite:" + resumePlayniteGameId);
-        }
-        if (target == null && !lastCarouselGameId.isEmpty()) {
-            target = directChildWithTag(appRow, "playnite:" + lastCarouselGameId);
-        }
-        if (target == null && !renderedPlayniteItems.isEmpty()) {
-            PlayniteDashboardItem mostRecent = null;
-            long latest = Long.MIN_VALUE;
-            for (PlayniteDashboardItem item : renderedPlayniteItems) {
-                if (!item.game.installed || isPlayniteInstalling(host.uuid, item)) continue;
-                long activity = playActivityEpoch(host.uuid, item);
-                if (activity > latest) {
-                    latest = activity;
-                    mostRecent = item;
-                }
-            }
-            if (mostRecent != null && latest != Long.MIN_VALUE) {
-                target = directChildWithTag(appRow, "playnite:" + mostRecent.stableId());
-            }
-        }
-        if (target == null && !renderedPlayniteItems.isEmpty()) {
-            String selected = preferences.getString("selected_playnite." + host.uuid, "");
-            target = directChildWithTag(appRow, "playnite:" + selected);
-        }
-        if (target == null) {
-            long latest = Long.MIN_VALUE;
-            for (NvApp app : currentSunshineApps) {
-                long played = preferences.getLong(appHistoryKey(host.uuid, app.getAppId()), 0L);
-                View candidate = directChildWithTag(appRow,
-                        "app:" + host.uuid + ":" + app.getAppId());
-                if (candidate != null && played > latest) {
-                    latest = played;
-                    target = candidate;
-                }
-            }
-        }
-        if (target == null) target = firstFocusableChild(appRow);
-        return target;
     }
 
     private int maxCarouselGameCount() {
@@ -7908,10 +8578,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (debugCarousel) {
             FrameLayout.LayoutParams stateParams = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                    (expandedCard ? Gravity.TOP : Gravity.BOTTOM) | Gravity.END);
-            stateParams.rightMargin = dp(5);
-            if (expandedCard) stateParams.topMargin = dp(5);
-            else stateParams.bottomMargin = dp(5);
+                    Gravity.BOTTOM | Gravity.END);
+            stateParams.rightMargin = dp(8);
+            stateParams.bottomMargin = dp(8);
             artworkFrame.addView(state, stateParams);
         }
         View copyScrim = new View(this);
@@ -7923,16 +8592,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         LinearLayout copy = new LinearLayout(this);
         copy.setOrientation(LinearLayout.HORIZONTAL);
         copy.setGravity(Gravity.BOTTOM | Gravity.CENTER_VERTICAL);
-        copy.setPadding(dp(5), dp(2), dp(5), dp(5));
-        copy.addView(source, new LinearLayout.LayoutParams(dp(18), dp(18)));
-        TextView name = text("", debugCarousel ? 8 : 15, Color.WHITE, true);
+        copy.setPadding(dp(CAROUSEL_CARD_GAP_DP), dp(2),
+                dp(CAROUSEL_CARD_GAP_DP), dp(5));
+        copy.addView(source, new LinearLayout.LayoutParams(dp(22), dp(22)));
+        TextView name = text("", debugCarousel ? 12 : 19, Color.WHITE, true);
         name.setTag("playnite.name");
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         name.setShadowLayer(dp(2), 0, dp(1), 0xF0000000);
         LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
-        nameParams.leftMargin = dp(5);
+        nameParams.leftMargin = dp(CAROUSEL_CARD_GAP_DP);
         copy.addView(name, nameParams);
         TextView playtime = text("", debugCarousel ? 8 : 10, 0xFFB8C9DC, false);
         playtime.setTag("playnite.playtime");
@@ -8115,7 +8785,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     : playniteStateGlyph(host.uuid, item, resumeSession);
             String label = suspendedSession ? getString(R.string.console_resume)
                     : playniteStateChipLabel(host.uuid, item, resumeSession);
-            state.setText(label.isEmpty() ? glyph : glyph + "  " + label);
+            state.setText(playniteStateChipText(glyph, label, resumeSession));
             stylePlayniteStateChip(state, host.uuid, item, resumeSession || suspendedSession);
         }
         stylePlayniteStateEmphasis(state, item, operation,
@@ -8476,7 +9146,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             card.getLocationInWindow(cardLocation);
             stage.getLocationInWindow(stageLocation);
             int left = cardLocation[0] - stageLocation[0]
-                    + dp(CAROUSEL_FOCUSED_CARD_WIDTH_DP) + dp(8);
+                    + dp(CAROUSEL_FOCUSED_CARD_WIDTH_DP)
+                    + dp(CAROUSEL_CARD_GAP_DP);
             int width = Math.min(dp(430), Math.max(dp(240),
                     stage.getWidth() - left - dp(12)));
             FrameLayout.LayoutParams params =
@@ -8605,6 +9276,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return CONSOLE_UI_V2 ? "" : getString(R.string.playnite_via_playnite_short);
         }
         return getString(R.string.playnite_configuration_short);
+    }
+
+    private CharSequence playniteStateChipText(String glyph, String label,
+                                               boolean resumeSession) {
+        SpannableString text = new SpannableString(
+                label.isEmpty() ? glyph : glyph + "  " + label);
+        if (resumeSession && !glyph.isEmpty()) {
+            text.setSpan(new RelativeSizeSpan(1.5f), 0, glyph.length(),
+                    Spanned.SPAN_EXCLUSIVE_EXCLUSIVE);
+        }
+        return text;
     }
 
     private void stylePlayniteStateChip(TextView state, String hostUuid,
@@ -9076,12 +9758,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean modestTileCrop = CONSOLE_UI_V2
                 && LoadingArtworkPolicy.canFillWithModestCrop(
                 bitmap.getWidth(), bitmap.getHeight(), targetWidth, targetHeight);
-        poster.setScaleType(modestTileCrop || landscape && !CONSOLE_UI_V2
+        boolean lowResolution = bitmap.getWidth() < targetWidth
+                || bitmap.getHeight() < targetHeight;
+        poster.setScaleType(lowResolution ? ImageView.ScaleType.CENTER_INSIDE
+                : modestTileCrop || landscape && !CONSOLE_UI_V2
                 ? ImageView.ScaleType.CENTER_CROP : ImageView.ScaleType.FIT_CENTER);
         BitmapDrawable drawable = filteredBitmapDrawable(bitmap);
         ImageView backdrop = playnitePosterBackdrop(poster);
         if (backdrop != null) {
-            if (modestTileCrop || landscape && !CONSOLE_UI_V2) {
+            if (lowResolution || modestTileCrop || landscape && !CONSOLE_UI_V2) {
                 backdrop.setImageDrawable(null);
                 backdrop.setVisibility(View.GONE);
             } else {

@@ -102,6 +102,7 @@ public class GatewayTransportTest {
         for (String path : new String[]{
                 "/api/v1/system/suspend-session",
                 "/api/v1/system/session/ensure",
+                "/api/v1/system/session/switch",
                 "/api/v1/system/session/cancel"}) {
             try {
                 transport.postJson(CONNECTION, path, new JSONObject(),
@@ -150,6 +151,19 @@ public class GatewayTransportTest {
         assertGatewayException("Unavailable", 503,
                 () -> GatewayTransport.decodeJsonResponse(503,
                         "{\"error\":\"Unavailable\"}".getBytes(StandardCharsets.UTF_8)));
+    }
+
+    @Test public void errorResponsePreservesBoundedRetryDelay() throws Exception {
+        try {
+            GatewayTransport.decodeJsonResponse(429,
+                    "{\"error\":\"rate_limited\",\"retry_after_seconds\":7}"
+                            .getBytes(StandardCharsets.UTF_8));
+            fail("Expected GatewayException");
+        } catch (GatewayTransport.GatewayException error) {
+            assertEquals("rate_limited", error.getMessage());
+            assertEquals(429, error.statusCode());
+            assertEquals(7, error.retryAfterSeconds());
+        }
     }
 
     @Test public void errorResponseWithoutMessageUsesFallback() throws Exception {

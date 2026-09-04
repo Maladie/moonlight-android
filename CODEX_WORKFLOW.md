@@ -374,3 +374,29 @@ For Gateway work specifically:
 Do not combine C1B cleanup into C1A merely because the new transport makes it possible. A compatibility facade or duplicate DTO may be acceptable temporary debt when it keeps the first diff small and behavior-preserving.
 
 Terminology must match actual runtime semantics. Do not invent a long-lived `Connection` or `Session` lifecycle for a stateless request/response API unless the implementation genuinely has one.
+
+## 17. Building branch artifacts
+
+Before handing off a new Host Installer, increment the patch version in
+`host-services/version.json` and keep the assembly versions in Host Installer,
+Host Control, and Host Configurator aligned. Reusing the installed version can
+cause the installer to treat shared components as current and skip their update.
+
+From the repository root, build and test the complete host package with:
+
+```powershell
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\Build-HostServices.ps1
+```
+
+The installer is written to
+`host-services\dist\MoonWakerHostInstaller.exe`.
+
+Build the branch's non-root debug APK with:
+
+```powershell
+.\gradlew.bat assembleNonRootDebug
+```
+
+The APK is written to
+`app\build\outputs\apk\nonRoot\debug\app-nonRoot-debug.apk`. Build artifacts
+remain untracked and must not be committed.

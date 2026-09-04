@@ -55,6 +55,127 @@ class GatewayStateTest(unittest.TestCase):
         handler.read_json = lambda: {}
         return handler, responses
 
+    def pin_state(self):
+        salt = b"0123456789abcdef"
+        verifier = {
+            "version": 1,
+            "algorithm": "pbkdf2-sha256",
+            "iterations": 100_000,
+            "salt": wakeplay_gateway.base64.b64encode(salt).decode("ascii"),
+            "digest": wakeplay_gateway.base64.b64encode(
+                wakeplay_gateway.hashlib.pbkdf2_hmac(
+                    "sha256", b"2468", salt, 100_000)).decode("ascii"),
+        }
+        self.config_path.write_text(json.dumps({
+            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
+            "certificate": "cert.pem",
+            "private_key": "key.pem",
+            "profiles": {
+                "protected": {"id": "protected", "name": "Protected",
+                              "enabled": True, "pin_verifier": verifier},
+                "open": {"id": "open", "name": "Open", "enabled": True},
+            },
+            "clients": [{
+                "id": "client-1", "token_sha256": sha256_text("pin-token"),
+                "profile_grants": {
+                    "protected": ["use_profile"], "open": ["use_profile"]},
+            }],
+        }), encoding="utf-8")
+        state = GatewayState(self.config_path, None)
+        return state, state.client_for_token("pin-token")
+
+    def test_profile_pin_summary_exposes_only_requirement(self):
+        state, client = self.pin_state()
+        state.discord_status = lambda: {
+            "bridge_online": False, "rpc_connected": False,
+            "authenticated": False, "error": ""}
+        state.proxy = lambda *_args, **_kwargs: (False, {})
+
+        summary = state.profiles_summary(client)
+        serialized = json.dumps(summary)
+
+        protected = next(profile for profile in summary["profiles"]
+                         if profile["id"] == "protected")
+        self.assertTrue(protected["pin_required"])
+        self.assertNotIn("pin_verifier", serialized)
+        self.assertNotIn("digest", serialized)
+        self.assertNotIn("2468", serialized)
+
+    def test_pin_verifier_uses_constant_time_comparison(self):
+        state, client = self.pin_state()
+        verifier = state.config["profiles"]["protected"]["pin_verifier"]
+        with mock.patch.object(wakeplay_gateway.secrets, "compare_digest",
+                               wraps=wakeplay_gateway.secrets.compare_digest) as compare:
+            self.assertTrue(wakeplay_gateway.verify_profile_pin("2468", verifier))
+            self.assertFalse(wakeplay_gateway.verify_profile_pin("1357", verifier))
+        self.assertEqual(2, compare.call_count)
+
+        status, result = state.verify_pin(client, "protected", "2468")
+        self.assertEqual(200, status)
+        self.assertTrue(result["unlocked"])
+
+    def test_pin_rate_limit_is_scoped_to_client_and_profile(self):
+        state, client = self.pin_state()
+        other = {"id": "client-2"}
+        state.config["profiles"]["second"] = {
+            "id": "second", "enabled": True,
+            "pin_verifier": state.config["profiles"]["protected"]["pin_verifier"],
+        }
+        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100.0):
+            self.assertEqual(403, state.verify_pin(client, "protected", "1357")[0])
+            self.assertEqual(429, state.verify_pin(client, "protected", "1357")[0])
+            self.assertEqual(403, state.verify_pin(other, "protected", "1357")[0])
+            self.assertEqual(403, state.verify_pin(client, "second", "1357")[0])
+        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=101.0):
+            status, result = state.verify_pin(client, "protected", "1357")
+            self.assertEqual(403, status)
+            self.assertEqual(2, result["retry_after_seconds"])
+
+    def test_protected_routes_require_current_unlock_lease(self):
+        state, _client = self.pin_state()
+        state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+
+        handler, responses = self.request_handler(
+            state, "/api/v1/playnite/health", "pin-token", "protected")
+        handler.do_GET()
+        self.assertEqual(403, responses[0][0])
+        state.playnite_health.assert_not_called()
+
+        handler, responses = self.request_handler(
+            state, "/api/v1/playnite/health", "pin-token", "open")
+        handler.do_GET()
+        self.assertEqual(200, responses[0][0])
+
+        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100.0):
+            handler, responses = self.request_handler(
+                state, "/api/v1/profiles/pin/verify", "pin-token", "protected")
+            handler.read_json = lambda: {"pin": "2468"}
+            handler.do_POST()
+            self.assertEqual(200, responses[0][0])
+
+            handler, responses = self.request_handler(
+                state, "/api/v1/playnite/health", "pin-token", "protected")
+            handler.do_GET()
+            self.assertEqual(200, responses[0][0])
+
+        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=401.0):
+            handler, responses = self.request_handler(
+                state, "/api/v1/playnite/health", "pin-token", "protected")
+            handler.do_GET()
+            self.assertEqual(403, responses[0][0])
+
+    def test_pin_verify_requires_authenticated_use_profile_grant(self):
+        state, _client = self.pin_state()
+        state.config["clients"][0]["profile_grants"] = {"open": ["use_profile"]}
+        handler, responses = self.request_handler(
+            state, "/api/v1/profiles/pin/verify", "pin-token", "protected")
+        handler.read_json = lambda: {"pin": "2468"}
+
+        handler.do_POST()
+
+        self.assertEqual(403, responses[0][0])
+        self.assertEqual({}, state.pin_unlock_leases)
+
     def test_gateway_installer_packages_microphone_worker(self):
         installer = (Path(__file__).parent / "Install-WakePlayGateway.ps1").read_text(
             encoding="utf-8-sig")
@@ -1745,8 +1866,11 @@ class LoginBrokerGatewayTest(unittest.TestCase):
             self.cancel_result = self.reply(
                 False, "action_required", "attempt_cancelled",
                 {3: "0123456789abcdef0123456789abcdef"})
+            self.switch_result = self.reply(
+                True, "pending", fields={3: "0123456789abcdef0123456789abcdef"})
             self.begin_calls = []
             self.cancel_calls = []
+            self.switch_calls = []
 
         @staticmethod
         def reply(success, state, reason="none", fields=None):
@@ -1769,6 +1893,10 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         def cancel(self, _client_id, _profile_id, _request_id, _attempt_id):
             self.cancel_calls.append((_request_id, _attempt_id))
             return self.cancel_result
+
+        def switch_session(self, client_id, profile, request_id):
+            self.switch_calls.append((client_id, profile["id"], request_id))
+            return self.switch_result
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -1829,6 +1957,34 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("ready", result["state"])
         self.assertEqual(1, len(self.broker.begin_calls))
+
+    def test_switch_maps_pending_and_missing_credential_attention(self):
+        status, result = self.state.switch_session(
+            self.client, "living-room", "request-switch")
+        self.assertEqual(202, status)
+        self.assertEqual("pending", result["state"])
+        self.assertEqual("0123456789abcdef0123456789abcdef", result["attempt_id"])
+        self.assertEqual(
+            [("android-tv", "living-room", "request-switch")],
+            self.broker.switch_calls)
+
+        self.broker.switch_result = self.broker.reply(
+            False, "attention_required", "credential_missing",
+            {3: "fedcba9876543210fedcba9876543210"})
+        status, result = self.state.switch_session(
+            self.client, "living-room", "request-no-credential")
+        self.assertEqual(409, status)
+        self.assertEqual("attention_required", result["state"])
+        self.assertEqual("credential_missing", result["reason"])
+
+    def test_switch_route_requires_remote_sign_in_grant(self):
+        self.client["profile_grants"]["living-room"] = ["use_profile"]
+        handler, responses = GatewayStateTest.request_handler(
+            self.state, "/api/v1/system/session/switch", "token", "living-room")
+        handler.headers["X-Request-Id"] = "request-switch-route"
+        handler.do_POST()
+        self.assertEqual(403, responses[0][0])
+        self.assertEqual([], self.broker.switch_calls)
 
     def test_other_user_or_missing_credential_requires_action(self):
         self.broker.profile = self.broker.reply(

@@ -684,6 +684,8 @@ function Get-Status {
                     [string]$entry.windows_account_sid
                 } else { "" }
                 enabled = if ($entry.PSObject.Properties["enabled"]) { [bool]$entry.enabled } else { $true }
+                pin_required = $null -ne $entry.PSObject.Properties["pin_verifier"] -and
+                    $null -ne $entry.pin_verifier
                 account_mapping_status = if ($entry.PSObject.Properties["account_mapping_status"]) {
                     [string]$entry.account_mapping_status
                 } else { "action_required" }

@@ -4,12 +4,12 @@
 
 ## Current implementation state
 
-- Status: planned; implementation has not started.
+- Status: manual-test corrections `MW-PROFILE-08` completed; `MW-PROFILE-01` through `MW-PROFILE-06` remain completed, while `MW-PROFILE-07` awaits live Windows VM acceptance.
 - Repository: `D:\Maladie\moonlight-android`
 - Branch at plan creation: `codex/multi-profile-remote-sign-in`
 - HEAD at plan creation: `c1e5d7f1`
 - Current task: none.
-- Next task: `MW-PROFILE-01` — Android read-only profile mismatch presentation.
+- Next task: none.
 - Important: the working tree already contained unrelated modified and untracked files. Preserve them; do not revert, reformat, claim, commit, or push them.
 
 ## Product outcome
@@ -118,13 +118,15 @@ Wprowadź PIN
 
 | ID | Status | Task | Depends on |
 |---|---|---|---|
-| `MW-PROFILE-01` | Ready | Android read-only mismatch status, yellow presentation, and profile choice in host options | — |
-| `MW-PROFILE-02` | Planned | Controller-first profile gate and per-host automatic app profile | 01 |
-| `MW-PROFILE-03` | Planned | Host Fast User Switching operation in Broker and Gateway | — |
-| `MW-PROFILE-04` | Planned | Android explicit Windows profile alignment actions | 01, 03 |
-| `MW-PROFILE-05` | Planned | Host Control and Gateway PIN configuration, verification, lease, and rate limit | 01 |
-| `MW-PROFILE-06` | Planned | Android PS5-style PIN entry and protected profile gate | 02, 05 |
-| `MW-PROFILE-07` | Planned | End-to-end hardening, Windows VM matrix, diagnostics review, and documentation | 03–06 |
+| `MW-PROFILE-01` | Done | Android read-only mismatch status, yellow presentation, and profile choice in host options | — |
+| `MW-PROFILE-02` | Done | Controller-first profile gate and per-host automatic app profile | 01 |
+| `MW-PROFILE-03` | Done | Host Fast User Switching operation in Broker and Gateway | — |
+| `MW-PROFILE-04` | Done | Android explicit Windows profile alignment actions | 01, 03 |
+| `MW-PROFILE-05` | Done | Host Control and Gateway PIN configuration, verification, lease, and rate limit | 01 |
+| `MW-PROFILE-06` | Done | Android PS5-style PIN entry and protected profile gate | 02, 05 |
+| `MW-PROFILE-07` | Blocked | End-to-end hardening, Windows VM matrix, diagnostics review, and documentation | 03–06 |
+
+| `MW-PROFILE-08` | Done | Fix Windows switch failure and PIN glyph board; build and deploy | 03, 06 |
 
 Full structured scope, requirements, non-goals, acceptance criteria, risks, and task work records are in `state.json`.
 
@@ -150,41 +152,113 @@ After implementation:
 
 Allowed task statuses: `planned`, `ready`, `in_progress`, `blocked`, `done`.
 
-## Prompt for the next agent
+## Completed task evidence
+
+- `MW-PROFILE-01`: cached authorized profile/session data now refines only idle-online host presentation; higher-priority stream, retained, suspended, terminating, waking, and offline states remain authoritative.
+- Profile mismatch labels identify another active PC profile only when it is present in the authorized profile list; otherwise they use privacy-safe generic text.
+- Host options expose the existing MoonWaker profile selector only when more than one authorized profile is cached.
+- Entering host selection refreshes eligible visible Gateway hosts with bounded executor concurrency, one in-flight request per host, and per-host generation rejection.
+- Validation passed: `.\gradlew.bat testNonRootDebugUnitTest`, `.\gradlew.bat assembleNonRootDebug`, and `git diff --check` (line-ending warnings only).
+- Blockers: none.
+- `MW-PROFILE-05`: the elevated Host Configurator sets, replaces, and removes a four-digit MoonWaker app PIN and clearly distinguishes it from a Windows password. Only a versioned PBKDF2-SHA256 salted verifier is written to the protected Gateway profile registry.
+- Host Control projects only whether the app PIN is enabled. LAN profile responses expose only `pin_required`; verifier fields and plaintext never enter an API response, process argument, environment variable, diagnostic, or log.
+- `POST /api/v1/profiles/pin/verify` requires an authenticated paired client and the existing `use_profile` grant. Numeric PIN verification uses constant-time digest comparison and a proportional per-client/profile cooldown.
+- Successful verification creates a five-minute in-memory lease bound to the client, profile, and current verifier. Missing, expired, or verifier-stale leases block all existing profile-scoped routes, while profiles without a PIN keep their previous behavior.
+- Android parses and caches `pin_required`; saving the next fresh `/profiles` result immediately removes a matching automatic app-profile preference. PIN entry remains exclusively in `MW-PROFILE-06`.
+- Validation passed: `python -m unittest test_gateway.GatewayStateTest` (86 tests), `python -m unittest test_gateway.py` (105 tests), `.\Test-MoonWakerHostConfigurator.ps1`, `.\Test-MoonWakerHostControl.ps1`, Host Control/Configurator build, focused Android tests, `.\gradlew.bat testNonRootDebugUnitTest`, `.\gradlew.bat assembleNonRootDebug`, and `git diff --check` (line-ending warnings only).
+- Blockers: none.
+- `MW-PROFILE-03`: Gateway now exposes a separate authenticated `session/switch` mutation requiring the existing `use_profile` and `remote_sign_in` grants and a stable request ID; `session/ensure` is unchanged.
+- Login Broker synchronously disconnects exactly one resolved local console session with `WTSDisconnectSession`, never logoff or `tsdiscon.exe`, before creating the selected profile's existing Credential Provider attempt.
+- The existing request-bound attempt ledger makes pending and missing-credential results idempotent. Missing credentials after LogonUI return terminal `attention_required`; disconnect failure creates no provider-visible attempt.
+- RDP, multiple or unresolved active sessions, disabled Fast User Switching, unavailable Credential Provider, and disconnect failure are rejected deterministically.
+- Validation passed: `.\Test-MoonWakerLoginBroker.ps1` (13 tests), Broker x64 build, `python -m unittest test_gateway.LoginBrokerGatewayTest` (14 tests), `python -m unittest test_gateway.py` (100 tests), and `git diff --check` (line-ending warnings only).
+- Limitation: this environment validated the WTS decision seam and native call contract but did not mutate a live Windows console session; the Basia/Gry process-survival scenario remains for the planned VM acceptance matrix.
+- Blockers: none.
+- `MW-PROFILE-02`: normal host activation, automatic host entry, and post-pairing entry now resolve the authorized app profile before `selectHost` can start application or Playnite loading.
+- One usable profile enters directly; multiple profiles require an explicit choice unless a still-authorized per-host automatic app profile exists. Invalid automatic choices are cleared.
+- The full-screen controller-first gate marks the active Windows profile and automatic app profile, supports Options toggling, and returns Back to the originating host tile.
+- Profile-scoped Playnite loading and refresh are guarded while the gate is unresolved; focused policy and source-contract tests cover the gate and the no-early-library invariant.
+- Review correction: gate and host-home profile changes share one invalidation helper, so selecting another profile for the same host clears the old profile-scoped library state, increments `profileGeneration`, and stales outstanding requests before host entry without starting a new request inside the gate.
+- Validation passed: `.\gradlew.bat testNonRootDebugUnitTest`, `.\gradlew.bat assembleNonRootDebug`, and `git diff --check` (line-ending warnings only).
+- Blockers: none.
+- `MW-PROFILE-04`: the host menu now separately offers local MoonWaker alignment to an authorized active PC profile and an explicit Windows switch to the selected app profile.
+- Local alignment only updates the existing selected profile; it never calls the Windows switch endpoint. The Windows action requires confirmation that the current session will disconnect while its applications remain running.
+- The explicit action uses the existing pinned-TLS/authenticated transport and `session/switch`, then bounded `session/status` polling and exact `session/cancel` correlation. Its Android state is transient and pinned to host, profile, request, and attempt.
+- Host/profile changes and user cancellation stale the request, best-effort cancel its exact attempt, and prevent late results from changing UI. Success, failure, cancellation, attention-required, and local cancellation all trigger a `/profiles` refresh.
+- `credential_missing` and `attention_required` show `Ekran logowania wymaga uwagi`; ordinary host and profile refresh paths contain no switch mutation.
+- Validation passed: `.\gradlew.bat testNonRootDebugUnitTest`, `.\gradlew.bat assembleNonRootDebug`, and `git diff --check` (line-ending warnings only).
+- Blockers: none.
+- `MW-PROFILE-06`: every protected-profile selection path now opens a transient masked four-digit PIN view and persists the selected profile only after the existing Gateway verification endpoint succeeds.
+- Gamepads use source-aware direct digit mapping without moving keypad focus; TV remotes retain D-pad navigation over a visibly focused 0–9 keypad, and physical numeric keys are accepted.
+- Four digits auto-submit; A submits a complete entry; B deletes and then returns from PIN to profile selection, with the next Back returning to hosts. Parallel input is consumed during requests/cooldowns while Back remains available.
+- Invalid PIN and rate-limit responses preserve `retry_after_seconds`, clear the secret, reject stale host/profile/generation results, and never replace the previous selected profile. PIN state and unlock status are never persisted or saved across recreation.
+- Protected profiles cannot be automatic; refresh, host-header selection, host-menu selection, align-only, and single-profile selector updates all share the protected-profile guard.
+- Validation passed: focused PIN/Gateway tests, `.\gradlew.bat compileNonRootDebugJavaWithJavac --rerun-tasks`, the full `.\gradlew.bat testNonRootDebugUnitTest` suite (909 tests), `.\gradlew.bat assembleNonRootDebug`, and `git diff --check` (line-ending warnings only). The earlier failures occurred during a transient concurrent UI write and were cleared by the stabilized rerun.
+- Blockers: none.
+
+## MW-PROFILE-07 integration evidence
+
+Automated and static evidence:
+
+- The forced Android rerun passed 911 tests with no failures, errors, or skips;
+  `assembleNonRootDebug` also passed.
+- The full Gateway suite passed 105 tests. Login Broker passed all 13 tests and
+  its x64 executable built successfully.
+- Host Configurator and Host Control tests passed, including the existing
+  secret-free elevation/password boundary and redacted diagnostic-export checks;
+  both executables built successfully.
+- Credential Provider static protocol/security validation passed. Its native x64
+  build could not run because this host has neither MSBuild with the Visual
+  Studio C++ workload nor `x86_64-w64-mingw32-clang++`.
+- Static integration review found no concrete defect or proven disclosure. The
+  profile list remains filtered by `use_profile` and exposes only
+  `pin_required`; protected profile-scoped routes enforce the verifier-bound
+  in-memory lease; diagnostics retain their existing allowlists and do not log
+  request bodies; ordinary profile selection/refresh has no `session/switch`
+  call; and required Playnite/connector and Vibepollo readiness precede target
+  readiness.
+- `git diff --check` passed with line-ending warnings only.
+
+Manual evidence and blocker:
+
+- No live Windows session mutation was attempted on the working host.
+- VirtualBox is installed but has no registered VM. Hyper-V inventory could not
+  be read with the current authorization, including a read-only elevated retry.
+- The unchecked matrix in
+  `host-services/windows-login/MANUAL_VM_TEST_PLAN.md` now covers active, locked,
+  signed-out, disconnected, missing-credential, policy-blocked, Broker/provider
+  unavailable, previous-user process survival, Gateway reachability, Bridge
+  settling, exact cancellation, and request idempotency.
+- Blocker: no dedicated, safely disposable Windows 10/11 VM or accessible live-FUS
+  harness is available. Therefore end-to-end switching, previous-user process
+  survival, Gateway reachability during a real session change, and live Bridge
+  settling are not claimed.
+
+Files changed by MW-PROFILE-07:
+
+- `MOONWAKER_ARCHITECTURE.md`
+- `host-services/windows-login/MANUAL_VM_TEST_PLAN.md`
+- `state.json`
+- `state.md`
+
+## Blocked acceptance handoff
 
 ```text
-Pracujesz w repozytorium D:\Maladie\moonlight-android na istniejącym drzewie roboczym.
-
-Najpierw przeczytaj w całości:
-- AGENTS.md
-- MOONWAKER_ARCHITECTURE.md
-- CODEX_WORKFLOW.md
-- state.json
-- state.md
-
-Zaimplementuj wyłącznie zadanie MW-PROFILE-01: „Android read-only profile mismatch presentation”. Przed edycją oznacz to zadanie jako in_progress w state.json i zsynchronizuj sekcję bieżącego stanu w state.md.
-
-Cel:
-Wykorzystaj już istniejące session_state z GET /api/v1/profiles i cache HostGatewayStore, aby na ekranie wyboru hostów oraz w nagłówku wybranego hosta pokazać żółty stan uwagi, gdy wybrany profil MoonWaker nie odpowiada aktywnej sesji Windows. Dodaj również realną opcję „Wybierz profil MoonWaker” do menu hosta na ekranie wyboru hostów, używając istniejącego selektora profili.
-
-Wymagania:
-- Dodaj małą, czystą projekcję prezentacyjną profilu; nie twórz nowego trwałego właściciela stanu ani state machine.
-- Basia + session_state=other_user_active: żółty stan i tekst zawierający nazwę Basia.
-- Jeśli wśród autoryzowanych profili Gry ma session_state=active, pokaż „MoonWaker: Basia · PC: Gry”. W przeciwnym razie użyj ogólnego „aktywny inny profil PC”; nie ujawniaj nazw nieskonfigurowanych lub nieautoryzowanych kont Windows.
-- Zgodny aktywny profil zachowuje normalny zielony stan.
-- Nie zmieniaj pierwszeństwa aktywnego streamu, retained stream, suspended, terminating, waking ani offline.
-- W menu hosta pokaż wybór profilu tylko wtedy, gdy istnieje więcej niż jeden autoryzowany profil; nie dodawaj martwego elementu dla jednego profilu.
-- Odśwież dane profili dla widocznych hostów online/sparowanych z Gateway po wejściu na ekran wyboru hostów. Ogranicz równoległe/in-flight żądania i odrzucaj stare wyniki per host/generacja.
-- Zachowaj aktualnie wybrany profil i istniejący przepływ biblioteki.
-- Nie zmieniaj Gateway, Login Broker, Host Control, session/ensure, przełączania Windows, PIN-u ani Moonlight core.
-- Nie dodawaj placeholderów pod przyszłe etapy.
-
-Repozytorium było brudne przed tym zadaniem, także w ConsoleActivity i plikach strings. Najpierw obejrzyj istniejące diffy, zachowaj cudze zmiany i nie wykonuj szerokiego formatowania ani porządków.
-
-Dodaj skupione testy projekcji i pierwszeństwa stanów. Następnie uruchom:
-- .\gradlew.bat testNonRootDebugUnitTest
-- .\gradlew.bat assembleNonRootDebug
-- git diff --check
-
-Na końcu zaktualizuj state.json i state.md zgodnie z Agent update protocol: status zadania, podsumowanie, dokładne pliki, wyniki walidacji, blokery, historię i next_task_id. Nie commituj i nie pushuj.
+Resume `MW-PROFILE-07` only when a dedicated, safely disposable Windows 10/11
+x64 VM or equivalent isolated live-FUS harness is available. Execute the
+unchecked matrix in `host-services/windows-login/MANUAL_VM_TEST_PLAN.md`, record
+only anonymized results, and mark the task done only if the full matrix passes.
+Do not exercise switch, lock, disconnect, or logoff on the working user's host.
 ```
+
+## MW-PROFILE-08 completed corrections
+
+- Native read-only reproduction confirmed that ANSI WTS station names decoded as Unicode caused local Console sessions to fail the RDP guard. The Broker now explicitly calls WTSEnumerateSessionsW, covered by a regression test.
+- Host Control/Configurator tests and the complete host build passed (105 Gateway, 223 Bridge, 14 Broker tests plus Gateway service and native Credential Provider checks). Installer 0.7.75 was rebuilt after excluding stale dist-* directories; its embedded Broker uses the corrected Unicode import.
+- PIN board follows the supplied PS5 layout with four masked slots, digit/glyph pairs and actual PS/Xbox action glyphs. It tracks the last gamepad and shows keypad focus only for remote input; existing verification, correlation and FLAG_SECURE remain intact.
+- Extended the existing font to 23 mapped codepoints; required glyph shapes were visually verified. No app runtime dependency was added.
+- Android focused tests and full `testNonRootDebugUnitTest assembleNonRootDebug --console=plain` passed: 913 tests, no failures/errors/skips.
+- APK installed on Sony BRAVIA with `adb install -r`; launch status was ok and installed SHA-256 matches the built APK.
+- Artifacts: `app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk` and `host-services/dist/MoonWakerHostInstaller.exe` (0.7.75). Hashes and exact changed files/commands are recorded in state.json.
+- Working branch/HEAD: `codex/multi-profile-remote-sign-in` / `a19ede595d3b85a41896bb2c1f334c7d7578bdd5`. Pre-existing changes preserved; no commit/push.
+- Limits: host installer was built but not installed; no live Windows switch or full PIN screenshot was attempted. Live FUS acceptance in MW-PROFILE-07 remains separately unproven.

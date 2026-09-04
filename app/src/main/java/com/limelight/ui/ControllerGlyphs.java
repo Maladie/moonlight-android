@@ -8,7 +8,10 @@ import java.util.Locale;
 
 public final class ControllerGlyphs {
     public enum Button {
-        CONFIRM, CANCEL, WEST, NORTH, MENU, RIGHT_BUMPER, LEFT_STICK, RIGHT_STICK
+        CONFIRM, CANCEL, WEST, NORTH, MENU,
+        DPAD_LEFT, DPAD_UP, DPAD_RIGHT, DPAD_DOWN,
+        RIGHT_BUMPER, RIGHT_TRIGGER, LEFT_BUMPER, LEFT_TRIGGER,
+        LEFT_STICK, RIGHT_STICK
     }
 
     private ControllerGlyphs() {}
@@ -46,7 +49,14 @@ public final class ControllerGlyphs {
                 case WEST: return "\uEEC7";
                 case NORTH: return "\uEEC6";
                 case MENU: return "\uE5D2";
+                case DPAD_LEFT: return "\uEECB";
+                case DPAD_UP: return "\uEEC9";
+                case DPAD_RIGHT: return "\uEECA";
+                case DPAD_DOWN: return "\uEECC";
                 case RIGHT_BUMPER: return "\uEEDA";
+                case RIGHT_TRIGGER: return "\uEED9";
+                case LEFT_BUMPER: return "\uEEDD";
+                case LEFT_TRIGGER: return "\uEEDC";
                 case LEFT_STICK: return "\uEED6";
                 case RIGHT_STICK: return "\uEED4";
             }
@@ -57,7 +67,14 @@ public final class ControllerGlyphs {
                 case WEST: return "\uE349";
                 case NORTH: return "\uEEC5";
                 case MENU: return "\uE5D2";
+                case DPAD_LEFT: return "\uEECB";
+                case DPAD_UP: return "\uEEC9";
+                case DPAD_RIGHT: return "\uEECA";
+                case DPAD_DOWN: return "\uEECC";
                 case RIGHT_BUMPER: return "\uEEDF";
+                case RIGHT_TRIGGER: return "\uEED1";
+                case LEFT_BUMPER: return "\uEEE0";
+                case LEFT_TRIGGER: return "\uEED2";
                 case LEFT_STICK: return "\uEED6";
                 case RIGHT_STICK: return "\uEED4";
             }

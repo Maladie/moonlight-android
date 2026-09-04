@@ -13,8 +13,10 @@ namespace MoonWaker.WindowsLogin
 {
     internal sealed class LoginSessionSnapshot
     {
+        internal int SessionId;
         internal string Sid;
         internal string AccountName;
+        internal string WinStationName;
         internal string State;
         internal bool Locked;
     }
@@ -300,7 +302,9 @@ namespace MoonWaker.WindowsLogin
             internal WtsConnectState State;
         }
 
-        [DllImport("wtsapi32.dll", SetLastError = true)]
+        [DllImport("wtsapi32.dll", CharSet = CharSet.Unicode,
+            EntryPoint = "WTSEnumerateSessionsW", ExactSpelling = true,
+            SetLastError = true)]
         private static extern bool WTSEnumerateSessions(IntPtr server, int reserved,
             int version, out IntPtr sessions, out int count);
         [DllImport("wtsapi32.dll", CharSet = CharSet.Unicode, SetLastError = true,
@@ -309,13 +313,32 @@ namespace MoonWaker.WindowsLogin
             WtsInfoClass informationClass, out IntPtr buffer, out int bytes);
         [DllImport("wtsapi32.dll")]
         private static extern void WTSFreeMemory(IntPtr memory);
+        [DllImport("wtsapi32.dll", SetLastError = true)]
+        private static extern bool WTSDisconnectSession(IntPtr server, int sessionId,
+            bool wait);
 
         public string GetState(ProfileIdentity identity)
+        {
+            try { return Classify(identity, Snapshots()); }
+            catch (BrokerFault) { return "unknown"; }
+        }
+
+        public string Switch(ProfileIdentity identity)
+        {
+            int sessionId = SelectDisconnectSession(identity, Snapshots(),
+                FastUserSwitchingEnabled());
+            if (sessionId == -2) return "ready";
+            if (sessionId >= 0 && !WTSDisconnectSession(CurrentServer, sessionId, true))
+                throw new BrokerFault("action_required", "disconnect_failed");
+            return "logon_ui";
+        }
+
+        private List<LoginSessionSnapshot> Snapshots()
         {
             IntPtr sessions;
             int count;
             if (!WTSEnumerateSessions(CurrentServer, 0, 1, out sessions, out count))
-                return "unknown";
+                throw new BrokerFault("action_required", "session_enumeration_failed");
             List<LoginSessionSnapshot> snapshots = new List<LoginSessionSnapshot>();
             try
             {
@@ -339,12 +362,50 @@ namespace MoonWaker.WindowsLogin
                     string state = session.State == WtsConnectState.Active ? "active" :
                         (session.State == WtsConnectState.Connected ||
                          session.State == WtsConnectState.ConnectQuery ? "connected" : "disconnected");
-                    snapshots.Add(new LoginSessionSnapshot { Sid = sid, AccountName = account,
+                    snapshots.Add(new LoginSessionSnapshot { SessionId = session.SessionId,
+                        Sid = sid, AccountName = account,
+                        WinStationName = Marshal.PtrToStringUni(session.WinStationName) ?? "",
                         State = state, Locked = IsLocked(session.SessionId) });
                 }
             }
             finally { WTSFreeMemory(sessions); }
-            return Classify(identity, snapshots);
+            return snapshots;
+        }
+
+        internal static int SelectDisconnectSession(ProfileIdentity identity,
+            IEnumerable<LoginSessionSnapshot> snapshots, bool fastUserSwitchingEnabled)
+        {
+            List<LoginSessionSnapshot> active = new List<LoginSessionSnapshot>();
+            foreach (LoginSessionSnapshot session in snapshots)
+                if (session.State == "active") active.Add(session);
+            if (active.Count > 1)
+                throw new BrokerFault("action_required", "multiple_active_sessions");
+            if (active.Count == 0) return -1;
+            LoginSessionSnapshot current = active[0];
+            if (String.IsNullOrWhiteSpace(current.Sid) ||
+                String.IsNullOrWhiteSpace(current.WinStationName))
+                throw new BrokerFault("action_required", "active_session_unresolved");
+            if (!String.Equals(current.WinStationName, "Console",
+                    StringComparison.OrdinalIgnoreCase))
+                throw new BrokerFault("unsupported", "rdp_session_active");
+            if (String.Equals(current.Sid, identity.Sid,
+                    StringComparison.OrdinalIgnoreCase))
+                return current.Locked ? -1 : -2;
+            if (!fastUserSwitchingEnabled)
+                throw new BrokerFault("unsupported", "fast_user_switching_disabled");
+            return current.SessionId;
+        }
+
+        private static bool FastUserSwitchingEnabled()
+        {
+            try
+            {
+                using (RegistryKey policy = Registry.LocalMachine.OpenSubKey(
+                    @"SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System"))
+                    return policy == null || Convert.ToInt32(
+                        policy.GetValue("HideFastUserSwitching", 0)) == 0;
+            }
+            catch { throw new BrokerFault("action_required", "fast_user_switching_unknown"); }
         }
 
         internal static string Classify(ProfileIdentity identity,

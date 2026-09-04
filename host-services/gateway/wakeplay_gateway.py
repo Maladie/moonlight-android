@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import base64
 import contextlib
 import hashlib
 import json
@@ -47,6 +48,9 @@ NETWORK_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024
 NETWORK_DOWNLOAD_CHUNK_BYTES = 64 * 1024
 GATEWAY_SCHEMA_VERSION = 2
 CLIENT_LAST_SEEN_WRITE_SECONDS = 5 * 60
+PIN_UNLOCK_LEASE_SECONDS = 5 * 60
+PIN_FAILURE_WINDOW_SECONDS = 5 * 60
+PIN_MAX_COOLDOWN_SECONDS = 30
 PROFILE_PERMISSIONS = {"use_profile", "remote_sign_in"}
 DISCORD_ID_PATTERN = re.compile(r"^[0-9]{5,32}$")
 VIRTUALHERE_ADDRESS_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
@@ -79,6 +83,30 @@ def profile_deletion_pending(profile: Any) -> bool:
 
 def compact_json(value: Any) -> bytes:
     return json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+
+
+def profile_pin_required(profile: Any) -> bool:
+    return isinstance(profile, dict) and profile.get("pin_verifier") is not None
+
+
+def verify_profile_pin(pin: str, verifier: Any) -> bool:
+    if not re.fullmatch(r"[0-9]{4}", pin or "") or not isinstance(verifier, dict):
+        return False
+    try:
+        if (int(verifier.get("version")) != 1 or
+                verifier.get("algorithm") != "pbkdf2-sha256"):
+            return False
+        iterations = int(verifier.get("iterations"))
+        if iterations < 100_000 or iterations > 1_000_000:
+            return False
+        salt = base64.b64decode(str(verifier.get("salt") or ""), validate=True)
+        expected = base64.b64decode(str(verifier.get("digest") or ""), validate=True)
+        if len(salt) != 16 or len(expected) != 32:
+            return False
+        actual = hashlib.pbkdf2_hmac("sha256", pin.encode("ascii"), salt, iterations)
+        return secrets.compare_digest(actual, expected)
+    except (TypeError, ValueError):
+        return False
 
 
 def sha256_text(value: str) -> str:
@@ -169,6 +197,16 @@ class LoginBrokerClient:
                request_id: str, attempt_id: str) -> dict[str, Any]:
         return self.request(3, {
             1: client_id, 2: profile_id, 3: request_id, 4: attempt_id,
+        })
+
+    def switch_session(self, client_id: str, profile: dict[str, Any],
+                       request_id: str) -> dict[str, Any]:
+        return self.request(6, {
+            1: client_id,
+            2: str(profile.get("id") or ""),
+            3: request_id,
+            4: str(profile.get("windows_account_sid") or ""),
+            5: str(profile.get("windows_account_name") or ""),
         })
 
     def request(self, operation: int, fields: dict[int, str]) -> dict[str, Any]:
@@ -549,6 +587,9 @@ class GatewayState:
         self.microphone_streams: dict[str, str] = {}
         self.discord_audio_streams: dict[str, str] = {}
         self.network_downloads: set[tuple[str, str]] = set()
+        self.pin_failures: dict[tuple[str, str], list[float]] = {}
+        self.pin_blocked_until: dict[tuple[str, str], float] = {}
+        self.pin_unlock_leases: dict[tuple[str, str], tuple[float, str]] = {}
         self.lock = threading.RLock()
         self.request_context = threading.local()
         self.runtime_status_path = self.config_path.with_name("runtime-status.json")
@@ -935,6 +976,65 @@ class GatewayState:
                 "This client is not authorized for the requested profile permission.")
         return self.select_profile(selected, record_use=record_use)
 
+    @staticmethod
+    def pin_client_key(client: dict[str, Any]) -> str:
+        return str(client.get("id") or client.get("token_sha256") or "")
+
+    @staticmethod
+    def pin_verifier_fingerprint(profile: dict[str, Any]) -> str:
+        verifier = profile.get("pin_verifier")
+        return hashlib.sha256(json.dumps(
+            verifier, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
+
+    def verify_pin(self, client: dict[str, Any], profile_id: str,
+                   pin: str) -> tuple[int, dict[str, Any]]:
+        profile = self.config.get("profiles", {}).get(profile_id)
+        if not isinstance(profile, dict) or not profile_pin_required(profile):
+            return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "pin_not_required"}
+        key = (self.pin_client_key(client), profile_id)
+        now = time.monotonic()
+        with self.lock:
+            blocked_until = self.pin_blocked_until.get(key, 0.0)
+            if blocked_until > now:
+                return HTTPStatus.TOO_MANY_REQUESTS, {
+                    "ok": False, "error": "rate_limited",
+                    "retry_after_seconds": max(1, int(blocked_until - now + 0.999)),
+                }
+            failures = [attempt for attempt in self.pin_failures.get(key, [])
+                        if now - attempt < PIN_FAILURE_WINDOW_SECONDS]
+            if not verify_profile_pin(pin, profile.get("pin_verifier")):
+                failures.append(now)
+                cooldown = min(PIN_MAX_COOLDOWN_SECONDS, len(failures))
+                self.pin_failures[key] = failures
+                self.pin_blocked_until[key] = now + cooldown
+                return HTTPStatus.FORBIDDEN, {
+                    "ok": False, "error": "invalid_pin",
+                    "retry_after_seconds": cooldown,
+                }
+            self.pin_failures.pop(key, None)
+            self.pin_blocked_until.pop(key, None)
+            self.pin_unlock_leases[key] = (
+                now + PIN_UNLOCK_LEASE_SECONDS,
+                self.pin_verifier_fingerprint(profile),
+            )
+        return HTTPStatus.OK, {"ok": True, "unlocked": True,
+                               "expires_in_seconds": PIN_UNLOCK_LEASE_SECONDS}
+
+    def require_profile_unlock(self, client: dict[str, Any], profile_id: str) -> None:
+        profile = self.config.get("profiles", {}).get(profile_id)
+        if not isinstance(profile, dict) or not profile_pin_required(profile):
+            return
+        key = (self.pin_client_key(client), profile_id)
+        now = time.monotonic()
+        with self.lock:
+            lease = self.pin_unlock_leases.get(key)
+            if (lease is not None and lease[0] > now and
+                    secrets.compare_digest(
+                        lease[1], self.pin_verifier_fingerprint(profile))):
+                return
+            self.pin_unlock_leases.pop(key, None)
+        raise PermissionError("Profile app PIN verification required.")
+
     def delete_profile(self, profile_id: str) -> bool:
         selected = str(profile_id or "").strip()
         if not PROFILE_ID_PATTERN.fullmatch(selected):
@@ -1191,6 +1291,37 @@ class GatewayState:
                 "attempt_id": str(fields.get(3) or ""), "request_id": request_id}
         return (HTTPStatus.ACCEPTED if result.get("success") else HTTPStatus.CONFLICT), body
 
+    def switch_session(self, client: dict[str, Any], profile_id: str,
+                       request_id: str) -> tuple[int, dict[str, Any]]:
+        if not REQUEST_ID_PATTERN.fullmatch(request_id):
+            raise ValueError("A valid X-Request-Id header is required.")
+        profile = self.config.get("profiles", {}).get(profile_id)
+        if not isinstance(profile, dict):
+            return HTTPStatus.CONFLICT, {"ok": False, "state": "action_required",
+                                         "reason": "profile_missing"}
+        if not profile.get("remote_sign_in_enabled"):
+            return HTTPStatus.CONFLICT, {"ok": False, "state": "action_required",
+                                         "reason": "remote_sign_in_disabled"}
+        if profile.get("account_mapping_status") != "resolved":
+            return HTTPStatus.CONFLICT, {"ok": False, "state": "action_required",
+                                         "reason": "account_mapping_required"}
+        result = self.login_broker.switch_session(
+            self.broker_client_id(client), profile, request_id)
+        state = str(result.get("state") or "action_required")
+        reason = str(result.get("reason") or "action_required")
+        if state == "broker_unavailable":
+            status = HTTPStatus.SERVICE_UNAVAILABLE
+        elif result.get("success") and state == "ready":
+            status = HTTPStatus.OK
+        elif result.get("success"):
+            status = HTTPStatus.ACCEPTED
+        else:
+            status = HTTPStatus.CONFLICT
+        fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
+        return status, {"ok": bool(result.get("success")), "state": state,
+                        "reason": reason, "attempt_id": str(fields.get(3) or ""),
+                        "request_id": request_id}
+
     def session_attempt_status(self, client: dict[str, Any], profile_id: str,
                                request_id: str, attempt_id: str) \
             -> tuple[int, dict[str, Any]]:
@@ -1437,6 +1568,7 @@ class GatewayState:
                     "display_name": display_name,
                     "enabled": (profile_config.get("enabled") is True and
                                 not profile_deletion_pending(profile_config)),
+                    "pin_required": profile_pin_required(profile_config),
                     "remote_sign_in_enabled": bool(
                         profile_config.get("remote_sign_in_enabled", False)),
                     "account_mapping_status": str(
@@ -2211,10 +2343,14 @@ class GatewayHandler(BaseHTTPRequestHandler):
         return None
 
     def authorize_profile(self, client: dict[str, Any],
-                          permission: str = "use_profile") -> str:
-        return self.state.authorize_profile(
+                          permission: str = "use_profile",
+                          require_pin: bool = True) -> str:
+        profile_id = self.state.authorize_profile(
             client, self.headers.get("X-WakePlay-Profile", "default"),
             permission, record_use=True)
+        if require_pin:
+            self.state.require_profile_unlock(client, profile_id)
+        return profile_id
 
     def _begin_diagnostics(self, method: str) -> None:
         self._diagnostic_method = method
@@ -2404,6 +2540,19 @@ class GatewayHandler(BaseHTTPRequestHandler):
                                self.state.stream_pair_ticket_for_client(
                                    self.client_address[0], authenticated_client))
                 return
+            if path == f"{API_PREFIX}/profiles/pin/verify":
+                profile_id = self.authorize_profile(
+                    authenticated_client, "use_profile", require_pin=False)
+                body = self.read_json()
+                pin = body.get("pin")
+                if not isinstance(pin, str) or not re.fullmatch(r"[0-9]{4}", pin):
+                    self.send_json(HTTPStatus.BAD_REQUEST, {
+                        "ok": False, "error": "invalid_pin_format"})
+                    return
+                status, result = self.state.verify_pin(
+                    authenticated_client, profile_id, pin)
+                self.send_json(status, result)
+                return
             if path == f"{API_PREFIX}/system/session/ensure":
                 request_id = self.headers.get("X-Request-Id", "").strip()
                 body = self.read_json()
@@ -2415,6 +2564,20 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 profile_id = self.authorize_profile(
                     authenticated_client, "use_profile")
                 status, result = self.state.ensure_session(
+                    authenticated_client, profile_id, request_id)
+                self.send_session_json(status, result)
+                return
+            if path == f"{API_PREFIX}/system/session/switch":
+                request_id = self.headers.get("X-Request-Id", "").strip()
+                body = self.read_json()
+                if body:
+                    self.send_session_json(HTTPStatus.BAD_REQUEST, {
+                        "ok": False, "state": "action_required",
+                        "reason": "invalid_request_body"})
+                    return
+                profile_id = self.authorize_profile(
+                    authenticated_client, "remote_sign_in")
+                status, result = self.state.switch_session(
                     authenticated_client, profile_id, request_id)
                 self.send_session_json(status, result)
                 return

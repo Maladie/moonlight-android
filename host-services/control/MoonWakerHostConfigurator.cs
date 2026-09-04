@@ -17,9 +17,9 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("0.7.59.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.7.59.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("0.7.59+2026.09.01")]
+[assembly: System.Reflection.AssemblyVersion("0.7.75.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.7.75.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("0.7.75+2026.09.04")]
 
 namespace MoonWaker.HostConfigurator
 {
@@ -236,6 +236,7 @@ namespace MoonWaker.HostConfigurator
         internal string VibepolloEndpoint;
         internal string GameProviderEndpoint;
         internal bool Enabled;
+        internal bool AppPinRequired;
         internal bool RemoteSignInEnabled;
         internal string MappingStatus;
         internal string DeletionNonce;
@@ -408,6 +409,48 @@ namespace MoonWaker.HostConfigurator
                 profile["display_name"] = displayName.Trim();
                 profile["enabled"] = enabled;
             });
+        }
+
+        internal void SetAppPin(string id, string expectedSid, string pin)
+        {
+            Dictionary<string, object> verifier = CreateAppPinVerifier(pin);
+            MutateProfile(id, expectedSid, delegate(Dictionary<string, object> document,
+                Dictionary<string, object> profile) { profile["pin_verifier"] = verifier; });
+        }
+
+        internal void RemoveAppPin(string id, string expectedSid)
+        {
+            MutateProfile(id, expectedSid, delegate(Dictionary<string, object> document,
+                Dictionary<string, object> profile) { profile.Remove("pin_verifier"); });
+        }
+
+        internal static Dictionary<string, object> CreateAppPinVerifier(string pin)
+        {
+            if (String.IsNullOrEmpty(pin) ||
+                !System.Text.RegularExpressions.Regex.IsMatch(pin, "^[0-9]{4}$"))
+                throw new InvalidOperationException("PIN aplikacji MoonWaker musi mieć dokładnie cztery cyfry.");
+            byte[] salt = new byte[16];
+            byte[] digest = null;
+            using (RandomNumberGenerator random = RandomNumberGenerator.Create())
+                random.GetBytes(salt);
+            try
+            {
+                using (Rfc2898DeriveBytes derive = new Rfc2898DeriveBytes(
+                    pin, salt, 120000, HashAlgorithmName.SHA256))
+                    digest = derive.GetBytes(32);
+                return new Dictionary<string, object> {
+                    { "version", 1 },
+                    { "algorithm", "pbkdf2-sha256" },
+                    { "iterations", 120000 },
+                    { "salt", Convert.ToBase64String(salt) },
+                    { "digest", Convert.ToBase64String(digest) }
+                };
+            }
+            finally
+            {
+                Array.Clear(salt, 0, salt.Length);
+                if (digest != null) Array.Clear(digest, 0, digest.Length);
+            }
         }
 
         internal void SetRemoteSignInEnabled(string id, string expectedSid, bool enabled)
@@ -676,6 +719,7 @@ namespace MoonWaker.HostConfigurator
                 VibepolloEndpoint = Text(profile, "vibepollo_bridge", ""),
                 GameProviderEndpoint = provider,
                 Enabled = BooleanValue(profile, "enabled"),
+                AppPinRequired = Value(profile, "pin_verifier") != null,
                 RemoteSignInEnabled = BooleanValue(profile, "remote_sign_in_enabled"),
                 MappingStatus = Text(profile, "account_mapping_status", "action_required"),
                 DeletionNonce = tombstone == null ? "" : Text(tombstone, "nonce", ""),
@@ -1894,6 +1938,9 @@ namespace MoonWaker.HostConfigurator
             Ui.Button(this, "Urządzenia i dostęp…", 230, 294, 190,
                 delegate { using (DeviceGrantsForm form = new DeviceGrantsForm(store, profile.Id))
                     form.ShowDialog(this); }, false);
+            Ui.Button(this, "PIN aplikacji…", 430, 294, 150,
+                delegate { using (AppPinForm form = new AppPinForm(store, profile.Id))
+                    form.ShowDialog(this); }, false);
             Ui.Button(this, "Zapisz", 488, 370, 92, SaveClicked, true);
             Button cancel = Ui.Button(this, "Anuluj", 588, 370, 92,
                 delegate { Close(); }, false);
@@ -1914,6 +1961,103 @@ namespace MoonWaker.HostConfigurator
                 MessageBox.Show(this, ex.Message, "MoonWaker Host Configurator",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+        }
+    }
+
+    internal sealed class AppPinForm : Form
+    {
+        private readonly GatewayRegistryStore store;
+        private readonly ProfileRecord profile;
+        private readonly TextBox pin;
+        private readonly TextBox confirmation;
+        private readonly Button remove;
+
+        internal AppPinForm(GatewayRegistryStore store, string profileId)
+        {
+            this.store = store;
+            profile = store.GetProfile(profileId);
+            profile.EnsureMutable();
+            Ui.Prepare(this, "PIN aplikacji MoonWaker", 620, 360);
+            Ui.Label(this, "PIN aplikacji MoonWaker", 28, 22, 560, 38,
+                18F, FontStyle.Bold, Color.White);
+            Ui.Label(this,
+                "To czterocyfrowy PIN aplikacji MoonWaker, nie hasło Windows.",
+                30, 68, 550, 30, 9.5F, FontStyle.Regular, Ui.Muted);
+            Ui.Label(this, profile.AppPinRequired
+                ? "Wpisz nowy PIN, aby zastąpić obecny." : "Ustaw PIN dla tego profilu.",
+                30, 104, 550, 24, 9F, FontStyle.Regular, Ui.Muted);
+            Ui.Label(this, "Nowy PIN", 30, 144, 180, 22, 9F,
+                FontStyle.Bold, Color.White);
+            pin = Ui.TextBox(this, 210, 140, 180);
+            pin.MaxLength = 4;
+            pin.UseSystemPasswordChar = true;
+            Ui.Label(this, "Powtórz PIN", 30, 184, 180, 22, 9F,
+                FontStyle.Bold, Color.White);
+            confirmation = Ui.TextBox(this, 210, 180, 180);
+            confirmation.MaxLength = 4;
+            confirmation.UseSystemPasswordChar = true;
+            Ui.Button(this, profile.AppPinRequired ? "Zmień PIN" : "Ustaw PIN",
+                330, 284, 110, SaveClicked, true);
+            remove = Ui.Button(this, "Usuń PIN", 202, 284, 118, RemoveClicked, false);
+            remove.Enabled = profile.AppPinRequired;
+            Button cancel = Ui.Button(this, "Anuluj", 450, 284, 110,
+                delegate { ClearAndClose(); }, false);
+            CancelButton = cancel;
+        }
+
+        private void SaveClicked(object sender, EventArgs e)
+        {
+            string value = pin.Text;
+            string repeated = confirmation.Text;
+            try
+            {
+                if (!String.Equals(value, repeated, StringComparison.Ordinal))
+                    throw new InvalidOperationException("Wpisane PIN-y aplikacji nie są identyczne.");
+                store.SetAppPin(profile.Id, profile.Sid, value);
+                MessageBox.Show(this, "PIN aplikacji MoonWaker zapisano.",
+                    "MoonWaker Host Configurator", MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                ClearAndClose();
+            }
+            catch (Exception ex)
+            {
+                pin.Clear();
+                confirmation.Clear();
+                MessageBox.Show(this, ex.Message, "MoonWaker Host Configurator",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+            finally
+            {
+                value = null;
+                repeated = null;
+            }
+        }
+
+        private void RemoveClicked(object sender, EventArgs e)
+        {
+            if (MessageBox.Show(this, "Usunąć PIN aplikacji MoonWaker dla tego profilu?",
+                "MoonWaker Host Configurator", MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            try
+            {
+                store.RemoveAppPin(profile.Id, profile.Sid);
+                MessageBox.Show(this, "PIN aplikacji MoonWaker usunięto.",
+                    "MoonWaker Host Configurator", MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                ClearAndClose();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "MoonWaker Host Configurator",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void ClearAndClose()
+        {
+            pin.Clear();
+            confirmation.Clear();
+            Close();
         }
     }
 
@@ -2419,6 +2563,22 @@ namespace MoonWaker.HostConfigurator
                 ProfileRecord edited = store.GetProfile("profile-a");
                 Assert(edited.DisplayName == "Renamed" && edited.Sid == sidA && !edited.Enabled,
                     "Profile edit did not preserve immutable SID.");
+                store.SetAppPin("profile-a", sidA, "4826");
+                raw = File.ReadAllText(config);
+                Dictionary<string, object> withPin = jsonDocument(raw);
+                Dictionary<string, object> pinProfile = dictionaryValue(
+                    dictionaryValue(withPin, "profiles"), "profile-a");
+                Dictionary<string, object> verifier = dictionaryValue(pinProfile, "pin_verifier");
+                Assert(!raw.Contains("4826") && store.GetProfile("profile-a").AppPinRequired &&
+                    Convert.ToInt32(verifier["version"]) == 1 &&
+                    Convert.ToString(verifier["algorithm"]) == "pbkdf2-sha256" &&
+                    Convert.FromBase64String(Convert.ToString(verifier["salt"])).Length == 16 &&
+                    Convert.FromBase64String(Convert.ToString(verifier["digest"])).Length == 32,
+                    "App PIN was not stored as a versioned salted verifier.");
+                store.RemoveAppPin("profile-a", sidA);
+                Assert(!store.GetProfile("profile-a").AppPinRequired &&
+                    !File.ReadAllText(config).Contains("pin_verifier"),
+                    "Removing the app PIN left verifier material in the profile.");
                 bool immutable = false;
                 try { store.UpdateProfile("profile-a", sidB, "Bad", true); }
                 catch (InvalidOperationException) { immutable = true; }
@@ -2558,6 +2718,17 @@ namespace MoonWaker.HostConfigurator
         private static void Assert(bool condition, string message)
         {
             if (!condition) throw new InvalidOperationException(message);
+        }
+
+        private static Dictionary<string, object> jsonDocument(string value)
+        {
+            return new JavaScriptSerializer().Deserialize<Dictionary<string, object>>(value);
+        }
+
+        private static Dictionary<string, object> dictionaryValue(
+            Dictionary<string, object> source, string key)
+        {
+            return (Dictionary<string, object>)source[key];
         }
     }
 }

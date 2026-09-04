@@ -54,6 +54,19 @@ public final class HostGatewayStore {
         }
     }
 
+    static final class ProfileGate {
+        final HostGatewayClient.IntegrationProfile profile;
+        final boolean showGate;
+        final boolean clearAutomatic;
+
+        ProfileGate(HostGatewayClient.IntegrationProfile profile, boolean showGate,
+                    boolean clearAutomatic) {
+            this.profile = profile;
+            this.showGate = showGate;
+            this.clearAutomatic = clearAutomatic;
+        }
+    }
+
     public HostGatewayStore(Context context) {
         preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
     }
@@ -119,6 +132,7 @@ public final class HostGatewayStore {
                 .remove(key(hostUuid, "token"))
                 .remove(key(hostUuid, "certificate"))
                 .remove(key(hostUuid, "integration_profile"))
+                .remove(key(hostUuid, "automatic_integration_profile"))
                 .remove(key(hostUuid, "profiles"))
                 .remove(key(hostUuid, "discord_auto_connect"))
                 .remove(key(hostUuid, "playnite_library_filter"))
@@ -150,6 +164,30 @@ public final class HostGatewayStore {
         preferences.edit().putString(key(hostUuid, "integration_profile"), normalized).apply();
     }
 
+    String automaticIntegrationProfileId(String hostUuid) {
+        if (hostUuid == null) return "";
+        String value = preferences.getString(
+                key(hostUuid, "automatic_integration_profile"), "");
+        if (value == null || value.isEmpty()) return "";
+        try {
+            return GatewayConnection.normalizeProfileId(value);
+        } catch (IllegalArgumentException invalidStoredProfile) {
+            return "";
+        }
+    }
+
+    void setAutomaticIntegrationProfileId(String hostUuid, String profileId) {
+        if (hostUuid == null || hostUuid.isEmpty()) return;
+        SharedPreferences.Editor editor = preferences.edit();
+        if (profileId == null || profileId.isEmpty()) {
+            editor.remove(key(hostUuid, "automatic_integration_profile"));
+        } else {
+            editor.putString(key(hostUuid, "automatic_integration_profile"),
+                    GatewayConnection.normalizeProfileId(profileId));
+        }
+        editor.apply();
+    }
+
     void saveProfiles(String hostUuid, HostGatewayClient.IntegrationProfiles profiles) {
         if (hostUuid == null || hostUuid.isEmpty() || profiles == null) return;
         JSONObject root = new JSONObject();
@@ -165,6 +203,7 @@ public final class HostGatewayStore {
                         .put("remote_sign_in", profile.remoteSignIn));
                 value.put("session_state", profile.sessionState);
                 value.put("remote_sign_in_state", profile.remoteSignInState);
+                value.put("pin_required", profile.pinRequired);
                 value.put("discord_bridge_online", profile.discordBridgeOnline);
                 value.put("discord_rpc_connected", profile.discordRpcConnected);
                 value.put("discord_authenticated", profile.discordAuthenticated);
@@ -180,7 +219,13 @@ public final class HostGatewayStore {
         } catch (JSONException impossible) {
             throw new IllegalStateException(impossible);
         }
-        preferences.edit().putString(key(hostUuid, "profiles"), root.toString()).apply();
+        SharedPreferences.Editor editor = preferences.edit()
+                .putString(key(hostUuid, "profiles"), root.toString());
+        if (shouldClearAutomaticProfile(
+                profiles.profiles, automaticIntegrationProfileId(hostUuid))) {
+            editor.remove(key(hostUuid, "automatic_integration_profile"));
+        }
+        editor.apply();
     }
 
     HostGatewayClient.IntegrationProfiles profiles(String hostUuid) {
@@ -205,6 +250,35 @@ public final class HostGatewayStore {
         HostGatewayClient.IntegrationProfiles cached = profiles(hostUuid);
         return projectProfiles(cached.profiles, selectedIntegrationProfileId(hostUuid),
                 cached.suggestedProfileId);
+    }
+
+    ProfileGate profileGate(String hostUuid) {
+        return resolveProfileGate(profileSelection(hostUuid),
+                automaticIntegrationProfileId(hostUuid));
+    }
+
+    static ProfileGate resolveProfileGate(ProfileSelection selection,
+                                          String automaticProfileId) {
+        List<HostGatewayClient.IntegrationProfile> profiles = selection == null
+                ? Collections.emptyList() : selection.profiles;
+        String automatic = automaticProfileId == null ? "" : automaticProfileId;
+        HostGatewayClient.IntegrationProfile selected = find(profiles, automatic);
+        boolean invalidAutomatic = !automatic.isEmpty()
+                && (selected == null || selected.pinRequired);
+        if (selected != null && selected.pinRequired) selected = null;
+        if (profiles.size() > 1 && selected == null) {
+            return new ProfileGate(null, true, invalidAutomatic);
+        }
+        if (selected == null && profiles.size() == 1) selected = profiles.get(0);
+        return new ProfileGate(selected, false, invalidAutomatic);
+    }
+
+    static boolean shouldClearAutomaticProfile(
+            List<HostGatewayClient.IntegrationProfile> profiles,
+            String automaticProfileId) {
+        HostGatewayClient.IntegrationProfile automatic =
+                find(profiles, automaticProfileId);
+        return automatic != null && automatic.pinRequired;
     }
 
     static ProfileSelection projectProfiles(
