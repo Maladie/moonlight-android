@@ -118,12 +118,20 @@ public final class DiscordOverlayController {
     public DiscordOverlayController(Activity activity, OverlayMenuView overlay,
                                     LinearLayout dock, PreferenceConfiguration preferences,
                                     String hostUuid, String activeHost) {
+        this(activity, overlay, dock, preferences, hostUuid, activeHost,
+                new HostGatewayStore(activity).selectedIntegrationProfileId(hostUuid));
+    }
+
+    public DiscordOverlayController(Activity activity, OverlayMenuView overlay,
+                                    LinearLayout dock, PreferenceConfiguration preferences,
+                                    String hostUuid, String activeHost,
+                                    String profileId) {
         this.activity = activity;
         this.overlay = overlay;
         this.dock = dock;
         this.hostUuid = hostUuid == null ? "" : hostUuid;
         store = new HostGatewayStore(activity);
-        GatewayConnection stored = store.loadForHost(hostUuid, activeHost);
+        GatewayConnection stored = store.loadForHost(hostUuid, activeHost, profileId);
         boolean enabled = stored != null && store.isDiscordEnabled(this.hostUuid, stored.profileId());
         connection = enabled ? stored : null;
         SharedPreferences state = activity.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
@@ -1042,8 +1050,8 @@ public final class DiscordOverlayController {
     }
 
     private String currentProfile() {
-        GatewayConnection stored = store.load(hostUuid);
-        return stored == null ? GatewayConnection.DEFAULT_PROFILE_ID : stored.profileId();
+        return connection == null ? GatewayConnection.DEFAULT_PROFILE_ID
+                : connection.profileId();
     }
 
     private void prepareDiscord(GatewayConnection stored) {

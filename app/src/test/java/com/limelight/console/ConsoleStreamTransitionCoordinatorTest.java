@@ -139,6 +139,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         assertFalse(harness.states.contains(LaunchTransitionState.ERROR));
         assertFalse(harness.states.contains(LaunchTransitionState.TIMED_OUT));
+        assertTrue(harness.states.contains(LaunchTransitionState.HOST_SESSION_LOCKED));
         assertTrue(harness.states.contains(LaunchTransitionState.GAME_RUNNING));
         assertFalse(harness.controller.snapshot().overlayVisible);
         assertFalse(harness.controller.snapshot().inputBlocked);
@@ -203,6 +204,8 @@ public class ConsoleStreamTransitionCoordinatorTest {
         controller.videoFrameRendered(providerSpec.id);
 
         assertEquals("host locked", controller.snapshot().detail);
+        assertEquals(LaunchTransitionState.HOST_SESSION_LOCKED,
+                controller.snapshot().state);
         assertTrue(controller.snapshot().manualRevealAvailable);
         coordinator.cancel();
         assertEquals(0, gateway.stopGameCalls);
@@ -417,6 +420,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals(120_000L, timeout(LaunchTransitionState.GAME_STARTING));
         assertEquals(120_000L, timeout(LaunchTransitionState.GAME_PROCESS_RUNNING));
         assertEquals(30_000L, timeout(LaunchTransitionState.GAME_WINDOW_STABILIZING));
+        assertEquals(0L, timeout(LaunchTransitionState.HOST_SESSION_LOCKED));
         assertEquals(45_000L, timeout(LaunchTransitionState.PLAYNITE_RETURNING));
         assertEquals(15_000L, timeout(LaunchTransitionState.PLAYNITE_STOPPING));
         assertEquals(15_000L, timeout(LaunchTransitionState.CLOSING_STREAM));
@@ -474,7 +478,28 @@ public class ConsoleStreamTransitionCoordinatorTest {
         harness.runObservation();
 
         assertEquals(Arrays.asList(1_000L, 1_000L, 2_000L), sleeper.delays);
-        assertEquals(LaunchTransitionState.ERROR, harness.controller.snapshot().state);
+        assertEquals(LaunchTransitionState.TIMED_OUT, harness.controller.snapshot().state);
+    }
+
+    @Test
+    public void temporaryObservationFailureDoesNotStopAnAcceptedGame() {
+        LaunchTransitionSpec spec = providerSpec("slow-provider", "steam:289070");
+        LaunchTransitionController controller = providerController(spec);
+        FakeGateway gateway = new FakeGateway();
+        gateway.snapshots.add(new IOException("one"));
+        gateway.snapshots.add(new IOException("two"));
+        gateway.snapshots.add(new IOException("three"));
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                spec, controller, gateway, new InlineExecutor(), new FakeClock(),
+                new ResetSleeper(), (action, delay) -> { }, new FakeCallbacks());
+
+        coordinator.start();
+        Thread.interrupted();
+
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+        assertEquals(LaunchTransitionState.TIMED_OUT, controller.snapshot().state);
+        assertTrue(controller.snapshot().uncertain);
     }
 
     @Test

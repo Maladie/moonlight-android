@@ -609,7 +609,6 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 if (timeout > 0L && clock.now() - context.stateSince >= timeout
                         && !"host_session_locked".equals(context.lastReadinessReason)
                         && isCurrent(runEpoch)) {
-                    requestProviderCleanup();
                     transitionController.timedOut(transitionSpec.id,
                             readinessFailureMessage(context.lastReadinessReason));
                     return;
@@ -617,8 +616,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             } catch (IOException | RuntimeException error) {
                 context.failures++;
                 if (context.failures >= 3 && isCurrent(runEpoch)) {
-                    requestProviderCleanup();
-                    transitionController.error(
+                    transitionController.timedOut(
                             transitionSpec.id, callbacks.gatewayUnavailableMessage());
                     return;
                 }
@@ -643,7 +641,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         String gameId = snapshot.gameId == null || snapshot.gameId.isEmpty()
                 ? transitionSpec.playniteGameId : snapshot.gameId;
         if ("host_session_locked".equals(snapshot.reason)) {
-            transitionController.targetWindowLost(transitionSpec.id, transitionSpec.hostId,
+            transitionController.hostSessionLocked(transitionSpec.id, transitionSpec.hostId,
                     kind, gameId, callbacks.hostSessionLockedMessage());
             return;
         }
@@ -947,7 +945,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         String reason = error.getMessage() == null ? "" : error.getMessage();
         if (reason.contains("host_session_locked")) {
             transitionController.gatewayConnected(transitionSpec.id, transitionSpec.hostId);
-            transitionController.targetWindowLost(
+            transitionController.hostSessionLocked(
                     transitionSpec.id, transitionSpec.hostId,
                     LaunchTransitionType.GAME, transitionSpec.playniteGameId,
                     callbacks.hostSessionLockedMessage());

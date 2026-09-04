@@ -85,7 +85,7 @@ public final class LaunchTransitionController {
     public synchronized void surfaceReady(String transitionId) {
         if (!accept(transitionId, null)) return;
         surfaceReady = true;
-        if (!streamConnected && state != LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED) {
+        if (!streamConnected && !requiresUserInteraction()) {
             state = LaunchTransitionState.WAITING_FOR_VIDEO_SURFACE;
         }
         evaluateReady();
@@ -94,7 +94,7 @@ public final class LaunchTransitionController {
     public synchronized void streamConnected(String transitionId) {
         if (!accept(transitionId, null)) return;
         streamConnected = true;
-        if (state == LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED) {
+        if (requiresUserInteraction()) {
             evaluateReady();
             return;
         }
@@ -244,6 +244,30 @@ public final class LaunchTransitionController {
         targetWindowReady = false;
         detail = reason == null ? "" : reason;
         state = LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED;
+        manualRevealAvailable = surfaceReady && streamConnected && videoFrameReady && inputReady;
+        publish();
+    }
+
+    public synchronized void hostSessionLocked(
+            String transitionId, String hostId, LaunchTransitionType kind,
+            String gameId, String reason) {
+        if (!acceptTarget(transitionId, hostId, kind, gameId)
+                || rejectsLateTargetSignal()) return;
+        targetWindowReady = false;
+        detail = reason == null ? "" : reason;
+        state = LaunchTransitionState.HOST_SESSION_LOCKED;
+        if (manualRevealOverride && revealCompleted) {
+            overlayVisible = false;
+            inputBlocked = false;
+            revealAuthorized = false;
+            manualRevealAvailable = false;
+            publish();
+            return;
+        }
+        overlayVisible = true;
+        inputBlocked = true;
+        revealAuthorized = false;
+        revealCompleted = false;
         manualRevealAvailable = surfaceReady && streamConnected && videoFrameReady && inputReady;
         publish();
     }
@@ -421,6 +445,11 @@ public final class LaunchTransitionController {
                 || state == LaunchTransitionState.RETURNING_TO_DASHBOARD;
     }
 
+    private boolean requiresUserInteraction() {
+        return state == LaunchTransitionState.LAUNCHER_INTERACTION_REQUIRED
+                || state == LaunchTransitionState.HOST_SESSION_LOCKED;
+    }
+
     private static String normalizedGameId(String gameId) {
         return gameId == null ? "" : gameId.trim().toLowerCase();
     }
@@ -524,6 +553,7 @@ public final class LaunchTransitionController {
                 return 3;
             case PLAYNITE_FULLSCREEN_STARTING:
             case GAME_WINDOW_STABILIZING:
+            case HOST_SESSION_LOCKED:
             case LAUNCHER_INTERACTION_REQUIRED:
             case GAME_STOPPING:
             case PLAYNITE_RETURNING:

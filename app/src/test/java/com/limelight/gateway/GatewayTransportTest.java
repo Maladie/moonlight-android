@@ -82,7 +82,7 @@ public class GatewayTransportTest {
         assertEquals(0, calls.get());
     }
 
-    @Test public void callerSuppliedRequestIdIsRestrictedToSuspendEndpoint() throws Exception {
+    @Test public void callerSuppliedRequestIdIsRestrictedToSessionMutations() throws Exception {
         GatewayTransport transport = new GatewayTransport(() -> "generated");
         try {
             transport.postJson(CONNECTION, "/api/v1/status", new JSONObject(),
@@ -99,12 +99,17 @@ public class GatewayTransportTest {
             calls.incrementAndGet();
             return "generated";
         });
-        try {
-            transport.postJson(CONNECTION, "/api/v1/system/suspend-session", new JSONObject(),
-                    "bad request id", 1_000);
-            fail("Expected IllegalArgumentException");
-        } catch (IllegalArgumentException expected) {
-            // Expected.
+        for (String path : new String[]{
+                "/api/v1/system/suspend-session",
+                "/api/v1/system/session/ensure",
+                "/api/v1/system/session/cancel"}) {
+            try {
+                transport.postJson(CONNECTION, path, new JSONObject(),
+                        "bad request id", 1_000);
+                fail("Expected IllegalArgumentException for " + path);
+            } catch (IllegalArgumentException expected) {
+                // The allowed route reached caller-ID validation without opening a connection.
+            }
         }
         assertEquals(0, calls.get());
     }

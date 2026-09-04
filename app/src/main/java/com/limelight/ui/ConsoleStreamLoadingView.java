@@ -302,6 +302,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         boolean resumingAfterError = error;
         currentStep = Math.max(1, Math.min(5, step));
         error = false;
+        messageView.setTextColor(0xFFE5E8F5);
         statusView.setTextColor(0xFFB8C7D8);
         statusView.setText(status == null || status.trim().isEmpty()
                 ? getContext().getString(R.string.transition_preparing_session) : status);
@@ -371,6 +372,33 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         showAnywayView.setNextFocusLeftId(cancelView.getId());
         renderSteps();
         requestDefaultActionFocus();
+        sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+    }
+
+    public void showWarning(String title, String details, boolean allowReveal) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(() -> showWarning(title, details, allowReveal));
+            return;
+        }
+        if (stopped || closingPresentation) return;
+        error = true;
+        handler.removeCallbacks(rotateMessage);
+        messageView.animate().cancel();
+        messageView.setAlpha(1f);
+        messageView.setText(title);
+        messageView.setTextColor(0xFFFFD166);
+        statusView.setText(details);
+        statusView.setTextColor(0xFFFFE3A3);
+        activityView.setVisibility(GONE);
+        actionsRow.setVisibility(VISIBLE);
+        cancelView.setEnabled(true);
+        cancelView.setText(R.string.transition_back);
+        retryView.setVisibility(GONE);
+        showAnywayView.setVisibility(allowReveal ? VISIBLE : GONE);
+        cancelView.setNextFocusRightId(showAnywayView.getId());
+        showAnywayView.setNextFocusLeftId(cancelView.getId());
+        renderSteps();
+        if (!isVisibleAction(findFocus())) cancelView.requestFocus();
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
     }
 

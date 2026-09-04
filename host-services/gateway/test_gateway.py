@@ -1,4 +1,5 @@
 import io
+import contextlib
 import json
 import os
 import re
@@ -31,6 +32,28 @@ class GatewayStateTest(unittest.TestCase):
         self.config_path.with_name("pairing-code.json").unlink(missing_ok=True)
         self.config_path.with_name("runtime-status.json").unlink(missing_ok=True)
         self.config_path.with_name("gateway-runtime.json").unlink(missing_ok=True)
+        self.config_path.with_name("client-activity.json").unlink(missing_ok=True)
+        self.config_path.with_suffix(self.config_path.suffix + ".lock").unlink(missing_ok=True)
+
+    @staticmethod
+    def request_handler(state, path, token, profile_id=None):
+        handler = object.__new__(GatewayHandler)
+        handler.path = path
+        handler.headers = Message()
+        handler.headers["Authorization"] = f"Bearer {token}"
+        if profile_id is not None:
+            handler.headers["X-WakePlay-Profile"] = profile_id
+        handler.server = SimpleNamespace(state=state)
+        handler.client_address = ("192.0.2.1", 12345)
+        responses = []
+
+        def send_json(status, body):
+            handler._response_status = int(status)
+            responses.append((int(status), body))
+
+        handler.send_json = send_json
+        handler.read_json = lambda: {}
+        return handler, responses
 
     def test_gateway_installer_packages_microphone_worker(self):
         installer = (Path(__file__).parent / "Install-WakePlayGateway.ps1").read_text(
@@ -53,7 +76,305 @@ class GatewayStateTest(unittest.TestCase):
         stored = json.loads(self.config_path.read_text(encoding="utf-8"))["clients"][0]
         self.assertNotIn(result["token"], self.config_path.read_text(encoding="utf-8"))
         self.assertEqual(sha256_text(result["token"]), stored["token_sha256"])
+        self.assertEqual(stored["paired_at"], stored["last_seen_at"])
+        self.assertEqual({"default": ["use_profile"]}, stored["profile_grants"])
+        self.assertNotIn("remote_sign_in", stored["profile_grants"]["default"])
+        self.assertEqual("default", result["suggested_profile_id"])
+        self.assertEqual(["default"], [profile["id"] for profile in result["profiles"]])
         self.assertIsNotNone(state.client_for_token(result["token"]))
+
+    def test_default_profile_alias_selects_only_granted_profile(self):
+        state = GatewayState(self.config_path, None)
+        state.config["profiles"] = {
+            "basia": {"id": "basia", "name": "Basia", "enabled": True},
+        }
+        client = {"profile_grants": {"basia": ["use_profile"]}}
+
+        self.assertEqual("basia", state.authorize_profile(client, "default"))
+
+    def test_pair_merges_into_current_registry_without_losing_profile_edits(self):
+        state = GatewayState(self.config_path, "123456")
+        externally_edited = json.loads(self.config_path.read_text(encoding="utf-8"))
+        externally_edited["profiles"]["added"] = {
+            "id": "added", "name": "Added", "enabled": True,
+        }
+        externally_edited["profiles"]["default"]["display_name"] = "Renamed"
+        self.config_path.write_text(json.dumps(externally_edited), encoding="utf-8")
+
+        result = state.pair("192.0.2.1", "123456", "Living room TV")
+
+        persisted = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual("Renamed", persisted["profiles"]["default"]["display_name"])
+        self.assertIn("added", persisted["profiles"])
+        self.assertEqual(
+            {"added": ["use_profile"], "default": ["use_profile"]},
+            persisted["clients"][0]["profile_grants"])
+        self.assertEqual("", result["suggested_profile_id"])
+        self.assertEqual(["added", "default"],
+                         [profile["id"] for profile in result["profiles"]])
+        self.assertIsNotNone(state.client_for_token(result["token"]))
+
+    def test_legacy_schema_migrates_profiles_and_clients_without_remote_grants(self):
+        token_hash = sha256_text("legacy-token")
+        self.config_path.write_text(json.dumps({
+            "certificate": "cert.pem",
+            "private_key": "key.pem",
+            "profiles": {
+                "basia": {
+                    "name": "Basia",
+                    "owner": "HOST\\Basia",
+                    "profile_root": "C:\\MoonWaker\\Basia",
+                    "discord_bridge": "http://127.0.0.1:8865",
+                    "vibepollo_bridge": "http://127.0.0.1:8875",
+                    "playnite_bridge": "http://127.0.0.1:8880",
+                    "integration_token": "preserved-token",
+                    "remote_sign_in_enabled": True,
+                },
+                "manual": {
+                    "name": "Manual",
+                    "owner": "HOST\\Missing",
+                    "remote_sign_in_enabled": True,
+                },
+                "disabled": {
+                    "name": "Disabled",
+                    "enabled": False,
+                },
+            },
+            "clients": [{
+                "id": "legacy-client",
+                "name": "TV",
+                "token_sha256": token_hash,
+                "paired_at": 123,
+                "profile_grants": {
+                    "basia": ["use_profile", "remote_sign_in"],
+                },
+            }],
+        }), encoding="utf-8")
+        self.config_path.with_suffix(self.config_path.suffix + ".lock").write_bytes(b"0")
+
+        with mock.patch.object(
+                wakeplay_gateway, "resolve_windows_account_sid",
+                side_effect=lambda name: (
+                    "S-1-5-21-1-2-3-1001" if name == "HOST\\Basia" else "")):
+            state = GatewayState(self.config_path, None)
+
+        saved = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
+                         saved["schema_version"])
+        basia = saved["profiles"]["basia"]
+        self.assertEqual("basia", basia["id"])
+        self.assertEqual("Basia", basia["display_name"])
+        self.assertEqual("S-1-5-21-1-2-3-1001", basia["windows_account_sid"])
+        self.assertEqual(basia["windows_account_sid"], basia["owner_sid"])
+        self.assertEqual("HOST\\Basia", basia["windows_account_name"])
+        self.assertEqual("C:\\MoonWaker\\Basia", basia["profile_root"])
+        self.assertEqual("http://127.0.0.1:8880", basia["game_provider_bridge"])
+        self.assertEqual("preserved-token", basia["integration_token"])
+        self.assertFalse(basia["remote_sign_in_enabled"])
+        manual = saved["profiles"]["manual"]
+        self.assertEqual("action_required", manual["account_mapping_status"])
+        self.assertFalse(manual["remote_sign_in_enabled"])
+        self.assertIn("manual", saved["profiles"])
+        client = saved["clients"][0]
+        self.assertEqual(token_hash, client["token_sha256"])
+        self.assertEqual(
+            {"basia": ["use_profile"], "default": ["use_profile"],
+             "disabled": ["use_profile"],
+             "manual": ["use_profile"]},
+            client["profile_grants"])
+        for permissions in client["profile_grants"].values():
+            self.assertNotIn("remote_sign_in", permissions)
+        with self.assertRaises(PermissionError):
+            state.authorize_profile(client, "basia", "remote_sign_in")
+
+    def test_current_schema_missing_or_malformed_grants_fail_closed(self):
+        self.config_path.write_text(json.dumps({
+            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
+            "certificate": "cert.pem",
+            "private_key": "key.pem",
+            "profiles": {"default": {"id": "default", "enabled": True}},
+            "clients": [
+                {"id": "missing", "token_sha256": sha256_text("missing")},
+                {"id": "malformed", "token_sha256": sha256_text("malformed"),
+                 "profile_grants": ["use_profile"]},
+            ],
+        }), encoding="utf-8")
+
+        state = GatewayState(self.config_path, None)
+
+        self.assertEqual({}, state.config["clients"][0]["profile_grants"])
+        self.assertEqual({}, state.config["clients"][1]["profile_grants"])
+
+    def test_current_schema_does_not_resurrect_removed_compatibility_profile(self):
+        self.config_path.write_text(json.dumps({
+            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
+            "certificate": "cert.pem",
+            "private_key": "key.pem",
+            "profiles": {},
+            "clients": [],
+        }), encoding="utf-8")
+
+        state = GatewayState(self.config_path, None)
+
+        self.assertEqual({}, state.config["profiles"])
+        self.assertEqual({}, json.loads(
+            self.config_path.read_text(encoding="utf-8"))["profiles"])
+
+    def test_tombstoned_profile_stays_disabled_and_cannot_be_used_or_regranted(self):
+        token = "existing-client-token"
+        tombstone = {"nonce": "deletion-nonce", "generation": 3,
+                     "created_at": 1234}
+        self.config_path.write_text(json.dumps({
+            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
+            "certificate": "cert.pem",
+            "private_key": "key.pem",
+            "profiles": {"pending": {
+                "id": "pending", "name": "Pending", "enabled": True,
+                "owner_sid": "S-1-5-21-1-2-3-1001",
+                "windows_account_sid": "S-1-5-21-1-2-3-1001",
+                "remote_sign_in_enabled": True,
+                "deletion_tombstone": tombstone,
+            }},
+            "clients": [{
+                "id": "existing", "token_sha256": sha256_text(token),
+                "profile_grants": {
+                    "pending": ["use_profile", "remote_sign_in"],
+                },
+            }],
+        }), encoding="utf-8")
+
+        state = GatewayState(self.config_path, "123456")
+        pending = state.config["profiles"]["pending"]
+        self.assertFalse(pending["enabled"])
+        self.assertFalse(pending["remote_sign_in_enabled"])
+        self.assertEqual(tombstone, pending["deletion_tombstone"])
+        client = state.client_for_token(token)
+        with self.assertRaises(PermissionError):
+            state.authorize_profile(client, "pending", "use_profile")
+        with self.assertRaises(PermissionError):
+            state.select_profile("pending")
+        self.assertEqual([], state.profiles_summary(client)["profiles"])
+
+        paired = state.pair("192.0.2.2", "123456", "New TV")
+        new_client = state.client_for_token(paired["token"])
+        self.assertNotIn("pending", new_client["profile_grants"])
+        persisted = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(tombstone,
+                         persisted["profiles"]["pending"]["deletion_tombstone"])
+
+    def test_corrupt_optional_client_activity_does_not_block_startup(self):
+        self.config_path.with_name("client-activity.json").write_text(json.dumps({
+            "schema_version": 1,
+            "clients": {"client-1": "not-a-timestamp"},
+        }), encoding="utf-8")
+        self.config_path.write_text(json.dumps({
+            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
+            "certificate": "cert.pem",
+            "private_key": "key.pem",
+            "profiles": {"default": {"id": "default", "enabled": True}},
+            "clients": [{"id": "client-1", "last_seen_at": 123,
+                         "profile_grants": {}}],
+        }), encoding="utf-8")
+
+        state = GatewayState(self.config_path, None)
+
+        self.assertEqual(123, state.config["clients"][0]["last_seen_at"])
+
+    def test_migration_never_replaces_registry_changed_while_starting(self):
+        replacement = {
+            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
+            "certificate": "replacement-cert.pem",
+            "private_key": "replacement-key.pem",
+            "profiles": {"default": {"id": "default", "enabled": True}},
+            "clients": [],
+        }
+
+        @contextlib.contextmanager
+        def concurrent_edit(_state):
+            self.config_path.write_text(json.dumps(replacement), encoding="utf-8")
+            yield
+
+        with mock.patch.object(GatewayState, "registry_update_lock", concurrent_edit):
+            with self.assertRaisesRegex(RuntimeError, "changed during migration"):
+                GatewayState(self.config_path, None)
+
+        self.assertEqual(
+            "replacement-cert.pem",
+            json.loads(self.config_path.read_text(encoding="utf-8"))["certificate"])
+
+    def test_live_gateway_refuses_to_mutate_newer_registry_schema(self):
+        state = GatewayState(self.config_path, "123456")
+        newer = json.loads(self.config_path.read_text(encoding="utf-8"))
+        newer["schema_version"] = wakeplay_gateway.GATEWAY_SCHEMA_VERSION + 1
+        self.config_path.write_text(json.dumps(newer), encoding="utf-8")
+
+        with self.assertRaisesRegex(ValueError, "schema changed"):
+            state.pair("192.0.2.1", "123456", "TV")
+
+        self.assertEqual(
+            wakeplay_gateway.GATEWAY_SCHEMA_VERSION + 1,
+            json.loads(self.config_path.read_text(encoding="utf-8"))["schema_version"])
+
+    def test_live_registry_reload_applies_grant_revocation_before_next_request(self):
+        token = "revoked-token"
+        self.config_path.write_text(json.dumps({
+            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
+            "certificate": "cert.pem",
+            "private_key": "key.pem",
+            "profiles": {"default": {"id": "default", "enabled": True}},
+            "clients": [{
+                "id": "client-1",
+                "token_sha256": sha256_text(token),
+                "profile_grants": {"default": ["use_profile", "remote_sign_in"]},
+            }],
+        }), encoding="utf-8")
+        state = GatewayState(self.config_path, None)
+        self.assertIsNotNone(state.client_for_token(token))
+
+        edited = json.loads(self.config_path.read_text(encoding="utf-8"))
+        edited["clients"][0]["profile_grants"] = {"default": ["use_profile"]}
+        self.config_path.write_text(json.dumps(edited), encoding="utf-8")
+        state.registry_modified_ns = -1
+
+        client = state.client_for_token(token)
+        self.assertIsNotNone(client)
+        with self.assertRaises(PermissionError):
+            state.authorize_profile(client, "default", "remote_sign_in")
+
+    def test_client_last_seen_write_is_throttled(self):
+        state = GatewayState(self.config_path, None)
+        token = "known-token"
+        state.config["clients"].append({
+            "id": "client-1",
+            "token_sha256": sha256_text(token),
+            "last_seen_at": 1000,
+            "profile_grants": {"default": ["use_profile"]},
+        })
+        state.save()
+        externally_edited = json.loads(self.config_path.read_text(encoding="utf-8"))
+        externally_edited["profiles"]["default"]["display_name"] = "Renamed elsewhere"
+        externally_edited["clients"][0]["profile_grants"] = {}
+        self.config_path.write_text(json.dumps(externally_edited), encoding="utf-8")
+
+        with mock.patch.object(wakeplay_gateway.time, "time", return_value=1299):
+            self.assertIsNotNone(state.client_for_token(token))
+        with mock.patch.object(wakeplay_gateway.time, "time", return_value=1300):
+            self.assertIsNotNone(state.client_for_token(token))
+        with mock.patch.object(wakeplay_gateway.time, "time", return_value=1301):
+            self.assertIsNotNone(state.client_for_token(token))
+
+        self.assertEqual(1300, state.config["clients"][0]["last_seen_at"])
+        persisted = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(1000, persisted["clients"][0]["last_seen_at"])
+        self.assertEqual({}, persisted["clients"][0]["profile_grants"])
+        self.assertEqual("Renamed elsewhere",
+                         persisted["profiles"]["default"]["display_name"])
+        activity = json.loads(
+            self.config_path.with_name("client-activity.json").read_text(encoding="utf-8"))
+        self.assertEqual(1300, activity["clients"]["client-1"])
+
+        restarted = GatewayState(self.config_path, None)
+        self.assertEqual(1300, restarted.config["clients"][0]["last_seen_at"])
 
     def test_invalid_pairing_code_is_rejected(self):
         state = GatewayState(self.config_path, "123456")
@@ -498,6 +819,7 @@ class GatewayStateTest(unittest.TestCase):
     def test_profile_selects_its_own_loopback_bridges(self):
         state = GatewayState(self.config_path, None)
         state.config["profiles"]["basia"] = {
+            "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
             "vibepollo_bridge": "http://localhost:8875",
             "playnite_bridge": "http://127.0.0.1:8880",
@@ -517,6 +839,7 @@ class GatewayStateTest(unittest.TestCase):
     def test_authenticated_profile_use_is_persisted_for_host_control(self):
         state = GatewayState(self.config_path, None)
         state.config["profiles"]["basia"] = {
+            "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
             "vibepollo_bridge": "http://127.0.0.1:8875",
             "playnite_bridge": "http://127.0.0.1:8880",
@@ -535,10 +858,181 @@ class GatewayStateTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             state.select_profile("../default")
 
+    def test_profile_listing_is_filtered_to_client_use_grants(self):
+        state = GatewayState(self.config_path, None)
+        state.config["profiles"]["basia"] = {
+            "name": "Basia",
+            "enabled": True,
+            "discord_bridge": "http://127.0.0.1:8865",
+            "vibepollo_bridge": "http://127.0.0.1:8875",
+            "game_provider_bridge": "http://127.0.0.1:8880",
+        }
+        token = "filtered-token"
+        state.config["clients"].append({
+            "id": "client-1",
+            "token_sha256": sha256_text(token),
+            "last_seen_at": int(time.time()),
+            "profile_grants": {"default": ["use_profile"]},
+        })
+        state.discord_status = lambda: {
+            "bridge_online": False, "rpc_connected": False,
+            "authenticated": False, "error": "",
+        }
+        state.proxy = lambda *_args, **_kwargs: (False, {})
+        handler, responses = self.request_handler(
+            state, "/api/v1/profiles", token)
+
+        handler.do_GET()
+
+        self.assertEqual(200, responses[0][0])
+        self.assertEqual(["default"], [
+            profile["id"] for profile in responses[0][1]["profiles"]])
+
+    def test_manual_unauthorized_profile_header_is_forbidden(self):
+        state = GatewayState(self.config_path, None)
+        state.config["profiles"]["basia"] = {
+            "name": "Basia", "enabled": True,
+        }
+        token = "limited-token"
+        state.config["clients"].append({
+            "id": "client-1",
+            "token_sha256": sha256_text(token),
+            "last_seen_at": int(time.time()),
+            "profile_grants": {"default": ["use_profile"]},
+        })
+        state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+        handler, responses = self.request_handler(
+            state, "/api/v1/playnite/health", token, "basia")
+
+        handler.do_GET()
+
+        self.assertEqual(403, responses[0][0])
+        state.playnite_health.assert_not_called()
+
+    def test_authorized_profile_header_reaches_profile_route(self):
+        state = GatewayState(self.config_path, None)
+        state.config["profiles"]["basia"] = {
+            "name": "Basia", "enabled": True,
+        }
+        token = "authorized-token"
+        state.config["clients"].append({
+            "id": "client-1",
+            "token_sha256": sha256_text(token),
+            "last_seen_at": int(time.time()),
+            "profile_grants": {"basia": ["use_profile"]},
+        })
+        state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+        handler, responses = self.request_handler(
+            state, "/api/v1/playnite/health", token, "basia")
+
+        handler.do_GET()
+
+        self.assertEqual((200, {"ok": True}), responses[0])
+        self.assertEqual("basia", state.last_runtime_profile)
+        state.playnite_health.assert_called_once_with()
+
+    def test_missing_or_non_boolean_profile_enablement_fails_closed(self):
+        token = "malformed-profile-token"
+        malformed_profiles = {
+            "missing": {"id": "missing", "name": "Missing"},
+            "null": {"id": "null", "name": "Null", "enabled": None},
+            "string": {"id": "string", "name": "String", "enabled": "true"},
+            "integer": {"id": "integer", "name": "Integer", "enabled": 1},
+            "false": {"id": "false", "name": "False", "enabled": False},
+        }
+        grants = {profile_id: ["use_profile"] for profile_id in malformed_profiles}
+        self.config_path.write_text(json.dumps({
+            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
+            "certificate": "cert.pem",
+            "private_key": "key.pem",
+            "profiles": malformed_profiles,
+            "clients": [{
+                "id": "client-1",
+                "token_sha256": sha256_text(token),
+                "last_seen_at": int(time.time()),
+                "profile_grants": grants,
+            }],
+        }), encoding="utf-8")
+
+        state = GatewayState(self.config_path, None)
+        self.assertTrue(all(profile["enabled"] is False
+                            for profile in state.config["profiles"].values()))
+
+        # A live schema-2 edit is loaded without migration normalization, so
+        # request-time checks must independently reject malformed values.
+        live_registry = json.loads(self.config_path.read_text(encoding="utf-8"))
+        live_registry["profiles"] = malformed_profiles
+        self.config_path.write_text(json.dumps(live_registry), encoding="utf-8")
+        state.registry_modified_ns = -1
+        client = state.client_for_token(token)
+        self.assertIsNotNone(client)
+
+        state.discord_status = mock.Mock(
+            side_effect=AssertionError("disabled profile Bridge was probed"))
+        state.proxy = mock.Mock(
+            side_effect=AssertionError("disabled profile Bridge was probed"))
+        self.assertEqual([], state.profiles_summary(client)["profiles"])
+        state.discord_status.assert_not_called()
+        state.proxy.assert_not_called()
+
+        state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+        for profile_id in malformed_profiles:
+            handler, responses = self.request_handler(
+                state, "/api/v1/playnite/health", token, profile_id)
+            handler.do_GET()
+            self.assertEqual(403, responses[0][0], profile_id)
+            with self.assertRaises(PermissionError, msg=profile_id):
+                state.select_profile(profile_id)
+        state.playnite_health.assert_not_called()
+
+    def test_host_wide_sleep_does_not_select_arbitrary_profile(self):
+        state = GatewayState(self.config_path, None)
+        state.config["profiles"]["basia"] = {"name": "Basia", "enabled": True}
+        token = "host-token"
+        state.config["clients"].append({
+            "id": "client-1",
+            "token_sha256": sha256_text(token),
+            "last_seen_at": int(time.time()),
+            "profile_grants": {"default": ["use_profile"]},
+        })
+        state.authorize_profile = mock.Mock(
+            side_effect=AssertionError("host-wide route selected a profile"))
+        state.sleep_host = mock.Mock(return_value=(202, {"ok": True}))
+        handler, responses = self.request_handler(
+            state, "/api/v1/system/sleep", token, "../invalid")
+        handler.headers["X-Request-Id"] = "sleep-request"
+
+        handler.do_POST()
+
+        self.assertEqual((202, {"ok": True}), responses[0])
+        state.authorize_profile.assert_not_called()
+        state.sleep_host.assert_called_once_with()
+
+    def test_profile_deletion_removes_all_client_grants(self):
+        state = GatewayState(self.config_path, None)
+        state.config["profiles"]["basia"] = {"name": "Basia"}
+        state.config["clients"] = [
+            {"profile_grants": {
+                "default": ["use_profile"],
+                "basia": ["use_profile", "remote_sign_in"],
+            }},
+            {"profile_grants": {"basia": ["use_profile"]}},
+        ]
+        state.save()
+
+        self.assertTrue(state.delete_profile("basia"))
+
+        saved = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertNotIn("basia", saved["profiles"])
+        self.assertEqual({"default": ["use_profile"]},
+                         saved["clients"][0]["profile_grants"])
+        self.assertEqual({}, saved["clients"][1]["profile_grants"])
+
     def test_profile_summary_reports_health_without_bridge_addresses(self):
         state = GatewayState(self.config_path, None)
         state.config["profiles"]["basia"] = {
             "name": "Basia",
+            "enabled": True,
             "discord_bridge": "http://127.0.0.1:8865",
             "vibepollo_bridge": "http://127.0.0.1:8875",
         }
@@ -551,7 +1045,12 @@ class GatewayStateTest(unittest.TestCase):
         state.proxy = lambda name, path, timeout=2.5: (
             True, {"installed": state.profile_id == "basia"})
 
-        summary = state.profiles_summary()
+        summary = state.profiles_summary({
+            "profile_grants": {
+                "default": ["use_profile"],
+                "basia": ["use_profile"],
+            },
+        })
 
         self.assertEqual("basia", summary["suggested_profile_id"])
         self.assertEqual("default", state.profile_id)
@@ -1234,6 +1733,250 @@ class GatewayDiagnosticsTest(unittest.TestCase):
             self.assertNotIn("x-request-id", headers[1])
             self.assertNotIn("x-request-id", headers[2])
             self.assertNotIn("x-request-id", headers[3])
+
+
+class LoginBrokerGatewayTest(unittest.TestCase):
+    class FakeBroker:
+        def __init__(self):
+            self.profile = self.reply(True, "signed_out", fields={3: "ready", 4: "none"})
+            self.begin_result = self.reply(
+                True, "pending", fields={3: "0123456789abcdef0123456789abcdef"})
+            self.attempt = self.reply(True, "completed")
+            self.cancel_result = self.reply(
+                False, "action_required", "attempt_cancelled",
+                {3: "0123456789abcdef0123456789abcdef"})
+            self.begin_calls = []
+            self.cancel_calls = []
+
+        @staticmethod
+        def reply(success, state, reason="none", fields=None):
+            return {"success": success, "state": state, "reason": reason,
+                    "fields": fields or {}}
+
+        def profile_state(self, _profile):
+            return self.profile
+
+        def capability(self):
+            return self.reply(True, "ready", fields={3: "1"})
+
+        def begin(self, client_id, profile, request_id):
+            self.begin_calls.append((client_id, profile["id"], request_id))
+            return self.begin_result
+
+        def attempt_state(self, _client_id, _profile_id, _request_id, _attempt_id):
+            return self.attempt
+
+        def cancel(self, _client_id, _profile_id, _request_id, _attempt_id):
+            self.cancel_calls.append((_request_id, _attempt_id))
+            return self.cancel_result
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.config_path = Path(self.temporary.name) / "gateway.json"
+        self.config_path.write_text(json.dumps({
+            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
+            "certificate": "cert.pem", "private_key": "key.pem",
+            "profiles": {"living-room": {
+                "id": "living-room", "name": "Living room", "enabled": True,
+                "windows_account_sid": "S-1-5-21-1-2-3-1001",
+                "windows_account_name": "TESTPC\\Player",
+                "remote_sign_in_enabled": True,
+            }},
+            "clients": [{
+                "id": "android-tv", "token_sha256": sha256_text("token"),
+                "profile_grants": {
+                    "living-room": ["use_profile", "remote_sign_in"],
+                },
+            }],
+        }), encoding="utf-8")
+        self.broker = self.FakeBroker()
+        self.state = GatewayState(
+            self.config_path, None, broker_client=self.broker)
+        self.client = self.state.config["clients"][0]
+
+    def tearDown(self):
+        self.temporary.cleanup()
+
+    def test_binary_gateway_client_matches_mwl_v1(self):
+        encoded = wakeplay_gateway.LoginBrokerClient.encode_request(
+            4, {1: "living-room", 2: "S-1-5-21-1"})
+        self.assertEqual(b"MWLB\x01\x04\x02\x00", encoded[:8])
+        self.assertEqual(1, encoded[8])
+        self.assertEqual(len("living-room"), int.from_bytes(encoded[9:13], "little"))
+
+        response = bytearray(b"MWLR\x01\x00\x03\x00")
+        for key, value in ((1, "locked"), (2, "none"), (3, "ready")):
+            raw = value.encode("utf-8")
+            response.extend(bytes((key,)) + len(raw).to_bytes(4, "little") + raw)
+        decoded = wakeplay_gateway.LoginBrokerClient.decode_response(io.BytesIO(response))
+        self.assertTrue(decoded["success"])
+        self.assertEqual("locked", decoded["state"])
+        self.assertEqual("ready", decoded["fields"][3])
+
+    def test_ensure_begins_bound_attempt_only_when_target_needs_login(self):
+        status, result = self.state.ensure_session(
+            self.client, "living-room", "request-one")
+        self.assertEqual(202, status)
+        self.assertEqual("pending", result["state"])
+        self.assertEqual("0123456789abcdef0123456789abcdef", result["attempt_id"])
+        self.assertEqual(
+            [("android-tv", "living-room", "request-one")], self.broker.begin_calls)
+
+        self.broker.profile = self.broker.reply(
+            True, "active", fields={3: "ready", 4: "none"})
+        status, result = self.state.ensure_session(
+            self.client, "living-room", "request-two")
+        self.assertEqual(200, status)
+        self.assertEqual("ready", result["state"])
+        self.assertEqual(1, len(self.broker.begin_calls))
+
+    def test_other_user_or_missing_credential_requires_action(self):
+        self.broker.profile = self.broker.reply(
+            True, "other_user_active", fields={3: "ready", 4: "none"})
+        status, result = self.state.ensure_session(
+            self.client, "living-room", "request-one")
+        self.assertEqual(409, status)
+        self.assertEqual("other_user_active", result["reason"])
+
+        self.broker.profile = self.broker.reply(
+            True, "signed_out", fields={3: "action_required", 4: "credential_missing"})
+        self.broker.begin_result = self.broker.reply(
+            False, "action_required", "credential_missing")
+        status, result = self.state.ensure_session(
+            self.client, "living-room", "request-two")
+        self.assertEqual(409, status)
+        self.assertEqual("credential_missing", result["reason"])
+        self.assertEqual(
+            [("android-tv", "living-room", "request-two")], self.broker.begin_calls)
+
+    def test_failed_request_replay_returns_same_terminal_broker_result(self):
+        attempt_id = "0123456789abcdef0123456789abcdef"
+        self.broker.profile = self.broker.reply(
+            True, "signed_out", fields={3: "action_required", 4: "credential_missing"})
+        self.broker.begin_result = self.broker.reply(
+            False, "action_required", "logon_failed", {3: attempt_id})
+        status, result = self.state.ensure_session(
+            self.client, "living-room", "same-failed-request")
+        self.assertEqual(409, status)
+        self.assertEqual("logon_failed", result["reason"])
+        self.assertEqual(attempt_id, result["attempt_id"])
+        self.assertEqual([("android-tv", "living-room", "same-failed-request")],
+                         self.broker.begin_calls)
+
+    def test_active_use_only_profile_succeeds_but_signed_out_requires_remote_grant(self):
+        self.client["profile_grants"]["living-room"] = ["use_profile"]
+        self.broker.profile = self.broker.reply(
+            True, "active", fields={3: "ready", 4: "none"})
+        status, result = self.state.ensure_session(
+            self.client, "living-room", "request-active")
+        self.assertEqual(200, status)
+        self.assertEqual("ready", result["state"])
+
+        self.broker.profile = self.broker.reply(
+            True, "signed_out", fields={3: "ready", 4: "none"})
+        with self.assertRaises(PermissionError):
+            self.state.ensure_session(
+                self.client, "living-room", "request-signed-out")
+
+    def test_other_active_user_is_reported_before_remote_grant_check(self):
+        self.client["profile_grants"]["living-room"] = ["use_profile"]
+        self.broker.profile = self.broker.reply(
+            True, "other_user_active",
+            fields={3: "action_required", 4: "credential_missing"})
+        status, result = self.state.ensure_session(
+            self.client, "living-room", "request-other-user")
+        self.assertEqual(409, status)
+        self.assertEqual("other_user_active", result["session_state"])
+        self.assertEqual([], self.broker.begin_calls)
+
+    def test_session_ensure_route_checks_remote_grant_only_when_login_is_needed(self):
+        self.client["profile_grants"]["living-room"] = ["use_profile"]
+        self.broker.profile = self.broker.reply(
+            True, "active", fields={3: "ready", 4: "none"})
+        handler, responses = GatewayStateTest.request_handler(
+            self.state, "/api/v1/system/session/ensure", "token", "living-room")
+        handler.headers["X-Request-Id"] = "request-active-route"
+        handler.do_POST()
+        self.assertEqual(200, responses[0][0])
+        self.assertEqual("ready", responses[0][1]["state"])
+
+        self.broker.profile = self.broker.reply(
+            True, "signed_out", fields={3: "ready", 4: "none"})
+        handler, responses = GatewayStateTest.request_handler(
+            self.state, "/api/v1/system/session/ensure", "token", "living-room")
+        handler.headers["X-Request-Id"] = "request-signed-out-route"
+        handler.do_POST()
+        self.assertEqual(403, responses[0][0])
+
+    def test_non_success_session_route_keeps_coarse_reason_in_error(self):
+        self.broker.profile = self.broker.reply(
+            True, "signed_out", fields={3: "action_required", 4: "credential_missing"})
+        self.broker.begin_result = self.broker.reply(
+            False, "action_required", "credential_missing")
+        handler, responses = GatewayStateTest.request_handler(
+            self.state, "/api/v1/system/session/ensure", "token", "living-room")
+        handler.headers["X-Request-Id"] = "request-missing-credential"
+        handler.do_POST()
+        self.assertEqual(409, responses[0][0])
+        self.assertEqual("credential_missing", responses[0][1]["error"])
+        self.assertEqual("credential_missing", responses[0][1]["reason"])
+
+    def test_session_ensure_route_rejects_all_body_fields(self):
+        handler, responses = GatewayStateTest.request_handler(
+            self.state, "/api/v1/system/session/ensure", "token", "living-room")
+        handler.headers["X-Request-Id"] = "request-with-password"
+        handler.read_json = lambda: {"password": "must-not-be-accepted"}
+        handler.do_POST()
+        self.assertEqual(400, responses[0][0])
+        self.assertEqual("invalid_request_body", responses[0][1]["error"])
+        self.assertNotIn("must-not-be-accepted", json.dumps(responses[0][1]))
+        self.assertEqual([], self.broker.begin_calls)
+
+    def test_cancel_route_rejects_header_body_request_mismatch(self):
+        attempt_id = "0123456789abcdef0123456789abcdef"
+        handler, responses = GatewayStateTest.request_handler(
+            self.state, "/api/v1/system/session/cancel", "token", "living-room")
+        handler.headers["X-Request-Id"] = "original-request"
+        handler.read_json = lambda: {
+            "attempt_id": attempt_id, "request_id": "different-request"}
+        handler.do_POST()
+        self.assertEqual(400, responses[0][0])
+        self.assertEqual("request_id_mismatch", responses[0][1]["error"])
+        self.assertEqual([], self.broker.cancel_calls)
+
+    def test_completed_attempt_waits_for_interactive_session_ready(self):
+        attempt_id = "0123456789abcdef0123456789abcdef"
+        status, result = self.state.session_attempt_status(
+            self.client, "living-room", "request-one", attempt_id)
+        self.assertEqual(202, status)
+        self.assertEqual("session_starting", result["state"])
+
+        self.broker.profile = self.broker.reply(
+            True, "active", fields={3: "ready", 4: "none"})
+        status, result = self.state.session_attempt_status(
+            self.client, "living-room", "request-one", attempt_id)
+        self.assertEqual(200, status)
+        self.assertEqual("ready", result["state"])
+
+    def test_cancel_and_profile_summary_expose_coarse_states(self):
+        attempt_id = "0123456789abcdef0123456789abcdef"
+        status, result = self.state.cancel_session_attempt(
+            self.client, "living-room", "request-one", attempt_id)
+        self.assertEqual(200, status)
+        self.assertEqual("cancelled", result["state"])
+
+        self.broker.profile = self.broker.reply(
+            True, "locked", fields={3: "ready", 4: "none"})
+        self.state.discord_status = mock.Mock(return_value={
+            "bridge_online": False, "rpc_connected": False, "authenticated": False})
+        self.state.proxy = mock.Mock(return_value=(False, {}))
+        summary = self.state.profiles_summary(self.client)["profiles"][0]
+        self.assertEqual("locked", summary["session_state"])
+        self.assertEqual("ready", summary["remote_sign_in_state"])
+        self.assertTrue(summary["permissions"]["remote_sign_in"])
+        capability = self.state.remote_windows_sign_in_capability()
+        self.assertTrue(capability["available"])
+        self.assertEqual(1, capability["protocol_version"])
 
 
 if __name__ == "__main__":

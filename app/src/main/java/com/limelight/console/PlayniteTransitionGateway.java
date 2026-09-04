@@ -114,11 +114,19 @@ public final class PlayniteTransitionGateway {
 
     public static PlayniteTransitionGateway connect(Context context, String hostId,
                                                     String activeHost) {
+        return connect(context, hostId, activeHost,
+                GatewayConnection.DEFAULT_PROFILE_ID);
+    }
+
+    public static PlayniteTransitionGateway connect(Context context, String hostId,
+                                                    String activeHost,
+                                                    String profileId) {
         GatewayConnection connection = new HostGatewayStore(context)
-                .loadForHost(hostId, activeHost);
+                .loadForHost(hostId, activeHost, profileId);
         if (connection == null) {
             MoonWakerDiagnostics.record("WARN", "android.playnite-transition",
                     "gateway.connect_failed", "host_id", hostId,
+                    "profile_id", GatewayConnection.normalizeProfileId(profileId),
                     "reason", "connection_missing");
             return null;
         }

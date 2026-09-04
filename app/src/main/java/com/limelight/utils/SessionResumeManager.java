@@ -7,6 +7,7 @@ import android.util.Base64;
 
 import com.limelight.Game;
 import com.limelight.console.transition.LaunchTransitionType;
+import com.limelight.gateway.GatewayConnection;
 
 import java.nio.charset.StandardCharsets;
 import java.util.Collections;
@@ -32,6 +33,7 @@ public final class SessionResumeManager {
     private static final String KEY_APP_HDR = "appHdr";
     private static final String KEY_UNIQUE_ID = "uniqueId";
     private static final String KEY_PC_UUID = "pcUuid";
+    private static final String KEY_PROFILE_ID = "profileId";
     private static final String KEY_PC_NAME = "pcName";
     private static final String KEY_SERVER_CERT = "serverCert";
     private static final String KEY_QUICK_LAUNCH = "quickLaunchKey";
@@ -55,6 +57,7 @@ public final class SessionResumeManager {
     public static final class PendingSession {
         public final String streamSessionId;
         public final String hostUuid;
+        public final String profileId;
         public final int appId;
         public final String playniteGameId;
         public final boolean neutralStreamTarget;
@@ -64,12 +67,14 @@ public final class SessionResumeManager {
         public final boolean legacy;
         private final Values values;
 
-        private PendingSession(String streamSessionId, String hostUuid, int appId,
+        private PendingSession(String streamSessionId, String hostUuid, String profileId,
+                               int appId,
                                String playniteGameId, boolean autoResume,
                                long createdAt, long updatedAt, boolean legacy,
                                SharedPreferences prefs) {
             this.streamSessionId = streamSessionId;
             this.hostUuid = hostUuid;
+            this.profileId = GatewayConnection.normalizeProfileId(profileId);
             this.appId = appId;
             this.playniteGameId = normalize(playniteGameId);
             this.neutralStreamTarget = prefs.getBoolean(KEY_NEUTRAL_STREAM_TARGET, false);
@@ -154,6 +159,8 @@ public final class SessionResumeManager {
         editor.putBoolean(KEY_APP_HDR, gameIntent.getBooleanExtra(Game.EXTRA_APP_HDR, false));
         editor.putString(KEY_UNIQUE_ID, gameIntent.getStringExtra(Game.EXTRA_UNIQUEID));
         editor.putString(KEY_PC_UUID, gameIntent.getStringExtra(Game.EXTRA_PC_UUID));
+        editor.putString(KEY_PROFILE_ID, GatewayConnection.normalizeProfileId(
+                gameIntent.getStringExtra(Game.EXTRA_PROFILE_ID)));
         editor.putString(KEY_PC_NAME, gameIntent.getStringExtra(Game.EXTRA_PC_NAME));
         editor.putBoolean(KEY_APPLY_OVERRIDES,
                 gameIntent.getBooleanExtra(Game.EXTRA_APPLY_PREFERENCE_OVERRIDES, false));
@@ -237,6 +244,7 @@ public final class SessionResumeManager {
         intent.putExtra(Game.EXTRA_APP_HDR, prefs.getBoolean(KEY_APP_HDR, false));
         intent.putExtra(Game.EXTRA_UNIQUEID, prefs.getString(KEY_UNIQUE_ID, null));
         intent.putExtra(Game.EXTRA_PC_UUID, prefs.getString(KEY_PC_UUID, null));
+        intent.putExtra(Game.EXTRA_PROFILE_ID, current.profileId);
         intent.putExtra(Game.EXTRA_PC_NAME, prefs.getString(KEY_PC_NAME, null));
         intent.putExtra(Game.EXTRA_APPLY_PREFERENCE_OVERRIDES,
                 prefs.getBoolean(KEY_APPLY_OVERRIDES, false));
@@ -308,13 +316,21 @@ public final class SessionResumeManager {
 
     private static PendingSession read(SharedPreferences prefs) {
         if (!prefs.getBoolean(KEY_PENDING, false)) return null;
+        if (!prefs.contains(KEY_PROFILE_ID)) return null;
         String hostUuid = normalize(prefs.getString(KEY_PC_UUID, null));
+        String profileId;
+        try {
+            profileId = GatewayConnection.normalizeProfileId(
+                    prefs.getString(KEY_PROFILE_ID, null));
+        } catch (IllegalArgumentException invalidProfile) {
+            return null;
+        }
         int appId = prefs.getInt(KEY_APP_ID, 0);
         String storedId = normalize(prefs.getString(KEY_STREAM_SESSION_ID, null));
         boolean legacy = storedId.isEmpty();
         String streamSessionId = resolveStreamSessionId(storedId, hostUuid, appId,
                 prefs.getString(KEY_UNIQUE_ID, null));
-        return new PendingSession(streamSessionId, hostUuid, appId,
+        return new PendingSession(streamSessionId, hostUuid, profileId, appId,
                 prefs.getString(KEY_TRANSITION_GAME_ID, null),
                 prefs.getBoolean(KEY_AUTO_RESUME, true),
                 prefs.getLong(KEY_CREATED_AT, 0L), prefs.getLong(KEY_UPDATED_AT, 0L),

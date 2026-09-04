@@ -7,9 +7,10 @@ For a complete installation use `../install/Install-WakePlayHost.ps1`. For
 development, run `Start-WakePlayGateway.ps1` and enter its six-digit code under
 Wake & Play's host integrations panel within ten minutes.
 
-The installer registers the Gateway at Windows startup under the installing
-user's limited account. Interactive Bridges still start at user logon because
-Discord RPC and user credentials are bound to that Windows session.
+The installer registers `MoonWakerGateway` as an automatic Windows service, so
+the HTTPS API is available before anyone signs in. It requires a system-wide
+Python installation under Program Files. Interactive Bridges still start at
+user logon because Discord RPC and user credentials are bound to that session.
 
 The first start generates `gateway.json`, a private TLS key and a certificate.
 They are ignored by Git. Paired client tokens are stored only as SHA-256 hashes,
@@ -30,6 +31,11 @@ Discord itself can only own one machine-global RPC endpoint at a time, so fully
 exit it in the previous profile before switching. Vibepollo also needs a
 per-profile Bridge when its credentials or runtime state differ.
 
+The profile registry uses stable IDs and authoritative Windows account SIDs.
+Paired clients store `profile_grants` separately for every profile. Legacy
+clients migrate with `use_profile` for retained profiles and without
+`remote_sign_in`; upgrades never turn remote sign-in on automatically.
+
 ## API v1
 
 - `GET /api/v1/hello` - unauthenticated discovery response.
@@ -45,6 +51,12 @@ per-profile Bridge when its credentials or runtime state differ.
   `X-Request-Id`, and
   `X-Microphone-Session-Id`.
 - `GET /api/v1/profiles` - lists safe profile names and Bridge health summaries.
+- `POST /api/v1/system/session/ensure` - returns `ready` for an already-active
+  selected profile, or starts a bounded remote Windows sign-in attempt when the
+  client also has the `remote_sign_in` grant.
+- `GET /api/v1/system/session/status` - returns coarse session state, or polls a
+  bound attempt when `attempt_id` and `request_id` are supplied.
+- `POST /api/v1/system/session/cancel` - idempotently cancels a bound attempt.
 - `GET /api/v1/diagnostics/network/download?size=...` - authenticated, no-store
   generated downlink bytes (8 MiB default, 512 MiB maximum), with one active
   test per client/profile pair. Android uses an 8 MiB probe, then targets an
@@ -88,6 +100,35 @@ All endpoints except `hello` and `pair` require `Authorization: Bearer ...`.
 Mutating actions also require a unique `X-Request-Id`. Discord snowflakes,
 participant volume, audio device IDs and VirtualHere addresses are validated;
 Gateway never exposes a general-purpose Bridge proxy.
+
+`capabilities.remote_windows_sign_in` is available only when the Login Broker
+answers the v1 protocol and the fixed MoonWaker Credential Provider is enabled,
+registered, and present. Per-profile credential readiness is reported separately
+by `profiles` and the session status endpoint.
+
+### Remote Windows session contract
+
+All three session routes use the normal pinned-TLS Gateway transport,
+`Authorization: Bearer ...`, and `X-WakePlay-Profile`. `ensure` additionally
+requires a stable `X-Request-Id` and an empty JSON object; it never accepts a
+password. A successful response is either `200 ready` or `202` with a 32-hex
+`attempt_id`. Android polls:
+
+```text
+GET /api/v1/system/session/status?attempt_id=<id>&request_id=<original-request-id>
+```
+
+Cancellation sends the original request ID in both `X-Request-Id` and body
+`{"attempt_id":"...","request_id":"<original-request-id>"}`. Broker and
+Gateway bind every operation to the authenticated client, selected profile,
+original request ID, and attempt. Repeating `ensure` with that same binding is
+idempotent and cannot submit a second password.
+
+LAN responses expose only coarse states/reasons: `ready`, `pending`,
+`session_starting`, `action_required`, `expired`, or `cancelled`, with reasons
+such as `remote_sign_in_not_granted`, `manual_sign_in_required`,
+`credential_action_required`, `other_user_active`, and `broker_unavailable`.
+They never expose credentials or detailed Windows authentication status codes.
 
 Microphone availability is reported only when the packaged renderer can open
 exactly one active render endpoint whose invariant name contains

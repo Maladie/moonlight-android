@@ -110,6 +110,24 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(method.contains("if (!changed) return"));
     }
 
+    @Test public void lockedSessionUsesWarningColorsAndRevealAction() throws IOException {
+        String text = source();
+        String method = text.substring(text.indexOf("public void showWarning("),
+                text.indexOf("public void showCancelling("));
+
+        assertTrue(method.contains("messageView.setTextColor(0xFFFFD166)"));
+        assertTrue(method.contains("statusView.setTextColor(0xFFFFE3A3)"));
+        assertTrue(method.contains("showAnywayView.setVisibility(allowReveal ? VISIBLE : GONE)"));
+        assertTrue(method.contains("retryView.setVisibility(GONE)"));
+
+        String game = gameSource();
+        String apply = game.substring(game.indexOf("private void applyTransitionSnapshot"),
+                game.indexOf("static boolean shouldShowTransitionOverlay"));
+        assertTrue(apply.contains("LaunchTransitionState.HOST_SESSION_LOCKED"));
+        assertTrue(apply.contains("consoleLoadingView.showWarning("));
+        assertTrue(apply.contains("transition_host_session_locked_title"));
+    }
+
     @Test public void repeatedErrorSnapshotPreservesVisibleActionFocus() throws IOException {
         String text = source();
         String method = text.substring(text.indexOf("public void showError(String title,"

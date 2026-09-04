@@ -20,12 +20,74 @@ $mutex = [Threading.Mutex]::new($false, "Local\MoonWakerProfileBridge_${sid}_$Pr
 $ownsMutex = $false
 $children = @{}
 
-function Get-ExpectedProfileOwner {
+function Test-ExpectedProfileRoot {
     try {
         $installRoot = Split-Path -Parent (Split-Path -Parent $ProfileRoot)
-        $gateway = Get-Content -LiteralPath (Join-Path $installRoot "gateway\gateway.json") -Raw | ConvertFrom-Json
-        return [string]$gateway.profiles.$ProfileId.owner
+        $expected = [IO.Path]::GetFullPath((Join-Path $installRoot "profiles\$ProfileId")).TrimEnd('\')
+        if (-not $ProfileRoot.TrimEnd('\').Equals($expected,
+            [StringComparison]::OrdinalIgnoreCase)) { return $false }
+        $cursor = [IO.DirectoryInfo]::new($expected)
+        while ($null -ne $cursor) {
+            if ($cursor.Exists -and ($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                return $false
+            }
+            $cursor = $cursor.Parent
+        }
+        return $true
+    } catch { return $false }
+}
+
+function Get-ExpectedProfileSid {
+    try {
+        $installRoot = Split-Path -Parent (Split-Path -Parent $ProfileRoot)
+        $gateway = Get-Content -LiteralPath (Join-Path $installRoot "gateway\gateway.json") -Raw |
+            ConvertFrom-Json
+        $entry = $gateway.profiles.$ProfileId
+        if ($null -eq $entry) { return "" }
+        $registeredRoot = if ($null -ne $entry.PSObject.Properties["profile_root"]) {
+            [string]$entry.profile_root
+        } else { "" }
+        if ([string]::IsNullOrWhiteSpace($registeredRoot) -or
+            -not [IO.Path]::GetFullPath($registeredRoot).TrimEnd('\').Equals(
+                $ProfileRoot.TrimEnd('\'), [StringComparison]::OrdinalIgnoreCase)) { return "" }
+        if ($null -ne $entry.PSObject.Properties["windows_account_sid"]) {
+            return [string]$entry.windows_account_sid
+        }
+        if ($null -ne $entry.PSObject.Properties["owner_sid"]) {
+            return [string]$entry.owner_sid
+        }
+        return ""
     } catch { return "" }
+}
+
+function Test-ExpectedProfileEnabled {
+    try {
+        $installRoot = Split-Path -Parent (Split-Path -Parent $ProfileRoot)
+        $gateway = Get-Content -LiteralPath (Join-Path $installRoot "gateway\gateway.json") -Raw |
+            ConvertFrom-Json
+        $entry = $gateway.profiles.$ProfileId
+        if ($null -eq $entry) { return $false }
+        if ($null -ne $entry.PSObject.Properties["deletion_tombstone"] -and
+            $null -ne $entry.deletion_tombstone) { return $false }
+        $enabledProperty = $entry.PSObject.Properties["enabled"]
+        if ($null -eq $enabledProperty) { return $false }
+        $enabled = $enabledProperty.Value
+        return $enabled -is [bool] -and $enabled -eq $true
+    } catch { return $false }
+}
+
+function Test-AuthoritativeProfileRuntime {
+    try {
+        if (-not (Test-ExpectedProfileRoot) -or -not (Test-ExpectedProfileEnabled)) {
+            return $false
+        }
+        $expectedSid = Get-ExpectedProfileSid
+        $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+        $currentSid = if ($null -ne $identity.User) { $identity.User.Value } else { "" }
+        return -not [string]::IsNullOrWhiteSpace($expectedSid) -and
+            -not [string]::IsNullOrWhiteSpace($currentSid) -and
+            $expectedSid.Equals($currentSid, [StringComparison]::OrdinalIgnoreCase)
+    } catch { return $false }
 }
 
 function Initialize-AgentDiagnostics {
@@ -196,13 +258,11 @@ function Stop-Components {
     }
 }
 
+if (-not (Test-ExpectedProfileRoot)) { exit 1 }
 Initialize-AgentDiagnostics
-$expectedOwner = Get-ExpectedProfileOwner
-$currentUser = [Security.Principal.WindowsIdentity]::GetCurrent().Name
-if (-not [string]::IsNullOrWhiteSpace($expectedOwner) -and
-    -not $expectedOwner.Equals($currentUser, [StringComparison]::OrdinalIgnoreCase)) {
-    Write-AgentDiagnosticEvent "wrong_user" @{ profile_id = $ProfileId; status = "refused" }
-    Write-State "wrong_user"
+if (-not (Test-AuthoritativeProfileRuntime)) {
+    Write-AgentDiagnosticEvent "profile_authority_refused" @{ profile_id = $ProfileId; status = "refused" }
+    Write-State "refused"
     exit 1
 }
 
@@ -222,6 +282,14 @@ try {
     Write-State "running"
     $healthTick = 0
     while (-not (Test-Path -LiteralPath $stopPath)) {
+        # Registry disable/tombstone/SID/root changes must stop all children even
+        # when this user remains signed in. Any read/validation error fails closed.
+        if (-not (Test-AuthoritativeProfileRuntime)) {
+            Write-AgentDiagnosticEvent "profile_authority_revoked" @{
+                profile_id = $ProfileId; status = "stopping"
+            }
+            break
+        }
         foreach ($name in @("discord", "vibepollo", "game-provider")) {
             $process = $children[$name]
             if ($null -ne $process -and $process.HasExited) {

@@ -16,33 +16,51 @@ function Get-ListeningOwnerPids([int]$Port) {
 }
 
 $GatewayDirectory = [IO.Path]::GetFullPath($GatewayDirectory)
+$gatewayDirectories = @($GatewayDirectory)
+foreach ($legacyDirectory in @("C:\Tools\WakePlayHost\gateway", "C:\Tools\WakePlayGateway")) {
+    if (-not $legacyDirectory.Equals($GatewayDirectory, [StringComparison]::OrdinalIgnoreCase) -and
+        (Test-Path -LiteralPath (Join-Path $legacyDirectory "gateway.json") -PathType Leaf)) {
+        $gatewayDirectories += $legacyDirectory
+        New-Item -ItemType File -Path (Join-Path $legacyDirectory "gateway-manually-stopped"),
+            (Join-Path $legacyDirectory "gateway-supervisor-stop") -Force | Out-Null
+    }
+}
+$service = Get-Service -Name "MoonWakerGateway" -ErrorAction SilentlyContinue
+if ($null -ne $service) {
+    if ($service.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped) {
+        Stop-Service -Name $service.Name
+        $service.WaitForStatus(
+            [ServiceProcess.ServiceControllerStatus]::Stopped,
+            [TimeSpan]::FromSeconds(15))
+    }
+    Write-Host "MoonWaker Gateway service is stopped."
+}
 New-Item -ItemType File -Path (Join-Path $GatewayDirectory "gateway-manually-stopped") -Force | Out-Null
 New-Item -ItemType File -Path (Join-Path $GatewayDirectory "gateway-supervisor-stop") -Force | Out-Null
 $port = 8785
 try { $port = [int](Get-Content -LiteralPath (Join-Path $GatewayDirectory "gateway.json") -Raw | ConvertFrom-Json).listen_port } catch {}
-$runtimePid = 0
-$runtimeStartedAt = 0L
-try {
-    $runtime = Get-Content -LiteralPath (Join-Path $GatewayDirectory "gateway-runtime.json") -Raw |
-        ConvertFrom-Json
-    $runtimePid = [int]$runtime.pid
-    $runtimeStartedAt = [int64]$runtime.started_at
-} catch {}
-$supervisorPid = 0
-try {
-    $supervisorPid = [int](Get-Content -LiteralPath (
-        Join-Path $GatewayDirectory "gateway-supervisor-state.json") -Raw | ConvertFrom-Json).pid
-} catch {}
+$runtimes = @()
+foreach ($directory in $gatewayDirectories) {
+    try {
+        $runtime = Get-Content -LiteralPath (Join-Path $directory "gateway-runtime.json") -Raw |
+            ConvertFrom-Json
+        $runtimes += [pscustomobject]@{
+            pid = [int]$runtime.pid
+            started_at = [int64]$runtime.started_at
+        }
+    } catch {}
+}
 
 $owners = @(Get-ListeningOwnerPids $port)
 $stoppedOwnerPids = @()
 foreach ($ownerPid in $owners) {
     $verified = $false
-    if ($ownerPid -eq $runtimePid -and $runtimeStartedAt -gt 0) {
+    $runtime = @($runtimes | Where-Object { $_.pid -eq $ownerPid } | Select-Object -First 1)
+    if ($runtime.Count -eq 1 -and $runtime[0].started_at -gt 0) {
         try {
             $process = Get-Process -Id $ownerPid -ErrorAction Stop
             $startedAt = [DateTimeOffset]::new($process.StartTime).ToUnixTimeSeconds()
-            $verified = [Math]::Abs($startedAt - $runtimeStartedAt) -le 5
+            $verified = [Math]::Abs($startedAt - $runtime[0].started_at) -le 5
         } catch {}
     }
     if (-not $verified) {
@@ -59,20 +77,14 @@ foreach ($ownerPid in $owners) {
 $deadline = [DateTime]::UtcNow.AddSeconds(12)
 while ([DateTime]::UtcNow -lt $deadline) {
     $listener = @(Get-ListeningOwnerPids $port)
-    $supervisor = if ($supervisorPid -gt 0) {
-        Get-Process -Id $supervisorPid -ErrorAction SilentlyContinue
-    } else { $null }
     $runningOwners = @($stoppedOwnerPids | Where-Object {
         Get-Process -Id $_ -ErrorAction SilentlyContinue
     })
-    if (-not $listener -and -not $supervisor -and $runningOwners.Count -eq 0) { break }
+    if (-not $listener -and $runningOwners.Count -eq 0) { break }
     Start-Sleep -Milliseconds 200
 }
 if (@(Get-ListeningOwnerPids $port).Count -gt 0) {
     throw "MoonWaker Gateway did not release port $port."
-}
-if ($supervisorPid -gt 0 -and (Get-Process -Id $supervisorPid -ErrorAction SilentlyContinue)) {
-    throw "MoonWaker Gateway supervisor PID $supervisorPid did not stop."
 }
 $runningOwners = @($stoppedOwnerPids | Where-Object {
     Get-Process -Id $_ -ErrorAction SilentlyContinue

@@ -8,6 +8,7 @@ param(
 $ErrorActionPreference = "Stop"
 Add-Type -AssemblyName System.Drawing
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.IO.Compression
 
 function Get-Descendants([Windows.Forms.Control]$Parent) {
     foreach ($child in $Parent.Controls) {
@@ -26,6 +27,37 @@ function Save-Preview([Windows.Forms.Form]$Form, [string]$Path) {
 
 $resolvedInstaller = (Resolve-Path -LiteralPath $InstallerPath).Path
 $assembly = [Reflection.Assembly]::LoadFile($resolvedInstaller)
+$payloadStream = $assembly.GetManifestResourceStream("MoonWaker.HostServices.zip")
+if ($null -eq $payloadStream) { throw "Installer payload resource is missing." }
+try {
+    $payload = [IO.Compression.ZipArchive]::new(
+        $payloadStream, [IO.Compression.ZipArchiveMode]::Read, $false)
+    try {
+        $payloadNames = @($payload.Entries | ForEach-Object { $_.FullName })
+        if ($payloadNames -contains "host-services/install/Install-MoonWakerHostBundle.ps1") {
+            throw "The GUI installer still embeds the legacy profile-owning bundle entry point."
+        }
+        if ($payloadNames -notcontains "host-services/install/Install-WakePlayProfile.ps1") {
+            throw "Host Control profile provisioning script is missing from the installer payload."
+        }
+        foreach ($requiredMachineEntry in @(
+            "host-services/install/Install-WakePlayHost.ps1",
+            "host-services/install/Invoke-MoonWakerMachineInstall.ps1",
+            "host-services/install/Prepare-MoonWakerHost.ps1",
+            "host-services/install/Uninstall-MoonWakerHostServices.ps1",
+            "host-services/gateway/Stop-MoonWakerGateway.ps1",
+            "host-services/gateway/Stop-MoonWakerGatewayWorkers.ps1",
+            "host-services/gateway/MoonWakerGatewayService.exe",
+            "host-services/windows-login/login-broker/MoonWakerLoginBroker.exe",
+            "host-services/windows-login/credential-provider/MoonWakerCredentialProvider.dll",
+            "host-services/windows-login/login-broker/Remove-MoonWakerLoginCredentials.ps1"
+        )) {
+            if ($payloadNames -notcontains $requiredMachineEntry) {
+                throw "Trusted machine installer payload is missing: $requiredMachineEntry"
+            }
+        }
+    } finally { $payload.Dispose() }
+} finally { $payloadStream.Dispose() }
 $formType = $assembly.GetType("MoonWaker.HostInstaller.InstallerForm", $true)
 $form = [Activator]::CreateInstance($formType, $true)
 $instanceFlags = [Reflection.BindingFlags]::Instance -bor [Reflection.BindingFlags]::NonPublic
@@ -63,35 +95,18 @@ try {
         throw "English localization was not applied to the wizard shell."
     }
 
-    $automaticToken = $formType.GetField("createVibepolloToken", $instanceFlags).GetValue($form)
-    $admin = $formType.GetField("vibepolloAdmin", $instanceFlags).GetValue($form)
-    $token = $formType.GetField("vibepolloToken", $instanceFlags).GetValue($form)
-    $automaticToken.Checked = $true
-    [Windows.Forms.Application]::DoEvents()
-    if (-not $admin.Enabled -or $token.Enabled) {
-        throw "Automatic token mode did not select administrator credentials."
-    }
-    $automaticToken.Checked = $false
-    [Windows.Forms.Application]::DoEvents()
-    if ($admin.Enabled -or -not $token.Enabled) {
-        throw "Existing token mode did not select the token field."
+    foreach ($fieldName in @("profileId", "profileName", "discord", "discordId", "discordSecret",
+            "vibepolloToken", "createVibepolloToken", "vibepolloAdmin", "vibepolloPassword")) {
+        if ($null -ne $formType.GetField($fieldName, $instanceFlags)) {
+            throw "Installer still owns profile setup field '$fieldName'."
+        }
     }
 
-    $discord = $formType.GetField("discord", $instanceFlags).GetValue($form)
-    $discordCredentials = $formType.GetField("discordCredentials", $instanceFlags).GetValue($form)
-    $discordCard = $formType.GetField("discordCard", $instanceFlags).GetValue($form)
-    $showPage.Invoke($form, @(3)) | Out-Null
-    [Windows.Forms.Application]::DoEvents()
-    $discord.Checked = $false
-    [Windows.Forms.Application]::DoEvents()
-    if ($discordCredentials.Visible -or $discordCard.Height -gt 80) {
-        throw "Optional Discord settings did not collapse."
+    if ($null -ne $formType.GetField("launchHostControl", $instanceFlags)) {
+        throw "The elevated installer must not automatically activate Host Control through per-user COM."
     }
-    $discord.Checked = $true
-    [Windows.Forms.Application]::DoEvents()
-    if (-not $discordCredentials.Visible -or $discordCard.Height -lt 150) {
-        throw "Optional Discord settings did not expand."
-    }
+    $uninstall = $formType.GetField("uninstall", $instanceFlags).GetValue($form)
+    if ($null -eq $uninstall) { throw "Installer uninstall action is missing." }
 
     $showPage.Invoke($form, @(1)) | Out-Null
     $firmwarePanel = $formType.GetField("firmwarePanel", $instanceFlags).GetValue($form)
@@ -104,8 +119,14 @@ try {
     $passwordBoxes = @($allControls | Where-Object {
         $_ -is [Windows.Forms.TextBox] -and $_.UseSystemPasswordChar
     })
-    if ($passwordBoxes.Count -lt 3) {
-        throw "Sensitive Vibepollo and Discord fields are not masked."
+    if ($passwordBoxes.Count -ne 0) {
+        throw "The installer must not collect a Vibepollo bootstrap password."
+    }
+    $hostControlGuidance = @($allControls | Where-Object {
+        $_ -is [Windows.Forms.Label] -and $_.Text -like "*Host Control*"
+    })
+    if ($hostControlGuidance.Count -eq 0) {
+        throw "The installer does not direct profile setup to Host Control."
     }
 
     $resolvedPreview = if ([string]::IsNullOrWhiteSpace($PreviewDirectory)) { "" } else {

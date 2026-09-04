@@ -307,6 +307,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_APP_ID = "AppId";
     public static final String EXTRA_UNIQUEID = "UniqueId";
     public static final String EXTRA_PC_UUID = "UUID";
+    public static final String EXTRA_PROFILE_ID = "MoonWakerProfileId";
     public static final String EXTRA_PC_NAME = "PcName";
     public static final String EXTRA_APP_HDR = "HDR";
     public static final String EXTRA_SERVER_CERT = "ServerCert";
@@ -415,7 +416,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             ? LaunchTransitionType.GENERIC
                             : LaunchTransitionType.GAME_CONNECTION;
                     transitionSpec = new LaunchTransitionSpec(
-                            transitionSpec.id, transitionSpec.hostId, warmUpType,
+                            transitionSpec.id, transitionSpec.hostId,
+                            transitionSpec.profileId, warmUpType,
                             transitionSpec.sunshineAppId, transitionSpec.playniteGameId,
                             transitionSpec.createdAtMillis,
                             transitionSpec.startProviderBeforeStream);
@@ -425,7 +427,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         transitionSpec.type, restoredRevealed);
                 if (recoveredType != transitionSpec.type) {
                     transitionSpec = new LaunchTransitionSpec(
-                            transitionSpec.id, transitionSpec.hostId, recoveredType,
+                            transitionSpec.id, transitionSpec.hostId,
+                            transitionSpec.profileId, recoveredType,
                             transitionSpec.sunshineAppId, transitionSpec.playniteGameId,
                             transitionSpec.createdAtMillis,
                             transitionSpec.startProviderBeforeStream);
@@ -600,7 +603,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         discordOverlayController = new DiscordOverlayController(this, overlayMenuView,
                 (LinearLayout) findViewById(R.id.discordDockView), prefConfig,
                 getIntent().getStringExtra(EXTRA_PC_UUID),
-                getIntent().getStringExtra(EXTRA_HOST));
+                getIntent().getStringExtra(EXTRA_HOST), currentProfileId());
         if (discordDmNotifications != null) {
             discordOverlayController.setVisiblePeerListener(peerId ->
                     discordDmNotifications.setVisiblePeer(discordDmHostToken, peerId));
@@ -1106,7 +1109,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (id == null || id.isEmpty() || hostId == null || hostId.isEmpty()
                 || rawType == null) return null;
         try {
-            return new LaunchTransitionSpec(id, hostId,
+            return new LaunchTransitionSpec(id, hostId, currentProfileId(),
                     LaunchTransitionType.valueOf(rawType),
                     getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID),
                     getIntent().getStringExtra(EXTRA_TRANSITION_PLAYNITE_GAME_ID),
@@ -3321,7 +3324,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         try {
             PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
                     this, operation.request.hostId,
-                    getIntent().getStringExtra(EXTRA_HOST));
+                    getIntent().getStringExtra(EXTRA_HOST), operation.request.profileId);
             if (gateway == null) throw new IOException("gateway_unavailable");
             PlayniteTransitionGateway.Snapshot current = gateway.snapshot();
             String exactGame = operation.request.oldGameId.isEmpty()
@@ -3351,7 +3354,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                        String error) {
         if (!isCurrentRetainedSwitch(operation)) return;
         LaunchTransitionSpec recovery = LaunchTransitionSpec.create(
-                operation.request.hostId, LaunchTransitionType.GAME_CONNECTION,
+                operation.request.hostId, operation.request.profileId,
+                LaunchTransitionType.GAME_CONNECTION,
                 operation.request.appId, operation.request.oldGameId,
                 System.currentTimeMillis());
         if (operation.request.preparing && !advancePreparingSwitch(
@@ -3428,7 +3432,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (transitionCoordinator != null) transitionCoordinator.close();
         providerStartRejectedTransitionId = "";
         LaunchTransitionSpec next = LaunchTransitionSpec.create(
-                operation.request.hostId, LaunchTransitionType.GAME,
+                operation.request.hostId, operation.request.profileId,
+                LaunchTransitionType.GAME,
                 operation.request.appId, operation.request.newGameId,
                 System.currentTimeMillis());
         if (operation.request.preparing && !advancePreparingSwitch(
@@ -3480,7 +3485,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         LaunchTransitionSpec next = LaunchTransitionSpec.create(
-                operation.request.hostId, LaunchTransitionType.GAME_CONNECTION,
+                operation.request.hostId, operation.request.profileId,
+                LaunchTransitionType.GAME_CONNECTION,
                 operation.request.appId, operation.request.newGameId,
                 System.currentTimeMillis());
         ConsoleStreamTransitionCoordinator replacement =
@@ -3581,7 +3587,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         boolean parked = backgroundStreamParked;
         if (transitionCoordinator != null) transitionCoordinator.close();
         LaunchTransitionSpec neutral = LaunchTransitionSpec.create(
-                hostId, LaunchTransitionType.GAME_CONNECTION,
+                hostId, currentProfileId(), LaunchTransitionType.GAME_CONNECTION,
                 appId, "", System.currentTimeMillis());
         transitionSpec = neutral;
         updateRetainedTransitionIntent(neutral, "",
@@ -3669,7 +3675,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (operation.newCoordinator == null) return false;
         operation.newCoordinator.detachForSwitch();
         LaunchTransitionSpec observation = LaunchTransitionSpec.create(
-                operation.request.hostId, LaunchTransitionType.GAME_CONNECTION,
+                operation.request.hostId, operation.request.profileId,
+                LaunchTransitionType.GAME_CONNECTION,
                 operation.request.appId, gameId, System.currentTimeMillis());
         transitionSpec = observation;
         updateRetainedTransitionIntent(observation, gameId,
@@ -3711,6 +3718,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         getIntent().putExtra(EXTRA_TRANSITION_ID, spec.id);
         getIntent().putExtra(EXTRA_TRANSITION_TYPE, spec.type.name());
         getIntent().putExtra(EXTRA_TRANSITION_HOST_ID, spec.hostId);
+        getIntent().putExtra(EXTRA_PROFILE_ID, spec.profileId);
         getIntent().putExtra(EXTRA_TRANSITION_PLAYNITE_GAME_ID, gameId);
         getIntent().putExtra(EXTRA_TRANSITION_CREATED_AT, spec.createdAtMillis);
         getIntent().putExtra(EXTRA_TRANSITION_START_BEFORE_STREAM,
@@ -3854,7 +3862,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             boolean success = false;
             try {
                 PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                        Game.this, hostId, activeHost);
+                        Game.this, hostId, activeHost, currentProfileId());
                 if (gateway == null) {
                     LimeLog.warning("Unable to stop provider game: Gateway unavailable");
                 } else {
@@ -4019,7 +4027,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             String reason = "provider_state_unverified";
             try {
                 PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                        Game.this, expectedHostId, activeHost);
+                        Game.this, expectedHostId, activeHost, currentProfileId());
                 if (gateway == null) {
                     reason = "gateway_unavailable";
                 } else {
@@ -4092,7 +4100,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && retained.state == RetainedStreamSessionCoordinator.State.TERMINATING
                 && expectedSessionId.equals(retained.streamSessionId)) {
             RetainedStreamSessionCoordinator.enterHome(this, expectedSessionId,
-                    expectedHostId, expectedAppId,
+                    expectedHostId, currentProfileId(), expectedAppId,
                     transitionSpec == null ? "" : transitionSpec.playniteGameId);
         }
         if (transitionController != null && transitionSpec != null) {
@@ -4484,6 +4492,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     SuspendedSessionStore.markResumedIfMatches(Game.this,
                             sourceSuspendId,
                             getIntent().getStringExtra(EXTRA_PC_UUID),
+                            currentProfileId(),
                             getIntent().getIntExtra(EXTRA_APP_ID, 0),
                             sourceSuspendPlayniteGameId, streamSessionId);
                 }
@@ -4551,7 +4560,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private ConsoleStreamTransitionCoordinator createTransitionCoordinator(
             LaunchTransitionSpec spec) {
         PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                this, spec.hostId, getIntent().getStringExtra(EXTRA_HOST));
+                this, spec.hostId, getIntent().getStringExtra(EXTRA_HOST), spec.profileId);
         return new ConsoleStreamTransitionCoordinator(
                 spec,
                 transitionController,
@@ -4922,6 +4931,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         getString(snapshot.state == LaunchTransitionState.PLAYNITE_RETURNING
                                 ? R.string.transition_waiting_playnite_return
                                 : R.string.transition_returning_library));
+            } else if (snapshot.state == LaunchTransitionState.HOST_SESSION_LOCKED) {
+                consoleLoadingView.showWarning(
+                        getString(R.string.transition_host_session_locked_title),
+                        snapshot.detail.isEmpty()
+                                ? getString(R.string.transition_host_session_locked)
+                                : snapshot.detail,
+                        !isOwnedHiddenAutoWarmUp() && snapshot.manualRevealAvailable);
             } else {
                 consoleLoadingView.setStep(snapshot.step, transitionStatus(snapshot));
                 consoleLoadingView.setManualRevealAvailable(
@@ -5161,6 +5177,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return snapshot.detail.isEmpty()
                         ? getString(R.string.transition_game_running_waiting_window)
                         : snapshot.detail;
+            case HOST_SESSION_LOCKED:
+                return getString(R.string.transition_host_session_locked);
             case LAUNCHER_INTERACTION_REQUIRED:
                 return getString(R.string.transition_launcher_interaction_required);
             case GAME_STOPPING:
@@ -5336,7 +5354,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (transitionCoordinator != null) transitionCoordinator.onStreamFailed();
         Intent retry = new Intent(getIntent());
         LaunchTransitionSpec next = LaunchTransitionSpec.create(
-                transitionSpec.hostId, transitionSpec.type, transitionSpec.sunshineAppId,
+                transitionSpec.hostId, transitionSpec.profileId, transitionSpec.type,
+                transitionSpec.sunshineAppId,
                 transitionSpec.playniteGameId, System.currentTimeMillis(),
                 transitionSpec.startProviderBeforeStream);
         providerStartRejectedTransitionId = "";
@@ -5364,7 +5383,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         manualRevealRequested = false;
         transitionCancelInFlight = false;
         LaunchTransitionSpec next = LaunchTransitionSpec.create(
-                transitionSpec.hostId, LaunchTransitionType.GAME_CONNECTION,
+                transitionSpec.hostId, transitionSpec.profileId,
+                LaunchTransitionType.GAME_CONNECTION,
                 transitionSpec.sunshineAppId, transitionSpec.playniteGameId,
                 System.currentTimeMillis());
         transitionSpec = next;
@@ -5892,6 +5912,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         SessionResumeManager.save(this, getIntent(), streamSessionId);
         RetainedStreamSessionCoordinator.enterHome(this, streamSessionId,
                 getIntent().getStringExtra(EXTRA_PC_UUID),
+                currentProfileId(),
                 getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID),
                 sessionGameId);
         if (streamAudioRenderer != null) streamAudioRenderer.setVolume(0f);
@@ -5918,6 +5939,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_SESSION_ID, streamSessionId);
         home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_HOST_ID,
                 getIntent().getStringExtra(EXTRA_PC_UUID));
+        home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_PROFILE_ID,
+                currentProfileId());
         home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_APP_ID,
                 getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID));
         home.putExtra(ConsoleActivity.EXTRA_RETAINED_STREAM_PLAYNITE_GAME_ID,
@@ -6004,7 +6027,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         consoleLoadingView.doAfterNextFrame(() -> new Thread(() -> {
             try {
                 PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                        Game.this, expected.hostId, getIntent().getStringExtra(EXTRA_HOST));
+                        Game.this, expected.hostId, getIntent().getStringExtra(EXTRA_HOST),
+                        expected.profileId);
                 if (gateway == null) throw new IOException("gateway_unavailable");
                 PlayniteTransitionGateway.Snapshot current = gateway.snapshot();
                 String exactGame = PlayniteIdentityResolutionPolicy.verifiedStopTarget(
@@ -6039,7 +6063,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void clearResumedSuspendedSession() {
         if (sourceSuspendId.isEmpty()) return;
         SuspendedSessionStore.markSessionEndedIfMatches(this,
-                getIntent().getStringExtra(EXTRA_PC_UUID), sourceSuspendId);
+                getIntent().getStringExtra(EXTRA_PC_UUID), currentProfileId(),
+                sourceSuspendId);
     }
     private void suspendSessionAndSleep() {
         if (transitionSpec == null) {
@@ -6053,7 +6078,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         final String suspendId = UUID.randomUUID().toString();
         new Thread(() -> {
             PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                    Game.this, transitionSpec.hostId, host);
+                    Game.this, transitionSpec.hostId, host, transitionSpec.profileId);
             if (gateway == null) {
                 runOnUiThread(() -> {
                     transitionController.cancel(transitionSpec.id);
@@ -6077,6 +6102,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 }
                 SuspendedSessionStore.save(Game.this,
                         new SuspendedSessionStore.Session(suspendId, transitionSpec.hostId,
+                                transitionSpec.profileId,
                                 transitionSpec.sunshineAppId, playniteGameId, appName,
                                 artwork, System.currentTimeMillis()));
                 SuspendedSessionStore.requestHostSelection(Game.this, transitionSpec.hostId);
@@ -6366,7 +6392,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean beginAutoWarmUpPreparing() {
         if (!hasAutoWarmUpTransportIdentity()) return false;
         boolean begun = RetainedStreamSessionCoordinator.beginPreparing(
-                this, streamSessionId, autoWarmUpHostId(), autoWarmUpAppId(),
+                this, streamSessionId, autoWarmUpHostId(), currentProfileId(),
+                autoWarmUpAppId(),
                 transitionSpec.playniteGameId, transitionSpec.id, autoWarmUpAttempt);
         return begun;
     }
@@ -6432,6 +6459,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && preparing.state == RetainedStreamSessionCoordinator.State.PREPARING
                 && streamSessionId.equals(preparing.streamSessionId)
                 && autoWarmUpHostId().equalsIgnoreCase(preparing.hostId)
+                && currentProfileId().equals(preparing.profileId)
                 && autoWarmUpAppId() == preparing.appId
                 && autoWarmUpAttempt == preparing.attempt
                 && RetainedStreamSessionCoordinator.isPreparing(
@@ -6446,6 +6474,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private int autoWarmUpAppId() {
         return getIntent().getIntExtra(
                 EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
+    }
+
+    private String currentProfileId() {
+        return com.limelight.gateway.GatewayConnection.normalizeProfileId(
+                getIntent().getStringExtra(EXTRA_PROFILE_ID));
     }
 
     private static String normalizeOpaqueId(String value) {

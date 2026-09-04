@@ -3,11 +3,92 @@
 param(
     [switch]$EnableWakeOnLan,
     [switch]$EnsureVibepollo,
-    [string]$VibepolloCredentialPath = ""
+    [string]$ProtectedStagingDirectory = ""
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$trustedModuleRoot = [IO.Path]::GetFullPath((Join-Path $PSHOME "Modules"))
+$env:PSModulePath = $trustedModuleRoot
+$netAdapterManifest = Join-Path $trustedModuleRoot "NetAdapter\NetAdapter.psd1"
+if (-not (Test-Path -LiteralPath $netAdapterManifest -PathType Leaf)) {
+    throw "Required trusted Windows PowerShell module is missing: NetAdapter"
+}
+Import-Module -Name $netAdapterManifest -Force -ErrorAction Stop
+
+function Get-TrustedSystemExecutable([string]$Name) {
+    $systemDirectory = [Environment]::SystemDirectory
+    if ([Environment]::Is64BitOperatingSystem -and -not [Environment]::Is64BitProcess) {
+        $systemDirectory = Join-Path (Split-Path -Parent $systemDirectory) "Sysnative"
+    }
+    $path = [IO.Path]::GetFullPath((Join-Path $systemDirectory $Name))
+    if (-not (Test-Path -LiteralPath $path -PathType Leaf)) {
+        throw "Trusted Windows executable was not found: $path"
+    }
+    return $path
+}
+
+function New-AdministratorOnlyDirectoryAcl {
+    $security = [Security.AccessControl.DirectorySecurity]::new()
+    $security.SetAccessRuleProtection($true, $false)
+    $security.SetOwner([Security.Principal.SecurityIdentifier]::new("S-1-5-32-544"))
+    $inheritance = [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor
+        [Security.AccessControl.InheritanceFlags]::ObjectInherit
+    foreach ($sid in @("S-1-5-18", "S-1-5-32-544")) {
+        $security.AddAccessRule([Security.AccessControl.FileSystemAccessRule]::new(
+            [Security.Principal.SecurityIdentifier]::new($sid),
+            [Security.AccessControl.FileSystemRights]::FullControl, $inheritance,
+            [Security.AccessControl.PropagationFlags]::None,
+            [Security.AccessControl.AccessControlType]::Allow))
+    }
+    return $security
+}
+
+function Assert-AdministratorOnlyDirectory([string]$Path) {
+    $full = [IO.Path]::GetFullPath($Path).TrimEnd('\')
+    $programData = [IO.Path]::GetFullPath([Environment]::GetFolderPath(
+        [Environment+SpecialFolder]::CommonApplicationData)).TrimEnd('\')
+    $leaf = [IO.Path]::GetFileName($full)
+    $id = [guid]::Empty
+    if (-not [IO.Path]::GetDirectoryName($full).Equals($programData,
+            [StringComparison]::OrdinalIgnoreCase) -or
+        -not $leaf.StartsWith("MoonWakerInstaller-", [StringComparison]::Ordinal) -or
+        -not [guid]::TryParseExact($leaf.Substring("MoonWakerInstaller-".Length), "N", [ref]$id)) {
+        throw "The protected installer staging path is invalid."
+    }
+    $item = Get-Item -LiteralPath $full -Force
+    if ($item.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "The protected installer staging path is a reparse point."
+    }
+    $security = [IO.Directory]::GetAccessControl($full,
+        [Security.AccessControl.AccessControlSections]::Access -bor
+        [Security.AccessControl.AccessControlSections]::Owner)
+    if (-not $security.AreAccessRulesProtected -or
+        $security.GetOwner([Security.Principal.SecurityIdentifier]).Value -notin
+            @("S-1-5-18", "S-1-5-32-544")) {
+        throw "The protected installer staging owner or inheritance is unsafe."
+    }
+    $found = @{}
+    foreach ($rule in $security.GetAccessRules($true, $false,
+            [Security.Principal.SecurityIdentifier])) {
+        $sid = $rule.IdentityReference.Value
+        if ($rule.IsInherited -or
+            $rule.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $sid -notin @("S-1-5-18", "S-1-5-32-544") -or
+            ($rule.FileSystemRights -band [Security.AccessControl.FileSystemRights]::FullControl) -ne
+                [Security.AccessControl.FileSystemRights]::FullControl) {
+            throw "The protected installer staging grants untrusted access."
+        }
+        $found[$sid] = $true
+    }
+    if (-not $found["S-1-5-18"] -or -not $found["S-1-5-32-544"]) {
+        throw "The protected installer staging ACL is incomplete."
+    }
+    return $full
+}
+
+$msiexecPath = Get-TrustedSystemExecutable "msiexec.exe"
+$powercfgPath = Get-TrustedSystemExecutable "powercfg.exe"
 
 function Test-Administrator {
     $principal = [Security.Principal.WindowsPrincipal]::new(
@@ -49,10 +130,14 @@ function Install-Vibepollo {
         throw "Vibepollo returned an unexpected download URL."
     }
 
-    $downloadRoot = Join-Path ([IO.Path]::GetTempPath()) (
-        "moonwaker-vibepollo-" + [guid]::NewGuid().ToString("N"))
+    if ([string]::IsNullOrWhiteSpace($ProtectedStagingDirectory)) {
+        throw "Vibepollo installation requires the protected installer staging directory."
+    }
+    $protectedRoot = Assert-AdministratorOnlyDirectory $ProtectedStagingDirectory
+    $downloadRoot = Join-Path $protectedRoot (
+        "vibepollo-" + [guid]::NewGuid().ToString("N"))
     $installer = Join-Path $downloadRoot "Vibepollo.msi"
-    New-Item -ItemType Directory -Path $downloadRoot -Force | Out-Null
+    [IO.DirectoryInfo]::new($downloadRoot).Create((New-AdministratorOnlyDirectoryAcl))
     try {
         Write-Host "Downloading the signed Vibepollo installer..."
         Invoke-WebRequest -UseBasicParsing -Headers $headers -Uri $downloadUrl.AbsoluteUri `
@@ -61,8 +146,12 @@ function Install-Vibepollo {
         if ([string]$signature.Status -ne "Valid") {
             throw "The downloaded Vibepollo installer does not have a valid Authenticode signature ($($signature.Status))."
         }
+        if ((Get-Item -LiteralPath $installer -Force).Attributes -band
+                [IO.FileAttributes]::ReparsePoint) {
+            throw "The downloaded Vibepollo installer became a reparse point."
+        }
         Write-Host "Installing Vibepollo..."
-        $process = Start-Process -FilePath "msiexec.exe" `
+        $process = Start-Process -FilePath $msiexecPath `
             -ArgumentList @("/i", "`"$installer`"", "/qn", "/norestart") `
             -Wait -PassThru
         if ($process.ExitCode -notin @(0, 3010)) {
@@ -79,91 +168,10 @@ function Install-Vibepollo {
     return $true
 }
 
-function Get-VibepolloExecutable {
-    $candidates = @((Join-Path $env:ProgramFiles "Vibepollo\sunshine.exe"))
-    if (-not [string]::IsNullOrWhiteSpace(${env:ProgramFiles(x86)})) {
-        $candidates += Join-Path ${env:ProgramFiles(x86)} "Vibepollo\sunshine.exe"
-    }
-    $installation = Get-VibepolloInstallation
-    if ($null -ne $installation -and -not [string]::IsNullOrWhiteSpace(
-            [string]$installation.InstallLocation)) {
-        $candidates = @((Join-Path ([string]$installation.InstallLocation) "sunshine.exe")) +
-            $candidates
-    }
-    return $candidates | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf } |
-        Select-Object -First 1
-}
-
-function Initialize-VibepolloCredentials {
-    param([Parameter(Mandatory)][string]$CredentialPath)
-    if (-not (Test-Path -LiteralPath $CredentialPath -PathType Leaf)) {
-        throw "The protected Vibepollo credential file is missing."
-    }
-    Add-Type -AssemblyName System.Security
-    $plain = $null
-    $password = $null
-    try {
-        $credential = @(Get-Content -LiteralPath $CredentialPath)
-        if ($credential.Count -ne 2) { throw "The protected credential file is invalid." }
-        $username = [Text.Encoding]::UTF8.GetString(
-            [Convert]::FromBase64String([string]$credential[0]))
-        $protected = [Convert]::FromBase64String([string]$credential[1])
-        $plain = [Security.Cryptography.ProtectedData]::Unprotect(
-            $protected, $null, [Security.Cryptography.DataProtectionScope]::CurrentUser)
-        $password = [Text.Encoding]::UTF8.GetString($plain)
-        if ([string]::IsNullOrWhiteSpace($username) -or [string]::IsNullOrWhiteSpace($password)) {
-            throw "The Vibepollo administrator credentials are incomplete."
-        }
-        $executable = Get-VibepolloExecutable
-        if ([string]::IsNullOrWhiteSpace($executable)) {
-            throw "Vibepollo is installed but sunshine.exe could not be found."
-        }
-        $service = Get-CimInstance Win32_Service -ErrorAction SilentlyContinue |
-            Where-Object { [string]$_.PathName -like "*$executable*" -or
-                ([string]$_.Name -like "*Sunshine*" -and [string]$_.PathName -like "*Vibepollo*") } |
-            Select-Object -First 1
-        try {
-            if ($null -ne $service) {
-                Stop-Service -Name ([string]$service.Name) -Force -ErrorAction SilentlyContinue
-            }
-            Write-Host "Creating the Vibepollo administrator account..."
-            Push-Location (Split-Path -Parent $executable)
-            try {
-                & $executable --creds $username $password | Out-Host
-                $credentialExitCode = $LASTEXITCODE
-            } finally { Pop-Location }
-            if ($credentialExitCode -ne 0) {
-                throw "Vibepollo rejected the administrator account configuration."
-            }
-        } finally {
-            if ($null -ne $service) {
-                Start-Service -Name ([string]$service.Name) -ErrorAction SilentlyContinue
-            }
-        }
-        if ($null -ne $service) {
-            $deadline = [DateTime]::UtcNow.AddSeconds(30)
-            $connected = $false
-            do {
-                $client = [Net.Sockets.TcpClient]::new()
-                try {
-                    $connected = $client.ConnectAsync("127.0.0.1", 47990).Wait(500)
-                    if ($connected -and $client.Connected) { break }
-                } catch {} finally { $client.Dispose() }
-                Start-Sleep -Milliseconds 500
-            } while ([DateTime]::UtcNow -lt $deadline)
-            if (-not $connected) { throw "Vibepollo did not start its local API in time." }
-        }
-    } finally {
-        if ($null -ne $plain) { [Array]::Clear($plain, 0, $plain.Length) }
-        $password = $null
-        Remove-Item -LiteralPath $CredentialPath -Force -ErrorAction SilentlyContinue
-    }
-}
-
 function Enable-MoonWakerWakeOnLan {
-    $programmable = @(& powercfg.exe /devicequery wake_programmable 2>$null |
+    $programmable = @(& $powercfgPath /devicequery wake_programmable 2>$null |
         ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-    $adapters = @(Get-NetAdapter -Physical -ErrorAction SilentlyContinue |
+    $adapters = @(NetAdapter\Get-NetAdapter -Physical -ErrorAction SilentlyContinue |
         Where-Object { $_.HardwareInterface -and [int]$_.NdisPhysicalMedium -eq 14 -and
             $_.Status -ne "Disabled" })
     $supported = @($adapters | Where-Object {
@@ -175,14 +183,14 @@ function Enable-MoonWakerWakeOnLan {
     }
     foreach ($adapter in $supported) {
         Write-Host "Enabling Wake-on-LAN for $($adapter.Name)..."
-        Enable-NetAdapterPowerManagement -Name $adapter.Name -WakeOnMagicPacket `
+        NetAdapter\Enable-NetAdapterPowerManagement -Name $adapter.Name -WakeOnMagicPacket `
             -Confirm:$false -ErrorAction Stop
-        & powercfg.exe /deviceenableawake "$($adapter.InterfaceDescription)" | Out-Null
+        & $powercfgPath /deviceenableawake "$($adapter.InterfaceDescription)" | Out-Null
         if ($LASTEXITCODE -ne 0) {
             throw "Windows could not arm $($adapter.InterfaceDescription) for wake."
         }
     }
-    $armed = @(& powercfg.exe /devicequery wake_armed 2>$null |
+    $armed = @(& $powercfgPath /devicequery wake_armed 2>$null |
         ForEach-Object { $_.Trim() } | Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
     foreach ($adapter in $supported) {
         if ($adapter.InterfaceDescription -notin $armed -and $adapter.Name -notin $armed) {
@@ -195,12 +203,8 @@ if (-not (Test-Administrator)) {
     throw "MoonWaker host preparation must run as administrator."
 }
 
-$vibepolloInstalled = $false
 if ($EnsureVibepollo) {
-    $vibepolloInstalled = Install-Vibepollo
-    if ($vibepolloInstalled) {
-        Initialize-VibepolloCredentials -CredentialPath $VibepolloCredentialPath
-    }
+    [void](Install-Vibepollo)
 }
 if ($EnableWakeOnLan) { Enable-MoonWakerWakeOnLan }
 Write-Host "MoonWaker host prerequisites are ready."

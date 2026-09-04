@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import hashlib
 import json
 import logging
@@ -13,6 +14,7 @@ import queue
 import re
 import secrets
 import ssl
+import struct
 import subprocess
 import threading
 import time
@@ -43,10 +45,14 @@ DISCORD_AUDIO_CONTENT_TYPE = (
 NETWORK_DOWNLOAD_DEFAULT_BYTES = 8 * 1024 * 1024
 NETWORK_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024
 NETWORK_DOWNLOAD_CHUNK_BYTES = 64 * 1024
+GATEWAY_SCHEMA_VERSION = 2
+CLIENT_LAST_SEEN_WRITE_SECONDS = 5 * 60
+PROFILE_PERMISSIONS = {"use_profile", "remote_sign_in"}
 DISCORD_ID_PATTERN = re.compile(r"^[0-9]{5,32}$")
 VIRTUALHERE_ADDRESS_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 AUDIO_DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:{}-]{1,220}$")
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+WINDOWS_SID_PATTERN = re.compile(r"^S-\d-\d+(?:-\d+)+$", re.IGNORECASE)
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 PLAYNITE_GAME_ID_PATTERN = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
@@ -61,8 +67,14 @@ DIAGNOSTIC_QUEUE_SIZE = 512
 DIAGNOSTIC_RETENTION_SECONDS = 7 * 24 * 60 * 60
 DIAGNOSTIC_FIELDS = {
     "method", "route", "request_id", "profile_id", "status",
-    "http_status", "duration_ms", "error_type",
+    "http_status", "duration_ms", "error_type", "error_code",
 }
+
+
+def profile_deletion_pending(profile: Any) -> bool:
+    """Treat any durable deletion marker as unavailable, including malformed ones."""
+    return (isinstance(profile, dict) and
+            profile.get("deletion_tombstone") is not None)
 
 
 def compact_json(value: Any) -> bytes:
@@ -71,6 +83,183 @@ def compact_json(value: Any) -> bytes:
 
 def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
+
+
+def resolve_windows_account_sid(account_name: str) -> str:
+    """Resolve a Windows account name without invoking a shell."""
+    if os.name != "nt" or not account_name.strip():
+        return ""
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        advapi32 = ctypes.WinDLL("advapi32", use_last_error=True)
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        lookup = advapi32.LookupAccountNameW
+        lookup.argtypes = [
+            wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.LPVOID,
+            wintypes.LPDWORD, wintypes.LPWSTR, wintypes.LPDWORD,
+            wintypes.LPDWORD,
+        ]
+        lookup.restype = wintypes.BOOL
+        sid_size = wintypes.DWORD()
+        domain_size = wintypes.DWORD()
+        sid_type = wintypes.DWORD()
+        lookup(None, account_name, None, ctypes.byref(sid_size), None,
+               ctypes.byref(domain_size), ctypes.byref(sid_type))
+        if ctypes.get_last_error() != 122 or sid_size.value <= 0:
+            return ""
+        sid = ctypes.create_string_buffer(sid_size.value)
+        domain = ctypes.create_unicode_buffer(max(1, domain_size.value))
+        if not lookup(None, account_name, sid, ctypes.byref(sid_size), domain,
+                      ctypes.byref(domain_size), ctypes.byref(sid_type)):
+            return ""
+        sid_text = wintypes.LPWSTR()
+        convert = advapi32.ConvertSidToStringSidW
+        convert.argtypes = [wintypes.LPVOID, ctypes.POINTER(wintypes.LPWSTR)]
+        convert.restype = wintypes.BOOL
+        if not convert(sid, ctypes.byref(sid_text)):
+            return ""
+        try:
+            return str(sid_text.value or "")
+        finally:
+            kernel32.LocalFree.argtypes = [wintypes.LPVOID]
+            kernel32.LocalFree.restype = wintypes.LPVOID
+            kernel32.LocalFree(ctypes.cast(sid_text, wintypes.LPVOID))
+    except (AttributeError, OSError, TypeError, ValueError):
+        return ""
+
+
+class LoginBrokerClient:
+    """Small client for the Broker's bounded MWLB/MWLR v1 Gateway pipe."""
+
+    PIPE_PATH = r"\\.\pipe\MoonWakerLoginBroker.Gateway.v1"
+    TIMEOUT_MS = 500
+    MAX_FIELD_BYTES = 4096
+    MAX_MESSAGE_BYTES = 32768
+    MAX_FIELDS = 8
+
+    def capability(self) -> dict[str, Any]:
+        return self.request(5, {})
+
+    def profile_state(self, profile: dict[str, Any]) -> dict[str, Any]:
+        return self.request(4, {
+            1: str(profile.get("id") or ""),
+            2: str(profile.get("windows_account_sid") or ""),
+            3: str(profile.get("windows_account_name") or ""),
+        })
+
+    def begin(self, client_id: str, profile: dict[str, Any],
+              request_id: str) -> dict[str, Any]:
+        return self.request(1, {
+            1: client_id,
+            2: str(profile.get("id") or ""),
+            3: request_id,
+            4: str(profile.get("windows_account_sid") or ""),
+            5: str(profile.get("windows_account_name") or ""),
+        })
+
+    def attempt_state(self, client_id: str, profile_id: str,
+                      request_id: str, attempt_id: str) -> dict[str, Any]:
+        return self.request(2, {
+            1: client_id, 2: profile_id, 3: request_id, 4: attempt_id,
+        })
+
+    def cancel(self, client_id: str, profile_id: str,
+               request_id: str, attempt_id: str) -> dict[str, Any]:
+        return self.request(3, {
+            1: client_id, 2: profile_id, 3: request_id, 4: attempt_id,
+        })
+
+    def request(self, operation: int, fields: dict[int, str]) -> dict[str, Any]:
+        if os.name != "nt":
+            return self.unavailable()
+        try:
+            import ctypes
+            wait = ctypes.WinDLL("kernel32", use_last_error=True).WaitNamedPipeW
+            wait.argtypes = [ctypes.c_wchar_p, ctypes.c_uint]
+            wait.restype = ctypes.c_int
+            deadline = time.monotonic() + self.TIMEOUT_MS / 1000
+            while not wait(self.PIPE_PATH, max(0, int(
+                    (deadline - time.monotonic()) * 1000))):
+                error_code = ctypes.get_last_error()
+                if error_code != 2 or time.monotonic() >= deadline:
+                    DIAGNOSTICS.record("login-broker-unavailable", level="WARN",
+                                       error_code=error_code)
+                    return self.unavailable()
+                time.sleep(0.01)
+            try:
+                pipe = open(self.PIPE_PATH, "r+b", buffering=0)
+            except OSError as error:
+                DIAGNOSTICS.record("login-broker-unavailable", level="WARN",
+                                   error=error,
+                                   error_code=int(getattr(error, "winerror", 0) or
+                                                  getattr(error, "errno", 0) or 0))
+                return self.unavailable()
+            with pipe:
+                pipe.write(self.encode_request(operation, fields))
+                return self.decode_response(pipe)
+        except (OSError, ValueError, UnicodeError, struct.error) as error:
+            DIAGNOSTICS.record("login-broker-unavailable", level="WARN", error=error,
+                               error_code=int(getattr(error, "winerror", 0) or
+                                              getattr(error, "errno", 0) or 0))
+            return self.unavailable()
+
+    @classmethod
+    def encode_request(cls, operation: int, fields: dict[int, str]) -> bytes:
+        if not 0 <= operation <= 255 or len(fields) > cls.MAX_FIELDS:
+            raise ValueError("Invalid Broker request.")
+        output = bytearray(b"MWLB" + bytes((1, operation, len(fields), 0)))
+        for key, text in fields.items():
+            if not 0 <= key <= 255:
+                raise ValueError("Invalid Broker field.")
+            value = str(text).encode("utf-8")
+            if (len(value) > cls.MAX_FIELD_BYTES or
+                    len(output) + 5 + len(value) > cls.MAX_MESSAGE_BYTES):
+                raise ValueError("Broker request is too large.")
+            output.extend(bytes((key,)))
+            output.extend(struct.pack("<I", len(value)))
+            output.extend(value)
+        return bytes(output)
+
+    @classmethod
+    def decode_response(cls, pipe: Any) -> dict[str, Any]:
+        header = cls.read_exact(pipe, 8)
+        if (header[:4] != b"MWLR" or header[4] != 1 or
+                header[6] > cls.MAX_FIELDS or header[7] != 0):
+            raise ValueError("Invalid Broker response.")
+        total = 8
+        fields: dict[int, str] = {}
+        for _ in range(header[6]):
+            field_header = cls.read_exact(pipe, 5)
+            key = field_header[0]
+            length = struct.unpack("<I", field_header[1:])[0]
+            if (key in fields or length > cls.MAX_FIELD_BYTES or
+                    total + 5 + length > cls.MAX_MESSAGE_BYTES):
+                raise ValueError("Invalid Broker response field.")
+            fields[key] = cls.read_exact(pipe, length).decode("utf-8")
+            total += 5 + length
+        return {
+            "success": header[5] == 0,
+            "state": fields.get(1, "ready" if header[5] == 0 else "action_required"),
+            "reason": fields.get(2, "none" if header[5] == 0 else "action_required"),
+            "fields": fields,
+        }
+
+    @staticmethod
+    def read_exact(pipe: Any, length: int) -> bytes:
+        value = bytearray()
+        while len(value) < length:
+            chunk = pipe.read(length - len(value))
+            if not chunk:
+                raise OSError("Broker pipe closed early.")
+            value.extend(chunk)
+        return bytes(value)
+
+    @staticmethod
+    def unavailable() -> dict[str, Any]:
+        return {"success": False, "state": "broker_unavailable",
+                "reason": "broker_unavailable", "fields": {}}
 
 
 def diagnostic_route(target: str) -> str:
@@ -217,10 +406,28 @@ DIAGNOSTICS = GatewayDiagnostics()
 
 
 class GatewayState:
-    def __init__(self, config_path: Path, pairing_code: str | None) -> None:
+    def __init__(self, config_path: Path, pairing_code: str | None,
+                 registry_lock_path: Path | None = None,
+                 broker_client: LoginBrokerClient | None = None) -> None:
         self.config_path = config_path.resolve()
+        self.registry_lock_path = ((registry_lock_path.resolve()
+                                    if registry_lock_path is not None else
+                                    self.config_path.with_suffix(
+                                        self.config_path.suffix + ".lock")))
+        self.client_activity_path = self.config_path.with_name("client-activity.json")
+        self.login_broker = broker_client or LoginBrokerClient()
         # Windows PowerShell 5.1 writes UTF-8 files with a BOM by default.
-        self.config = json.loads(self.config_path.read_text(encoding="utf-8-sig"))
+        loaded_registry_text = self.config_path.read_text(encoding="utf-8-sig")
+        self.config = json.loads(loaded_registry_text)
+        before_migration = json.dumps(
+            self.config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        try:
+            schema_version = int(self.config.get("schema_version", 1))
+        except (TypeError, ValueError):
+            raise ValueError("Invalid Gateway configuration schema version.") from None
+        if schema_version > GATEWAY_SCHEMA_VERSION:
+            raise ValueError("Gateway configuration was written by a newer version.")
+        legacy_schema = schema_version < GATEWAY_SCHEMA_VERSION
         self.config.setdefault("listen_host", "0.0.0.0")
         self.config.setdefault("listen_port", 8785)
         self.config.setdefault("discord_bridge", "http://127.0.0.1:8765")
@@ -233,20 +440,105 @@ class GatewayState:
         self.config.setdefault("microphone_worker", "MoonWakerMicrophoneWorker.exe")
         self.config.setdefault("discord_audio_worker", "MoonWakerDiscordAudioWorker.exe")
         self.config.setdefault("profiles", {})
-        self.config["profiles"].setdefault("default", {
-            "discord_bridge": self.config["discord_bridge"],
-            "vibepollo_bridge": self.config["vibepollo_bridge"],
-            "game_provider_bridge": self.config["game_provider_bridge"],
-            "playnite_bridge": self.config["playnite_bridge"],
-        })
-        for profile in self.config["profiles"].values():
+        if not isinstance(self.config["profiles"], dict):
+            raise ValueError("Gateway profiles must be an object.")
+        # Create the compatibility record only while migrating an old registry.
+        # A schema-2 administrator may deliberately remove it in Host Control;
+        # restarting the Gateway must not silently resurrect that profile.
+        if legacy_schema:
+            self.config["profiles"].setdefault("default", {
+                "discord_bridge": self.config["discord_bridge"],
+                "vibepollo_bridge": self.config["vibepollo_bridge"],
+                "game_provider_bridge": self.config["game_provider_bridge"],
+                "playnite_bridge": self.config["playnite_bridge"],
+            })
+        for profile_id, profile in self.config["profiles"].items():
             if not isinstance(profile, dict):
-                continue
+                raise ValueError(f"Gateway profile {profile_id!r} must be an object.")
             endpoint = str(profile.get("game_provider_bridge") or
                            profile.get("playnite_bridge") or provider_bridge)
+            display_name = str(
+                profile.get("display_name") or profile.get("name") or profile_id
+            ).strip()[:80] or str(profile_id)
+            account_name = str(
+                profile.get("windows_account_name") or profile.get("owner") or ""
+            ).strip()
+            sid_candidates = (
+                str(profile.get("windows_account_sid") or "").strip(),
+                str(profile.get("owner_sid") or "").strip(),
+            )
+            account_sid = next((candidate for candidate in sid_candidates
+                                if WINDOWS_SID_PATTERN.fullmatch(candidate)), "")
+            if not account_sid:
+                account_sid = resolve_windows_account_sid(account_name) \
+                    if legacy_schema else ""
+            mapping_resolved = bool(WINDOWS_SID_PATTERN.fullmatch(account_sid))
+            profile["id"] = str(profile_id)
+            profile["name"] = display_name
+            profile["display_name"] = display_name
+            profile["owner_sid"] = account_sid
+            profile["windows_account_sid"] = account_sid
+            profile["owner"] = account_name
+            profile["windows_account_name"] = account_name
+            profile["enabled"] = (
+                (profile.get("enabled") is True or
+                 (legacy_schema and "enabled" not in profile)) and
+                not profile_deletion_pending(profile)
+            )
+            profile["profile_root"] = str(profile.get("profile_root") or "")
+            profile.setdefault("discord_bridge", self.config["discord_bridge"])
+            profile.setdefault("vibepollo_bridge", self.config["vibepollo_bridge"])
             profile.setdefault("game_provider_bridge", endpoint)
             profile.setdefault("playnite_bridge", endpoint)
+            profile["remote_sign_in_enabled"] = (
+                bool(profile.get("remote_sign_in_enabled", False)) and
+                mapping_resolved and not legacy_schema and
+                not profile_deletion_pending(profile))
+            profile["account_mapping_status"] = (
+                "resolved" if mapping_resolved else "action_required")
         self.config.setdefault("clients", [])
+        if not isinstance(self.config["clients"], list):
+            raise ValueError("Gateway clients must be an array.")
+        client_activity: dict[str, Any] = {}
+        try:
+            activity_document = json.loads(
+                self.client_activity_path.read_text(encoding="utf-8-sig"))
+            if isinstance(activity_document, dict) and isinstance(
+                    activity_document.get("clients"), dict):
+                client_activity = activity_document["clients"]
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            pass
+        existing_profiles = {str(profile_id) for profile_id in self.config["profiles"]}
+        for client in self.config["clients"]:
+            if not isinstance(client, dict):
+                raise ValueError("Gateway client records must be objects.")
+            grants = ({profile_id: ["use_profile"]
+                       for profile_id in sorted(existing_profiles)}
+                      if legacy_schema else client.get("profile_grants"))
+            if grants is None:
+                grants = {}
+            elif not isinstance(grants, dict):
+                grants = {}
+            normalized_grants = {}
+            for profile_id, permissions in grants.items():
+                if (profile_id not in self.config["profiles"] or
+                        not isinstance(permissions, list)):
+                    continue
+                allowed = PROFILE_PERMISSIONS.intersection(
+                    permission for permission in permissions if isinstance(permission, str))
+                if allowed:
+                    normalized_grants[str(profile_id)] = sorted(
+                        allowed, key=lambda value: value != "use_profile")
+            client["profile_grants"] = normalized_grants
+            client_id = str(client.get("id", ""))
+            try:
+                activity_seen = int(client_activity.get(client_id) or 0)
+            except (TypeError, ValueError):
+                activity_seen = 0
+            client["last_seen_at"] = max(
+                int(client.get("last_seen_at") or client.get("paired_at") or 0),
+                activity_seen)
+        self.config["schema_version"] = GATEWAY_SCHEMA_VERSION
         self.pairing_code_hash = sha256_text(pairing_code) if pairing_code else None
         self.pairing_expires_at = time.monotonic() + PAIRING_LIFETIME_SECONDS if pairing_code else 0.0
         self.pairing_control_path = self.config_path.with_name("pairing-code.json")
@@ -265,6 +557,10 @@ class GatewayState:
         self.version_info = self._load_version_info()
         self.last_runtime_profile = ""
         self.last_runtime_write = 0.0
+        after_migration = json.dumps(
+            self.config, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        if after_migration != before_migration:
+            self.save(expected_registry_text=loaded_registry_text)
 
     @property
     def base_dir(self) -> Path:
@@ -305,16 +601,137 @@ class GatewayState:
         value = Path(str(self.config[key]))
         return value if value.is_absolute() else (self.base_dir / value).resolve()
 
-    def save(self) -> None:
+    def save(self, expected_registry_text: str | None = None) -> None:
+        with self.registry_update_lock():
+            if (expected_registry_text is not None and
+                    self.config_path.read_text(encoding="utf-8-sig") !=
+                    expected_registry_text):
+                raise RuntimeError(
+                    "Gateway configuration changed during migration; restart the Gateway.")
+            self.replace_registry(self.config)
+
+    @contextlib.contextmanager
+    def registry_update_lock(self):
+        """Serialize registry replacement with local installers/configurators."""
+        handle = None
+        deadline = time.monotonic() + 10.0
+        while handle is None:
+            try:
+                handle = self.registry_lock_path.open("a+b")
+                if handle.seek(0, os.SEEK_END) < 1:
+                    handle.write(b"\0")
+                    handle.flush()
+                handle.seek(0)
+                if os.name == "nt":
+                    import msvcrt
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_NBLCK, 1)
+                else:
+                    import fcntl
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except (OSError, BlockingIOError):
+                if handle is not None:
+                    handle.close()
+                    handle = None
+                if time.monotonic() >= deadline:
+                    raise TimeoutError("Gateway registry is busy.") from None
+                time.sleep(0.05)
+        try:
+            yield
+        finally:
+            try:
+                handle.seek(0)
+                if os.name == "nt":
+                    msvcrt.locking(handle.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+            finally:
+                handle.close()
+
+    def current_registry(self) -> dict[str, Any]:
+        current = json.loads(self.config_path.read_text(encoding="utf-8-sig"))
+        if (not isinstance(current, dict) or
+                not isinstance(current.get("profiles"), dict) or
+                not isinstance(current.get("clients"), list)):
+            raise ValueError("Gateway configuration registry is malformed.")
+        try:
+            schema_version = int(current.get("schema_version", 0))
+        except (TypeError, ValueError):
+            raise ValueError("Invalid Gateway configuration schema version.") from None
+        if schema_version != GATEWAY_SCHEMA_VERSION:
+            raise ValueError("Gateway configuration schema changed while running.")
+        return current
+
+    def replace_registry(self, registry: dict[str, Any]) -> None:
         temporary = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
-        temporary.write_text(json.dumps(self.config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        temporary.write_text(
+            json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
         os.replace(temporary, self.config_path)
+        self.registry_modified_ns = self.config_path.stat().st_mtime_ns
+
+    def refresh_registry_if_changed(self) -> None:
+        if (getattr(self, "registry_modified_ns", None) ==
+                self.config_path.stat().st_mtime_ns):
+            return
+        with self.registry_update_lock():
+            current = self.current_registry()
+            activity_clients: dict[str, Any] = {}
+            try:
+                activity = json.loads(
+                    self.client_activity_path.read_text(encoding="utf-8-sig"))
+                if isinstance(activity, dict) and isinstance(activity.get("clients"), dict):
+                    activity_clients = activity["clients"]
+            except (OSError, TypeError, ValueError, json.JSONDecodeError):
+                pass
+            for client in current["clients"]:
+                if not isinstance(client, dict):
+                    raise ValueError("Gateway client records must be objects.")
+                client_id = str(client.get("id", ""))
+                try:
+                    activity_seen = int(activity_clients.get(client_id) or 0)
+                except (TypeError, ValueError):
+                    activity_seen = 0
+                client["last_seen_at"] = max(
+                    int(client.get("last_seen_at") or client.get("paired_at") or 0),
+                    activity_seen)
+            self.config = current
+            self.registry_modified_ns = self.config_path.stat().st_mtime_ns
+
+    def persist_client_last_seen(self, client: dict[str, Any], seen_at: int) -> None:
+        """Persist activity separately so it cannot race security-policy edits."""
+        client_id = str(client.get("id", ""))
+        if not client_id:
+            return
+        try:
+            activity = {"schema_version": 1, "clients": {}}
+            if self.client_activity_path.exists():
+                loaded = json.loads(
+                    self.client_activity_path.read_text(encoding="utf-8-sig"))
+                if isinstance(loaded, dict) and isinstance(loaded.get("clients"), dict):
+                    activity = loaded
+            activity["schema_version"] = 1
+            activity["clients"][client_id] = seen_at
+            temporary = self.client_activity_path.with_suffix(".json.tmp")
+            temporary.write_text(
+                json.dumps(activity, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+            os.replace(temporary, self.client_activity_path)
+        except (OSError, TypeError, ValueError, json.JSONDecodeError):
+            # Activity tracking must never make an otherwise valid request fail.
+            return
 
     def client_for_token(self, token: str) -> dict[str, Any] | None:
         digest = sha256_text(token)
         with self.lock:
+            try:
+                self.refresh_registry_if_changed()
+            except (OSError, TimeoutError, TypeError, ValueError, json.JSONDecodeError):
+                return None
             for client in self.config["clients"]:
                 if secrets.compare_digest(str(client.get("token_sha256", "")), digest):
+                    now = int(time.time())
+                    if now - int(client.get("last_seen_at") or 0) >= \
+                            CLIENT_LAST_SEEN_WRITE_SECONDS:
+                        client["last_seen_at"] = now
+                        self.persist_client_last_seen(client, now)
                     return client
         return None
 
@@ -359,21 +776,44 @@ class GatewayState:
 
         token = secrets.token_urlsafe(32)
         client_id = secrets.token_hex(12)
-        record = {
-            "id": client_id,
-            "name": client_name[:80] or "Android TV",
-            "token_sha256": sha256_text(token),
-            "paired_at": int(time.time()),
-        }
+        paired_at = int(time.time())
         with self.lock:
-            self.config["clients"].append(record)
-            self.save()
+            with self.registry_update_lock():
+                current = self.current_registry()
+                record = {
+                    "id": client_id,
+                    "name": client_name[:80] or "Android TV",
+                    "token_sha256": sha256_text(token),
+                    "paired_at": paired_at,
+                    "last_seen_at": paired_at,
+                    "profile_grants": {
+                        str(profile_id): ["use_profile"]
+                        for profile_id, profile in sorted(current["profiles"].items())
+                        if (isinstance(profile, dict) and
+                            profile.get("enabled") is True and
+                            not profile_deletion_pending(profile))
+                    },
+                }
+                current["clients"].append(record)
+                self.replace_registry(current)
+                self.config = current
+        profiles = []
+        for profile_id in record["profile_grants"]:
+            profile = current["profiles"][profile_id]
+            profiles.append({
+                "id": profile_id,
+                "name": str(profile.get("name") or profile.get("display_name") or
+                            profile_id)[:80],
+                "permissions": {"use_profile": True, "remote_sign_in": False},
+            })
         ticket = self.issue_stream_pair_ticket(address, client_id)
         return {
             "client_id": client_id,
             "token": token,
             "stream_pair_ticket": ticket,
             "stream_pair_expires_seconds": STREAM_PAIR_TICKET_LIFETIME_SECONDS,
+            "profiles": profiles,
+            "suggested_profile_id": profiles[0]["id"] if len(profiles) == 1 else "",
         }
 
     def issue_stream_pair_ticket(self, address: str, client_id: str) -> str:
@@ -441,17 +881,81 @@ class GatewayState:
             "permissions": int(result.get("permissions", 0)),
         }
 
-    def select_profile(self, profile_id: str | None, record_use: bool = False) -> str:
+    def resolve_profile_id(self, profile_id: str | None,
+                           client: dict[str, Any] | None = None) -> str:
         selected = str(profile_id or "default").strip() or "default"
         if not PROFILE_ID_PATTERN.fullmatch(selected):
             raise ValueError("Invalid integration profile ID.")
         profiles = self.config.get("profiles", {})
+        if selected == "default" and selected not in profiles:
+            grants = client.get("profile_grants", {}) if client else None
+            available = [
+                str(candidate) for candidate, profile in profiles.items()
+                if (isinstance(profile, dict) and profile.get("enabled") is True and
+                    not profile_deletion_pending(profile) and
+                    (grants is None or "use_profile" in grants.get(str(candidate), [])))
+            ]
+            if len(available) == 1:
+                selected = available[0]
+        return selected
+
+    def select_profile(self, profile_id: str | None, record_use: bool = False) -> str:
+        selected = self.resolve_profile_id(profile_id)
+        profiles = self.config.get("profiles", {})
         if selected not in profiles:
             raise ValueError(f"Unknown integration profile: {selected}")
+        profile = profiles[selected]
+        if (not isinstance(profile, dict) or profile.get("enabled") is not True or
+                profile_deletion_pending(profile)):
+            raise PermissionError("The requested integration profile is unavailable.")
         self.request_context.profile_id = selected
         if record_use:
             self.record_profile_use(selected)
         return selected
+
+    def authorize_profile(self, client: dict[str, Any], profile_id: str | None,
+                          required_permission: str = "use_profile",
+                          record_use: bool = False) -> str:
+        if required_permission not in PROFILE_PERMISSIONS:
+            raise ValueError("Invalid profile permission.")
+        selected = self.resolve_profile_id(profile_id, client)
+        profile = self.config.get("profiles", {}).get(selected)
+        if not isinstance(profile, dict):
+            raise ValueError(f"Unknown integration profile: {selected}")
+        permissions = client.get("profile_grants", {}).get(selected, [])
+        authorized = (
+            profile.get("enabled") is True and
+            not profile_deletion_pending(profile) and
+            isinstance(permissions, list) and
+            "use_profile" in permissions and
+            required_permission in permissions
+        )
+        if not authorized:
+            raise PermissionError(
+                "This client is not authorized for the requested profile permission.")
+        return self.select_profile(selected, record_use=record_use)
+
+    def delete_profile(self, profile_id: str) -> bool:
+        selected = str(profile_id or "").strip()
+        if not PROFILE_ID_PATTERN.fullmatch(selected):
+            raise ValueError("Invalid integration profile ID.")
+        if selected == "default":
+            raise ValueError("The compatibility default profile cannot be deleted.")
+        with self.lock:
+            with self.registry_update_lock():
+                current = self.current_registry()
+                if selected not in current["profiles"]:
+                    return False
+                del current["profiles"][selected]
+                for client in current["clients"]:
+                    if not isinstance(client, dict):
+                        continue
+                    grants = client.get("profile_grants")
+                    if isinstance(grants, dict):
+                        grants.pop(selected, None)
+                self.replace_registry(current)
+                self.config = current
+        return True
 
     def record_profile_use(self, profile_id: str) -> None:
         now = time.monotonic()
@@ -565,6 +1069,7 @@ class GatewayState:
         if discord_ok:
             virtualhere_ok, virtualhere = self.proxy(
                 "discord", "/virtualhere-state", timeout=1.5)
+        remote_windows_sign_in = self.remote_windows_sign_in_capability()
         return {
             "gateway": {
                 "online": True,
@@ -585,6 +1090,8 @@ class GatewayState:
                 },
                 "host_sleep": {"available": os.name == "nt"},
                 "session_suspend": {"available": os.name == "nt"},
+                "remote_windows_sign_in": remote_windows_sign_in,
+                "remote_sign_in": remote_windows_sign_in,
                 "microphone": {
                     **microphone,
                     "format": "pcm_s16le",
@@ -601,6 +1108,137 @@ class GatewayState:
                 },
             },
         }
+
+    def profile_login_state(self, profile: dict[str, Any]) -> dict[str, str]:
+        enabled = bool(profile.get("remote_sign_in_enabled", False))
+        result = self.login_broker.profile_state(profile)
+        if result.get("state") == "broker_unavailable":
+            return {"session_state": "unknown",
+                    "remote_sign_in_state": "broker_unavailable" if enabled else "disabled",
+                    "reason": "broker_unavailable" if enabled else "remote_sign_in_disabled"}
+        session_state = str(result.get("state") or "unknown") \
+            if result.get("success") else "unknown"
+        fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
+        credential_state = str(fields.get(3) or "action_required")
+        credential_reason = str(fields.get(4) or result.get("reason") or "credential_missing")
+        if not enabled:
+            remote_state, reason = "disabled", "remote_sign_in_disabled"
+        elif profile.get("account_mapping_status") != "resolved":
+            remote_state, reason = "action_required", "account_mapping_required"
+        elif not result.get("success") or credential_state != "ready":
+            remote_state, reason = "action_required", credential_reason
+        elif session_state == "other_user_active":
+            remote_state, reason = "action_required", "other_user_active"
+        elif session_state == "unknown":
+            remote_state, reason = "unavailable", "session_state_unknown"
+        else:
+            remote_state, reason = "ready", "none"
+        return {"session_state": session_state,
+                "remote_sign_in_state": remote_state, "reason": reason}
+
+    def remote_windows_sign_in_capability(self) -> dict[str, Any]:
+        result = self.login_broker.capability()
+        fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
+        compatible = bool(result.get("success")) and str(fields.get(3) or "") == "1"
+        return {"available": compatible,
+                "state": "ready" if compatible else str(
+                    result.get("state") or "broker_unavailable"),
+                "reason": "none" if compatible else str(
+                    result.get("reason") or "broker_unavailable"),
+                "protocol_version": 1}
+
+    @staticmethod
+    def broker_client_id(client: dict[str, Any]) -> str:
+        value = str(client.get("id") or client.get("token_sha256") or "")
+        if not value or len(value) > 128 or any(character.isspace() for character in value):
+            raise PermissionError("The paired client has no usable identity.")
+        return value
+
+    def ensure_session(self, client: dict[str, Any], profile_id: str,
+                       request_id: str) -> tuple[int, dict[str, Any]]:
+        if not REQUEST_ID_PATTERN.fullmatch(request_id):
+            raise ValueError("A valid X-Request-Id header is required.")
+        profile = self.config.get("profiles", {}).get(profile_id)
+        if not isinstance(profile, dict):
+            return HTTPStatus.CONFLICT, {"ok": False, "state": "action_required",
+                                         "reason": "profile_missing"}
+        current = self.profile_login_state(profile)
+        if current["remote_sign_in_state"] == "broker_unavailable":
+            return HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, **current}
+        if current["session_state"] == "active":
+            return HTTPStatus.OK, {"ok": True, "state": "ready",
+                                   "reason": "none", "session_state": "active"}
+        if current["session_state"] == "other_user_active":
+            return HTTPStatus.CONFLICT, {"ok": False, **current}
+        self.authorize_profile(client, profile_id, "remote_sign_in", record_use=True)
+        if not profile.get("remote_sign_in_enabled"):
+            return HTTPStatus.CONFLICT, {"ok": False, "state": "action_required",
+                                         "reason": "remote_sign_in_disabled",
+                                         "session_state": current["session_state"]}
+        if (current["remote_sign_in_state"] == "unavailable" or
+                current["reason"] == "account_mapping_required"):
+            return HTTPStatus.CONFLICT, {"ok": False, **current}
+        result = self.login_broker.begin(
+            self.broker_client_id(client), profile, request_id)
+        state = str(result.get("state") or "action_required")
+        reason = str(result.get("reason") or "action_required")
+        if state == "broker_unavailable":
+            return HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "state": state,
+                                                     "reason": reason}
+        fields = result.get("fields") if isinstance(result.get("fields"), dict) else {}
+        body = {"ok": bool(result.get("success")), "state": state, "reason": reason,
+                "session_state": current["session_state"],
+                "attempt_id": str(fields.get(3) or ""), "request_id": request_id}
+        return (HTTPStatus.ACCEPTED if result.get("success") else HTTPStatus.CONFLICT), body
+
+    def session_attempt_status(self, client: dict[str, Any], profile_id: str,
+                               request_id: str, attempt_id: str) \
+            -> tuple[int, dict[str, Any]]:
+        if (not REQUEST_ID_PATTERN.fullmatch(request_id) or
+                not re.fullmatch(r"[0-9a-f]{32}", attempt_id)):
+            raise ValueError("Valid attempt and request IDs are required.")
+        result = self.login_broker.attempt_state(
+            self.broker_client_id(client), profile_id, request_id, attempt_id)
+        state = str(result.get("state") or "action_required")
+        reason = str(result.get("reason") or "action_required")
+        if state == "broker_unavailable":
+            return HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "state": state,
+                                                     "reason": reason}
+        if state == "completed":
+            profile = self.config.get("profiles", {}).get(profile_id, {})
+            current = self.profile_login_state(profile)
+            if current["session_state"] == "active":
+                return HTTPStatus.OK, {"ok": True, "state": "ready", "reason": "none",
+                                       "session_state": "active", "attempt_id": attempt_id}
+            if current["remote_sign_in_state"] == "broker_unavailable":
+                return HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, **current,
+                                                         "attempt_id": attempt_id}
+            return HTTPStatus.ACCEPTED, {"ok": True, "state": "session_starting",
+                                         "reason": "none",
+                                         "session_state": current["session_state"],
+                                         "attempt_id": attempt_id}
+        body = {"ok": bool(result.get("success")), "state": state, "reason": reason,
+                "attempt_id": attempt_id}
+        return (HTTPStatus.ACCEPTED if result.get("success") else HTTPStatus.CONFLICT), body
+
+    def cancel_session_attempt(self, client: dict[str, Any], profile_id: str,
+                               request_id: str, attempt_id: str) \
+            -> tuple[int, dict[str, Any]]:
+        if (not REQUEST_ID_PATTERN.fullmatch(request_id) or
+                not re.fullmatch(r"[0-9a-f]{32}", attempt_id)):
+            raise ValueError("Valid attempt and request IDs are required.")
+        result = self.login_broker.cancel(
+            self.broker_client_id(client), profile_id, request_id, attempt_id)
+        state = str(result.get("state") or "action_required")
+        reason = str(result.get("reason") or "action_required")
+        if state == "broker_unavailable":
+            return HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "state": state,
+                                                     "reason": reason}
+        if reason == "attempt_cancelled":
+            return HTTPStatus.OK, {"ok": True, "state": "cancelled", "reason": reason,
+                                   "attempt_id": attempt_id}
+        return HTTPStatus.CONFLICT, {"ok": False, "state": state, "reason": reason,
+                                     "attempt_id": attempt_id}
 
     def microphone_worker(self) -> Path:
         return self.path_from_config("microphone_worker")
@@ -754,8 +1392,8 @@ class GatewayState:
             "session_close_requested": session_ok,
         }
 
-    def profiles_summary(self) -> dict[str, Any]:
-        original_profile = self.profile_id
+    def profiles_summary(self, client: dict[str, Any]) -> dict[str, Any]:
+        original_profile = getattr(self.request_context, "profile_id", None)
         profiles = []
         suggested_profile_id = ""
         available_profile_id = ""
@@ -763,7 +1401,10 @@ class GatewayState:
             for profile_id in sorted(self.config.get("profiles", {})):
                 if not PROFILE_ID_PATTERN.fullmatch(str(profile_id)):
                     continue
-                self.select_profile(str(profile_id))
+                try:
+                    self.authorize_profile(client, str(profile_id), "use_profile")
+                except PermissionError:
+                    continue
                 profile_config = self.config["profiles"].get(profile_id, {})
                 display_name = str(
                     profile_config.get("name") or
@@ -788,9 +1429,25 @@ class GatewayState:
                 if not available_profile_id and (
                         discord["bridge_online"] or vibepollo_online or playnite_online):
                     available_profile_id = str(profile_id)
+                login = self.profile_login_state(profile_config)
+                permissions = client.get("profile_grants", {}).get(str(profile_id), [])
                 profiles.append({
                     "id": str(profile_id),
                     "name": display_name,
+                    "display_name": display_name,
+                    "enabled": (profile_config.get("enabled") is True and
+                                not profile_deletion_pending(profile_config)),
+                    "remote_sign_in_enabled": bool(
+                        profile_config.get("remote_sign_in_enabled", False)),
+                    "account_mapping_status": str(
+                        profile_config.get("account_mapping_status") or
+                        "action_required"),
+                    "permissions": {
+                        "use_profile": True,
+                        "remote_sign_in": (isinstance(permissions, list) and
+                                           "remote_sign_in" in permissions),
+                    },
+                    **login,
                     "discord_bridge_online": discord["bridge_online"],
                     "discord_rpc_connected": discord["rpc_connected"],
                     "discord_authenticated": discord["authenticated"],
@@ -801,9 +1458,13 @@ class GatewayState:
                     "virtualhere_available": virtualhere_online,
                 })
         finally:
-            self.select_profile(
-                original_profile if original_profile in self.config.get("profiles", {})
-                else "default")
+            original_config = self.config.get("profiles", {}).get(original_profile)
+            if (isinstance(original_config, dict) and
+                    original_config.get("enabled") is True and
+                    not profile_deletion_pending(original_config)):
+                self.select_profile(str(original_profile))
+            elif hasattr(self.request_context, "profile_id"):
+                delattr(self.request_context, "profile_id")
         return {
             "profiles": profiles,
             "suggested_profile_id": suggested_profile_id or available_profile_id,
@@ -1303,6 +1964,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def send_session_json(self, status: int, value: dict[str, Any]) -> None:
+        if int(status) >= 400 and "error" not in value:
+            value = {**value, "error": str(value.get("reason") or "session_request_failed")}
+        self.send_json(status, value)
+
     def send_binary(self, status: int, body: bytes, content_type: str) -> None:
         self._response_status = int(status)
         self.send_response(int(status))
@@ -1537,15 +2203,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
         token = header[7:] if header.startswith("Bearer ") else ""
         return self.state.client_for_token(token) if token else None
 
-    def require_auth(self) -> bool:
-        if self.authenticated():
-            return True
+    def require_auth(self) -> dict[str, Any] | None:
+        client = self.authenticated_client()
+        if client is not None:
+            return client
         self.send_json(HTTPStatus.UNAUTHORIZED, {"error": "Authentication required."})
-        return False
+        return None
 
-    def select_profile(self) -> str:
-        return self.state.select_profile(
-            self.headers.get("X-WakePlay-Profile", "default"), record_use=True)
+    def authorize_profile(self, client: dict[str, Any],
+                          permission: str = "use_profile") -> str:
+        return self.state.authorize_profile(
+            client, self.headers.get("X-WakePlay-Profile", "default"),
+            permission, record_use=True)
 
     def _begin_diagnostics(self, method: str) -> None:
         self._diagnostic_method = method
@@ -1602,6 +2271,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
         except (ValueError, json.JSONDecodeError) as error:
             self._diagnostic_error = error
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
+        except PermissionError as error:
+            self._diagnostic_error = error
+            self.send_json(HTTPStatus.FORBIDDEN, {"error": str(error)})
         except Exception as error:
             self._diagnostic_error = error
             self._diagnostic_unexpected = True
@@ -1619,17 +2291,38 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 "pairing": self.state.pairing_active(), **self.state.runtime_info(),
             })
             return
-        if not self.require_auth():
+        authenticated_client = self.require_auth()
+        if authenticated_client is None:
             return
         if path == f"{API_PREFIX}/profiles":
-            self.send_json(HTTPStatus.OK, self.state.profiles_summary())
+            self.send_json(
+                HTTPStatus.OK, self.state.profiles_summary(authenticated_client))
             return
-        profile_id = self.select_profile()
+        if path == f"{API_PREFIX}/system/session/status":
+            profile_id = self.authorize_profile(authenticated_client, "use_profile")
+            attempt_id = str(query.get("attempt_id", [""])[0]).strip()
+            request_id = str(query.get("request_id", [""])[0]).strip()
+            if attempt_id or request_id:
+                self.authorize_profile(authenticated_client, "remote_sign_in")
+                status, result = self.state.session_attempt_status(
+                    authenticated_client, profile_id, request_id, attempt_id)
+            else:
+                profile = self.state.config.get("profiles", {}).get(profile_id, {})
+                result = self.state.profile_login_state(profile)
+                result = {"ok": result["remote_sign_in_state"] != "broker_unavailable",
+                          **result}
+                status = (HTTPStatus.SERVICE_UNAVAILABLE
+                          if result["remote_sign_in_state"] == "broker_unavailable"
+                          else HTTPStatus.OK)
+            self.send_session_json(status, result)
+            return
         if path == f"{API_PREFIX}/diagnostics/network/download":
-            client = self.authenticated_client() or {}
-            client_id = str(client.get("id") or client.get("token_sha256") or "")
-            self.network_download(query.get("size", [None])[0], profile_id, client_id)
-        elif path == f"{API_PREFIX}/capabilities":
+            client_id = str(authenticated_client.get("id") or
+                            authenticated_client.get("token_sha256") or "")
+            self.network_download(query.get("size", [None])[0], "host", client_id)
+            return
+        self.authorize_profile(authenticated_client)
+        if path == f"{API_PREFIX}/capabilities":
             self.send_json(HTTPStatus.OK, self.state.capabilities())
         elif path == f"{API_PREFIX}/vibepollo/repair/status":
             status, result = self.state.vibepollo_status()
@@ -1702,12 +2395,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 result = self.state.pair(self.client_address[0], str(body.get("code", "")), str(body.get("client_name", "Android TV")))
                 self.send_json(HTTPStatus.CREATED, result)
                 return
-            if not self.require_auth():
-                return
-            authenticated_client = self.authenticated_client()
-            profile_id = self.select_profile()
-            if path == f"{API_PREFIX}/microphone/stream":
-                self.microphone_stream(profile_id)
+            authenticated_client = self.require_auth()
+            if authenticated_client is None:
                 return
             if path == f"{API_PREFIX}/vibepollo/pair/ticket":
                 self.read_json()
@@ -1715,12 +2404,39 @@ class GatewayHandler(BaseHTTPRequestHandler):
                                self.state.stream_pair_ticket_for_client(
                                    self.client_address[0], authenticated_client))
                 return
-            if path == f"{API_PREFIX}/vibepollo/pair":
+            if path == f"{API_PREFIX}/system/session/ensure":
+                request_id = self.headers.get("X-Request-Id", "").strip()
                 body = self.read_json()
-                status, result = self.state.vibepollo_pair_client(
-                    self.client_address[0], authenticated_client,
-                    str(body.pop("ticket", "")), body)
-                self.send_json(status, result)
+                if body:
+                    self.send_session_json(HTTPStatus.BAD_REQUEST, {
+                        "ok": False, "state": "action_required",
+                        "reason": "invalid_request_body"})
+                    return
+                profile_id = self.authorize_profile(
+                    authenticated_client, "use_profile")
+                status, result = self.state.ensure_session(
+                    authenticated_client, profile_id, request_id)
+                self.send_session_json(status, result)
+                return
+            if path == f"{API_PREFIX}/system/session/cancel":
+                request_id = self.headers.get("X-Request-Id", "").strip()
+                if not REQUEST_ID_PATTERN.fullmatch(request_id):
+                    self.send_json(HTTPStatus.BAD_REQUEST, {
+                        "error": "A valid X-Request-Id header is required."})
+                    return
+                body = self.read_json()
+                attempt_id = str(body.get("attempt_id") or "").strip()
+                attempt_request_id = str(body.get("request_id") or request_id).strip()
+                if attempt_request_id != request_id:
+                    self.send_session_json(HTTPStatus.BAD_REQUEST, {
+                        "ok": False, "state": "action_required",
+                        "reason": "request_id_mismatch"})
+                    return
+                profile_id = self.authorize_profile(
+                    authenticated_client, "remote_sign_in")
+                status, result = self.state.cancel_session_attempt(
+                    authenticated_client, profile_id, attempt_request_id, attempt_id)
+                self.send_session_json(status, result)
                 return
             if path == f"{API_PREFIX}/system/sleep":
                 request_id = self.headers.get("X-Request-Id", "").strip()
@@ -1741,6 +2457,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 status, result = self.state.idempotent(
                     f"session-suspend:{request_id}",
                     lambda: self.state.suspend_session(body, request_id))
+                self.send_json(status, result)
+                return
+            profile_id = self.authorize_profile(authenticated_client)
+            if path == f"{API_PREFIX}/microphone/stream":
+                self.microphone_stream(profile_id)
+                return
+            if path == f"{API_PREFIX}/vibepollo/pair":
+                body = self.read_json()
+                status, result = self.state.vibepollo_pair_client(
+                    self.client_address[0], authenticated_client,
+                    str(body.pop("ticket", "")), body)
                 self.send_json(status, result)
                 return
             if path == f"{API_PREFIX}/session/hard-reset":
@@ -1854,12 +2581,14 @@ class GatewayServer(ThreadingHTTPServer):
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--config", default="gateway.json")
+    parser.add_argument("--registry-lock")
     parser.add_argument("--pairing-code", default=os.environ.get("WAKEPLAY_PAIRING_CODE"))
     args = parser.parse_args()
 
     config_path = Path(args.config)
     DIAGNOSTICS.start(config_path.resolve().parent / "logs")
-    state = GatewayState(config_path, args.pairing_code)
+    state = GatewayState(config_path, args.pairing_code,
+                         Path(args.registry_lock) if args.registry_lock else None)
     server = GatewayServer((str(state.config["listen_host"]), int(state.config["listen_port"])), state)
     context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
     context.minimum_version = ssl.TLSVersion.TLSv1_2

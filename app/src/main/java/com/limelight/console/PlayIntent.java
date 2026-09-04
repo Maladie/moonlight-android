@@ -1,6 +1,7 @@
 package com.limelight.console;
 
 import com.limelight.console.transition.LaunchTransitionType;
+import com.limelight.gateway.GatewayConnection;
 
 import java.util.Objects;
 
@@ -8,7 +9,9 @@ import java.util.Objects;
 final class PlayIntent {
     enum Kind { SUNSHINE_APP, PLAYNITE_GAME, PLAYNITE_FULLSCREEN, AUTO_WARM_UP }
 
+    final HostProfileKey profileKey;
     final String hostId;
+    final String profileId;
     final Kind kind;
     final int sunshineAppId;
     final String appName;
@@ -25,24 +28,26 @@ final class PlayIntent {
     final int runtimeFps;
     final int runtimeBitrateKbps;
 
-    private PlayIntent(String hostId, Kind kind, int sunshineAppId, String appName,
+    private PlayIntent(String hostId, String profileId, Kind kind, int sunshineAppId, String appName,
                        boolean hdrSupported, String playniteGameId,
                        String quickLaunchId, String loadingArtworkGameId,
                        boolean requiresConnector, boolean neutralStream,
                        boolean startBeforeStream) {
-        this(hostId, kind, sunshineAppId, appName, hdrSupported, playniteGameId,
+        this(hostId, profileId, kind, sunshineAppId, appName, hdrSupported, playniteGameId,
                 quickLaunchId, loadingArtworkGameId, requiresConnector, neutralStream,
                 startBeforeStream, "", 0, 0, 0, 0);
     }
 
-    private PlayIntent(String hostId, Kind kind, int sunshineAppId, String appName,
+    private PlayIntent(String hostId, String profileId, Kind kind, int sunshineAppId, String appName,
                        boolean hdrSupported, String playniteGameId,
                        String quickLaunchId, String loadingArtworkGameId,
                        boolean requiresConnector, boolean neutralStream,
                        boolean startBeforeStream, String calibrationAppKey,
                        int runtimeWidth, int runtimeHeight, int runtimeFps,
                        int runtimeBitrateKbps) {
-        this.hostId = hostId == null ? "" : hostId.trim();
+        this.profileKey = new HostProfileKey(hostId, profileId);
+        this.hostId = profileKey.hostId;
+        this.profileId = profileKey.profileId;
         this.kind = Objects.requireNonNull(kind, "kind");
         this.sunshineAppId = sunshineAppId;
         this.appName = appName == null ? "" : appName.trim();
@@ -79,13 +84,28 @@ final class PlayIntent {
 
     static PlayIntent sunshineApp(String hostId, int appId, String appName,
                                   boolean hdrSupported, String quickLaunchId) {
-        return sunshineApp(hostId, appId, appName, hdrSupported, quickLaunchId, "");
+        return sunshineApp(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
+                hdrSupported, quickLaunchId, "");
+    }
+
+    static PlayIntent sunshineApp(String hostId, String profileId, int appId,
+                                  String appName, boolean hdrSupported,
+                                  String quickLaunchId) {
+        return sunshineApp(hostId, profileId, appId, appName, hdrSupported,
+                quickLaunchId, "");
     }
 
     static PlayIntent sunshineApp(String hostId, int appId, String appName,
                                   boolean hdrSupported, String quickLaunchId,
                                   String loadingArtworkGameId) {
-        return new PlayIntent(hostId, Kind.SUNSHINE_APP, appId, appName,
+        return sunshineApp(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
+                hdrSupported, quickLaunchId, loadingArtworkGameId);
+    }
+
+    static PlayIntent sunshineApp(String hostId, String profileId, int appId, String appName,
+                                  boolean hdrSupported, String quickLaunchId,
+                                  String loadingArtworkGameId) {
+        return new PlayIntent(hostId, profileId, Kind.SUNSHINE_APP, appId, appName,
                 hdrSupported, "", quickLaunchId, loadingArtworkGameId,
                 false, false, false);
     }
@@ -93,7 +113,15 @@ final class PlayIntent {
     static PlayIntent playniteGame(String hostId, int appId, String appName,
                                    boolean hdrSupported, String gameId,
                                    String loadingArtworkGameId) {
-        return playniteGame(hostId, appId, appName, hdrSupported, gameId,
+        return playniteGame(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
+                hdrSupported, gameId,
+                loadingArtworkGameId, "");
+    }
+
+    static PlayIntent playniteGame(String hostId, String profileId, int appId, String appName,
+                                   boolean hdrSupported, String gameId,
+                                   String loadingArtworkGameId) {
+        return playniteGame(hostId, profileId, appId, appName, hdrSupported, gameId,
                 loadingArtworkGameId, "");
     }
 
@@ -101,14 +129,31 @@ final class PlayIntent {
                                    boolean hdrSupported, String gameId,
                                    String loadingArtworkGameId,
                                    boolean requiresConnector, boolean neutralStream) {
-        return playniteGame(hostId, appId, appName, hdrSupported, gameId,
+        return playniteGame(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
+                hdrSupported, gameId,
+                loadingArtworkGameId, "", requiresConnector, neutralStream);
+    }
+
+    static PlayIntent playniteGame(String hostId, String profileId, int appId, String appName,
+                                   boolean hdrSupported, String gameId,
+                                   String loadingArtworkGameId,
+                                   boolean requiresConnector, boolean neutralStream) {
+        return playniteGame(hostId, profileId, appId, appName, hdrSupported, gameId,
                 loadingArtworkGameId, "", requiresConnector, neutralStream);
     }
 
     static PlayIntent playniteGame(String hostId, int appId, String appName,
                                    boolean hdrSupported, String gameId,
                                    String loadingArtworkGameId, String streamSettingsKey) {
-        return playniteGame(hostId, appId, appName, hdrSupported, gameId,
+        return playniteGame(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
+                hdrSupported, gameId,
+                loadingArtworkGameId, streamSettingsKey, true, false);
+    }
+
+    static PlayIntent playniteGame(String hostId, String profileId, int appId, String appName,
+                                   boolean hdrSupported, String gameId,
+                                   String loadingArtworkGameId, String streamSettingsKey) {
+        return playniteGame(hostId, profileId, appId, appName, hdrSupported, gameId,
                 loadingArtworkGameId, streamSettingsKey, true, false);
     }
 
@@ -116,7 +161,17 @@ final class PlayIntent {
                                    boolean hdrSupported, String gameId,
                                    String loadingArtworkGameId, String streamSettingsKey,
                                    boolean requiresConnector, boolean neutralStream) {
-        return playniteGame(hostId, appId, appName, hdrSupported, gameId,
+        return playniteGame(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
+                hdrSupported, gameId,
+                loadingArtworkGameId, streamSettingsKey, requiresConnector,
+                neutralStream, false);
+    }
+
+    static PlayIntent playniteGame(String hostId, String profileId, int appId, String appName,
+                                   boolean hdrSupported, String gameId,
+                                   String loadingArtworkGameId, String streamSettingsKey,
+                                   boolean requiresConnector, boolean neutralStream) {
+        return playniteGame(hostId, profileId, appId, appName, hdrSupported, gameId,
                 loadingArtworkGameId, streamSettingsKey, requiresConnector,
                 neutralStream, false);
     }
@@ -126,7 +181,17 @@ final class PlayIntent {
                                    String loadingArtworkGameId, String streamSettingsKey,
                                    boolean requiresConnector, boolean neutralStream,
                                    boolean startBeforeStream) {
-        return new PlayIntent(hostId, Kind.PLAYNITE_GAME, appId, appName,
+        return playniteGame(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
+                hdrSupported, gameId, loadingArtworkGameId, streamSettingsKey,
+                requiresConnector, neutralStream, startBeforeStream);
+    }
+
+    static PlayIntent playniteGame(String hostId, String profileId, int appId, String appName,
+                                   boolean hdrSupported, String gameId,
+                                   String loadingArtworkGameId, String streamSettingsKey,
+                                   boolean requiresConnector, boolean neutralStream,
+                                   boolean startBeforeStream) {
+        return new PlayIntent(hostId, profileId, Kind.PLAYNITE_GAME, appId, appName,
                 hdrSupported, gameId, streamSettingsKey, loadingArtworkGameId,
                 requiresConnector, neutralStream, startBeforeStream);
     }
@@ -134,20 +199,37 @@ final class PlayIntent {
     static PlayIntent providerGame(String hostId, int appId, String appName,
                                    boolean hdrSupported, PlayniteLibraryGame game,
                                    String streamSettingsKey) {
+        return providerGame(hostId, GatewayConnection.DEFAULT_PROFILE_ID, appId, appName,
+                hdrSupported, game, streamSettingsKey);
+    }
+
+    static PlayIntent providerGame(String hostId, String profileId, int appId, String appName,
+                                   boolean hdrSupported, PlayniteLibraryGame game,
+                                   String streamSettingsKey) {
         if (game == null) throw new IllegalArgumentException("Game metadata is required");
-        return playniteGame(hostId, appId, appName, hdrSupported,
+        return playniteGame(hostId, profileId, appId, appName, hdrSupported,
                 game.playniteGameId, game.playniteGameId, streamSettingsKey,
                 game.requiresConnector, game.usesNeutralStream(), game.startBeforeStream);
     }
 
     static PlayIntent playniteFullscreen(String hostId, int appId, String appName,
                                          boolean hdrSupported) {
-        return new PlayIntent(hostId, Kind.PLAYNITE_FULLSCREEN, appId, appName,
+        return playniteFullscreen(hostId, GatewayConnection.DEFAULT_PROFILE_ID,
+                appId, appName, hdrSupported);
+    }
+
+    static PlayIntent playniteFullscreen(String hostId, String profileId, int appId,
+                                         String appName, boolean hdrSupported) {
+        return new PlayIntent(hostId, profileId, Kind.PLAYNITE_FULLSCREEN, appId, appName,
                 hdrSupported, "", "", "", false, false, false);
     }
 
     static PlayIntent autoWarmUp(String hostId) {
-        return new PlayIntent(hostId, Kind.AUTO_WARM_UP, 0,
+        return autoWarmUp(hostId, GatewayConnection.DEFAULT_PROFILE_ID);
+    }
+
+    static PlayIntent autoWarmUp(String hostId, String profileId) {
+        return new PlayIntent(hostId, profileId, Kind.AUTO_WARM_UP, 0,
                 PlayniteTargetResolver.MOONWAKER_STREAM_NAME,
                 false, "", "", "", false, true, false);
     }
@@ -157,7 +239,7 @@ final class PlayIntent {
         if (appKey == null || appKey.trim().isEmpty()) {
             throw new IllegalArgumentException("Calibration app key is required");
         }
-        return new PlayIntent(hostId, kind, sunshineAppId, appName, hdrSupported,
+        return new PlayIntent(hostId, profileId, kind, sunshineAppId, appName, hdrSupported,
                 playniteGameId, quickLaunchId, loadingArtworkGameId, requiresConnector,
                 neutralStream, startBeforeStream, appKey, width, height, fps, bitrateKbps);
     }
@@ -176,13 +258,22 @@ final class PlayIntent {
     }
 
     boolean matches(SessionSnapshot snapshot) {
-        return snapshot != null && matches(snapshot.hostId, snapshot.hostGameAppId,
+        return snapshot != null && profileKey.equals(snapshot.profileKey)
+                && matches(snapshot.hostId, snapshot.profileId, snapshot.hostGameAppId,
                 snapshot.playniteGameId);
     }
 
     boolean matches(String currentHostId, int currentAppId, String currentGameId) {
+        return matches(currentHostId, GatewayConnection.DEFAULT_PROFILE_ID,
+                currentAppId, currentGameId);
+    }
+
+    boolean matches(String currentHostId, String currentProfileId,
+                    int currentAppId, String currentGameId) {
         if (!SessionSnapshot.normalize(hostId).equals(
-                SessionSnapshot.normalize(currentHostId))) return false;
+                SessionSnapshot.normalize(currentHostId))
+                || !profileId.equals(GatewayConnection.normalizeProfileId(
+                currentProfileId))) return false;
         switch (kind) {
             case PLAYNITE_GAME:
                 return SessionSnapshot.normalize(playniteGameId).equals(

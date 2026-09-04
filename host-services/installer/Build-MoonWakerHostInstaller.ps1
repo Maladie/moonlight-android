@@ -1,7 +1,8 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string] $OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) "dist")
+    [string] $OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) "dist"),
+    [string] $CredentialProviderBinary = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -31,6 +32,7 @@ try {
         "host-services/gateway" `
         "host-services/install" `
         "host-services/profile-agent" `
+        "host-services/windows-login" `
         "host-services/version.json"
     if ($LASTEXITCODE -ne 0 -or -not $tracked) {
         throw "Unable to enumerate the host payload."
@@ -40,9 +42,30 @@ try {
     $tracked = @($tracked) + @(
         "host-services/bridges/playnite/GameProviderBridge.py",
         "host-services/gateway/Stop-MoonWakerGatewayWorkers.ps1",
-        "host-services/install/Prepare-MoonWakerHost.ps1"
+        "host-services/install/Prepare-MoonWakerHost.ps1",
+        "host-services/control/MoonWakerHostConfigurator.cs",
+        "host-services/control/MoonWakerHostConfigurator.manifest",
+        "host-services/control/Test-MoonWakerHostConfigurator.ps1",
+        "host-services/gateway/Build-MoonWakerGatewayService.ps1",
+        "host-services/gateway/MoonWakerGatewayService.cs",
+        "host-services/gateway/MoonWakerGatewayService.manifest",
+        "host-services/gateway/MoonWakerGatewayServiceTests.cs",
+        "host-services/gateway/Test-MoonWakerGatewayService.ps1",
+        "host-services/gateway/Uninstall-MoonWakerGatewayService.ps1",
+        "host-services/install/Uninstall-MoonWakerHostServices.ps1"
     ) | Sort-Object -Unique
+    $windowsLogin = Get-ChildItem -LiteralPath (Join-Path $hostServicesRoot "windows-login") `
+        -File -Recurse | Where-Object {
+            $_.FullName -notmatch '[\\/](dist|out|obj|verify-dist)[\\/]' -and
+            $_.Extension -notin @(".exe", ".dll")
+        } | ForEach-Object {
+            "host-services/" + $_.FullName.Substring($hostServicesRoot.Length + 1).Replace("\", "/")
+        }
+    $tracked = @($tracked) + @($windowsLogin) | Sort-Object -Unique
     foreach ($relative in $tracked) {
+        if ($relative -eq "host-services/install/Install-MoonWakerHostBundle.ps1") {
+            continue
+        }
         if ($relative -match "(^|/)(dist|__pycache__)(/|$)" -or
                 $relative -match "\.pyc$") {
             continue
@@ -67,6 +90,26 @@ try {
     & (Join-Path $payloadHostServices `
         "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
         -OutputDirectory $payloadGateway | Out-Null
+    & (Join-Path $payloadHostServices "gateway\Build-MoonWakerGatewayService.ps1") `
+        -OutputDirectory $payloadGateway | Out-Null
+
+    $payloadWindowsLogin = Join-Path $payloadHostServices "windows-login"
+    & (Join-Path $payloadWindowsLogin "login-broker\Build-MoonWakerLoginBroker.ps1") `
+        -OutputDirectory (Join-Path $payloadWindowsLogin "login-broker") | Out-Null
+    $providerBinary = if ([string]::IsNullOrWhiteSpace($CredentialProviderBinary)) {
+        $providerOutput = Join-Path $temporaryRoot "credential-provider-build"
+        & (Join-Path $payloadWindowsLogin `
+            "credential-provider\Build-MoonWakerCredentialProvider.ps1") `
+            -Configuration Release -OutputDirectory $providerOutput | Out-Host
+        Join-Path $providerOutput "MoonWakerCredentialProvider.dll"
+    } else {
+        & (Join-Path $payloadWindowsLogin `
+            "credential-provider\Test-MoonWakerCredentialProvider.ps1")
+        (Resolve-Path -LiteralPath $CredentialProviderBinary).Path
+    }
+    Copy-Item -LiteralPath $providerBinary `
+        -Destination (Join-Path $payloadWindowsLogin `
+            "credential-provider\MoonWakerCredentialProvider.dll") -Force
 
     & (Join-Path $payloadHostServices "control\Build-MoonWakerHostControl.ps1") `
         -OutputDirectory (Join-Path $payloadHostServices "control")

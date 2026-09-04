@@ -2,6 +2,7 @@
 [CmdletBinding()]
 param(
     [string]$OutputDirectory = "",
+    [string]$CredentialProviderBinary = "",
     [switch]$SkipTests
 )
 
@@ -27,6 +28,8 @@ if (-not $SkipTests) {
     if ($LASTEXITCODE -ne 0) { throw "Gateway tests failed." }
     & python.exe -m unittest discover -s (Join-Path $hostServices "bridges\playnite") -p "test*.py"
     if ($LASTEXITCODE -ne 0) { throw "Game Provider Bridge tests failed." }
+    & (Join-Path $hostServices "gateway\Test-MoonWakerGatewayService.ps1")
+    & (Join-Path $hostServices "windows-login\login-broker\Test-MoonWakerLoginBroker.ps1")
 }
 
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ("moonwaker-host-build-" + [guid]::NewGuid().ToString("N"))
@@ -34,14 +37,38 @@ $payloadRoot = Join-Path $temporary "payload\host-services"
 $zipPath = Join-Path $temporary "host-services.zip"
 New-Item -ItemType Directory -Path $payloadRoot, $OutputDirectory -Force | Out-Null
 try {
-    foreach ($directory in @("bridges", "gateway", "install", "profile-agent")) {
+    foreach ($directory in @("bridges", "gateway", "install", "profile-agent", "windows-login")) {
         Copy-Item -LiteralPath (Join-Path $hostServices $directory) `
             -Destination $payloadRoot -Recurse -Force
     }
+    Remove-Item -LiteralPath (Join-Path $payloadRoot `
+        "install\Install-MoonWakerHostBundle.ps1") -Force
     & (Join-Path $hostServices "bridges\microphone\Build-MoonWakerMicrophoneWorker.ps1") `
         -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
     & (Join-Path $hostServices "bridges\discord\Build-MoonWakerDiscordAudioWorker.ps1") `
         -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
+    & (Join-Path $hostServices "gateway\Build-MoonWakerGatewayService.ps1") `
+        -OutputDirectory (Join-Path $payloadRoot "gateway") | Out-Null
+    & (Join-Path $hostServices "windows-login\login-broker\Build-MoonWakerLoginBroker.ps1") `
+        -OutputDirectory (Join-Path $payloadRoot "windows-login\login-broker") | Out-Null
+    $credentialProviderOutput = Join-Path $temporary "credential-provider-build"
+    $credentialProviderDll = if ([string]::IsNullOrWhiteSpace($CredentialProviderBinary)) {
+        $credentialProviderBuild = @{
+            Configuration = "Release"
+            OutputDirectory = $credentialProviderOutput
+        }
+        if ($SkipTests) { $credentialProviderBuild.SkipTests = $true }
+        & (Join-Path $hostServices `
+            "windows-login\credential-provider\Build-MoonWakerCredentialProvider.ps1") `
+            @credentialProviderBuild | Out-Host
+        Join-Path $credentialProviderOutput "MoonWakerCredentialProvider.dll"
+    } else {
+        & (Join-Path $hostServices `
+            "windows-login\credential-provider\Test-MoonWakerCredentialProvider.ps1")
+        (Resolve-Path -LiteralPath $CredentialProviderBinary).Path
+    }
+    Copy-Item -LiteralPath $credentialProviderDll -Destination (Join-Path $payloadRoot `
+        "windows-login\credential-provider\MoonWakerCredentialProvider.dll") -Force
     & (Join-Path $hostServices "installer\Install-LegendaryPayload.ps1") `
         -TargetDirectory (Join-Path $payloadRoot "tools\legendary")
     Copy-Item -LiteralPath (Join-Path $hostServices "version.json") `
@@ -51,7 +78,8 @@ try {
     Copy-Item -LiteralPath (Join-Path $hostServices "installer\Install-LegendaryPayload.ps1") `
         -Destination $controlTarget -Force
     foreach ($file in @("Build-MoonWakerHostControl.ps1", "Invoke-MoonWakerHostControl.ps1",
-        "MoonWakerHostControl.cs", "MoonWakerHostControl.manifest")) {
+        "MoonWakerHostControl.cs", "MoonWakerHostControl.manifest",
+        "MoonWakerHostConfigurator.cs", "MoonWakerHostConfigurator.manifest")) {
         Copy-Item -LiteralPath (Join-Path $hostServices "control\$file") `
             -Destination $controlTarget -Force
     }
@@ -60,7 +88,8 @@ try {
 
     Get-ChildItem -LiteralPath (Join-Path $temporary "payload") -Recurse -Force |
         Where-Object {
-            $_.Name -eq "__pycache__" -or $_.Extension -in @(".pyc", ".log") -or
+            $_.Name -in @("__pycache__", "dist", "out", "obj", "verify-dist") -or
+            $_.Name -like "*.tmp.exe" -or $_.Extension -in @(".pyc", ".log") -or
             $_.FullName -match '[\\/]exports[\\/]'
         } | Sort-Object FullName -Descending | Remove-Item -Recurse -Force
 

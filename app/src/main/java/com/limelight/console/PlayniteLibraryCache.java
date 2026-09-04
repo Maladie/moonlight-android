@@ -20,7 +20,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
-/** Last-known-good Playnite library, isolated by Moonlight host UUID. */
+/** Last-known-good Playnite library, isolated by host and Windows profile. */
 final class PlayniteLibraryCache {
     private static final Map<String, Entry> MEMORY = new ConcurrentHashMap<>();
 
@@ -46,9 +46,15 @@ final class PlayniteLibraryCache {
     }
 
     Entry read(String hostUuid) {
-        Entry memory = hostUuid == null ? null : MEMORY.get(hostUuid);
+        return read(new HostProfileKey(hostUuid,
+                com.limelight.gateway.GatewayConnection.DEFAULT_PROFILE_ID));
+    }
+
+    Entry read(HostProfileKey key) {
+        String cacheKey = key == null ? null : key.cacheKey();
+        Entry memory = cacheKey == null ? null : MEMORY.get(cacheKey);
         if (memory != null) return memory;
-        File file = fileFor(hostUuid);
+        File file = fileFor(key);
         if (file == null || !file.isFile()) return null;
         try (BufferedInputStream input = new BufferedInputStream(new FileInputStream(file));
              ByteArrayOutputStream output = new ByteArrayOutputStream()) {
@@ -117,7 +123,7 @@ final class PlayniteLibraryCache {
             }
             Entry entry = new Entry(games, root.optLong("saved_at", file.lastModified()),
                     root.optString("revision", ""), root.optString("api_version", ""));
-            MEMORY.put(hostUuid, entry);
+            MEMORY.put(cacheKey, entry);
             return entry;
         } catch (IOException | JSONException invalidCache) {
             return null;
@@ -125,7 +131,12 @@ final class PlayniteLibraryCache {
     }
 
     void write(String hostUuid, Entry entry) throws IOException {
-        File target = fileFor(hostUuid);
+        write(new HostProfileKey(hostUuid,
+                com.limelight.gateway.GatewayConnection.DEFAULT_PROFILE_ID), entry);
+    }
+
+    void write(HostProfileKey key, Entry entry) throws IOException {
+        File target = fileFor(key);
         if (target == null) throw new IOException("Invalid host cache key");
         if (!directory.isDirectory() && !directory.mkdirs() && !directory.isDirectory()) {
             throw new IOException("Unable to create Playnite library cache");
@@ -192,11 +203,11 @@ final class PlayniteLibraryCache {
             temporary.delete();
             throw new IOException("Unable to publish Playnite library cache");
         }
-        MEMORY.put(hostUuid, entry);
+        MEMORY.put(key.cacheKey(), entry);
     }
 
-    private File fileFor(String hostUuid) {
-        if (hostUuid == null || !hostUuid.matches("[A-Za-z0-9._-]{1,128}")) return null;
-        return new File(directory, hostUuid + ".json");
+    private File fileFor(HostProfileKey key) {
+        if (key == null || !key.cacheKey().matches("[A-Za-z0-9._-]{1,200}")) return null;
+        return new File(directory, key.cacheKey() + ".json");
     }
 }

@@ -43,4 +43,18 @@ public class SuspendedSessionStoreTest {
         assertEquals(SuspendedSessionStore.legacySuspendId("HOST", 42, 100L),
                 SuspendedSessionStore.legacySuspendId("host", 42, 100L));
     }
+
+    @Test public void resumeIdentityCannotCrossProfilesOnTheSameHost() {
+        SuspendedSessionStore.Session session = new SuspendedSessionStore.Session(
+                "suspend-a", "host", "Basia", 42, "game", "Title", "", 100L);
+
+        assertTrue(SuspendedSessionStore.canCompleteResume(
+                session, "suspend-a", "host", "Basia", 42, "game"));
+        assertFalse(SuspendedSessionStore.canCompleteResume(
+                session, "suspend-a", "host", "Gry", 42, "game"));
+        assertFalse(SuspendedSessionStore.legacySuspendId(
+                "host", "Basia", 42, 100L).equals(
+                SuspendedSessionStore.legacySuspendId(
+                        "host", "Gry", 42, 100L)));
+    }
 }

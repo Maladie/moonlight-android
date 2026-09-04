@@ -6,6 +6,7 @@ import org.junit.Test;
 
 import java.io.IOException;
 import java.util.ArrayDeque;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.Deque;
@@ -52,7 +53,7 @@ public class HostLaunchPreflightTest {
         }
     }
 
-    @Test public void genericSunshineLaunchNeedsNoGatewayOrOptionalIntegration() {
+    @Test public void genericSunshineLaunchEnsuresProfileSessionButNeedsNoOptionalBridge() {
         Fake fake = new Fake();
         fake.apps.add(Collections.singletonList(app("Discord", 42, "")));
 
@@ -60,7 +61,8 @@ public class HostLaunchPreflightTest {
 
         assertEquals(HostLaunchPreflight.Status.READY, result.status);
         assertEquals(42, result.target.getAppId());
-        assertEquals(0, fake.profileChecks);
+        assertEquals(1, fake.profileChecks);
+        assertEquals(1, fake.sessionEnsureCalls);
         assertEquals(0, fake.ensureCalls);
     }
 
@@ -93,7 +95,8 @@ public class HostLaunchPreflightTest {
         assertEquals(77, result.target.getAppId());
         assertEquals(HostLaunchPreflight.TargetResolution.EXISTING, result.resolution);
         assertEquals(HostLaunchPreflight.Action.WARM_UP, fake.networkActionSeen);
-        assertEquals(0, fake.profileChecks);
+        assertEquals(1, fake.profileChecks);
+        assertEquals(1, fake.sessionEnsureCalls);
         assertEquals(0, fake.ensureCalls);
         assertEquals(1, fake.refreshes);
     }
@@ -107,7 +110,8 @@ public class HostLaunchPreflightTest {
         assertFailure(fake.run(warmUp(), new AtomicBoolean()),
                 HostLaunchPreflight.Stage.TARGET_READY,
                 HostLaunchPreflight.FailureReason.TARGET_UNAVAILABLE);
-        assertEquals(0, fake.profileChecks);
+        assertEquals(1, fake.profileChecks);
+        assertEquals(1, fake.sessionEnsureCalls);
         assertEquals(0, fake.ensureCalls);
         assertEquals(1, fake.refreshes);
     }
@@ -125,7 +129,7 @@ public class HostLaunchPreflightTest {
         Fake missing = new Fake();
         missing.profile = profile(false, true, true, true);
         assertFailure(missing.run(game(42), new AtomicBoolean()),
-                HostLaunchPreflight.Stage.PROFILE_READY,
+                HostLaunchPreflight.Stage.PROFILE_AUTHORIZED,
                 HostLaunchPreflight.FailureReason.SELECTED_PROFILE_UNAVAILABLE);
 
         Fake offline = new Fake();
@@ -247,6 +251,21 @@ public class HostLaunchPreflightTest {
         assertEquals(1, fake.ensureCalls);
     }
 
+    @Test public void preflightPinsGatewayWorkToTheIntentProfile() {
+        Fake fake = ensuringFake();
+        fake.apps.add(Collections.emptyList());
+        addStable(fake, Collections.singletonList(app("Game", 77, "expected")));
+        HostLaunchPreflight.Request request = HostLaunchPreflight.Request.from(
+                PlayIntent.playniteGame("host", "Basia", 42, "Game", false,
+                        "game", "game"), HostLaunchPreflight.Action.LAUNCH);
+
+        assertEquals(HostLaunchPreflight.Status.READY,
+                fake.run(request, new AtomicBoolean()).status);
+        assertEquals("Basia", fake.profileSeen);
+        assertEquals("Basia", fake.sessionProfileSeen);
+        assertEquals("Basia", fake.ensureProfileSeen);
+    }
+
     @Test public void similarlyNamedStaleAppDoesNotBeatEnsuredIdentity() {
         Fake fake = ensuringFake();
         NvApp stale = app("Game", 12, "stale");
@@ -319,6 +338,111 @@ public class HostLaunchPreflightTest {
         assertEquals(2, fake.refreshes);
     }
 
+    @Test public void signInAttemptIsPinnedAndPolledBeforeProfileBridgeReadiness() {
+        Fake fake = new Fake();
+        String attempt = "0123456789abcdef0123456789abcdef";
+        fake.profile = new HostLaunchPreflight.Profile(
+                "Gry", true, true, true, true);
+        fake.session = new HostLaunchPreflight.Session(
+                "pending", "none", attempt, 500);
+        fake.sessionStatuses.add(new HostLaunchPreflight.Session(
+                "session_starting", "none", attempt, 500));
+        fake.sessionStatuses.add(HostLaunchPreflight.Session.ready());
+        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
+        HostLaunchPreflight.Request request = HostLaunchPreflight.Request.from(
+                PlayIntent.playniteGame("host", "Gry", 42, "Game", false,
+                        "game", "game"), HostLaunchPreflight.Action.LAUNCH, 17L);
+
+        HostLaunchPreflight.Result result = fake.run(request, new AtomicBoolean());
+
+        assertEquals(HostLaunchPreflight.Status.READY, result.status);
+        assertEquals(2, fake.sessionStatusCalls);
+        assertEquals("Gry", fake.sessionProfileSeen);
+        assertEquals(request.requestId, fake.sessionRequestSeen);
+        assertEquals(attempt, fake.sessionAttemptSeen);
+        assertEquals(Arrays.asList(
+                HostLaunchPreflight.Stage.NETWORK_READY,
+                HostLaunchPreflight.Stage.GATEWAY_READY,
+                HostLaunchPreflight.Stage.PROFILE_AUTHORIZED,
+                HostLaunchPreflight.Stage.INTERACTIVE_SESSION_READY,
+                HostLaunchPreflight.Stage.PROFILE_READY,
+                HostLaunchPreflight.Stage.PLAYNITE_READY,
+                HostLaunchPreflight.Stage.TARGET_READY), fake.stages);
+    }
+
+    @Test public void cancellingPendingSignInCancelsTheBoundBrokerAttempt() {
+        Fake fake = new Fake();
+        String attempt = "0123456789abcdef0123456789abcdef";
+        fake.session = new HostLaunchPreflight.Session(
+                "pending", "none", attempt, 500);
+        AtomicBoolean cancelled = new AtomicBoolean();
+        fake.waitAction = () -> cancelled.set(true);
+
+        HostLaunchPreflight.Result result = fake.run(game(42), cancelled);
+
+        assertEquals(HostLaunchPreflight.Status.CANCELLED, result.status);
+        assertEquals(1, fake.sessionCancelCalls);
+        assertEquals(attempt, fake.sessionAttemptSeen);
+        assertEquals(0, fake.refreshes);
+    }
+
+    @Test public void timingOutPendingSignInCancelsTheBoundBrokerAttempt() {
+        Fake fake = new Fake();
+        String attempt = "0123456789abcdef0123456789abcdef";
+        fake.session = new HostLaunchPreflight.Session(
+                "pending", "none", attempt, 500);
+        fake.waitStepMs = 60_000L;
+        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
+        HostLaunchPreflight.Request request = game(42);
+
+        HostLaunchPreflight.Result result = fake.run(request, new AtomicBoolean());
+
+        assertEquals(HostLaunchPreflight.Status.READY, result.status);
+        assertEquals(1, fake.sessionCancelCalls);
+        assertEquals(request.requestId, fake.sessionRequestSeen);
+        assertEquals(attempt, fake.sessionAttemptSeen);
+        assertEquals(1, fake.refreshes);
+    }
+
+    @Test public void remoteSignInDenialFallsBackToTheWindowsLockScreen() {
+        Fake fake = new Fake();
+        fake.profile = new HostLaunchPreflight.Profile(
+                "Gry", true, true, true, true);
+        fake.session = new HostLaunchPreflight.Session(
+                "action_required", "remote_sign_in_not_granted", "", 1_000);
+        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
+
+        HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
+
+        assertEquals(HostLaunchPreflight.Status.READY, result.status);
+        assertEquals(1, fake.refreshes);
+    }
+
+    @Test public void anotherActiveProfileStillBlocksTheLaunch() {
+        Fake fake = new Fake();
+        fake.session = new HostLaunchPreflight.Session(
+                "failed", "other_profile_active", "", 1_000);
+
+        HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
+
+        assertFailure(result, HostLaunchPreflight.Stage.INTERACTIVE_SESSION_READY,
+                HostLaunchPreflight.FailureReason.OTHER_PROFILE_ACTIVE);
+        assertEquals(0, fake.refreshes);
+    }
+
+    @Test public void missingLoginBrokerFallsBackToTheWindowsLockScreen() {
+        Fake fake = new Fake();
+        fake.session = new HostLaunchPreflight.Session(
+                "failed", "broker_unavailable", "", 1_000);
+        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
+
+        HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
+
+        assertEquals(HostLaunchPreflight.Status.READY, result.status);
+        assertEquals(42, result.target.getAppId());
+        assertEquals(1, fake.refreshes);
+    }
+
     private static Fake ensuringFake() {
         Fake fake = new Fake();
         fake.ensured = new HostLaunchPreflight.EnsuredTarget(77, "expected");
@@ -378,7 +502,11 @@ public class HostLaunchPreflightTest {
             HostLaunchPreflight.Gateway, HostLaunchPreflight.Sunshine,
             HostLaunchPreflight.Clock, HostLaunchPreflight.Waiter {
         final Deque<List<NvApp>> apps = new ArrayDeque<>();
-        HostLaunchPreflight.Profile profile = profile(true, true, true, true);
+        final List<HostLaunchPreflight.Stage> stages = new ArrayList<>();
+        HostLaunchPreflight.Profile profile = HostLaunchPreflightTest.profile(
+                true, true, true, true);
+        HostLaunchPreflight.Session session = HostLaunchPreflight.Session.ready();
+        final Deque<HostLaunchPreflight.Session> sessionStatuses = new ArrayDeque<>();
         HostLaunchPreflight.EnsuredTarget ensured =
                 new HostLaunchPreflight.EnsuredTarget(77, "expected");
         Runnable networkAction;
@@ -386,19 +514,28 @@ public class HostLaunchPreflightTest {
         Runnable ensureAction;
         Runnable refreshAction;
         Runnable retainedAction;
+        Runnable waitAction;
         NvApp retainedTarget;
         int retainedChecks;
         HostLaunchPreflight.Action networkActionSeen;
         int profileChecks;
+        int sessionEnsureCalls;
+        int sessionStatusCalls;
+        int sessionCancelCalls;
         int ensureCalls;
         int refreshes;
+        String profileSeen;
+        String sessionProfileSeen;
+        String sessionRequestSeen;
+        String sessionAttemptSeen;
+        String ensureProfileSeen;
         long now;
         long waitStepMs = 10_000L;
 
         HostLaunchPreflight.Result run(HostLaunchPreflight.Request request,
                                        AtomicBoolean cancelled) {
             return new HostLaunchPreflight(this, this, this, this, this)
-                    .run(request, cancelled::get, stage -> { });
+                    .run(request, cancelled::get, stages::add);
         }
 
         @Override public boolean awaitReady(String hostId, HostLaunchPreflight.Action action,
@@ -408,15 +545,43 @@ public class HostLaunchPreflightTest {
             return !cancelled.getAsBoolean();
         }
 
-        @Override public HostLaunchPreflight.Profile selectedProfile(String hostId) {
+        @Override public HostLaunchPreflight.Profile profile(String hostId, String profileId) {
             profileChecks++;
+            profileSeen = profileId;
             if (profileAction != null) profileAction.run();
             return profile;
         }
 
+        @Override public HostLaunchPreflight.Session ensureSession(
+                String hostId, String profileId, String requestId) {
+            sessionEnsureCalls++;
+            sessionProfileSeen = profileId;
+            sessionRequestSeen = requestId;
+            return session;
+        }
+
+        @Override public HostLaunchPreflight.Session sessionStatus(
+                String hostId, String profileId, String requestId, String attemptId) {
+            sessionStatusCalls++;
+            sessionProfileSeen = profileId;
+            sessionRequestSeen = requestId;
+            sessionAttemptSeen = attemptId;
+            return sessionStatuses.isEmpty() ? session : sessionStatuses.removeFirst();
+        }
+
+        @Override public void cancelSession(String hostId, String profileId,
+                                            String requestId, String attemptId) {
+            sessionCancelCalls++;
+            sessionProfileSeen = profileId;
+            sessionRequestSeen = requestId;
+            sessionAttemptSeen = attemptId;
+        }
+
         @Override public HostLaunchPreflight.EnsuredTarget ensureTarget(
-                String hostId, String gameId, String name) throws IOException {
+                String hostId, String profileId, String gameId, String name)
+                throws IOException {
             ensureCalls++;
+            ensureProfileSeen = profileId;
             if (ensureAction != null) ensureAction.run();
             return ensured;
         }
@@ -438,6 +603,7 @@ public class HostLaunchPreflightTest {
         @Override public boolean await(long millis,
                                        java.util.function.BooleanSupplier cancelled) {
             now += waitStepMs;
+            if (waitAction != null) waitAction.run();
             return !cancelled.getAsBoolean();
         }
     }

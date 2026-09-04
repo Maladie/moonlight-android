@@ -100,7 +100,7 @@ public class ConsoleActivityLibraryPerformanceContractTest {
 
         String cache = source("PlayniteLibraryCache.java");
         assertTrue(cache.contains("private static final Map<String, Entry> MEMORY"));
-        assertTrue(cache.contains("MEMORY.get(hostUuid)"));
+        assertTrue(cache.contains("MEMORY.get(cacheKey)"));
     }
 
     private static String consoleActivitySource() throws IOException {

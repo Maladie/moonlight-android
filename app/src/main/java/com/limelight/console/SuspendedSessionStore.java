@@ -6,6 +6,8 @@ import android.content.SharedPreferences;
 import org.json.JSONException;
 import org.json.JSONObject;
 
+import com.limelight.gateway.GatewayConnection;
+
 import java.nio.charset.StandardCharsets;
 import java.util.Locale;
 import java.util.UUID;
@@ -17,6 +19,7 @@ public final class SuspendedSessionStore {
     public static final class Session {
         public final String suspendId;
         public final String hostId;
+        public final String profileId;
         public final int sunshineAppId;
         public final String playniteGameId;
         public final String title;
@@ -30,17 +33,27 @@ public final class SuspendedSessionStore {
         public Session(String suspendId, String hostId, int sunshineAppId,
                        String playniteGameId, String title, String artwork,
                        long suspendedAt) {
-            this(suspendId, hostId, sunshineAppId, playniteGameId, title, artwork,
+            this(suspendId, hostId, GatewayConnection.DEFAULT_PROFILE_ID,
+                    sunshineAppId, playniteGameId, title, artwork,
                     suspendedAt, 0L, "", 0L, false);
         }
 
-        private Session(String suspendId, String hostId, int sunshineAppId,
+        public Session(String suspendId, String hostId, String profileId,
+                       int sunshineAppId, String playniteGameId, String title,
+                       String artwork, long suspendedAt) {
+            this(suspendId, hostId, profileId, sunshineAppId, playniteGameId,
+                    title, artwork, suspendedAt, 0L, "", 0L, false);
+        }
+
+        private Session(String suspendId, String hostId, String profileId,
+                        int sunshineAppId,
                         String playniteGameId, String title, String artwork,
                         long suspendedAt, long resumedAt,
                         String resumedStreamSessionId, long sleepObservedAt,
                         boolean legacy) {
             this.suspendId = normalizeValue(suspendId);
             this.hostId = normalize(hostId);
+            this.profileId = GatewayConnection.normalizeProfileId(profileId);
             this.sunshineAppId = sunshineAppId;
             this.playniteGameId = normalize(playniteGameId);
             this.title = title == null ? "" : title.trim();
@@ -61,6 +74,7 @@ public final class SuspendedSessionStore {
         try {
             value.put("suspend_id", session.suspendId);
             value.put("host_id", session.hostId);
+            value.put("profile_id", session.profileId);
             value.put("sunshine_app_id", session.sunshineAppId);
             value.put("playnite_game_id", session.playniteGameId);
             value.put("title", session.title);
@@ -73,31 +87,34 @@ public final class SuspendedSessionStore {
             throw new IllegalStateException(impossible);
         }
         prefs(context).edit()
-                .putString(session.hostId, value.toString())
-                .remove("ended_at." + session.hostId)
-                .remove("ended_id." + session.hostId)
+                .putString(key(session.hostId, session.profileId), value.toString())
+                .remove(endedAtKey(session.hostId, session.profileId))
+                .remove(endedIdKey(session.hostId, session.profileId))
                 .apply();
     }
 
     public static synchronized Session load(Context context, String hostId) {
-        String key = normalize(hostId);
-        String raw = prefs(context).getString(key, "");
+        return load(context, hostId, GatewayConnection.DEFAULT_PROFILE_ID);
+    }
+
+    public static synchronized Session load(Context context, String hostId,
+                                            String profileId) {
+        String host = normalize(hostId);
+        String profile = GatewayConnection.normalizeProfileId(profileId);
+        String raw = prefs(context).getString(key(host, profile), "");
         if (raw == null || raw.isEmpty()) return null;
         try {
             JSONObject value = new JSONObject(raw);
+            String storedProfile = value.optString("profile_id", "").trim();
+            if (storedProfile.isEmpty() || !profile.equals(storedProfile)) return null;
             long suspendedAt = value.optLong("suspended_at", 0L);
             int appId = value.optInt("sunshine_app_id", 0);
             String storedSuspendId = normalizeValue(value.optString("suspend_id", ""));
             boolean legacy = storedSuspendId.isEmpty();
-            String suspendId = legacy ? legacySuspendId(key, appId, suspendedAt)
+            String suspendId = legacy ? legacySuspendId(host, profile, appId, suspendedAt)
                     : storedSuspendId;
             String playniteGameId = value.optString("playnite_game_id", "");
-            if (playniteGameId.isEmpty()) {
-                playniteGameId = context.getSharedPreferences(
-                        "console_dashboard", Context.MODE_PRIVATE)
-                        .getString("selected_playnite." + key, "");
-            }
-            return new Session(suspendId, key, appId, playniteGameId,
+            return new Session(suspendId, host, profile, appId, playniteGameId,
                     value.optString("title", ""), value.optString("artwork", ""),
                     suspendedAt, value.optLong("resumed_at", 0L),
                     value.optString("resumed_stream_session_id", ""),
@@ -109,19 +126,33 @@ public final class SuspendedSessionStore {
 
     public static synchronized boolean clearIfMatches(Context context, String hostId,
                                                        String suspendId) {
-        Session current = load(context, hostId);
+        return clearIfMatches(context, hostId, GatewayConnection.DEFAULT_PROFILE_ID,
+                suspendId);
+    }
+
+    public static synchronized boolean clearIfMatches(Context context, String hostId,
+                                                       String profileId, String suspendId) {
+        Session current = load(context, hostId, profileId);
         if (!matches(current, suspendId)) return false;
-        prefs(context).edit().remove(current.hostId).apply();
+        prefs(context).edit().remove(key(current.hostId, current.profileId)).apply();
         return true;
     }
 
     public static synchronized boolean markResumedIfMatches(
             Context context, String suspendId, String hostId, int sunshineAppId,
             String playniteGameId, String streamSessionId) {
-        Session current = load(context, hostId);
-        if (!canCompleteResume(current, suspendId, hostId, sunshineAppId,
+        return markResumedIfMatches(context, suspendId, hostId,
+                GatewayConnection.DEFAULT_PROFILE_ID, sunshineAppId,
+                playniteGameId, streamSessionId);
+    }
+
+    public static synchronized boolean markResumedIfMatches(
+            Context context, String suspendId, String hostId, String profileId,
+            int sunshineAppId, String playniteGameId, String streamSessionId) {
+        Session current = load(context, hostId, profileId);
+        if (!canCompleteResume(current, suspendId, hostId, profileId, sunshineAppId,
                 playniteGameId)) return false;
-        save(context, new Session(current.suspendId, current.hostId,
+        save(context, new Session(current.suspendId, current.hostId, current.profileId,
                 current.sunshineAppId, current.playniteGameId, current.title,
                 current.artwork, current.suspendedAt, System.currentTimeMillis(),
                 streamSessionId, current.sleepObservedAt, false));
@@ -131,9 +162,9 @@ public final class SuspendedSessionStore {
     public static synchronized Session markSleepObservedIfMatches(
             Context context, Session expected) {
         if (expected == null || expected.sleepObservedAt > 0L) return expected;
-        Session current = load(context, expected.hostId);
+        Session current = load(context, expected.hostId, expected.profileId);
         if (!matches(current, expected.suspendId)) return current;
-        Session updated = new Session(current.suspendId, current.hostId,
+        Session updated = new Session(current.suspendId, current.hostId, current.profileId,
                 current.sunshineAppId, current.playniteGameId, current.title,
                 current.artwork, current.suspendedAt, current.resumedAt,
                 current.resumedStreamSessionId, System.currentTimeMillis(), false);
@@ -143,12 +174,19 @@ public final class SuspendedSessionStore {
 
     public static synchronized boolean markSessionEndedIfMatches(
             Context context, String hostId, String suspendId) {
-        Session current = load(context, hostId);
+        return markSessionEndedIfMatches(context, hostId,
+                GatewayConnection.DEFAULT_PROFILE_ID, suspendId);
+    }
+
+    public static synchronized boolean markSessionEndedIfMatches(
+            Context context, String hostId, String profileId, String suspendId) {
+        Session current = load(context, hostId, profileId);
         if (!matches(current, suspendId)) return false;
         SharedPreferences.Editor editor = prefs(context).edit();
-        editor.remove(current.hostId);
-        editor.putLong("ended_at." + current.hostId, System.currentTimeMillis());
-        editor.putString("ended_id." + current.hostId, current.suspendId);
+        editor.remove(key(current.hostId, current.profileId));
+        editor.putLong(endedAtKey(current.hostId, current.profileId),
+                System.currentTimeMillis());
+        editor.putString(endedIdKey(current.hostId, current.profileId), current.suspendId);
         editor.apply();
         return true;
     }
@@ -158,13 +196,24 @@ public final class SuspendedSessionStore {
     }
 
     public static boolean recentlyEnded(Context context, String hostId) {
-        long endedAt = prefs(context).getLong("ended_at." + normalize(hostId), 0L);
+        return recentlyEnded(context, hostId, GatewayConnection.DEFAULT_PROFILE_ID);
+    }
+
+    public static boolean recentlyEnded(Context context, String hostId, String profileId) {
+        long endedAt = prefs(context).getLong(endedAtKey(normalize(hostId),
+                GatewayConnection.normalizeProfileId(profileId)), 0L);
         return endedAt > 0L && System.currentTimeMillis() - endedAt < 20_000L;
     }
 
     public static void clearEnded(Context context, String hostId) {
-        String key = normalize(hostId);
-        prefs(context).edit().remove("ended_at." + key).remove("ended_id." + key).apply();
+        clearEnded(context, hostId, GatewayConnection.DEFAULT_PROFILE_ID);
+    }
+
+    public static void clearEnded(Context context, String hostId, String profileId) {
+        String host = normalize(hostId);
+        String profile = GatewayConnection.normalizeProfileId(profileId);
+        prefs(context).edit().remove(endedAtKey(host, profile))
+                .remove(endedIdKey(host, profile)).apply();
     }
 
     public static String consumeHostSelectionRequest(Context context) {
@@ -175,14 +224,30 @@ public final class SuspendedSessionStore {
     }
 
     static String legacySuspendId(String hostId, int appId, long suspendedAt) {
-        String material = normalize(hostId) + '|' + appId + '|' + suspendedAt;
+        return legacySuspendId(hostId, GatewayConnection.DEFAULT_PROFILE_ID,
+                appId, suspendedAt);
+    }
+
+    static String legacySuspendId(String hostId, String profileId,
+                                  int appId, long suspendedAt) {
+        String material = normalize(hostId) + '|' +
+                GatewayConnection.normalizeProfileId(profileId) + '|' + appId + '|' + suspendedAt;
         return UUID.nameUUIDFromBytes(material.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     static boolean canCompleteResume(Session session, String suspendId, String hostId,
                                      int sunshineAppId, String playniteGameId) {
+        return canCompleteResume(session, suspendId, hostId,
+                GatewayConnection.DEFAULT_PROFILE_ID, sunshineAppId, playniteGameId);
+    }
+
+    static boolean canCompleteResume(Session session, String suspendId, String hostId,
+                                     String profileId, int sunshineAppId,
+                                     String playniteGameId) {
         if (!matches(session, suspendId)
                 || !session.hostId.equals(normalize(hostId))
+                || !session.profileId.equals(
+                GatewayConnection.normalizeProfileId(profileId))
                 || session.sunshineAppId != sunshineAppId) return false;
         String expectedGameId = normalize(playniteGameId);
         return (expectedGameId.isEmpty() && session.playniteGameId.isEmpty())
@@ -196,6 +261,19 @@ public final class SuspendedSessionStore {
 
     private static SharedPreferences prefs(Context context) {
         return context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+    }
+
+    private static String key(String hostId, String profileId) {
+        return normalize(hostId) + ".profile." +
+                GatewayConnection.normalizeProfileId(profileId);
+    }
+
+    private static String endedAtKey(String hostId, String profileId) {
+        return "ended_at." + key(hostId, profileId);
+    }
+
+    private static String endedIdKey(String hostId, String profileId) {
+        return "ended_id." + key(hostId, profileId);
     }
 
     private static String normalize(String value) {

@@ -23,14 +23,28 @@ final class PlayniteArtworkCache {
     }
 
     File get(String hostUuid, String gameId, String kind, String version) {
-        if (!valid(hostUuid, gameId, kind)) return null;
-        File host = new File(directory, hostUuid);
+        return get(new HostProfileKey(hostUuid,
+                com.limelight.gateway.GatewayConnection.DEFAULT_PROFILE_ID),
+                gameId, kind, version);
+    }
+
+    File get(HostProfileKey key, String gameId, String kind, String version) {
+        if (key == null || !valid(key.cacheKey(), gameId, kind)) return null;
+        File host = new File(directory, key.cacheKey());
         return new File(host, gameId + "_" + kind + "_" + digest(version) + ".img");
     }
 
     File fetch(HostGatewayClient client, GatewayConnection connection,
                String hostUuid, String gameId, String kind, String version) throws IOException {
-        File target = get(hostUuid, gameId, kind, version);
+        return fetch(client, connection,
+                new HostProfileKey(hostUuid, connection.profileId()),
+                gameId, kind, version);
+    }
+
+    File fetch(HostGatewayClient client, GatewayConnection connection,
+               HostProfileKey key, String gameId, String kind,
+               String version) throws IOException {
+        File target = get(key, gameId, kind, version);
         if (target == null) throw new IOException("Invalid artwork cache key");
         String lockKey = target.getAbsolutePath();
         Object lock = FETCH_LOCKS.computeIfAbsent(lockKey, ignored -> new Object());

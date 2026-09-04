@@ -46,4 +46,16 @@ public class SessionResumeManagerTest {
         assertTrue(text.contains("public final boolean neutralStreamTarget"));
         assertTrue(text.contains("this.neutralStreamTarget = prefs.getBoolean("));
     }
+
+    @Test public void reconnectPersistsProfileAndRejectsAmbiguousLegacyState()
+            throws IOException {
+        Path source = Paths.get("src/main/java/com/limelight/utils/SessionResumeManager.java");
+        if (!Files.exists(source)) source = Paths.get(
+                "app/src/main/java/com/limelight/utils/SessionResumeManager.java");
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+
+        assertTrue(text.contains("editor.putString(KEY_PROFILE_ID"));
+        assertTrue(text.contains("if (!prefs.contains(KEY_PROFILE_ID)) return null;"));
+        assertTrue(text.contains("intent.putExtra(Game.EXTRA_PROFILE_ID, current.profileId);"));
+    }
 }

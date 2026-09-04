@@ -2140,7 +2140,8 @@ function Write-HttpResponse {
 }
 
 # One instance per user/session.
-$mutexName = "Local\DiscordUnifiedRemoteRpcBridge"
+$mutexScope = $ScriptRoot.ToLowerInvariant() -replace '[^a-z0-9]', '_'
+$mutexName = "Local\DiscordUnifiedRemoteRpcBridge_$mutexScope"
 $createdNew = $false
 $mutex = [System.Threading.Mutex]::new($true, $mutexName, [ref]$createdNew)
 

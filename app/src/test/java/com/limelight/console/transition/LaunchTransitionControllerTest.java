@@ -311,6 +311,27 @@ public class LaunchTransitionControllerTest {
     }
 
     @Test
+    public void lockedSessionKeepsRevealAvailableAcrossRepeatedHostSamples() {
+        LaunchTransitionController controller = started(LaunchTransitionType.GAME);
+        transportReady(controller);
+        assertTrue(controller.snapshot().manualRevealAvailable);
+
+        controller.hostSessionLocked("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME, "Windows session locked");
+
+        assertEquals(LaunchTransitionState.HOST_SESSION_LOCKED,
+                controller.snapshot().state);
+        assertTrue(controller.snapshot().manualRevealAvailable);
+
+        controller.hostSessionLocked("transition-1", HOST,
+                LaunchTransitionType.GAME, GAME, "Windows session locked");
+
+        assertTrue(controller.snapshot().manualRevealAvailable);
+        controller.showStreamAnyway("transition-1");
+        assertTrue(controller.snapshot().revealAuthorized);
+    }
+
+    @Test
     public void explicitRevealKeepsTheSameTransitionVisibleAfterAnotherLostWindowSample() {
         LaunchTransitionController controller = started(LaunchTransitionType.GAME);
         controller.gatewayConnected("transition-1", HOST);

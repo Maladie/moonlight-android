@@ -7,6 +7,7 @@ $compiler = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
 if (-not (Test-Path -LiteralPath $compiler)) { $compiler = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe" }
 if (-not (Test-Path -LiteralPath $compiler)) { throw ".NET Framework C# compiler was not found." }
 $output = Join-Path $OutputDirectory "MoonWakerHostControl.exe"
+$configuratorOutput = Join-Path $OutputDirectory "MoonWakerHostConfigurator.exe"
 
 function New-MoonWakerIcon([string]$Path) {
     Add-Type -AssemblyName System.Drawing
@@ -49,6 +50,20 @@ $compilerArguments = @(
 & $compiler @compilerArguments
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) { throw "MoonWaker Host Control compilation failed." }
 
+$configuratorArguments = @(
+    "/nologo", "/target:winexe", "/platform:x64", "/optimize+",
+    "/main:MoonWaker.HostConfigurator.Program", "/out:$configuratorOutput",
+    "/win32icon:$iconPath",
+    "/win32manifest:$(Join-Path $PSScriptRoot 'MoonWakerHostConfigurator.manifest')",
+    "/reference:System.dll", "/reference:System.Core.dll", "/reference:System.Drawing.dll",
+    "/reference:System.Windows.Forms.dll", "/reference:System.Web.Extensions.dll",
+    "/reference:System.Management.dll", "/reference:System.Security.dll",
+    (Join-Path $PSScriptRoot "MoonWakerHostConfigurator.cs"))
+& $compiler @configuratorArguments
+if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $configuratorOutput)) {
+    throw "MoonWaker Host Configurator compilation failed."
+}
+
 if ($false) {
 & $compiler /nologo /target:winexe /optimize+ "/out:$output" `
     "/win32manifest:$(Join-Path $PSScriptRoot 'MoonWakerHostControl.manifest')" `
@@ -59,4 +74,4 @@ if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) { throw "Moon
 Get-Item -LiteralPath $output
 }
 Remove-Item -LiteralPath $iconPath -Force -ErrorAction SilentlyContinue
-Get-Item -LiteralPath $output
+Get-Item -LiteralPath $output, $configuratorOutput

@@ -5,9 +5,16 @@ import android.content.SharedPreferences;
 
 import com.limelight.gateway.GatewayConnection;
 
+import org.json.JSONArray;
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.net.URI;
 import java.net.URISyntaxException;
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.HashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -31,6 +38,19 @@ public final class HostGatewayStore {
             this.guildId = guildId;
             this.guildName = guildName;
             this.channelName = channelName;
+        }
+    }
+
+    static final class ProfileSelection {
+        final List<HostGatewayClient.IntegrationProfile> profiles;
+        final HostGatewayClient.IntegrationProfile selected;
+        final boolean showSelector;
+
+        ProfileSelection(List<HostGatewayClient.IntegrationProfile> profiles,
+                         HostGatewayClient.IntegrationProfile selected) {
+            this.profiles = Collections.unmodifiableList(new ArrayList<>(profiles));
+            this.selected = selected;
+            this.showSelector = profiles.size() > 1;
         }
     }
 
@@ -74,6 +94,12 @@ public final class HostGatewayStore {
         }
     }
 
+    public GatewayConnection loadForHost(String hostUuid, String activeHost,
+                                         String profileId) {
+        GatewayConnection connection = loadForHost(hostUuid, activeHost);
+        return connection == null ? null : connection.forProfile(profileId);
+    }
+
     void save(String hostUuid, GatewayConnection connection) {
         if (hostUuid == null || hostUuid.isEmpty() || connection == null) return;
         preferences.edit()
@@ -93,6 +119,7 @@ public final class HostGatewayStore {
                 .remove(key(hostUuid, "token"))
                 .remove(key(hostUuid, "certificate"))
                 .remove(key(hostUuid, "integration_profile"))
+                .remove(key(hostUuid, "profiles"))
                 .remove(key(hostUuid, "discord_auto_connect"))
                 .remove(key(hostUuid, "playnite_library_filter"))
                 .remove(key(hostUuid, "playnite_installed_only"))
@@ -121,6 +148,87 @@ public final class HostGatewayStore {
         if (hostUuid == null || hostUuid.isEmpty()) return;
         String normalized = GatewayConnection.normalizeProfileId(profileId);
         preferences.edit().putString(key(hostUuid, "integration_profile"), normalized).apply();
+    }
+
+    void saveProfiles(String hostUuid, HostGatewayClient.IntegrationProfiles profiles) {
+        if (hostUuid == null || hostUuid.isEmpty() || profiles == null) return;
+        JSONObject root = new JSONObject();
+        JSONArray values = new JSONArray();
+        try {
+            for (HostGatewayClient.IntegrationProfile profile : profiles.profiles) {
+                if (!profile.useProfile) continue;
+                JSONObject value = new JSONObject();
+                value.put("id", profile.id);
+                value.put("name", profile.name);
+                value.put("permissions", new JSONObject()
+                        .put("use_profile", true)
+                        .put("remote_sign_in", profile.remoteSignIn));
+                value.put("session_state", profile.sessionState);
+                value.put("remote_sign_in_state", profile.remoteSignInState);
+                value.put("discord_bridge_online", profile.discordBridgeOnline);
+                value.put("discord_rpc_connected", profile.discordRpcConnected);
+                value.put("discord_authenticated", profile.discordAuthenticated);
+                value.put("vibepollo_bridge_online", profile.vibepolloBridgeOnline);
+                value.put("playnite_bridge_online", profile.playniteBridgeOnline);
+                value.put("playnite_connector_connected",
+                        profile.playniteConnectorConnected);
+                value.put("virtualhere_available", profile.virtualHereAvailable);
+                values.put(value);
+            }
+            root.put("profiles", values);
+            root.put("suggested_profile_id", profiles.suggestedProfileId);
+        } catch (JSONException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+        preferences.edit().putString(key(hostUuid, "profiles"), root.toString()).apply();
+    }
+
+    HostGatewayClient.IntegrationProfiles profiles(String hostUuid) {
+        if (hostUuid == null || hostUuid.isEmpty()) {
+            return new HostGatewayClient.IntegrationProfiles(
+                    Collections.emptyList(), "");
+        }
+        String raw = preferences.getString(key(hostUuid, "profiles"), "");
+        if (raw == null || raw.isEmpty()) {
+            return new HostGatewayClient.IntegrationProfiles(
+                    Collections.emptyList(), "");
+        }
+        try {
+            return HostGatewayClient.parseIntegrationProfiles(new JSONObject(raw));
+        } catch (JSONException invalidCache) {
+            return new HostGatewayClient.IntegrationProfiles(
+                    Collections.emptyList(), "");
+        }
+    }
+
+    ProfileSelection profileSelection(String hostUuid) {
+        HostGatewayClient.IntegrationProfiles cached = profiles(hostUuid);
+        return projectProfiles(cached.profiles, selectedIntegrationProfileId(hostUuid),
+                cached.suggestedProfileId);
+    }
+
+    static ProfileSelection projectProfiles(
+            List<HostGatewayClient.IntegrationProfile> profiles,
+            String preferredProfileId, String suggestedProfileId) {
+        List<HostGatewayClient.IntegrationProfile> allowed = new ArrayList<>();
+        if (profiles != null) {
+            for (HostGatewayClient.IntegrationProfile profile : profiles) {
+                if (profile != null && profile.useProfile) allowed.add(profile);
+            }
+        }
+        HostGatewayClient.IntegrationProfile selected = find(allowed, preferredProfileId);
+        if (selected == null) selected = find(allowed, suggestedProfileId);
+        if (selected == null && !allowed.isEmpty()) selected = allowed.get(0);
+        return new ProfileSelection(allowed, selected);
+    }
+
+    private static HostGatewayClient.IntegrationProfile find(
+            List<HostGatewayClient.IntegrationProfile> profiles, String profileId) {
+        if (profileId == null) return null;
+        for (HostGatewayClient.IntegrationProfile profile : profiles) {
+            if (profile.id.equals(profileId)) return profile;
+        }
+        return null;
     }
 
     boolean isPlayniteInstalledOnly(String hostUuid) {

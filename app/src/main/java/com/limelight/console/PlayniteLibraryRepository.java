@@ -40,12 +40,21 @@ final class PlayniteLibraryRepository {
 
     PlayniteLibraryCache.Entry cached(String hostUuid) { return cache.read(hostUuid); }
 
+    PlayniteLibraryCache.Entry cached(HostProfileKey key) { return cache.read(key); }
+
     Result refresh(String hostUuid, GatewayConnection connection,
                    Cancellation cancellation) {
-        return refresh(hostUuid, connection, cancellation, false);
+        return refresh(new HostProfileKey(hostUuid, connection.profileId()),
+                connection, cancellation, false);
     }
 
     Result refresh(String hostUuid, GatewayConnection connection,
+                   Cancellation cancellation, boolean refreshSource) {
+        return refresh(new HostProfileKey(hostUuid, connection.profileId()), connection,
+                cancellation, refreshSource);
+    }
+
+    Result refresh(HostProfileKey key, GatewayConnection connection,
                    Cancellation cancellation, boolean refreshSource) {
         if (connection == null) return Result.failure(ErrorKind.AUTHENTICATION);
         IOException last = null;
@@ -63,7 +72,7 @@ final class PlayniteLibraryRepository {
                     refreshSource = false;
                 }
                 PlayniteLibraryCache.Entry entry = fetchAll(connection, cancellation);
-                cache.write(hostUuid, entry);
+                cache.write(key, entry);
                 return Result.success(entry);
             } catch (HostGatewayClient.GatewayException error) {
                 if (error.statusCode == 401 || error.statusCode == 403) {
