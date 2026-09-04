@@ -68,6 +68,43 @@ LogonUI behavior.
   after locking Windows. In both cases Vibepollo closes the stream and Sunshine
   restores the physical displays; no game process is terminated by Host Control.
 
+## Explicit profile-switch acceptance
+
+Run these checks only through the Android **Switch Windows user** action. Merely
+selecting a MoonWaker profile, entering the host, refreshing profiles, or loading
+the library must not disconnect or switch Windows.
+
+For every row record only anonymous profile IDs, the Windows build, response
+state/reason, elapsed time, Gateway reachability, and Bridge readiness. Do not
+record account names, credentials, PINs, bearer tokens, certificate material, or
+raw diagnostics.
+
+| Initial state | Action and expected result | Passed |
+|---|---|---|
+| Target profile active | The explicit action is unnecessary; ordinary profile use remains ready and creates no credential attempt. | [ ] |
+| Target profile locked | One explicit switch/unlock attempt reaches ready; no duplicate credential submission occurs. | [ ] |
+| Target profile signed out, another local profile active | The active console session is disconnected with Fast User Switching, never logged off; one target attempt reaches ready. | [ ] |
+| Target profile disconnected, no other active console user | One explicit attempt resumes the target and reaches ready. | [ ] |
+| Target credential missing | The current session is disconnected only after the switch is accepted, LogonUI remains usable, and Android reports `attention_required` / `credential_missing`. | [ ] |
+| Fast User Switching blocked by policy | The request terminates with a bounded actionable failure; no logoff and no target credential attempt occur. | [ ] |
+| Login Broker unavailable | The request terminates with service unavailable; built-in Windows sign-in remains usable. | [ ] |
+| Credential Provider unavailable | The request terminates with a bounded provider-unavailable failure; built-in providers remain present. | [ ] |
+
+For each successful active-user-to-target switch:
+
+- [ ] Start a harmless marker process in the previous profile and record its PID
+  out of band; after the switch, confirm the same process is still alive in the
+  disconnected session.
+- [ ] Poll Gateway from a separate LAN client before, during, and after the
+  interactive-session change; confirm authenticated health remains reachable.
+- [ ] Confirm the selected profile's Bridge processes start in that user's
+  session and that Android does not continue normal launch readiness until the
+  required Playnite connector and Vibepollo Bridge report ready.
+- [ ] Change the Android host/profile or cancel while polling; confirm only the
+  exact correlated attempt is cancelled and a late result cannot update the new
+  selection.
+- [ ] Repeat an accepted request ID and confirm it does not disconnect twice.
+
 Record Windows version, MoonWaker version, account/session state, Gateway
 response state/reason, and whether one provider submission occurred for each
 case. Do not put passwords or bearer tokens in the record.

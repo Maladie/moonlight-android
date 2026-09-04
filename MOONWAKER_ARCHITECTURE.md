@@ -359,6 +359,18 @@ boundary. `remote_sign_in` is checked only when a locked or signed-out target
 needs a credential submission. An already-active authorized profile remains
 usable with `use_profile` alone.
 
+An optional four-digit app PIN is stored only as a versioned salted verifier in
+the machine profile registry. Profile responses expose only `pin_required`.
+Verification requires an authenticated `use_profile` client, is rate limited per
+client and profile, and creates a five-minute in-memory lease bound to the
+current verifier. Existing profile-scoped endpoints enforce that lease; no PIN,
+verifier, or lease is persisted on Android.
+
+Android resolves the authorized profile gate before profile-scoped library
+loading. A protected selection is persisted only after Gateway verification,
+and a protected profile cannot remain the per-host automatic app profile.
+Selecting or refreshing an app profile has no Windows-session side effect.
+
 ### 5.3 Profile Bridge supervisor
 
 The Profile Bridge supervisor already owns:
@@ -499,6 +511,13 @@ is cancelled or profile selection changes. Broker expiry is the fallback.
 `INTERACTIVE_SESSION_READY` is separately observable; it is not a second
 transition state machine. `LaunchTransitionController` remains authoritative
 for stream privacy, fresh-frame readiness, reveal, and input gating.
+
+Changing the active Windows desktop is a separate, explicit `session/switch`
+mutation. The authenticated request requires `use_profile`, `remote_sign_in`, a
+valid protected-profile lease when applicable, and a stable request ID. Login
+Broker tests verify that exactly one resolved local console session is passed to
+`WTSDisconnectSession` before one request-bound target attempt is created; the
+tested rejection paths create no attempt and never call a logoff API.
 
 Supported automatic authentication is limited to Windows 10/11 x64 local,
 password-based accounts at LogonUI, when no other Windows user is active.

@@ -14,9 +14,9 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.72.0")]
-[assembly: AssemblyFileVersion("0.7.72.0")]
-[assembly: AssemblyInformationalVersion("0.7.72+2026.09.04")]
+[assembly: AssemblyVersion("0.7.75.0")]
+[assembly: AssemblyFileVersion("0.7.75.0")]
+[assembly: AssemblyInformationalVersion("0.7.75+2026.09.04")]
 
 namespace MoonWaker.HostInstaller
 {

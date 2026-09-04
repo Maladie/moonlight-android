@@ -15,9 +15,9 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.59.0")]
-[assembly: AssemblyFileVersion("0.7.59.0")]
-[assembly: AssemblyInformationalVersion("0.7.59+2026.09.01")]
+[assembly: AssemblyVersion("0.7.75.0")]
+[assembly: AssemblyFileVersion("0.7.75.0")]
+[assembly: AssemblyInformationalVersion("0.7.75+2026.09.04")]
 
 namespace MoonWaker.HostControl
 {
@@ -184,6 +184,7 @@ namespace MoonWaker.HostControl
             profiles.Columns.Add("Discord / PID", 116);
             profiles.Columns.Add("Vibepollo / PID", 124);
             profiles.Columns.Add("Provider / PID", 116);
+            profiles.Columns.Add("PIN aplikacji", 94);
             profiles.Columns.Add("Logowanie", 88);
             profiles.SelectedIndexChanged += delegate { UpdateConnectionControls(); };
             profilePanel.Controls.Add(profiles);
@@ -427,6 +428,7 @@ namespace MoonWaker.HostControl
                     row.SubItems.Add(ProcessStatus(profile, "discord"));
                     row.SubItems.Add(ProcessStatus(profile, "vibepollo"));
                     row.SubItems.Add(ProcessStatus(profile, "game_provider"));
+                    row.SubItems.Add(GetBool(profile, "pin_required") ? "WŁ." : "WYŁ.");
                     row.SubItems.Add(RemoteSignInStatus(profile));
                     profiles.Items.Add(row);
                     if (id == selected) row.Selected = true;

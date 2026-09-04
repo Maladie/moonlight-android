@@ -89,6 +89,7 @@ try {
     Get-ChildItem -LiteralPath (Join-Path $temporary "payload") -Recurse -Force |
         Where-Object {
             $_.Name -in @("__pycache__", "dist", "out", "obj", "verify-dist") -or
+            ($_.PSIsContainer -and $_.Name -like "dist-*") -or
             $_.Name -like "*.tmp.exe" -or $_.Extension -in @(".pyc", ".log") -or
             $_.FullName -match '[\\/]exports[\\/]'
         } | Sort-Object FullName -Descending | Remove-Item -Recurse -Force

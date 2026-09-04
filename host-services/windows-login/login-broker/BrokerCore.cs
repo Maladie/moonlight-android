@@ -105,6 +105,7 @@ namespace MoonWaker.WindowsLogin
     internal interface ISessionStateBackend
     {
         string GetState(ProfileIdentity identity);
+        string Switch(ProfileIdentity identity);
     }
 
     internal sealed class BrokerReply : IDisposable
@@ -439,6 +440,33 @@ namespace MoonWaker.WindowsLogin
             }
         }
 
+        internal AttemptRecord AttentionRequired(string clientId, string requestId,
+            ProfileIdentity identity, string reason)
+        {
+            ValidateBinding(clientId, requestId, identity);
+            lock (gate)
+            {
+                DateTime now = utcNow();
+                Expire(now);
+                PurgeOld(now);
+                string requestKey = Key(clientId, identity.ProfileId, requestId);
+                string existingId;
+                AttemptRecord existing;
+                if (byRequest.TryGetValue(requestKey, out existingId) &&
+                    byId.TryGetValue(existingId, out existing)) return Copy(existing);
+                if (byId.Count >= maximumAttempts)
+                    throw new BrokerFault("busy", "too_many_attempts");
+                AttemptRecord record = new AttemptRecord {
+                    Id = Guid.NewGuid().ToString("N"), ClientId = clientId,
+                    RequestId = requestId, Identity = identity, CreatedUtc = now,
+                    State = "attention_required", Reason = SafeReason(reason)
+                };
+                byId[record.Id] = record;
+                byRequest[requestKey] = record.Id;
+                return Copy(record);
+            }
+        }
+
         internal bool TryByRequest(string clientId, string requestId,
             ProfileIdentity identity, out AttemptRecord attempt)
         {
@@ -640,6 +668,7 @@ namespace MoonWaker.WindowsLogin
         internal const byte GatewayCancelAttempt = 3;
         internal const byte GatewayProfileState = 4;
         internal const byte GatewayCapability = 5;
+        internal const byte GatewaySwitchSession = 6;
         internal const byte ProviderObserve = 1;
         internal const byte ProviderAcquire = 2;
         internal const byte ProviderReport = 3;
@@ -773,6 +802,28 @@ namespace MoonWaker.WindowsLogin
                     AttemptRecord attempt = attempts.Begin(clientId, requestId, identity);
                     return AttemptReply(attempt);
                 }
+                if (request.Operation == GatewaySwitchSession)
+                {
+                    ProfileIdentity identity = new ProfileIdentity(profileId,
+                        request.Text(4, 184), request.Text(5, 256));
+                    AttemptRecord existing;
+                    if (attempts.TryByRequest(clientId, requestId, identity, out existing))
+                        return AttemptReply(existing);
+                    if (!providerReady())
+                        return BrokerReply.Fail("unavailable", "provider_unavailable");
+                    string switchState = sessions.Switch(identity);
+                    if (switchState == "ready") return BrokerReply.Ok("ready");
+                    CredentialMaterial stored;
+                    if (!secrets.TryRead(profileId, out stored))
+                        return AttemptReply(attempts.AttentionRequired(
+                            clientId, requestId, identity, "credential_missing"));
+                    using (stored)
+                        if (!identity.Same(stored.Identity))
+                            return AttemptReply(attempts.AttentionRequired(
+                                clientId, requestId, identity,
+                                "credential_identity_mismatch"));
+                    return AttemptReply(attempts.Begin(clientId, requestId, identity));
+                }
                 if (request.Operation == GatewayAttemptState)
                 {
                     AttemptRecord attempt = attempts.State(request.Text(4, 64),
@@ -862,7 +913,8 @@ namespace MoonWaker.WindowsLogin
 
         private static BrokerReply AttemptReply(AttemptRecord attempt)
         {
-            BrokerReply reply = attempt.State == "action_required"
+            BrokerReply reply = attempt.State == "action_required" ||
+                attempt.State == "attention_required"
                 ? BrokerReply.Fail(attempt.State, attempt.Reason)
                 : BrokerReply.Ok(attempt.State);
             return reply.Add(3, attempt.Id);

@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
@@ -30,9 +31,14 @@ namespace MoonWaker.WindowsLogin
                 Run("attempt expiry is terminal", TestExpiry);
                 Run("MWLB/MWLR v1 framing matches the Configurator contract", TestWireProtocol);
                 Run("session classification handles lock and another active user", TestSessionClassification);
+                Run("session enumeration binds the Unicode WTS API", TestSessionEnumerationUsesUnicode);
                 Run("pipe ACLs keep all three channels local and separated", TestPipeSecurity);
                 Run("capability requires a registered compatible provider", TestCapability);
                 Run("SID remains authoritative when account display metadata changes", TestSidIdentity);
+                Run("session switch disconnects before one idempotent target attempt", TestSessionSwitch);
+                Run("session switch records missing credentials only after LogonUI", TestSwitchMissingCredential);
+                Run("session switch failure creates no target attempt", TestSwitchFailureBeforeAttempt);
+                Run("session switch rejects unsafe active-session states", TestSwitchRejections);
                 Console.WriteLine("PASS: " + passed + " Login Broker tests");
                 return 0;
             }
@@ -241,6 +247,18 @@ namespace MoonWaker.WindowsLogin
             }) == "unknown", "an unresolved active session was matched by display name");
         }
 
+        private static void TestSessionEnumerationUsesUnicode()
+        {
+            MethodInfo method = typeof(WindowsSessionStateBackend).GetMethod(
+                "WTSEnumerateSessions", BindingFlags.NonPublic | BindingFlags.Static);
+            DllImportAttribute import = method == null ? null :
+                (DllImportAttribute)Attribute.GetCustomAttribute(
+                    method, typeof(DllImportAttribute));
+            Assert(import != null && import.CharSet == CharSet.Unicode &&
+                import.EntryPoint == "WTSEnumerateSessionsW" && import.ExactSpelling,
+                "session enumeration must decode WTS station names as Unicode");
+        }
+
         private static void TestPipeSecurity()
         {
             SecurityIdentifier system = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null);
@@ -341,6 +359,101 @@ namespace MoonWaker.WindowsLogin
             }
         }
 
+        private static void TestSessionSwitch()
+        {
+            Harness harness = new Harness();
+            Configure(harness);
+            string attemptId;
+            using (BrokerReply reply = Switch(harness, "request-switch"))
+            {
+                AssertOk(reply, "pending");
+                attemptId = (string)reply.Extra[3];
+            }
+            using (BrokerReply repeat = Switch(harness, "request-switch"))
+            {
+                AssertOk(repeat, "pending");
+                Assert((string)repeat.Extra[3] == attemptId,
+                    "switch replay returned a different attempt");
+            }
+            Assert(harness.Sessions.SwitchCount == 1,
+                "switch replay disconnected the console session twice");
+            Assert(harness.Signals == 1, "switch did not create exactly one provider attempt");
+        }
+
+        private static void TestSwitchMissingCredential()
+        {
+            Harness harness = new Harness();
+            string attemptId;
+            using (BrokerReply reply = Switch(harness, "request-missing"))
+            {
+                AssertFail(reply, "attention_required", "credential_missing");
+                attemptId = (string)reply.Extra[3];
+            }
+            using (BrokerReply repeat = Switch(harness, "request-missing"))
+            {
+                AssertFail(repeat, "attention_required", "credential_missing");
+                Assert((string)repeat.Extra[3] == attemptId,
+                    "missing-credential replay lost its request binding");
+            }
+            Assert(harness.Sessions.SwitchCount == 1,
+                "missing-credential replay disconnected twice");
+            Assert(harness.Signals == 0, "missing credentials woke the provider");
+            using (BrokerReply observe = Provider(harness.Core, BrokerCore.ProviderObserve))
+                AssertOk(observe, "idle");
+        }
+
+        private static void TestSwitchFailureBeforeAttempt()
+        {
+            Harness harness = new Harness();
+            Configure(harness);
+            harness.Sessions.SwitchReason = "disconnect_failed";
+            using (BrokerReply reply = Switch(harness, "request-failed-disconnect"))
+                AssertFail(reply, "action_required", "disconnect_failed");
+            Assert(harness.Signals == 0, "failed disconnect created a provider attempt");
+            using (BrokerReply observe = Provider(harness.Core, BrokerCore.ProviderObserve))
+                AssertOk(observe, "idle");
+        }
+
+        private static void TestSwitchRejections()
+        {
+            ProfileIdentity identity = new ProfileIdentity(ProfileId, Sid, Account);
+            LoginSessionSnapshot console = new LoginSessionSnapshot {
+                SessionId = 2, Sid = OtherSid, AccountName = "TESTPC\\Other",
+                WinStationName = "Console", State = "active"
+            };
+            Assert(WindowsSessionStateBackend.SelectDisconnectSession(
+                identity, new[] { console }, true) == 2,
+                "local console session was not selected for disconnect");
+            AssertSwitchFault(identity, new[] { console,
+                new LoginSessionSnapshot { SessionId = 3, Sid = Sid,
+                    WinStationName = "Console", State = "active" } }, true,
+                "multiple_active_sessions");
+            AssertSwitchFault(identity, new[] { new LoginSessionSnapshot {
+                SessionId = 2, WinStationName = "Console", State = "active" } },
+                true, "active_session_unresolved");
+            AssertSwitchFault(identity, new[] { new LoginSessionSnapshot {
+                SessionId = 2, Sid = OtherSid, WinStationName = "RDP-Tcp#1",
+                State = "active" } }, true, "rdp_session_active");
+            AssertSwitchFault(identity, new[] { console }, false,
+                "fast_user_switching_disabled");
+        }
+
+        private static void AssertSwitchFault(ProfileIdentity identity,
+            IEnumerable<LoginSessionSnapshot> snapshots, bool enabled, string reason)
+        {
+            try
+            {
+                WindowsSessionStateBackend.SelectDisconnectSession(
+                    identity, snapshots, enabled);
+                Assert(false, "unsafe switch state was accepted: " + reason);
+            }
+            catch (BrokerFault fault)
+            {
+                Assert(fault.Reason == reason,
+                    "expected " + reason + ", got " + fault.Reason);
+            }
+        }
+
         private static void Configure(Harness harness)
         {
             char[] password = Password.ToCharArray();
@@ -356,6 +469,12 @@ namespace MoonWaker.WindowsLogin
         private static BrokerReply Begin(Harness harness, string requestId)
         {
             return Gateway(harness.Core, BrokerCore.GatewayBeginAttempt,
+                1, "android-tv", 2, ProfileId, 3, requestId, 4, Sid, 5, Account);
+        }
+
+        private static BrokerReply Switch(Harness harness, string requestId)
+        {
+            return Gateway(harness.Core, BrokerCore.GatewaySwitchSession,
                 1, "android-tv", 2, ProfileId, 3, requestId, 4, Sid, 5, Account);
         }
 
@@ -567,7 +686,17 @@ namespace MoonWaker.WindowsLogin
         private sealed class FakeSessions : ISessionStateBackend
         {
             internal string State = "signed_out";
+            internal string SwitchState = "logon_ui";
+            internal string SwitchReason;
+            internal int SwitchCount;
             public string GetState(ProfileIdentity identity) { return State; }
+            public string Switch(ProfileIdentity identity)
+            {
+                SwitchCount++;
+                if (!String.IsNullOrEmpty(SwitchReason))
+                    throw new BrokerFault("action_required", SwitchReason);
+                return SwitchState;
+            }
         }
     }
 }

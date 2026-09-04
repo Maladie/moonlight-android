@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": 1,
-  "last_updated_at": "2026-09-04",
+  "revision": 17,
+  "last_updated_at": "2026-09-04T23:44:34+02:00",
   "document_status": "active",
   "repository": {
     "path": "D:\\Maladie\\moonlight-android",
@@ -12,7 +12,7 @@
   "feature": {
     "id": "moonwaker-multi-profile-login",
     "title": "MoonWaker profile selection, PIN protection, and Windows user switching",
-    "status": "planned",
+    "status": "blocked",
     "objective": "Let the Android client select a MoonWaker profile after host selection, show whether it matches the active Windows session, protect selected profiles with an optional four-digit PIN, and explicitly switch Windows users without logging anybody off.",
     "definition_of_done": [
       "A host with a selected MoonWaker profile that differs from the active Windows profile is shown with a yellow profile-attention state.",
@@ -121,7 +121,7 @@
     {
       "id": "MW-PROFILE-01",
       "title": "Android read-only profile mismatch presentation",
-      "status": "ready",
+      "status": "done",
       "priority": 1,
       "depends_on": [],
       "objective": "Use the existing cached profile session_state to show a yellow profile-attention status and expose profile selection from the host options menu.",
@@ -162,32 +162,40 @@
         {
           "command": ".\\gradlew.bat testNonRootDebugUnitTest",
           "required": true,
-          "result": null
+          "result": "passed (BUILD SUCCESSFUL, 2026-09-04)"
         },
         {
           "command": ".\\gradlew.bat assembleNonRootDebug",
           "required": true,
-          "result": null
+          "result": "passed (BUILD SUCCESSFUL, 2026-09-04)"
         },
         {
           "command": "git diff --check",
           "required": true,
-          "result": null
+          "result": "passed (no whitespace errors; line-ending warnings only, 2026-09-04)"
         }
       ],
       "work": {
-        "owner": null,
-        "started_at": null,
-        "completed_at": null,
-        "summary": null,
-        "files_changed": [],
+        "owner": "mw_profile_01",
+        "started_at": "2026-09-04T19:56:22+02:00",
+        "completed_at": "2026-09-04T20:05:03+02:00",
+        "summary": "Added a pure cached-profile presentation projection, yellow mismatch status and privacy-safe profile labels on host tiles and the selected-host header, a conditional host-menu profile chooser using the existing selector, and bounded generation-correlated refreshes for visible eligible Gateway hosts.",
+        "files_changed": [
+          "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+          "app/src/main/java/com/limelight/console/ConsoleHostPresentation.java",
+          "app/src/main/res/values/strings.xml",
+          "app/src/main/res/values-pl/strings.xml",
+          "app/src/test/java/com/limelight/console/ConsoleHostPresentationTest.java",
+          "state.json",
+          "state.md"
+        ],
         "blockers": []
       }
     },
     {
       "id": "MW-PROFILE-02",
       "title": "Controller-first profile gate and automatic app profile",
-      "status": "planned",
+      "status": "done",
       "priority": 2,
       "depends_on": [
         "MW-PROFILE-01"
@@ -211,20 +219,46 @@
         "A removed or unauthorized automatic profile is cleared and the gate is shown.",
         "No profile-scoped library request runs for the previously selected profile while the gate is unresolved."
       ],
-      "validation": [],
+      "validation": [
+        {
+          "command": ".\\gradlew.bat testNonRootDebugUnitTest",
+          "required": true,
+          "result": "passed (BUILD SUCCESSFUL, 2026-09-04)"
+        },
+        {
+          "command": ".\\gradlew.bat assembleNonRootDebug",
+          "required": true,
+          "result": "passed (BUILD SUCCESSFUL, 2026-09-04)"
+        },
+        {
+          "command": "git diff --check",
+          "required": true,
+          "result": "passed (no whitespace errors; line-ending warnings only, 2026-09-04)"
+        }
+      ],
       "work": {
-        "owner": null,
-        "started_at": null,
-        "completed_at": null,
-        "summary": null,
-        "files_changed": [],
+        "owner": "mw_profile_02",
+        "started_at": "2026-09-04T20:32:23+02:00",
+        "completed_at": "2026-09-04T20:50:29+02:00",
+        "summary": "Inserted a controller-first profile gate before every normal host-entry path, added per-host automatic app-profile persistence in HostGatewayStore, marked active Windows and automatic profiles in one focused view, restored host focus on Back, cleared stale automatic choices, blocked profile-scoped library polling until the gate resolves, and reused one profile-change invalidation helper so same-host profile changes cannot retain the previous profile's library or accept stale profile refreshes.",
+        "files_changed": [
+          "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+          "app/src/main/java/com/limelight/console/ConsoleProfileGateView.java",
+          "app/src/main/java/com/limelight/console/HostGatewayStore.java",
+          "app/src/main/res/values/strings.xml",
+          "app/src/main/res/values-pl/strings.xml",
+          "app/src/test/java/com/limelight/console/ConsoleActivityEnsureContractTest.java",
+          "app/src/test/java/com/limelight/console/ConsoleProfileGateTest.java",
+          "state.json",
+          "state.md"
+        ],
         "blockers": []
       }
     },
     {
       "id": "MW-PROFILE-03",
       "title": "Host Fast User Switching operation",
-      "status": "planned",
+      "status": "done",
       "priority": 3,
       "depends_on": [],
       "objective": "Add an explicit host-side operation that disconnects the active local console session and starts or resumes the selected profile without logging off the previous user.",
@@ -244,20 +278,56 @@
         "A failed disconnect does not issue credentials or start a target attempt.",
         "Repeated use of the same request ID does not disconnect twice."
       ],
-      "validation": [],
+      "validation": [
+        {
+          "command": ".\\Test-MoonWakerLoginBroker.ps1",
+          "required": true,
+          "result": "passed (13 Login Broker tests, including switch seam and unsafe-session rejections, 2026-09-04)"
+        },
+        {
+          "command": ".\\Build-MoonWakerLoginBroker.ps1 -OutputDirectory <temporary-directory>",
+          "required": true,
+          "result": "passed (x64 Broker executable compiled; temporary output removed, 2026-09-04)"
+        },
+        {
+          "command": "python -m unittest test_gateway.LoginBrokerGatewayTest",
+          "required": true,
+          "result": "passed (14 focused Gateway Login Broker tests, 2026-09-04)"
+        },
+        {
+          "command": "python -m unittest test_gateway.py",
+          "required": true,
+          "result": "passed (100 Gateway tests, 2026-09-04)"
+        },
+        {
+          "command": "git diff --check",
+          "required": true,
+          "result": "passed (no whitespace errors; line-ending warnings only, 2026-09-04)"
+        }
+      ],
       "work": {
-        "owner": null,
-        "started_at": null,
-        "completed_at": null,
-        "summary": null,
-        "files_changed": [],
+        "owner": "mw_profile_03",
+        "started_at": "2026-09-04T20:56:44+02:00",
+        "completed_at": "2026-09-04T21:03:47+02:00",
+        "summary": "Added an explicit authorized Gateway session/switch mutation and Login Broker operation that synchronously disconnects exactly one resolved local console session with WTSDisconnectSession, then reuses the existing Credential Provider attempt flow. Request-bound Broker ledger entries make successful and missing-credential outcomes idempotent; missing credentials return attention_required only after the disconnect reaches LogonUI, while RDP, multiple or unresolved active sessions, disabled Fast User Switching, provider unavailability, and disconnect failure are rejected before a target attempt.",
+        "files_changed": [
+          "host-services/gateway/README.md",
+          "host-services/gateway/test_gateway.py",
+          "host-services/gateway/wakeplay_gateway.py",
+          "host-services/windows-login/login-broker/BrokerCore.cs",
+          "host-services/windows-login/login-broker/BrokerCoreTests.cs",
+          "host-services/windows-login/login-broker/BrokerService.cs",
+          "host-services/windows-login/login-broker/README.md",
+          "state.json",
+          "state.md"
+        ],
         "blockers": []
       }
     },
     {
       "id": "MW-PROFILE-04",
       "title": "Android explicit Windows profile switch",
-      "status": "planned",
+      "status": "done",
       "priority": 4,
       "depends_on": [
         "MW-PROFILE-01",
@@ -278,20 +348,47 @@
         "No host-screen refresh can trigger a switch.",
         "Cancelling or changing host/profile stops polling and cannot update the new selection."
       ],
-      "validation": [],
+      "validation": [
+        {
+          "command": ".\\gradlew.bat testNonRootDebugUnitTest",
+          "required": true,
+          "result": "passed (BUILD SUCCESSFUL, 2026-09-04)"
+        },
+        {
+          "command": ".\\gradlew.bat assembleNonRootDebug",
+          "required": true,
+          "result": "passed (BUILD SUCCESSFUL, 2026-09-04)"
+        },
+        {
+          "command": "git diff --check",
+          "required": true,
+          "result": "passed (no whitespace errors; line-ending warnings only, 2026-09-04)"
+        }
+      ],
       "work": {
-        "owner": null,
-        "started_at": null,
-        "completed_at": null,
-        "summary": null,
-        "files_changed": [],
+        "owner": "mw_profile_04",
+        "started_at": "2026-09-04T21:10:47+02:00",
+        "completed_at": "2026-09-04T21:21:21+02:00",
+        "summary": "Added separate host-menu actions to align MoonWaker with an authorized active Windows profile without a host mutation and to explicitly switch Windows to the selected app profile after a disconnect-with-apps-running confirmation. The explicit action uses the existing authenticated transport, stable request ID, session status/cancel endpoints, two-minute bounded polling, transient host/profile/request correlation, exact best-effort cancellation, stale-result rejection, terminal profile refresh, and the required login-screen attention message.",
+        "files_changed": [
+          "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+          "app/src/main/java/com/limelight/console/HostGatewayClient.java",
+          "app/src/main/java/com/limelight/gateway/GatewayTransport.java",
+          "app/src/main/res/values/strings.xml",
+          "app/src/main/res/values-pl/strings.xml",
+          "app/src/test/java/com/limelight/console/ConsoleWindowsProfileSwitchTest.java",
+          "app/src/test/java/com/limelight/console/HostGatewayClientTest.java",
+          "app/src/test/java/com/limelight/gateway/GatewayTransportTest.java",
+          "state.json",
+          "state.md"
+        ],
         "blockers": []
       }
     },
     {
       "id": "MW-PROFILE-05",
       "title": "Host Control and Gateway PIN protection",
-      "status": "planned",
+      "status": "done",
       "priority": 5,
       "depends_on": [
         "MW-PROFILE-01"
@@ -313,20 +410,79 @@
         "An expired or absent lease blocks protected profile endpoints.",
         "Profiles without PIN preserve existing behavior for current clients."
       ],
-      "validation": [],
+      "validation": [
+        {
+          "command": "python -m unittest test_gateway.GatewayStateTest",
+          "required": true,
+          "result": "passed (86 focused Gateway state tests, 2026-09-04)"
+        },
+        {
+          "command": "python -m unittest test_gateway.py",
+          "required": true,
+          "result": "passed (105 Gateway tests, 2026-09-04)"
+        },
+        {
+          "command": ".\\Test-MoonWakerHostConfigurator.ps1",
+          "required": true,
+          "result": "passed (Configurator registry/PIN verifier, Host Control elevation/password, startup UI tests, 2026-09-04)"
+        },
+        {
+          "command": ".\\Test-MoonWakerHostControl.ps1",
+          "required": true,
+          "result": "passed (Host Control focused suite, 2026-09-04)"
+        },
+        {
+          "command": ".\\Build-MoonWakerHostControl.ps1 -OutputDirectory <temporary-workspace-directory>",
+          "required": true,
+          "result": "passed (Host Control and elevated Configurator executables compiled; temporary output removed, 2026-09-04)"
+        },
+        {
+          "command": ".\\gradlew.bat testNonRootDebugUnitTest --tests com.limelight.console.ConsoleProfileGateTest --tests com.limelight.console.HostGatewayClientTest",
+          "required": true,
+          "result": "passed after rerun with JDK access outside the sandbox; initial sandboxed launch was denied before Gradle started (BUILD SUCCESSFUL, 2026-09-04)"
+        },
+        {
+          "command": ".\\gradlew.bat testNonRootDebugUnitTest",
+          "required": true,
+          "result": "passed (BUILD SUCCESSFUL, 2026-09-04)"
+        },
+        {
+          "command": ".\\gradlew.bat assembleNonRootDebug",
+          "required": true,
+          "result": "passed (BUILD SUCCESSFUL, 2026-09-04)"
+        },
+        {
+          "command": "git diff --check",
+          "required": true,
+          "result": "passed (no whitespace errors; line-ending warnings only, 2026-09-04)"
+        }
+      ],
       "work": {
-        "owner": null,
-        "started_at": null,
-        "completed_at": null,
-        "summary": null,
-        "files_changed": [],
+        "owner": "mw_profile_05",
+        "started_at": "2026-09-04T21:26:26+02:00",
+        "completed_at": "2026-09-04T21:37:51+02:00",
+        "summary": "Added elevated Host Control configuration for setting, replacing, and removing a four-digit MoonWaker app PIN as a versioned PBKDF2-SHA256 salted verifier only. Gateway profile summaries expose only pin_required; authenticated use_profile clients can verify through a rate-limited endpoint that creates a five-minute in-memory client/profile lease, and every existing profile-scoped route enforces that lease without changing unprotected-profile behavior. Android parses and caches pin_required and immediately removes a matching automatic app-profile preference on the next fresh profile save.",
+        "files_changed": [
+          "app/src/main/java/com/limelight/console/HostGatewayClient.java",
+          "app/src/main/java/com/limelight/console/HostGatewayStore.java",
+          "app/src/test/java/com/limelight/console/ConsoleProfileGateTest.java",
+          "app/src/test/java/com/limelight/console/HostGatewayClientTest.java",
+          "host-services/control/Invoke-MoonWakerHostControl.ps1",
+          "host-services/control/MoonWakerHostConfigurator.cs",
+          "host-services/control/MoonWakerHostControl.cs",
+          "host-services/gateway/README.md",
+          "host-services/gateway/test_gateway.py",
+          "host-services/gateway/wakeplay_gateway.py",
+          "state.json",
+          "state.md"
+        ],
         "blockers": []
       }
     },
     {
       "id": "MW-PROFILE-06",
       "title": "Android PS5-style PIN entry",
-      "status": "planned",
+      "status": "done",
       "priority": 6,
       "depends_on": [
         "MW-PROFILE-02",
@@ -349,20 +505,60 @@
         "Back navigation is PIN to profile selection to host selection.",
         "Process recreation requires protected profile authorization again."
       ],
-      "validation": [],
+      "validation": [
+        {
+          "command": ".\\gradlew.bat testNonRootDebugUnitTest --tests com.limelight.console.ConsolePinEntryTest --tests com.limelight.console.ConsoleProfileGateTest --tests com.limelight.console.HostGatewayClientTest --tests com.limelight.gateway.GatewayTransportTest",
+          "required": true,
+          "result": "passed (focused PIN, protected-profile gate, client, and transport tests; BUILD SUCCESSFUL, 2026-09-04)"
+        },
+        {
+          "command": ".\\gradlew.bat compileNonRootDebugJavaWithJavac --rerun-tasks",
+          "required": true,
+          "result": "passed (BUILD SUCCESSFUL after independent validation stabilization, 2026-09-04)"
+        },
+        {
+          "command": ".\\gradlew.bat testNonRootDebugUnitTest",
+          "required": true,
+          "result": "passed (909 tests, BUILD SUCCESSFUL after Gradle daemon restart and concurrent UI stabilization, 2026-09-04)"
+        },
+        {
+          "command": ".\\gradlew.bat assembleNonRootDebug",
+          "required": true,
+          "result": "passed (BUILD SUCCESSFUL after concurrent UI stabilization, 2026-09-04)"
+        },
+        {
+          "command": "git diff --check",
+          "required": true,
+          "result": "passed (no whitespace errors; line-ending warnings only, 2026-09-04)"
+        }
+      ],
       "work": {
-        "owner": null,
-        "started_at": null,
-        "completed_at": null,
-        "summary": null,
-        "files_changed": [],
+        "owner": "mw_profile_06",
+        "started_at": "2026-09-04T21:42:23+02:00",
+        "completed_at": "2026-09-04T21:58:09+02:00",
+        "summary": "Added transient masked four-digit PIN entry for every protected-profile selection path, direct source-aware gamepad digit mapping, a focusable TV keypad and physical numeric input, automatic and explicit submit, delete/back chaining, server verification through the shared Gateway transport, stale-result rejection, deterministic invalid/cooldown handling, local screenshot protection, secret clearing, and protected automatic-profile prevention. Selected profile persistence occurs only after successful verification.",
+        "files_changed": [
+          "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+          "app/src/main/java/com/limelight/console/ConsolePinEntry.java",
+          "app/src/main/java/com/limelight/console/ConsolePinEntryView.java",
+          "app/src/main/java/com/limelight/console/ConsoleProfileGateView.java",
+          "app/src/main/java/com/limelight/console/HostGatewayClient.java",
+          "app/src/main/java/com/limelight/gateway/GatewayTransport.java",
+          "app/src/main/res/values/strings.xml",
+          "app/src/main/res/values-pl/strings.xml",
+          "app/src/test/java/com/limelight/console/ConsolePinEntryTest.java",
+          "app/src/test/java/com/limelight/console/ConsoleProfileGateTest.java",
+          "app/src/test/java/com/limelight/gateway/GatewayTransportTest.java",
+          "state.json",
+          "state.md"
+        ],
         "blockers": []
       }
     },
     {
       "id": "MW-PROFILE-07",
       "title": "Integration hardening and Windows VM acceptance",
-      "status": "planned",
+      "status": "blocked",
       "priority": 7,
       "depends_on": [
         "MW-PROFILE-03",
@@ -385,18 +581,198 @@
         "Android unit tests, host component tests, builds, and git diff checks pass.",
         "The final state documents identify limitations and the exact validation evidence."
       ],
-      "validation": [],
+      "validation": [
+        {
+          "command": ".\\gradlew.bat testNonRootDebugUnitTest --rerun-tasks",
+          "required": true,
+          "result": "passed (911 tests, 0 failures/errors/skips; BUILD SUCCESSFUL, 2026-09-04)"
+        },
+        {
+          "command": ".\\gradlew.bat assembleNonRootDebug",
+          "required": true,
+          "result": "passed (BUILD SUCCESSFUL in 1m 22s, 2026-09-04)"
+        },
+        {
+          "command": "python -m unittest test_gateway.py",
+          "required": true,
+          "result": "passed (105 Gateway tests, 2026-09-04)"
+        },
+        {
+          "command": ".\\Test-MoonWakerLoginBroker.ps1",
+          "required": true,
+          "result": "passed (13 Login Broker tests, 2026-09-04)"
+        },
+        {
+          "command": ".\\Build-MoonWakerLoginBroker.ps1 -OutputDirectory <temporary-workspace-directory>",
+          "required": true,
+          "result": "passed (x64 Broker executable compiled; temporary output removed, 2026-09-04)"
+        },
+        {
+          "command": ".\\Test-MoonWakerHostConfigurator.ps1",
+          "required": true,
+          "result": "passed (Configurator registry/PIN verifier, elevation/password, startup and Broker-unavailable tests, 2026-09-04)"
+        },
+        {
+          "command": ".\\Test-MoonWakerHostControl.ps1",
+          "required": true,
+          "result": "passed (Host Control configuration, redacted diagnostic export, ownership, Gateway stop and stream-hotkey tests, 2026-09-04)"
+        },
+        {
+          "command": ".\\Build-MoonWakerHostControl.ps1 -OutputDirectory <temporary-workspace-directory>",
+          "required": true,
+          "result": "passed (Host Control and elevated Configurator executables compiled; temporary output removed, 2026-09-04)"
+        },
+        {
+          "command": ".\\Test-MoonWakerCredentialProvider.ps1",
+          "required": true,
+          "result": "passed (static provider/protocol/security validation, 2026-09-04)"
+        },
+        {
+          "command": ".\\Build-MoonWakerCredentialProvider.ps1 -OutputDirectory <temporary-workspace-directory>",
+          "required": true,
+          "result": "not run to native completion: neither MSBuild with the Visual Studio C++ workload nor x86_64-w64-mingw32-clang++ is installed; no provider binary was produced (2026-09-04)"
+        },
+        {
+          "command": "VBoxManage list vms; Get-VM",
+          "required": true,
+          "result": "no dedicated VM available: VirtualBox returned no registered VMs and Hyper-V inventory was denied even after read-only elevation (2026-09-04)"
+        },
+        {
+          "command": "git diff --check",
+          "required": true,
+          "result": "passed (no whitespace errors; line-ending warnings only, 2026-09-04)"
+        }
+      ],
       "work": {
-        "owner": null,
-        "started_at": null,
+        "owner": "mw_profile_07",
+        "started_at": "2026-09-04T22:11:55+02:00",
         "completed_at": null,
-        "summary": null,
-        "files_changed": [],
-        "blockers": []
+        "summary": "Revalidated the integrated Android, Gateway, Login Broker, Host Control, Configurator, and Credential Provider static contracts; reviewed profile priority/gating, explicit switch correlation and cancellation, PIN verifier/lease/rate limiting, protected-profile selection paths, readiness ordering, and diagnostic/config/response redaction without finding a concrete integration defect or proven secret disclosure. Updated architecture only with automated-test-backed profile gate, PIN lease, and explicit switch contracts, and expanded the existing disposable-VM checklist with the unexecuted live FUS acceptance matrix. Native Credential Provider build could not run because this host lacks a C++ toolchain. No live session mutation was attempted.",
+        "files_changed": [
+          "MOONWAKER_ARCHITECTURE.md",
+          "host-services/windows-login/MANUAL_VM_TEST_PLAN.md",
+          "state.json",
+          "state.md"
+        ],
+        "blockers": [
+          "No dedicated, safely disposable Windows 10/11 VM or accessible live-FUS harness is available, so the live session-state matrix, previous-user process survival, Gateway reachability during a session change, and per-user Bridge settling cannot be proven without risking the current interactive user session."
+        ]
       }
+    },
+    {
+      "id": "MW-PROFILE-08",
+      "title": "Manual-test corrections: Windows switching and controller PIN board",
+      "status": "done",
+      "priority": 8,
+      "depends_on": [
+        "MW-PROFILE-03",
+        "MW-PROFILE-06"
+      ],
+      "objective": "Diagnose and fix reported Windows profile switching failure and reproduce supplied PS5 PIN board with detected-controller glyphs; build artifacts and deploy APK to TV.",
+      "acceptance_criteria": [
+        "Root cause is documented and focused regressions pass.",
+        "PIN board uses existing controller glyphs and preserves remote entry and PIN security.",
+        "APK and version-bumped host installer build; APK is deployed to TV."
+      ],
+      "validation": [
+        {
+          "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File host-services/control/Test-MoonWakerHostControl.ps1",
+          "required": true,
+          "result": "passed"
+        },
+        {
+          "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File host-services/control/Test-MoonWakerHostConfigurator.ps1",
+          "required": true,
+          "result": "passed"
+        },
+        {
+          "command": "PATH=<installed LLVM-MinGW>/bin; powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Build-HostServices.ps1",
+          "required": true,
+          "result": "passed: 105 Gateway tests, 223 Game Provider Bridge tests, Gateway service test, 14 Login Broker tests, native Credential Provider protocol tests and complete installer build"
+        },
+        {
+          "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Build-HostServices.ps1 -SkipTests (same compiler PATH)",
+          "required": true,
+          "result": "passed after packaging-only correction; 110 payload entries; no dist-* entries; packaged Broker reflection confirms WTSEnumerateSessionsW and Unicode; installer version 0.7.75.0"
+        },
+        {
+          "command": ".\\gradlew.bat testNonRootDebugUnitTest --tests com.limelight.console.ConsolePinEntryTest --tests com.limelight.console.ConsoleProfileGateTest --tests com.limelight.console.ConsoleWindowsProfileSwitchTest --console=plain",
+          "required": true,
+          "result": "passed with JDK17 and build permissions; initial sandbox attempt stopped before compilation due network access"
+        },
+        {
+          "command": ".\\gradlew.bat testNonRootDebugUnitTest assembleNonRootDebug --console=plain",
+          "required": true,
+          "result": "passed, 913 tests, 0 failures/errors/skips; BUILD SUCCESSFUL in 57s"
+        },
+        {
+          "command": "adb -s <TV> install -r app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+          "required": true,
+          "result": "Success; Sony BRAVIA"
+        },
+        {
+          "command": "adb -s <TV> shell am start -W -a android.intent.action.MAIN -c android.intent.category.LEANBACK_LAUNCHER -n com.limelight.debug/com.limelight.console.ConsoleActivity; adb shell sha256sum <installed-base.apk>",
+          "required": true,
+          "result": "Status ok; installed APK SHA-256 matches local APK"
+        },
+        {
+          "command": "Font cmap/static-axis inspection and rendered controller glyph sheet review",
+          "required": true,
+          "result": "passed; 23 mapped codepoints, 24 glyphs including .notdef, no variable axes; required PS/Xbox symbols visually verified"
+        },
+        {
+          "command": "git diff --check; final git status and per-task baseline diff review",
+          "required": true,
+          "result": "passed; pre-existing dirty work preserved, no commit/push"
+        }
+      ],
+      "work": {
+        "owner": "root supervising Luna Max windows_switch and pin_ui",
+        "started_at": "2026-09-04T23:16:50+02:00",
+        "completed_at": "2026-09-04T23:44:34+02:00",
+        "summary": "Fixed verified ANSI/Unicode WTS station-name mismatch that rejected local Console as RDP; added Unicode import regression. Rebuilt PS5-reference PIN board with four masked slots, actual detected-controller glyphs for digits and actions, last-gamepad selection, and remote-only focus styling. Extended existing Material Symbols subset with required D-pad/bumper/trigger glyphs. Built version-aligned host installer 0.7.75 and excluded stale dist-* staging directories. Full Android validation passed; APK installed and launched on Sony BRAVIA, with installed SHA-256 equal to local artifact. No live Windows switch was attempted and host installer was not installed.",
+        "files_changed": [
+          "Build-HostServices.ps1",
+          "app/src/main/assets/controller_glyphs.ttf",
+          "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+          "app/src/main/java/com/limelight/console/ConsolePinEntryView.java",
+          "app/src/main/java/com/limelight/ui/ControllerGlyphs.java",
+          "app/src/main/res/raw/controller_glyphs_license.txt",
+          "app/src/main/res/values/strings.xml",
+          "app/src/main/res/values-pl/strings.xml",
+          "app/src/test/java/com/limelight/console/ConsolePinEntryTest.java",
+          "host-services/control/MoonWakerHostControl.cs",
+          "host-services/control/MoonWakerHostConfigurator.cs",
+          "host-services/installer/MoonWakerHostInstaller.cs",
+          "host-services/version.json",
+          "host-services/windows-login/login-broker/BrokerService.cs",
+          "host-services/windows-login/login-broker/BrokerCoreTests.cs",
+          "state.json",
+          "state.md"
+        ],
+        "blockers": []
+      },
+      "artifacts": {
+        "apk": {
+          "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+          "sha256": "c5fa4291106be115b07aebda737a59694d4c09fa8e6f7fcb1da2e2282bc4318d",
+          "bytes": 46517609
+        },
+        "host_installer": {
+          "path": "host-services/dist/MoonWakerHostInstaller.exe",
+          "sha256": "13fa854f64e7055d04988cdb685bdda0887b79a4025c5bd27a22631a68f1e167",
+          "bytes": 9320448
+        }
+      },
+      "limitations": [
+        "MW-PROFILE-07 live Windows VM acceptance remains blocked and is not claimed by this correction task.",
+        "The native WTS encoding defect was reproduced read-only; exact original failed request was not recovered from logs.",
+        "PIN glyph sheet and layout/code were reviewed; a full on-TV protected PIN screenshot was not captured because FLAG_SECURE remains enabled.",
+        "Host installer was built, not installed; use the new installer before manually rechecking Windows switching."
+      ]
     }
   ],
-  "next_task_id": "MW-PROFILE-01",
+  "next_task_id": null,
   "current_task_id": null,
   "known_risks": [
     {
@@ -468,6 +844,83 @@
       "task_id": null,
       "event": "plan_created",
       "summary": "Created the structured implementation memory and selected MW-PROFILE-01 as the next bounded task."
+    },
+    {
+      "at": "2026-09-04T20:05:03+02:00",
+      "agent": "mw_profile_01",
+      "task_id": "MW-PROFILE-01",
+      "event": "task_completed",
+      "summary": "Completed Android read-only profile mismatch presentation, host-menu profile selection, bounded visible-host profile refresh, focused tests, and required Android validation."
+    },
+    {
+      "at": "2026-09-04T20:42:56+02:00",
+      "agent": "mw_profile_02",
+      "task_id": "MW-PROFILE-02",
+      "event": "task_completed",
+      "summary": "Completed the controller-first host-entry profile gate, per-host automatic app profile, stale preference clearing, library-load guard, focused tests, and required Android validation."
+    },
+    {
+      "at": "2026-09-04T20:50:29+02:00",
+      "agent": "mw_profile_02",
+      "task_id": "MW-PROFILE-02",
+      "event": "review_correction_completed",
+      "summary": "Centralized selected-profile invalidation for gate and host-home changes, preventing same-host profile changes from retaining the previous library or accepting stale profile refreshes; repeated all required validation."
+    },
+    {
+      "at": "2026-09-04T21:03:47+02:00",
+      "agent": "mw_profile_03",
+      "task_id": "MW-PROFILE-03",
+      "event": "task_completed",
+      "summary": "Completed the explicit Fast User Switching Gateway and Login Broker operation, synchronous WTS console disconnect, request-bound idempotency, attention-required credential handling, focused rejection coverage, and host validation."
+    },
+    {
+      "at": "2026-09-04T21:21:21+02:00",
+      "agent": "mw_profile_04",
+      "task_id": "MW-PROFILE-04",
+      "event": "task_completed",
+      "summary": "Completed Android profile alignment and explicit Windows switching with confirmation, transient correlated polling, exact cancellation, terminal profile refresh, focused tests, and required Android validation."
+    },
+    {
+      "at": "2026-09-04T21:37:51+02:00",
+      "agent": "mw_profile_05",
+      "task_id": "MW-PROFILE-05",
+      "event": "task_completed",
+      "summary": "Completed elevated app-PIN verifier management, authenticated rate-limited Gateway verification, ephemeral client/profile leases, protected endpoint enforcement, safe pin_required projection, immediate Android automatic-profile invalidation, and required validation."
+    },
+    {
+      "at": "2026-09-04T21:58:09+02:00",
+      "agent": "mw_profile_06",
+      "task_id": "MW-PROFILE-06",
+      "event": "task_completed_with_baseline_blockers",
+      "summary": "Completed Android PS5-style PIN entry and protected-profile verification; focused tests and diff check pass, while the shared UI baseline blocks the full test target and assemble build."
+    },
+    {
+      "at": "2026-09-04T22:07:24+02:00",
+      "agent": "root",
+      "task_id": "MW-PROFILE-06",
+      "event": "validation_stabilized",
+      "summary": "Independent rerun after concurrent UI stabilization passed clean Java compilation, all 909 Android unit tests, and the non-root debug assembly; the transient validation blockers were cleared."
+    },
+    {
+      "at": "2026-09-04T22:26:03+02:00",
+      "agent": "mw_profile_07",
+      "task_id": "MW-PROFILE-07",
+      "event": "task_blocked",
+      "summary": "Completed automated integration hardening, diagnostics review, architecture synchronization, and a precise unexecuted VM checklist; live acceptance remains blocked because no safe dedicated Windows 10/11 VM or accessible live-FUS harness is available."
+    },
+    {
+      "at": "2026-09-04T23:16:50+02:00",
+      "agent": "root",
+      "task_id": "MW-PROFILE-08",
+      "event": "task_started",
+      "summary": "Started bounded manual-test corrections with two Luna Max agents; preserve prior VM acceptance limitation."
+    },
+    {
+      "at": "2026-09-04T23:44:34+02:00",
+      "agent": "root supervising Luna Max agents",
+      "task_id": "MW-PROFILE-08",
+      "event": "task_completed",
+      "summary": "Reviewed and completed bounded Windows encoding and controller PIN UI fixes; all required automated tests/builds passed, installer0.7.75 verified, APK deployed with matching hash. Prior live-FUS acceptance remains separately unproven."
     }
   ]
 }

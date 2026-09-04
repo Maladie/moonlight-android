@@ -32,6 +32,8 @@ public class HostGatewayClientTest {
                 new GatewayTransport.GatewayException("unavailable", 503)).reason);
         assertEquals("other_user_active", HostGatewayClient.sessionFailure(
                 new GatewayTransport.GatewayException("other_user_active", 409)).reason);
+        assertEquals("credential_missing", HostGatewayClient.sessionFailure(
+                new GatewayTransport.GatewayException("credential_missing", 409)).reason);
     }
 
     @Test public void windowsSessionCancellationPinsOriginalRequestAndAttempt() throws Exception {
@@ -257,6 +259,7 @@ public class HostGatewayClientTest {
                 .put(new JSONObject().put("id", "Basia").put("name", "Basia")
                         .put("permissions", new JSONObject()
                                 .put("use_profile", true).put("remote_sign_in", true))
+                        .put("pin_required", true)
                         .put("session_state", "unlocked")
                         .put("remote_sign_in_state", "available"))
                 .put(new JSONObject().put("id", "Gry").put("name", "Gry")
@@ -271,6 +274,7 @@ public class HostGatewayClientTest {
         assertEquals("Gry", multiple.selected.id);
         assertTrue(multiple.showSelector);
         assertTrue(parsed.find("Basia").remoteSignIn);
+        assertTrue(parsed.find("Basia").pinRequired);
         assertEquals("unlocked", parsed.find("Basia").sessionState);
         assertEquals("available", parsed.find("Basia").remoteSignInState);
 

@@ -75,6 +75,7 @@ public final class GatewayTransport {
                                String requestId, int readTimeoutMs) throws IOException {
         if (!"/api/v1/system/suspend-session".equals(path)
                 && !"/api/v1/system/session/ensure".equals(path)
+                && !"/api/v1/system/session/switch".equals(path)
                 && !"/api/v1/system/session/cancel".equals(path)) {
             throw new IllegalArgumentException(
                     "Caller request IDs are only supported for session mutations");
@@ -269,7 +270,8 @@ public final class GatewayTransport {
         }
         if (status < HttpURLConnection.HTTP_OK || status >= 300) {
             throw new GatewayException(
-                    response.optString("error", "Host gateway request failed."), status);
+                    response.optString("error", "Host gateway request failed."), status,
+                    Math.max(0, response.optInt("retry_after_seconds", 0)));
         }
         return response;
     }
@@ -564,14 +566,24 @@ public final class GatewayTransport {
 
     public static final class GatewayException extends IOException {
         private final int statusCode;
+        private final int retryAfterSeconds;
 
         public GatewayException(String message, int statusCode) {
+            this(message, statusCode, 0);
+        }
+
+        GatewayException(String message, int statusCode, int retryAfterSeconds) {
             super(message);
             this.statusCode = statusCode;
+            this.retryAfterSeconds = retryAfterSeconds;
         }
 
         public int statusCode() {
             return statusCode;
+        }
+
+        public int retryAfterSeconds() {
+            return retryAfterSeconds;
         }
     }
 

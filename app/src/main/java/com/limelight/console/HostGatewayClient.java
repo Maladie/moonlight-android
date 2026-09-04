@@ -64,6 +64,7 @@ final class HostGatewayClient {
         final boolean remoteSignIn;
         final String sessionState;
         final String remoteSignInState;
+        final boolean pinRequired;
         final boolean discordBridgeOnline;
         final boolean discordRpcConnected;
         final boolean discordAuthenticated;
@@ -108,10 +109,24 @@ final class HostGatewayClient {
                            boolean virtualHereAvailable, boolean useProfile,
                            boolean remoteSignIn, String sessionState,
                            String remoteSignInState) {
+            this(id, name, discordBridgeOnline, discordRpcConnected,
+                    discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
+                    playniteConnectorConnected, virtualHereAvailable, useProfile,
+                    remoteSignIn, sessionState, remoteSignInState, false);
+        }
+
+        IntegrationProfile(String id, String name, boolean discordBridgeOnline,
+                           boolean discordRpcConnected, boolean discordAuthenticated,
+                           boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
+                           boolean playniteConnectorConnected,
+                           boolean virtualHereAvailable, boolean useProfile,
+                           boolean remoteSignIn, String sessionState,
+                           String remoteSignInState, boolean pinRequired) {
             this.id = id;
             this.name = name;
             this.useProfile = useProfile;
             this.remoteSignIn = remoteSignIn;
+            this.pinRequired = pinRequired;
             this.sessionState = normalizedState(sessionState, "unknown");
             this.remoteSignInState = normalizedState(remoteSignInState, "unavailable");
             this.discordBridgeOnline = discordBridgeOnline;
@@ -765,10 +780,16 @@ final class HostGatewayClient {
 
     static final class GatewayException extends IOException {
         final int statusCode;
+        final int retryAfterSeconds;
 
         GatewayException(String message, int statusCode) {
+            this(message, statusCode, 0);
+        }
+
+        GatewayException(String message, int statusCode, int retryAfterSeconds) {
             super(message);
             this.statusCode = statusCode;
+            this.retryAfterSeconds = retryAfterSeconds;
         }
     }
 
@@ -877,11 +898,40 @@ final class HostGatewayClient {
         return parseIntegrationProfiles(response);
     }
 
+    void verifyProfilePin(GatewayConnection connection, String pin) throws IOException {
+        if (pin == null || !pin.matches("[0-9]{4}")) {
+            throw new IllegalArgumentException("PIN must contain four digits");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("pin", pin);
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection, "/api/v1/profiles/pin/verify", "POST",
+                body, READ_TIMEOUT_MS);
+        if (!response.optBoolean("unlocked", false)) {
+            throw new GatewayException("pin_verification_failed", 502);
+        }
+    }
+
     WindowsSession ensureWindowsSession(GatewayConnection connection, String requestId)
             throws IOException {
         try {
             return parseWindowsSession(transport.postJson(connection,
                     "/api/v1/system/session/ensure", new JSONObject(), requestId, 15_000));
+        } catch (GatewayTransport.GatewayException error) {
+            WindowsSession failure = sessionFailure(error);
+            if (failure != null) return failure;
+            throw mapException(error);
+        }
+    }
+
+    WindowsSession switchWindowsSession(GatewayConnection connection, String requestId)
+            throws IOException {
+        try {
+            return parseWindowsSession(transport.postJson(connection,
+                    "/api/v1/system/session/switch", new JSONObject(), requestId, 15_000));
         } catch (GatewayTransport.GatewayException error) {
             WindowsSession failure = sessionFailure(error);
             if (failure != null) return failure;
@@ -1026,7 +1076,8 @@ final class HostGatewayClient {
                         permissions != null && permissions.optBoolean(
                                 "remote_sign_in", false),
                         value.optString("session_state", "unknown"),
-                        value.optString("remote_sign_in_state", "unavailable")));
+                        value.optString("remote_sign_in_state", "unavailable"),
+                        value.optBoolean("pin_required", false)));
             }
         }
         return new IntegrationProfiles(profiles,
@@ -1960,6 +2011,7 @@ final class HostGatewayClient {
     }
 
     private static GatewayException mapException(GatewayTransport.GatewayException error) {
-        return new GatewayException(error.getMessage(), error.statusCode());
+        return new GatewayException(error.getMessage(), error.statusCode(),
+                error.retryAfterSeconds());
     }
 }

@@ -432,17 +432,21 @@ public class ConsoleActivityEnsureContractTest {
                 "RetainedStreamSessionCoordinator.isPreparingSwitchOwned("));
     }
 
-    @Test public void automaticHostSelectionStartsWarmUpOnce() throws IOException {
+    @Test public void automaticHostSelectionResolvesProfileGateBeforeWarmUp() throws IOException {
         String source = consoleActivitySource();
         String method = source.substring(
                 source.indexOf("private void resolveInitialHostSelection()"),
                 source.indexOf("private void showHostSelection("));
+        String enter = source.substring(
+                source.indexOf("private void enterHostAfterProfileGate("),
+                source.indexOf("private void closeProfileGate("));
 
-        assertTrue(method.indexOf("selectHost(automatic, false)")
-                < method.indexOf("prepareSelectedHost(automatic)"));
-        assertEquals(1, occurrences(method, "prepareSelectedHost(automatic)"));
+        assertTrue(method.contains("resolveProfileGate(automatic, false, true)"));
+        assertFalse(method.contains("selectHost(automatic, false)"));
+        assertTrue(enter.indexOf("selectHost(host, focusApps)")
+                < enter.indexOf("prepareSelectedHost(host)"));
         assertTrue(method.indexOf("initialHostSelectionResolved = true")
-                < method.indexOf("prepareSelectedHost(automatic)"));
+                < method.indexOf("resolveProfileGate(automatic, false, true)"));
     }
 
     @Test public void retainedHomeStartingWindowIsOpaqueButTranslucent() throws IOException {
@@ -538,7 +542,8 @@ public class ConsoleActivityEnsureContractTest {
                 < localLibrary.lastIndexOf("requestPlayniteRefresh("));
         assertTrue(preDraw.contains("prepareInitialCarouselFrame()"));
         assertTrue(prepare.contains("initialLocalPresentationReady("));
-        assertTrue(prepare.contains("preferences.getInt(\"app_scroll.\" + host.uuid"));
+        assertTrue(prepare.contains("View target = firstFocusableChild(appRow)"));
+        assertTrue(prepare.contains("appScroll.scrollTo(0, 0)"));
         assertTrue(prepare.contains("target.requestFocus()"));
         assertTrue(prepare.contains("enterExpandedLibrary(true)"));
         assertTrue(prepare.contains("return false;"));

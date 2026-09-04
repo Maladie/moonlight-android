@@ -35,6 +35,9 @@ The profile registry uses stable IDs and authoritative Windows account SIDs.
 Paired clients store `profile_grants` separately for every profile. Legacy
 clients migrate with `use_profile` for retained profiles and without
 `remote_sign_in`; upgrades never turn remote sign-in on automatically.
+An optional four-digit MoonWaker app PIN is stored only as a versioned salted
+verifier. Profile listings expose only `pin_required`. Protected profile routes
+require a short in-memory unlock lease bound to the paired client and profile.
 
 ## API v1
 
@@ -51,9 +54,15 @@ clients migrate with `use_profile` for retained profiles and without
   `X-Request-Id`, and
   `X-Microphone-Session-Id`.
 - `GET /api/v1/profiles` - lists safe profile names and Bridge health summaries.
+- `POST /api/v1/profiles/pin/verify` - verifies the selected profile's four-digit
+  app PIN for a paired client with `use_profile`; success creates a five-minute
+  in-memory unlock lease and failures use a per-client/profile cooldown.
 - `POST /api/v1/system/session/ensure` - returns `ready` for an already-active
   selected profile, or starts a bounded remote Windows sign-in attempt when the
   client also has the `remote_sign_in` grant.
+- `POST /api/v1/system/session/switch` - explicitly disconnects the active local
+  console session through Fast User Switching and starts or resumes the selected
+  profile; it requires `use_profile`, `remote_sign_in`, and an idempotent request ID.
 - `GET /api/v1/system/session/status` - returns coarse session state, or polls a
   bound attempt when `attempt_id` and `request_id` are supplied.
 - `POST /api/v1/system/session/cancel` - idempotently cancels a bound attempt.
@@ -108,10 +117,12 @@ by `profiles` and the session status endpoint.
 
 ### Remote Windows session contract
 
-All three session routes use the normal pinned-TLS Gateway transport,
+All session routes use the normal pinned-TLS Gateway transport,
 `Authorization: Bearer ...`, and `X-WakePlay-Profile`. `ensure` additionally
 requires a stable `X-Request-Id` and an empty JSON object; it never accepts a
-password. A successful response is either `200 ready` or `202` with a 32-hex
+password. `switch` is a separate explicit mutation with the same empty-body and
+request-ID contract. It never changes `ensure` semantics, logs off a user, or
+uses a shell command. A successful response is either `200 ready` or `202` with a 32-hex
 `attempt_id`. Android polls:
 
 ```text
@@ -122,7 +133,10 @@ Cancellation sends the original request ID in both `X-Request-Id` and body
 `{"attempt_id":"...","request_id":"<original-request-id>"}`. Broker and
 Gateway bind every operation to the authenticated client, selected profile,
 original request ID, and attempt. Repeating `ensure` with that same binding is
-idempotent and cannot submit a second password.
+idempotent and cannot submit a second password. Repeating `switch` cannot
+disconnect the console session twice. Missing credentials after a successful
+disconnect return `attention_required`; RDP, multiple or unresolved active
+sessions, disabled Fast User Switching, and disconnect failure are rejected.
 
 LAN responses expose only coarse states/reasons: `ready`, `pending`,
 `session_starting`, `action_required`, `expired`, or `cancelled`, with reasons
