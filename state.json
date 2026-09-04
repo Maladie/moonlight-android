@@ -1,0 +1,473 @@
+{
+  "schema_version": 1,
+  "revision": 1,
+  "last_updated_at": "2026-09-04",
+  "document_status": "active",
+  "repository": {
+    "path": "D:\\Maladie\\moonlight-android",
+    "branch_at_plan_creation": "codex/multi-profile-remote-sign-in",
+    "head_at_plan_creation": "c1e5d7f1",
+    "working_tree_note": "The repository contained unrelated modified and untracked files before this plan was created. Preserve them and do not claim, revert, reformat, or commit them."
+  },
+  "feature": {
+    "id": "moonwaker-multi-profile-login",
+    "title": "MoonWaker profile selection, PIN protection, and Windows user switching",
+    "status": "planned",
+    "objective": "Let the Android client select a MoonWaker profile after host selection, show whether it matches the active Windows session, protect selected profiles with an optional four-digit PIN, and explicitly switch Windows users without logging anybody off.",
+    "definition_of_done": [
+      "A host with a selected MoonWaker profile that differs from the active Windows profile is shown with a yellow profile-attention state.",
+      "When several authorized profiles exist and no valid automatic app profile is configured, host activation opens a controller-first profile selection screen.",
+      "A protected profile requires a valid four-digit PIN before Android persists or enters that profile.",
+      "An explicit Windows profile switch disconnects the active console session through Fast User Switching and never logs it off.",
+      "Missing Windows sign-in credentials leave the computer at LogonUI and produce an attention-required message.",
+      "All affected Android, Gateway, Host Control, Login Broker, and Credential Provider contracts have focused automated coverage and the Windows flow has passed the manual VM matrix."
+    ]
+  },
+  "sources_of_truth": {
+    "selected_app_profile": "Android HostGatewayStore, keyed by host UUID",
+    "automatic_app_profile": "Android HostGatewayStore, keyed by host UUID; this preference selects the app profile and does not silently switch Windows",
+    "windows_session_state": "MoonWakerLoginBroker",
+    "profile_registry_and_device_grants": "Machine Gateway registry/configuration managed by Host Control",
+    "profile_pin_verifier": "Machine Gateway profile configuration managed only by elevated Host Control",
+    "pin_unlock_lease": "Ephemeral Gateway memory, bound to paired client and profile",
+    "windows_switch_attempt": "MoonWakerLoginBroker attempt ledger",
+    "android_switch_state": "Transient presentation/request state only"
+  },
+  "invariants": [
+    "Windows users are switched by disconnecting the active console session; no logoff API or command may be used.",
+    "A profile mismatch never makes an online host appear offline.",
+    "Opening or refreshing the host-selection screen never switches the Windows user.",
+    "Automatic app-profile selection and Windows-session switching are separate features.",
+    "A PIN-protected profile cannot be configured for unattended automatic app login.",
+    "Android never stores or logs a profile PIN.",
+    "The Gateway never returns a PIN verifier or plaintext PIN to Android.",
+    "Profile listing is a presentation aid; use_profile and remote_sign_in grants remain authorization boundaries.",
+    "A protected profile's scoped endpoints enforce a valid server-side unlock lease; the PIN is not merely an Android UI lock.",
+    "Existing LaunchTransitionController privacy and readiness rules remain unchanged.",
+    "PlayIntent remains pinned to one hostId and profileId for its lifetime.",
+    "Stale asynchronous results are rejected using host, profile, request, and generation correlation.",
+    "Moonlight core is not modified for this feature."
+  ],
+  "decisions": [
+    {
+      "id": "D-001",
+      "status": "accepted",
+      "decision": "Use Windows Fast User Switching by disconnecting the active console session, never by logging it off.",
+      "rationale": "The previous user's applications and session must remain alive."
+    },
+    {
+      "id": "D-002",
+      "status": "accepted",
+      "decision": "Insert a MoonWaker profile gate between host selection and the host home screen.",
+      "rationale": "With multiple profiles and no automatic app profile, the user must choose an identity before profile-scoped data is loaded."
+    },
+    {
+      "id": "D-003",
+      "status": "accepted",
+      "decision": "Model a profile mismatch as a yellow attention state while preserving existing offline, suspended, terminating, and active-stream precedence.",
+      "rationale": "The computer is reachable but the selected profile is not ready."
+    },
+    {
+      "id": "D-004",
+      "status": "accepted",
+      "decision": "Automatic app login is a per-host profile preference and does not silently switch Windows.",
+      "rationale": "Choosing the app identity and changing the active Windows desktop are distinct user intents."
+    },
+    {
+      "id": "D-005",
+      "status": "accepted",
+      "decision": "Use a PS5-inspired direct controller-to-digit PIN mapping with a focusable numeric keypad fallback for TV remotes.",
+      "rationale": "Gamepad entry should not require moving focus between ten keys, while non-gamepad devices must remain usable."
+    },
+    {
+      "id": "D-006",
+      "status": "accepted",
+      "decision": "Verify the four-digit PIN on the Gateway with rate limiting and issue only an ephemeral client/profile unlock lease.",
+      "rationale": "A four-digit PIN is a local access gate with low entropy and must not be persisted or enforced only cosmetically on Android."
+    },
+    {
+      "id": "D-007",
+      "status": "accepted",
+      "decision": "Expose Windows switching through a separate explicit session/switch mutation rather than changing session/ensure semantics.",
+      "rationale": "Existing launch and warm-up flows must not begin disconnecting an active user as an implicit side effect."
+    }
+  ],
+  "verified_baseline": [
+    "Android already stores the selected integration profile in HostGatewayStore.",
+    "GET /api/v1/profiles already returns authorized profiles with session_state and remote_sign_in_state.",
+    "ConsoleActivity already has a profile selector on the host home screen, but not a full-screen gate after host selection.",
+    "ConsoleActivity host-selection tiles currently derive color only from Moonlight and session presentation state.",
+    "HostLaunchPreflight already drives bounded remote sign-in attempts and treats another active Windows profile as blocking.",
+    "MoonWakerLoginBroker already classifies active, locked, connected, disconnected, signed_out, other_user_active, and unknown session states.",
+    "Host Control already manages stable SID-backed profiles, remote-sign-in credentials, and per-device use_profile/remote_sign_in grants.",
+    "The current architecture documentation explicitly marks automatic user switching as unsupported; it must be updated only after the new flow is validated."
+  ],
+  "controller_pin_mapping": {
+    "1": "DPAD_LEFT",
+    "2": "DPAD_UP",
+    "3": "DPAD_RIGHT",
+    "4": "DPAD_DOWN",
+    "5": "BUTTON_R1_OR_RB",
+    "6": "BUTTON_R2_OR_RT",
+    "7": "BUTTON_L1_OR_LB",
+    "8": "BUTTON_L2_OR_LT",
+    "9": "BUTTON_Y_OR_TRIANGLE",
+    "0": "BUTTON_X_OR_SQUARE",
+    "submit": "BUTTON_A_OR_CROSS; four digits also auto-submit",
+    "delete_or_back": "BUTTON_B_OR_CIRCLE",
+    "fallback": "A focusable 0-9 keypad for non-gamepad TV remotes plus physical numeric keys"
+  },
+  "tasks": [
+    {
+      "id": "MW-PROFILE-01",
+      "title": "Android read-only profile mismatch presentation",
+      "status": "ready",
+      "priority": 1,
+      "depends_on": [],
+      "objective": "Use the existing cached profile session_state to show a yellow profile-attention status and expose profile selection from the host options menu.",
+      "scope": [
+        "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+        "app/src/main/java/com/limelight/console/ConsoleHostPresentation.java",
+        "app/src/main/java/com/limelight/console/HostGatewayStore.java",
+        "app/src/main/res/values/strings.xml",
+        "app/src/main/res/values-pl/strings.xml",
+        "focused Android unit tests"
+      ],
+      "requirements": [
+        "Add a pure read-only profile presentation projection derived from HostGatewayStore.ProfileSelection and per-profile session_state.",
+        "When the selected profile is other_user_active, signed_out, disconnected, locked, or unknown, show profile attention only if no higher-priority active, retained, suspended, terminating, waking, or offline presentation applies.",
+        "For selected Basia with another authorized active profile Gry, show both names; otherwise show Basia and a generic other-profile message.",
+        "Use the existing yellow presentation color for profile attention.",
+        "Add Wybierz profil MoonWaker to host options when more than one authorized profile exists, reusing the existing profile selection action.",
+        "Refresh profile summaries for visible online paired Gateway hosts when the host-selection screen is entered, with bounded in-flight work and stale-result rejection.",
+        "Preserve current profile selection and library behavior."
+      ],
+      "non_goals": [
+        "No Windows user switch action.",
+        "No new Gateway or Login Broker contract.",
+        "No profile gate screen.",
+        "No automatic app profile.",
+        "No PIN support.",
+        "No Moonlight core changes."
+      ],
+      "acceptance_criteria": [
+        "Basia selected plus Basia session_state=other_user_active renders a yellow host/profile-attention state and includes Basia in the status text.",
+        "If Gry is an authorized profile with session_state=active, the status identifies PC: Gry and MoonWaker: Basia.",
+        "A matching active selected profile retains the normal green online state.",
+        "Offline and active-stream states keep their existing colors and labels.",
+        "The host options menu opens the existing profile chooser without first entering the host home screen.",
+        "Late responses for another host cannot change the focused host's presentation."
+      ],
+      "validation": [
+        {
+          "command": ".\\gradlew.bat testNonRootDebugUnitTest",
+          "required": true,
+          "result": null
+        },
+        {
+          "command": ".\\gradlew.bat assembleNonRootDebug",
+          "required": true,
+          "result": null
+        },
+        {
+          "command": "git diff --check",
+          "required": true,
+          "result": null
+        }
+      ],
+      "work": {
+        "owner": null,
+        "started_at": null,
+        "completed_at": null,
+        "summary": null,
+        "files_changed": [],
+        "blockers": []
+      }
+    },
+    {
+      "id": "MW-PROFILE-02",
+      "title": "Controller-first profile gate and automatic app profile",
+      "status": "planned",
+      "priority": 2,
+      "depends_on": [
+        "MW-PROFILE-01"
+      ],
+      "objective": "Place a PS5-inspired MoonWaker profile selection screen between host selection and host home, and allow an unprotected per-host automatic app profile.",
+      "requirements": [
+        "Do not call the existing selectHost/load-library path until the profile gate resolves.",
+        "One usable profile enters directly; several usable profiles without a valid automatic profile show the gate.",
+        "Back returns to host selection and restores focus to the same host.",
+        "The active Windows profile is marked but never chosen automatically unless it is the configured automatic app profile.",
+        "Automatic app-profile selection never switches the Windows user.",
+        "Use one focused view component and existing ConsoleActivity callbacks; do not introduce a navigation framework."
+      ],
+      "non_goals": [
+        "No PIN input yet.",
+        "No Windows user switching."
+      ],
+      "acceptance_criteria": [
+        "Two profiles and no automatic profile always show the profile gate.",
+        "A valid automatic profile skips the gate.",
+        "A removed or unauthorized automatic profile is cleared and the gate is shown.",
+        "No profile-scoped library request runs for the previously selected profile while the gate is unresolved."
+      ],
+      "validation": [],
+      "work": {
+        "owner": null,
+        "started_at": null,
+        "completed_at": null,
+        "summary": null,
+        "files_changed": [],
+        "blockers": []
+      }
+    },
+    {
+      "id": "MW-PROFILE-03",
+      "title": "Host Fast User Switching operation",
+      "status": "planned",
+      "priority": 3,
+      "depends_on": [],
+      "objective": "Add an explicit host-side operation that disconnects the active local console session and starts or resumes the selected profile without logging off the previous user.",
+      "requirements": [
+        "Add a dedicated Gateway session/switch mutation with an idempotent request ID.",
+        "Require the existing profile and remote-sign-in authorization appropriate to the operation.",
+        "Keep disconnect and attempt ownership in MoonWakerLoginBroker.",
+        "Use WTSDisconnectSession or the equivalent native WTS API, never logoff or tsdiscon.exe.",
+        "Return attention_required when credentials are missing after reaching LogonUI.",
+        "Reject RDP, unresolved/multiple active sessions, disabled Fast User Switching, and failed disconnects deterministically.",
+        "Do not change the implicit behavior of session/ensure."
+      ],
+      "acceptance_criteria": [
+        "Switching from Gry to Basia leaves Gry disconnected with its applications running.",
+        "A ready Basia credential completes through the existing Credential Provider attempt flow.",
+        "Missing Basia credentials end at LogonUI with attention_required.",
+        "A failed disconnect does not issue credentials or start a target attempt.",
+        "Repeated use of the same request ID does not disconnect twice."
+      ],
+      "validation": [],
+      "work": {
+        "owner": null,
+        "started_at": null,
+        "completed_at": null,
+        "summary": null,
+        "files_changed": [],
+        "blockers": []
+      }
+    },
+    {
+      "id": "MW-PROFILE-04",
+      "title": "Android explicit Windows profile switch",
+      "status": "planned",
+      "priority": 4,
+      "depends_on": [
+        "MW-PROFILE-01",
+        "MW-PROFILE-03"
+      ],
+      "objective": "Expose safe profile-alignment actions in the Android host menu and drive the bounded host switch operation.",
+      "requirements": [
+        "Offer Use Gry in MoonWaker when an authorized Gry profile is active on the PC.",
+        "Offer Switch Windows user to Basia when Basia is the selected app profile but is not active.",
+        "Confirm that the current session will be disconnected and its applications left running.",
+        "Map missing credentials to Ekran logowania wymaga uwagi.",
+        "Keep Android switch state transient and reject stale host/profile/request results.",
+        "Refresh profile status after success, failure, cancellation, or attention_required."
+      ],
+      "acceptance_criteria": [
+        "Selecting the active PC profile aligns only MoonWaker and performs no Windows mutation.",
+        "Explicit switching aligns Windows to the selected MoonWaker profile.",
+        "No host-screen refresh can trigger a switch.",
+        "Cancelling or changing host/profile stops polling and cannot update the new selection."
+      ],
+      "validation": [],
+      "work": {
+        "owner": null,
+        "started_at": null,
+        "completed_at": null,
+        "summary": null,
+        "files_changed": [],
+        "blockers": []
+      }
+    },
+    {
+      "id": "MW-PROFILE-05",
+      "title": "Host Control and Gateway PIN protection",
+      "status": "planned",
+      "priority": 5,
+      "depends_on": [
+        "MW-PROFILE-01"
+      ],
+      "objective": "Let an administrator set, change, or remove a four-digit app PIN per profile and enforce it on the Gateway.",
+      "requirements": [
+        "Host Control labels this as an app PIN, not a Windows password.",
+        "Store only a versioned salted verifier in protected machine configuration.",
+        "Profile listing exposes pin_required only.",
+        "PIN verification is available only to an authenticated paired client with use_profile.",
+        "Use constant-time verifier comparison and per-client/profile online rate limiting.",
+        "Successful verification creates a short, non-persistent client/profile unlock lease.",
+        "Profile-scoped endpoints enforce the lease when pin_required is true.",
+        "Enabling PIN invalidates automatic app-profile selection on Android when it is next observed."
+      ],
+      "acceptance_criteria": [
+        "No config, response, argument, environment variable, diagnostic, or log contains the plaintext PIN.",
+        "Wrong PIN attempts are rate limited without revealing verifier material.",
+        "An expired or absent lease blocks protected profile endpoints.",
+        "Profiles without PIN preserve existing behavior for current clients."
+      ],
+      "validation": [],
+      "work": {
+        "owner": null,
+        "started_at": null,
+        "completed_at": null,
+        "summary": null,
+        "files_changed": [],
+        "blockers": []
+      }
+    },
+    {
+      "id": "MW-PROFILE-06",
+      "title": "Android PS5-style PIN entry",
+      "status": "planned",
+      "priority": 6,
+      "depends_on": [
+        "MW-PROFILE-02",
+        "MW-PROFILE-05"
+      ],
+      "objective": "Require and verify a profile PIN from the profile gate using direct controller digit shortcuts and a TV-remote fallback keypad.",
+      "requirements": [
+        "Do not persist selectedIntegrationProfileId until verification succeeds.",
+        "Auto-submit after four digits and allow A/Cross to submit.",
+        "B/Circle deletes one digit and returns to profile selection when empty.",
+        "Never display, persist, diagnose, or log entered digits.",
+        "Provide focusable 0-9 entry for non-gamepad devices and accept physical numeric keys.",
+        "Show deterministic invalid-PIN and cooldown states.",
+        "A PIN-protected profile cannot be saved as the automatic app profile."
+      ],
+      "acceptance_criteria": [
+        "A DualSense-compatible controller can enter every digit without moving focus across keypad buttons.",
+        "A basic Android TV remote can enter every digit through the focusable keypad.",
+        "Wrong PIN leaves the previous app profile selected.",
+        "Back navigation is PIN to profile selection to host selection.",
+        "Process recreation requires protected profile authorization again."
+      ],
+      "validation": [],
+      "work": {
+        "owner": null,
+        "started_at": null,
+        "completed_at": null,
+        "summary": null,
+        "files_changed": [],
+        "blockers": []
+      }
+    },
+    {
+      "id": "MW-PROFILE-07",
+      "title": "Integration hardening and Windows VM acceptance",
+      "status": "planned",
+      "priority": 7,
+      "depends_on": [
+        "MW-PROFILE-03",
+        "MW-PROFILE-04",
+        "MW-PROFILE-05",
+        "MW-PROFILE-06"
+      ],
+      "objective": "Validate the complete multi-profile experience and update architecture/support documentation to match proven behavior.",
+      "requirements": [
+        "Run the manual Windows 10/11 matrix for active, locked, signed-out, disconnected, missing-credential, policy-blocked, and service-unavailable states.",
+        "Verify the previous user's processes survive every successful switch.",
+        "Verify Gateway remains reachable while interactive sessions change.",
+        "Verify profile Bridges settle before normal launch readiness continues.",
+        "Update MOONWAKER_ARCHITECTURE.md only with behavior proven by tests.",
+        "Review diagnostics for accidental account names, PINs, passwords, tokens, or certificate material."
+      ],
+      "acceptance_criteria": [
+        "The Basia/Gry scenarios in feature.definition_of_done pass end to end.",
+        "Fast User Switching restrictions produce a bounded actionable error.",
+        "Android unit tests, host component tests, builds, and git diff checks pass.",
+        "The final state documents identify limitations and the exact validation evidence."
+      ],
+      "validation": [],
+      "work": {
+        "owner": null,
+        "started_at": null,
+        "completed_at": null,
+        "summary": null,
+        "files_changed": [],
+        "blockers": []
+      }
+    }
+  ],
+  "next_task_id": "MW-PROFILE-01",
+  "current_task_id": null,
+  "known_risks": [
+    {
+      "id": "R-001",
+      "risk": "Group Policy or secure-logon policy can disable or alter Fast User Switching and Credential Provider behavior.",
+      "mitigation": "Fail without logoff, return an actionable reason, and cover the condition in the VM matrix."
+    },
+    {
+      "id": "R-002",
+      "risk": "A four-digit PIN is vulnerable to online brute force.",
+      "mitigation": "Require an already paired client, use a salted verifier, constant-time comparison, a short lease, and per-client/profile rate limiting."
+    },
+    {
+      "id": "R-003",
+      "risk": "Profile summaries are currently refreshed mainly for the selected host and may be stale on the host-selection screen.",
+      "mitigation": "MW-PROFILE-01 adds bounded visible-host refresh and generation correlation without creating a second durable state owner."
+    },
+    {
+      "id": "R-004",
+      "risk": "Existing profile/session presentation can be overridden by retained, suspended, terminating, or active-stream states.",
+      "mitigation": "Define profile attention as an idle-online presentation refinement and add precedence tests."
+    },
+    {
+      "id": "R-005",
+      "risk": "The current working tree contains unrelated changes in files likely to be touched, including ConsoleActivity and string resources.",
+      "mitigation": "Inspect the complete diff before editing, preserve overlapping user work, and avoid broad rewrites or formatting."
+    }
+  ],
+  "agent_update_protocol": {
+    "canonical_file": "state.json",
+    "human_projection": "state.md",
+    "allowed_task_statuses": [
+      "planned",
+      "ready",
+      "in_progress",
+      "blocked",
+      "done"
+    ],
+    "before_work": [
+      "Read AGENTS.md, MOONWAKER_ARCHITECTURE.md, CODEX_WORKFLOW.md, state.json, and state.md.",
+      "Verify the prompt assumptions against the current code and inspect existing dirty changes in every target file.",
+      "Increment revision and update last_updated_at.",
+      "Set current_task_id and change exactly one ready/planned task to in_progress.",
+      "Set task.work.owner and task.work.started_at.",
+      "Synchronize the Current implementation state section in state.md."
+    ],
+    "after_work": [
+      "Set the task to done only when its acceptance criteria are met; otherwise leave it in_progress or mark it blocked with a concrete reason.",
+      "Record summary, exact files changed, blockers, and every validation command/result in the task.",
+      "Append one history event; never rewrite or delete earlier history.",
+      "Set current_task_id to null when work ends and move next_task_id only to a dependency-ready task.",
+      "Update state.md to match state.json in the same change.",
+      "Do not store secrets, PINs, passwords, tokens, certificates, personal Windows account names beyond product examples, or raw diagnostics in either state file.",
+      "Do not commit or push unless the user explicitly requests it."
+    ],
+    "timestamp_format": "ISO-8601 with timezone when available",
+    "history_event_fields": [
+      "at",
+      "agent",
+      "task_id",
+      "event",
+      "summary"
+    ]
+  },
+  "history": [
+    {
+      "at": "2026-09-04",
+      "agent": "root",
+      "task_id": null,
+      "event": "plan_created",
+      "summary": "Created the structured implementation memory and selected MW-PROFILE-01 as the next bounded task."
+    }
+  ]
+}
