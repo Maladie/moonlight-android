@@ -233,7 +233,8 @@ public class ConsoleActivityEnsureContractTest {
 
         assertTrue(orchestration.contains("@Override public void refreshSession("));
         assertTrue(orchestration.contains("streamLoadingView.setStep(1,"));
-        assertTrue(orchestration.contains("resolveActivePlayniteGame(host, true, accepted ->"));
+        assertTrue(orchestration.contains(
+                "resolveActivePlayniteGame(host, intent.profileKey, true, accepted ->"));
         assertTrue(orchestration.contains("console_session_uncertain_title"));
         assertTrue(orchestration.contains("console_session_uncertain_details"));
         assertTrue(resolver.contains("invalidateActivePlayniteGameRequest(host.uuid)"));

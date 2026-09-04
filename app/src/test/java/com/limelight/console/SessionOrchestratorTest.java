@@ -834,6 +834,7 @@ public class SessionOrchestratorTest {
         }
         @Override public HostLaunchPreflight.Result preflight(
                 PlayIntent intent, HostLaunchPreflight.Action action,
+                long orchestrationId,
                 BooleanSupplier cancelled) {
             readiness++;
             preflightAction = action;

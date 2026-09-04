@@ -195,6 +195,11 @@ final class DiscordPanelController {
         load(context.getString(R.string.gateway_pair_error),
                 () -> client.pair(endpoint, code, "Moonlight Android TV"), pairing -> {
             store.save(hostUuid, pairing.connection);
+            store.saveProfiles(hostUuid, pairing.profiles);
+            if (pairing.profiles.profiles.size() > 1) {
+                showProfiles(pairing.connection, returnToDiscord);
+                return;
+            }
             if (returnToDiscord) showDiscordServers(true);
             else showHostIntegrations(hostUuid, hostAddress, hostName);
         }, () -> showPairingDialog(returnToDiscord));
@@ -212,6 +217,10 @@ final class DiscordPanelController {
     }
 
     private void showProfiles(GatewayConnection connection) {
+        showProfiles(connection, false);
+    }
+
+    private void showProfiles(GatewayConnection connection, boolean returnToDiscord) {
         showGatewayBusy(context.getString(R.string.gateway_profiles_title),
                 context.getString(R.string.gateway_profiles_loading));
         load(context.getString(R.string.gateway_profiles_error),
@@ -223,7 +232,8 @@ final class DiscordPanelController {
                 TextView action = ui.action(profile.name + suffix);
                 action.setOnClickListener(view -> {
                     store.setSelectedIntegrationProfileId(hostUuid, profile.id);
-                    showHostIntegrations(hostUuid, hostAddress, hostName);
+                    if (returnToDiscord) showDiscordServers(true);
+                    else showHostIntegrations(hostUuid, hostAddress, hostName);
                 });
                 actions.add(action);
             }
@@ -343,6 +353,10 @@ final class DiscordPanelController {
         return voiceConnected ? 0xFF36B96C : 0xFF4DA3FF;
     }
 
+    static boolean discordNeedsReconnect(HostGatewayClient.DiscordStatus status) {
+        return status != null && !status.rpcConnected;
+    }
+
     private HostGatewayClient.DiscordGuild findGuild(List<HostGatewayClient.DiscordGuild> guilds,
                                                       String guildId) {
         for (HostGatewayClient.DiscordGuild guild : guilds) {
@@ -367,6 +381,11 @@ final class DiscordPanelController {
             return client.getDiscordHome(connection, force);
         } catch (Exception firstFailure) {
             HostGatewayClient.DiscordStatus status = client.getDiscordStatus(connection);
+            if (shouldConnectDiscord(status)) {
+                client.connectDiscord(connection, false);
+                Thread.sleep(350L);
+                return client.getDiscordHome(connection, true);
+            }
             if (!status.bridgeOnline || !status.rpcConnected || !status.authenticated) {
                 throw firstFailure;
             }
@@ -375,6 +394,11 @@ final class DiscordPanelController {
             Thread.sleep(350L);
             return client.getDiscordHome(connection, true);
         }
+    }
+
+    static boolean shouldConnectDiscord(HostGatewayClient.DiscordStatus status) {
+        return status != null && status.bridgeOnline
+                && (!status.rpcConnected || !status.authenticated);
     }
 
     private void addChannelGroup(List<View> actions, String title,

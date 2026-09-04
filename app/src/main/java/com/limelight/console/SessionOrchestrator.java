@@ -17,6 +17,7 @@ final class SessionOrchestrator implements AutoCloseable {
     enum CloseResult { CLOSED, REUSED, CANCELLED, NEEDS_CONFIRMATION }
 
     static final class PreparedWarmUp {
+        final HostProfileKey profileKey;
         final NvApp target;
         final String activeGameId;
         final ComputerDetails host;
@@ -24,9 +25,19 @@ final class SessionOrchestrator implements AutoCloseable {
 
         PreparedWarmUp(NvApp target, String activeGameId, ComputerDetails host,
                        boolean ownsFreshSunshineSession) {
+            this(target, activeGameId, host,
+                    host == null ? null : new HostProfileKey(host.uuid,
+                            com.limelight.gateway.GatewayConnection.DEFAULT_PROFILE_ID),
+                    ownsFreshSunshineSession);
+        }
+
+        PreparedWarmUp(NvApp target, String activeGameId, ComputerDetails host,
+                       HostProfileKey profileKey,
+                       boolean ownsFreshSunshineSession) {
             this.target = target;
             this.activeGameId = SessionSnapshot.normalize(activeGameId);
             this.host = host;
+            this.profileKey = profileKey;
             this.ownsFreshSunshineSession = ownsFreshSunshineSession;
         }
     }
@@ -34,28 +45,35 @@ final class SessionOrchestrator implements AutoCloseable {
     private static final class Preparation {
         final long request;
         final String hostId;
+        final HostProfileKey profileKey;
         PlayIntent pendingGame;
         boolean opaqueReady;
         PreparedWarmUp prepared;
         boolean launchClaimed;
 
-        Preparation(long request, String hostId) {
+        Preparation(long request, HostProfileKey profileKey) {
             this.request = request;
-            this.hostId = SessionSnapshot.normalize(hostId);
+            this.profileKey = profileKey;
+            this.hostId = SessionSnapshot.normalize(profileKey.hostId);
         }
     }
 
     interface Dispatcher { void post(Runnable action); }
     interface Effects {
         boolean isAvailable(); boolean isPaired(String hostId); SessionSnapshot resolve(String hostId);
+        default SessionSnapshot resolve(HostProfileKey key) { return resolve(key.hostId); }
         default boolean canPrepareHost(String hostId) { return isPaired(hostId); }
-        void returnToRetainedStream(); void reconnectSavedSession(); void reject(Rejection reason);
+        void returnToRetainedStream(); void reconnectSavedSession();
+        default void reconnectSavedSession(PlayIntent intent) { reconnectSavedSession(); }
+        void reject(Rejection reason);
         void confirmReplacement(Runnable accepted);
         boolean canAttemptRetainedSwitch(PlayIntent intent);
         void showLoading(PlayIntent intent, LaunchTransitionType type, Runnable opaqueFrameReady);
         void refreshSession(PlayIntent intent, BooleanSupplier cancelled,
                             Consumer<Boolean> completion);
-        HostLaunchPreflight.Result preflight(PlayIntent intent, HostLaunchPreflight.Action action, BooleanSupplier cancelled);
+        HostLaunchPreflight.Result preflight(PlayIntent intent, HostLaunchPreflight.Action action,
+                                             long orchestrationId,
+                                             BooleanSupplier cancelled);
         CloseResult closePreviousSession(PlayIntent intent, NvApp target,
                                          boolean allowDestructiveClose,
                                          BooleanSupplier cancelled) throws Exception;
@@ -120,7 +138,12 @@ final class SessionOrchestrator implements AutoCloseable {
     }
 
     long prepareHost(String hostId) {
-        PlayIntent intent = PlayIntent.autoWarmUp(hostId);
+        return prepareHost(hostId,
+                com.limelight.gateway.GatewayConnection.DEFAULT_PROFILE_ID);
+    }
+
+    long prepareHost(String hostId, String profileId) {
+        PlayIntent intent = PlayIntent.autoWarmUp(hostId, profileId);
         long request = generation.incrementAndGet();
         preparation = null;
         if (closed) return 0L;
@@ -130,7 +153,7 @@ final class SessionOrchestrator implements AutoCloseable {
         if (!effects.canPrepareHost(intent.hostId)) {
             return 0L;
         }
-        Preparation pending = new Preparation(request, intent.hostId);
+        Preparation pending = new Preparation(request, intent.profileKey);
         preparation = pending;
         try {
             executor.execute(() -> {
@@ -183,7 +206,7 @@ final class SessionOrchestrator implements AutoCloseable {
         Preparation pending = preparation;
         if (intent.kind != PlayIntent.Kind.PLAYNITE_GAME
                 || !currentPreparation(pending) || pending.launchClaimed
-                || !pending.hostId.equals(SessionSnapshot.normalize(intent.hostId))) {
+                || !pending.profileKey.equals(intent.profileKey)) {
             return false;
         }
         if (pending.pendingGame != null) return true;
@@ -200,7 +223,9 @@ final class SessionOrchestrator implements AutoCloseable {
 
     private void completePreparation(Preparation pending, PreparedWarmUp prepared) {
         if (!currentPreparation(pending)) return;
-        if (prepared == null || prepared.target == null) {
+        if (prepared == null || prepared.target == null
+                || prepared.profileKey != null
+                && !pending.profileKey.equals(prepared.profileKey)) {
             preparation = null;
             if (pending.pendingGame != null) effects.preparationFailed();
             return;
@@ -240,7 +265,7 @@ final class SessionOrchestrator implements AutoCloseable {
             effects.orchestrationFailed(); return;
         }
 
-        SessionSnapshot snapshot = effects.resolve(intent.hostId);
+        SessionSnapshot snapshot = effects.resolve(intent.profileKey);
         if (!current(request)) return;
         if (snapshot.state == SessionSnapshot.State.TERMINATING) {
             diagnostic("WARN", "orchestration.rejected", request, intent,
@@ -292,12 +317,12 @@ final class SessionOrchestrator implements AutoCloseable {
                 return;
             }
             if (snapshot.hostGameAppId == 0) {
-                snapshot = new SessionSnapshot(snapshot.hostId,
+                snapshot = new SessionSnapshot(snapshot.hostId, snapshot.profileId,
                         SessionSnapshot.State.NONE, 0, "", false,
                         false, false, snapshot.hostSleepRequested,
                         snapshot.hostSleepObserved);
             } else if (intent.sunshineAppId == snapshot.hostGameAppId) {
-                snapshot = new SessionSnapshot(snapshot.hostId,
+                snapshot = new SessionSnapshot(snapshot.hostId, snapshot.profileId,
                         SessionSnapshot.State.ACTIVE, snapshot.hostGameAppId,
                         "", snapshot.retainedTransport, false, false,
                         snapshot.hostSleepRequested, snapshot.hostSleepObserved);
@@ -337,7 +362,7 @@ final class SessionOrchestrator implements AutoCloseable {
                 awaitPreflight(request, intent, replacementAuthorized, reuseOnly, pass,
                         HostLaunchPreflight.Action.LAUNCH);
             } else {
-                SessionSnapshot latest = effects.resolve(intent.hostId);
+                SessionSnapshot latest = effects.resolve(intent.profileKey);
                 if (!current(request)) return;
                 if (latest.state == SessionSnapshot.State.NONE) {
                     launch(request, intent, preparedTarget, freshType(intent), "",
@@ -396,7 +421,8 @@ final class SessionOrchestrator implements AutoCloseable {
                                 boolean reuseOnly, int pass,
                                 HostLaunchPreflight.Action action) {
         execute(request, intent, () -> {
-            HostLaunchPreflight.Result result = effects.preflight(intent, action, () -> !current(request));
+            HostLaunchPreflight.Result result = effects.preflight(
+                    intent, action, request, () -> !current(request));
             diagnostic(result.status == HostLaunchPreflight.Status.FAILED ? "WARN" : "INFO",
                     "orchestration.preflight_completed", request, intent,
                     "status", result.status.name(), "operation", action.name(),
@@ -419,7 +445,7 @@ final class SessionOrchestrator implements AutoCloseable {
         effects.refreshSession(intent, () -> !current(request), success ->
                 dispatcher.post(() -> {
                     if (!current(request)) return;
-                    if (!success || effects.resolve(intent.hostId).state
+                    if (!success || effects.resolve(intent.profileKey).state
                             == SessionSnapshot.State.UNCERTAIN) {
                         diagnostic("WARN", "orchestration.refresh_uncertain", request, intent,
                                 "status", success ? "UNCERTAIN" : "FAILED");
@@ -434,7 +460,7 @@ final class SessionOrchestrator implements AutoCloseable {
     private void closeCompetingSession(long request, PlayIntent intent, NvApp preparedTarget,
                                        boolean replacementAuthorized, boolean reuseOnly,
                                        int pass) {
-        SessionSnapshot beforeClose = effects.resolve(intent.hostId);
+        SessionSnapshot beforeClose = effects.resolve(intent.profileKey);
         if (!current(request)) return;
         if (beforeClose.state == SessionSnapshot.State.NONE || intent.matches(beforeClose)) {
             evaluate(request, intent, replacementAuthorized, reuseOnly,
@@ -474,7 +500,7 @@ final class SessionOrchestrator implements AutoCloseable {
                     returnToRetained(request, intent);
                     return;
                 }
-                SessionSnapshot afterClose = effects.resolve(intent.hostId);
+                SessionSnapshot afterClose = effects.resolve(intent.profileKey);
                 if (!current(request)) return;
                 if (afterClose.state == SessionSnapshot.State.NONE) {
                     launch(request, intent, preparedTarget, freshType(intent), "",
@@ -503,7 +529,7 @@ final class SessionOrchestrator implements AutoCloseable {
 
     private void reconnect(long request, PlayIntent intent) {
         diagnostic("INFO", "orchestration.reconnect", request, intent);
-        effects.reconnectSavedSession();
+        effects.reconnectSavedSession(intent);
     }
 
     private void launch(long request, PlayIntent intent, NvApp target,
@@ -517,9 +543,10 @@ final class SessionOrchestrator implements AutoCloseable {
     private static void diagnostic(String level, String event, long request,
                                    PlayIntent intent, Object... fields) {
         if (intent == null) return;
-        Object[] values = new Object[fields.length + 10];
+        Object[] values = new Object[fields.length + 12];
         Object[] base = {"orchestration_id", request, "host_id", intent.hostId,
-                "game_id", intent.playniteGameId, "app_id", intent.sunshineAppId,
+                "profile_id", intent.profileId, "game_id", intent.playniteGameId,
+                "app_id", intent.sunshineAppId,
                 "kind", intent.kind.name()};
         System.arraycopy(base, 0, values, 0, base.length);
         System.arraycopy(fields, 0, values, base.length, fields.length);

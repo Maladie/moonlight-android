@@ -7,6 +7,17 @@ $statePath = Join-Path $GatewayDirectory "gateway-supervisor-state.json"
 $stopPath = Join-Path $GatewayDirectory "gateway-supervisor-stop"
 Remove-Item -LiteralPath (Join-Path $GatewayDirectory "gateway-manually-stopped") -Force -ErrorAction SilentlyContinue
 Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
+$service = Get-Service -Name "MoonWakerGateway" -ErrorAction SilentlyContinue
+if ($null -ne $service) {
+    if ($service.Status -ne [ServiceProcess.ServiceControllerStatus]::Running) {
+        Start-Service -Name $service.Name
+        $service.WaitForStatus(
+            [ServiceProcess.ServiceControllerStatus]::Running,
+            [TimeSpan]::FromSeconds(15))
+    }
+    Write-Host "MoonWaker Gateway service is running."
+    return
+}
 if (Test-Path -LiteralPath $statePath) {
     try {
         $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json

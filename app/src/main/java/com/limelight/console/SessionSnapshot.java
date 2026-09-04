@@ -1,5 +1,7 @@
 package com.limelight.console;
 
+import com.limelight.gateway.GatewayConnection;
+
 import java.util.Locale;
 import java.util.Objects;
 
@@ -15,7 +17,9 @@ final class SessionSnapshot {
         UNCERTAIN
     }
 
+    final HostProfileKey profileKey;
     final String hostId;
+    final String profileId;
     final State state;
     final int hostGameAppId;
     final String playniteGameId;
@@ -33,7 +37,17 @@ final class SessionSnapshot {
                     String playniteGameId, boolean retainedTransport,
                     boolean explicitSuspension, boolean suspensionSleepObserved,
                     boolean hostSleepRequested, boolean hostSleepObserved) {
-        this(hostId, state, hostGameAppId, playniteGameId, retainedTransport,
+        this(hostId, GatewayConnection.DEFAULT_PROFILE_ID, state, hostGameAppId,
+                playniteGameId, retainedTransport,
+                explicitSuspension, suspensionSleepObserved, hostSleepRequested,
+                hostSleepObserved, "", false);
+    }
+
+    SessionSnapshot(String hostId, String profileId, State state, int hostGameAppId,
+                    String playniteGameId, boolean retainedTransport,
+                    boolean explicitSuspension, boolean suspensionSleepObserved,
+                    boolean hostSleepRequested, boolean hostSleepObserved) {
+        this(hostId, profileId, state, hostGameAppId, playniteGameId, retainedTransport,
                 explicitSuspension, suspensionSleepObserved, hostSleepRequested,
                 hostSleepObserved, "", false);
     }
@@ -43,7 +57,18 @@ final class SessionSnapshot {
                     boolean explicitSuspension, boolean suspensionSleepObserved,
                     boolean hostSleepRequested, boolean hostSleepObserved,
                     String suspendId) {
-        this(hostId, state, hostGameAppId, playniteGameId, retainedTransport,
+        this(hostId, GatewayConnection.DEFAULT_PROFILE_ID, state, hostGameAppId,
+                playniteGameId, retainedTransport,
+                explicitSuspension, suspensionSleepObserved, hostSleepRequested,
+                hostSleepObserved, suspendId, false);
+    }
+
+    SessionSnapshot(String hostId, String profileId, State state, int hostGameAppId,
+                    String playniteGameId, boolean retainedTransport,
+                    boolean explicitSuspension, boolean suspensionSleepObserved,
+                    boolean hostSleepRequested, boolean hostSleepObserved,
+                    String suspendId) {
+        this(hostId, profileId, state, hostGameAppId, playniteGameId, retainedTransport,
                 explicitSuspension, suspensionSleepObserved, hostSleepRequested,
                 hostSleepObserved, suspendId, false);
     }
@@ -53,7 +78,21 @@ final class SessionSnapshot {
                     boolean explicitSuspension, boolean suspensionSleepObserved,
                     boolean hostSleepRequested, boolean hostSleepObserved,
                     String suspendId, boolean neutralStreamTarget) {
+        this(hostId, GatewayConnection.DEFAULT_PROFILE_ID, state, hostGameAppId,
+                playniteGameId, retainedTransport, explicitSuspension,
+                suspensionSleepObserved, hostSleepRequested, hostSleepObserved,
+                suspendId, neutralStreamTarget);
+    }
+
+    SessionSnapshot(String hostId, String profileId, State state, int hostGameAppId,
+                    String playniteGameId, boolean retainedTransport,
+                    boolean explicitSuspension, boolean suspensionSleepObserved,
+                    boolean hostSleepRequested, boolean hostSleepObserved,
+                    String suspendId, boolean neutralStreamTarget) {
         this.hostId = normalize(hostId);
+        this.profileId = GatewayConnection.normalizeProfileId(profileId);
+        this.profileKey = this.hostId.isEmpty() ? null
+                : new HostProfileKey(this.hostId, this.profileId);
         this.state = state;
         this.hostGameAppId = hostGameAppId;
         this.playniteGameId = normalize(playniteGameId);
@@ -81,7 +120,7 @@ final class SessionSnapshot {
     boolean isResumeAvailable() { return resumeAvailable; }
 
     String signature() {
-        return state + "|" + hostId + "|" + hostGameAppId + "|" + playniteGameId
+        return state + "|" + hostId + "|" + profileId + "|" + hostGameAppId + "|" + playniteGameId
                 + "|" + retainedTransport + "|" + explicitSuspension + "|"
                 + suspensionSleepObserved + "|" + hostSleepRequested + "|"
                 + hostSleepObserved + "|" + suspendId + "|" + neutralStreamTarget;
@@ -98,13 +137,14 @@ final class SessionSnapshot {
                 && hostSleepRequested == other.hostSleepRequested
                 && hostSleepObserved == other.hostSleepObserved
                 && neutralStreamTarget == other.neutralStreamTarget
-                && hostId.equals(other.hostId) && state == other.state
+                && hostId.equals(other.hostId) && profileId.equals(other.profileId)
+                && state == other.state
                 && playniteGameId.equals(other.playniteGameId)
                 && suspendId.equals(other.suspendId);
     }
 
     @Override public int hashCode() {
-        return Objects.hash(hostId, state, hostGameAppId, playniteGameId,
+        return Objects.hash(hostId, profileId, state, hostGameAppId, playniteGameId,
                 retainedTransport, explicitSuspension, suspensionSleepObserved,
                 hostSleepRequested, hostSleepObserved, suspendId, neutralStreamTarget);
     }

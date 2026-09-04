@@ -1,4 +1,5 @@
 {
+  "schema_version": 2,
   "listen_host": "0.0.0.0",
   "listen_port": 8785,
   "certificate": "gateway-cert.pem",
@@ -11,11 +12,21 @@
   "playnite_bridge": "http://127.0.0.1:8780",
   "profiles": {
     "default": {
+      "id": "default",
       "name": "Default",
+      "display_name": "Default",
+      "owner_sid": "",
+      "windows_account_sid": "",
+      "owner": "",
+      "windows_account_name": "",
+      "enabled": true,
+      "profile_root": "",
       "discord_bridge": "http://127.0.0.1:8765",
       "vibepollo_bridge": "http://127.0.0.1:8775",
       "game_provider_bridge": "http://127.0.0.1:8780",
-      "playnite_bridge": "http://127.0.0.1:8780"
+      "playnite_bridge": "http://127.0.0.1:8780",
+      "remote_sign_in_enabled": false,
+      "account_mapping_status": "action_required"
     }
   },
   "clients": []

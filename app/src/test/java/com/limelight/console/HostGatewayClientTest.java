@@ -1,13 +1,48 @@
 package com.limelight.console;
 
+import com.limelight.gateway.GatewayTransport;
+
 import org.json.JSONObject;
 import org.junit.Test;
+
+import java.util.Collections;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class HostGatewayClientTest {
+    @Test public void windowsSessionResponseKeepsOnlyCoarsePollingState() throws Exception {
+        HostGatewayClient.WindowsSession session = HostGatewayClient.parseWindowsSession(
+                new JSONObject().put("state", "session_starting")
+                        .put("reason", "none")
+                        .put("attempt_id", "0123456789abcdef0123456789abcdef")
+                        .put("retry_after_ms", 750));
+
+        assertEquals("session_starting", session.state);
+        assertEquals("none", session.reason);
+        assertEquals("0123456789abcdef0123456789abcdef", session.attemptId);
+        assertEquals(750, session.retryAfterMs);
+    }
+
+    @Test public void windowsSessionHttpErrorsMapToCoarseAndroidReasons() {
+        assertEquals("remote_sign_in_not_granted", HostGatewayClient.sessionFailure(
+                new GatewayTransport.GatewayException("denied", 403)).reason);
+        assertEquals("broker_unavailable", HostGatewayClient.sessionFailure(
+                new GatewayTransport.GatewayException("unavailable", 503)).reason);
+        assertEquals("other_user_active", HostGatewayClient.sessionFailure(
+                new GatewayTransport.GatewayException("other_user_active", 409)).reason);
+    }
+
+    @Test public void windowsSessionCancellationPinsOriginalRequestAndAttempt() throws Exception {
+        JSONObject body = HostGatewayClient.sessionCancellationBody(
+                "android-42-original", "0123456789abcdef0123456789abcdef");
+
+        assertEquals("android-42-original", body.getString("request_id"));
+        assertEquals("0123456789abcdef0123456789abcdef",
+                body.getString("attempt_id"));
+    }
+
     @Test public void adaptiveNetworkDownloadTargetsEightSecondsAtEightyMegabits() {
         assertEquals(80_000_000, HostGatewayClient.adaptiveNetworkDownloadSize(
                 8L * 1024 * 1024, 838_860_800L));
@@ -192,6 +227,56 @@ public class HostGatewayClientTest {
                                 .put("playnite_connector_connected", true))));
 
         assertTrue(profiles.find("default").playniteConnectorConnected);
+    }
+
+    @Test public void pairingSelectsTheOnlyGrantedProfile() throws Exception {
+        HostGatewayClient.IntegrationProfiles profiles =
+                HostGatewayClient.parseIntegrationProfiles(new JSONObject()
+                        .put("profiles", new org.json.JSONArray().put(new JSONObject()
+                                .put("id", "p-basia")
+                                .put("permissions", new JSONObject()
+                                        .put("use_profile", true)))));
+
+        assertEquals("p-basia", HostGatewayClient.pairingProfileId(profiles));
+    }
+
+    @Test public void pairingUsesARealProfileWhileMultipleProfilesAwaitSelection() throws Exception {
+        HostGatewayClient.IntegrationProfiles profiles =
+                HostGatewayClient.parseIntegrationProfiles(new JSONObject()
+                        .put("profiles", new org.json.JSONArray()
+                                .put(new JSONObject().put("id", "p-basia"))
+                                .put(new JSONObject().put("id", "p-guest"))));
+
+        assertEquals("p-basia", HostGatewayClient.pairingProfileId(profiles));
+    }
+
+    @Test public void selectorProjectsOnlyUsableProfilesAndHidesForOne() throws Exception {
+        org.json.JSONArray values = new org.json.JSONArray()
+                .put(new JSONObject().put("id", "denied").put("name", "Denied")
+                        .put("permissions", new JSONObject().put("use_profile", false)))
+                .put(new JSONObject().put("id", "Basia").put("name", "Basia")
+                        .put("permissions", new JSONObject()
+                                .put("use_profile", true).put("remote_sign_in", true))
+                        .put("session_state", "unlocked")
+                        .put("remote_sign_in_state", "available"))
+                .put(new JSONObject().put("id", "Gry").put("name", "Gry")
+                        .put("permissions", new JSONObject().put("use_profile", true)));
+        HostGatewayClient.IntegrationProfiles parsed =
+                HostGatewayClient.parseIntegrationProfiles(
+                        new JSONObject().put("profiles", values));
+
+        HostGatewayStore.ProfileSelection multiple = HostGatewayStore.projectProfiles(
+                parsed.profiles, "Gry", "Basia");
+        assertEquals(2, multiple.profiles.size());
+        assertEquals("Gry", multiple.selected.id);
+        assertTrue(multiple.showSelector);
+        assertTrue(parsed.find("Basia").remoteSignIn);
+        assertEquals("unlocked", parsed.find("Basia").sessionState);
+        assertEquals("available", parsed.find("Basia").remoteSignInState);
+
+        HostGatewayStore.ProfileSelection single = HostGatewayStore.projectProfiles(
+                Collections.singletonList(parsed.find("Basia")), "Basia", "");
+        assertFalse(single.showSelector);
     }
 
     @Test public void gameStartRejectionPreservesTopLevelAndNestedReasons() throws Exception {

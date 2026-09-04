@@ -16,7 +16,7 @@ public class ConsoleHostPreparationContractTest {
                 "private void dispatchPendingHostPreparation()");
         assertTrue(prepare.contains("ConsoleActionCatalog.canPrepareHost(host)"));
         assertTrue(prepare.indexOf("if (managerBinder == null)")
-                < prepare.indexOf("sessionOrchestrator.prepareHost(host.uuid)"));
+                < prepare.indexOf("sessionOrchestrator.prepareHost(host.uuid,"));
         assertTrue(prepare.contains("pendingHostPreparation = host.uuid;\n                return;"));
         String dispatch = section(source, "private void dispatchPendingHostPreparation()",
                 "private void armPendingWarmUpRelay()");

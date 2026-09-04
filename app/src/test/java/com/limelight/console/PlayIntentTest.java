@@ -132,8 +132,26 @@ public class PlayIntentTest {
         assertEquals(20_000, calibration.runtimeBitrateKbps);
     }
 
+    @Test public void profileIsImmutableAndRequiredForSessionMatch() {
+        PlayIntent intent = PlayIntent.playniteGame(
+                "host", "Basia", 42, "Game", false, "game", "game");
+        PlayIntent calibrated = intent.withCalibration(
+                "settings:game", 1920, 1080, 60, 20_000);
+
+        assertEquals("Basia", intent.profileId);
+        assertEquals(intent.profileKey, calibrated.profileKey);
+        assertTrue(intent.matches(snapshot("host", "Basia", 42, "game")));
+        assertFalse(intent.matches(snapshot("host", "Gry", 42, "game")));
+    }
+
     private static SessionSnapshot snapshot(String host, int appId, String gameId) {
         return new SessionSnapshot(host, SessionSnapshot.State.ACTIVE, appId, gameId,
                 false, false, false, false, false);
+    }
+
+    private static SessionSnapshot snapshot(String host, String profileId,
+                                            int appId, String gameId) {
+        return new SessionSnapshot(host, profileId, SessionSnapshot.State.ACTIVE,
+                appId, gameId, false, false, false, false, false);
     }
 }

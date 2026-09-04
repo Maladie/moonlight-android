@@ -105,6 +105,25 @@ public class DiscordSocialPanelControllerTest {
     }
 
     @Test
+    public void enteringDiscordConnectsAnOnlineUnauthenticatedBridge() {
+        assertTrue(DiscordPanelController.shouldConnectDiscord(
+                new HostGatewayClient.DiscordStatus(true, false, false,
+                        "authorization required")));
+        assertFalse(DiscordPanelController.shouldConnectDiscord(
+                new HostGatewayClient.DiscordStatus(false, false, false, "offline")));
+        assertFalse(DiscordPanelController.shouldConnectDiscord(
+                new HostGatewayClient.DiscordStatus(true, true, true, "")));
+    }
+
+    @Test
+    public void staleDiscordErrorDoesNotOverrideAConnectedRpc() {
+        assertFalse(DiscordPanelController.discordNeedsReconnect(
+                new HostGatewayClient.DiscordStatus(true, true, true, "old write error")));
+        assertTrue(DiscordPanelController.discordNeedsReconnect(
+                new HostGatewayClient.DiscordStatus(true, false, true, "")));
+    }
+
+    @Test
     public void joinedVoiceMustMatchTheRequestedChannel() {
         HostGatewayClient.DiscordVoice matching = new HostGatewayClient.DiscordVoice(
                 true, "12345", "Lobby", "67890", false, false, 1);

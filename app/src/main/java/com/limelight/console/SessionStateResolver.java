@@ -1,18 +1,22 @@
 package com.limelight.console;
 
 import com.limelight.stream.RetainedStreamSessionCoordinator;
+import com.limelight.gateway.GatewayConnection;
 
 /** Pure precedence resolver over session facts read by ConsoleActivity. */
 final class SessionStateResolver {
     static final class Observations {
         final String hostId;
+        final String profileId;
         final int runningGameAppId;
         final String resolvedPlayniteGameId;
         final RetainedStreamSessionCoordinator.State retainedState;
         final String retainedHostId;
+        final String retainedProfileId;
         final int retainedAppId;
         final String retainedPlayniteGameId;
         final String suspendedHostId;
+        final String suspendedProfileId;
         final int suspendedAppId;
         final String suspendedPlayniteGameId;
         String suspendedId;
@@ -21,6 +25,7 @@ final class SessionStateResolver {
         final boolean recentlyEnded;
         final boolean pendingResume;
         final String pendingResumeHostId;
+        final String pendingResumeProfileId;
         final int pendingResumeAppId;
         final String hostSleepHostId;
         final boolean hostSleepRequested;
@@ -36,16 +41,34 @@ final class SessionStateResolver {
                      boolean pendingResume, String pendingResumeHostId,
                      int pendingResumeAppId, String hostSleepHostId,
                      HostSleepStateStore.State hostSleep, boolean hostOnline) {
-            this(hostId, runningGameAppId, resolvedPlayniteGameId,
-                    retained.state, retained.hostId, retained.appId,
+            this(hostId, GatewayConnection.DEFAULT_PROFILE_ID, runningGameAppId,
+                    resolvedPlayniteGameId, retained,
+                    suspended, recentlyEnded, pendingResume, pendingResumeHostId,
+                    GatewayConnection.DEFAULT_PROFILE_ID, pendingResumeAppId,
+                    hostSleepHostId, hostSleep, hostOnline);
+        }
+
+        Observations(String hostId, String profileId, int runningGameAppId,
+                     String resolvedPlayniteGameId,
+                     RetainedStreamSessionCoordinator.Snapshot retained,
+                     SuspendedSessionStore.Session suspended, boolean recentlyEnded,
+                     boolean pendingResume, String pendingResumeHostId,
+                     String pendingResumeProfileId, int pendingResumeAppId,
+                     String hostSleepHostId, HostSleepStateStore.State hostSleep,
+                     boolean hostOnline) {
+            this(hostId, profileId, runningGameAppId, resolvedPlayniteGameId,
+                    retained.state, retained.hostId, retained.profileId, retained.appId,
                     retained.playniteGameId,
                     suspended == null ? "" : suspended.hostId,
+                    suspended == null ? GatewayConnection.DEFAULT_PROFILE_ID
+                            : suspended.profileId,
                     suspended == null ? 0 : suspended.sunshineAppId,
                     suspended == null ? "" : suspended.playniteGameId,
                     suspended == null ? -1L : suspended.resumedAt,
                     suspended == null ? 0L : suspended.sleepObservedAt,
                     recentlyEnded, pendingResume, pendingResumeHostId,
-                    pendingResumeAppId, hostSleepHostId, hostSleep != null,
+                    pendingResumeProfileId, pendingResumeAppId, hostSleepHostId,
+                    hostSleep != null,
                     hostSleep != null && hostSleep.sleepObservedAt > 0L);
             this.hostOnline = hostOnline;
             this.suspendedId = suspended == null ? "" : suspended.suspendId;
@@ -61,16 +84,43 @@ final class SessionStateResolver {
                      String pendingResumeHostId, int pendingResumeAppId,
                      String hostSleepHostId, boolean hostSleepRequested,
                      boolean hostSleepObserved) {
+            this(hostId, GatewayConnection.DEFAULT_PROFILE_ID, runningGameAppId,
+                    resolvedPlayniteGameId, retainedState, retainedHostId,
+                    GatewayConnection.DEFAULT_PROFILE_ID, retainedAppId,
+                    retainedPlayniteGameId, suspendedHostId,
+                    GatewayConnection.DEFAULT_PROFILE_ID, suspendedAppId,
+                    suspendedPlayniteGameId, suspendedResumedAt,
+                    suspendedSleepObservedAt, recentlyEnded, pendingResume,
+                    pendingResumeHostId, GatewayConnection.DEFAULT_PROFILE_ID,
+                    pendingResumeAppId, hostSleepHostId, hostSleepRequested,
+                    hostSleepObserved);
+        }
+
+        Observations(String hostId, String profileId, int runningGameAppId,
+                     String resolvedPlayniteGameId,
+                     RetainedStreamSessionCoordinator.State retainedState,
+                     String retainedHostId, String retainedProfileId, int retainedAppId,
+                     String retainedPlayniteGameId, String suspendedHostId,
+                     String suspendedProfileId, int suspendedAppId,
+                     String suspendedPlayniteGameId, long suspendedResumedAt,
+                     long suspendedSleepObservedAt, boolean recentlyEnded,
+                     boolean pendingResume, String pendingResumeHostId,
+                     String pendingResumeProfileId, int pendingResumeAppId,
+                     String hostSleepHostId, boolean hostSleepRequested,
+                     boolean hostSleepObserved) {
             this.hostId = SessionSnapshot.normalize(hostId);
+            this.profileId = GatewayConnection.normalizeProfileId(profileId);
             this.runningGameAppId = runningGameAppId;
             this.resolvedPlayniteGameId = SessionSnapshot.normalize(
                     resolvedPlayniteGameId);
             this.retainedState = retainedState;
             this.retainedHostId = SessionSnapshot.normalize(retainedHostId);
+            this.retainedProfileId = GatewayConnection.normalizeProfileId(retainedProfileId);
             this.retainedAppId = retainedAppId;
             this.retainedPlayniteGameId = SessionSnapshot.normalize(
                     retainedPlayniteGameId);
             this.suspendedHostId = SessionSnapshot.normalize(suspendedHostId);
+            this.suspendedProfileId = GatewayConnection.normalizeProfileId(suspendedProfileId);
             this.suspendedAppId = suspendedAppId;
             this.suspendedPlayniteGameId = SessionSnapshot.normalize(
                     suspendedPlayniteGameId);
@@ -79,6 +129,8 @@ final class SessionStateResolver {
             this.recentlyEnded = recentlyEnded;
             this.pendingResume = pendingResume;
             this.pendingResumeHostId = SessionSnapshot.normalize(pendingResumeHostId);
+            this.pendingResumeProfileId = GatewayConnection.normalizeProfileId(
+                    pendingResumeProfileId);
             this.pendingResumeAppId = pendingResumeAppId;
             this.hostSleepHostId = SessionSnapshot.normalize(hostSleepHostId);
             this.hostSleepRequested = hostSleepRequested;
@@ -96,7 +148,9 @@ final class SessionStateResolver {
         boolean bridgeIdle = "idle".equals(bridgeState);
         boolean bridgeUncertain = !bridgeState.isEmpty()
                 && !bridgeRunning && !bridgeIdle;
-        boolean retainedMatches = facts.hostId.equals(facts.retainedHostId)
+        boolean retainedProfileMatches = facts.hostId.equals(facts.retainedHostId)
+                && facts.profileId.equals(facts.retainedProfileId);
+        boolean retainedMatches = retainedProfileMatches
                 && (facts.runningGameAppId == 0
                 || facts.retainedAppId == 0
                 || facts.runningGameAppId == facts.retainedAppId)
@@ -106,9 +160,11 @@ final class SessionStateResolver {
         boolean retainedLive = facts.retainedOwnerLive && retainedMatches
                 && (facts.retainedState == RetainedStreamSessionCoordinator.State.HOME_LIVE
                 || facts.retainedState == RetainedStreamSessionCoordinator.State.PARKED_LIVE);
-        boolean suspendedMatches = facts.hostId.equals(facts.suspendedHostId);
+        boolean suspendedMatches = facts.hostId.equals(facts.suspendedHostId)
+                && facts.profileId.equals(facts.suspendedProfileId);
         boolean pendingMatches = facts.pendingResume
-                && facts.hostId.equals(facts.pendingResumeHostId);
+                && facts.hostId.equals(facts.pendingResumeHostId)
+                && facts.profileId.equals(facts.pendingResumeProfileId);
         boolean sleepMatches = facts.hostId.equals(facts.hostSleepHostId);
         boolean explicitSuspension = suspendedMatches && facts.suspendedResumedAt == 0L;
         boolean suspensionSleepObserved = explicitSuspension
@@ -116,7 +172,7 @@ final class SessionStateResolver {
         boolean sleepRequested = sleepMatches && facts.hostSleepRequested;
         boolean sleepObserved = sleepRequested && facts.hostSleepObserved;
 
-        if (facts.hostId.equals(facts.retainedHostId) && facts.retainedState
+        if (retainedProfileMatches && facts.retainedState
                 == RetainedStreamSessionCoordinator.State.TERMINATING) {
             return snapshot(facts, SessionSnapshot.State.TERMINATING,
                     facts.retainedAppId, facts.retainedPlayniteGameId, false,
@@ -124,7 +180,7 @@ final class SessionStateResolver {
                     sleepRequested, sleepObserved);
         }
 
-        if (facts.hostId.equals(facts.retainedHostId) && facts.retainedState
+        if (retainedProfileMatches && facts.retainedState
                 == RetainedStreamSessionCoordinator.State.PREPARING) {
             return snapshot(facts, SessionSnapshot.State.PREPARING,
                     facts.retainedAppId, facts.retainedPlayniteGameId, false,
@@ -202,7 +258,7 @@ final class SessionStateResolver {
                                             boolean suspensionSleepObserved,
                                             boolean hostSleepRequested,
                                             boolean hostSleepObserved) {
-        return new SessionSnapshot(facts.hostId, state, appId, gameId,
+        return new SessionSnapshot(facts.hostId, facts.profileId, state, appId, gameId,
                 retainedTransport, explicitSuspension, suspensionSleepObserved,
                 hostSleepRequested, hostSleepObserved,
                 explicitSuspension ? facts.suspendedId : "",

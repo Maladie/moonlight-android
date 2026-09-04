@@ -313,6 +313,25 @@ public class SessionStateResolverTest {
         assertEquals(99, snapshot.hostGameAppId);
     }
 
+    @Test public void retainedSuspendedAndPendingFactsFromAnotherProfileAreIgnored() {
+        Facts facts = suspendedFacts();
+        facts.profile = "Basia";
+        facts.suspendedProfile = "Gry";
+        facts.retainedState = RetainedStreamSessionCoordinator.State.HOME_LIVE;
+        facts.retainedHost = "host";
+        facts.retainedProfile = "Gry";
+        facts.retainedApp = 42;
+        facts.pending = true;
+        facts.pendingHost = "host";
+        facts.pendingProfile = "Gry";
+        facts.pendingApp = 42;
+
+        SessionSnapshot snapshot = resolver.resolve(facts.build());
+
+        assertEquals(SessionSnapshot.State.NONE, snapshot.state);
+        assertEquals("Basia", snapshot.profileId);
+    }
+
     @Test public void recentEndedSuppressesRawSuspendedAndPendingMarkers() {
         Facts raw = new Facts();
         raw.runningApp = 42;
@@ -446,14 +465,17 @@ public class SessionStateResolverTest {
 
     private static final class Facts {
         String host = "host";
+        String profile = "default";
         int runningApp;
         String resolvedGame = "";
         RetainedStreamSessionCoordinator.State retainedState =
                 RetainedStreamSessionCoordinator.State.NONE;
         String retainedHost = "";
+        String retainedProfile = "default";
         int retainedApp;
         String retainedGame = "";
         String suspendedHost = "";
+        String suspendedProfile = "default";
         int suspendedApp;
         String suspendedGame = "";
         long suspendedResumedAt = -1L;
@@ -461,6 +483,7 @@ public class SessionStateResolverTest {
         boolean recentlyEnded;
         boolean pending;
         String pendingHost = "";
+        String pendingProfile = "default";
         int pendingApp;
         String sleepHost = "";
         boolean sleepRequested;
@@ -473,11 +496,12 @@ public class SessionStateResolverTest {
 
         SessionStateResolver.Observations build() {
             SessionStateResolver.Observations observations =
-                    new SessionStateResolver.Observations(host, runningApp, resolvedGame,
-                    retainedState, retainedHost, retainedApp, retainedGame,
-                    suspendedHost, suspendedApp, suspendedGame, suspendedResumedAt,
+                    new SessionStateResolver.Observations(host, profile, runningApp,
+                    resolvedGame, retainedState, retainedHost, retainedProfile,
+                    retainedApp, retainedGame, suspendedHost, suspendedProfile,
+                    suspendedApp, suspendedGame, suspendedResumedAt,
                     suspendedSleepObservedAt, recentlyEnded, pending, pendingHost,
-                    pendingApp, sleepHost, sleepRequested, sleepObserved);
+                    pendingProfile, pendingApp, sleepHost, sleepRequested, sleepObserved);
             observations.hostOnline = hostOnline;
             observations.bridgeGameState = bridgeState.isEmpty()
                     ? observations.bridgeGameState : bridgeState;

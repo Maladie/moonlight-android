@@ -27,11 +27,14 @@ final class HostGatewayClient {
         final GatewayConnection connection;
         final String clientId;
         final String streamPairTicket;
+        final IntegrationProfiles profiles;
 
-        Pairing(GatewayConnection connection, String clientId, String streamPairTicket) {
+        Pairing(GatewayConnection connection, String clientId, String streamPairTicket,
+                IntegrationProfiles profiles) {
             this.connection = connection;
             this.clientId = clientId;
             this.streamPairTicket = streamPairTicket == null ? "" : streamPairTicket;
+            this.profiles = profiles;
         }
     }
 
@@ -57,6 +60,10 @@ final class HostGatewayClient {
     static final class IntegrationProfile {
         final String id;
         final String name;
+        final boolean useProfile;
+        final boolean remoteSignIn;
+        final String sessionState;
+        final String remoteSignInState;
         final boolean discordBridgeOnline;
         final boolean discordRpcConnected;
         final boolean discordAuthenticated;
@@ -70,7 +77,7 @@ final class HostGatewayClient {
                            boolean vibepolloBridgeOnline, boolean virtualHereAvailable) {
             this(id, name, discordBridgeOnline, discordRpcConnected,
                     discordAuthenticated, vibepolloBridgeOnline, false, false,
-                    virtualHereAvailable);
+                    virtualHereAvailable, true, false, "unknown", "unavailable");
         }
 
         IntegrationProfile(String id, String name, boolean discordBridgeOnline,
@@ -79,7 +86,8 @@ final class HostGatewayClient {
                            boolean virtualHereAvailable) {
             this(id, name, discordBridgeOnline, discordRpcConnected,
                     discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
-                    false, virtualHereAvailable);
+                    false, virtualHereAvailable, true, false,
+                    "unknown", "unavailable");
         }
 
         IntegrationProfile(String id, String name, boolean discordBridgeOnline,
@@ -87,8 +95,25 @@ final class HostGatewayClient {
                            boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
                            boolean playniteConnectorConnected,
                            boolean virtualHereAvailable) {
+            this(id, name, discordBridgeOnline, discordRpcConnected,
+                    discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
+                    playniteConnectorConnected, virtualHereAvailable, true, false,
+                    "unknown", "unavailable");
+        }
+
+        IntegrationProfile(String id, String name, boolean discordBridgeOnline,
+                           boolean discordRpcConnected, boolean discordAuthenticated,
+                           boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
+                           boolean playniteConnectorConnected,
+                           boolean virtualHereAvailable, boolean useProfile,
+                           boolean remoteSignIn, String sessionState,
+                           String remoteSignInState) {
             this.id = id;
             this.name = name;
+            this.useProfile = useProfile;
+            this.remoteSignIn = remoteSignIn;
+            this.sessionState = normalizedState(sessionState, "unknown");
+            this.remoteSignInState = normalizedState(remoteSignInState, "unavailable");
             this.discordBridgeOnline = discordBridgeOnline;
             this.discordRpcConnected = discordRpcConnected;
             this.discordAuthenticated = discordAuthenticated;
@@ -503,6 +528,20 @@ final class HostGatewayClient {
         }
     }
 
+    static final class WindowsSession {
+        final String state;
+        final String reason;
+        final String attemptId;
+        final int retryAfterMs;
+
+        WindowsSession(String state, String reason, String attemptId, int retryAfterMs) {
+            this.state = normalizedState(state, "failed");
+            this.reason = normalizedState(reason, "manual_sign_in_required");
+            this.attemptId = attemptId == null ? "" : attemptId.trim();
+            this.retryAfterMs = retryAfterMs > 0 ? retryAfterMs : 1_000;
+        }
+    }
+
     static final class RepairStatus {
         final boolean online;
         final String version;
@@ -766,10 +805,19 @@ final class HostGatewayClient {
         String fingerprint = pairing.certificateSha256();
         String token = response.optString("token", "");
         if (token.isEmpty()) throw new GatewayException("The gateway returned no client token.", 0);
-        return new Pairing(new GatewayConnection(endpoint, token, fingerprint,
-                GatewayConnection.DEFAULT_PROFILE_ID),
+        IntegrationProfiles profiles = parseIntegrationProfiles(response);
+        String selectedProfile = pairingProfileId(profiles);
+        return new Pairing(new GatewayConnection(endpoint, token, fingerprint, selectedProfile),
                 response.optString("client_id", ""),
-                response.optString("stream_pair_ticket", ""));
+                response.optString("stream_pair_ticket", ""), profiles);
+    }
+
+    static String pairingProfileId(IntegrationProfiles profiles) {
+        if (profiles != null && profiles.find(profiles.suggestedProfileId) != null) {
+            return profiles.suggestedProfileId;
+        }
+        return profiles != null && !profiles.profiles.isEmpty()
+                ? profiles.profiles.get(0).id : GatewayConnection.DEFAULT_PROFILE_ID;
     }
 
     String requestVibepolloPairingTicket(GatewayConnection connection) throws IOException {
@@ -829,6 +877,99 @@ final class HostGatewayClient {
         return parseIntegrationProfiles(response);
     }
 
+    WindowsSession ensureWindowsSession(GatewayConnection connection, String requestId)
+            throws IOException {
+        try {
+            return parseWindowsSession(transport.postJson(connection,
+                    "/api/v1/system/session/ensure", new JSONObject(), requestId, 15_000));
+        } catch (GatewayTransport.GatewayException error) {
+            WindowsSession failure = sessionFailure(error);
+            if (failure != null) return failure;
+            throw mapException(error);
+        }
+    }
+
+    WindowsSession getWindowsSessionStatus(GatewayConnection connection,
+                                           String requestId, String attemptId)
+            throws IOException {
+        String attempt = requireAttemptId(attemptId);
+        String request = requireSessionRequestId(requestId);
+        String path = "/api/v1/system/session/status?attempt_id="
+                + URLEncoder.encode(attempt, StandardCharsets.UTF_8.name())
+                + "&request_id="
+                + URLEncoder.encode(request, StandardCharsets.UTF_8.name());
+        try {
+            return parseWindowsSession(transport.getJson(connection, path, 10_000));
+        } catch (GatewayTransport.GatewayException error) {
+            WindowsSession failure = sessionFailure(error);
+            if (failure != null) return failure;
+            throw mapException(error);
+        }
+    }
+
+    void cancelWindowsSession(GatewayConnection connection, String requestId,
+                              String attemptId) throws IOException {
+        String request = requireSessionRequestId(requestId);
+        JSONObject body = sessionCancellationBody(request, attemptId);
+        try {
+            transport.postJson(connection, "/api/v1/system/session/cancel",
+                    body, request, 10_000);
+        } catch (GatewayTransport.GatewayException error) {
+            throw mapException(error);
+        }
+    }
+
+    static JSONObject sessionCancellationBody(String requestId, String attemptId) {
+        JSONObject body = new JSONObject();
+        try {
+            body.put("request_id", requireSessionRequestId(requestId));
+            body.put("attempt_id", requireAttemptId(attemptId));
+        } catch (JSONException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+        return body;
+    }
+
+    static WindowsSession parseWindowsSession(JSONObject response) {
+        return new WindowsSession(response.optString("state", "failed"),
+                response.optString("reason", "manual_sign_in_required"),
+                response.optString("attempt_id", ""),
+                response.optInt("retry_after_ms", 1_000));
+    }
+
+    static WindowsSession sessionFailure(
+            GatewayTransport.GatewayException error) {
+        if (error.statusCode() == 403) {
+            return new WindowsSession("action_required",
+                    "remote_sign_in_not_granted", "", 1_000);
+        }
+        if (error.statusCode() == 503) {
+            return new WindowsSession("failed", "broker_unavailable", "", 1_000);
+        }
+        if (error.statusCode() < 400) return null;
+        String reason = normalizedState(error.getMessage(), "manual_sign_in_required");
+        if (!reason.matches("[a-z0-9_]{1,64}")) reason = "manual_sign_in_required";
+        String state = "attempt_expired".equals(reason) ? "expired"
+                : "attempt_cancelled".equals(reason) ? "cancelled" : "action_required";
+        return new WindowsSession(state, reason, "", 1_000);
+    }
+
+    private static String requireSessionRequestId(String requestId) {
+        String value = requestId == null ? "" : requestId.trim();
+        if (!value.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,127}")) {
+            throw new IllegalArgumentException("Invalid session request ID");
+        }
+        return value;
+    }
+
+    private static String requireAttemptId(String attemptId) {
+        String value = attemptId == null ? "" : attemptId.trim();
+        if (!value.matches("[0-9a-f]{32}")) {
+            throw new IllegalArgumentException("Invalid remote sign-in attempt ID");
+        }
+        return value;
+    }
+
     GatewayTransport.NetworkDownloadSample measureNetworkDownload(
             GatewayConnection connection, int sizeBytes) throws IOException {
         return measureNetworkDownload(connection, sizeBytes, 15_000);
@@ -870,6 +1011,7 @@ final class HostGatewayClient {
                 String id = value.optString("id", "").trim();
                 if (!id.matches("[A-Za-z0-9._-]{1,64}")) continue;
                 String name = value.optString("name", id).trim();
+                JSONObject permissions = value.optJSONObject("permissions");
                 profiles.add(new IntegrationProfile(
                         id, name.isEmpty() ? id : name,
                         value.optBoolean("discord_bridge_online", false),
@@ -879,7 +1021,12 @@ final class HostGatewayClient {
                         value.optBoolean("game_provider_bridge_online",
                                 value.optBoolean("playnite_bridge_online", false)),
                         value.optBoolean("playnite_connector_connected", false),
-                        value.optBoolean("virtualhere_available", false)));
+                        value.optBoolean("virtualhere_available", false),
+                        permissions == null || permissions.optBoolean("use_profile", true),
+                        permissions != null && permissions.optBoolean(
+                                "remote_sign_in", false),
+                        value.optString("session_state", "unknown"),
+                        value.optString("remote_sign_in_state", "unavailable")));
             }
         }
         return new IntegrationProfiles(profiles,
@@ -1007,6 +1154,11 @@ final class HostGatewayClient {
         JSONObject response = request(connection, "/api/v1/game/current",
                 "GET", null, READ_TIMEOUT_MS);
         return parseCurrentGame(response);
+    }
+
+    private static String normalizedState(String value, String fallback) {
+        String normalized = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
+        return normalized.matches("[a-z_]{1,40}") ? normalized : fallback;
     }
 
     static PlayniteCurrentGame parseCurrentGame(JSONObject response) {

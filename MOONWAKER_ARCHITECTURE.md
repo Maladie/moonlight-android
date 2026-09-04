@@ -239,6 +239,8 @@ Possible stages:
 ```text
 NETWORK_READY
 GATEWAY_READY
+PROFILE_AUTHORIZED
+INTERACTIVE_SESSION_READY
 PROFILE_READY
 PLAYNITE_READY
 VIBEPOLLO_READY
@@ -326,6 +328,11 @@ Migration is intentionally staged:
 
 Gateway remains the only LAN-facing host API.
 
+`MoonWakerGateway` is an automatic Windows service running under the restricted
+`NT SERVICE\MoonWakerGateway` virtual account. It supervises only the machine
+Gateway process and is available before interactive sign-in. It must not start
+profile Bridges in session 0.
+
 Keep:
 
 - authenticated HTTPS;
@@ -338,7 +345,21 @@ Keep:
 
 Do not expose a generic arbitrary Bridge proxy.
 
-### 5.2 Profile Bridge supervisor
+### 5.2 Host profiles and paired-client grants
+
+The machine profile registry owns non-secret definitions keyed by a stable,
+opaque `profile_id`. The Windows account SID is the authoritative account
+identity; the account name is display metadata. A profile rename never changes
+its ID, SID, root, grants, or Android cache identity.
+
+Each paired Gateway client owns explicit per-profile `use_profile` and
+`remote_sign_in` grants. Every profile-scoped endpoint enforces `use_profile`;
+listing only authorized profiles is a presentation aid, not the authorization
+boundary. `remote_sign_in` is checked only when a locked or signed-out target
+needs a credential submission. An already-active authorized profile remains
+usable with `use_profile` alone.
+
+### 5.3 Profile Bridge supervisor
 
 The Profile Bridge supervisor already owns:
 
@@ -351,7 +372,7 @@ The Profile Bridge supervisor already owns:
 
 Guardian should use host-side repair actions rather than reimplement process supervision on Android.
 
-### 5.3 Game Provider Bridge
+### 5.4 Game Provider Bridge
 
 `GameProviderBridge.py` currently combines:
 
@@ -384,7 +405,7 @@ GameProviderBridge
             +-- GenericPlayniteProvider
 ```
 
-### 5.4 `OperationJournal`
+### 5.5 `OperationJournal`
 
 `OperationJournal` is the durable host-authoritative GameOps state.
 
@@ -401,6 +422,32 @@ Retain states such as:
 - completed;
 - failed;
 - cancelled.
+
+### 5.6 Host Control, installer, and Windows sign-in
+
+The installer owns machine binaries, Windows services, Credential Provider
+registration, ACLs, the private-LAN firewall rule, and version-preserving
+upgrades. It never asks for a Windows account or password and never enables
+remote sign-in for a device.
+
+Host Control owns profile and device management. Its separate elevated
+Configurator enumerates local accounts, creates/edits/removes MoonWaker
+profiles, manages grants, and collects a password directly in the elevated
+window. Passwords are sent only over the local management pipe to
+`MoonWakerLoginBroker`; they never pass through Gateway, Android, PowerShell
+arguments, environment variables, ordinary configuration, or logs.
+
+`MoonWakerLoginBroker` is a LocalSystem service and the sole owner of LSA private
+secrets and short-lived sign-in attempts. Attempts are bound to client, profile,
+request, and SID, expire after two minutes, and issue a credential once. A
+failed submission consumes the attempt and changes the credential to
+`action_required` until Host Control replaces or validates it.
+
+The native x64 MoonWaker Credential Provider supports only Windows logon and
+workstation unlock. It has no network code or provider filter, never hides
+built-in providers, and enumerates a credential only for a pending Broker
+attempt. Its fixed registration can be disabled or removed without changing
+other providers.
 
 ## 6. Privacy architecture
 
@@ -432,28 +479,42 @@ Required semantics:
 - host privacy surface shown before planned target replacement/close;
 - Android privacy surface stays opaque until host confirms target readiness and host privacy removal.
 
-## 7. Boot/sleep assumptions
+## 7. Boot, sleep, and remote sign-in
 
-For v1.0, treat the reliable zero-touch target as:
-
-```text
-sleeping, logged-in Windows session
-    -> Wake-on-LAN
-    -> Bridges/Gateway available
-    -> game launch/resume
-```
-
-Do not promise full:
+The implemented bounded flow is:
 
 ```text
-powered off
-    -> Windows boot
-    -> unattended login
-    -> interactive Bridges
-    -> game
+Wake-on-LAN / network ready
+    -> pre-logon Gateway ready
+    -> selected profile still authorized
+    -> target Windows session active (or one Broker attempt)
+    -> selected profile Bridges ready
+    -> target ready
+    -> existing Moonlight launch and transition privacy gates
 ```
 
-unless a separate Windows-login/service design is implemented.
+`PlayIntent` pins `(hostId, profileId)` for the entire operation. Android polls
+one attempt for at most two minutes and cancels it best-effort when orchestration
+is cancelled or profile selection changes. Broker expiry is the fallback.
+`INTERACTIVE_SESSION_READY` is separately observable; it is not a second
+transition state machine. `LaunchTransitionController` remains authoritative
+for stream privacy, fresh-frame readiness, reveal, and input gating.
+
+Supported automatic authentication is limited to Windows 10/11 x64 local,
+password-based accounts at LogonUI, when no other Windows user is active.
+Windows Hello, Microsoft/Entra/domain accounts, RDP sessions, automatic user
+switching/logout, BitLocker preboot prompts, UEFI passwords, and similar
+preboot interaction require manual action.
+
+Wake from full shutdown is hardware/firmware dependent and is not guaranteed.
+The machine must first reach Windows and LogonUI; MoonWaker cannot cross a
+BitLocker, firmware, or boot failure screen.
+
+Recovery is always manual Windows sign-in with the built-in providers. An
+administrator may run `Disable-MoonWakerCredentialProvider.ps1` or unregister
+only MoonWaker's provider, then repair credentials in Host Control. Service-only
+uninstall preserves profile data and secrets; full uninstall explicitly purges
+configured Broker secrets before removing the Broker.
 
 ## 8. Components to preserve
 
@@ -497,7 +558,7 @@ Post-v1.0 unless required by discovered defects:
 - Guardian;
 - Streaming Autopilot;
 - Together;
-- true cold-boot unattended Windows login.
+- preboot authentication and non-local Windows account automation.
 
 ## 11. Review rule
 

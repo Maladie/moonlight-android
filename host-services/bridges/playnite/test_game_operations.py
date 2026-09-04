@@ -392,17 +392,23 @@ class GameOperationsTest(unittest.TestCase):
             self.assertEqual(1, runner.call_count)
             preflight.assert_called_once_with(provider)
             provider.process_registry.remove(provider.process_registry.get("launch-task"))
-            for reason in ("host_session_locked", "steam_launch_preflight_unavailable"):
-                preflight.return_value = {"ready": False, "reason": reason}
-                self.assertFalse(provider.launch({
-                    "id": "steam:224760", "providerGameId": "224760"})["accepted"])
-                self.assertEqual(1, runner.call_count)
+            preflight.return_value = {"ready": False, "reason": "host_session_locked"}
+            self.assertTrue(provider.launch({
+                "id": "steam:224760", "providerGameId": "224760"},
+                "locked-launch")["accepted"])
+            self.assertEqual(2, runner.call_count)
+            provider.process_registry.remove(provider.process_registry.get("locked-launch"))
+            preflight.return_value = {
+                "ready": False, "reason": "steam_launch_preflight_unavailable"}
+            self.assertFalse(provider.launch({
+                "id": "steam:224760", "providerGameId": "224760"})["accepted"])
+            self.assertEqual(2, runner.call_count)
             preflight.return_value = {"ready": True}
             self.assertFalse(provider.launch({"providerGameId": "invalid"})["accepted"])
             self.assertFalse(provider.launch({"providerGameId": "999"})["accepted"])
             executable.unlink()
             self.assertFalse(provider.launch({"providerGameId": "224760"})["accepted"])
-            self.assertEqual(1, runner.call_count)
+            self.assertEqual(2, runner.call_count)
 
     def test_steam_console_log_is_not_launcher_surface_evidence(self):
         with tempfile.TemporaryDirectory() as temporary:

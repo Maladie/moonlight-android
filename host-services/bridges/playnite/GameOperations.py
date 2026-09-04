@@ -676,7 +676,8 @@ class SteamProvider(GenericPlayniteProvider):
                     "reason": "operation_busy"}
         preflight = self.launch_preflight(self) if self.launch_preflight else {
             "ready": False, "reason": "steam_launch_preflight_unavailable"}
-        if not preflight.get("ready"):
+        if not preflight.get("ready") \
+                and preflight.get("reason") != "host_session_locked":
             return {"accepted": False, "command": "launch", "provider": "steam",
                     "requires_attention": preflight.get("reason") in {
                         "launcher_interaction_required", "host_session_locked"},
@@ -1779,7 +1780,8 @@ class GameOperationsService:
         provider = self.provider_for(game)
         if provider is not self.steam and prepare_nonsteam is not None:
             prepared = prepare_nonsteam()
-            if not prepared.get("ready"):
+            if not prepared.get("ready") \
+                    and prepared.get("reason") != "host_session_locked":
                 return {"accepted": False, "command": "launch",
                         "reason": str(prepared.get("reason") or "steam_close_request_failed")}
         if launch_allowed is not None and not launch_allowed():

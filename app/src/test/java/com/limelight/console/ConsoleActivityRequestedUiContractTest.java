@@ -107,6 +107,10 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(source.contains("homeContent.setPadding(dp(54), dp(14), dp(54), dp(24))"));
         assertTrue(source.contains("headerParams.bottomMargin = dp(28)"));
         assertTrue(source.contains("titleParams.topMargin = dp(103)"));
+        assertTrue(source.contains("carouselStage.addView(playniteLibraryStatus, statusParams)"));
+        assertTrue(source.contains("statusParams.bottomMargin = dp(2)"));
+        assertFalse(source.contains(
+                "CONSOLE_UI_V2 && textId == R.string.playnite_data_current"));
         assertTrue(source.contains("hintParams.topMargin = dp(66)"));
         assertTrue(source.contains("ViewGroup.LayoutParams.WRAP_CONTENT, dp(28)"));
         assertTrue(source.contains("Gravity.TOP | Gravity.START"));

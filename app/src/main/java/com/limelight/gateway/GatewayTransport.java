@@ -73,9 +73,11 @@ public final class GatewayTransport {
 
     public JSONObject postJson(GatewayConnection connection, String path, JSONObject body,
                                String requestId, int readTimeoutMs) throws IOException {
-        if (!"/api/v1/system/suspend-session".equals(path)) {
+        if (!"/api/v1/system/suspend-session".equals(path)
+                && !"/api/v1/system/session/ensure".equals(path)
+                && !"/api/v1/system/session/cancel".equals(path)) {
             throw new IllegalArgumentException(
-                    "Caller request IDs are only supported for session suspend");
+                    "Caller request IDs are only supported for session mutations");
         }
         return requestJson(connection.endpoint(), path, body != null ? body : new JSONObject(),
                 readTimeoutMs, connection,

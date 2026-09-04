@@ -13,7 +13,7 @@ API token, then use `Start-VibepolloBridge.ps1` and
 portable to another Windows profile.
 
 The token must allow `GET` and `POST` on `/api/apps` and `DELETE` on
-`/api/apps/*`. The bundled installer
+`/api/apps/*`. Host Control's **Integracje** dialog
 uses `moonwaker-token-scopes.example.json` when it creates or renews the token.
 Existing apps are matched by Playnite GUID first; legacy exact-name entries are
 migrated by sending their complete record so custom commands, images and hooks

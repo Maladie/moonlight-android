@@ -6,12 +6,14 @@ param(
         "StartProfile", "StopProfile", "RestartProfile", "RecoverAll",
         "ConfigureSteamWebApi", "DisconnectSteam", "ConnectEpic", "DisconnectEpic",
         "ConnectPlaynite", "DisconnectPlaynite",
-        "ClearDiscord", "ClearDiscordMachine", "RemoveProfile", "ExportDiagnostics")]
+        "ConfigureIntegrations", "CloseStream",
+        "ClearDiscord", "ClearDiscordMachine", "ExportDiagnostics")]
     [string]$Action,
     [ValidatePattern('^[A-Za-z0-9._-]{0,64}$')][string]$ProfileId = "",
     [switch]$RemoveMachineDiscordApplication,
     [switch]$SteamWebApiKeyFromStdin,
     [switch]$SteamWebApiKeyProtectedFromEnvironment,
+    [switch]$IntegrationDataProtectedFromEnvironment,
     [string]$SteamWebApiDiagnosticPath = "",
     [string]$PlayniteDirectory = "",
     [string]$DiagnosticsOutputDirectory = "",
@@ -256,13 +258,27 @@ function Test-HttpHealth([string]$Endpoint) {
 }
 
 function Get-ProfileRoot([object]$Entry, [string]$Id) {
+    $expected = [IO.Path]::GetFullPath((Join-Path (Get-InstallRoot) "profiles\$Id")).TrimEnd('\')
+    $candidate = ""
     if ($entry -and $entry.PSObject.Properties["profile_root"]) {
         $candidate = [string]$entry.profile_root
-        if (-not [string]::IsNullOrWhiteSpace($candidate)) { return $candidate }
     }
-    $local = Join-Path (Get-InstallRoot) "profiles\$Id"
-    if (Test-Path -LiteralPath $local) { return $local }
-    return ""
+    if ([string]::IsNullOrWhiteSpace($candidate)) {
+        if (-not (Test-Path -LiteralPath $expected)) { return "" }
+        $candidate = $expected
+    }
+    try {
+        $resolved = [IO.Path]::GetFullPath($candidate).TrimEnd('\')
+        if (-not $resolved.Equals($expected, [StringComparison]::OrdinalIgnoreCase)) { return "" }
+        $cursor = [IO.DirectoryInfo]::new($resolved)
+        while ($null -ne $cursor) {
+            if ($cursor.Exists -and ($cursor.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+                return ""
+            }
+            $cursor = $cursor.Parent
+        }
+        return $resolved
+    } catch { return "" }
 }
 
 function Get-SupervisorStatus([string]$Root) {
@@ -323,11 +339,18 @@ function Get-MicrophoneReadiness([object]$Gateway, [string]$Directory) {
 }
 
 function Test-CurrentProfileOwner([object]$Entry) {
-    if (-not $Entry -or -not $Entry.PSObject.Properties["owner"]) { return $true }
-    $owner = [string]$Entry.owner
-    if ([string]::IsNullOrWhiteSpace($owner)) { return $true }
-    return $owner.Equals([Security.Principal.WindowsIdentity]::GetCurrent().Name,
-        [StringComparison]::OrdinalIgnoreCase)
+    if (-not $Entry) { return $false }
+    $expectedSid = if ($null -ne $Entry.PSObject.Properties["windows_account_sid"]) {
+        [string]$Entry.windows_account_sid
+    } elseif ($null -ne $Entry.PSObject.Properties["owner_sid"]) {
+        [string]$Entry.owner_sid
+    } else { "" }
+    if ([string]::IsNullOrWhiteSpace($expectedSid)) { return $false }
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if ($null -eq $identity.User -or [string]::IsNullOrWhiteSpace($identity.User.Value)) {
+        return $false
+    }
+    return $expectedSid.Equals($identity.User.Value, [StringComparison]::OrdinalIgnoreCase)
 }
 
 function Protect-ForCurrentUser([string]$Value) {
@@ -365,6 +388,189 @@ function Unprotect-ForCurrentUser([string]$Value) {
         if ($null -ne $plainBytes) {
             [Array]::Clear($plainBytes, 0, $plainBytes.Length)
         }
+    }
+}
+
+function Take-ProcessEnvironment([string]$Name) {
+    $value = [string][Environment]::GetEnvironmentVariable($Name, "Process")
+    [Environment]::SetEnvironmentVariable($Name, $null, "Process")
+    return $value
+}
+
+function Get-EndpointPort([object]$Entry, [string]$Property, [int]$Fallback) {
+    if ($Entry -and $null -ne $Entry.PSObject.Properties[$Property]) {
+        $uri = $null
+        if ([uri]::TryCreate([string]$Entry.$Property, [UriKind]::Absolute, [ref]$uri) -and
+            $uri.Port -ge 1024 -and $uri.Port -le 65535) { return $uri.Port }
+    }
+    return $Fallback
+}
+
+function New-VibepolloToken([string]$Directory, [string]$BaseUrl,
+        [string]$Username, [string]$Password) {
+    $transport = Join-Path $Directory "VibepolloTransport.py"
+    $scopePath = Join-Path $Directory "moonwaker-token-scopes.example.json"
+    if (-not (Test-Path -LiteralPath $transport -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $scopePath -PathType Leaf)) {
+        throw "Brakuje plikow pomocniczych Vibepollo. Zaktualizuj profil MoonWaker."
+    }
+    $scopes = Get-Content -LiteralPath $scopePath -Raw | ConvertFrom-Json
+    $request = [ordered]@{
+        base_url = $BaseUrl.TrimEnd('/')
+        path = "/api/token"
+        method = "POST"
+        username = $Username
+        password = $Password
+        body = @{ scopes = @($scopes.scopes) }
+    } | ConvertTo-Json -Depth 20 -Compress
+    try {
+        $raw = ($request | & python.exe $transport) -join "`n"
+        $transportExitCode = $LASTEXITCODE
+        try { $transportResult = $raw | ConvertFrom-Json } catch { $transportResult = $null }
+        if ($null -eq $transportResult) {
+            throw "Pomocnik Vibepollo zwrocil nieprawidlowa odpowiedz (kod $transportExitCode)."
+        }
+        if (-not $transportResult.ok) {
+            throw "Vibepollo odrzucilo utworzenie tokenu (HTTP $($transportResult.status))."
+        }
+        if ($transportExitCode -ne 0) {
+            throw "Pomocnik Vibepollo zakonczyl sie bledem (kod $transportExitCode)."
+        }
+        $content = [string]$transportResult.content
+        try { $response = $content | ConvertFrom-Json } catch { $response = $content.Trim() }
+        $token = if ($response -is [string]) { [string]$response } `
+            elseif ($response.PSObject.Properties["token"]) { [string]$response.token } `
+            elseif ($response.PSObject.Properties["access_token"]) { [string]$response.access_token } `
+            else { "" }
+        if ([string]::IsNullOrWhiteSpace($token)) {
+            throw "Vibepollo nie zwrocilo tokenu API."
+        }
+        return $token
+    } finally {
+        $request = $null
+        $Password = $null
+    }
+}
+
+function Set-ProfileIntegrations([string]$Id) {
+    if (-not $IntegrationDataProtectedFromEnvironment) {
+        throw "Dane integracji musza pochodzic z MoonWaker Host Control."
+    }
+    $profile = Resolve-Profile $Id
+    if (-not (Test-CurrentProfileOwner $profile.entry) -or
+        [string]::IsNullOrWhiteSpace($profile.root)) {
+        throw "Zaloguj sie na konto Windows wlasciciela profilu '$Id', aby skonfigurowac integracje."
+    }
+
+    $configureDiscord = (Take-ProcessEnvironment "MOONWAKER_DISCORD_CONFIGURE") -eq "1"
+    $discordId = Take-ProcessEnvironment "MOONWAKER_DISCORD_CLIENT_ID"
+    $discordSecret = Take-ProcessEnvironment "MOONWAKER_DISCORD_CLIENT_SECRET_PROTECTED"
+    $configureVibepollo = (Take-ProcessEnvironment "MOONWAKER_VIBEPOLLO_CONFIGURE") -eq "1"
+    $vibepolloUrl = Take-ProcessEnvironment "MOONWAKER_VIBEPOLLO_URL"
+    $vibepolloToken = Take-ProcessEnvironment "MOONWAKER_VIBEPOLLO_TOKEN_PROTECTED"
+    $createVibepolloToken = (Take-ProcessEnvironment "MOONWAKER_VIBEPOLLO_CREATE_TOKEN") -eq "1"
+    $vibepolloAdmin = Take-ProcessEnvironment "MOONWAKER_VIBEPOLLO_ADMIN_USERNAME"
+    $vibepolloPassword = Take-ProcessEnvironment "MOONWAKER_VIBEPOLLO_ADMIN_PASSWORD_PROTECTED"
+
+    try {
+        if ($configureDiscord) {
+            $directory = Join-Path $profile.root "discord"
+            $configPath = Join-Path $directory "discord_bridge_config.json"
+            $secretPath = Join-Path $directory "client_secret.dpapi"
+            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+                throw "Discord Bridge nie jest zainstalowany dla tego profilu."
+            }
+            if ([string]::IsNullOrWhiteSpace($discordId) -xor
+                [string]::IsNullOrWhiteSpace($discordSecret)) {
+                throw "Podaj jednoczesnie Discord Client ID i Client Secret."
+            }
+            if (-not [string]::IsNullOrWhiteSpace($discordId)) {
+                if ($discordId -notmatch '^[0-9]{17,20}$') {
+                    throw "Discord Client ID musi zawierac od 17 do 20 cyfr."
+                }
+                $previousId = ""
+                try { $previousId = [string](Get-Content -LiteralPath $configPath -Raw |
+                    ConvertFrom-Json).client_id } catch {}
+                [ordered]@{
+                    client_id = $discordId
+                    port = Get-EndpointPort $profile.entry "discord_bridge" 8765
+                    redirect_uri = ""
+                    scopes = @("rpc", "identify", "guilds", "rpc.voice.read", "rpc.voice.write")
+                } | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $configPath -Encoding UTF8
+                Set-Content -LiteralPath $secretPath -Value $discordSecret -Encoding ASCII
+                if ($previousId -and $previousId -ne $discordId) {
+                    Remove-Item -LiteralPath (Join-Path $directory "oauth_token.dpapi") `
+                        -Force -ErrorAction SilentlyContinue
+                }
+            } elseif (-not (Test-Path -LiteralPath $configPath -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $secretPath -PathType Leaf)) {
+                throw "Podaj dane aplikacji Discord przy pierwszej konfiguracji."
+            }
+        }
+
+        if ($configureVibepollo) {
+            $directory = Join-Path $profile.root "vibepollo"
+            $configPath = Join-Path $directory "config.json"
+            $tokenPath = Join-Path $directory "api_token.dpapi"
+            if (-not (Test-Path -LiteralPath $directory -PathType Container)) {
+                throw "Vibepollo Bridge nie jest zainstalowany dla tego profilu."
+            }
+            if ([string]::IsNullOrWhiteSpace($vibepolloUrl)) {
+                try { $vibepolloUrl = [string](Get-Content -LiteralPath $configPath -Raw |
+                    ConvertFrom-Json).base_url } catch {}
+            }
+            if ([string]::IsNullOrWhiteSpace($vibepolloUrl)) {
+                $vibepolloUrl = "https://127.0.0.1:47990"
+            }
+            $uri = $null
+            if (-not [uri]::TryCreate($vibepolloUrl, [UriKind]::Absolute, [ref]$uri) -or
+                $uri.Scheme -ne "https" -or $uri.Host -notin @("127.0.0.1", "localhost")) {
+                throw "API Vibepollo musi uzywac HTTPS na 127.0.0.1 lub localhost."
+            }
+            if ($createVibepolloToken) {
+                if ([string]::IsNullOrWhiteSpace($vibepolloAdmin) -or
+                    [string]::IsNullOrWhiteSpace($vibepolloPassword)) {
+                    throw "Podaj login i haslo administratora Vibepollo."
+                }
+                $plainPassword = Unprotect-ForCurrentUser $vibepolloPassword
+                $plainToken = New-VibepolloToken $directory $vibepolloUrl `
+                    $vibepolloAdmin $plainPassword
+                $vibepolloToken = Protect-ForCurrentUser $plainToken
+            }
+            if (-not [string]::IsNullOrWhiteSpace($vibepolloToken)) {
+                if ([string]::IsNullOrWhiteSpace((Unprotect-ForCurrentUser $vibepolloToken))) {
+                    throw "Token Vibepollo jest pusty."
+                }
+                Set-Content -LiteralPath $tokenPath -Value $vibepolloToken -Encoding ASCII
+            } elseif (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) {
+                throw "Utworz token Vibepollo automatycznie albo wklej istniejacy token API."
+            }
+            $existing = $null
+            try { $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json } catch {}
+            [ordered]@{
+                base_url = $vibepolloUrl.TrimEnd('/')
+                listen_port = Get-EndpointPort $profile.entry "vibepollo_bridge" 8775
+                python_path = if ($existing -and $existing.PSObject.Properties["python_path"]) {
+                    [string]$existing.python_path
+                } else { "" }
+            } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding UTF8
+        }
+
+        if ((Get-SupervisorStatus $profile.root) -eq "running") { Restart-Profile $Id }
+        return [ordered]@{
+            ok = $true
+            profile_id = $Id
+            discord_configured = (Test-Path -LiteralPath (Join-Path $profile.root `
+                "discord\client_secret.dpapi") -PathType Leaf)
+            vibepollo_configured = (Test-Path -LiteralPath (Join-Path $profile.root `
+                "vibepollo\api_token.dpapi") -PathType Leaf)
+        }
+    } finally {
+        $plainPassword = $null
+        $plainToken = $null
+        $discordSecret = $null
+        $vibepolloToken = $null
+        $vibepolloPassword = $null
     }
 }
 
@@ -419,6 +625,10 @@ function Ensure-BackgroundServices([object]$Gateway, [string]$GatewayDirectory, 
     $currentProfilesRoot = [IO.Path]::GetFullPath((Join-Path (Get-InstallRoot) "profiles"))
     foreach ($property in $Gateway.profiles.PSObject.Properties) {
         $id = [string]$property.Name
+        if ($null -ne $property.Value.PSObject.Properties["deletion_tombstone"] -and
+            $null -ne $property.Value.deletion_tombstone) { continue }
+        if ($null -ne $property.Value.PSObject.Properties["enabled"] -and
+            -not [bool]$property.Value.enabled) { continue }
         $root = Get-ProfileRoot $property.Value $id
         # A profile contains user-DPAPI-protected credentials. Starting it from
         # another Windows account makes it look alive while every protected
@@ -470,6 +680,21 @@ function Get-Status {
                 id = $id
                 name = if ($entry.PSObject.Properties["name"]) { [string]$entry.name } else { $id }
                 owner = if ($entry.PSObject.Properties["owner"]) { [string]$entry.owner } else { "" }
+                windows_account_sid = if ($entry.PSObject.Properties["windows_account_sid"]) {
+                    [string]$entry.windows_account_sid
+                } else { "" }
+                enabled = if ($entry.PSObject.Properties["enabled"]) { [bool]$entry.enabled } else { $true }
+                account_mapping_status = if ($entry.PSObject.Properties["account_mapping_status"]) {
+                    [string]$entry.account_mapping_status
+                } else { "action_required" }
+                remote_sign_in_enabled = if ($entry.PSObject.Properties["remote_sign_in_enabled"]) {
+                    [bool]$entry.remote_sign_in_enabled
+                } else { $false }
+                deletion_pending = $null -ne $entry.PSObject.Properties["deletion_tombstone"] -and
+                    $null -ne $entry.deletion_tombstone
+                windows_session = "unknown"
+                remote_sign_in = if ($entry.PSObject.Properties["remote_sign_in_enabled"] -and
+                    [bool]$entry.remote_sign_in_enabled) { "unavailable" } else { "disabled" }
                 profile_root = $root
                 current_user = Test-CurrentProfileOwner $entry
                 supervisor = Get-SupervisorStatus $root
@@ -496,6 +721,12 @@ function Get-Status {
                 steam_connected = $steamConnected
                 epic_connected = Test-LegendaryConnection $root
                 playnite_connected = Test-PlayniteConnection $root
+                discord_configured = -not [string]::IsNullOrWhiteSpace($root) -and
+                    (Test-Path -LiteralPath (Join-Path $root "discord\discord_bridge_config.json") -PathType Leaf) -and
+                    (Test-Path -LiteralPath (Join-Path $root "discord\client_secret.dpapi") -PathType Leaf)
+                vibepollo_configured = -not [string]::IsNullOrWhiteSpace($root) -and
+                    (Test-Path -LiteralPath (Join-Path $root "vibepollo\config.json") -PathType Leaf) -and
+                    (Test-Path -LiteralPath (Join-Path $root "vibepollo\api_token.dpapi") -PathType Leaf)
                 platform_controls_available = Test-CurrentProfileOwner $entry
                 last_used = $runtime -and [string]$runtime.profile_id -eq $id
                 last_used_at = if ($runtime -and [string]$runtime.profile_id -eq $id) { [int64]$runtime.updated_at } else { 0 }
@@ -627,8 +858,51 @@ function Resolve-Profile([string]$Id) {
     return [pscustomobject]@{ gateway_directory = $directory; config = $config; entry = $property.Value; root = $root }
 }
 
+function Close-ActiveStream {
+    $directory = Get-GatewayDirectory
+    $config = Get-Content -LiteralPath (Join-Path $directory "gateway.json") -Raw |
+        ConvertFrom-Json
+    $profileId = ""
+    try {
+        $profileId = [string](Get-Content -LiteralPath (Join-Path $directory `
+            "runtime-status.json") -Raw | ConvertFrom-Json).profile_id
+    } catch {}
+    $property = if ([string]::IsNullOrWhiteSpace($profileId)) { $null } else {
+        $config.profiles.PSObject.Properties[$profileId]
+    }
+    if (-not $property -or -not (Test-CurrentProfileOwner $property.Value)) {
+        $owned = @($config.profiles.PSObject.Properties | Where-Object {
+            Test-CurrentProfileOwner $_.Value
+        })
+        if ($owned.Count -ne 1) {
+            throw "Nie można jednoznacznie ustalić aktywnego profilu streamu."
+        }
+        $property = $owned[0]
+        $profileId = [string]$property.Name
+    }
+    $endpoint = [string]$property.Value.vibepollo_bridge
+    $uri = $null
+    if (-not [uri]::TryCreate($endpoint, [UriKind]::Absolute, [ref]$uri) -or
+        $uri.Scheme -ne "http" -or
+        $uri.Host -notin @("127.0.0.1", "localhost") -or
+        $uri.Port -lt 1024 -or $uri.Port -gt 65535) {
+        throw "Profil '$profileId' nie ma bezpiecznego lokalnego endpointu Vibepollo."
+    }
+    $response = Invoke-RestMethod -Uri ($endpoint.TrimEnd('/') + "/action/close-app") `
+        -Method Post -TimeoutSec 10
+    if ($response -and $response.PSObject.Properties["ok"] -and $response.ok -eq $false) {
+        throw "Vibepollo odrzucił zamknięcie streamu."
+    }
+    return [ordered]@{ ok = $true; profile_id = $profileId }
+}
+
 function Invoke-ProfileControl([string]$Id, [string]$Mode) {
     $profile = Resolve-Profile $Id
+    if ($Mode -ne "stop" -and
+        $null -ne $profile.entry.PSObject.Properties["enabled"] -and
+        -not [bool]$profile.entry.enabled) {
+        throw "Profile '$Id' is disabled. Enable it in MoonWaker Host Configurator first."
+    }
     if (-not (Test-CurrentProfileOwner $profile.entry)) {
         # A legacy Host Control may already have started this profile under the
         # wrong account. Let that same account stop its own accidental process,
@@ -862,31 +1136,6 @@ function Set-PlayniteConnection([string]$Id, [bool]$Enabled, [string]$Directory 
     return [ordered]@{ ok = $true; profile_id = $Id; connected = $Enabled }
 }
 
-function Remove-Profile([string]$Id) {
-    $profile = Resolve-Profile $Id
-    if ([string]::IsNullOrWhiteSpace($profile.root)) { throw "This profile's files are not available in the current Windows session." }
-    $expectedRoot = [IO.Path]::GetFullPath((Join-Path (Get-InstallRoot) "profiles"))
-    $resolvedRoot = [IO.Path]::GetFullPath($profile.root)
-    if (-not $resolvedRoot.StartsWith($expectedRoot + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
-        throw "Refusing to remove a profile outside the current user's MoonWaker profile directory."
-    }
-    try { Invoke-ProfileControl $Id "stop" } catch {}
-    foreach ($taskName in @("Wake & Play Discord Bridge ($Id)", "Wake & Play Vibepollo Bridge ($Id)",
-        "Wake & Play Game Provider Bridge ($Id)",
-        "Wake & Play Playnite Bridge ($Id)", "MoonWaker Profile Bridge ($Id)")) {
-        Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-    }
-    $runKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Run"
-    Get-ItemProperty -Path $runKey -ErrorAction SilentlyContinue | ForEach-Object {
-        $_.PSObject.Properties | Where-Object { $_.Name -like "MoonWaker*$Id*" } |
-            ForEach-Object { Remove-ItemProperty -Path $runKey -Name $_.Name -ErrorAction SilentlyContinue }
-    }
-    Remove-Item -LiteralPath $resolvedRoot -Recurse -Force
-    $profile.config.profiles.PSObject.Properties.Remove($Id)
-    $profile.config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath `
-        (Join-Path $profile.gateway_directory "gateway.json") -Encoding UTF8
-}
-
 try {
     $result = switch ($Action) {
         "Status" { Get-Status }
@@ -914,9 +1163,10 @@ try {
         "DisconnectEpic" { Disconnect-Epic $ProfileId }
         "ConnectPlaynite" { Set-PlayniteConnection $ProfileId $true $PlayniteDirectory }
         "DisconnectPlaynite" { Set-PlayniteConnection $ProfileId $false }
+        "ConfigureIntegrations" { Set-ProfileIntegrations $ProfileId }
+        "CloseStream" { Close-ActiveStream }
         "ClearDiscord" { Clear-DiscordData $ProfileId; [ordered]@{ ok = $true } }
         "ClearDiscordMachine" { $RemoveMachineDiscordApplication = $true; Clear-DiscordData $ProfileId; [ordered]@{ ok = $true } }
-        "RemoveProfile" { Remove-Profile $ProfileId; [ordered]@{ ok = $true } }
         "ExportDiagnostics" { Export-Diagnostics }
     }
     $json = $result | ConvertTo-Json -Depth 12 -Compress

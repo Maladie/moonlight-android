@@ -39,6 +39,13 @@ public final class GatewayConnection {
         return profileId;
     }
 
+    /** Returns request context pinned to the profile chosen for one operation. */
+    public GatewayConnection forProfile(String requestedProfileId) {
+        String normalized = normalizeProfileId(requestedProfileId);
+        return profileId.equals(normalized) ? this
+                : new GatewayConnection(endpoint, token, certificateSha256, normalized);
+    }
+
     public static String normalizeFingerprint(String value) {
         return value == null ? "" : value.replace(":", "").trim().toLowerCase(Locale.US);
     }

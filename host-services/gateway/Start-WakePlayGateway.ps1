@@ -12,18 +12,30 @@ $privateKey = Join-Path $PSScriptRoot "gateway-key.pem"
 
 if (-not (Test-Path -LiteralPath $certificate) -or -not (Test-Path -LiteralPath $privateKey)) {
     $openssl = (Get-Command openssl.exe -ErrorAction Stop).Source
-    & $openssl req -x509 -newkey rsa:3072 -sha256 -nodes `
-        -keyout $privateKey -out $certificate -days 825 `
-        -subj "/CN=Wake and Play Host Gateway" `
-        -addext "subjectAltName=DNS:localhost,IP:127.0.0.1"
-    if ($LASTEXITCODE -ne 0) { throw "OpenSSL certificate generation failed." }
+    $previousErrorActionPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = "Continue"
+        & $openssl req -x509 -newkey rsa:3072 -sha256 -nodes `
+            -keyout $privateKey -out $certificate -days 825 `
+            -subj "/CN=Wake and Play Host Gateway" `
+            -addext "subjectAltName=DNS:localhost,IP:127.0.0.1" 2>$null
+        $opensslExitCode = $LASTEXITCODE
+    } finally {
+        $ErrorActionPreference = $previousErrorActionPreference
+    }
+    if ($opensslExitCode -ne 0) { throw "OpenSSL certificate generation failed." }
 }
 
 if (-not (Test-Path -LiteralPath $ConfigPath)) {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "gateway.example.json") -Destination $ConfigPath
 }
 
-$arguments = @((Join-Path $PSScriptRoot "wakeplay_gateway.py"), "--config", $ConfigPath)
+$registryLockPath = "$ConfigPath.lock"
+if (-not (Test-Path -LiteralPath $registryLockPath -PathType Leaf)) {
+    [IO.File]::WriteAllBytes($registryLockPath, [byte[]]@(0))
+}
+$arguments = @((Join-Path $PSScriptRoot "wakeplay_gateway.py"), "--config", $ConfigPath,
+    "--registry-lock", $registryLockPath)
 if (-not $NoPairing) {
     if (-not $PairingCode) {
         $PairingCode = [string](Get-Random -Minimum 100000 -Maximum 999999)

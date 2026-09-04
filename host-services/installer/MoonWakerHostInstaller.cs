@@ -1,23 +1,42 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.IO;
 using System.IO.Compression;
 using Microsoft.Win32;
 using System.Reflection;
-using System.Security.Cryptography;
+using System.Runtime.InteropServices;
+using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.62.0")]
-[assembly: AssemblyFileVersion("0.7.62.0")]
-[assembly: AssemblyInformationalVersion("0.7.62+2026.09.03")]
+[assembly: AssemblyVersion("0.7.72.0")]
+[assembly: AssemblyFileVersion("0.7.72.0")]
+[assembly: AssemblyInformationalVersion("0.7.72+2026.09.04")]
 
 namespace MoonWaker.HostInstaller
 {
+    internal static class NativeMethods
+    {
+        [StructLayout(LayoutKind.Sequential)]
+        internal struct SecurityAttributes
+        {
+            internal int Length;
+            internal IntPtr SecurityDescriptor;
+            [MarshalAs(UnmanagedType.Bool)] internal bool InheritHandle;
+        }
+
+        [DllImport("kernel32.dll", EntryPoint = "CreateDirectoryW", CharSet = CharSet.Unicode,
+            SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool CreateDirectory(string path,
+            ref SecurityAttributes securityAttributes);
+    }
+
     internal static class Program
     {
         [STAThread]
@@ -46,6 +65,7 @@ namespace MoonWaker.HostInstaller
         private readonly Panel navigation = new Panel();
         private readonly Button back = new Button();
         private readonly Button next = new Button();
+        private readonly Button uninstall = new Button();
 
         private readonly Label wolStatus = new Label();
         private readonly Label wolDetails = new Label();
@@ -62,18 +82,6 @@ namespace MoonWaker.HostInstaller
         private Label systemCaveat;
 
         private readonly TextBox installPath = new TextBox();
-        private readonly TextBox profileId = new TextBox();
-        private readonly TextBox profileName = new TextBox();
-        private readonly CheckBox discord = new CheckBox();
-        private readonly Panel discordCard;
-        private readonly Panel discordCredentials = new Panel();
-        private readonly TextBox discordId = new TextBox();
-        private readonly TextBox discordSecret = new TextBox();
-        private readonly TextBox vibepolloUrl = new TextBox();
-        private readonly TextBox vibepolloToken = new TextBox();
-        private readonly CheckBox createVibepolloToken = new CheckBox();
-        private readonly TextBox vibepolloAdmin = new TextBox();
-        private readonly TextBox vibepolloPassword = new TextBox();
         private readonly CheckBox installMachine = new CheckBox();
         private readonly Label installationStatus = new Label();
 
@@ -89,8 +97,6 @@ namespace MoonWaker.HostInstaller
         private bool vibepolloInstalled;
         private string vibepolloVersion;
         private WakeOnLanProbe wakeOnLan = new WakeOnLanProbe();
-        private bool tokenChoiceInitialized;
-        private bool discordChoiceInitialized;
         private bool installationCompleted;
         private bool installationFailed;
         private readonly string payloadVersion;
@@ -129,6 +135,12 @@ namespace MoonWaker.HostInstaller
             next.FlatAppearance.BorderColor = Accent;
             next.Click += async delegate { await ContinueAsync(); };
             navigation.Controls.Add(next);
+            ConfigureNavigationButton(uninstall, 24, "Uninstall", "Odinstaluj");
+            uninstall.Anchor = AnchorStyles.Top | AnchorStyles.Left;
+            uninstall.BackColor = Color.FromArgb(92, 38, 47);
+            uninstall.FlatAppearance.BorderColor = Bad;
+            uninstall.Click += async delegate { await UninstallAsync(); };
+            navigation.Controls.Add(uninstall);
             navigation.Resize += delegate {
                 next.Left = navigation.ClientSize.Width - next.Width - 24;
                 back.Left = next.Left - back.Width - 12;
@@ -143,41 +155,16 @@ namespace MoonWaker.HostInstaller
             BuildSystemPage();
             BuildVibepolloPage();
             BuildOptionsPage();
-            discordCard = BuildDiscordCard(pages[3]);
             BuildProgressPage();
 
             installPath.Text = DetectInstallDirectory();
-            profileId.Text = "default";
-            profileName.Text = Environment.UserName;
-            vibepolloUrl.Text = "https://127.0.0.1:47990";
             installMachine.Checked = SharedComponentsNeedUpdate(installPath.Text.Trim());
 
             installPath.TextChanged += delegate {
                 installMachine.Checked = SharedComponentsNeedUpdate(installPath.Text.Trim());
-                RefreshProfileDefaults();
                 RefreshInstallationStatus();
             };
-            profileId.TextChanged += delegate {
-                RefreshProfileDefaults();
-                RefreshInstallationStatus();
-            };
-            createVibepolloToken.CheckedChanged += delegate {
-                UpdateTokenFields();
-                RefreshInstallationStatus();
-            };
-            discord.CheckedChanged += delegate {
-                UpdateDiscordFields();
-                RefreshInstallationStatus();
-            };
-            FormClosed += delegate {
-                discordSecret.Clear();
-                vibepolloToken.Clear();
-                vibepolloPassword.Clear();
-            };
-
             ApplyLanguage(this);
-            UpdateTokenFields();
-            UpdateDiscordFields();
             RefreshInstallationStatus();
             ShowPage(0);
         }
@@ -297,10 +284,10 @@ namespace MoonWaker.HostInstaller
 
         private void BuildVibepolloPage()
         {
-            Panel page = CreatePage(2, 670);
+            Panel page = CreatePage(2, 520);
             AddPageHeading(page, "Set up Vibepollo", "Skonfiguruj Vibepollo",
-                "MoonWaker can install the official signed release and create a limited API token.",
-                "MoonWaker może zainstalować oficjalne podpisane wydanie i utworzyć token API z ograniczonymi uprawnieniami.");
+                "MoonWaker installs Vibepollo here; profile access is configured after the host installation.",
+                "MoonWaker instaluje tutaj Vibepollo; dostęp profilu skonfigurujesz po instalacji hosta.");
             Panel statusCard = MakeCard(page, 112, 82, Color.FromArgb(255, 166, 76));
             vibepolloSetupStatus.SetBounds(24, 15, 650, 25);
             vibepolloSetupStatus.Font = new Font("Segoe UI", 10.5F, FontStyle.Bold);
@@ -308,50 +295,24 @@ namespace MoonWaker.HostInstaller
             vibepolloSetupDetails.SetBounds(24, 45, 650, 24);
             vibepolloSetupDetails.ForeColor = Muted;
             statusCard.Controls.Add(vibepolloSetupDetails);
-            Panel tokenCard = MakeCard(page, 208, 362, Accent);
-            AddLocalizedLabel(tokenCard, "Secure API access", "Bezpieczny dostęp API",
+            Panel setupCard = MakeCard(page, 208, 156, Accent);
+            AddLocalizedLabel(setupCard, "No password is collected here", "Tutaj nie podajesz hasła",
                 13F, FontStyle.Bold, 24, 16, 500, 28);
-            ConfigureCheckBox(createVibepolloToken,
-                "Create or renew a MoonWaker token automatically",
-                "Utwórz lub odnów token MoonWaker automatycznie", 24, 52);
-            tokenCard.Controls.Add(createVibepolloToken);
-            AddLocalizedLabel(tokenCard, "Administrator username", "Login administratora",
-                9F, FontStyle.Regular, 24, 93, 290, 22);
-            AddLocalizedLabel(tokenCard, "Administrator password", "Hasło administratora",
-                9F, FontStyle.Regular, 358, 93, 290, 22);
-            ConfigureTextBox(vibepolloAdmin, 24, 117, 314, false);
-            ConfigureTextBox(vibepolloPassword, 358, 117, 318, true);
-            tokenCard.Controls.Add(vibepolloAdmin);
-            tokenCard.Controls.Add(vibepolloPassword);
-            Label credentialNote = AddLocalizedLabel(tokenCard,
-                "For a new installation these become the Vibepollo Web UI credentials. Existing installations only use them to request the scoped token.",
-                "Przy nowej instalacji będą to dane do panelu WWW Vibepollo. W istniejącej instalacji służą tylko do pobrania ograniczonego tokenu.",
-                8.7F, FontStyle.Regular, 24, 157, 650, 44);
-            credentialNote.ForeColor = Muted;
-            AddLocalizedLabel(tokenCard, "Existing API token (alternative)",
-                "Istniejący token API (alternatywa)", 9F, FontStyle.Regular,
-                24, 213, 330, 22);
-            ConfigureTextBox(vibepolloToken, 24, 237, 652, true);
-            tokenCard.Controls.Add(vibepolloToken);
-            Label tokenNote = AddLocalizedLabel(tokenCard,
-                "Leave this empty to preserve a token already stored for the selected MoonWaker profile.",
-                "Pozostaw puste, aby zachować token zapisany wcześniej dla wybranego profilu MoonWaker.",
-                8.7F, FontStyle.Regular, 24, 275, 650, 25);
-            tokenNote.ForeColor = Muted;
-            AddLocalizedLabel(tokenCard, "Local API address", "Adres lokalnego API",
-                9F, FontStyle.Regular, 24, 304, 260, 22);
-            ConfigureTextBox(vibepolloUrl, 358, 300, 318, false);
-            tokenCard.Controls.Add(vibepolloUrl);
+            Label setupNote = AddLocalizedLabel(setupCard,
+                "After installation, create a profile in Host Control and choose Integrations. You can paste a Vibepollo token or let MoonWaker request one, and configure Discord there too.",
+                "Po instalacji utwórz profil w Host Control i wybierz Integracje. Możesz wkleić token Vibepollo albo pobrać go automatycznie; tam skonfigurujesz też Discorda.",
+                9F, FontStyle.Regular, 24, 58, 650, 70);
+            setupNote.ForeColor = Muted;
             Label safety = AddLocalizedLabel(page,
-                "Credentials and tokens are never written to the installation log. Stored Bridge tokens are protected with Windows DPAPI.",
-                "Dane logowania i tokeny nigdy nie trafiają do dziennika instalacji. Zapisane tokeny Bridge chroni mechanizm Windows DPAPI.",
-                8.8F, FontStyle.Regular, 34, 594, 680, 44);
+                "The MoonWaker installer never receives or logs a Vibepollo password.",
+                "Instalator MoonWaker nigdy nie otrzymuje ani nie zapisuje hasła Vibepollo.",
+                8.8F, FontStyle.Regular, 34, 388, 680, 44);
             safety.ForeColor = Color.FromArgb(133, 143, 162);
         }
 
         private void BuildOptionsPage()
         {
-            Panel page = CreatePage(3, 690);
+            Panel page = CreatePage(3, 520);
             AddPageHeading(page, "Ready to install", "Gotowe do instalacji",
                 "Defaults are selected automatically. Change only what you need.",
                 "Ustawienia domyślne wybrano automatycznie. Zmień tylko to, czego potrzebujesz.");
@@ -368,40 +329,18 @@ namespace MoonWaker.HostInstaller
             installationStatus.SetBounds(24, 119, 652, 75);
             installationStatus.ForeColor = Muted;
             locationCard.Controls.Add(installationStatus);
-            Panel profileCard = MakeCard(page, 334, 142, Color.FromArgb(68, 198, 142));
-            AddLocalizedLabel(profileCard, "Windows profile", "Profil Windows",
+            Panel profileCard = MakeCard(page, 334, 154, Color.FromArgb(68, 198, 142));
+            AddLocalizedLabel(profileCard, "Profiles in Host Control", "Profile w Host Control",
                 13F, FontStyle.Bold, 24, 14, 400, 28);
-            AddLocalizedLabel(profileCard, "Profile ID", "Identyfikator profilu",
-                9F, FontStyle.Regular, 24, 50, 270, 22);
-            AddLocalizedLabel(profileCard, "Display name", "Nazwa wyświetlana",
-                9F, FontStyle.Regular, 274, 50, 300, 22);
-            ConfigureTextBox(profileId, 24, 74, 230, false);
-            ConfigureTextBox(profileName, 274, 74, 402, false);
-            profileCard.Controls.Add(profileId);
-            profileCard.Controls.Add(profileName);
-        }
-
-        private Panel BuildDiscordCard(Panel page)
-        {
-            Panel card = MakeCard(page, 490, 176, Color.FromArgb(88, 101, 242));
-            ConfigureCheckBox(discord, "Enable optional Discord integration",
-                "Włącz opcjonalną integrację Discord", 24, 13);
-            discord.Font = new Font("Segoe UI", 11.5F, FontStyle.Bold);
-            card.Controls.Add(discord);
-            discordCredentials.SetBounds(24, 52, 652, 105);
-            Label info = AddLocalizedLabel(discordCredentials,
-                "Leave both fields empty to reuse this computer's shared Discord application.",
-                "Pozostaw oba pola puste, aby użyć wspólnej aplikacji Discord tego komputera.",
-                8.8F, FontStyle.Regular, 0, 0, 650, 23);
+            Label info = AddLocalizedLabel(profileCard,
+                "This installer installs the shared machine components and Gateway. Add Windows profiles, integrations and Remote Sign-in permissions in Host Control.",
+                "Ten instalator instaluje wspólne komponenty komputera i Gateway. Profile Windows, integracje i uprawnienia zdalnego logowania dodasz w Host Control.",
+                8.8F, FontStyle.Regular, 24, 48, 650, 42);
             info.ForeColor = Muted;
-            AddLabel(discordCredentials, "Client ID", 9F, FontStyle.Regular, 0, 30, 270, 22);
-            AddLabel(discordCredentials, "Client Secret", 9F, FontStyle.Regular, 300, 30, 300, 22);
-            ConfigureTextBox(discordId, 0, 53, 280, false);
-            ConfigureTextBox(discordSecret, 300, 53, 352, true);
-            discordCredentials.Controls.Add(discordId);
-            discordCredentials.Controls.Add(discordSecret);
-            card.Controls.Add(discordCredentials);
-            return card;
+            AddLocalizedLabel(profileCard,
+                "After installation, open MoonWaker Host Control from the Windows Start menu.",
+                "Po instalacji otwórz MoonWaker Host Control z menu Start systemu Windows.",
+                8.6F, FontStyle.Bold, 24, 96, 650, 42);
         }
 
         private void BuildProgressPage()
@@ -472,8 +411,6 @@ namespace MoonWaker.HostInstaller
             if (currentPage == 1) { ShowPage(2); return; }
             if (currentPage == 2)
             {
-                string error = ValidateVibepolloInput();
-                if (error != null) { ShowWarning(error); return; }
                 ShowPage(3); return;
             }
             if (currentPage == 3)
@@ -502,6 +439,7 @@ namespace MoonWaker.HostInstaller
             navigation.Visible = index != 0;
             back.Visible = index > 1 && index < 4;
             next.Visible = index > 0;
+            uninstall.Visible = index == 3 && SharedComponentsInstalled(installPath.Text.Trim());
             next.Enabled = true;
             next.Text = index == 3 ? T("Install", "Zainstaluj") : T("Continue", "Dalej");
             if (index == 4)
@@ -598,9 +536,8 @@ namespace MoonWaker.HostInstaller
                       "Dostępna aktualizacja — profile i sekrety zostaną zachowane"), Warning);
             else
                 SetStatus(moonWakerDetectionStatus,
-                    T("Up to date — the selected Windows profile will be refreshed",
-                      "Aktualne — wybrany profil Windows zostanie odświeżony"), Good);
-            RefreshProfileDefaults();
+                    T("Up to date — manage Windows profiles in Host Control",
+                      "Aktualne — profilami Windows zarządza Host Control"), Good);
             RefreshInstallationStatus();
         }
 
@@ -645,11 +582,15 @@ namespace MoonWaker.HostInstaller
 
         private static WakeOnLanProbe ProbeWakeOnLan()
         {
+            string powerCfg = WindowsSystemExecutable("powercfg.exe").Replace("'", "''");
             string script =
                 "$ErrorActionPreference='SilentlyContinue';" +
-                "$programmable=@(& powercfg.exe /devicequery wake_programmable|%{$_.Trim()}|?{$_});" +
-                "$armed=@(& powercfg.exe /devicequery wake_armed|%{$_.Trim()}|?{$_});" +
-                "$adapters=@(Get-NetAdapter -Physical|?{$_.HardwareInterface -and [int]$_.NdisPhysicalMedium -eq 14 -and $_.Status -ne 'Disabled'});" +
+                "$moduleRoot=Join-Path $PSHOME 'Modules';$env:PSModulePath=$moduleRoot;" +
+                "Import-Module -Name (Join-Path $moduleRoot 'NetAdapter\\NetAdapter.psd1') -Force -ErrorAction Stop;" +
+                "$powercfg='" + powerCfg + "';" +
+                "$programmable=@(& $powercfg /devicequery wake_programmable|%{$_.Trim()}|?{$_});" +
+                "$armed=@(& $powercfg /devicequery wake_armed|%{$_.Trim()}|?{$_});" +
+                "$adapters=@(NetAdapter\\Get-NetAdapter -Physical|?{$_.HardwareInterface -and [int]$_.NdisPhysicalMedium -eq 14 -and $_.Status -ne 'Disabled'});" +
                 "$found=$false;foreach($a in $adapters){$d=[string]$a.InterfaceDescription;" +
                 "if($programmable -contains $d -or $programmable -contains [string]$a.Name){$found=$true;" +
                 "$state=if($armed -contains $d -or $armed -contains [string]$a.Name){'armed'}else{'supported'};" +
@@ -657,7 +598,7 @@ namespace MoonWaker.HostInstaller
                 "Write-Output ('MW_WOL|'+$state+'|'+$name)}};" +
                 "if(-not $found){Write-Output 'MW_WOL|unavailable|'}";
             string encoded = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
-            string output = RunHiddenProcess("powershell.exe",
+            string output = RunHiddenProcess(WindowsPowerShellPath(),
                 "-NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand " + encoded, 15000);
             WakeOnLanProbe result = new WakeOnLanProbe();
             List<string> names = new List<string>();
@@ -715,7 +656,7 @@ namespace MoonWaker.HostInstaller
         {
             string validation = ValidateInput();
             if (validation != null) { ShowWarning(validation); return; }
-            if (!PrepareHostControlUpdate()) return;
+            if (!PrepareHostControlUpdate(installMachine.Checked, true)) return;
             installationCompleted = false;
             installationFailed = false;
             ShowPage(4);
@@ -724,20 +665,19 @@ namespace MoonWaker.HostInstaller
             progress.Value = 4;
             progressTitle.Text = T("Installing MoonWaker Host", "Instalowanie MoonWaker Host");
             progressDetail.Text = T(
-                "Keep this window open. Windows may ask once for administrator approval.",
-                "Pozostaw to okno otwarte. Windows może raz poprosić o zgodę administratora.");
+                "Keep this administrator window open while the machine components and Gateway are installed.",
+                "Pozostaw to okno administratora otwarte podczas instalowania komponentów komputera i Gateway.");
             log.Text = T("Preparing the installation…\r\n", "Przygotowywanie instalacji…\r\n");
             try
             {
                 string output = await Task.Run<string>(() => RunInstaller());
                 log.AppendText(output);
                 progress.Value = 100;
-                progressTitle.Text = T("Host is ready", "Host jest gotowy");
+                progressTitle.Text = T("Host files are installed", "Pliki hosta są zainstalowane");
                 progressDetail.Text = T(
-                    "MoonWaker components, Vibepollo access and the selected Windows profile are configured.",
-                    "Komponenty MoonWaker, dostęp do Vibepollo i wybrany profil Windows są skonfigurowane.");
+                    "Gateway and Login Broker are running. Open Host Control from Start to add profiles and integrations.",
+                    "Gateway i Login Broker działają. Otwórz Host Control z menu Start, aby dodać profile i integracje.");
                 installationCompleted = true;
-                discordSecret.Clear(); vibepolloToken.Clear(); vibepolloPassword.Clear();
             }
             catch (Exception error)
             {
@@ -750,22 +690,67 @@ namespace MoonWaker.HostInstaller
             finally { RestartHostControlIfNeeded(); ShowPage(4); }
         }
 
+        private async Task UninstallAsync()
+        {
+            string directory = Path.GetFullPath(installPath.Text.Trim());
+            if (!SharedComponentsInstalled(directory))
+            {
+                ShowWarning(T("No MoonWaker installation was found in this folder.",
+                    "W tym katalogu nie znaleziono instalacji MoonWaker."));
+                return;
+            }
+            DialogResult answer = MessageBox.Show(this, T(
+                "Remove MoonWaker services, profiles, pairing data and stored credentials from this computer?\n\nThis cannot be undone.",
+                "Usunąć z tego komputera usługi MoonWaker, profile, dane parowania i zapisane poświadczenia?\n\nTej operacji nie można cofnąć."),
+                T("Uninstall MoonWaker", "Odinstaluj MoonWaker"),
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (answer != DialogResult.Yes || !PrepareHostControlUpdate(true, false)) return;
+
+            installationCompleted = false;
+            installationFailed = false;
+            ShowPage(4);
+            next.Enabled = false;
+            back.Visible = false;
+            progress.Value = 10;
+            progressTitle.Text = T("Uninstalling MoonWaker Host", "Odinstalowywanie MoonWaker Host");
+            progressDetail.Text = T("Stopping services and removing MoonWaker data…",
+                "Zatrzymywanie usług i usuwanie danych MoonWaker…");
+            log.Text = progressDetail.Text + "\r\n";
+            try
+            {
+                string output = await Task.Run<string>(() => RunUninstaller(directory));
+                log.AppendText(output);
+                progress.Value = 100;
+                progressTitle.Text = T("MoonWaker was removed", "MoonWaker został usunięty");
+                progressDetail.Text = T("Services, profiles, credentials and installation files were removed.",
+                    "Usunięto usługi, profile, poświadczenia i pliki instalacji.");
+                installationCompleted = true;
+            }
+            catch (Exception error)
+            {
+                log.AppendText("\r\n" + T("ERROR: ", "BŁĄD: ") + error.Message);
+                progressTitle.Text = T("Uninstallation needs attention", "Deinstalacja wymaga uwagi");
+                progressDetail.Text = T("Review the message below and retry.",
+                    "Przeczytaj komunikat poniżej i spróbuj ponownie.");
+                installationFailed = true;
+            }
+            finally { ShowPage(4); }
+        }
+
         private string RunInstaller()
         {
-            string temporary = Path.Combine(Path.GetTempPath(),
-                "moonwaker-host-" + Guid.NewGuid().ToString("N"));
-            Directory.CreateDirectory(temporary);
+            string temporary = CreateProtectedStagingDirectory();
             try
             {
                 ReportProgress(10, T("Unpacking verified host components…",
                     "Rozpakowywanie zweryfikowanych komponentów hosta…"));
                 ExtractPayload(temporary);
                 string package = Path.Combine(temporary, "host-services");
-                string script = Path.Combine(package, "install", "Install-MoonWakerHostBundle.ps1");
                 string hostScript = Path.Combine(package, "install", "Install-WakePlayHost.ps1");
                 string machineWrapper = Path.Combine(package, "install", "Invoke-MoonWakerMachineInstall.ps1");
                 string prerequisiteScript = Path.Combine(package, "install", "Prepare-MoonWakerHost.ps1");
-                if (!File.Exists(script)) throw new InvalidOperationException(T(
+                if (!File.Exists(hostScript) || !File.Exists(machineWrapper) ||
+                    !File.Exists(prerequisiteScript)) throw new InvalidOperationException(T(
                     "The embedded host package is incomplete.", "Osadzony pakiet hosta jest niekompletny."));
                 bool ensureVibepollo = !vibepolloInstalled;
                 bool enableWakeOnLan = wakeOnLan.Supported && !wakeOnLan.Armed;
@@ -775,85 +760,54 @@ namespace MoonWaker.HostInstaller
                     ReportProgress(28, ensureVibepollo
                         ? T("Downloading and configuring Vibepollo…", "Pobieranie i konfigurowanie Vibepollo…")
                         : T("Configuring Windows host services…", "Konfigurowanie usług hosta Windows…"));
-                    string credentialPath = ensureVibepollo
-                        ? WriteProtectedVibepolloCredentials(temporary) : "";
                     combinedOutput.Append(RunMachineInstall(hostScript, machineWrapper,
                         prerequisiteScript, Path.GetFullPath(installPath.Text.Trim()), temporary,
-                        credentialPath, installMachine.Checked, enableWakeOnLan, ensureVibepollo));
+                        installMachine.Checked, enableWakeOnLan, ensureVibepollo));
                 }
-                ReportProgress(62, T("Creating the MoonWaker integration profile…",
-                    "Tworzenie profilu integracji MoonWaker…"));
-                EnsureSharedDiscordAccess(temporary);
-                List<string> args = new List<string>();
-                args.Add("-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(script));
-                args.Add("-InstallDirectory " + Quote(Path.GetFullPath(installPath.Text.Trim())));
-                args.Add("-ProfileId " + Quote(profileId.Text.Trim()));
-                args.Add("-ProfileName " + Quote(profileName.Text.Trim()));
-                args.Add("-ProfileOnly");
-                if (installMachine.Checked) args.Add("-InitializeMachineData");
-                if (!discord.Checked) args.Add("-SkipDiscord");
-                ProcessStartInfo info = new ProcessStartInfo("powershell.exe", String.Join(" ", args.ToArray()));
+                if (combinedOutput.Length == 0) combinedOutput.AppendLine(T(
+                    "Machine host components are already up to date.",
+                    "Komponenty hosta komputera są już aktualne."));
+                ReportProgress(92, T("Machine services are installed and starting; open Host Control to pair or manage profiles.",
+                    "Usługi komputera są zainstalowane i uruchamiane; otwórz Host Control, aby sparować urządzenie lub zarządzać profilami."));
+                return combinedOutput.ToString();
+            }
+            finally { DeleteProtectedStagingDirectory(temporary); }
+        }
+
+        private string RunUninstaller(string directory)
+        {
+            string temporary = CreateProtectedStagingDirectory();
+            try
+            {
+                ExtractPayload(temporary);
+                string script = Path.Combine(temporary, "host-services", "install",
+                    "Uninstall-MoonWakerHostServices.ps1");
+                if (!File.Exists(script)) throw new InvalidOperationException(T(
+                    "The embedded uninstaller is missing.", "Brakuje osadzonego deinstalatora."));
+                string arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " +
+                    Quote(script) + " -InstallDirectory " + Quote(directory) +
+                    " -PurgeCredentials -RemoveFiles";
+                ProcessStartInfo info = new ProcessStartInfo(WindowsPowerShellPath(), arguments);
                 info.UseShellExecute = false; info.CreateNoWindow = true;
                 info.RedirectStandardOutput = true; info.RedirectStandardError = true;
                 info.StandardOutputEncoding = Encoding.UTF8; info.StandardErrorEncoding = Encoding.UTF8;
-                info.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_ID"] =
-                    discord.Checked ? discordId.Text.Trim() : "";
-                info.EnvironmentVariables["MOONWAKER_DISCORD_CLIENT_SECRET"] =
-                    discord.Checked ? discordSecret.Text : "";
-                info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_URL"] = vibepolloUrl.Text.Trim();
-                info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_TOKEN"] = vibepolloToken.Text;
-                info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_CREATE_TOKEN"] =
-                    createVibepolloToken.Checked ? "1" : "0";
-                info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_ADMIN_USERNAME"] = vibepolloAdmin.Text.Trim();
-                info.EnvironmentVariables["MOONWAKER_VIBEPOLLO_ADMIN_PASSWORD"] = vibepolloPassword.Text;
+                info.EnvironmentVariables["PSModulePath"] = TrustedPowerShellModulePath();
                 using (Process process = Process.Start(info))
                 {
-                    Task<string> stdoutTask = process.StandardOutput.ReadToEndAsync();
-                    Task<string> stderrTask = process.StandardError.ReadToEndAsync();
+                    string stdout = process.StandardOutput.ReadToEnd();
+                    string stderr = process.StandardError.ReadToEnd();
                     process.WaitForExit();
-                    bool streamsClosed = Task.WaitAll(new Task[] { stdoutTask, stderrTask }, 2000);
-                    string stdout = stdoutTask.IsCompleted ? stdoutTask.Result :
-                        T("Profile services started in the background.\r\n",
-                          "Usługi profilu uruchomiono w tle.\r\n");
-                    string stderr = stderrTask.IsCompleted ? stderrTask.Result : "";
                     if (process.ExitCode != 0) throw new InvalidOperationException(
                         String.IsNullOrWhiteSpace(stderr) ? stdout : stderr);
-                    combinedOutput.Append(stdout);
-                    if (!streamsClosed) combinedOutput.Append(T(
-                        "Installer log streams were detached after profile services started.\r\n",
-                        "Strumienie dziennika odłączono po uruchomieniu usług profilu.\r\n"));
+                    return stdout;
                 }
-                ReportProgress(92, T("Verifying Gateway and profile services…",
-                    "Weryfikowanie Gatewaya i usług profilu…"));
-                return combinedOutput.ToString();
             }
-            finally { try { Directory.Delete(temporary, true); } catch { } }
-        }
-
-        private string WriteProtectedVibepolloCredentials(string temporary)
-        {
-            byte[] passwordBytes = Encoding.UTF8.GetBytes(vibepolloPassword.Text);
-            byte[] protectedBytes = null;
-            try
-            {
-                protectedBytes = ProtectedData.Protect(passwordBytes, null, DataProtectionScope.CurrentUser);
-                string path = Path.Combine(temporary, "vibepollo-credentials.dpapi");
-                File.WriteAllLines(path, new[] {
-                    Convert.ToBase64String(Encoding.UTF8.GetBytes(vibepolloAdmin.Text.Trim())),
-                    Convert.ToBase64String(protectedBytes)
-                }, Encoding.ASCII);
-                return path;
-            }
-            finally
-            {
-                Array.Clear(passwordBytes, 0, passwordBytes.Length);
-                if (protectedBytes != null) Array.Clear(protectedBytes, 0, protectedBytes.Length);
-            }
+            finally { DeleteProtectedStagingDirectory(temporary); }
         }
 
         private static string RunMachineInstall(string hostScript, string wrapper,
             string prerequisiteScript, string directory, string temporaryDirectory,
-            string credentialPath, bool installHost, bool enableWakeOnLan, bool ensureVibepollo)
+            bool installHost, bool enableWakeOnLan, bool ensureVibepollo)
         {
             if (!File.Exists(wrapper)) throw new InvalidOperationException(
                 "The machine installation module is missing.");
@@ -863,14 +817,14 @@ namespace MoonWaker.HostInstaller
                 " -PrerequisiteScript " + Quote(prerequisiteScript) +
                 " -InstallDirectory " + Quote(directory) +
                 " -GatewayDirectory " + Quote(Path.Combine(directory, "gateway")) +
+                " -ProtectedStagingDirectory " + Quote(temporaryDirectory) +
                 " -ResultPath " + Quote(resultPath);
-            if (!String.IsNullOrWhiteSpace(credentialPath))
-                arguments += " -VibepolloCredentialPath " + Quote(credentialPath);
             if (!installHost) arguments += " -SkipMoonWakerHost";
             if (enableWakeOnLan) arguments += " -EnableWakeOnLan";
             if (ensureVibepollo) arguments += " -EnsureVibepollo";
-            ProcessStartInfo info = new ProcessStartInfo("powershell.exe", arguments);
-            info.UseShellExecute = true; info.Verb = "runas";
+            ProcessStartInfo info = new ProcessStartInfo(WindowsPowerShellPath(), arguments);
+            info.UseShellExecute = false; info.CreateNoWindow = true;
+            info.EnvironmentVariables["PSModulePath"] = TrustedPowerShellModulePath();
             using (Process process = Process.Start(info))
             {
                 process.WaitForExit();
@@ -892,29 +846,27 @@ namespace MoonWaker.HostInstaller
             }));
         }
 
-        private bool PrepareHostControlUpdate()
+        private bool PrepareHostControlUpdate(bool required, bool reopen)
         {
             restartHostControl = false;
-            if (!installMachine.Checked) return true;
-            string executable = Path.GetFullPath(Path.Combine(
-                installPath.Text.Trim(), "control", "MoonWakerHostControl.exe"));
+            if (!required) return true;
             List<Process> running = new List<Process>();
-            foreach (Process process in Process.GetProcessesByName("MoonWakerHostControl"))
+            bool hostControlRunning = false;
+            foreach (string name in new[] { "MoonWakerHostControl", "MoonWakerHostConfigurator" })
             {
-                try
+                foreach (Process process in Process.GetProcessesByName(name))
                 {
-                    if (String.Equals(process.MainModule.FileName, executable,
-                            StringComparison.OrdinalIgnoreCase)) running.Add(process);
-                    else process.Dispose();
+                    running.Add(process);
+                    if (name == "MoonWakerHostControl") hostControlRunning = true;
                 }
-                catch { process.Dispose(); }
             }
             if (running.Count == 0) return true;
-            DialogResult answer = MessageBox.Show(this, T(
-                "MoonWaker Host Control is running and must close for the update.\n\nClose it now and reopen it after installation?",
-                "MoonWaker Host Control jest uruchomiony i musi zostać zamknięty na czas aktualizacji.\n\nZamknąć go teraz i uruchomić ponownie po instalacji?"),
-                T("Update MoonWaker Host Control", "Aktualizacja MoonWaker Host Control"),
-                MessageBoxButtons.YesNo, MessageBoxIcon.Information);
+            DialogResult answer = MessageBox.Show(this, reopen ? T(
+                "MoonWaker Host Control must close for the update.\n\nClose it now and reopen it after installation?",
+                "MoonWaker Host Control musi zostać zamknięty na czas aktualizacji.\n\nZamknąć go teraz i uruchomić ponownie po instalacji?") : T(
+                "MoonWaker Host Control and Host Configurator must close before uninstallation.\n\nClose them now?",
+                "MoonWaker Host Control i Host Configurator muszą zostać zamknięte przed deinstalacją.\n\nZamknąć je teraz?"),
+                "MoonWaker Host Control", MessageBoxButtons.YesNo, MessageBoxIcon.Information);
             if (answer != DialogResult.Yes)
             {
                 foreach (Process process in running) process.Dispose();
@@ -922,24 +874,13 @@ namespace MoonWaker.HostInstaller
             }
             try
             {
-                restartHostControl = true;
+                restartHostControl = reopen && hostControlRunning;
                 foreach (Process process in running)
                 {
                     using (process)
                     {
-                        ProcessStartInfo killInfo = new ProcessStartInfo(
-                            "taskkill.exe", "/PID " + process.Id + " /T /F");
-                        killInfo.UseShellExecute = false; killInfo.CreateNoWindow = true;
-                        using (Process killer = Process.Start(killInfo))
-                        {
-                            if (!killer.WaitForExit(10000))
-                            {
-                                try { killer.Kill(); } catch { }
-                                throw new InvalidOperationException(T(
-                                    "MoonWaker Host Control did not close in time.",
-                                    "MoonWaker Host Control nie zamknął się na czas."));
-                            }
-                        }
+                        if (process.CloseMainWindow() && process.WaitForExit(3000)) continue;
+                        process.Kill();
                         if (!process.WaitForExit(5000)) throw new InvalidOperationException(T(
                             "MoonWaker Host Control did not close in time.",
                             "MoonWaker Host Control nie zamknął się na czas."));
@@ -971,69 +912,8 @@ namespace MoonWaker.HostInstaller
             }
         }
 
-        private void EnsureSharedDiscordAccess(string temporary)
-        {
-            if (installMachine.Checked || !discord.Checked ||
-                    !String.IsNullOrWhiteSpace(discordId.Text) ||
-                    !String.IsNullOrWhiteSpace(discordSecret.Text)) return;
-            string directory = Path.GetFullPath(installPath.Text.Trim());
-            string application = Path.Combine(directory, "machine-data", "discord-app.json");
-            string secret = Path.Combine(directory, "machine-data", "discord-app-secret.dpapi");
-            if (!File.Exists(application) || !File.Exists(secret)) throw new InvalidOperationException(T(
-                "Shared Discord application data was not found. Enter Client ID and Client Secret, or disable Discord integration.",
-                "Nie znaleziono wspólnych danych aplikacji Discord. Podaj Client ID i Client Secret albo wyłącz integrację Discord."));
-            if (CanRead(application) && CanRead(secret)) return;
-            string helper = Path.Combine(temporary, "host-services", "install",
-                "Grant-MoonWakerMachineDiscordAccess.ps1");
-            if (!File.Exists(helper)) throw new InvalidOperationException("The Discord access helper is missing.");
-            string sid = WindowsIdentity.GetCurrent().User.Value;
-            string arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File " + Quote(helper) +
-                " -InstallDirectory " + Quote(directory) + " -UserSid " + Quote(sid);
-            ProcessStartInfo info = new ProcessStartInfo("powershell.exe", arguments);
-            info.UseShellExecute = true; info.Verb = "runas";
-            using (Process process = Process.Start(info))
-            {
-                process.WaitForExit();
-                if (process.ExitCode != 0) throw new InvalidOperationException(T(
-                    "Could not grant this profile access to shared Discord data.",
-                    "Nie udało się przyznać temu profilowi dostępu do wspólnych danych Discord."));
-            }
-        }
-
-        private static bool CanRead(string path)
-        {
-            try { using (File.Open(path, FileMode.Open, FileAccess.Read, FileShare.Read)) { return true; } }
-            catch { return false; }
-        }
-
-        private string ValidateVibepolloInput()
-        {
-            Uri uri;
-            if (!Uri.TryCreate(vibepolloUrl.Text.Trim(), UriKind.Absolute, out uri) ||
-                uri.Scheme != Uri.UriSchemeHttps ||
-                !(uri.Host == "127.0.0.1" || uri.Host.Equals("localhost", StringComparison.OrdinalIgnoreCase)))
-                return T("Vibepollo API must use HTTPS on 127.0.0.1 or localhost.",
-                    "API Vibepollo musi używać HTTPS na 127.0.0.1 lub localhost.");
-            bool profileHasToken = ProfileHasVibepolloToken();
-            if (!vibepolloInstalled && !createVibepolloToken.Checked)
-                return T("A new Vibepollo installation needs an administrator username and password.",
-                    "Nowa instalacja Vibepollo wymaga loginu i hasła administratora.");
-            if (createVibepolloToken.Checked &&
-                    (String.IsNullOrWhiteSpace(vibepolloAdmin.Text) ||
-                     String.IsNullOrWhiteSpace(vibepolloPassword.Text)))
-                return T("Enter the Vibepollo administrator username and password to create the API token.",
-                    "Podaj login i hasło administratora Vibepollo, aby utworzyć token API.");
-            if (!createVibepolloToken.Checked && String.IsNullOrWhiteSpace(vibepolloToken.Text) &&
-                    !profileHasToken)
-                return T("Create a token automatically or enter an existing Vibepollo API token.",
-                    "Utwórz token automatycznie albo podaj istniejący token API Vibepollo.");
-            return null;
-        }
-
         private string ValidateInput()
         {
-            string vibepolloError = ValidateVibepolloInput();
-            if (vibepolloError != null) return vibepolloError;
             string path = installPath.Text.Trim();
             if (String.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path))
                 return T("Choose an absolute installation path.", "Wybierz bezwzględną ścieżkę instalacji.");
@@ -1044,43 +924,7 @@ namespace MoonWaker.HostInstaller
                     Path.GetFullPath(path), "gateway", "gateway.json")))
                 return T("Install shared MoonWaker components first or select an existing installation.",
                     "Najpierw zainstaluj wspólne komponenty MoonWaker albo wybierz istniejącą instalację.");
-            if (!System.Text.RegularExpressions.Regex.IsMatch(
-                    profileId.Text.Trim(), "^[A-Za-z0-9._-]{1,64}$"))
-                return T("The profile ID may contain letters, digits, dots, underscores and hyphens.",
-                    "Identyfikator profilu może zawierać litery, cyfry, kropki, podkreślenia i łączniki.");
-            if (discord.Checked && (String.IsNullOrWhiteSpace(discordId.Text) !=
-                    String.IsNullOrWhiteSpace(discordSecret.Text)))
-                return T("Enter both Discord fields or leave both empty.",
-                    "Podaj oba pola Discord albo pozostaw oba puste.");
             return null;
-        }
-
-        private void RefreshProfileDefaults()
-        {
-            bool hasToken = ProfileHasVibepolloToken();
-            if (!tokenChoiceInitialized)
-            {
-                createVibepolloToken.Checked = !hasToken || !vibepolloInstalled;
-                tokenChoiceInitialized = true;
-            }
-            if (!discordChoiceInitialized)
-            {
-                string root = installPath.Text.Trim();
-                string id = profileId.Text.Trim();
-                discord.Checked = !String.IsNullOrWhiteSpace(root) &&
-                    !String.IsNullOrWhiteSpace(id) && File.Exists(Path.Combine(
-                        root, "profiles", id, "discord", "discord_bridge_config.json"));
-                discordChoiceInitialized = true;
-            }
-            UpdateTokenFields(); UpdateDiscordFields();
-        }
-
-        private bool ProfileHasVibepolloToken()
-        {
-            string root = installPath.Text.Trim();
-            string id = profileId.Text.Trim();
-            return !String.IsNullOrWhiteSpace(root) && !String.IsNullOrWhiteSpace(id) &&
-                File.Exists(Path.Combine(root, "profiles", id, "vibepollo", "api_token.dpapi"));
         }
 
         private void RefreshInstallationStatus()
@@ -1092,8 +936,8 @@ namespace MoonWaker.HostInstaller
             {
                 installationStatus.ForeColor = Warning;
                 installationStatus.Text = T(
-                    "New installation. Shared host components, Gateway and this Windows profile will be created.",
-                    "Nowa instalacja. Zostaną utworzone wspólne komponenty hosta, Gateway i ten profil Windows.");
+                    "New installation. Shared host components and Gateway will be installed. Profiles are added in Host Control.",
+                    "Nowa instalacja. Zostaną zainstalowane wspólne komponenty hosta i Gateway. Profile dodaje się w Host Control.");
             }
             else if (updateRequired)
             {
@@ -1107,27 +951,10 @@ namespace MoonWaker.HostInstaller
             {
                 installationStatus.ForeColor = Good;
                 installationStatus.Text = T(
-                    "Shared components are up to date. The selected Windows profile will be installed or refreshed.",
-                    "Wspólne komponenty są aktualne. Wybrany profil Windows zostanie zainstalowany lub odświeżony.");
+                    "Shared components are up to date. Open Host Control to add or manage Windows profiles.",
+                    "Wspólne komponenty są aktualne. Profile Windows dodasz lub zmienisz w Host Control.");
             }
-        }
-
-        private void UpdateTokenFields()
-        {
-            vibepolloAdmin.Enabled = createVibepolloToken.Checked;
-            vibepolloPassword.Enabled = createVibepolloToken.Checked;
-            vibepolloToken.Enabled = !createVibepolloToken.Checked;
-        }
-
-        private void UpdateDiscordFields()
-        {
-            discordCredentials.Visible = discord.Checked;
-            discordCredentials.Enabled = discord.Checked;
-            if (discordCard != null)
-            {
-                discordCard.Height = discord.Checked ? 176 : 70;
-                pages[3].AutoScrollMinSize = new Size(0, discord.Checked ? 690 : 590);
-            }
+            uninstall.Visible = currentPage == 3 && sharedInstalled;
         }
 
         private void BrowseInstallDirectory()
@@ -1145,6 +972,9 @@ namespace MoonWaker.HostInstaller
         {
             ProcessStartInfo info = new ProcessStartInfo(fileName, arguments);
             info.UseShellExecute = false; info.CreateNoWindow = true;
+            if (String.Equals(Path.GetFullPath(fileName), WindowsPowerShellPath(),
+                    StringComparison.OrdinalIgnoreCase))
+                info.EnvironmentVariables["PSModulePath"] = TrustedPowerShellModulePath();
             info.RedirectStandardOutput = true; info.RedirectStandardError = true;
             using (Process process = Process.Start(info))
             {
@@ -1162,8 +992,147 @@ namespace MoonWaker.HostInstaller
             }
         }
 
+        private static string WindowsPowerShellPath()
+        {
+            return WindowsSystemExecutable("WindowsPowerShell", "v1.0", "powershell.exe");
+        }
+
+        private static string TrustedPowerShellModulePath()
+        {
+            return Path.Combine(Path.GetDirectoryName(WindowsPowerShellPath()), "Modules");
+        }
+
+        private static string WindowsSystemExecutable(params string[] relativeParts)
+        {
+            string windows = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+            string system = Environment.Is64BitOperatingSystem && !Environment.Is64BitProcess
+                ? Path.Combine(windows, "Sysnative") : Path.Combine(windows, "System32");
+            string executable = system;
+            foreach (string part in relativeParts) executable = Path.Combine(executable, part);
+            executable = Path.GetFullPath(executable);
+            if (!File.Exists(executable))
+                throw new FileNotFoundException("Trusted Windows executable was not found.", executable);
+            return executable;
+        }
+
+        private static DirectorySecurity ProtectedStagingSecurity()
+        {
+            DirectorySecurity security = new DirectorySecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.SetOwner(new SecurityIdentifier(
+                WellKnownSidType.BuiltinAdministratorsSid, null));
+            InheritanceFlags inheritance = InheritanceFlags.ContainerInherit |
+                InheritanceFlags.ObjectInherit;
+            foreach (WellKnownSidType sidType in new[] {
+                WellKnownSidType.LocalSystemSid, WellKnownSidType.BuiltinAdministratorsSid })
+            {
+                security.AddAccessRule(new FileSystemAccessRule(
+                    new SecurityIdentifier(sidType, null), FileSystemRights.FullControl,
+                    inheritance, PropagationFlags.None, AccessControlType.Allow));
+            }
+            return security;
+        }
+
+        private static string CreateProtectedStagingDirectory()
+        {
+            const int ErrorFileExists = 80;
+            const int ErrorAlreadyExists = 183;
+            string parent = Path.GetFullPath(Environment.GetFolderPath(
+                Environment.SpecialFolder.CommonApplicationData)).TrimEnd(
+                    Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            byte[] descriptor = ProtectedStagingSecurity().GetSecurityDescriptorBinaryForm();
+            GCHandle pinned = GCHandle.Alloc(descriptor, GCHandleType.Pinned);
+            try
+            {
+                NativeMethods.SecurityAttributes attributes = new NativeMethods.SecurityAttributes {
+                    Length = Marshal.SizeOf(typeof(NativeMethods.SecurityAttributes)),
+                    SecurityDescriptor = pinned.AddrOfPinnedObject(), InheritHandle = false
+                };
+                for (int attempt = 0; attempt < 8; attempt++)
+                {
+                    string path = Path.Combine(parent,
+                        "MoonWakerInstaller-" + Guid.NewGuid().ToString("N"));
+                    if (NativeMethods.CreateDirectory(path, ref attributes))
+                        return ValidateProtectedStagingDirectory(path);
+                    int error = Marshal.GetLastWin32Error();
+                    if (error != ErrorFileExists && error != ErrorAlreadyExists)
+                        throw new Win32Exception(error,
+                            "Could not create the protected installer staging directory.");
+                }
+            }
+            finally { pinned.Free(); Array.Clear(descriptor, 0, descriptor.Length); }
+            throw new IOException("Could not allocate a unique installer staging directory.");
+        }
+
+        private static string ValidateProtectedStagingDirectory(string path)
+        {
+            string parent = Path.GetFullPath(Environment.GetFolderPath(
+                Environment.SpecialFolder.CommonApplicationData)).TrimEnd(
+                    Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string full = Path.GetFullPath(path).TrimEnd(
+                Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+            string leaf = Path.GetFileName(full);
+            Guid id;
+            if (!String.Equals(Path.GetDirectoryName(full), parent,
+                    StringComparison.OrdinalIgnoreCase) ||
+                !leaf.StartsWith("MoonWakerInstaller-", StringComparison.Ordinal) ||
+                !Guid.TryParseExact(leaf.Substring("MoonWakerInstaller-".Length), "N", out id))
+                throw new InvalidDataException("Invalid installer staging path.");
+            DirectoryInfo directory = new DirectoryInfo(full);
+            if (!directory.Exists || (directory.Attributes & FileAttributes.ReparsePoint) != 0)
+                throw new InvalidDataException("Installer staging must be an ordinary directory.");
+            DirectorySecurity security = directory.GetAccessControl(
+                AccessControlSections.Access | AccessControlSections.Owner);
+            if (!security.AreAccessRulesProtected)
+                throw new UnauthorizedAccessException("Installer staging ACL inheritance is enabled.");
+            SecurityIdentifier owner = (SecurityIdentifier)security.GetOwner(
+                typeof(SecurityIdentifier));
+            if (owner.Value != new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null).Value &&
+                owner.Value != new SecurityIdentifier(
+                    WellKnownSidType.BuiltinAdministratorsSid, null).Value)
+                throw new UnauthorizedAccessException("Installer staging has an untrusted owner.");
+            HashSet<string> allowed = new HashSet<string>(StringComparer.OrdinalIgnoreCase) {
+                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null).Value,
+                new SecurityIdentifier(WellKnownSidType.BuiltinAdministratorsSid, null).Value
+            };
+            foreach (FileSystemAccessRule rule in security.GetAccessRules(
+                true, false, typeof(SecurityIdentifier)))
+            {
+                SecurityIdentifier sid = (SecurityIdentifier)rule.IdentityReference;
+                if (rule.AccessControlType != AccessControlType.Allow ||
+                    !allowed.Contains(sid.Value) ||
+                    (rule.FileSystemRights & FileSystemRights.FullControl) != FileSystemRights.FullControl)
+                    throw new UnauthorizedAccessException(
+                        "Installer staging grants access outside Administrators and SYSTEM.");
+                allowed.Remove(sid.Value);
+            }
+            if (allowed.Count != 0)
+                throw new UnauthorizedAccessException("Installer staging ACL is incomplete.");
+            return full;
+        }
+
+        private static void DeleteProtectedStagingDirectory(string path)
+        {
+            string root = ValidateProtectedStagingDirectory(path);
+            Stack<string> pending = new Stack<string>();
+            pending.Push(root);
+            while (pending.Count > 0)
+            {
+                foreach (string entry in Directory.GetFileSystemEntries(pending.Pop()))
+                {
+                    FileAttributes attributes = File.GetAttributes(entry);
+                    if ((attributes & FileAttributes.ReparsePoint) != 0)
+                        throw new InvalidDataException(
+                            "Refusing to recursively delete a reparse point from installer staging.");
+                    if ((attributes & FileAttributes.Directory) != 0) pending.Push(entry);
+                }
+            }
+            Directory.Delete(root, true);
+        }
+
         private static void ExtractPayload(string destination)
         {
+            destination = ValidateProtectedStagingDirectory(destination);
             Stream resource = Assembly.GetExecutingAssembly().GetManifestResourceStream(
                 "MoonWaker.HostServices.zip");
             if (resource == null) throw new InvalidOperationException("Missing embedded host package.");
@@ -1207,7 +1176,8 @@ namespace MoonWaker.HostInstaller
         {
             string configured = Environment.GetEnvironmentVariable("MOONWAKER_INSTALL_DIRECTORY");
             if (!String.IsNullOrWhiteSpace(configured)) return configured;
-            return @"C:\Tools\WakePlayHost";
+            return Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles),
+                "MoonWaker");
         }
 
         private bool SharedComponentsNeedUpdate(string root)
