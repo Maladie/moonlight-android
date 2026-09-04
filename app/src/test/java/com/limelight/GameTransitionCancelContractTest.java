@@ -15,6 +15,21 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class GameTransitionCancelContractTest {
+    @Test public void retainedStreamDisconnectDoesNotStopTheProviderGame() throws IOException {
+        String text = source();
+        String disconnect = text.substring(text.indexOf("public void disconnectRetainedStream("),
+                text.indexOf("public void terminateRetainedSession("));
+
+        assertTrue(disconnect.contains("stopConnection("));
+        assertTrue(disconnect.contains("SessionResumeManager.clearIfMatches("));
+        assertFalse(disconnect.contains("terminateWholeSessionVerified("));
+        assertFalse(disconnect.contains("stopProviderGame("));
+        String cleanup = text.substring(text.indexOf(
+                        "private boolean cleanupUnrevealedProviderLaunch("),
+                text.indexOf("private boolean isFreshOwnedFailureCleanup("));
+        assertTrue(cleanup.contains("if (userInitiatedDisconnect) return false"));
+    }
+
     @Test public void repeatedSnapshotsDoNotRecoverOverlayButReadinessRegressionDoes() {
         assertFalse(Game.shouldShowTransitionOverlay(true, false, true, false));
         assertFalse(Game.shouldShowTransitionOverlay(true, true, true, true));

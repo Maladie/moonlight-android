@@ -3230,6 +3230,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
+    public void disconnectRetainedStream(
+            RetainedStreamSessionCoordinator.TerminationCallback completion) {
+        runOnUiThread(() -> {
+            userInitiatedDisconnect = true;
+            backgroundStreamParked = false;
+            SessionResumeManager.clearIfMatches(this, streamSessionId);
+            BackgroundStreamService.resumed(this, streamSessionId);
+            stopConnection(() -> {
+                finish();
+                if (completion != null) completion.complete(true);
+            });
+        });
+    }
+
+    @Override
     public void terminateRetainedSession(
             RetainedStreamSessionCoordinator.TerminationCallback completion) {
         terminateWholeSessionVerified(completion == null
@@ -5113,6 +5128,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private boolean cleanupUnrevealedProviderLaunch(String milestone) {
+        if (userInitiatedDisconnect) return false;
         if (freshOwnedFailureCleanupInFlight.get()) return true;
         if (transitionCoordinator == null
                 || !shouldCleanupUnrevealedProviderLaunch(

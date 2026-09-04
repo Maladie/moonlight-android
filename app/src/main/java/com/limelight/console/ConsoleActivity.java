@@ -3844,10 +3844,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         TextView sleep = hostSelectionMenuAction(getString(R.string.console_sleep_host), canSleep);
         sleep.setOnClickListener(view -> confirmSleepHost(host));
         TextView terminate = hostSelectionMenuAction(
-                getString(R.string.overlay_menu_quit_session),
+                getString(R.string.console_close_stream),
                 online && paired && host.runningGameId != 0);
         terminate.setTextColor(terminate.isEnabled() ? 0xFFFF9B92 : 0x88FF9B92);
-        terminate.setOnClickListener(view -> confirmTerminateSession(host));
+        terminate.setOnClickListener(view -> confirmCloseHostStream(host));
         TextView hardTerminate = hostSelectionMenuAction(
                 getString(R.string.console_hard_terminate_session),
                 online && paired && gatewayAvailable);
@@ -4936,6 +4936,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         sessionOrchestrator.play(intent);
     }
     private void confirmTerminateSession(ComputerDetails host) {
+        confirmTerminateSession(host, "");
+    }
+
+    private void confirmTerminateSession(ComputerDetails host, String providerGameId) {
         if (host == null || host.state != ComputerDetails.State.ONLINE
                 || (resolveSessionSnapshot(host).state != SessionSnapshot.State.ACTIVE
                 && host.runningGameId == 0)
@@ -4946,7 +4950,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         cancel.setOnClickListener(view -> handlePanelBack());
         terminate.setOnClickListener(view -> {
             hideSidePanel();
-            requestTerminateSession(host);
+            requestTerminateSession(host, providerGameId);
         });
         showSidePanel(getString(R.string.console_status_active_session),
                 getString(R.string.console_terminate_session_title),
@@ -4955,11 +4959,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void requestTerminateSession(ComputerDetails host) {
+        requestTerminateSession(host, "");
+    }
+
+    private void requestTerminateSession(ComputerDetails host, String expectedProviderGameId) {
         HostProfileKey profileKey = selectedProfileKey(host.uuid);
         SuspendedSessionStore.Session suspended =
                 SuspendedSessionStore.load(this, host.uuid, profileKey.profileId);
         String expectedSuspendId = suspended == null ? "" : suspended.suspendId;
-        String providerGameId = knownProviderGameId(host, suspended);
+        String requestedProviderGameId = normalizeId(expectedProviderGameId);
+        final String providerGameId = requestedProviderGameId.isEmpty()
+                ? knownProviderGameId(host, suspended) : requestedProviderGameId;
         NvApp runningTarget = PlayniteTargetResolver.findById(
                 currentSunshineApps, host.runningGameId);
         boolean requireProviderVerification = !providerGameId.isEmpty()
@@ -4994,6 +5004,68 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         Toast.LENGTH_LONG).show();
             });
         });
+    }
+
+    private void confirmCloseHostStream(ComputerDetails host) {
+        if (host == null || host.state != ComputerDetails.State.ONLINE
+                || host.runningGameId == 0 || managerBinder == null) return;
+        TextView cancel = panelAction(getString(R.string.console_cancel));
+        TextView close = panelAction(getString(R.string.console_close_stream));
+        close.setTextColor(0xFFFF8A80);
+        cancel.setOnClickListener(view -> handlePanelBack());
+        close.setOnClickListener(view -> {
+            hideSidePanel();
+            requestCloseHostStream(host);
+        });
+        showSidePanel(getString(R.string.console_status_active_session),
+                getString(R.string.console_close_stream_title),
+                getString(R.string.console_close_stream_details), cancel, close);
+    }
+
+    private void requestCloseHostStream(ComputerDetails host) {
+        RetainedStreamSessionCoordinator.Snapshot retained =
+                RetainedStreamSessionCoordinator.snapshot();
+        boolean exactRetained = retained.hostId.equalsIgnoreCase(host.uuid)
+                && retained.profileId.equals(selectedProfileId(host.uuid));
+        if (exactRetained && !retained.streamSessionId.isEmpty()) {
+            RetainedStreamSessionCoordinator.TerminationResult result =
+                    RetainedStreamSessionCoordinator.disconnect(
+                            retained.streamSessionId,
+                            success -> mainHandler.post(() -> finishCloseHostStream(
+                                    host, retained.streamSessionId, success)));
+            if (result != RetainedStreamSessionCoordinator.TerminationResult.NO_CONTROLLER) {
+                ConsoleUiFeedback.makeText(this, R.string.console_close_stream_request,
+                        Toast.LENGTH_SHORT).show();
+                return;
+            }
+        }
+        ConsoleUiFeedback.makeText(this, R.string.console_close_stream_request,
+                Toast.LENGTH_SHORT).show();
+        executor.execute(() -> {
+            boolean stopped = false;
+            try {
+                stopped = quitSunshineIfRunning(host);
+            } catch (IOException | XmlPullParserException ignored) { }
+            boolean success = stopped;
+            mainHandler.post(() -> finishCloseHostStream(
+                    host, exactRetained ? retained.streamSessionId : "", success));
+        });
+    }
+
+    private void finishCloseHostStream(ComputerDetails host, String streamSessionId,
+                                       boolean success) {
+        if (success) {
+            if (!streamSessionId.isEmpty()) {
+                RetainedStreamSessionCoordinator.clearIfMatches(streamSessionId);
+                SessionResumeManager.clearIfMatches(this, streamSessionId);
+                BackgroundStreamService.resumed(this, streamSessionId);
+            }
+            refreshSessionState(host.uuid);
+        }
+        ConsoleUiFeedback.makeText(this, success
+                        ? R.string.console_close_stream_success
+                        : R.string.console_close_stream_failed,
+                Toast.LENGTH_LONG).show();
     }
 
     private void confirmHardTerminateSession(ComputerDetails host) {
@@ -5131,23 +5203,27 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (suspended != null && HostGatewayClient.isPlayniteId(suspended.playniteGameId)) {
             return suspended.playniteGameId;
         }
-        String active = host == null ? "" : activePlayniteGameIds.get(host.uuid);
+        String active = host == null ? ""
+                : activePlayniteGameIds.get(profileStateKey(host.uuid));
         if (HostGatewayClient.isPlayniteId(active)) return active;
         RetainedStreamSessionCoordinator.Snapshot retained =
                 RetainedStreamSessionCoordinator.snapshot();
         SessionResumeManager.PendingSession pending =
                 SessionResumeManager.pendingSession(this);
         if (host != null && host.uuid.equalsIgnoreCase(retained.hostId)
+                && retained.profileId.equals(selectedProfileId(host.uuid))
                 && HostGatewayClient.isPlayniteId(retained.playniteGameId)) {
             return retained.playniteGameId;
         }
         if (host != null && pending != null
                 && host.uuid.equalsIgnoreCase(pending.hostUuid)
+                && pending.profileId.equals(selectedProfileId(host.uuid))
                 && host.runningGameId == pending.appId
                 && HostGatewayClient.isPlayniteId(pending.playniteGameId)) {
             return pending.playniteGameId;
         }
         if (host != null && host.uuid.equalsIgnoreCase(retainedStreamHostId)
+                && retainedStreamProfileId.equals(selectedProfileId(host.uuid))
                 && HostGatewayClient.isPlayniteId(retainedStreamPlayniteGameId)) {
             return retainedStreamPlayniteGameId;
         }
@@ -7797,6 +7873,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         TextView running = text(getString(R.string.playnite_running_badge), 8,
                 Color.WHITE, true);
         running.setTag("playnite.running");
+        running.setSingleLine(true);
+        if (debugCarousel && !expandedCard) running.setTextSize(6);
         running.setPadding(dp(5), dp(2), dp(5), dp(2));
         running.setBackground(gradient(0xEE147D75, 0xEE0E625D, 5));
         running.setVisibility(View.GONE);
@@ -7830,9 +7908,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (debugCarousel) {
             FrameLayout.LayoutParams stateParams = new FrameLayout.LayoutParams(
                     ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.TOP | Gravity.END);
+                    (expandedCard ? Gravity.TOP : Gravity.BOTTOM) | Gravity.END);
             stateParams.rightMargin = dp(5);
-            stateParams.topMargin = dp(5);
+            if (expandedCard) stateParams.topMargin = dp(5);
+            else stateParams.bottomMargin = dp(5);
             artworkFrame.addView(state, stateParams);
         }
         View copyScrim = new View(this);
@@ -9098,7 +9177,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 TextView terminate = panelAction(
                         getString(R.string.overlay_menu_quit_session));
                 terminate.setTextColor(0xFFFF9B92);
-                terminate.setOnClickListener(view -> confirmTerminateSession(host));
+                terminate.setOnClickListener(view ->
+                        confirmTerminateSession(host, item.stableId()));
                 actions.add(terminate);
             }
         } else if (installing) {
