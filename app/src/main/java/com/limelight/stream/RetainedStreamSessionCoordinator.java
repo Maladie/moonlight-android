@@ -25,6 +25,7 @@ public final class RetainedStreamSessionCoordinator {
         default boolean parkPreparingTransport(Snapshot preparing) { return false; }
         default boolean cancelPreparingTransport(Snapshot preparing) { return false; }
         default boolean preparingHomeFrameSubmitted(Snapshot preparing) { return false; }
+        void disconnectRetainedStream(TerminationCallback completion);
         void terminateRetainedSession(TerminationCallback completion);
         void switchGame(SwitchRequest request, SwitchCallback completion);
     }
@@ -700,6 +701,17 @@ public final class RetainedStreamSessionCoordinator {
 
     public static TerminationResult terminate(String expectedStreamSessionId,
                                               TerminationCallback completion) {
+        return finish(expectedStreamSessionId, completion, true);
+    }
+
+    public static TerminationResult disconnect(String expectedStreamSessionId,
+                                               TerminationCallback completion) {
+        return finish(expectedStreamSessionId, completion, false);
+    }
+
+    private static TerminationResult finish(String expectedStreamSessionId,
+                                            TerminationCallback completion,
+                                            boolean terminateGame) {
         Controller owner;
         String capturedId;
         State previousState;
@@ -716,7 +728,7 @@ public final class RetainedStreamSessionCoordinator {
             }
             setStateLocked(State.TERMINATING);
         }
-        owner.terminateRetainedSession(success -> {
+        TerminationCallback finished = success -> {
             boolean current;
             synchronized (RetainedStreamSessionCoordinator.class) {
                 current = matches(capturedId) && state == State.TERMINATING;
@@ -730,7 +742,9 @@ public final class RetainedStreamSessionCoordinator {
                 }
             }
             if (current && completion != null) completion.complete(success);
-        });
+        };
+        if (terminateGame) owner.terminateRetainedSession(finished);
+        else owner.disconnectRetainedStream(finished);
         return TerminationResult.STARTED;
     }
 

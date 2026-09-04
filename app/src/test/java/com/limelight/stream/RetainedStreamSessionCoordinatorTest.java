@@ -16,6 +16,7 @@ public class RetainedStreamSessionCoordinatorTest {
     private static class FakeController
             implements RetainedStreamSessionCoordinator.Controller {
         boolean parkResult = true;
+        boolean disconnected;
         boolean terminated;
         boolean completeTermination = true;
         boolean terminationResult = true;
@@ -49,6 +50,13 @@ public class RetainedStreamSessionCoordinatorTest {
                 RetainedStreamSessionCoordinator.Snapshot preparing) {
             submittedPreparingFrames++;
             return preparingFrameResult;
+        }
+        @Override public void disconnectRetainedStream(
+                RetainedStreamSessionCoordinator.TerminationCallback completion) {
+            disconnected = true;
+            if (completeTermination && completion != null) {
+                completion.complete(terminationResult);
+            }
         }
         @Override public void terminateRetainedSession(
                 RetainedStreamSessionCoordinator.TerminationCallback completion) {
@@ -248,6 +256,17 @@ public class RetainedStreamSessionCoordinatorTest {
         assertTrue(controller.terminated);
         assertFalse(RetainedStreamSessionCoordinator.hasRetainedSession());
         assertFalse(RetainedStreamSessionCoordinator.canResumeInstantly());
+    }
+
+    @Test public void disconnectInvokesStreamOnlyOwnerPath() {
+        FakeController controller = new FakeController();
+        RetainedStreamSessionCoordinator.enterHome(controller, SESSION_A, "host", 7, "game");
+
+        assertEquals(RetainedStreamSessionCoordinator.TerminationResult.STARTED,
+                RetainedStreamSessionCoordinator.disconnect(SESSION_A, null));
+        assertTrue(controller.disconnected);
+        assertFalse(controller.terminated);
+        assertFalse(RetainedStreamSessionCoordinator.hasRetainedSession());
     }
 
     @Test public void hardResetClearsEvenPreparingStateOnlyForTheExactHost() {

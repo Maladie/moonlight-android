@@ -22,7 +22,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertFalse(quickActions.contains("global.quick_launch"));
     }
 
-    @Test public void hostStatusOpensTheExistingMenuWithSessionTermination() throws IOException {
+    @Test public void hostStatusClosesOnlyTheStreamAndKeepsHardTermination() throws IOException {
         String source = consoleActivitySource();
         String selector = source.substring(source.indexOf("hostSelector = compactButton("),
                 source.indexOf("LinearLayout.LayoutParams selectorParams"));
@@ -30,8 +30,9 @@ public class ConsoleActivityRequestedUiContractTest {
                 source.indexOf("private TextView hostSelectionMenuAction("));
 
         assertTrue(selector.contains("showHostSelectionOptions(host)"));
-        assertTrue(menu.contains("R.string.overlay_menu_quit_session"));
-        assertTrue(menu.contains("confirmTerminateSession(host)"));
+        assertTrue(menu.contains("R.string.console_close_stream"));
+        assertTrue(menu.contains("confirmCloseHostStream(host)"));
+        assertFalse(menu.contains("confirmTerminateSession(host)"));
         assertTrue(menu.contains("R.string.console_hard_terminate_session"));
         assertTrue(menu.contains("confirmHardTerminateSession(host)"));
         assertTrue(menu.contains("online && paired && gatewayAvailable"));
@@ -81,7 +82,8 @@ public class ConsoleActivityRequestedUiContractTest {
 
         assertTrue(card.contains("debugCarousel ? CAROUSEL_CARD_HEIGHT_DP : 190"));
         assertTrue(card.contains("state.setTag(\"playnite.state\")"));
-        assertTrue(card.contains("Gravity.TOP | Gravity.END"));
+        assertTrue(card.contains("(expandedCard ? Gravity.TOP : Gravity.BOTTOM) | Gravity.END"));
+        assertTrue(card.contains("else stateParams.bottomMargin = dp(5)"));
         assertTrue(card.contains("playnite.install.progress"));
         assertTrue(card.contains("expandedCard ? CAROUSEL_FOCUSED_CARD_HEIGHT_DP"));
         assertTrue(card.contains("new int[]{0x00000000, 0xE6000000}"));
@@ -365,6 +367,8 @@ public class ConsoleActivityRequestedUiContractTest {
                 source.indexOf("private void showPlayniteGameDetails("));
 
         assertTrue(card.contains("running.setTag(\"playnite.running\")"));
+        assertTrue(card.contains("running.setSingleLine(true)"));
+        assertTrue(card.contains("running.setTextSize(6)"));
         assertTrue(card.contains("Gravity.TOP | Gravity.START"));
         assertTrue(binding.contains("running.setVisibility(runningSession"));
         assertTrue(binding.contains("R.string.playnite_running_badge_description"));
@@ -372,6 +376,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(menu.contains("isFreshExactRunningManagedGame(host, item)"));
         assertTrue(menu.indexOf("R.string.overlay_menu_end_game")
                 < menu.indexOf("R.string.overlay_menu_quit_session"));
+        assertTrue(menu.contains("confirmTerminateSession(host, item.stableId())"));
         assertTrue(stop.contains("stopActiveProviderGame(host, item.stableId(), true)"));
         assertTrue(stop.contains("markExactPlayniteGameIdle(host.uuid, expectedAppId"));
         assertTrue(stop.contains("refreshSessionState(host.uuid)"));
