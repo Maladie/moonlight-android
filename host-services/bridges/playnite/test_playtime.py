@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest import mock
 
@@ -9,15 +10,16 @@ from OperationJournal import OperationJournal
 
 
 class PlaytimeTest(unittest.TestCase):
-    def make_state(self, path):
+    def make_state(self, path, clock=None):
         service = GameOperationsService(OperationJournal(None),
                                        steam=SteamProvider(root_resolver=lambda: None))
-        return BridgeState(cache_path=path, game_operations=service)
+        return BridgeState(cache_path=path, game_operations=service, clock=clock)
 
     def test_epic_time_survives_refresh_restart_and_playnite_removal(self):
         with tempfile.TemporaryDirectory() as directory:
             path = Path(directory) / "library-cache.json"
             state = self.make_state(path)
+            state.clock = lambda: 1700000000
             epic = {"id": "epic:Batman", "provider": "epic", "playtimeMinutes": 10}
             state.library = {epic["id"]: dict(epic)}
             state.library_revision = "1"
@@ -28,17 +30,29 @@ class PlaytimeTest(unittest.TestCase):
                     clock.return_value = second
                     state.refresh_running_games()
                 self.assertEqual(665, state.library[epic["id"]]["playtimeSeconds"])
+                expected_last_played = datetime.fromtimestamp(
+                    1700000000, timezone.utc).isoformat()
+                self.assertEqual(expected_last_played,
+                                 state.library[epic["id"]]["lastPlayed"])
+                self.assertEqual(expected_last_played,
+                                 state.epic_last_played[epic["id"]])
                 self.assertEqual("complete", state.current_snapshot()["running_scan_status"])
                 # No Playnite connection; a new provider snapshot contains no usage.
                 state.game_operations.aggregate_catalog = mock.Mock(return_value={
                     "library": {epic["id"]: {"id": epic["id"], "provider": "epic"}}})
                 state._refresh_catalog()
                 self.assertEqual(665, state.library[epic["id"]]["playtimeSeconds"])
+                self.assertEqual(expected_last_played,
+                                 state.library[epic["id"]]["lastPlayed"])
                 running.clear()
                 clock.return_value = 170
                 state.refresh_running_games()
             restored = self.make_state(path)
             self.assertEqual(665, restored.library[epic["id"]]["playtimeSeconds"])
+            self.assertEqual(expected_last_played,
+                             restored.library[epic["id"]]["lastPlayed"])
+            self.assertEqual(expected_last_played,
+                             restored.epic_last_played[epic["id"]])
             self.assertEqual({}, restored._epic_playtime_samples)
             self.assertFalse(restored.connected)
 

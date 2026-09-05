@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": 29,
-  "last_updated_at": "2026-09-05T11:34:08.2312555+02:00",
+  "revision": 31,
+  "last_updated_at": "2026-09-05T12:56:27.825943+02:00",
   "document_status": "active",
   "repository": {
     "path": "D:\\Maladie\\moonlight-android",
@@ -1123,6 +1123,87 @@
       ],
       "branch": "codex/multi-profile-remote-sign-in",
       "head": "fc6b198609f7a6362a493ca748f1956e38002927"
+    },
+    {
+      "id": "MW-POLISH-01",
+      "title": "Repair play metadata and carousel transitions; redesign profile selection",
+      "status": "done",
+      "objective": "Restore Steam/Epic last played and playtime, remove verified return-to-carousel regression, retain opaque artwork curtain and align profile selection with host selection.",
+      "acceptance_criteria": [
+        "Root causes and parent-baseline evidence reviewed",
+        "Focused regressions and affected full builds pass",
+        "Profile selection retains authorization and controller navigation with coherent host styling",
+        "Runtime validation limits recorded accurately"
+      ],
+      "validation": [
+        "JDK17 and existing gradle-home-17: gradlew.bat testNonRootDebugUnitTest --tests *ConsoleProfileGateTest --tests *ConsolePinEntryTest assembleNonRootDebug --console=plain: PASS 20 tests and APK. First sandbox attempt failed on Gradle cache lock before execution; approved retry passed.",
+        "python -m unittest discover -s host-services/bridges/playnite -p test*.py: PASS 227 tests; includes real Windows DPAPI synthetic-secret roundtrip with spaces and trailing newline, plus Epic date/time refresh/restart regression.",
+        "Read-only patched SteamProvider.catalog with installed selected-profile key and system PowerShell module path: 115 games, 71 positive playtime and last-played values. No cache or artwork writes. The Codex shell injected an incompatible module path; validation used the normal Windows PowerShell module path.",
+        "Build-HostServices.ps1 with installed LLVM-MinGW bin on PATH: PASS 110 Gateway, 227 provider and 14 Broker tests, Gateway service/native Credential Provider checks and complete installer 0.7.79. Initial network-restricted packaging failed fetching pinned Legendary; approved network-enabled rerun passed. Log work/polish-01/host-build.log.",
+        "Installer embedded ZIP inspection: 113 files; GameOperations.py, GameProviderBridge.py and version.json match source; no profile data, logs, DPAPI secrets or stale dist folders.",
+        "JDK17: gradlew.bat testNonRootDebugUnitTest --tests com.limelight.ui.ConsoleStreamLoadingViewContractTest --tests com.limelight.console.ConsoleActivityEnsureContractTest: PASS.",
+        "Final JDK17: gradlew.bat testNonRootDebugUnitTest assembleNonRootDebug --console=plain: PASS 939 tests, zero failures/errors/skips, APK built in 35 seconds. Log work/polish-01/android-full-build.log.",
+        "Temporary standalone profile preview compiled actual ConsoleProfileGateView and ControllerGlyphs sources with real glyph font, synthetic DTOs and copies of existing drawables. Sony TV 1920x1080 screenshots verified controller and Polish remote focus/legend/layout; preview package removed. It does not exercise production Activity/PIN callbacks.",
+        "adb install -r app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk: Success on Sony BRAVIA; pm path plus shell sha256sum confirms final installed hash. An earlier UI-only APK was installed/launched for QA; final APK replaces it and was not launched.",
+        "git diff --check and complete scoped diff/status review: PASS; existing untracked artifacts preserved, no commit/push or Moonlight-core changes."
+      ],
+      "work": {
+        "owner": "root supervising Luna Max metadata, transitions, profile_ui",
+        "started_at": "2026-09-05T12:14:48.1406366+02:00",
+        "completed_at": "2026-09-05T12:56:27.825943+02:00",
+        "summary": "Reviewed Luna Max fixes for Steam DPAPI path/newline parsing, Epic last-played persistence in its existing cache owner, mutually exclusive opaque splash presentation, profile-keyed initial carousel cache and deferral of profile refresh until the retained Home first frame. Rebuilt profile chooser with shared host backdrop/avatar styling, controller/remote legends and focus navigation. Full builds passed; final APK installed with matching hash. Live close timing and final multi-profile callback acceptance remain unmeasured.",
+        "files_changed": [
+          "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+          "app/src/main/java/com/limelight/console/ConsoleProfileGateView.java",
+          "app/src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java",
+          "app/src/main/res/values-pl/strings.xml",
+          "app/src/main/res/values/strings.xml",
+          "app/src/test/java/com/limelight/console/ConsoleActivityEnsureContractTest.java",
+          "app/src/test/java/com/limelight/ui/ConsoleStreamLoadingViewContractTest.java",
+          "host-services/bridges/playnite/GameOperations.py",
+          "host-services/bridges/playnite/GameProviderBridge.py",
+          "host-services/bridges/playnite/test_game_operations.py",
+          "host-services/bridges/playnite/test_playtime.py",
+          "host-services/control/MoonWakerHostConfigurator.cs",
+          "host-services/control/MoonWakerHostControl.cs",
+          "host-services/installer/MoonWakerHostInstaller.cs",
+          "host-services/version.json",
+          "state.json",
+          "state.md"
+        ],
+        "blockers": []
+      },
+      "branch": "codex/multi-profile-remote-sign-in",
+      "head": "5744415f4d9de3e5f601b5beec715cfee4316bc5",
+      "findings": [
+        "Installed Steam cache had 38 records with no usage and steam_api_key_missing. The actual key existed; old PowerShell -Command argument handling broke on its path with spaces, and raw trailing newline also broke DPAPI conversion. No Playnite overlay added.",
+        "Installed Epic cache had 53 records, one installed with 236 seconds; its captured session lasted about 239 seconds. Existing verified process sampler works. Date was never recorded; now persisted alongside epic_playtime_seconds in the same profile library cache.",
+        "Post-baseline c1e5d7f1 enqueued profile refresh before local retained-Home app/cache work on the shared three-thread executor. Deferral removes that extra request from first-frame preparation; exact one-second benefit is not measured.",
+        "Direct Game close and stopConnection callback ordering match parent 60fbb576 and were preserved. Regular artwork navigation timings were not globally changed.",
+        "Splash/default layers could be enabled together and same-artwork rebinding cleared/redecoded an existing bitmap. Splash is now retained/reused with black backing and interrupted animation handling; explicit neutral/different invalid target clears it.",
+        "InitialLibraryPresentation now keys restore by host/profile, preventing another profile from reusing the same-host initial view."
+      ],
+      "artifacts": {
+        "apk": {
+          "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+          "sha256": "5468cc229468d0628c5e98452d93bf7818638d057c31cbf3460658dc3b1832c1",
+          "installed": true,
+          "installed_hash_verified": true
+        },
+        "host_installer": {
+          "path": "host-services/dist/MoonWakerHostInstaller.exe",
+          "version": "0.7.79",
+          "sha256": "c32adfc3a562a872d011a3fd5c322eced408353928909b6ae8f2b3a7e412e74e",
+          "installed": false
+        },
+        "profile_preview": "work/polish-01/profile-preview/remote-polish-open-focused.png"
+      },
+      "runtime_limits": [
+        "Installer is built, not installed. Install 0.7.79 to apply Steam reader and Epic date persistence changes; existing historical Epic dates cannot be reconstructed.",
+        "No end-to-end game launch/close or measured before/after Home latency was run. Direct close ordering is unchanged; performance improvement is bounded to retained Home preparation and splash reuse.",
+        "Real TV profile entry currently goes directly to a protected single profile; no PIN was supplied and no grants were altered. Standalone preview validates rendering/navigation only. A Desktop preflight was inadvertently selected during QA navigation and failed readiness; no successful stream or Windows switch is claimed.",
+        "Existing MW-PROFILE-07 and other prior runtime acceptance limits remain separate."
+      ]
     }
   ],
   "next_task_id": null,
@@ -1350,6 +1431,20 @@
       "task_id": "MW-STABILITY-03",
       "event": "apk_deployed",
       "summary": "User-requested APK installed successfully on Sony BRAVIA; installed SHA-256 matches validated artifact. Live game-switch acceptance remains pending."
+    },
+    {
+      "at": "2026-09-05T12:14:48.1406366+02:00",
+      "agent": "root",
+      "task_id": "MW-POLISH-01",
+      "event": "task_started",
+      "summary": "Started user-requested metadata, transition and profile UI corrections with three Luna Max agents on existing working tree."
+    },
+    {
+      "at": "2026-09-05T12:56:27.825943+02:00",
+      "agent": "root supervising Luna Max agents",
+      "task_id": "MW-POLISH-01",
+      "event": "fixes_built_apk_deployed",
+      "summary": "Reviewed Luna Max fixes for Steam DPAPI path/newline parsing, Epic last-played persistence in its existing cache owner, mutually exclusive opaque splash presentation, profile-keyed initial carousel cache and deferral of profile refresh until the retained Home first frame. Rebuilt profile chooser with shared host backdrop/avatar styling, controller/remote legends and focus navigation. Full builds passed; final APK installed with matching hash. Live close timing and final multi-profile callback acceptance remain unmeasured."
     }
   ]
 }

@@ -406,10 +406,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final Runnable clockTick = new Runnable() {
         @Override public void run() {
             Date now = new Date();
+            String clockText = DateFormat.getTimeInstance(DateFormat.SHORT).format(now);
             if (hostSelectionClock != null) {
-                hostSelectionClock.setText(DateFormat.getTimeInstance(
-                        DateFormat.SHORT).format(now));
+                hostSelectionClock.setText(clockText);
             }
+            if (profileGateView != null) profileGateView.setClockText(clockText);
             long delay = 60_000L - System.currentTimeMillis() % 60_000L;
             mainHandler.postDelayed(this, delay);
         }
@@ -549,7 +550,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static volatile InitialLibraryPresentation initialLibraryPresentation;
 
     private static final class InitialLibraryPresentation {
-        final String hostId;
+        final HostProfileKey profileKey;
         final List<PlayniteLibraryGame> games;
         final List<NvApp> sunshineApps;
         final List<PlayniteDashboardItem> allItems;
@@ -561,7 +562,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         final String sessionSignature;
         final long savedAt;
 
-        InitialLibraryPresentation(String hostId, List<PlayniteLibraryGame> games,
+        InitialLibraryPresentation(HostProfileKey profileKey,
+                                   List<PlayniteLibraryGame> games,
                                    List<NvApp> sunshineApps,
                                    List<PlayniteDashboardItem> allItems,
                                    List<PlayniteDashboardItem> unfilteredItems,
@@ -569,7 +571,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                    PlayniteSessionPresentation.Projection sessionProjection,
                                    String resumeGameId, String suspendedGameId,
                                    String sessionSignature, long savedAt) {
-            this.hostId = hostId;
+            this.profileKey = profileKey;
             this.games = games;
             this.sunshineApps = sunshineApps;
             this.allItems = allItems;
@@ -670,6 +672,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private int initialCarouselArtworkGeneration;
     private boolean suppressInitialCarouselMotion;
     private boolean deferInitialPlayniteRefresh;
+    private boolean deferInitialHostProfileRefresh;
     private PlayniteLibraryRepository.ErrorKind playniteLibraryError;
     private String currentPlayniteHostUuid;
     private int pendingConsoleUpdateChannels;
@@ -1642,6 +1645,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         suppressInitialCarouselMotion = false;
         resetInitialCarouselArtworkWarmup();
         libraryTransitionCoordinator.setReducedMotion(reducedMotion);
+        if (deferInitialHostProfileRefresh) {
+            deferInitialHostProfileRefresh = false;
+            ComputerDetails selected = currentHost(selectedHostUuid);
+            if (selected != null) refreshHostProfiles(selected);
+        }
         if (deferInitialPlayniteRefresh) {
             deferInitialPlayniteRefresh = false;
             scheduleNextPlayniteRefresh();
@@ -2766,6 +2774,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         hostSelectionFocusUuid = host.uuid;
         if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.GONE);
         if (homeLayer != null) homeLayer.setVisibility(View.GONE);
+        List<ControllerInfo> controllers = loadControllers();
+        profileGateView.setControllerState(usesPlayStationButtons(controllers),
+                !controllers.isEmpty());
+        profileGateView.setReducedMotion(reducedMotion);
         profileGateView.show(host.name, selection.profiles,
                 hostGatewayStore.automaticIntegrationProfileId(host.uuid),
                 new ConsoleProfileGateView.Listener() {
@@ -2795,6 +2807,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         showProfileGate(host, focusApps, prepareHost);
                     }
                 });
+        profileGateView.setClockText(DateFormat.getTimeInstance(DateFormat.SHORT)
+                .format(new Date()));
         profileGateView.bringToFront();
     }
 
@@ -6266,7 +6280,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         appsLabel.setText(getString(R.string.console_apps_host,
                 host.name.toUpperCase(Locale.ROOT)));
         updateHostSelector();
-        refreshHostProfiles(host);
+        if (requiresPreparedInitialCarouselFrame()) {
+            deferInitialHostProfileRefresh = true;
+        } else {
+            refreshHostProfiles(host);
+        }
         refreshDiscordIndicator();
         startAppListPoller(host);
         if (restoredInitialPresentation) settleInitialLocalPresentation(host);
@@ -6396,7 +6414,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private boolean restoreInitialLocalPresentationData(ComputerDetails host) {
         InitialLibraryPresentation cached = initialLibraryPresentation;
-        if (cached == null || host == null || !host.uuid.equals(cached.hostId)) return false;
+        if (cached == null || host == null
+                || !selectedProfileKey(host.uuid).equals(cached.profileKey)) return false;
         currentPlayniteHostUuid = host.uuid;
         currentPlayniteGames = cached.games;
         currentSunshineApps = cached.sunshineApps;
@@ -6470,7 +6489,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private boolean restoreInitialLibraryPresentation(ComputerDetails host) {
         InitialLibraryPresentation cached = initialLibraryPresentation;
-        if (cached == null || !host.uuid.equals(cached.hostId)
+        if (cached == null || !selectedProfileKey(host.uuid).equals(cached.profileKey)
                 || cached.games != currentPlayniteGames) return false;
         allPlayniteItems = cached.allItems;
         unfilteredPlayniteItems = cached.unfilteredItems;
@@ -7337,7 +7356,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         updateHostSelector();
         updatePlayniteLibraryStatus(host);
         initialLibraryPresentation = new InitialLibraryPresentation(
-                host.uuid, currentPlayniteGames, currentSunshineApps, allPlayniteItems,
+                selectedProfileKey(host.uuid), currentPlayniteGames, currentSunshineApps, allPlayniteItems,
                 unfilteredPlayniteItems, renderedPlayniteItems,
                 playniteSessionProjection, resumePlayniteGameId,
                 suspendedPlayniteGameId, renderedCarouselSessionSignature,
@@ -12666,6 +12685,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             rebuildExpandedNavigationLegend(controllers);
             rebuildHostSelectionLegend(controllers);
         }
+        if (profileGateView != null) {
+            profileGateView.setControllerState(usesPlayStationButtons(controllers),
+                    !controllers.isEmpty());
+        }
         if (signature.toString().equals(renderedControllersSignature)) return;
         renderedControllersSignature = signature.toString();
         renderedControllerDevicesSignature = devicesSignature.toString();
@@ -15077,7 +15100,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
-    private static final class HostAvatarDrawable extends Drawable {
+    static final class HostAvatarDrawable extends Drawable {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
         private final int seed;
 
@@ -15133,7 +15156,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
     }
 
-    private static final class HostSelectionBackdropDrawable extends Drawable {
+    static final class HostSelectionBackdropDrawable extends Drawable {
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
 
         @Override public void draw(Canvas canvas) {

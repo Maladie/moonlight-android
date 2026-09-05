@@ -621,12 +621,18 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(localLibrary.contains("if (!deferInitialPlayniteRefresh)"));
         assertTrue(console.contains("if (deferInitialPlayniteRefresh)"));
         assertTrue(console.contains("scheduleNextPlayniteRefresh()"));
+        assertTrue(select.contains("deferInitialHostProfileRefresh = true"));
+        assertTrue(console.contains("if (deferInitialHostProfileRefresh)"));
+        assertTrue(console.contains("refreshHostProfiles(selected)"));
         String restore = console.substring(console.indexOf(
                         "private boolean restoreInitialLibraryPresentation("),
                 console.indexOf("private void requestPlayniteRefresh("));
         assertTrue(restore.contains("cached.games != currentPlayniteGames"));
+        assertTrue(restore.contains("selectedProfileKey(host.uuid).equals(cached.profileKey)"));
         assertTrue(restore.contains("applyPlayniteDiff("));
         assertFalse(restore.contains("PlayniteTargetResolver.resolve("));
+        assertTrue(console.contains("final HostProfileKey profileKey;"));
+        assertTrue(console.contains("selectedProfileKey(host.uuid), currentPlayniteGames"));
         assertTrue(console.contains("suppressInitialCarouselMotion = true"));
         assertTrue(console.contains("suppressInitialCarouselMotion = false"));
         assertTrue(console.contains("if (suppressInitialCarouselMotion) return;"));

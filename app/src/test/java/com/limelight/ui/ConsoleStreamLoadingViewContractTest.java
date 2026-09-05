@@ -50,6 +50,7 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(method.contains("stepsView.setVisibility(GONE)"));
         assertTrue(method.contains("showAnywayView.setVisibility(GONE)"));
         assertTrue(method.contains("actionsRow.setVisibility(GONE)"));
+        assertTrue(method.contains("showSplashArtworkPresentation(true)"));
         assertFalse(method.contains("requestDefaultActionFocus"));
         assertTrue(text.contains("if (stopped || error || closingPresentation) return"));
 
@@ -167,13 +168,22 @@ public class ConsoleStreamLoadingViewContractTest {
         String text = source();
         String artwork = text.substring(text.indexOf("public void setSplashArtwork("),
                 text.indexOf("private Bitmap decodeSplashArtwork("));
+        String splashPresentation = text.substring(text.indexOf("private void showSplashArtworkPresentation("),
+                text.indexOf("private void applySplashArtwork("));
         String apply = text.substring(text.indexOf("private void applySplashArtwork("),
                 text.indexOf("private void showSplashMessageImmediately("));
         String title = text.substring(text.indexOf("public void setTitle("),
                 text.indexOf("private Bitmap decodeSplashArtwork("));
 
-        assertTrue(artwork.contains("splashArtworkView.setImageDrawable(null)"));
-        assertTrue(artwork.contains("splashArtworkView.setVisibility(GONE)"));
+        assertTrue(artwork.contains("Bitmap bitmap = decodeSplashArtwork(path)"));
+        assertTrue(artwork.contains("if (sameArtwork && hasSplashArtwork())"));
+        assertTrue(artwork.contains("if (!sameArtwork) hideSplashArtwork()"));
+        assertTrue(splashPresentation.contains("defaultBackdrop.setVisibility(GONE)"));
+        assertTrue(splashPresentation.contains("defaultShade.setVisibility(GONE)"));
+        assertTrue(splashPresentation.contains("defaultContent.setVisibility(GONE)"));
+        assertTrue(text.contains("splashArtworkView.setImageDrawable(null)"));
+        assertTrue(text.contains("splashArtworkView.setVisibility(GONE)"));
+        assertTrue(text.contains("setBackgroundColor(Color.BLACK)"));
         assertTrue(apply.contains("splashArtworkView.setVisibility(VISIBLE)"));
         assertTrue(apply.contains("splashArtworkView.setImageBitmap(bitmap)"));
         assertTrue(apply.contains("artwork.setScaleType(ImageView.ScaleType.CENTER_CROP)"));
@@ -197,9 +207,11 @@ public class ConsoleStreamLoadingViewContractTest {
         assertTrue(neutral.contains("defaultContent.setVisibility(GONE)"));
         assertFalse(neutral.contains("setAlpha("));
         assertFalse(neutral.contains("ConsoleStreamLoadingView.this.setVisibility"));
-        assertTrue(full.contains("defaultBackdrop.setVisibility(VISIBLE)"));
-        assertTrue(full.contains("defaultShade.setVisibility(VISIBLE)"));
-        assertTrue(full.contains("defaultContent.setVisibility(VISIBLE)"));
+        assertTrue(full.contains("showDefaultTransitionPresentation()"));
+        assertTrue(full.contains("showSplashArtworkPresentation(false)"));
+        assertTrue(text.contains("defaultBackdrop.setVisibility(VISIBLE)"));
+        assertTrue(text.contains("defaultShade.setVisibility(VISIBLE)"));
+        assertTrue(text.contains("defaultContent.setVisibility(VISIBLE)"));
     }
 
     private static String source() throws IOException {

@@ -1,4 +1,5 @@
 import json
+import os
 import subprocess
 import tempfile
 import threading
@@ -489,6 +490,29 @@ class GameOperationsTest(unittest.TestCase):
             self.assertEqual(str(install), result["games"][0]["installDir"])
             self.assertEqual(8, opened[0][1])
             self.assertEqual("https", opened[0][0].full_url.split(":", 1)[0])
+
+    @unittest.skipUnless(os.name == "nt", "Windows DPAPI is required")
+    def test_steam_dpapi_reader_accepts_paths_with_spaces(self):
+        secret = "0123456789ABCDEF0123456789ABCDEF"
+        with tempfile.TemporaryDirectory() as temporary:
+            path = Path(temporary) / "Program Files" / "steam-web-api-key.dpapi"
+            path.parent.mkdir()
+            environment = os.environ.copy()
+            system_root = environment.get("SystemRoot", r"C:\Windows")
+            program_files = environment.get("ProgramFiles", r"C:\Program Files")
+            environment["PSModulePath"] = ";".join((
+                os.path.join(program_files, "WindowsPowerShell", "Modules"),
+                os.path.join(system_root, "System32", "WindowsPowerShell", "v1.0", "Modules"),
+            ))
+            protected = subprocess.run(
+                ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
+                 "$s=ConvertTo-SecureString '%s' -AsPlainText -Force;"
+                 "ConvertFrom-SecureString $s" % secret],
+                capture_output=True, text=True, timeout=5, env=environment, check=False)
+            self.assertEqual(0, protected.returncode)
+            path.write_text(protected.stdout, encoding="ascii")
+            with mock.patch.dict(os.environ, {"PSModulePath": environment["PSModulePath"]}):
+                self.assertEqual(secret, SteamProvider._read_dpapi_secret(path))
 
     def test_steam_catalog_without_key_exposes_installed_manifest_subset(self):
         with tempfile.TemporaryDirectory() as temporary:
