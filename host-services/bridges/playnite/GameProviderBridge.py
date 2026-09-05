@@ -1558,6 +1558,7 @@ class BridgeState:
         self._running_scan_at = 0.0
         # Host-owned Epic totals live in the existing profile library cache.
         self.epic_playtime_seconds: dict[str, float] = {}
+        self.epic_last_played: dict[str, str] = {}
         self._epic_playtime_samples: dict[str, tuple[str, float]] = {}
         self.snapshot_in_progress = False
         self.playnite_enabled = True
@@ -1770,6 +1771,14 @@ class BridgeState:
                 for key, value in cached_playtime.items()
                 if re.fullmatch(r"epic:[A-Za-z0-9_-]+", str(key))
                 and isinstance(value, (int, float)) and math.isfinite(value) and value >= 0}
+            cached_last_played = cached.get("epic_last_played")
+            if not isinstance(cached_last_played, dict):
+                cached_last_played = {}
+            self.epic_last_played = {
+                str(key): str(value).strip()[:100]
+                for key, value in cached_last_played.items()
+                if re.fullmatch(r"epic:[A-Za-z0-9_-]+", str(key))
+                and str(value).strip()}
             self._apply_epic_playtime_locked()
             playnite_values = cached.get("playnite_library") \
                 if cached.get("version") == 2 else cached.get("library")
@@ -1797,6 +1806,8 @@ class BridgeState:
             # A broken cache must never prevent the Bridge from starting. It will
             # be replaced after the next complete connector snapshot.
             self.library = {}
+            self.epic_playtime_seconds = {}
+            self.epic_last_played = {}
             self.playnite_library = {}
             self.categories = []
             self.plugins = []
@@ -2073,6 +2084,7 @@ class BridgeState:
             "revision": self.library_revision,
             "library": list(self.library.values()),
             "epic_playtime_seconds": dict(self.epic_playtime_seconds),
+            "epic_last_played": dict(self.epic_last_played),
             "playnite_library": list(self.playnite_library.values()),
             "providers": dict(self.provider_health),
             "categories": list(self.categories),
@@ -3859,8 +3871,14 @@ class BridgeState:
             if game_id not in self.epic_playtime_seconds:
                 self.epic_playtime_seconds[game_id] = max(0, int(
                     game.get("playtimeSeconds", int(game.get("playtimeMinutes") or 0) * 60)))
+            if game_id not in self.epic_last_played:
+                cached_last_played = str(game.get("lastPlayed") or "").strip()
+                if cached_last_played:
+                    self.epic_last_played[game_id] = cached_last_played[:100]
             game["playtimeSeconds"] = int(self.epic_playtime_seconds[game_id])
             game["playtimeMinutes"] = game["playtimeSeconds"] // 60
+            if self.epic_last_played.get(game_id):
+                game["lastPlayed"] = self.epic_last_played[game_id]
 
     def _sample_epic_playtime_locked(self, games: list[dict[str, Any]], now: float) -> None:
         self._apply_epic_playtime_locked()
@@ -3873,6 +3891,11 @@ class BridgeState:
             token = running["process_token"]
             previous = self._epic_playtime_samples.get(game_id)
             before = self.epic_playtime_seconds[game_id]
+            if previous is None or previous[0] != token:
+                last_played = datetime.fromtimestamp(self.clock(), timezone.utc).isoformat()
+                if self.epic_last_played.get(game_id) != last_played:
+                    self.epic_last_played[game_id] = last_played
+                    publish = True
             if previous is not None and previous[0] == token:
                 elapsed = now - previous[1]
                 # ponytail: sampled process lifetime, not active input time. Do not

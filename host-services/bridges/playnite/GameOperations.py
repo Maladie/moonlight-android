@@ -471,13 +471,16 @@ class SteamProvider(GenericPlayniteProvider):
         if os.name != "nt" or not path.is_file():
             return ""
         script = (
-            "$e=Get-Content -LiteralPath $args[0] -Raw | ConvertTo-SecureString;"
+            "$e=(Get-Content -LiteralPath $env:MOONWAKER_STEAM_SECRET_PATH -Raw).Trim() | "
+            "ConvertTo-SecureString;"
             "$c=[pscredential]::new('steam',$e);"
             "$c.GetNetworkCredential().Password")
         try:
+            environment = os.environ.copy()
+            environment["MOONWAKER_STEAM_SECRET_PATH"] = str(path)
             result = subprocess.run(
                 ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command",
-                 script, str(path)], capture_output=True, text=True, timeout=5,
+                 script], capture_output=True, text=True, timeout=5, env=environment,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0), check=False)
             return str(result.stdout or "").strip() if result.returncode == 0 else ""
         except (OSError, subprocess.SubprocessError):

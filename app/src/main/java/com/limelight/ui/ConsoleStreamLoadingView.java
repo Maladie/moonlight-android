@@ -57,6 +57,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     private final LinearLayout defaultContent;
     private final TextView titleView;
     private ImageView splashArtworkView;
+    private View splashReadabilityView;
+    private String splashArtworkPath = "";
     private final TextView messageView;
     private final LinearLayout stepsView;
     private final LinearLayout statusLine;
@@ -114,7 +116,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         setFocusable(true);
         setFocusableInTouchMode(true);
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
-        setBackgroundColor(Color.rgb(5, 6, 10));
+        setBackgroundColor(Color.BLACK);
         setElevation(dp(64));
         setLayerType(View.LAYER_TYPE_HARDWARE, null);
 
@@ -208,6 +210,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
     public void showNeutralWarmUpAppearance() {
         if (stopped) return;
+        hideSplashArtwork();
         defaultBackdrop.setVisibility(GONE);
         defaultShade.setVisibility(GONE);
         defaultContent.setVisibility(GONE);
@@ -216,22 +219,33 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
     public void showFullTransitionAppearance() {
         if (stopped) return;
         closingPresentation = false;
-        defaultBackdrop.setVisibility(VISIBLE);
-        defaultShade.setVisibility(VISIBLE);
-        defaultContent.setVisibility(VISIBLE);
+        if (hasSplashArtwork()) showSplashArtworkPresentation(false);
+        else showDefaultTransitionPresentation();
         stepsView.setVisibility(VISIBLE);
     }
 
     public void setSplashArtwork(String artworkPath) {
         if (stopped) return;
-        if (splashArtworkView != null) {
-            splashArtworkView.setImageDrawable(null);
-            splashArtworkView.setVisibility(GONE);
+        String path = artworkPath == null ? "" : artworkPath.trim();
+        if (path.isEmpty()) {
+            splashArtworkPath = "";
+            hideSplashArtwork();
+            return;
         }
-        if (artworkPath == null || artworkPath.trim().isEmpty()) return;
-        String path = artworkPath.trim();
+        boolean sameArtwork = path.equals(splashArtworkPath);
+        if (sameArtwork && hasSplashArtwork()) {
+            showSplashArtworkPresentation(false);
+            return;
+        }
         Bitmap bitmap = decodeSplashArtwork(path);
-        if (bitmap != null) applySplashArtwork(bitmap);
+        if (bitmap == null) {
+            splashArtworkPath = path;
+            hideSplashArtwork();
+            return;
+        }
+        if (!sameArtwork) hideSplashArtwork();
+        splashArtworkPath = path;
+        applySplashArtwork(bitmap);
     }
 
     public void setTitle(String title) {
@@ -435,6 +449,8 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         messageView.setText(title);
         statusView.setText(status);
         statusView.setTextColor(0xFFB8C7D8);
+        if (hasSplashArtwork()) showSplashArtworkPresentation(true);
+        else showDefaultTransitionPresentation();
         activityView.setVisibility(VISIBLE);
         stepsView.setVisibility(GONE);
         retryView.setVisibility(GONE);
@@ -653,14 +669,54 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         animate().cancel();
     }
 
+    private boolean hasSplashArtwork() {
+        return splashArtworkView != null && splashArtworkView.getDrawable() != null;
+    }
+
+    private void hideSplashArtwork() {
+        if (splashArtworkView != null) {
+            splashArtworkView.animate().cancel();
+            splashArtworkView.setImageDrawable(null);
+            splashArtworkView.setVisibility(GONE);
+        }
+        if (splashReadabilityView != null) {
+            splashReadabilityView.setVisibility(GONE);
+        }
+    }
+
+    private void showDefaultTransitionPresentation() {
+        hideSplashArtwork();
+        defaultBackdrop.setVisibility(VISIBLE);
+        defaultShade.setVisibility(VISIBLE);
+        defaultContent.setVisibility(VISIBLE);
+    }
+
+    private void showSplashArtworkPresentation(boolean forceVisible) {
+        if (!hasSplashArtwork()) return;
+        defaultBackdrop.setVisibility(GONE);
+        defaultShade.setVisibility(GONE);
+        defaultContent.setVisibility(GONE);
+        if (splashReadabilityView != null) {
+            splashReadabilityView.setVisibility(VISIBLE);
+        }
+        splashArtworkView.setVisibility(VISIBLE);
+        if (forceVisible) {
+            splashArtworkView.animate().cancel();
+            splashArtworkView.setAlpha(1f);
+        }
+    }
+
     private void applySplashArtwork(Bitmap bitmap) {
         if (stopped) {
             bitmap.recycle();
             return;
         }
         if (splashArtworkView != null) {
+            splashArtworkView.animate().cancel();
             splashArtworkView.setVisibility(VISIBLE);
             splashArtworkView.setImageBitmap(bitmap);
+            splashArtworkView.setAlpha(1f);
+            showSplashArtworkPresentation(false);
             return;
         }
         splashLayout = true;
@@ -682,11 +738,10 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
                 GradientDrawable.Orientation.TOP_BOTTOM,
                 new int[]{0xB8000000, 0x18000000, 0x18000000, 0xD9000000});
         readability.setBackground(scrim);
+        splashReadabilityView = readability;
         addView(readability, 2, match());
 
-        defaultBackdrop.setVisibility(GONE);
-        defaultShade.setVisibility(GONE);
-        defaultContent.setVisibility(GONE);
+        showSplashArtworkPresentation(false);
 
         detach(messageView);
         detach(statusLine);

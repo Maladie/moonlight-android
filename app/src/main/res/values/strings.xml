@@ -750,9 +750,14 @@
     <string name="console_profile_status_sign_in">%1$s · sign-in required</string>
     <string name="console_profile_status_unknown">%1$s · check PC profile</string>
     <string name="console_profile_gate_title">Choose profile</string>
+    <string name="console_profile_gate_subtitle">Choose who is using this MoonWaker host.</string>
     <string name="console_profile_gate_active">Active on PC</string>
     <string name="console_profile_gate_automatic">Automatic</string>
     <string name="console_profile_gate_pin">PIN</string>
+    <string name="console_profile_gate_hint">Select a profile to continue</string>
+    <string name="console_profile_gate_back">Back</string>
+    <string name="console_profile_gate_options">Automatic login</string>
+    <string name="console_profile_gate_tile_description">%1$s. %2$s. Press Select to use this profile.</string>
     <string name="console_profile_gate_legend">A / OK  Select     B  Back     OPTIONS  Automatic login</string>
     <string name="console_pin_title">Enter PIN</string>
     <string name="console_pin_invalid">Incorrect PIN. Try again.</string>

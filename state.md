@@ -8,7 +8,7 @@
 - Repository: `D:\Maladie\moonlight-android`
 - Branch at plan creation: `codex/multi-profile-remote-sign-in`
 - HEAD at plan creation: `c1e5d7f1`
-- Current task: none. `MW-STABILITY-03` code fix and automated validation completed; updated APK live acceptance pending.
+- Current task: none. `MW-POLISH-01` reviewed changes and automated validation complete; APK deployed, Host 0.7.79 installation and live return timing pending.
 - `MW-PROFILE-10`: completed; local preliminary PIN verification implemented, tested and APK deployed. Live sleep/wake acceptance remains pending.
 - `MW-PROFILE-09`: user confirmed successful account switching; bounded defect accepted.
 - Next task: none.
@@ -382,3 +382,17 @@ Remaining runtime observation: the unchanged legacy graceful-stop path requested
 ## MW-STABILITY-03 APK deployment
 
 - User-requested update installed on Sony BRAVIA using adb install -r: Success. Installed base.apk SHA-256 matches the validated APK. App not launched; live game switching and post-failure retry remain untested.
+
+
+## MW-POLISH-01 reviewed fixes and validation
+
+- Root supervised Luna Max metadata, transitions and profile UI agents on `codex/multi-profile-remote-sign-in`, HEAD `5744415f4d9de3e5f601b5beec715cfee4316bc5`; no commit or push.
+- Steam failed to read its existing DPAPI key because PowerShell parsed a spaced path after `-Command`; the raw trailing newline also required trimming. Real synthetic DPAPI regression covers both. Read-only corrected account catalog returned 115 games, 71 with positive playtime and last-played dates. Playnite remains excluded from direct-provider metadata.
+- Epic's existing sampler recorded 236 seconds for a roughly 239-second session. It now records lastPlayed in its existing profile cache as well; historical missing dates are not reconstructed. Totals survive refresh/restart.
+- The curtain keeps panoramic artwork over black backing; full/closing appearance no longer re-enables the default backdrop over splash presentation. Same artwork is reused and interrupted fades restore opacity. Explicit neutral/different invalid artwork still clears the old target.
+- Retained Home now defers profile refresh until its first prepared carousel frame; c1e5d7f1 had placed that network task ahead of local work on the shared executor. Initial presentation cache now matches host/profile. Privacy gates and direct Game close callbacks remain unchanged. Exact before/after latency remains unmeasured.
+- Profile chooser reuses host backdrop/avatar styling, with visible active/PIN/automatic badges, controller and remote legends, focus navigation and reduced motion. Actual view source was compiled into a temporary standalone TV preview with synthetic profiles; Polish/controller screenshots pass visual review. The preview does not validate real Activity/PIN callbacks and was uninstalled.
+- Validation: 20 focused profile/PIN tests; focused transition contracts; all 939 Android tests with zero failures/errors/skips and final APK build. Full Host 0.7.79 build passed 110 Gateway, 227 provider, 14 Broker tests plus service/native checks. Restricted build attempts required Gradle cache/network access; approved reruns succeeded. Diff check passes.
+- Final APK SHA-256 `5468cc229468d0628c5e98452d93bf7818638d057c31cbf3460658dc3b1832c1`, installed on Sony BRAVIA with matching installed hash. Final APK was not launched. Host installer SHA-256 `c32adfc3a562a872d011a3fd5c322eced408353928909b6ae8f2b3a7e412e74e`, built but not installed; its 113-file payload matches corrected sources and contains no runtime profiles/logs/secrets/stale dist folders.
+- Artifacts: `app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk`, `host-services/dist/MoonWakerHostInstaller.exe`, visual preview `work/polish-01/profile-preview/remote-polish-open-focused.png`. Exact file scope and commands are in state.json; build logs in work/polish-01.
+- Runtime limits: real device currently enters a single protected profile, so no PIN/grants were changed. During navigation a Desktop preflight was inadvertently selected and failed readiness; no successful stream or Windows switch is claimed. Live launch/close and timing acceptance remain pending after host installation. Earlier acceptance limitations remain separate.
