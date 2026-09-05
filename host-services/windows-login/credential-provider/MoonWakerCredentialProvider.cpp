@@ -29,6 +29,7 @@ namespace
     constexpr wchar_t kSettingsKey[] =
         L"SOFTWARE\\MoonWaker\\WindowsLogin\\CredentialProvider";
     constexpr DWORD kPipeWaitMilliseconds = 750;
+    constexpr DWORD kAttemptPollMilliseconds = 250;
 
     constexpr BYTE kObserve = 1;
     constexpr BYTE kAcquire = 2;
@@ -99,6 +100,13 @@ namespace
         DWORD bytes = sizeof(value);
         return RegGetValueW(HKEY_LOCAL_MACHINE, kSettingsKey, L"Enabled",
             RRF_RT_REG_DWORD, nullptr, &value, &bytes) == ERROR_SUCCESS && value == 1;
+    }
+
+    bool IsActiveConsoleSession()
+    {
+        DWORD sessionId = 0;
+        return ProcessIdToSessionId(GetCurrentProcessId(), &sessionId) &&
+            sessionId == WTSGetActiveConsoleSessionId();
     }
 
     void SignalRefresh()
@@ -1055,6 +1063,9 @@ namespace
             }
             if (scenario_ != scenario)
             {
+                EnterCriticalSection(&eventLock_);
+                lastNotifiedAttemptId_.clear();
+                LeaveCriticalSection(&eventLock_);
                 ReleaseCredential();
             }
             scenario_ = scenario;
@@ -1076,6 +1087,7 @@ namespace
                 return E_INVALIDARG;
             }
             EnterCriticalSection(&eventLock_);
+            lastNotifiedAttemptId_.clear();
             events_ = events;
             events_->AddRef();
             adviseContext_ = context;
@@ -1242,6 +1254,9 @@ namespace
                 userArray_->Release();
             }
             userArray_ = users;
+            EnterCriticalSection(&eventLock_);
+            lastNotifiedAttemptId_.clear();
+            LeaveCriticalSection(&eventLock_);
             ReleaseCredential();
             return S_OK;
         }
@@ -1276,24 +1291,15 @@ namespace
             Provider* self = static_cast<Provider*>(context);
             const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
             HANDLE waits[] = {self->stopEvent_, self->attemptEvent_};
-            while (WaitForMultipleObjects(2, waits, FALSE, INFINITE) ==
-                WAIT_OBJECT_0 + 1)
+            while (true)
             {
-                ICredentialProviderEvents* events = nullptr;
-                UINT_PTR adviseContext = 0;
-                EnterCriticalSection(&self->eventLock_);
-                if (self->events_ != nullptr)
+                const DWORD wait = WaitForMultipleObjects(2, waits, FALSE,
+                    kAttemptPollMilliseconds);
+                if (wait != WAIT_OBJECT_0 + 1 && wait != WAIT_TIMEOUT)
                 {
-                    events = self->events_;
-                    events->AddRef();
-                    adviseContext = self->adviseContext_;
+                    break;
                 }
-                LeaveCriticalSection(&self->eventLock_);
-                if (events != nullptr)
-                {
-                    events->CredentialsChanged(adviseContext);
-                    events->Release();
-                }
+                self->NotifyPendingAttempt(wait == WAIT_OBJECT_0 + 1);
             }
             if (SUCCEEDED(initialized))
             {
@@ -1301,6 +1307,35 @@ namespace
             }
             self->Release();
             return 0;
+        }
+
+        void NotifyPendingAttempt(bool eventSignaled)
+        {
+            if (!IsActiveConsoleSession())
+            {
+                return;
+            }
+            AttemptDescriptor attempt;
+            const bool pending = BrokerClient().Observe(&attempt);
+            ICredentialProviderEvents* events = nullptr;
+            UINT_PTR adviseContext = 0;
+            EnterCriticalSection(&eventLock_);
+            const bool newAttempt = moonwaker::ShouldNotifyPendingAttempt(
+                pending ? attempt.attemptId : L"", &lastNotifiedAttemptId_);
+            // Preserve explicit result refreshes. Polling only catches missed pending requests,
+            // and never refreshes away a credential already acquired for serialization.
+            if (events_ != nullptr && (eventSignaled || newAttempt))
+            {
+                events = events_;
+                events->AddRef();
+                adviseContext = adviseContext_;
+            }
+            LeaveCriticalSection(&eventLock_);
+            if (events != nullptr)
+            {
+                events->CredentialsChanged(adviseContext);
+                events->Release();
+            }
         }
 
         static DWORD WINAPI HotkeyMain(void* context)
@@ -1350,7 +1385,7 @@ namespace
         void RefreshCredential()
         {
             if ((scenario_ != CPUS_LOGON && scenario_ != CPUS_UNLOCK_WORKSTATION) ||
-                !IsProviderEnabled())
+                !IsProviderEnabled() || !IsActiveConsoleSession())
             {
                 ReleaseCredential();
                 return;
@@ -1400,6 +1435,7 @@ namespace
         HANDLE attemptEvent_ = nullptr;
         HANDLE notifierThread_ = nullptr;
         DWORD notifierThreadId_ = 0;
+        std::wstring lastNotifiedAttemptId_;
         HANDLE hotkeyThread_ = nullptr;
         DWORD hotkeyThreadId_ = 0;
     };

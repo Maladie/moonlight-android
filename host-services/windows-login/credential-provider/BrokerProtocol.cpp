@@ -99,6 +99,22 @@ namespace moonwaker
         value->clear();
     }
 
+    bool ShouldNotifyPendingAttempt(const std::wstring& attemptId,
+        std::wstring* lastAttemptId)
+    {
+        if (attemptId.empty())
+        {
+            lastAttemptId->clear();
+            return false;
+        }
+        if (*lastAttemptId == attemptId)
+        {
+            return false;
+        }
+        *lastAttemptId = attemptId;
+        return true;
+    }
+
     std::vector<BYTE> Utf8(const std::wstring& value)
     {
         if (value.empty())

@@ -52,12 +52,16 @@ PIN_UNLOCK_LEASE_SECONDS = 5 * 60
 PIN_FAILURE_WINDOW_SECONDS = 5 * 60
 PIN_MAX_COOLDOWN_SECONDS = 30
 PROFILE_PERMISSIONS = {"use_profile", "remote_sign_in"}
+PROFILE_SESSION_HEADER = "X-MoonWaker-Profile-Session"
 DISCORD_ID_PATTERN = re.compile(r"^[0-9]{5,32}$")
 VIRTUALHERE_ADDRESS_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 AUDIO_DEVICE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:{}-]{1,220}$")
 PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
 WINDOWS_SID_PATTERN = re.compile(r"^S-\d-\d+(?:-\d+)+$", re.IGNORECASE)
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
+PROFILE_SESSION_ID_PATTERN = re.compile(
+    r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-"
+    r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
 PLAYNITE_GAME_ID_PATTERN = re.compile(
     r"^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$")
 GAME_RECORD_ID_PATTERN = re.compile(
@@ -87,6 +91,17 @@ def compact_json(value: Any) -> bytes:
 
 def profile_pin_required(profile: Any) -> bool:
     return isinstance(profile, dict) and profile.get("pin_verifier") is not None
+
+
+def normalize_profile_session_id(value: str | None) -> str | None:
+    """Validate an optional per-process profile authorization identifier."""
+    if value is None:
+        return None
+    normalized = str(value).strip()
+    if not PROFILE_SESSION_ID_PATTERN.fullmatch(normalized):
+        raise ValueError(
+            f"A valid {PROFILE_SESSION_HEADER} header is required.")
+    return normalized.lower()
 
 
 def verify_profile_pin(pin: str, verifier: Any) -> bool:
@@ -589,7 +604,11 @@ class GatewayState:
         self.network_downloads: set[tuple[str, str]] = set()
         self.pin_failures: dict[tuple[str, str], list[float]] = {}
         self.pin_blocked_until: dict[tuple[str, str], float] = {}
-        self.pin_unlock_leases: dict[tuple[str, str], tuple[float, str]] = {}
+        # The lease key is always (client_id, profile_id). Its session ID is
+        # transient process authorization: None means a legacy five-minute
+        # lease, while a UUID means the matching process session has no wall-
+        # clock expiry. A new verification replaces the prior lease.
+        self.pin_unlock_leases: dict[tuple[str, str], tuple[float | None, str, str | None]] = {}
         self.lock = threading.RLock()
         self.request_context = threading.local()
         self.runtime_status_path = self.config_path.with_name("runtime-status.json")
@@ -987,11 +1006,13 @@ class GatewayState:
             verifier, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()
 
     def verify_pin(self, client: dict[str, Any], profile_id: str,
-                   pin: str) -> tuple[int, dict[str, Any]]:
+                   pin: str, session_id: str | None = None) -> tuple[int, dict[str, Any]]:
+        session_id = normalize_profile_session_id(session_id)
         profile = self.config.get("profiles", {}).get(profile_id)
         if not isinstance(profile, dict) or not profile_pin_required(profile):
             return HTTPStatus.BAD_REQUEST, {"ok": False, "error": "pin_not_required"}
-        key = (self.pin_client_key(client), profile_id)
+        client_id = self.pin_client_key(client)
+        key = (client_id, profile_id)
         now = time.monotonic()
         with self.lock:
             blocked_until = self.pin_blocked_until.get(key, 0.0)
@@ -1014,25 +1035,44 @@ class GatewayState:
             self.pin_failures.pop(key, None)
             self.pin_blocked_until.pop(key, None)
             self.pin_unlock_leases[key] = (
-                now + PIN_UNLOCK_LEASE_SECONDS,
+                None if session_id is not None else now + PIN_UNLOCK_LEASE_SECONDS,
                 self.pin_verifier_fingerprint(profile),
+                session_id,
             )
-        return HTTPStatus.OK, {"ok": True, "unlocked": True,
-                               "expires_in_seconds": PIN_UNLOCK_LEASE_SECONDS}
+        result = {"ok": True, "unlocked": True}
+        if session_id is None:
+            result["expires_in_seconds"] = PIN_UNLOCK_LEASE_SECONDS
+        else:
+            result["session_scoped"] = True
+        return HTTPStatus.OK, result
 
-    def require_profile_unlock(self, client: dict[str, Any], profile_id: str) -> None:
+    def require_profile_unlock(self, client: dict[str, Any], profile_id: str,
+                               session_id: str | None = None) -> None:
+        session_id = normalize_profile_session_id(session_id)
         profile = self.config.get("profiles", {}).get(profile_id)
         if not isinstance(profile, dict) or not profile_pin_required(profile):
             return
-        key = (self.pin_client_key(client), profile_id)
+        client_id = self.pin_client_key(client)
+        key = (client_id, profile_id)
         now = time.monotonic()
         with self.lock:
             lease = self.pin_unlock_leases.get(key)
-            if (lease is not None and lease[0] > now and
-                    secrets.compare_digest(
-                        lease[1], self.pin_verifier_fingerprint(profile))):
+            fingerprint_matches = (lease is not None and secrets.compare_digest(
+                lease[1], self.pin_verifier_fingerprint(profile)))
+            session_lease = (session_id is not None and lease is not None and
+                             lease[0] is None and lease[2] == session_id)
+            legacy_lease = (session_id is None and lease is not None and
+                            lease[0] is not None and lease[0] > now and
+                            lease[2] is None)
+            if fingerprint_matches and (session_lease or legacy_lease):
                 return
-            self.pin_unlock_leases.pop(key, None)
+            # A stale or different process must not be able to invalidate the
+            # currently authorized process. Verifier changes and expiry do
+            # invalidate the stored lease; session mismatches only deny access.
+            if (lease is not None and
+                    (not fingerprint_matches or
+                     (lease[0] is not None and lease[0] <= now))):
+                self.pin_unlock_leases.pop(key, None)
         raise PermissionError("Profile app PIN verification required.")
 
     def delete_profile(self, profile_id: str) -> bool:
@@ -1055,6 +1095,9 @@ class GatewayState:
                         grants.pop(selected, None)
                 self.replace_registry(current)
                 self.config = current
+                for key in list(self.pin_unlock_leases):
+                    if key[1] == selected:
+                        self.pin_unlock_leases.pop(key, None)
         return True
 
     def record_profile_use(self, profile_id: str) -> None:
@@ -2349,8 +2392,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
             client, self.headers.get("X-WakePlay-Profile", "default"),
             permission, record_use=True)
         if require_pin:
-            self.state.require_profile_unlock(client, profile_id)
+            self.state.require_profile_unlock(
+                client, profile_id, self.profile_session_id())
         return profile_id
+
+    def profile_session_id(self) -> str | None:
+        return normalize_profile_session_id(
+            self.headers.get(PROFILE_SESSION_HEADER))
 
     def _begin_diagnostics(self, method: str) -> None:
         self._diagnostic_method = method
@@ -2550,7 +2598,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         "ok": False, "error": "invalid_pin_format"})
                     return
                 status, result = self.state.verify_pin(
-                    authenticated_client, profile_id, pin)
+                    authenticated_client, profile_id, pin,
+                    self.profile_session_id())
                 self.send_json(status, result)
                 return
             if path == f"{API_PREFIX}/system/session/ensure":

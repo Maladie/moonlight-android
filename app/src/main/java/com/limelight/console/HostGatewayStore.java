@@ -25,6 +25,7 @@ public final class HostGatewayStore {
     private static final String PREFS = "host_gateway_connections";
     static final String DEFAULT_DISCORD_PROFILE_ID = "default";
     private final SharedPreferences preferences;
+    private final OfflineProfilePinStore offlineProfilePinStore;
 
     static final class DiscordChannelSelection {
         final String channelId;
@@ -69,6 +70,11 @@ public final class HostGatewayStore {
 
     public HostGatewayStore(Context context) {
         preferences = context.getSharedPreferences(PREFS, Context.MODE_PRIVATE);
+        offlineProfilePinStore = new OfflineProfilePinStore(context);
+    }
+
+    OfflineProfilePinStore offlineProfilePinStore() {
+        return offlineProfilePinStore;
     }
 
     GatewayConnection load(String hostUuid) {
@@ -115,6 +121,11 @@ public final class HostGatewayStore {
 
     void save(String hostUuid, GatewayConnection connection) {
         if (hostUuid == null || hostUuid.isEmpty() || connection == null) return;
+        GatewayConnection previous = load(hostUuid);
+        if (previous == null || !previous.token().equals(connection.token())
+                || !previous.certificateSha256().equals(connection.certificateSha256())) {
+            offlineProfilePinStore.removeHost(hostUuid);
+        }
         preferences.edit()
                 .putBoolean(key(hostUuid, "paired"), true)
                 .putString(key(hostUuid, "endpoint"), connection.endpoint())
@@ -145,6 +156,7 @@ public final class HostGatewayStore {
             if (preferenceKey.startsWith(discordPrefix)) editor.remove(preferenceKey);
         }
         editor.apply();
+        offlineProfilePinStore.removeHost(hostUuid);
     }
 
     String selectedIntegrationProfileId(String hostUuid) {
@@ -192,9 +204,11 @@ public final class HostGatewayStore {
         if (hostUuid == null || hostUuid.isEmpty() || profiles == null) return;
         JSONObject root = new JSONObject();
         JSONArray values = new JSONArray();
+        Set<String> retainedProfileIds = new HashSet<>();
         try {
             for (HostGatewayClient.IntegrationProfile profile : profiles.profiles) {
                 if (!profile.useProfile) continue;
+                if (profile.pinRequired) retainedProfileIds.add(profile.id);
                 JSONObject value = new JSONObject();
                 value.put("id", profile.id);
                 value.put("name", profile.name);
@@ -226,6 +240,7 @@ public final class HostGatewayStore {
             editor.remove(key(hostUuid, "automatic_integration_profile"));
         }
         editor.apply();
+        offlineProfilePinStore.retainProfiles(hostUuid, retainedProfileIds);
     }
 
     HostGatewayClient.IntegrationProfiles profiles(String hostUuid) {

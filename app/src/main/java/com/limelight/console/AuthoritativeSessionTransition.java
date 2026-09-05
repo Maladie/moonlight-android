@@ -28,7 +28,6 @@ final class AuthoritativeSessionTransition {
 
     static SunshineStopAction sunshineStopAction(int capturedRunningAppId,
                                                   Integer freshRunningAppId) {
-        if (capturedRunningAppId == 0) return SunshineStopAction.COMPLETE;
         if (freshRunningAppId == null) return SunshineStopAction.FAILED;
         if (freshRunningAppId == 0) return SunshineStopAction.COMPLETE;
         return freshRunningAppId == capturedRunningAppId

@@ -2502,6 +2502,84 @@ class BridgeStateTest(unittest.TestCase):
                 {key: value for key, value in saved.items() if key != "process_path"})
             self.assertFalse(trace_path.with_name("active-game.json.tmp").exists())
 
+    def test_running_connector_event_captures_delayed_identity_before_stop(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            trace_path = Path(temporary) / "active-game.json"
+            trace = self._active_trace(
+                game_id=GAME_ID, provider="playnite",
+                provider_game_id=GAME_ID, playnite_guid=GAME_ID)
+            self.state.active_game_path = trace_path
+            self.state.library[GAME_ID] = self._trace_game(trace)
+            self.state.playnite_library[GAME_ID] = {
+                "id": GAME_ID, "name": "Baba Is You", "source": "GOG"}
+            self.state.set_reconciliation_actions(
+                lambda _process_id: None, lambda _path: [])
+
+            self.state.handle_message({
+                "type": "status", "status": {
+                    "name": "gameStarted", "id": GAME_ID,
+                    "processId": trace["process_id"],
+                }})
+
+            self.assertEqual("running", self.state.current["state"])
+            self.assertNotIn("processPath", self.state.current)
+            self.assertFalse(trace_path.exists())
+
+            sample = {
+                "qualified": False, "reason": "target_on_wrong_display",
+                "process_id": trace["process_id"],
+                "process_path": trace["process_path"],
+                "observed_game_id": GAME_ID,
+            }
+            self.state.apply_window_sample(sample)
+            self.assertNotIn("processPath", self.state.current)
+            self.assertFalse(trace_path.exists())
+            self.assertFalse(self.state.readiness["ready"])
+
+            identity = {
+                "process_id": trace["process_id"],
+                "process_path": trace["process_path"],
+                "process_started_filetime": trace["process_started_filetime"],
+            }
+            self.state.set_reconciliation_actions(
+                lambda _process_id: identity, lambda _path: [identity])
+            with mock.patch.object(
+                    self.state, "_save_active_game_trace_locked",
+                    wraps=self.state._save_active_game_trace_locked) as save_trace:
+                self.state.apply_window_sample(sample)
+                self.state.apply_window_sample(sample)
+
+            self.assertEqual(1, save_trace.call_count)
+            self.assertFalse(self.state.readiness["ready"])
+            self.assertEqual(trace["process_path"].casefold(),
+                             self.state.current["processPath"])
+            self.assertEqual(trace["process_started_filetime"],
+                             self.state.current["processStartedFiletime"])
+            self.assertEqual(
+                trace["process_path"].casefold(),
+                json.loads(trace_path.read_text(encoding="utf-8"))["process_path"])
+
+            close_requested = threading.Event()
+            self.state.graceful_close = lambda process_id: (
+                self.closed_processes.append(process_id),
+                close_requested.set(), True)[-1]
+            stop_result = {}
+            stopping = threading.Thread(target=lambda: stop_result.update(
+                self.state.stop_game(GAME_ID)))
+            stopping.start()
+            self.assertTrue(close_requested.wait(1))
+            self.state.apply_window_sample({
+                "qualified": False, "reason": "game_process_exited",
+                "process_id": trace["process_id"],
+                "observed_game_id": GAME_ID,
+            })
+            stopping.join(1)
+
+            self.assertFalse(stopping.is_alive())
+            self.assertTrue(stop_result["accepted"])
+            self.assertEqual("idle", self.state.current["state"])
+            self.assertFalse(trace_path.exists())
+
     def test_bridge_restart_restores_exact_running_game_not_ready(self):
         with tempfile.TemporaryDirectory() as temporary:
             trace_path = Path(temporary) / "active-game.json"
@@ -3386,6 +3464,32 @@ class BridgeStateTest(unittest.TestCase):
         }
         self.assertEqual(
             [r"\\.\DISPLAY15"], StreamDisplayResolver.displays_from_payload(payload))
+
+    def test_stream_display_resolver_uses_active_displays_endpoint(self):
+        resolver = StreamDisplayResolver("http://127.0.0.1:47990/")
+        self.assertEqual(
+            "http://127.0.0.1:47990/diagnostics/active-displays", resolver.endpoint)
+
+    def test_stream_display_resolver_accepts_one_display_and_rejects_ambiguous_payload(self):
+        resolver = StreamDisplayResolver("http://127.0.0.1:47990")
+        response = mock.MagicMock()
+        response.__enter__.return_value = response
+        payloads = [
+            ({"ok": True, "value": {"displays": [
+                {"display_name": "DISPLAY15", "bounds": {"width": 1920}}
+            ]}}, r"\\.\DISPLAY15"),
+            ({"ok": True, "value": {"displays": [
+                {"display_name": "DISPLAY15"}, {"display_name": "DISPLAY16"}
+            ]}}, ""),
+        ]
+        with mock.patch.object(GameProviderBridge.urllib.request, "urlopen",
+                               return_value=response) as urlopen:
+            for payload, expected in payloads:
+                resolver.last_check = 0.0
+                response.read.return_value = json.dumps(payload).encode("utf-8")
+                self.assertEqual(expected, resolver.resolve())
+            self.assertEqual(2, urlopen.call_count)
+            self.assertTrue(all(call.args[0] == resolver.endpoint for call in urlopen.call_args_list))
 
     def test_connector_patch_is_guarded_and_idempotent(self):
         fixture = "\n".join([

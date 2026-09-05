@@ -446,7 +446,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(menu.indexOf("R.string.overlay_menu_end_game")
                 < menu.indexOf("R.string.overlay_menu_quit_session"));
         assertTrue(menu.contains("confirmTerminateSession(host, item.stableId())"));
-        assertTrue(stop.contains("stopActiveProviderGame(host, item.stableId(), true)"));
+        assertTrue(stop.contains("stopActiveProviderGame(host, item.stableId(), true, confirmedKey.profileId)"));
         assertTrue(stop.contains("markExactPlayniteGameIdle(host.uuid, expectedAppId"));
         assertTrue(stop.contains("refreshSessionState(host.uuid)"));
         assertTrue(stop.contains("R.string.overlay_menu_end_game_failed"));

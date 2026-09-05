@@ -8,12 +8,15 @@ $control = Join-Path $root "control"
 $gateway = Join-Path $root "gateway"
 $profile = Join-Path $root "profiles\default"
 $foreignProfile = Join-Path $root "profiles\foreign"
+$legendaryState = Join-Path $profile "state\legendary"
+$fakeLegendary = Join-Path $root "fake-legendary.cmd"
 $resultPath = Join-Path $root "result.json"
 $diagnosticPath = Join-Path $root "steam-web-api-configure.log"
 $plain = "0" * 32
 $listenerProcess = $null
 $closeListenerProcess = $null
 $uiSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "MoonWakerHostControl.cs") -Raw
+$hostControlSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "Invoke-MoonWakerHostControl.ps1") -Raw
 if (-not $uiSource.Contains('vibepolloUrl.Text = vibepolloConfigured ? "" :')) {
     throw "The integrations dialog no longer preserves an existing Vibepollo base URL."
 }
@@ -44,7 +47,7 @@ function Protect-TestValue([string]$Value) {
 
 try {
     New-Item -ItemType Directory -Path $control, $gateway, (Join-Path $profile "game-provider"), `
-        (Join-Path $profile "discord"), (Join-Path $profile "vibepollo"), `
+        (Join-Path $profile "discord"), (Join-Path $profile "vibepollo"), $legendaryState, `
         $foreignProfile -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Invoke-MoonWakerHostControl.ps1") `
         -Destination (Join-Path $control "Invoke-MoonWakerHostControl.ps1")
@@ -85,6 +88,70 @@ try {
     [ordered]@{ version = "test"; build = "test"; protocol_version = 1 } |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root "version.json") -Encoding UTF8
     New-Item -ItemType File -Path (Join-Path $gateway "gateway-manually-stopped") -Force | Out-Null
+
+    @'
+@echo off
+set "LT=<"
+set "GT=>"
+if /I "%MOONWAKER_TEST_LEGENDARY_MODE%"=="placeholder" (
+    echo {"account":"%LT%not logged in%GT%"}
+    exit /b 0
+)
+if /I "%MOONWAKER_TEST_LEGENDARY_MODE%"=="empty" (
+    echo {"account":""}
+    exit /b 0
+)
+if /I "%MOONWAKER_TEST_LEGENDARY_MODE%"=="null" (
+    echo {"account":null}
+    exit /b 0
+)
+if /I "%MOONWAKER_TEST_LEGENDARY_MODE%"=="real" (
+    echo {"account":"epic-test-user"}
+    exit /b 0
+)
+exit /b 7
+'@ | Set-Content -LiteralPath $fakeLegendary -Encoding ASCII
+    $tokens = $null
+    $parseErrors = $null
+    $sourceAst = [System.Management.Automation.Language.Parser]::ParseInput(
+        $hostControlSource, [ref]$tokens, [ref]$parseErrors)
+    if ($parseErrors.Count -gt 0) { throw "Host Control source parsing failed." }
+    $legendaryFunction = @($sourceAst.Find({
+            param($node)
+            $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and
+                $node.Name -eq "Test-LegendaryConnection"
+        }, $true)) | Select-Object -First 1
+    if ($null -eq $legendaryFunction) {
+        throw "Test-LegendaryConnection was not found in Host Control source."
+    }
+    $legendaryFunctionText = $legendaryFunction.Extent.Text
+    $legendaryContract = [scriptblock]::Create(@"
+param([string]`$executablePath, [string]`$profileRoot)
+function Get-LegendaryExecutable { return `$executablePath }
+$legendaryFunctionText
+`$previousMode = `$env:MOONWAKER_TEST_LEGENDARY_MODE
+try {
+    function Assert-LegendaryConnection([string]`$mode, [bool]`$expected) {
+        `$env:MOONWAKER_TEST_LEGENDARY_MODE = `$mode
+        `$env:LEGENDARY_CONFIG_PATH = "moonwaker-test-sentinel"
+        `$actual = Test-LegendaryConnection `$profileRoot
+        if ([bool]`$actual -ne `$expected) {
+            throw "Legendary status mode '`$mode' returned '`$actual'; expected '`$expected'."
+        }
+        if (`$env:LEGENDARY_CONFIG_PATH -ne "moonwaker-test-sentinel") {
+            throw "Legendary config path was not restored after status probing."
+        }
+    }
+    Assert-LegendaryConnection "placeholder" `$false
+    Assert-LegendaryConnection "empty" `$false
+    Assert-LegendaryConnection "null" `$false
+    Assert-LegendaryConnection "real" `$true
+    Assert-LegendaryConnection "failure" `$false
+} finally {
+    `$env:MOONWAKER_TEST_LEGENDARY_MODE = `$previousMode
+}
+"@)
+    & $legendaryContract $fakeLegendary $profile
 
     Add-Type -AssemblyName System.Security
     $plainBytes = [Text.Encoding]::Unicode.GetBytes($plain)

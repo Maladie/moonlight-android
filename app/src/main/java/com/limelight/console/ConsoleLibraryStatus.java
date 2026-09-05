@@ -32,7 +32,7 @@ final class ConsoleLibraryStatus {
         if (error == PlayniteLibraryRepository.ErrorKind.SERVER) return State.SERVER_ERROR;
         if (error != null) return State.GATEWAY_UNAVAILABLE;
         if (cached) return State.CACHED;
-        if (refreshing) return State.REFRESHING;
+        // A populated library remains usable while its background refresh runs.
         return State.CURRENT;
     }
 

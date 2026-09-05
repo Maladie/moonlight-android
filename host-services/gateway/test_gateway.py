@@ -164,6 +164,113 @@ class GatewayStateTest(unittest.TestCase):
             handler.do_GET()
             self.assertEqual(403, responses[0][0])
 
+    def test_legacy_unlock_lease_expires_after_five_minutes(self):
+        state, client = self.pin_state()
+        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100.0):
+            status, result = state.verify_pin(client, "protected", "2468")
+        self.assertEqual(200, status)
+        self.assertEqual(300, result["expires_in_seconds"])
+        self.assertEqual(400.0, state.pin_unlock_leases[("client-1", "protected")][0])
+
+        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=399.0):
+            state.require_profile_unlock(client, "protected")
+        self.assertEqual(400.0, state.pin_unlock_leases[("client-1", "protected")][0])
+
+        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=400.0):
+            with self.assertRaises(PermissionError):
+                state.require_profile_unlock(client, "protected")
+
+    def test_profile_session_unlock_survives_idle_and_replaces_prior_session(self):
+        state, client = self.pin_state()
+        session_a = "01234567-89ab-cdef-0123-456789abcdef"
+        session_b = "fedcba98-7654-3210-fedc-ba9876543210"
+        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100.0):
+            status, result = state.verify_pin(client, "protected", "2468", session_a)
+        self.assertEqual(200, status)
+        self.assertTrue(result["session_scoped"])
+        self.assertNotIn("expires_in_seconds", result)
+
+        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100000.0):
+            state.require_profile_unlock(client, "protected", session_a.upper())
+            with self.assertRaises(PermissionError):
+                state.require_profile_unlock(client, "protected")
+
+            status, _result = state.verify_pin(client, "protected", "2468", session_b)
+            self.assertEqual(200, status)
+            with self.assertRaises(PermissionError):
+                state.require_profile_unlock(client, "protected", session_a)
+            state.require_profile_unlock(client, "protected", session_b)
+
+    def test_profile_session_unlock_is_invalidated_by_verifier_change(self):
+        state, client = self.pin_state()
+        session_id = "01234567-89ab-cdef-0123-456789abcdef"
+        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100.0):
+            status, _result = state.verify_pin(client, "protected", "2468", session_id)
+        self.assertEqual(200, status)
+        state.config["profiles"]["protected"]["pin_verifier"]["digest"] = (
+            wakeplay_gateway.base64.b64encode(
+                wakeplay_gateway.hashlib.pbkdf2_hmac(
+                    "sha256", b"2468", b"fedcba9876543210", 100_000)).decode("ascii"))
+        with self.assertRaises(PermissionError):
+            state.require_profile_unlock(client, "protected", session_id)
+        self.assertNotIn(("client-1", "protected"), state.pin_unlock_leases)
+
+    def test_profile_session_header_requires_a_canonical_uuid(self):
+        state, _client = self.pin_state()
+        with self.assertRaises(ValueError):
+            state.verify_pin(
+                {"id": "client-1"}, "protected", "2468", "short-session")
+
+    def test_handler_propagates_profile_session_to_protected_routes(self):
+        state, _client = self.pin_state()
+        state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+        session_a = "01234567-89ab-cdef-0123-456789abcdef"
+        session_b = "fedcba98-7654-3210-fedc-ba9876543210"
+        second_profile = dict(state.config["profiles"]["protected"])
+        second_profile["id"] = "protected-other"
+        state.config["profiles"]["protected-other"] = second_profile
+        state.config["clients"][0]["profile_grants"]["protected-other"] = ["use_profile"]
+        state.config["clients"].append({
+            "id": "client-2",
+            "token_sha256": sha256_text("other-token"),
+            "profile_grants": {"protected": ["use_profile"]},
+        })
+        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100.0):
+            handler, responses = self.request_handler(
+                state, "/api/v1/profiles/pin/verify", "pin-token", "protected")
+            handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
+            handler.read_json = lambda: {"pin": "2468"}
+            handler.do_POST()
+            self.assertEqual(200, responses[0][0])
+
+        with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=100000.0):
+            for session_id, expected_status in (
+                    (session_a, 200), (session_b, 403), (None, 403)):
+                handler, responses = self.request_handler(
+                    state, "/api/v1/playnite/health", "pin-token", "protected")
+                if session_id is not None:
+                    handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_id
+                handler.do_GET()
+                self.assertEqual(expected_status, responses[0][0])
+
+            handler, responses = self.request_handler(
+                state, "/api/v1/playnite/health", "pin-token", "protected")
+            handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
+            handler.do_GET()
+            self.assertEqual(200, responses[0][0])
+
+            handler, responses = self.request_handler(
+                state, "/api/v1/playnite/health", "other-token", "protected")
+            handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
+            handler.do_GET()
+            self.assertEqual(403, responses[0][0])
+
+            handler, responses = self.request_handler(
+                state, "/api/v1/playnite/health", "pin-token", "protected-other")
+            handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
+            handler.do_GET()
+            self.assertEqual(403, responses[0][0])
+
     def test_pin_verify_requires_authenticated_use_profile_grant(self):
         state, _client = self.pin_state()
         state.config["clients"][0]["profile_grants"] = {"open": ["use_profile"]}

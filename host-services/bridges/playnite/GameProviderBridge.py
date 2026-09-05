@@ -237,7 +237,7 @@ class StreamDisplayResolver:
     }
 
     def __init__(self, vibepollo_bridge: str) -> None:
-        self.endpoint = vibepollo_bridge.rstrip("/") + "/diagnostics/stream-sources" \
+        self.endpoint = vibepollo_bridge.rstrip("/") + "/diagnostics/active-displays" \
             if vibepollo_bridge else ""
         self.last_check = 0.0
         self.cached = ""
@@ -4206,6 +4206,19 @@ class BridgeState:
                     "processPath": str(sample.get("process_path") or ""),
                 })
                 self._save_active_game_trace_locked()
+            if target_kind == "game" and current_state == "running" \
+                    and not sample.get("launcher_candidate") \
+                    and not str(self.current.get("processPath") or ""):
+                sample_process_id = int(sample.get("process_id") or 0)
+                current_process_id = int(
+                    self.current.get("processId") or
+                    self.current.get("process_id") or 0)
+                if sample_process_id > 0 and sample_process_id == current_process_id \
+                        and str(sample.get("process_path") or ""):
+                    # The sample only gates the retry.  The helper obtains and
+                    # validates the authoritative PID/path/start identity before
+                    # changing current state or writing the recovery trace.
+                    self._save_active_game_trace_locked()
             launcher_signature = None
             if sample.get("launcher_candidate"):
                 launcher_signature = (
