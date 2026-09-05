@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": 27,
-  "last_updated_at": "2026-09-05T10:47:43+02:00",
+  "revision": 29,
+  "last_updated_at": "2026-09-05T11:34:08.2312555+02:00",
   "document_status": "active",
   "repository": {
     "path": "D:\\Maladie\\moonlight-android",
@@ -1076,10 +1076,57 @@
           }
         }
       }
+    },
+    {
+      "id": "MW-STABILITY-03",
+      "title": "Repair streaming readiness regression after game replacement or failed launch",
+      "status": "done",
+      "objective": "Identify and fix the parent-branch regression that leaves streaming unavailable after an in-flight game switch or failed window readiness.",
+      "acceptance_criteria": [
+        "Root cause traced against parent baseline and runtime evidence",
+        "Focused regression coverage and affected builds pass",
+        "Runtime validation and remaining limitations reported accurately"
+      ],
+      "validation": [
+        "Read-only TV logcat and app diagnostic capture: SWITCH_RETAINED failed at NETWORK_READY/NETWORK_UNAVAILABLE in9-15ms on2026-09-05; installed Host0.7.78 confirmed. No live game/session mutation.",
+        "JDK17: gradlew.bat testNonRootDebugUnitTest --tests com.limelight.stream.RetainedStreamSessionCoordinatorTest --console=plain: pre-fix49 tests1 failure at new profile regression; fixed49 tests pass.",
+        "JDK17 with existing gradle-home-17: gradlew.bat testNonRootDebugUnitTest assembleNonRootDebug --console=plain: PASS939 tests,0 failures/errors/skips; BUILD SUCCESSFUL in47s. Initial sandbox attempt denied Gradle cache lock before execution; elevated retry passed.",
+        "git diff --check: PASS with line-ending warnings only; complete four-file diff and final status reviewed.",
+        "adb -s <TV> install -r app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk: Success; pm path and shell sha256sum confirm installed base.apk matches f8b46e8d37d8de1c7033a4db3f149644be8481c9a0c4eaa21433ec56d7ca9d17. App not launched."
+      ],
+      "work": {
+        "owner": "root supervising Luna Max android_switch and host_stream",
+        "started_at": "2026-09-05T11:17:15.6187397+02:00",
+        "completed_at": "2026-09-05T11:27:58.3887518+02:00",
+        "summary": "Fixed missing profile forwarding in RetainedStreamSessionCoordinator.canSwitchGame(Snapshot), introduced in c1e5d7f1 after parent baseline60fbb576. Nondefault-profile retained switches were rejected as NETWORK_UNAVAILABLE in9-15ms despite healthy host, producing misleading90-second timeout. Single production-line correction preserves the snapshot profile and all existing correlation/privacy checks. Regressions cover PREPARING/HOME_LIVE, active/empty game identity, and stale profile rejection. Full Android build passes.",
+        "files_changed": [
+          "app/src/main/java/com/limelight/stream/RetainedStreamSessionCoordinator.java",
+          "app/src/test/java/com/limelight/stream/RetainedStreamSessionCoordinatorTest.java",
+          "state.json",
+          "state.md"
+        ],
+        "blockers": []
+      },
+      "artifacts": {
+        "apk": {
+          "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+          "sha256": "f8b46e8d37d8de1c7033a4db3f149644be8481c9a0c4eaa21433ec56d7ca9d17",
+          "installed": true,
+          "installed_at": "2026-09-05T11:34:08.2312555+02:00",
+          "installed_hash_verified": true
+        }
+      },
+      "runtime_limits": [
+        "Updated APK deployed to Sony BRAVIA with matching SHA-256; live game switch and post-failure retry remain untested.",
+        "Recent Batman evidence reached GAME_RUNNING before losing its window and reporting game_stopped; cause of game exit is separate and not claimed fixed.",
+        "No host source/build/install or Moonlight-core changes, commit or push."
+      ],
+      "branch": "codex/multi-profile-remote-sign-in",
+      "head": "fc6b198609f7a6362a493ca748f1956e38002927"
     }
   ],
   "next_task_id": null,
-  "current_task_id": "MW-STABILITY-02",
+  "current_task_id": null,
   "known_risks": [
     {
       "id": "R-001",
@@ -1289,6 +1336,20 @@
       "task_id": "MW-STABILITY-02",
       "event": "fixes_built_apk_deployed_runtime_pending",
       "summary": "Reviewed and built corrections for duplicate-supervisor cleanup, profile-scoped provider shutdown, delayed strict process identity capture and library status flicker. Final combined APK installed/hash verified on TV. Host0.7.78 artifact ready but not installed. Batman installed=true confirmed by normal library refresh. Task remains in_progress pending administrator host update/Apollo restart and live launch/close acceptance; no complete runtime stability claim."
+    },
+    {
+      "at": "2026-09-05T11:27:58.3887518+02:00",
+      "agent": "root supervising Luna Max agents",
+      "task_id": "MW-STABILITY-03",
+      "event": "fix_validated",
+      "summary": "Fixed retained switch profile forwarding regression, proved failing-before/passing-after test, reviewed diff and passed939 Android tests plus APK build; live updated-APK acceptance pending."
+    },
+    {
+      "at": "2026-09-05T11:34:08.2312555+02:00",
+      "agent": "root",
+      "task_id": "MW-STABILITY-03",
+      "event": "apk_deployed",
+      "summary": "User-requested APK installed successfully on Sony BRAVIA; installed SHA-256 matches validated artifact. Live game-switch acceptance remains pending."
     }
   ]
 }

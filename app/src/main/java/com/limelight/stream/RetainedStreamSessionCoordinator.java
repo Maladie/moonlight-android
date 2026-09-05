@@ -468,7 +468,7 @@ public final class RetainedStreamSessionCoordinator {
                 && transitionId.equals(expected.transitionId) && attempt == expected.attempt
                 && profileId.equals(expected.profileId)
                 && playniteGameId.equalsIgnoreCase(expected.playniteGameId)
-                && canSwitchGame(expected.hostId, expected.appId);
+                && canSwitchGame(expected.hostId, expected.profileId, expected.appId);
     }
 
     public static synchronized boolean canSwitchGame(String expectedHostId,

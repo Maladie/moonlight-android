@@ -8,7 +8,7 @@
 - Repository: `D:\Maladie\moonlight-android`
 - Branch at plan creation: `codex/multi-profile-remote-sign-in`
 - HEAD at plan creation: `c1e5d7f1`
-- Current task: `MW-STABILITY-02`, parallel host/runtime stabilization.
+- Current task: none. `MW-STABILITY-03` code fix and automated validation completed; updated APK live acceptance pending.
 - `MW-PROFILE-10`: completed; local preliminary PIN verification implemented, tested and APK deployed. Live sleep/wake acceptance remains pending.
 - `MW-PROFILE-09`: user confirmed successful account switching; bounded defect accepted.
 - Next task: none.
@@ -363,3 +363,22 @@ Remaining runtime observation: the unchanged legacy graceful-stop path requested
 - Combined Android validation with MW-PROFILE-10:937 tests,0 failures/errors/skips; assembleNonRootDebug passed. APK SHA-256:a7894381d59d8499e1958e3d8fbf2eb370e75168429ef74e2aac68d8fe6d72e7. The other root installed it on Sony BRAVIA via adb install -r and verified installed base.apk hash. App was not launched.
 - Host installer path:host-services/dist/MoonWakerHostInstaller.exe; APK path:app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk. Exact scope and commands are in state.json. git diff --check passed; no commit/push and concurrent PIN changes preserved.
 - Host0.7.78 is NOT installed. Windows service permissions prevented Apollo restart; administrator action and live launch/close/TV checks remain pending. MW-STABILITY-02 remains in_progress rather than claiming full runtime stability. Existing Epic operation ownership cannot survive an in-flight bridge restart; ordinary catalog refresh correctly reflects installation after completion, without inventing operation success.
+
+## MW-STABILITY-03 investigation
+
+- Root supervises Luna Max Android and host investigations on HEAD fc6b1986 against parent baseline 60fbb576.
+- User reports streaming readiness timeout after replacing a game or failed Batman window readiness. Existing artifacts are preserved.
+
+## MW-STABILITY-03 reviewed fix and validation
+
+- Missing profile forwarding in `RetainedStreamSessionCoordinator.canSwitchGame(Snapshot)` was introduced in `c1e5d7f1`, after parent baseline `60fbb576`. It compared a nondefault-profile snapshot against the compatibility overload's default profile. The shared helper now forwards `expected.profileId`; existing ownership, correlation and privacy checks remain intact.
+- Fresh Android diagnostics confirm repeated `SWITCH_RETAINED` rejection at `NETWORK_READY` with `NETWORK_UNAVAILABLE` in 9–15 ms, despite healthy host polling. The 90-second message was misleading. The same helper gates active-game replacement and retry on a neutral stream after a game exits.
+- Two regression tests cover PREPARING/HOME_LIVE with empty and active game identity, plus a stale snapshot where only profile changes. Exact original production line: 49 tests, 1 failure in the new regression. Fixed line: all 49 pass.
+- Full JDK17 command `gradlew.bat testNonRootDebugUnitTest assembleNonRootDebug --console=plain` passed in 47 seconds: 939 tests, zero failures/errors/skips. Initial sandbox cache-lock access failed before Gradle execution; elevated retry passed. Build log: `work/stability-03/android-full-build.log`.
+- APK: `app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk`, SHA-256 `f8b46e8d37d8de1c7033a4db3f149644be8481c9a0c4eaa21433ec56d7ca9d17`. Deployed to Sony BRAVIA with verified matching SHA-256; live switching/retry acceptance on this APK remains unrun. Host 0.7.78 is already installed; no host rebuild is needed for this Android correction.
+- Recent Batman diagnostics reached GAME_RUNNING, then lost the window and reported game_stopped. The cause of the game exit is separate and is not claimed fixed here.
+- Reviewed four-file diff: coordinator, its test, state.json and state.md. `git diff --check` passes with line-ending warnings only. Branch `codex/multi-profile-remote-sign-in`, HEAD `fc6b198609f7a6362a493ca748f1956e38002927`; pre-existing artifacts preserved, no commit/push or Moonlight-core changes.
+
+## MW-STABILITY-03 APK deployment
+
+- User-requested update installed on Sony BRAVIA using adb install -r: Success. Installed base.apk SHA-256 matches the validated APK. App not launched; live game switching and post-failure retry remain untested.

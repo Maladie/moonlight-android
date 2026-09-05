@@ -100,6 +100,38 @@ public class RetainedStreamSessionCoordinatorTest {
         assertFalse(RetainedStreamSessionCoordinator.canSwitchGame(home));
     }
 
+    @Test public void snapshotSwitchEligibilityPreservesNonDefaultProfile() {
+        for (String gameId : new String[] { "", "old" }) {
+            RetainedStreamSessionCoordinator.clear();
+            FakeController owner = new FakeController();
+            String profile = "profile-a";
+            assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                    owner, SESSION_A, "host", profile, 7, gameId,
+                    "transition-a", 1L));
+            RetainedStreamSessionCoordinator.Snapshot preparing =
+                    RetainedStreamSessionCoordinator.snapshot();
+            assertTrue(RetainedStreamSessionCoordinator.canSwitchGame(preparing));
+
+            RetainedStreamSessionCoordinator.enterHome(
+                    owner, SESSION_A, "host", profile, 7, gameId);
+            RetainedStreamSessionCoordinator.Snapshot home =
+                    RetainedStreamSessionCoordinator.snapshot();
+            assertTrue(RetainedStreamSessionCoordinator.canSwitchGame(home));
+        }
+    }
+
+    @Test public void snapshotSwitchEligibilityRejectsStaleProfile() {
+        FakeController owner = new FakeController();
+        RetainedStreamSessionCoordinator.enterHome(
+                owner, SESSION_A, "host", "profile-a", 7, "old");
+        RetainedStreamSessionCoordinator.Snapshot stale =
+                RetainedStreamSessionCoordinator.snapshot();
+
+        RetainedStreamSessionCoordinator.enterHome(
+                owner, SESSION_A, "host", "profile-b", 7, "old");
+        assertFalse(RetainedStreamSessionCoordinator.canSwitchGame(stale));
+    }
+
     @Test public void ownedSwitchCanPublishAcceptedGameButDashboardCannotPreclearIt() {
         for (String oldGame : new String[] { "", "old" }) {
             RetainedStreamSessionCoordinator.clear();
