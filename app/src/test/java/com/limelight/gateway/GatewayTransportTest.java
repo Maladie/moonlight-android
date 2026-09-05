@@ -20,6 +20,7 @@ import javax.net.ssl.HttpsURLConnection;
 import static org.junit.Assert.assertArrayEquals;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
@@ -43,9 +44,25 @@ public class GatewayTransportTest {
         assertEquals("close", headers.get("Connection"));
         assertEquals("Bearer secret", headers.get("Authorization"));
         assertEquals("profile-1", headers.get("X-WakePlay-Profile"));
+        assertTrue(headers.get("X-MoonWaker-Profile-Session")
+                .matches("[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"));
         assertFalse(headers.containsKey("Content-Type"));
         assertEquals("get-request", headers.get("X-Request-Id"));
         assertEquals(1, calls.get());
+    }
+
+    @Test public void profileSessionIsStableAcrossTransportsAndSeparateFromRequestIds() {
+        GatewayTransport first = new GatewayTransport(() -> "request-a");
+        GatewayTransport second = new GatewayTransport(() -> "request-b");
+
+        String firstSession = first.buildRequestHeaders(CONNECTION, false, false)
+                .get("X-MoonWaker-Profile-Session");
+        String secondSession = second.buildRequestHeaders(CONNECTION, false, false)
+                .get("X-MoonWaker-Profile-Session");
+
+        assertEquals(firstSession, secondSession);
+        assertNotEquals("request-a", firstSession);
+        assertNotEquals("request-b", secondSession);
     }
 
     @Test public void postHeadersContainOneDeterministicRequestId() {
@@ -127,6 +144,7 @@ public class GatewayTransportTest {
         assertEquals("pair-request", headers.get("X-Request-Id"));
         assertFalse(headers.containsKey("Authorization"));
         assertFalse(headers.containsKey("X-WakePlay-Profile"));
+        assertFalse(headers.containsKey("X-MoonWaker-Profile-Session"));
         assertEquals(1, calls.get());
     }
 

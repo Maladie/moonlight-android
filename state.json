@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": 17,
-  "last_updated_at": "2026-09-04T23:44:34+02:00",
+  "revision": 27,
+  "last_updated_at": "2026-09-05T10:47:43+02:00",
   "document_status": "active",
   "repository": {
     "path": "D:\\Maladie\\moonlight-android",
@@ -29,9 +29,10 @@
     "windows_session_state": "MoonWakerLoginBroker",
     "profile_registry_and_device_grants": "Machine Gateway registry/configuration managed by Host Control",
     "profile_pin_verifier": "Machine Gateway profile configuration managed only by elevated Host Control",
-    "pin_unlock_lease": "Ephemeral Gateway memory, bound to paired client and profile",
+    "pin_unlock_lease": "Ephemeral Gateway memory, bound to paired client, profile, verifier and transient Android process UUID; legacy clients retain five-minute expiry",
     "windows_switch_attempt": "MoonWakerLoginBroker attempt ledger",
-    "android_switch_state": "Transient presentation/request state only"
+    "android_switch_state": "Transient presentation/request state only",
+    "offline_pin_wake_gate": "Android Keystore-bound local verifier learned after Gateway verification; permits wake only, never host access"
   },
   "invariants": [
     "Windows users are switched by disconnecting the active console session; no logoff API or command may be used.",
@@ -90,6 +91,12 @@
       "status": "accepted",
       "decision": "Expose Windows switching through a separate explicit session/switch mutation rather than changing session/ensure semantics.",
       "rationale": "Existing launch and warm-up flows must not begin disconnecting an active user as an implicit side effect."
+    },
+    {
+      "id": "D-008",
+      "status": "accepted",
+      "decision": "Use a learned device/pairing/profile-bound local PIN verifier only to authorize wake while Gateway is unreachable; always reverify the entered PIN on Gateway before protected access.",
+      "rationale": "User explicitly requires preliminary client validation for Wake & Play while host is asleep/off. Gateway remains authoritative; first use requires online verification."
     }
   ],
   "verified_baseline": [
@@ -770,10 +777,309 @@
         "PIN glyph sheet and layout/code were reviewed; a full on-TV protected PIN screenshot was not captured because FLAG_SECURE remains enabled.",
         "Host installer was built, not installed; use the new installer before manually rechecking Windows switching."
       ]
+    },
+    {
+      "id": "MW-PROFILE-09",
+      "title": "Complete Windows sign-in after explicit profile switch",
+      "status": "done",
+      "priority": 9,
+      "depends_on": [
+        "MW-PROFILE-08"
+      ],
+      "objective": "After explicit switch, authenticate the selected Windows profile using the existing lock-screen sign-in mechanism and confirm completed login to Android.",
+      "acceptance_criteria": [
+        "Switch disconnects previous session without logoff and signs into selected target profile.",
+        "The existing credential flow is reused without weakening authentication or adding implicit switch effects to ensure.",
+        "Android reports success only for verified selected-profile active/unlocked state.",
+        "Focused tests cover the observed failure and confirmation boundary; final runtime acceptance is recorded accurately."
+      ],
+      "validation": [
+        {
+          "command": "python -m unittest test_gateway.LoginBrokerGatewayTest",
+          "result": "PASS 14 tests"
+        },
+        {
+          "command": "gradlew.bat testNonRootDebugUnitTest --tests com.limelight.console.ConsoleWindowsProfileSwitchTest --tests com.limelight.console.HostGatewayClientTest",
+          "result": "PASS 30 tests"
+        },
+        {
+          "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Build-HostServices.ps1 (LLVM-MinGW directory on PATH)",
+          "result": "exit 0; 105 Gateway, 223 Bridge, 14 Broker tests, Gateway service checks, native Credential Provider tests and x64 build passed; Bridge background catalog thread reported sqlite unable to open database file, tracked as unrelated observation"
+        },
+        {
+          "command": "git diff --check",
+          "result": "PASS"
+        },
+        {
+          "command": "User manual account-switch test",
+          "result": "User confirms success on 2026-09-05."
+        }
+      ],
+      "work": {
+        "owner": "root; Luna Max implementation and confirmation audit, root review corrections",
+        "started_at": "2026-09-04T23:55:26+02:00",
+        "completed_at": "2026-09-05T10:03:23+02:00",
+        "summary": "Prior changes committed as 7221343e. Fixed a code-supported missed-notification race with bounded active-console pending catch-up; preserved explicit result refreshes and single-use credential acquisition. Resets catch-up after user-array/scenario readiness. Exact runtime event consumer is unproven. Installer 0.7.76 built; awaiting user live Gry-to-Basia desktop and app-success acceptance. User now confirms successful account switching in manual testing; bounded defect accepted. Full historical VM matrix remains separate.",
+        "files_changed": [
+          "host-services/windows-login/credential-provider/MoonWakerCredentialProvider.cpp",
+          "host-services/windows-login/credential-provider/BrokerProtocol.cpp",
+          "host-services/windows-login/credential-provider/BrokerProtocol.h",
+          "host-services/windows-login/credential-provider/CredentialProviderProtocolTests.cpp",
+          "host-services/windows-login/credential-provider/Test-MoonWakerCredentialProvider.ps1",
+          "host-services/gateway/test_gateway.py",
+          "app/src/test/java/com/limelight/console/ConsoleWindowsProfileSwitchTest.java",
+          "app/src/test/java/com/limelight/console/HostGatewayClientTest.java",
+          "host-services/version.json",
+          "host-services/control/MoonWakerHostControl.cs",
+          "host-services/control/MoonWakerHostConfigurator.cs",
+          "host-services/installer/MoonWakerHostInstaller.cs"
+        ],
+        "blockers": []
+      },
+      "artifact": {
+        "path": "work/profile-09-validation/MoonWakerHostInstaller-0.7.76.exe",
+        "version": "0.7.76.0",
+        "sha256": "9f8194b0e13164780b1c8cb7cd412e03a233b256932b166f82d0572b34b1d8c1",
+        "installed": false
+      }
+    },
+    {
+      "id": "MW-STABILITY-01",
+      "title": "Stabilize Gateway, game and stream lifecycle, and Epic library",
+      "status": "done",
+      "priority": 10,
+      "depends_on": [],
+      "objective": "Investigate recent launch logs and fix verified Gateway/Bridge communication, stop/Resume state synchronization and Legendary catalog regressions.",
+      "acceptance_criteria": [
+        "Verified root causes have focused regression coverage.",
+        "Gateway and Bridge suites and Android unit tests/build pass.",
+        "Recent launch log evidence and runtime validation limits are documented."
+      ],
+      "validation": [
+        {
+          "command": "Build-HostServices.ps1 (LLVM-MinGW bin on PATH)",
+          "result": "PASS: 110 Gateway tests, 225 Game Provider tests, Gateway service check, 14 Broker tests, native Credential Provider protocol/security tests and x64 build; installer 0.7.77. Network-enabled rerun required for pinned Legendary payload download."
+        },
+        {
+          "command": "python -m unittest test_vibepollo_bridge.py",
+          "working_directory": "host-services/bridges/vibepollo",
+          "result": "PASS: 3 tests"
+        },
+        {
+          "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./Test-MoonWakerProfileBridge.ps1",
+          "working_directory": "host-services/profile-agent",
+          "result": "PASS"
+        },
+        {
+          "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File ./Test-MoonWakerHostControl.ps1",
+          "working_directory": "host-services/control",
+          "result": "PASS: full harness including executable fake Legendary status regression"
+        },
+        {
+          "command": "JAVA_HOME=JDK17; GRADLE_USER_HOME=gradle-home-17; ./gradlew.bat testNonRootDebugUnitTest assembleNonRootDebug --console=plain",
+          "result": "PASS: final frozen sources, 917 tests, zero failures/errors/skips, APK assembled; 41 seconds. Earlier missing test import corrected before successful runs."
+        },
+        {
+          "command": "git diff --check; git status --short; complete scoped diff review",
+          "result": "PASS: line-ending warnings only; pre-existing Windows sign-in changes and tests preserved; no Moonlight core edits, no commit/push."
+        },
+        {
+          "command": "Installer manifest resources / embedded ZIP inspection",
+          "result": "PASS: version0.7.77,112 payload files, correct changed services present, no runtime profiles/logs/config/secrets or stale dist directories in payload."
+        },
+        {
+          "command": "adb install -r app-nonRoot-debug.apk; adb shell pm path com.limelight.debug; adb shell sha256sum <installed base.apk>",
+          "result": "PASS: installation Success on Sony BRAVIA; installed SHA-256 matches built APK 69495e57f870d1873048e316206d5a8052b2ba5061b38d34276f1d95ed1e89a6. App not launched by this deployment."
+        }
+      ],
+      "work": {
+        "owner": "root supervising Luna Max gateway_stability, android_session, bridge_epic",
+        "started_at": "2026-09-05T00:10:36+02:00",
+        "completed_at": "2026-09-05T01:08:54+02:00",
+        "summary": "Reviewed Luna Max fixes for process-bound PIN authorization, bounded display polling and Vibepollo liveness, fresh Sunshine close verification, teardown-safe refresh, captured-profile game stop/reset state, and accurate Legendary connection status. Full Android and host builds pass; runtime acceptance and legacy graceful-stop diagnostic limits remain explicit.",
+        "files_changed": [
+          "MOONWAKER_ARCHITECTURE.md",
+          "app/src/main/java/com/limelight/console/AuthoritativeSessionTransition.java",
+          "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+          "app/src/main/java/com/limelight/gateway/GatewayTransport.java",
+          "app/src/test/java/com/limelight/console/AuthoritativeSessionTransitionTest.java",
+          "app/src/test/java/com/limelight/console/ConsoleActivityEnsureContractTest.java",
+          "app/src/test/java/com/limelight/gateway/GatewayTransportTest.java",
+          "host-services/bridges/playnite/GameProviderBridge.py",
+          "host-services/bridges/playnite/test_playnite_bridge.py",
+          "host-services/bridges/vibepollo/README.md",
+          "host-services/bridges/vibepollo/VibepolloBridge.ps1",
+          "host-services/bridges/vibepollo/test_vibepollo_bridge.py",
+          "host-services/control/Invoke-MoonWakerHostControl.ps1",
+          "host-services/control/Test-MoonWakerHostControl.ps1",
+          "host-services/control/MoonWakerHostControl.cs (version only in this task)",
+          "host-services/control/MoonWakerHostConfigurator.cs (version only in this task)",
+          "host-services/installer/MoonWakerHostInstaller.cs (version only in this task)",
+          "host-services/gateway/wakeplay_gateway.py",
+          "host-services/gateway/test_gateway.py",
+          "host-services/gateway/README.md",
+          "host-services/profile-agent/MoonWakerProfileBridge.ps1",
+          "host-services/profile-agent/Test-MoonWakerProfileBridge.ps1",
+          "host-services/version.json",
+          "state.json",
+          "state.md",
+          "app/src/test/java/com/limelight/console/ConsoleActivityRequestedUiContractTest.java"
+        ],
+        "blockers": []
+      },
+      "artifacts": {
+        "installer": {
+          "path": "host-services/dist/MoonWakerHostInstaller.exe",
+          "version": "0.7.77",
+          "sha256": "0cb2c6b96bf83fec03b02227e22c4feb0d5cec97b57f0bb5e6e6ab136d467641",
+          "installed": false
+        },
+        "apk": {
+          "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+          "sha256": "69495e57f870d1873048e316206d5a8052b2ba5061b38d34276f1d95ed1e89a6",
+          "installed": true,
+          "installed_at": "2026-09-05T09:51:57+02:00",
+          "device": "Sony BRAVIA",
+          "installed_hash_verified": true
+        }
+      },
+      "runtime_limits": [
+        "APK deployed to Sony BRAVIA with matching SHA-256. Host installer remains not deployed; live screensaver/launch/close acceptance has not been run.",
+        "Selected installed Epic profile is not authenticated and requires a real account sign-in.",
+        "Existing legacy graceful stop emitted WM_CLOSE but no matching natural stop event before timeout. Logs lack process-exit evidence, so ignored close versus missing connector event remains unresolved; no forced-close workaround added.",
+        "Earlier MW-PROFILE-07 live Windows VM acceptance remains separate and unproven."
+      ],
+      "branch": "codex/multi-profile-remote-sign-in",
+      "head": "7221343e1fc291863229da1d08ecdf558fe611a1"
+    },
+    {
+      "id": "MW-PROFILE-10",
+      "title": "Offline preliminary profile PIN verification before wake",
+      "status": "done",
+      "priority": 11,
+      "depends_on": [
+        "MW-PROFILE-09"
+      ],
+      "objective": "Check a previously verified profile PIN locally before waking an offline host, then reverify with the authoritative Gateway before protected profile access and existing sign-in preparation.",
+      "acceptance_criteria": [
+        "Wrong offline PIN causes no wake; correct learned PIN permits wake and bounded server verification.",
+        "Never persist plaintext PIN or export server verifier; local verifier is device/pairing/profile bound with throttling.",
+        "No library, protected selection persistence, or Windows login before server authorization; cancel and stale-result guards preserved.",
+        "First use without a learned verifier provides actionable online setup message.",
+        "Focused tests and full Android build pass; updated APK deployed to TV."
+      ],
+      "validation": [
+        "JDK17: gradlew.bat testNonRootDebugUnitTest --tests '*OfflineProfilePinStoreTest' --tests '*OfflineProfilePinFlowTest' --tests '*ConsoleProfileGateTest' --tests '*ConsolePinEntryTest' --tests '*ConsoleLibraryStatusTest' --console=plain: PASS 43 tests.",
+        "JDK17: gradlew.bat testNonRootDebugUnitTest assembleNonRootDebug --console=plain: BUILD SUCCESSFUL; 937 tests, 0 failures/errors/skipped. Includes concurrent frozen ConsoleLibraryStatus changes.",
+        "adb -s 192.168.1.31:5555 install -r app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk: Success; pm path com.limelight.debug and shell sha256sum confirm installed hash matches artifact.",
+        "Scoped baseline diff reviewed; git diff --check passed. No plaintext PIN persistence or logging; shared preferences excluded by backup_rules.xml and backup_rules_s.xml."
+      ],
+      "work": {
+        "owner": "root supervising Luna Max offline_pin_store and offline_pin_flow",
+        "started_at": "2026-09-05T10:03:23+02:00",
+        "completed_at": "2026-09-05T10:46:00+02:00",
+        "summary": "Implemented and reviewed Luna Max store/flow: online-first PIN verification learns device-local Keystore HMAC verifier; transport-offline fallback checks local PIN before one WOL, polls authenticated pinned Gateway for up to 90 seconds and reverifies PIN before protected entry. Pairing/cancellation guards, persistent cooldown, pruning, API23+ support and honest first-use UI preserved. Combined APK built and installed on TV with matching hash.",
+        "files_changed": [
+          "app/src/main/java/com/limelight/console/OfflineProfilePinStore.java",
+          "app/src/main/java/com/limelight/console/OfflineProfilePinFlow.java",
+          "app/src/main/java/com/limelight/console/HostGatewayStore.java",
+          "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+          "app/src/test/java/com/limelight/console/OfflineProfilePinStoreTest.java",
+          "app/src/test/java/com/limelight/console/OfflineProfilePinFlowTest.java",
+          "app/src/main/res/values/strings.xml",
+          "app/src/main/res/values-pl/strings.xml",
+          "MOONWAKER_ARCHITECTURE.md",
+          "state.json",
+          "state.md"
+        ],
+        "blockers": []
+      },
+      "artifacts": {
+        "apk": {
+          "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+          "sha256": "a7894381d59d8499e1958e3d8fbf2eb370e75168429ef74e2aac68d8fe6d72e7",
+          "installed": true,
+          "installed_at": "2026-09-05T10:46:00+02:00",
+          "device": "Sony BRAVIA Android12 API31",
+          "installed_hash_verified": true
+        }
+      },
+      "runtime_limits": [
+        "Each paired profile must first verify online on this TV to learn its local verifier. API21/22 remain online-only.",
+        "Local success permits wake only; current Gateway PIN/grants remain authoritative after wake.",
+        "Live sleep/offline wake cycle and device Keystore end-to-end acceptance were not exercised; host left running. Earlier MW-PROFILE-07 VM matrix remains separate and unproven.",
+        "No host source or installer change required by this Android-only task. Parallel MW-STABILITY-02 owns its host artifact and runtime issues."
+      ],
+      "branch": "codex/multi-profile-remote-sign-in",
+      "head": "7221343e1fc291863229da1d08ecdf558fe611a1"
+    },
+    {
+      "id": "MW-STABILITY-02",
+      "title": "Diagnose live launch blocking, streaming TLS stall, library flicker and Epic installation detection",
+      "status": "in_progress",
+      "priority": 10,
+      "depends_on": [
+        "MW-STABILITY-01"
+      ],
+      "objective": "Fix concrete runtime failures reproduced with installed Host0.7.77 and deployed APK917; preserve concurrent MW-PROFILE-10 PIN work.",
+      "acceptance_criteria": [
+        "Live failure evidence is correlated before code changes.",
+        "Verified fixes have focused regressions and full affected builds.",
+        "Runtime repair and unresolved limits are reported accurately."
+      ],
+      "validation": [
+        "PASS: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\host-services\\profile-agent\\Test-MoonWakerProfileBridge.ps1; nonowner cannot write state/stop owner children.",
+        "PASS: powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\host-services\\bridges\\playnite\\Test-Stop-PlayniteBridge.ps1; shutdown matches only exact current-profile script.",
+        "PASS: python -m unittest test_playnite_bridge.py (157 tests), focused delayed identity regression and py_compile.",
+        "PASS: final Build-HostServices.ps1 with LLVM-MinGW on PATH;110 Gateway,226 provider,14 Broker tests plus service/native checks and complete installer0.7.78 build.",
+        "PASS: combined Gradle testNonRootDebugUnitTest assembleNonRootDebug --console=plain with JDK17;937 tests,0 failures/errors/skips. Concurrent MW-PROFILE-10 root executed and deployed; installed APK hash verified.",
+        "PASS: installer embedded payload113 files, source matches all three corrected host scripts; no runtime profiles/logs/secrets/stale dist directories.",
+        "PASS: git diff --check; branch codex/multi-profile-remote-sign-in, HEAD7221343e1fc291863229da1d08ecdf558fe611a1; no commit/push.",
+        "LIVE: ordinary library refresh confirms Epic Cowbird installed=true after Legendary completion; no source Epic parser changes.",
+        "UNVERIFIED: Host0.7.78 installation, Apollo TLS recovery, and live TV launch/close acceptance."
+      ],
+      "work": {
+        "owner": "root supervising Luna Max gateway_stability, android_session and bridge_epic",
+        "started_at": "2026-09-05T10:14:25+02:00",
+        "completed_at": null,
+        "summary": "Reviewed and built corrections for duplicate-supervisor cleanup, profile-scoped provider shutdown, delayed strict process identity capture and library status flicker. Final combined APK installed/hash verified on TV. Host0.7.78 artifact ready but not installed. Batman installed=true confirmed by normal library refresh. Task remains in_progress pending administrator host update/Apollo restart and live launch/close acceptance; no complete runtime stability claim.",
+        "files_changed": [
+          "app/src/main/java/com/limelight/console/ConsoleLibraryStatus.java",
+          "app/src/test/java/com/limelight/console/ConsoleLibraryStatusTest.java",
+          "host-services/profile-agent/MoonWakerProfileBridge.ps1",
+          "host-services/profile-agent/Test-MoonWakerProfileBridge.ps1",
+          "host-services/bridges/playnite/Stop-PlayniteBridge.ps1",
+          "host-services/bridges/playnite/Test-Stop-PlayniteBridge.ps1",
+          "host-services/bridges/playnite/GameProviderBridge.py",
+          "host-services/bridges/playnite/test_playnite_bridge.py",
+          "host-services/version.json",
+          "host-services/control/MoonWakerHostControl.cs",
+          "host-services/control/MoonWakerHostConfigurator.cs",
+          "host-services/installer/MoonWakerHostInstaller.cs",
+          "state.json",
+          "state.md"
+        ],
+        "blockers": [
+          "ApolloService restart denied by Windows service permissions; user asked for administrator restart. Sunshine TLS recovery and live TV launch/close acceptance remain unverified."
+        ],
+        "artifacts": {
+          "apk": {
+            "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+            "sha256": "a7894381d59d8499e1958e3d8fbf2eb370e75168429ef74e2aac68d8fe6d72e7",
+            "installed_on_tv": true
+          },
+          "host_installer": {
+            "path": "host-services/dist/MoonWakerHostInstaller.exe",
+            "version": "0.7.78",
+            "sha256": "9048e66802d7219606bc74922e7b2a9cc98e196d5cc2cf0c31ab73754a1a8028",
+            "installed": false
+          }
+        }
+      }
     }
   ],
   "next_task_id": null,
-  "current_task_id": null,
+  "current_task_id": "MW-STABILITY-02",
   "known_risks": [
     {
       "id": "R-001",
@@ -783,7 +1089,7 @@
     {
       "id": "R-002",
       "risk": "A four-digit PIN is vulnerable to online brute force.",
-      "mitigation": "Require an already paired client, use a salted verifier, constant-time comparison, a short lease, and per-client/profile rate limiting."
+      "mitigation": "Require an already paired client, salted verifier, constant-time comparison, per-client/profile rate limiting and verifier-bound process authorization."
     },
     {
       "id": "R-003",
@@ -921,6 +1227,68 @@
       "task_id": "MW-PROFILE-08",
       "event": "task_completed",
       "summary": "Reviewed and completed bounded Windows encoding and controller PIN UI fixes; all required automated tests/builds passed, installer0.7.75 verified, APK deployed with matching hash. Prior live-FUS acceptance remains separately unproven."
+    },
+    {
+      "at": "2026-09-04T23:55:26+02:00",
+      "agent": "root",
+      "task_id": "MW-PROFILE-09",
+      "event": "task_started",
+      "summary": "Committed prior source/docs as7221343e and started analysis of post-switch lock-screen sign-in and Android confirmation."
+    },
+    {
+      "at": "2026-09-05T00:10:36+02:00",
+      "agent": "root",
+      "task_id": "MW-STABILITY-01",
+      "event": "task_started",
+      "summary": "Investigation started on existing dirty tree; previous sign-in work preserved and left ready for separate continuation."
+    },
+    {
+      "at": "2026-09-05T01:08:54+02:00",
+      "agent": "root supervising Luna Max agents",
+      "task_id": "MW-STABILITY-01",
+      "event": "task_completed",
+      "summary": "Reviewed Luna Max fixes for process-bound PIN authorization, bounded display polling and Vibepollo liveness, fresh Sunshine close verification, teardown-safe refresh, captured-profile game stop/reset state, and accurate Legendary connection status. Full Android and host builds pass; runtime acceptance and legacy graceful-stop diagnostic limits remain explicit."
+    },
+    {
+      "at": "2026-09-05T09:51:57+02:00",
+      "agent": "root",
+      "task_id": "MW-STABILITY-01",
+      "event": "apk_deployed",
+      "summary": "User-requested APK update installed on Sony BRAVIA; installed hash matches final build. Host installer not deployed."
+    },
+    {
+      "at": "2026-09-05T10:03:23+02:00",
+      "agent": "root",
+      "task_id": "MW-PROFILE-09",
+      "event": "manual_acceptance_confirmed",
+      "summary": "User confirmed account switching succeeds."
+    },
+    {
+      "at": "2026-09-05T10:03:23+02:00",
+      "agent": "root",
+      "task_id": "MW-PROFILE-10",
+      "event": "task_started",
+      "summary": "User requested local preliminary PIN verification to permit wake while host is offline."
+    },
+    {
+      "at": "2026-09-05T10:14:25+02:00",
+      "agent": "root stability task",
+      "task_id": "MW-STABILITY-02",
+      "event": "task_started",
+      "summary": "Host0.7.77 verified installed. Android reports provider stopping with empty identity for minutes, followed by Sunshine offline. Local HTTP serverinfo succeeds while TLS handshake stalls and CLOSE_WAIT sockets accumulate. Concurrent PIN task ownership coordinated."
+    },
+    {
+      "at": "2026-09-05T10:46:00+02:00",
+      "task_id": "MW-PROFILE-10",
+      "event": "completed",
+      "summary": "Offline preliminary PIN gate implemented, reviewed, 43 focused and 937 full Android tests passed; APK built and deployed to TV with matching SHA-256. Live sleep/wake acceptance remains unrun."
+    },
+    {
+      "at": "2026-09-05T10:47:43+02:00",
+      "agent": "root supervising Luna Max agents",
+      "task_id": "MW-STABILITY-02",
+      "event": "fixes_built_apk_deployed_runtime_pending",
+      "summary": "Reviewed and built corrections for duplicate-supervisor cleanup, profile-scoped provider shutdown, delayed strict process identity capture and library status flicker. Final combined APK installed/hash verified on TV. Host0.7.78 artifact ready but not installed. Batman installed=true confirmed by normal library refresh. Task remains in_progress pending administrator host update/Apollo restart and live launch/close acceptance; no complete runtime stability claim."
     }
   ]
 }

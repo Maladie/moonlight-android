@@ -32,4 +32,15 @@ public class ConsoleLibraryStatusTest {
         assertFalse(ConsoleLibraryStatus.isError(cached));
         assertTrue(ConsoleLibraryStatus.isError(ConsoleLibraryStatus.State.TIMEOUT));
     }
+
+    @Test
+    public void populatedRefreshKeepsLastKnownStatusAndReportsErrors() {
+        assertEquals(ConsoleLibraryStatus.State.CURRENT,
+                ConsoleLibraryStatus.resolve(true, true, false, null, true));
+        assertEquals(ConsoleLibraryStatus.State.CACHED,
+                ConsoleLibraryStatus.resolve(true, true, true, null, true));
+        assertEquals(ConsoleLibraryStatus.State.SERVER_ERROR,
+                ConsoleLibraryStatus.resolve(true, true, false,
+                        PlayniteLibraryRepository.ErrorKind.SERVER, true));
+    }
 }

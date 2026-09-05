@@ -37,7 +37,13 @@ clients migrate with `use_profile` for retained profiles and without
 `remote_sign_in`; upgrades never turn remote sign-in on automatically.
 An optional four-digit MoonWaker app PIN is stored only as a versioned salted
 verifier. Profile listings expose only `pin_required`. Protected profile routes
-require a short in-memory unlock lease bound to the paired client and profile.
+require an in-memory unlock lease. Android sends a fresh UUID in
+`X-MoonWaker-Profile-Session` for each app process; that lease is bound to the
+paired client, profile, verifier and UUID and survives screensaver idle time.
+The UUID is never persisted. A new UUID must verify again, a new verification
+replaces the prior session for that client/profile, and profile grant,
+verifier, or Gateway restart invalidates the authorization. Clients that omit
+the header retain the fixed five-minute lease for compatibility.
 
 ## API v1
 
@@ -55,8 +61,10 @@ require a short in-memory unlock lease bound to the paired client and profile.
   `X-Microphone-Session-Id`.
 - `GET /api/v1/profiles` - lists safe profile names and Bridge health summaries.
 - `POST /api/v1/profiles/pin/verify` - verifies the selected profile's four-digit
-  app PIN for a paired client with `use_profile`; success creates a five-minute
-  in-memory unlock lease and failures use a per-client/profile cooldown.
+  app PIN for a paired client with `use_profile`; when
+  `X-MoonWaker-Profile-Session` is present, success creates a process-scoped
+  in-memory unlock lease, otherwise it creates a fixed five-minute lease.
+  Failures use a per-client/profile cooldown.
 - `POST /api/v1/system/session/ensure` - returns `ready` for an already-active
   selected profile, or starts a bounded remote Windows sign-in attempt when the
   client also has the `remote_sign_in` grant.

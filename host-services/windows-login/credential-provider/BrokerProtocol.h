@@ -37,6 +37,8 @@ namespace moonwaker
 
     void SecureClear(std::vector<BYTE>* value);
     void SecureClear(std::vector<wchar_t>* value);
+    bool ShouldNotifyPendingAttempt(const std::wstring& attemptId,
+        std::wstring* lastAttemptId);
     std::vector<BYTE> Utf8(const std::wstring& value);
     bool Utf8ToWide(const std::vector<BYTE>& value, std::vector<wchar_t>* result);
     bool BuildRequest(BYTE operation, const std::vector<Field>& fields,

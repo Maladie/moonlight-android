@@ -110,12 +110,38 @@ namespace
         return Expect(!moonwaker::ParseReply(oversized, &parsed),
             L"oversized reply field is rejected");
     }
+
+    bool TestPendingAttemptNotificationPolicy()
+    {
+        std::wstring lastAttempt;
+        if (!Expect(moonwaker::ShouldNotifyPendingAttempt(L"first", &lastAttempt),
+                L"missed event is caught by first pending poll") ||
+            !Expect(!moonwaker::ShouldNotifyPendingAttempt(L"first", &lastAttempt),
+                L"duplicate poll does not refresh LogonUI"))
+        {
+            return false;
+        }
+        lastAttempt.clear(); // SetUserArray/Advise makes enumeration eligible again.
+        if (!Expect(moonwaker::ShouldNotifyPendingAttempt(L"first", &lastAttempt),
+                L"user-array readiness allows catch-up for same attempt") ||
+            !Expect(!moonwaker::ShouldNotifyPendingAttempt(L"", &lastAttempt),
+                L"acquired credential is not removed by an idle poll") ||
+            !Expect(!moonwaker::ShouldNotifyPendingAttempt(L"", &lastAttempt),
+                L"idle polls never refresh LogonUI"))
+        {
+            return false;
+        }
+        return Expect(moonwaker::ShouldNotifyPendingAttempt(L"second", &lastAttempt),
+            L"subsequent authorized attempt notifies");
+    }
+
 }
 
 int wmain()
 {
     const bool ok = TestObserveRequest() && TestAcquireRequest() &&
-        TestReplyAndUtf8() && TestMalformedReplyRejected();
+        TestReplyAndUtf8() && TestMalformedReplyRejected() &&
+        TestPendingAttemptNotificationPolicy();
     if (ok)
     {
         std::wcout << L"MoonWaker credential-provider protocol tests passed."

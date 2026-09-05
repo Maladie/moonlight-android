@@ -36,6 +36,12 @@ Assert-Contains $source 'CPUS_PLAP' 'PLAP usage must be rejected explicitly.'
 Assert-Contains $source 'MoonWakerLoginBroker.Provider.v1' 'Provider Broker pipe is missing.'
 Assert-Contains $source 'Global\\MoonWaker.LoginAttempt.v1' 'Broker notification event is missing.'
 Assert-Contains $source 'CredentialsChanged' 'LogonUI event refresh is missing.'
+Assert-Contains $source 'kAttemptPollMilliseconds' `
+    'Missed pending attempts have no bounded provider catch-up poll.'
+Assert-Contains $source 'self->NotifyPendingAttempt(wait == WAIT_OBJECT_0 + 1)' `
+    'Provider notifier does not perform event/poll pending-attempt catch-up.'
+Assert-Contains $source 'ShouldNotifyPendingAttempt' `
+    'Pending-attempt notification deduplication is missing.'
 Assert-Contains $source 'RegisterHotKey(nullptr, kStreamHotkeyId' `
     'Secure-desktop stream hotkey registration is missing.'
 Assert-Contains $source 'MoonWakerHostControl.StreamHotkey.' `

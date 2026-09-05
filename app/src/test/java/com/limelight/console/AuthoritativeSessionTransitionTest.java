@@ -44,8 +44,10 @@ public class AuthoritativeSessionTransitionTest {
     }
 
     @Test public void freshSunshineStateOverridesStaleCapturedAppId() {
-        assertEquals(AuthoritativeSessionTransition.SunshineStopAction.COMPLETE,
+        assertEquals(AuthoritativeSessionTransition.SunshineStopAction.FAILED,
                 AuthoritativeSessionTransition.sunshineStopAction(0, null));
+        assertEquals(AuthoritativeSessionTransition.SunshineStopAction.FAILED,
+                AuthoritativeSessionTransition.sunshineStopAction(0, 7));
         assertEquals(AuthoritativeSessionTransition.SunshineStopAction.COMPLETE,
                 AuthoritativeSessionTransition.sunshineStopAction(7, 0));
         assertEquals(AuthoritativeSessionTransition.SunshineStopAction.QUIT,

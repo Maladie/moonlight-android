@@ -133,6 +133,7 @@ function Start-HiddenProcess([string]$FileName, [string]$Arguments, [string]$Wor
 }
 
 function Write-State([string]$Status) {
+    if (-not $ownsMutex) { return }
     $components = [ordered]@{}
     foreach ($name in @("discord", "vibepollo", "game-provider")) {
         $process = $children[$name]
@@ -235,6 +236,21 @@ function Test-ComponentHealth([string]$Name, [bool]$RequireIdentity = $false) {
     } catch { return $false }
 }
 
+function Should-Restart-Component([string]$Name, [bool]$Healthy,
+                                  [hashtable]$FailureCounts) {
+    if ($Healthy) {
+        $FailureCounts[$Name] = 0
+        return $false
+    }
+    $failureCount = if ($FailureCounts.ContainsKey($Name)) {
+        [int]$FailureCounts[$Name]
+    } else { 0 }
+    $failureCount++
+    $FailureCounts[$Name] = $failureCount
+    $requiredFailures = if ($Name -eq "vibepollo") { 2 } else { 1 }
+    return $failureCount -ge $requiredFailures
+}
+
 function Restart-Component([string]$Name, [Diagnostics.Process]$Process) {
     Write-AgentDiagnosticEvent "health_check.failed" @{ profile_id = $ProfileId; child_component = $Name; status = "restarting" }
     try { if ($null -ne $Process -and -not $Process.HasExited) { Stop-Process -Id $Process.Id -Force } } catch {}
@@ -256,6 +272,16 @@ function Stop-Components {
     foreach ($process in @($children.Values)) {
         try { if ($null -ne $process -and -not $process.HasExited) { Stop-Process -Id $process.Id -Force } } catch {}
     }
+}
+
+function Complete-ProfileBridge {
+    if (-not $ownsMutex) { return }
+    Write-State "stopping"
+    Stop-Components
+    Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
+    $finalStatus = if (Test-Path -LiteralPath $manualStopPath) { "manually_stopped" } else { "stopped" }
+    Write-State $finalStatus
+    Write-AgentDiagnosticEvent "supervisor.stopped" @{ profile_id = $ProfileId; status = $finalStatus }
 }
 
 if (-not (Test-ExpectedProfileRoot)) { exit 1 }
@@ -281,6 +307,7 @@ try {
     }
     Write-State "running"
     $healthTick = 0
+    $healthFailures = @{}
     while (-not (Test-Path -LiteralPath $stopPath)) {
         # Registry disable/tombstone/SID/root changes must stop all children even
         # when this user remains signed in. Any read/validation error fails closed.
@@ -293,10 +320,12 @@ try {
         foreach ($name in @("discord", "vibepollo", "game-provider")) {
             $process = $children[$name]
             if ($null -ne $process -and $process.HasExited) {
+                $healthFailures[$name] = 0
                 Write-AgentDiagnosticEvent "component.exited" @{ profile_id = $ProfileId; child_component = $name; exit_code = [int]$process.ExitCode; status = "restarting" }
                 Start-Sleep -Milliseconds 750
                 try { $children[$name] = Start-Component $name } catch { Write-AgentDiagnosticEvent "component.restart_failed" @{ profile_id = $ProfileId; child_component = $name; status = "failed" } $_.Exception }
             } elseif ($null -eq $process) {
+                $healthFailures[$name] = 0
                 try { $children[$name] = Start-Component $name } catch {}
             }
         }
@@ -311,8 +340,10 @@ try {
                 # RPC read timeout and the normal exited-process check above still
                 # recover a genuinely failed Bridge.
                 if ($name -eq "discord") { continue }
-                if ($null -ne $process -and -not $process.HasExited -and
-                    -not (Test-ComponentHealth $name ($name -eq "game-provider"))) {
+                if ($null -eq $process -or $process.HasExited) { continue }
+                $healthy = Test-ComponentHealth $name ($name -eq "game-provider")
+                if (Should-Restart-Component $name $healthy $healthFailures) {
+                    $healthFailures[$name] = 0
                     Restart-Component $name $process
                 }
             }
@@ -321,12 +352,7 @@ try {
         Start-Sleep -Seconds 2
     }
 } finally {
-    Write-State "stopping"
-    Stop-Components
-    Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
-    $finalStatus = if (Test-Path -LiteralPath $manualStopPath) { "manually_stopped" } else { "stopped" }
-    Write-State $finalStatus
-    Write-AgentDiagnosticEvent "supervisor.stopped" @{ profile_id = $ProfileId; status = $finalStatus }
+    Complete-ProfileBridge
     if ($ownsMutex) { try { $mutex.ReleaseMutex() } catch {} }
     $mutex.Dispose()
 }

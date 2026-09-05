@@ -90,7 +90,8 @@ public class ConsoleActivityEnsureContractTest {
 
         assertTrue(method.indexOf("getComputerDetails(true)")
                 < method.indexOf("connection.quitApp()"));
-        assertTrue(method.contains("host.runningGameId, fresh.runningGameId"));
+        assertTrue(method.contains("expectedRunningAppId = host.runningGameId"));
+        assertTrue(method.contains("expectedRunningAppId, fresh.runningGameId"));
         assertTrue(method.contains("SunshineStopAction.COMPLETE"));
         assertTrue(method.contains("SunshineStopAction.QUIT"));
     }
@@ -102,8 +103,68 @@ public class ConsoleActivityEnsureContractTest {
 
         assertTrue(method.indexOf("stopActiveProviderGame")
                 < method.indexOf("connection.quitApp()"));
-        assertTrue(method.contains("if (host.runningGameId == 0) return true"));
+        assertTrue(method.contains("expectedRunningAppId = host.runningGameId"));
+        assertTrue(method.contains("getComputerDetails(true)"));
+        assertTrue(method.contains("SunshineStopAction.COMPLETE"));
+        assertTrue(method.contains("SunshineStopAction.QUIT"));
         assertTrue(method.contains("requireProviderVerification"));
+    }
+
+    @Test public void terminationRefreshCannotSubmitAfterActivityDestroy() throws IOException {
+        String source = consoleActivitySource();
+        String destroy = source.substring(source.indexOf("protected void onDestroy()"),
+                source.indexOf("super.onDestroy()"));
+        String refresh = source.substring(source.indexOf("private void refreshSessionState("),
+                source.indexOf("private void invalidateHostStateAsync("));
+        String close = source.substring(source.indexOf("private void finishCloseHostStream("),
+                source.indexOf("private void confirmHardTerminateSession("));
+
+        assertTrue(destroy.indexOf("active = false;")
+                < destroy.indexOf("executor.shutdownNow()"));
+        assertTrue(refresh.contains("executor.isShutdown()"));
+        assertTrue(refresh.contains("catch (RejectedExecutionException"));
+        assertTrue(close.contains("refreshSessionState(host.uuid)"));
+        assertTrue(close.indexOf("if (success)")
+                < close.indexOf("refreshSessionState(host.uuid)"));
+    }
+
+    @Test public void playniteStopKeepsCapturedProfileStateAcrossConfirmationAndCompletion()
+            throws IOException {
+        String source = consoleActivitySource();
+        String confirmation = source.substring(
+                source.indexOf("private void confirmEndPlayniteGame("),
+                source.indexOf("private void requestEndPlayniteGame("));
+        String stop = source.substring(
+                source.indexOf("private void requestEndPlayniteGame("),
+                source.indexOf("private void restoreCachedPlaynitePoster("));
+        String hardReset = source.substring(
+                source.indexOf("private void clearHardResetSessionState("),
+                source.indexOf("private boolean quitSunshineIfRunning("));
+
+        assertTrue(confirmation.contains(
+                "HostProfileKey confirmedKey = selectedProfileKey(host.uuid)"));
+        assertTrue(confirmation.matches("(?s).*runningGameObservations\\.get\\(\\s*"
+                + "confirmedKey\\.cacheKey\\(\\)\\).*"));
+        assertTrue(confirmation.matches("(?s).*requestEndPlayniteGame\\(host, item, "
+                + "confirmedGame, confirmedObservation,\\s*confirmedKey\\).*"));
+        assertTrue(stop.contains("String stateKey = confirmedKey.cacheKey()"));
+        assertTrue(stop.contains("!confirmedKey.equals(selectedProfileKey(host.uuid))"));
+        assertTrue(stop.contains("runningGameObservations.get(stateKey)"));
+        assertTrue(stop.contains("runningGameObservations.put(stateKey"));
+        assertFalse(stop.contains("runningGameObservations.get(host.uuid)"));
+        assertTrue(stop.contains(
+                "activePlayniteGameResolvedAt.getOrDefault(stateKey, 0L)"));
+        assertTrue(stop.contains("boolean stoppedSessionGame = stoppedCurrent"));
+        assertTrue(stop.contains("if (stoppedSessionGame) markExactPlayniteGameIdle"));
+        assertTrue(stop.contains("if (sameStopScope)"));
+        assertTrue(stop.contains("resolveActivePlayniteGame(host, host.runningGameId != 0"));
+        assertTrue(hardReset.contains("String stateKey = profileKey.cacheKey()"));
+        assertTrue(hardReset.contains("activePlayniteGameIds.remove(stateKey)"));
+        assertTrue(hardReset.contains("activePlayniteGameStates.remove(stateKey)"));
+        assertTrue(hardReset.contains("activePlayniteGameAppIds.remove(stateKey)"));
+        assertTrue(hardReset.contains("activePlayniteGameResolvedAt.remove(stateKey)"));
+        assertTrue(hardReset.contains("lastFreshRunningAppIds.remove(host.uuid)"));
+        assertTrue(hardReset.contains("lastFreshStreamSessionIds.remove(host.uuid)"));
     }
 
     @Test public void destructiveReplacementUsesExactRetainedTerminationBeforeFallback()

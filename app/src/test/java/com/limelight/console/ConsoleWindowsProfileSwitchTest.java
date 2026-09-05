@@ -72,6 +72,28 @@ public class ConsoleWindowsProfileSwitchTest {
                         "action_required", "credential_missing", "", 1_000)));
     }
 
+    @Test public void pollingStopsOnlyForTerminalSwitchStates() {
+        String attemptId = "0123456789abcdef0123456789abcdef";
+        assertTrue(ConsoleActivity.canPollWindowsProfileSwitch(
+                new HostGatewayClient.WindowsSession("pending", "none", attemptId, 1_000)));
+        assertTrue(ConsoleActivity.canPollWindowsProfileSwitch(
+                new HostGatewayClient.WindowsSession(
+                        "credential_issued", "none", attemptId, 1_000)));
+        assertTrue(ConsoleActivity.canPollWindowsProfileSwitch(
+                new HostGatewayClient.WindowsSession(
+                        "session_starting", "none", attemptId, 1_000)));
+        assertFalse(ConsoleActivity.canPollWindowsProfileSwitch(
+                new HostGatewayClient.WindowsSession("ready", "none", attemptId, 1_000)));
+        assertFalse(ConsoleActivity.canPollWindowsProfileSwitch(
+                new HostGatewayClient.WindowsSession(
+                        "attention_required", "credential_missing", attemptId, 1_000)));
+        assertFalse(ConsoleActivity.canPollWindowsProfileSwitch(
+                new HostGatewayClient.WindowsSession("expired", "attempt_expired", attemptId,
+                        1_000)));
+        assertFalse(ConsoleActivity.canPollWindowsProfileSwitch(
+                new HostGatewayClient.WindowsSession("pending", "none", "", 1_000)));
+    }
+
     @Test public void ordinaryRefreshNeverStartsWindowsSwitch() throws Exception {
         String source = source();
         String refresh = between(source, "private void refreshDashboard()",

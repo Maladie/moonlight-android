@@ -40,6 +40,10 @@ public final class GatewayTransport {
     private static final int JSON_LIMIT = 1024 * 1024;
     private static final int BINARY_LIMIT = 8 * 1024 * 1024;
     public static final int NETWORK_DOWNLOAD_MAX_BYTES = 512 * 1024 * 1024;
+    // This identifies only the current Android process. It is deliberately not persisted or
+    // included in diagnostics; the host uses it to keep an authenticated profile lease alive
+    // while this process remains active (for example while the screen is asleep).
+    private static final String PROFILE_SESSION_ID = UUID.randomUUID().toString();
 
     private static final HostnameVerifier PINNED_HOSTNAME_VERIFIER = (hostname, session) -> {
         // Identity is verified by the pinned certificate independently of a DHCP address
@@ -252,6 +256,7 @@ public final class GatewayTransport {
         if (!pairing) {
             headers.put("Authorization", "Bearer " + connection.token());
             headers.put("X-WakePlay-Profile", connection.profileId());
+            headers.put("X-MoonWaker-Profile-Session", PROFILE_SESSION_ID);
         }
         if (post) {
             headers.put("Content-Type", "application/json; charset=utf-8");

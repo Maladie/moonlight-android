@@ -722,6 +722,12 @@
     <string name="console_pin_invalid">Nieprawidłowy PIN. Spróbuj ponownie.</string>
     <string name="console_pin_cooldown">Spróbuj ponownie za %1$d s</string>
     <string name="console_pin_failed">Nie udało się zweryfikować PIN-u.</string>
+    <string name="console_pin_checking">Sprawdzanie PIN-u…</string>
+    <string name="console_pin_offline_connect_once">Włącz komputer i potwierdź PIN na tym telewizorze, aby przygotować wybudzanie offline.</string>
+    <string name="console_pin_offline_unsupported">Wybudzanie PIN-em offline jest niedostępne w tej wersji Androida. Połącz się z komputerem, aby kontynuować.</string>
+    <string name="console_pin_offline_waking">Wybudzanie komputera…</string>
+    <string name="console_pin_offline_waiting">Oczekiwanie na uruchomienie komputera…</string>
+    <string name="console_pin_offline_unavailable">Nie udało się połączyć z komputerem po wybudzeniu.</string>
     <string name="console_pin_submit">Zatwierdź</string>
     <string name="console_pin_delete_or_back">Usuń / wstecz</string>
     <string name="discord_panel_title">Discord</string>

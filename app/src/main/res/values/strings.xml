@@ -758,6 +758,12 @@
     <string name="console_pin_invalid">Incorrect PIN. Try again.</string>
     <string name="console_pin_cooldown">Try again in %1$d s</string>
     <string name="console_pin_failed">Could not verify the PIN.</string>
+    <string name="console_pin_checking">Checking PIN…</string>
+    <string name="console_pin_offline_connect_once">Turn on the PC and verify the PIN on this TV once to prepare offline wake.</string>
+    <string name="console_pin_offline_unsupported">Offline PIN wake is unavailable on this Android version. Connect to the PC to continue.</string>
+    <string name="console_pin_offline_waking">Waking the PC…</string>
+    <string name="console_pin_offline_waiting">Waiting for the PC to start…</string>
+    <string name="console_pin_offline_unavailable">The PC could not be reached after waking.</string>
     <string name="console_pin_submit">Submit</string>
     <string name="console_pin_delete_or_back">Delete / back</string>
     <string name="discord_panel_title">Discord</string>

@@ -8,7 +8,9 @@
 - Repository: `D:\Maladie\moonlight-android`
 - Branch at plan creation: `codex/multi-profile-remote-sign-in`
 - HEAD at plan creation: `c1e5d7f1`
-- Current task: none.
+- Current task: `MW-STABILITY-02`, parallel host/runtime stabilization.
+- `MW-PROFILE-10`: completed; local preliminary PIN verification implemented, tested and APK deployed. Live sleep/wake acceptance remains pending.
+- `MW-PROFILE-09`: user confirmed successful account switching; bounded defect accepted.
 - Next task: none.
 - Important: the working tree already contained unrelated modified and untracked files. Preserve them; do not revert, reformat, claim, commit, or push them.
 
@@ -127,6 +129,8 @@ Wprowadź PIN
 | `MW-PROFILE-07` | Blocked | End-to-end hardening, Windows VM matrix, diagnostics review, and documentation | 03–06 |
 
 | `MW-PROFILE-08` | Done | Fix Windows switch failure and PIN glyph board; build and deploy | 03, 06 |
+
+| `MW-PROFILE-09` | Done | Complete post-switch sign-in and app confirmation | 08 |
 
 Full structured scope, requirements, non-goals, acceptance criteria, risks, and task work records are in `state.json`.
 
@@ -262,3 +266,100 @@ Do not exercise switch, lock, disconnect, or logoff on the working user's host.
 - Artifacts: `app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk` and `host-services/dist/MoonWakerHostInstaller.exe` (0.7.75). Hashes and exact changed files/commands are recorded in state.json.
 - Working branch/HEAD: `codex/multi-profile-remote-sign-in` / `a19ede595d3b85a41896bb2c1f334c7d7578bdd5`. Pre-existing changes preserved; no commit/push.
 - Limits: host installer was built but not installed; no live Windows switch or full PIN screenshot was attempted. Live FUS acceptance in MW-PROFILE-07 remains separately unproven.
+
+## MW-PROFILE-09 investigation
+
+- Prior changes committed as `7221343e`.
+- User reports that switching exits the previous session and selects the correct profile, but stops at the lock screen. Dismissing it manually does not trigger authentication.
+- Root supervises Luna Max investigation of the existing sign-in path and independently reviews app confirmation.
+
+## MW-PROFILE-09 build and review handoff
+
+- Prior changes committed as `7221343e`; new sign-in correction remains uncommitted.
+- Provider now catches missed pending requests only in the active console session; original explicit result notifications remain. Catch-up resets when Windows supplies its user array or changes usage scenario. No credential reissue or logoff added.
+- Android/Gateway production confirmation was already correct; 30 focused Android tests and 14 focused Gateway tests pass.
+- Full host build passes (105 Gateway, 223 Bridge, 14 Broker tests, service/native checks). Bridge tests emitted a background SQLite file-open exception despite suite success; separate follow-up observation.
+- Installer `work/profile-09-validation/MoonWakerHostInstaller-0.7.76.exe`, SHA-256 `9f8194b0e13164780b1c8cb7cd412e03a233b256932b166f82d0572b34b1d8c1`; not installed. APK unchanged from previous deployment.
+- Await manual Gry → Basia verification: target desktop becomes available and app confirms success. Exact missed-event runtime consumer remains a hypothesis; do not mark live acceptance complete from unit tests.
+
+## MW-STABILITY-01 investigation evidence
+
+- Parent baseline verified from the branch reflog: `60fbb576` (`codex/streaming-autopilot`). Current HEAD is `7221343e1fc291863229da1d08ecdf558fe611a1`. Existing dirty Windows sign-in changes remain outside this stabilization diff.
+- Read-only Android and installed Gateway/Bridge diagnostics were inspected. Times below are UTC on 2026-09-04; Android local timestamps are UTC+2.
+- PIN verification succeeded at 21:48:09.973; `/api/v1/game/current` began returning HTTP 403 at 21:53:14.940. The fixed five-minute unlock lifetime is a new regression on this branch. The user requires an already-open profile to survive the screen saver without another PIN prompt.
+- The next launch passed preflight, connected video and started the provider process. Gateway `/game/start` completed at 21:56:11.238. Android observed `stream_display_changed`, then `target_not_foreground`, rather than automatic readiness.
+- `/game/stop` began at 21:56:55.817 and Gateway answered at 21:57:15.841 (20.023 seconds). Android reported `provider_stop_failed:GatewayException` at 21:57:14.744; its clock trails the host by about 1.095 seconds (also measured on successful start), so this matches the host response rather than proving an earlier transport timeout. HEAD already gives stop requests 30 seconds. A second stop took 22.374 seconds. HTTP success alone is not proof that the game exited; Bridge returned HTTP 202 and no game-stopped event appeared in this interval.
+- Supervisor health failures at 21:56:28.907 and 21:58:01.250 restarted **Vibepollo**, not Game Provider. Vibepollo logs contain repeated abandoned `/diagnostics/stream-sources` responses and an `/api/apps/close` TLS timeout. Its synchronous diagnostics endpoint performs six API calls on the single HTTP listener; this is being characterized separately from PIN expiry.
+- A proposed Game Provider lock explanation was rejected during root review: `Condition.wait()` releases its underlying RLock. No fix will rely on the incorrect assertion that the twenty-second condition wait itself holds the lock.
+- Read-only `Legendary status --offline --json` for the selected installed profile returned exit 0, an unauthenticated account placeholder, and zero available/installed games. Host Control currently mistakes a non-null placeholder for a connected account. The installed Legendary executable exists; an empty configured executable path correctly selects the default installation path.
+- Automated validation is complete (see results below). Runtime acceptance remains unperformed: no live Windows switch, lock, logoff, game launch, or installation was performed during this investigation.
+
+## MW-STABILITY-01 reviewed changes
+
+- PIN authorization now uses a non-persisted process UUID shared by all authenticated Android Gateway requests. The server binds it to client, profile and verifier; screensaver idle does not expire it. Legacy clients retain five-minute leases. Pairing, TLS pinning, grants and rate limits remain enforced.
+- Readiness polls use a local active-displays endpoint instead of the six-call stream-source diagnostics endpoint. Ambiguous displays remain unresolved. Vibepollo's outer transport deadline now allows its inner deadline to finish; its supervisor tolerates one missed health probe before restarting.
+- Android stream close always checks fresh pinned Sunshine state, including when the cached app id is zero. A different app is not closed. Failed close/termination refreshes host state; callbacks after Activity teardown cannot submit to a shut-down executor.
+- Final review found a separate profile-key migration defect in game termination: inventory is written under host/profile, but confirmation and stop still looked up host-only keys, causing a verified running game to fail with game_stop_profile_changed. Corresponding stop and hard-reset cache handling now uses the captured profile key. Provider-stop and support-stream restoration requests retain that profile through asynchronous work; stale confirmation/completion is rejected.
+- Root rejected two incorrect proposed fixes: stopped_current=false is a valid successful background-game stop, and current=idle/Sunshine app=0 does not imply no background games. Their inventory and process-token protections remain intact.
+- Legendary connection status now rejects the unauthenticated placeholder. The selected installed profile needs a real Epic sign-in; no credentials were copied or account authentication attempted.
+
+Remaining runtime observation: the unchanged legacy graceful-stop path requested WM_CLOSE at 21:56:55.832Z, but no matching natural gameStopped event arrived before timeout. The second stop sent no second close request; exact retry identity was not demonstrated in the log. game-stopped appeared only in explicit hard-reset cleanup at 21:59:22Z. Existing diagnostics omit process identity/probe results and stop counts, so they cannot distinguish a game ignoring close from a missing connector event after process exit. This case is not claimed fixed by the PIN/display changes; validate it on the updated installation. Do not replace normal close with automatic force termination.
+
+
+## MW-STABILITY-01 validation and handoff
+
+- Final Android command: `./gradlew.bat testNonRootDebugUnitTest assembleNonRootDebug --console=plain` with JDK17. PASS: 917 tests, no failures/errors/skips, APK built. Initial missing test import was fixed; the final frozen source run took 41 seconds.
+- Full host command: `Build-HostServices.ps1` with LLVM-MinGW on PATH. PASS: 110 Gateway tests, 225 Game Provider tests, Gateway service test, 14 Broker tests, native Credential Provider protocol/security checks and x64 build. Network-enabled rerun fetched the pinned Legendary payload. Installer version0.7.77 verified.
+- Focused Vibepollo tests (3), Profile Bridge restart test and Host Control executable Legendary-status regression harness passed. Final independent Android profile-key review passed.
+- `git diff --check` passes with line-ending warnings only. Complete scoped diff and final tracked/untracked status reviewed; prior Windows sign-in changes, prior tests, and artifacts preserved. No Moonlight core change, commit, or push.
+- Artifacts: `host-services/dist/MoonWakerHostInstaller.exe` (0.7.77, SHA-256 `0cb2c6b96bf83fec03b02227e22c4feb0d5cec97b57f0bb5e6e6ab136d467641`) and `app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk` (SHA-256 `69495e57f870d1873048e316206d5a8052b2ba5061b38d34276f1d95ed1e89a6`). Neither was installed by this task. Installer payload inspection found112 files, correct changed services and no runtime profiles/logs/secrets/stale dist folders.
+- Branch/HEAD: `codex/multi-profile-remote-sign-in` / `7221343e1fc291863229da1d08ecdf558fe611a1`. Exact task-owned file list and commands are in state.json.
+- Runtime follow-up: install both artifacts together, verify an open PIN profile across screensaver idle, launch/close and Resume state. Epic requires a real sign-in in the selected profile. The legacy graceful-stop observation above and earlier MW-PROFILE-07 Windows VM acceptance are not claimed resolved by automated tests.
+
+
+## MW-STABILITY-01 APK deployment
+
+- User-requested update installed on Sony BRAVIA using adb install -r: Success.
+- Installed com.limelight.debug base.apk SHA-256 matches the final build: 69495e57f870d1873048e316206d5a8052b2ba5061b38d34276f1d95ed1e89a6.
+- App was not launched; Host Installer remains not deployed and runtime acceptance remains pending.
+
+## MW-PROFILE-10 investigation
+
+- User confirmed the Windows switch fix and requested local preliminary PIN verification before wake.
+- Local verification may permit wake only; Gateway remains authoritative for protected access after wake. No plaintext PIN persistence or server-verifier export.
+- Luna Max agents independently inspect secure local storage and existing wake/preflight integration.
+
+
+## MW-STABILITY-02 live investigation
+
+- Parallel with MW-PROFILE-10; its PIN methods and current-task marker remain owned by that task.
+- Installed Host0.7.77 confirmed. TV logs show provider state stopping with empty game identity from about10:01 to10:03 on2026-09-05, then repeated Sunshine offline.
+- Local serverinfo HTTP responds in underone second, while verified TLS handshake to47984 times out and many CLOSE_WAIT connections remain in Sunshine. Investigate streaming service separately from Gateway liveness.
+- Epic account is now connected but existing installation detection and repeated library refresh are under investigation. No live games, installation or Windows sessions were changed during initial capture.
+
+
+## MW-STABILITY-02 confirmed findings
+
+- Duplicate supervisor instances reached the unconditional finally cleanup after failing to acquire the profile mutex. Cleanup stopped the owning instance's children and wrote shared state. Cleanup/state writes now require mutex ownership. Stop-PlayniteBridge also matches the exact script path for its own profile instead of all GameProvider Python processes.
+- Android's uncertainty message is explained by the captured stopping state. A fresh idle state, including running_scan_status=partial, does not itself trigger this gate. No privacy bypass or forced Online state was added.
+- Populated-library background refresh now retains CURRENT/CACHED while preserving real errors, eliminating the visible refresh-status toggle. Combined Android build belongs to concurrent MW-PROFILE-10.
+- Batman/Cowbird installation continued through the external bridge restart. Legendary subsequently registered the completed installation. A normal POST /library/refresh then changed the authoritative library record to installed=true with its verified installation directory. No Epic parser or installation-record mutation was needed. The interrupted journal entry is not retroactively claimed successful: process ownership was lost at restart, and durable identity-safe Epic recovery remains a limitation.
+- Sunshine HTTP serverinfo reports FREE/currentgame0, but TLS47984 still times out. Windows denied Restart-Service ApolloService even after sandbox escalation; automatic approval did not reject it. Administrator restart was requested from the user. No service restart, live game launch/close, or full TV runtime acceptance is claimed.
+
+
+## MW-PROFILE-10 implementation and deployment
+
+- Implemented client preliminary PIN verification before WOL. Local verifier is learned only after online success, protected by Android Keystore, pairing/profile bound, backup-excluded and persistently rate limited. API23+; older versions retain online-only verification. No plaintext PIN is stored.
+- A local match permits one wake; authenticated pinned Gateway readiness and final server PIN verification still precede selected-profile persistence, library access and sign-in. Cancellation and stale pairing results are rejected. First use requires one online PIN confirmation on this TV.
+- Validation: 43 focused tests and all 937 Android tests passed (zero failures/errors/skips); testNonRootDebugUnitTest assembleNonRootDebug succeeded. Exact commands/files are in state.json and logs in work/profile-10-validation. Scoped diff reviewed; git diff --check passed.
+- APK installed successfully on Sony BRAVIA API31; installed SHA-256 matches a7894381d59d8499e1958e3d8fbf2eb370e75168429ef74e2aac68d8fe6d72e7. App not launched and host not suspended for this test; live offline wake/Keystore acceptance remains unrun. No host rebuild required for this task.
+- Branch codex/multi-profile-remote-sign-in, HEAD 7221343e1fc291863229da1d08ecdf558fe611a1; no commit or push. MW-PROFILE-09 user acceptance recorded; MW-PROFILE-07 VM matrix remains separate. Current work handed back to parallel MW-STABILITY-02.
+
+
+## MW-STABILITY-02 reviewed fixes and validation
+
+- GameProviderBridge now retries its existing strict PID/path/start identity capture when the connector reported running before identity was available. It accepts the current process only after existing uniqueness and game mapping checks, including for an unready window; it never copies a raw sample path or opens the privacy gate. Later exit follows the existing confirmed-exit path to idle. One regression covers unavailable identity, delayed valid identity, no repeated writes, readiness remaining false, graceful stop and exit. This closes a concrete code gap; the historical failure log does not prove every timeout had this cause.
+- Independent Profile Bridge/Stop-PlayniteBridge PowerShell regressions pass. Provider tests:157 pass; complete host build:110 Gateway,226 provider,14 Broker plus native/service checks pass. Final host installer0.7.78 SHA-256:9048e66802d7219606bc74922e7b2a9cc98e196d5cc2cf0c31ab73754a1a8028. Embedded113-file payload matches corrected source and contains no runtime profiles/logs/secrets/stale dist files.
+- Combined Android validation with MW-PROFILE-10:937 tests,0 failures/errors/skips; assembleNonRootDebug passed. APK SHA-256:a7894381d59d8499e1958e3d8fbf2eb370e75168429ef74e2aac68d8fe6d72e7. The other root installed it on Sony BRAVIA via adb install -r and verified installed base.apk hash. App was not launched.
+- Host installer path:host-services/dist/MoonWakerHostInstaller.exe; APK path:app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk. Exact scope and commands are in state.json. git diff --check passed; no commit/push and concurrent PIN changes preserved.
+- Host0.7.78 is NOT installed. Windows service permissions prevented Apollo restart; administrator action and live launch/close/TV checks remain pending. MW-STABILITY-02 remains in_progress rather than claiming full runtime stability. Existing Epic operation ownership cannot survive an in-flight bridge restart; ordinary catalog refresh correctly reflects installation after completion, without inventing operation success.

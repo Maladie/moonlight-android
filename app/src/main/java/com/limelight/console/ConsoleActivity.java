@@ -149,6 +149,7 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.RejectedExecutionException;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -335,6 +336,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private boolean pinSubmitting;
     private long pinCooldownUntil;
     private boolean pinSecureFlagAdded;
+    private volatile OfflinePinAttempt offlinePinAttempt;
     private boolean hasLastControllerInput;
     private boolean lastControllerPlayStation;
     private boolean lastInputWasController;
@@ -358,6 +360,27 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean matches(String hostId, String profileId, String requestId) {
             return !cancelled && this.hostId.equals(hostId)
                     && this.profileId.equals(profileId) && this.requestId.equals(requestId);
+        }
+    }
+
+    private static final class OfflinePinAttempt {
+        final String hostId;
+        final String profileId;
+        final int gateToken;
+        final GatewayConnection pairing;
+        final ComputerDetails host;
+        final String initialAddress;
+        volatile boolean cancelled;
+
+        OfflinePinAttempt(String hostId, String profileId, int gateToken,
+                          GatewayConnection pairing, ComputerDetails host) {
+            this.hostId = hostId;
+            this.profileId = profileId;
+            this.gateToken = gateToken;
+            this.pairing = pairing;
+            this.host = host;
+            this.initialAddress = host == null || host.activeAddress == null
+                    ? null : host.activeAddress.address;
         }
     }
 
@@ -1649,6 +1672,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     @Override
     protected void onPause() {
         pendingHostPreparation = null;
+        cancelOfflinePinAttempt();
         if (pinProfileId != null) {
             profileGateGeneration.incrementAndGet();
             pinEntry.clear();
@@ -1717,7 +1741,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     @Override
     protected void onDestroy() {
+        active = false;
         pendingHostPreparation = null;
+        cancelOfflinePinAttempt();
         pinEntry.clear();
         clearPinEntry();
         cancelStreamingAutopilot(false);
@@ -2431,6 +2457,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void showHostSelection(String focusUuid) {
         pendingHostPreparation = null;
+        cancelOfflinePinAttempt();
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = null;
@@ -2730,6 +2757,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void showProfileGate(ComputerDetails host, boolean focusApps,
                                  boolean prepareHost) {
+        cancelOfflinePinAttempt();
         clearPinEntry();
         HostGatewayStore.ProfileSelection selection =
                 hostGatewayStore.profileSelection(host.uuid);
@@ -2783,6 +2811,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                               HostGatewayClient.IntegrationProfile profile,
                               boolean focusApps, boolean prepareHost,
                               boolean completeHostEntry) {
+        cancelOfflinePinAttempt();
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = host.uuid;
@@ -2827,22 +2856,159 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ? null : host.activeAddress.address;
         GatewayConnection connection = hostGatewayStore.loadForHost(
                 hostId, address, profileId);
+        OfflinePinAttempt attempt = new OfflinePinAttempt(
+                hostId, profileId, token, connection, host);
+        offlinePinAttempt = attempt;
+        renderPinEntry(getString(R.string.console_pin_checking));
         executor.execute(() -> {
-            HostGatewayClient.GatewayException gatewayError = null;
-            IOException transportError = null;
-            try {
-                if (connection == null) throw new IOException("Gateway unavailable");
-                hostGatewayClient.verifyProfilePin(connection, pin);
-            } catch (HostGatewayClient.GatewayException error) {
-                gatewayError = error;
-            } catch (IOException error) {
-                transportError = error;
-            }
-            HostGatewayClient.GatewayException resultError = gatewayError;
-            IOException resultTransportError = transportError;
-            mainHandler.post(() -> finishProfilePinVerification(
-                    hostId, profileId, token, resultError, resultTransportError));
+            OfflineProfilePinFlow.Result result = OfflineProfilePinFlow.run(
+                    hostId, connection, pin,
+                    OfflineProfilePinFlow.cacheOf(hostGatewayStore.offlineProfilePinStore()),
+                    new OfflineProfilePinFlow.Gateway() {
+                        @Override public void verifyProfilePin(
+                                GatewayConnection current, String enteredPin)
+                                throws IOException {
+                            mainHandler.post(() -> renderOfflinePinMessage(attempt,
+                                    R.string.console_pin_checking));
+                            hostGatewayClient.verifyProfilePin(current, enteredPin);
+                        }
+
+                        @Override public HostGatewayClient.IntegrationProfiles
+                        getIntegrationProfiles(GatewayConnection current) throws IOException {
+                            mainHandler.post(() -> renderOfflinePinMessage(attempt,
+                                    R.string.console_pin_offline_waiting));
+                            return hostGatewayClient.getIntegrationProfiles(current);
+                        }
+                    },
+                    () -> {
+                        if (!isOfflinePinAttemptCurrent(attempt)
+                                || currentOfflinePinConnection(attempt) == null
+                                || attempt.host == null) {
+                            throw new IOException("Host unavailable");
+                        }
+                        mainHandler.post(() -> renderOfflinePinMessage(attempt,
+                                R.string.console_pin_offline_waking));
+                        WakeOnLanSender.sendWolPacket(attempt.host);
+                    },
+                    () -> currentOfflinePinConnection(attempt),
+                    SystemClock::elapsedRealtime,
+                    millis -> {
+                        try {
+                            Thread.sleep(millis);
+                            return true;
+                        } catch (InterruptedException interrupted) {
+                            Thread.currentThread().interrupt();
+                            return false;
+                        }
+                    },
+                    () -> !isOfflinePinAttemptCurrent(attempt));
+            mainHandler.post(() -> finishProfilePinFlow(attempt, result));
         });
+    }
+
+    private boolean isOfflinePinAttemptCurrent(OfflinePinAttempt attempt) {
+        return attempt != null && offlinePinAttempt == attempt && !attempt.cancelled
+                && attempt.gateToken == profileGateGeneration.get();
+    }
+
+    private GatewayConnection currentOfflinePinConnection(OfflinePinAttempt attempt) {
+        if (attempt == null) return null;
+        ComputerDetails current = managerBinder == null
+                ? null : managerBinder.getComputer(attempt.hostId);
+        if (managerBinder != null && current == null) return null;
+        String address = current == null || current.activeAddress == null
+                ? attempt.initialAddress : current.activeAddress.address;
+        GatewayConnection connection = hostGatewayStore.loadForHost(
+                attempt.hostId, address, attempt.profileId);
+        return OfflineProfilePinFlow.samePairing(attempt.pairing, connection)
+                ? connection : null;
+    }
+
+    private void cancelOfflinePinAttempt() {
+        OfflinePinAttempt attempt = offlinePinAttempt;
+        if (attempt != null) attempt.cancelled = true;
+        offlinePinAttempt = null;
+    }
+
+    private void renderOfflinePinMessage(OfflinePinAttempt attempt, int message) {
+        if (!isOfflinePinAttemptCurrent(attempt)) return;
+        renderPinEntry(getString(message));
+    }
+
+    private void finishProfilePinFlow(OfflinePinAttempt attempt,
+                                      OfflineProfilePinFlow.Result result) {
+        if (!isOfflinePinAttemptCurrent(attempt)
+                || !ConsolePinEntry.matchesResult(attempt.gateToken, attempt.hostId,
+                attempt.profileId, profileGateGeneration.get(), profileGateHostUuid,
+                pinProfileId)) return;
+        if (currentOfflinePinConnection(attempt) == null) {
+            attempt.cancelled = true;
+            offlinePinAttempt = null;
+            pinSubmitting = false;
+            pinEntry.clear();
+            renderPinEntry(getString(R.string.console_pin_failed));
+            return;
+        }
+        offlinePinAttempt = null;
+        pinSubmitting = false;
+        pinEntry.clear();
+        if (result == null) {
+            renderPinEntry(getString(R.string.console_pin_failed));
+            return;
+        }
+        if (result.profiles != null) {
+            hostGatewayStore.saveProfiles(attempt.hostId, result.profiles);
+        }
+        switch (result.status) {
+            case VERIFIED:
+                finishProfilePinVerification(attempt.hostId, attempt.profileId,
+                        attempt.gateToken, null, null);
+                return;
+            case INVALID:
+                finishOfflinePinFailure(attempt.gateToken, attempt.profileId,
+                        result.retryAfterSeconds, getString(R.string.console_pin_invalid));
+                return;
+            case COOLDOWN:
+                finishOfflinePinFailure(attempt.gateToken, attempt.profileId,
+                        result.retryAfterSeconds, null);
+                return;
+            case MISSING:
+                renderPinEntry(getString(OfflineProfilePinStore.supportsOfflineValidation(
+                        Build.VERSION.SDK_INT)
+                        ? R.string.console_pin_offline_connect_once
+                        : R.string.console_pin_offline_unsupported));
+                return;
+            case PROFILE_DENIED:
+                ComputerDetails current = currentHost(attempt.hostId);
+                if (current != null) {
+                    showProfileGate(current, pinFocusApps, pinPrepareHost);
+                }
+                return;
+            case CANCELLED:
+                renderPinEntry("");
+                return;
+            case TIMEOUT:
+                renderPinEntry(getString(R.string.console_pin_offline_unavailable));
+                return;
+            case UNAVAILABLE:
+            default:
+                renderPinEntry(getString(R.string.console_pin_failed));
+        }
+    }
+
+    private void finishOfflinePinFailure(int token, String profileId, int retryAfterSeconds,
+                                         String message) {
+        int seconds = Math.max(1, retryAfterSeconds);
+        pinCooldownUntil = SystemClock.elapsedRealtime() + seconds * 1_000L;
+        if (message != null) {
+            renderPinEntry(message);
+            mainHandler.postDelayed(() -> {
+                if (token == profileGateGeneration.get()
+                        && profileId.equals(pinProfileId)) renderPinCooldown();
+            }, PIN_INVALID_FEEDBACK_MS);
+        } else {
+            renderPinCooldown();
+        }
     }
 
     private void finishProfilePinVerification(String hostId, String profileId, int token,
@@ -2929,6 +3095,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void enterHostAfterProfileGate(ComputerDetails host, boolean focusApps,
                                            boolean prepareHost) {
         if (host == null) return;
+        cancelOfflinePinAttempt();
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = null;
@@ -4602,20 +4769,25 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void refreshSessionState(String hostUuid) {
-        if (managerBinder == null || hostUuid == null || hostUuid.isEmpty()) return;
+        if (managerBinder == null || hostUuid == null || hostUuid.isEmpty()
+                || executor.isShutdown()) return;
         boolean refreshSelected = hostUuid.equalsIgnoreCase(selectedHostUuid);
-        executor.execute(() -> {
-            ComputerManagerService.ComputerManagerBinder binder = managerBinder;
-            if (binder == null) return;
-            binder.invalidateStateForComputer(hostUuid);
-            if (refreshSelected) {
-                mainHandler.post(() -> {
-                    if (!active || !hostUuid.equalsIgnoreCase(selectedHostUuid)) return;
-                    refreshSelectedApplications();
-                    refreshSelectedPlayniteLibrary();
-                });
-            }
-        });
+        try {
+            executor.execute(() -> {
+                ComputerManagerService.ComputerManagerBinder binder = managerBinder;
+                if (binder == null) return;
+                binder.invalidateStateForComputer(hostUuid);
+                if (refreshSelected) {
+                    mainHandler.post(() -> {
+                        if (!active || !hostUuid.equalsIgnoreCase(selectedHostUuid)) return;
+                        refreshSelectedApplications();
+                        refreshSelectedPlayniteLibrary();
+                    });
+                }
+            });
+        } catch (RejectedExecutionException ignored) {
+            // A termination callback can arrive after Activity teardown has shut down the pool.
+        }
     }
 
     private void invalidateHostStateAsync(String hostUuid) {
@@ -5691,7 +5863,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             boolean stopped = false;
             try {
                 stopActiveProviderGame(host, providerGameId,
-                        requireProviderVerification);
+                        requireProviderVerification, profileKey.profileId);
                 stopped = quitSunshineIfRunning(host);
             } catch (IOException | XmlPullParserException ignored) { }
             boolean success = stopped;
@@ -5706,9 +5878,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     activePlayniteGameStates.remove(stateKey);
                     activePlayniteGameAppIds.remove(stateKey);
                     activePlayniteGameResolvedAt.remove(stateKey);
-                    invalidateActivePlayniteGameRequest(host.uuid);
-                    refreshSessionState(host.uuid);
+                    if (profileKey.equals(selectedProfileKey(host.uuid))) {
+                        invalidateActivePlayniteGameRequest(host.uuid);
+                    }
                 }
+                refreshSessionState(host.uuid);
                 ConsoleUiFeedback.makeText(this, getString(success
                                 ? R.string.console_terminate_session_success
                                 : R.string.console_terminate_session_failed),
@@ -5771,8 +5945,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 SessionResumeManager.clearIfMatches(this, streamSessionId);
                 BackgroundStreamService.resumed(this, streamSessionId);
             }
-            refreshSessionState(host.uuid);
         }
+        refreshSessionState(host.uuid);
         ConsoleUiFeedback.makeText(this, success
                         ? R.string.console_close_stream_success
                         : R.string.console_close_stream_failed,
@@ -5783,15 +5957,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (host == null || host.state != ComputerDetails.State.ONLINE
                 || host.pairState != PairingManager.PairState.PAIRED
                 || managerBinder == null) return;
+        HostProfileKey profileKey = selectedProfileKey(host.uuid);
         String address = host.activeAddress == null ? null : host.activeAddress.address;
-        if (hostGatewayStore.loadForHost(host.uuid, address) == null) return;
+        if (hostGatewayStore.loadForHost(host.uuid, address, profileKey.profileId) == null) return;
         TextView cancel = panelAction(getString(R.string.console_cancel));
         TextView terminate = panelAction(getString(R.string.console_hard_terminate_session));
         terminate.setTextColor(0xFFFF6F61);
         cancel.setOnClickListener(view -> handlePanelBack());
         terminate.setOnClickListener(view -> {
             hideSidePanel();
-            requestHardTerminateSession(host);
+            requestHardTerminateSession(host, profileKey);
         });
         showSidePanel(getString(R.string.console_host_eyebrow),
                 getString(R.string.console_hard_terminate_session_title),
@@ -5799,9 +5974,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 cancel, terminate);
     }
 
-    private void requestHardTerminateSession(ComputerDetails host) {
+    private void requestHardTerminateSession(ComputerDetails host, HostProfileKey profileKey) {
+        if (host == null || profileKey == null
+                || !profileKey.equals(selectedProfileKey(host.uuid))) return;
         String address = host.activeAddress == null ? null : host.activeAddress.address;
-        GatewayConnection gateway = hostGatewayStore.loadForHost(host.uuid, address);
+        GatewayConnection gateway = hostGatewayStore.loadForHost(host.uuid, address,
+                profileKey.profileId);
         if (gateway == null || managerBinder == null) return;
         if (sessionOrchestrator != null) sessionOrchestrator.cancel();
         cancelOwnedWarmUp(host.uuid, false);
@@ -5815,7 +5993,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             } catch (IOException | XmlPullParserException ignored) { }
             boolean success = stopped;
             mainHandler.post(() -> {
-                if (success) clearHardResetSessionState(host);
+                if (success) clearHardResetSessionState(host, profileKey);
                 ConsoleUiFeedback.makeText(this, getString(success
                                 ? R.string.console_hard_terminate_session_success
                                 : R.string.console_hard_terminate_session_failed),
@@ -5847,9 +6025,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return false;
     }
 
-    private void clearHardResetSessionState(ComputerDetails host) {
+    private void clearHardResetSessionState(ComputerDetails host, HostProfileKey profileKey) {
+        if (host == null || profileKey == null
+                || !profileKey.hostId.equalsIgnoreCase(host.uuid)
+                || !profileKey.equals(selectedProfileKey(host.uuid))) return;
+        String stateKey = profileKey.cacheKey();
         SuspendedSessionStore.Session suspended =
-                SuspendedSessionStore.load(this, host.uuid, selectedProfileId(host.uuid));
+                SuspendedSessionStore.load(this, host.uuid, profileKey.profileId);
         if (suspended != null) {
             SuspendedSessionStore.markSessionEndedIfMatches(
                     this, host.uuid, suspended.profileId, suspended.suspendId);
@@ -5879,13 +6061,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             retainedStreamAppId = StreamConfiguration.INVALID_APP_ID;
             retainedStreamPlayniteGameId = "";
         }
-        activePlayniteGameIds.remove(host.uuid);
-        activePlayniteGameStates.remove(host.uuid);
-        activePlayniteGameAppIds.remove(host.uuid);
-        activePlayniteGameResolvedAt.remove(host.uuid);
+        activePlayniteGameIds.remove(stateKey);
+        activePlayniteGameStates.remove(stateKey);
+        activePlayniteGameAppIds.remove(stateKey);
+        activePlayniteGameResolvedAt.remove(stateKey);
         lastFreshRunningAppIds.remove(host.uuid);
         lastFreshStreamSessionIds.remove(host.uuid);
-        invalidateActivePlayniteGameRequest(host.uuid);
+        if (profileKey.equals(selectedProfileKey(host.uuid))) {
+            invalidateActivePlayniteGameRequest(host.uuid);
+        }
         if (host.uuid.equalsIgnoreCase(selectedHostUuid)) {
             resumePlayniteGameId = "";
             suspendedPlayniteGameId = "";
@@ -5895,7 +6079,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private boolean quitSunshineIfRunning(ComputerDetails host)
             throws IOException, XmlPullParserException {
-        if (host.runningGameId == 0) return true;
+        int expectedRunningAppId = host.runningGameId;
         NvHTTP connection = new NvHTTP(
                 ServerHelper.getCurrentAddressFromComputer(host), host.httpsPort,
                 managerBinder.getUniqueId(), host.serverCert,
@@ -5903,9 +6087,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         ComputerDetails fresh = connection.getComputerDetails(true);
         AuthoritativeSessionTransition.SunshineStopAction action =
                 AuthoritativeSessionTransition.sunshineStopAction(
-                        host.runningGameId, fresh.runningGameId);
-        return action == AuthoritativeSessionTransition.SunshineStopAction.COMPLETE
-                || action == AuthoritativeSessionTransition.SunshineStopAction.QUIT
+                        expectedRunningAppId, fresh.runningGameId);
+        if (action == AuthoritativeSessionTransition.SunshineStopAction.COMPLETE) return true;
+        return action == AuthoritativeSessionTransition.SunshineStopAction.QUIT
                 && connection.quitApp();
     }
 
@@ -5942,10 +6126,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void stopActiveProviderGame(ComputerDetails host, String knownGameId,
-                                        boolean requireProviderVerification)
+                                        boolean requireProviderVerification,
+                                        String profileId)
             throws IOException {
         String address = host.activeAddress == null ? null : host.activeAddress.address;
-        GatewayConnection gateway = hostGatewayStore.loadForHost(host.uuid, address);
+        GatewayConnection gateway = hostGatewayStore.loadForHost(host.uuid, address, profileId);
         String expectedGameId = normalizeId(knownGameId);
         if (gateway == null) {
             if (requireProviderVerification || !expectedGameId.isEmpty()) {
@@ -9958,16 +10143,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void confirmEndPlayniteGame(ComputerDetails host,
                                         PlayniteDashboardItem item) {
+        HostProfileKey confirmedKey = selectedProfileKey(host.uuid);
         if (!isFreshExactRunningManagedGame(host, item)) return;
         HostGatewayClient.RunningGame confirmedGame = freshRunningGame(host, item.stableId());
-        RunningGameObservation confirmedObservation = runningGameObservations.get(host.uuid);
+        RunningGameObservation confirmedObservation = runningGameObservations.get(
+                confirmedKey.cacheKey());
         TextView cancel = panelAction(getString(R.string.console_cancel));
         TextView endGame = panelAction(getString(R.string.overlay_menu_end_game_confirm));
         endGame.setTextColor(0xFFFF9B92);
         cancel.setOnClickListener(view -> handlePanelBack());
         endGame.setOnClickListener(view -> {
             hideSidePanel();
-            requestEndPlayniteGame(host, item, confirmedGame, confirmedObservation);
+            requestEndPlayniteGame(host, item, confirmedGame, confirmedObservation,
+                    confirmedKey);
         });
         showSidePanel(getString(R.string.playnite_game_options), item.game.name,
                 getString(R.string.playnite_end_game_confirmation), cancel, endGame);
@@ -9976,7 +10164,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void requestEndPlayniteGame(ComputerDetails host,
                                         PlayniteDashboardItem item,
                                         HostGatewayClient.RunningGame confirmedGame,
-                                        RunningGameObservation confirmedObservation) {
+                                        RunningGameObservation confirmedObservation,
+                                        HostProfileKey confirmedKey) {
+        if (host == null || confirmedKey == null
+                || !confirmedKey.equals(selectedProfileKey(host.uuid))
+                || !host.uuid.equalsIgnoreCase(selectedHostUuid)) {
+            ConsoleUiFeedback.makeText(this, R.string.overlay_menu_end_game_failed,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        String stateKey = confirmedKey.cacheKey();
         String expectedGameId = SessionSnapshot.normalize(item.stableId());
         HostGatewayClient.RunningGame latestGame = freshRunningGame(host, expectedGameId);
         boolean verified = confirmedGame != null;
@@ -9987,18 +10184,22 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     Toast.LENGTH_LONG).show();
             return;
         }
-        RunningGameObservation latestObservation = runningGameObservations.get(host.uuid);
+        RunningGameObservation latestObservation = runningGameObservations.get(stateKey);
         // Never downgrade an inventory confirmation to the older current-only operation.
         if (!verified && latestObservation != null && latestObservation.inventory != null) return;
         int expectedAppId = host.runningGameId;
-        long expectedResolvedAt = activePlayniteGameResolvedAt.getOrDefault(host.uuid, 0L);
+        long expectedResolvedAt = activePlayniteGameResolvedAt.getOrDefault(stateKey, 0L);
         executor.execute(() -> {
             boolean success = false;
             boolean stoppedCurrent = false;
             try {
+                if (!confirmedKey.equals(selectedProfileKey(host.uuid))) {
+                    throw new IOException("game_stop_profile_changed");
+                }
                 if (verified) {
                     GatewayConnection connection = hostGatewayStore.loadForHost(host.uuid,
-                            host.activeAddress == null ? null : host.activeAddress.address);
+                            host.activeAddress == null ? null : host.activeAddress.address,
+                            confirmedKey.profileId);
                     if (confirmedObservation == null
                             || !sameGatewayProfile(confirmedObservation.connection, connection)) {
                         throw new IOException("game_stop_profile_changed");
@@ -10011,15 +10212,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         throw new IOException("game_stop_process_changed");
                     }
                     GatewayConnection beforeStop = hostGatewayStore.loadForHost(host.uuid,
-                            host.activeAddress == null ? null : host.activeAddress.address);
-                    if (!host.uuid.equalsIgnoreCase(selectedHostUuid)
+                            host.activeAddress == null ? null : host.activeAddress.address,
+                            confirmedKey.profileId);
+                    if (!confirmedKey.equals(selectedProfileKey(host.uuid))
+                            || !host.uuid.equalsIgnoreCase(selectedHostUuid)
                             || !sameGatewayProfile(connection, beforeStop)) {
                         throw new IOException("game_stop_host_changed");
                     }
                     stoppedCurrent = hostGatewayClient.stopGame(connection,
                             exact.gameId, exact.processToken);
                 } else {
-                    stopActiveProviderGame(host, item.stableId(), true);
+                    if (!confirmedKey.equals(selectedProfileKey(host.uuid))) {
+                        throw new IOException("game_stop_profile_changed");
+                    }
+                    stopActiveProviderGame(host, item.stableId(), true, confirmedKey.profileId);
                     stoppedCurrent = true;
                 }
                 success = true;
@@ -10027,9 +10233,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             boolean stopped = success;
             boolean stoppedSessionGame = stoppedCurrent;
             mainHandler.post(() -> {
-                RunningGameObservation local = runningGameObservations.get(host.uuid);
+                if (!confirmedKey.equals(selectedProfileKey(host.uuid))
+                        || !host.uuid.equalsIgnoreCase(selectedHostUuid)) return;
+                RunningGameObservation local = runningGameObservations.get(stateKey);
                 GatewayConnection currentConnection = hostGatewayStore.loadForHost(host.uuid,
-                        host.activeAddress == null ? null : host.activeAddress.address);
+                        host.activeAddress == null ? null : host.activeAddress.address,
+                        confirmedKey.profileId);
                 HostGatewayClient.RunningGame localGame = local == null || local.inventory == null
                         ? null : local.inventory.find(expectedGameId);
                 boolean sameStopScope = !verified || (confirmedObservation != null
@@ -10042,14 +10251,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     if (stoppedSessionGame) markExactPlayniteGameIdle(host.uuid, expectedAppId,
                             expectedGameId, expectedResolvedAt);
                     // Preserve other verified games and their original freshness deadline.
-                    RunningGameObservation observation = runningGameObservations.get(host.uuid);
+                    RunningGameObservation observation = runningGameObservations.get(stateKey);
                     if (observation != null && confirmedGame != null) {
-                        runningGameObservations.put(host.uuid, observation.without(confirmedGame));
+                        runningGameObservations.put(stateKey, observation.without(confirmedGame));
                     }
                     invalidateActivePlayniteGameRequest(host.uuid);
                     renderPlayniteLibrary(currentHost(host.uuid), currentSunshineApps);
-                    resolveActivePlayniteGame(host, host.runningGameId != 0, ignored -> { });
                     if (stoppedSessionGame) refreshSessionState(host.uuid);
+                }
+                if (sameStopScope) {
+                    resolveActivePlayniteGame(host, host.runningGameId != 0, ignored -> { });
                 }
                 ConsoleUiFeedback.makeText(this, stopped
                                 ? R.string.playnite_end_game_success
@@ -11662,7 +11873,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 try {
                     closed = ConsoleActivity.this.closePreviousSession(
                             host, target.getAppId(), true,
-                            intent.kind == PlayIntent.Kind.PLAYNITE_GAME, cancelled,
+                            intent.kind == PlayIntent.Kind.PLAYNITE_GAME, intent.profileId,
+                            cancelled,
                             message -> mainHandler.post(() -> {
                                 if (!cancelled.getAsBoolean() && streamLoadingView != null) {
                                     streamLoadingView.setStep(1, message);
@@ -11910,13 +12122,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             ConsoleUiFeedback.makeText(this, R.string.console_initializing, Toast.LENGTH_SHORT).show();
             return;
         }
+        String transitionProfileId = selectedProfileId(host.uuid);
         int token = hostPreparationGeneration.incrementAndGet();
         LaunchTransitionSpec transition = LaunchTransitionSpec.create(
-                host.uuid, selectedProfileId(host.uuid), transitionType,
+                host.uuid, transitionProfileId, transitionType,
                 app.getAppId(), playniteGameId,
                 System.currentTimeMillis());
         SuspendedSessionStore.Session suspendedLaunch =
-                SuspendedSessionStore.load(this, host.uuid, selectedProfileId(host.uuid));
+                SuspendedSessionStore.load(this, host.uuid, transitionProfileId);
         boolean restoringSuspendedSession = suspendedLaunch != null
                 && suspendedLaunch.resumedAt == 0L
                 && suspendedLaunch.sunshineAppId == app.getAppId();
@@ -11934,7 +12147,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (ready != null && restoringSuspendedSession) {
                 PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
                         this, host.uuid, ready.activeAddress != null
-                                ? ready.activeAddress.address : null);
+                                ? ready.activeAddress.address : null, transitionProfileId);
                 if (gateway != null) {
                     try {
                         gateway.focusGame();
@@ -11950,6 +12163,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     && ready.runningGameId != app.getAppId()) {
                 try {
                     closePreviousSession(ready, app.getAppId(), false, false,
+                            transitionProfileId,
                             () -> token != hostPreparationGeneration.get() || !active,
                             message -> setLoadingStatus(token, message));
                 } catch (IOException | XmlPullParserException error) {
@@ -12258,23 +12472,32 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private boolean closePreviousSession(ComputerDetails host, int targetAppId,
                                          boolean closeMatchingApp,
                                          boolean requireProviderVerification,
+                                         String profileId,
                                          BooleanSupplier cancelled,
                                          Consumer<String> status)
             throws IOException, XmlPullParserException {
-        if (!closeMatchingApp && host.runningGameId != 0
-                && host.runningGameId == targetAppId) return true;
+        int expectedRunningAppId = host.runningGameId;
+        if (!closeMatchingApp && expectedRunningAppId != 0
+                && expectedRunningAppId == targetAppId) return true;
         if (cancelled.getAsBoolean()) return false;
         status.accept(getString(R.string.transition_closing_session));
         stopActiveProviderGame(host, knownProviderGameId(
                         host, SuspendedSessionStore.load(this, host.uuid,
-                                selectedProfileId(host.uuid))),
-                requireProviderVerification);
-        if (host.runningGameId == 0) return true;
+                                profileId)),
+                requireProviderVerification, profileId);
         NvHTTP connection = new NvHTTP(
                 ServerHelper.getCurrentAddressFromComputer(host), host.httpsPort,
                 managerBinder.getUniqueId(), host.serverCert,
                 PlatformBinding.getCryptoProvider(this));
         if (cancelled.getAsBoolean()) return false;
+        ComputerDetails fresh = connection.getComputerDetails(true);
+        AuthoritativeSessionTransition.SunshineStopAction action =
+                AuthoritativeSessionTransition.sunshineStopAction(
+                        expectedRunningAppId, fresh.runningGameId);
+        if (action == AuthoritativeSessionTransition.SunshineStopAction.COMPLETE) return true;
+        if (action != AuthoritativeSessionTransition.SunshineStopAction.QUIT) {
+            throw new IOException("Previous host session changed before close.");
+        }
         if (!connection.quitApp()) {
             throw new IOException("Host rejected closing the previous session.");
         }
@@ -13561,6 +13784,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             complete.complete(providerGameId.isEmpty());
             return;
         }
+        String terminationProfileId = !retained.profileId.isEmpty()
+                ? retained.profileId
+                : !retainedStreamProfileId.isEmpty()
+                ? retainedStreamProfileId : selectedProfileId(host.uuid);
 
         showSidePanelBusy(getString(R.string.console_title),
                 getString(R.string.console_close_game_and_moonwaker),
@@ -13570,7 +13797,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             boolean stopped = false;
             try {
                 stopActiveProviderGame(host, providerGameId,
-                        !normalizeId(providerGameId).isEmpty());
+                        !normalizeId(providerGameId).isEmpty(), terminationProfileId);
                 if (!mayCompleteTermination(expectedStreamSessionId)) return;
                 stopped = quitSunshineIfRunning(host);
             } catch (IOException | XmlPullParserException error) {
@@ -13585,6 +13812,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     RetainedStreamSessionCoordinator.clearIfMatches(
                             expectedStreamSessionId);
                 }
+                refreshSessionState(host.uuid);
                 complete.complete(success);
             });
         });

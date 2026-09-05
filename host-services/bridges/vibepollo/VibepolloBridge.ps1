@@ -82,6 +82,7 @@ $script:SnapshotCache = $null
 $script:SnapshotCacheTime = [datetime]::MinValue
 $script:DiagnosticsCache = $null
 $script:DiagnosticsCacheTime = [datetime]::MinValue
+$script:ApiProcessTimeoutMs = 5000
 $script:MoonWakerClientPermissions = 0x07001F00 # list, view, launch and all input devices
 $script:GameRecordIdPattern = '^(?:[a-z][a-z0-9_-]{1,31}:[a-z0-9._-]{1,128}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$'
 
@@ -113,7 +114,10 @@ function Invoke-VibepolloApi {
         $stderrTask = $process.StandardError.ReadToEndAsync()
         $process.StandardInput.Write((ConvertTo-JsonSafe $transportRequest 8))
         $process.StandardInput.Close()
-        if (-not $process.WaitForExit(2000)) {
+        # VibepolloTransport has a three-second urllib deadline. Keep the
+        # outer process alive long enough for that deadline plus startup/output
+        # overhead, while retaining a bounded listener operation.
+        if (-not $process.WaitForExit($script:ApiProcessTimeoutMs)) {
             try { $process.Kill() } catch {}
             throw "TLS transport timed out"
         }
@@ -1215,6 +1219,12 @@ try {
                 '^/snapshot$' {
                     $force = [string]$request.Query["force"] -in @("1", "true", "yes")
                     Send-JsonResponse $request.Stream (Get-Snapshot -Force:$force)
+                }
+                '^/diagnostics/active-displays$' {
+                    # Game Provider readiness polls this endpoint frequently.
+                    # Keep it local and bounded so a slow Vibepollo API cannot
+                    # starve /health on this single-threaded loopback listener.
+                    Send-JsonResponse $request.Stream (Get-ActiveDisplayDiagnostics)
                 }
                 '^/diagnostics/stream-sources$' {
                     Send-JsonResponse $request.Stream (Get-StreamSourceDiagnostics)

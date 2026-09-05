@@ -362,9 +362,28 @@ usable with `use_profile` alone.
 An optional four-digit app PIN is stored only as a versioned salted verifier in
 the machine profile registry. Profile responses expose only `pin_required`.
 Verification requires an authenticated `use_profile` client, is rate limited per
-client and profile, and creates a five-minute in-memory lease bound to the
-current verifier. Existing profile-scoped endpoints enforce that lease; no PIN,
-verifier, or lease is persisted on Android.
+client and profile. Android supplies a transient process UUID through the shared
+Gateway transport in `X-MoonWaker-Profile-Session`. Successful verification creates
+one in-memory authorization per paired client/profile, bound to that UUID and
+the current verifier. An open application process keeps its authorization across
+screensaver idle time. A different or missing UUID cannot reuse it; a new PIN
+verification replaces it. Gateway restart, verifier changes, and existing grant
+checks revoke or reject access. Legacy clients without this header retain their
+fixed five-minute lease. Existing profile-scoped endpoints enforce this boundary;
+no plaintext PIN, session UUID, or host unlock state is persisted on Android.
+
+Before waking an unreachable host, Android may check a device-local PIN verifier
+learned only after successful Gateway verification on that paired device. This
+preliminary check permits Wake-on-LAN only; it does not authorize profile access.
+The verifier is bound to host, profile and pairing identity, protected by an
+Android Keystore key, excluded from backup, and locally rate limited across
+process restarts. No server verifier or plaintext PIN is exported or persisted.
+This requires Android 6.0/API 23 or newer; older clients remain online-only.
+An unlearned profile requires one online verification first. After wake the same
+entered PIN is held only for the bounded foreground request and verified by the
+Gateway before selected-profile persistence, protected loading or sign-in.
+Cancellation discards the pending request. A stale local PIN can wake the host
+but cannot override its current PIN or grants.
 
 Android resolves the authorized profile gate before profile-scoped library
 loading. A protected selection is persisted only after Gateway verification,

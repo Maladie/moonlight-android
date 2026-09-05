@@ -613,7 +613,10 @@ function Test-LegendaryConnection([string]$Root) {
         $raw = (& $executable status --offline --json 2>$null | Out-String)
         if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) { return $false }
         $status = $raw | ConvertFrom-Json
-        return $null -ne $status.account
+        $account = if ($null -eq $status.account) { "" } else { [string]$status.account }
+        $account = $account.Trim()
+        return -not [string]::IsNullOrWhiteSpace($account) -and
+            $account -notmatch '^<not logged in>$'
     } catch { return $false } finally { $env:LEGENDARY_CONFIG_PATH = $previous }
 }
 

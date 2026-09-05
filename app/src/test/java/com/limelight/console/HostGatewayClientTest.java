@@ -34,6 +34,10 @@ public class HostGatewayClientTest {
                 new GatewayTransport.GatewayException("other_user_active", 409)).reason);
         assertEquals("credential_missing", HostGatewayClient.sessionFailure(
                 new GatewayTransport.GatewayException("credential_missing", 409)).reason);
+        assertEquals("expired", HostGatewayClient.sessionFailure(
+                new GatewayTransport.GatewayException("attempt_expired", 409)).state);
+        assertEquals("cancelled", HostGatewayClient.sessionFailure(
+                new GatewayTransport.GatewayException("attempt_cancelled", 409)).state);
     }
 
     @Test public void windowsSessionCancellationPinsOriginalRequestAndAttempt() throws Exception {
