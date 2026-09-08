@@ -196,6 +196,20 @@ public final class SessionResumeManager {
                 gameIntent.getStringExtra(Game.EXTRA_SOURCE_SUSPEND_ID));
         putString(editor, KEY_SOURCE_SUSPEND_GAME_ID,
                 gameIntent.getStringExtra(Game.EXTRA_SOURCE_SUSPEND_PLAYNITE_GAME_ID));
+        putString(editor, Game.EXTRA_EXECUTION_PROFILE_ID,
+                gameIntent.getStringExtra(Game.EXTRA_EXECUTION_PROFILE_ID));
+        editor.putBoolean(Game.EXTRA_CHILD_PROFILE, gameIntent.getBooleanExtra(
+                Game.EXTRA_CHILD_PROFILE, gameIntent.hasExtra(Game.EXTRA_CHILD_SESSION_ID)));
+        putString(editor, Game.EXTRA_CHILD_SESSION_ID,
+                gameIntent.getStringExtra(Game.EXTRA_CHILD_SESSION_ID));
+        putString(editor, Game.EXTRA_CHILD_EXECUTION_PROFILE_ID,
+                gameIntent.getStringExtra(Game.EXTRA_CHILD_EXECUTION_PROFILE_ID));
+        putString(editor, Game.EXTRA_CHILD_GAME_ID,
+                gameIntent.getStringExtra(Game.EXTRA_CHILD_GAME_ID));
+        editor.putLong(Game.EXTRA_CHILD_DEADLINE_ELAPSED_MS,
+                gameIntent.getLongExtra(Game.EXTRA_CHILD_DEADLINE_ELAPSED_MS, Long.MIN_VALUE));
+        editor.putLong(Game.EXTRA_CHILD_POLICY_REVISION,
+                gameIntent.getLongExtra(Game.EXTRA_CHILD_POLICY_REVISION, 0L));
         byte[] cert = gameIntent.getByteArrayExtra(Game.EXTRA_SERVER_CERT);
         putString(editor, KEY_SERVER_CERT, cert == null ? null
                 : Base64.encodeToString(cert, Base64.NO_WRAP));
@@ -283,6 +297,20 @@ public final class SessionResumeManager {
                 prefs.getString(KEY_SOURCE_SUSPEND_ID, null));
         putExtra(intent, Game.EXTRA_SOURCE_SUSPEND_PLAYNITE_GAME_ID,
                 prefs.getString(KEY_SOURCE_SUSPEND_GAME_ID, null));
+        putExtra(intent, Game.EXTRA_EXECUTION_PROFILE_ID,
+                prefs.getString(Game.EXTRA_EXECUTION_PROFILE_ID, null));
+        intent.putExtra(Game.EXTRA_CHILD_PROFILE, prefs.getBoolean(Game.EXTRA_CHILD_PROFILE,
+                prefs.getString(Game.EXTRA_CHILD_SESSION_ID, null) != null));
+        putExtra(intent, Game.EXTRA_CHILD_SESSION_ID,
+                prefs.getString(Game.EXTRA_CHILD_SESSION_ID, null));
+        putExtra(intent, Game.EXTRA_CHILD_EXECUTION_PROFILE_ID,
+                prefs.getString(Game.EXTRA_CHILD_EXECUTION_PROFILE_ID, null));
+        putExtra(intent, Game.EXTRA_CHILD_GAME_ID,
+                prefs.getString(Game.EXTRA_CHILD_GAME_ID, null));
+        intent.putExtra(Game.EXTRA_CHILD_DEADLINE_ELAPSED_MS,
+                prefs.getLong(Game.EXTRA_CHILD_DEADLINE_ELAPSED_MS, Long.MIN_VALUE));
+        intent.putExtra(Game.EXTRA_CHILD_POLICY_REVISION,
+                prefs.getLong(Game.EXTRA_CHILD_POLICY_REVISION, 0L));
         String cert = prefs.getString(KEY_SERVER_CERT, null);
         if (cert != null && !cert.isEmpty()) {
             intent.putExtra(Game.EXTRA_SERVER_CERT, Base64.decode(cert, Base64.DEFAULT));

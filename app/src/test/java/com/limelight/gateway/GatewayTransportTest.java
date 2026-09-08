@@ -46,6 +46,7 @@ public class GatewayTransportTest {
         assertEquals("profile-1", headers.get("X-WakePlay-Profile"));
         assertTrue(headers.get("X-MoonWaker-Profile-Session")
                 .matches("[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}"));
+        assertEquals("child_profiles_v1", headers.get("X-MoonWaker-Capabilities"));
         assertFalse(headers.containsKey("Content-Type"));
         assertEquals("get-request", headers.get("X-Request-Id"));
         assertEquals(1, calls.get());
@@ -145,6 +146,7 @@ public class GatewayTransportTest {
         assertFalse(headers.containsKey("Authorization"));
         assertFalse(headers.containsKey("X-WakePlay-Profile"));
         assertFalse(headers.containsKey("X-MoonWaker-Profile-Session"));
+        assertFalse(headers.containsKey("X-MoonWaker-Capabilities"));
         assertEquals(1, calls.get());
     }
 
@@ -181,6 +183,20 @@ public class GatewayTransportTest {
             assertEquals("rate_limited", error.getMessage());
             assertEquals(429, error.statusCode());
             assertEquals(7, error.retryAfterSeconds());
+        }
+    }
+
+    @Test public void errorResponsePreservesStructuredReasonAndBody() throws Exception {
+        try {
+            GatewayTransport.decodeJsonResponse(409,
+                    ("{\"error\":\"blocked\",\"reason\":\"outside_schedule\","
+                            + "\"actor_profile_id\":\"profile-1\"}")
+                            .getBytes(StandardCharsets.UTF_8));
+            fail("Expected GatewayException");
+        } catch (GatewayTransport.GatewayException error) {
+            assertEquals("outside_schedule", error.reason());
+            assertEquals("profile-1",
+                    error.responseBody().getString("actor_profile_id"));
         }
     }
 

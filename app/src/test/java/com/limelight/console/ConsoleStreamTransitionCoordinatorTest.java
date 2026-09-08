@@ -1136,6 +1136,94 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void differentActorCannotDetachCancelOrTransferExactProviderOwner() {
+        FakeGateway gateway = stoppingObservationGateway();
+        LaunchTransitionSpec ownerSpec = providerSpec(
+                "same-owner", "child-a", "steam:old");
+        ConsoleStreamTransitionCoordinator owner = new ConsoleStreamTransitionCoordinator(
+                ownerSpec, providerController(ownerSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        owner.start();
+        Thread.interrupted();
+
+        LaunchTransitionSpec staleSpec = providerSpec(
+                "same-owner", "child-b", "steam:old");
+        LaunchTransitionSpec replacementSpec = providerSpec(
+                "replacement", "child-b", "steam:old");
+        ConsoleStreamTransitionCoordinator stale = new ConsoleStreamTransitionCoordinator(
+                staleSpec, providerController(staleSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        ConsoleStreamTransitionCoordinator replacement = new ConsoleStreamTransitionCoordinator(
+                replacementSpec, providerController(replacementSpec), gateway,
+                new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
+                (action, delay) -> { }, new FakeCallbacks());
+
+        assertFalse(stale.detachForSwitch());
+        assertFalse(stale.detachAfterConfirmedGameStop());
+        assertFalse(stale.transferProviderOwnershipTo(replacement));
+        stale.onStreamFailed();
+        stale.cancel();
+
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+        assertFalse(owner.transferProviderOwnershipTo(replacement));
+        assertTrue(owner.detachForSwitch());
+    }
+
+    @Test
+    public void sameActorObservationTransfersExactOwnerWithoutProviderAction() {
+        FakeGateway gateway = stoppingObservationGateway();
+        LaunchTransitionSpec oldSpec = new LaunchTransitionSpec(
+                "old-child-observer", HOST, "child-a", LaunchTransitionType.GAME_CONNECTION,
+                42, "steam:old", 1L, false);
+        LaunchTransitionSpec newSpec = new LaunchTransitionSpec(
+                "new-child-observer", HOST, "child-a", LaunchTransitionType.GAME_CONNECTION,
+                42, "steam:old", 2L, false);
+        ConsoleStreamTransitionCoordinator oldObserver = new ConsoleStreamTransitionCoordinator(
+                oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        ConsoleStreamTransitionCoordinator newObserver = new ConsoleStreamTransitionCoordinator(
+                newSpec, providerController(newSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+
+        assertTrue(oldObserver.adoptDetachedProviderOwnership());
+        assertTrue(oldObserver.transferProviderOwnershipTo(newObserver));
+        newObserver.start();
+        Thread.interrupted();
+        assertTrue(newObserver.detachForSwitch());
+
+        assertEquals(0, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
+    public void differentActorOwnerStillBlocksAdoptOnSameHost() {
+        LaunchTransitionSpec ownerSpec = new LaunchTransitionSpec(
+                "owner-child-a", HOST, "child-a", LaunchTransitionType.GAME_CONNECTION,
+                42, "steam:old", 1L, false);
+        LaunchTransitionSpec otherSpec = new LaunchTransitionSpec(
+                "owner-child-b", HOST, "child-b", LaunchTransitionType.GAME_CONNECTION,
+                42, "steam:old", 2L, false);
+        FakeGateway gateway = new FakeGateway();
+        ConsoleStreamTransitionCoordinator owner = new ConsoleStreamTransitionCoordinator(
+                ownerSpec, providerController(ownerSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        ConsoleStreamTransitionCoordinator other = new ConsoleStreamTransitionCoordinator(
+                otherSpec, providerController(otherSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+
+        assertTrue(owner.adoptDetachedProviderOwnership());
+        assertFalse(other.adoptDetachedProviderOwnership());
+        assertTrue(owner.detachForSwitch());
+    }
+
+    @Test
     public void failedSwitchRecoveryCannotReplaceNewerProviderOwner() {
         FakeGateway gateway = stoppingObservationGateway();
         LaunchTransitionSpec oldSpec = providerSpec("old-switch", "steam:old");
@@ -1303,6 +1391,13 @@ public class ConsoleStreamTransitionCoordinatorTest {
         return new LaunchTransitionSpec(
                 transitionId, HOST, LaunchTransitionType.GAME, 42, gameId, 1_000L,
                 startBeforeStream);
+    }
+
+    private static LaunchTransitionSpec providerSpec(String transitionId, String profileId,
+                                                     String gameId) {
+        return new LaunchTransitionSpec(
+                transitionId, HOST, profileId, LaunchTransitionType.GAME, 42, gameId,
+                1_000L, true);
     }
 
     private static LaunchTransitionController providerController(LaunchTransitionSpec spec) {

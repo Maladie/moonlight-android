@@ -6,6 +6,11 @@ param(
 
 $ErrorActionPreference = "Stop"
 $script:Root = $PSScriptRoot
+$identityHelpers = Join-Path $script:Root "VibepolloIdentity.ps1"
+if (-not (Test-Path -LiteralPath $identityHelpers -PathType Leaf)) {
+    throw "Missing identity proof helpers: $identityHelpers"
+}
+. $identityHelpers
 if ([string]::IsNullOrWhiteSpace($ConfigPath)) { $ConfigPath = Join-Path $script:Root "config.json" }
 $script:LogDirectory = Join-Path $script:Root "logs"
 $script:ExportDirectory = Join-Path $script:Root "exports"
@@ -42,6 +47,30 @@ function Get-PropertyValue {
     return $Default
 }
 
+function Get-CompatiblePythonExecutable {
+    $candidates = @()
+    foreach ($programFiles in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if ([string]::IsNullOrWhiteSpace($programFiles) -or
+            -not (Test-Path -LiteralPath $programFiles -PathType Container)) { continue }
+        $candidates += Get-ChildItem -LiteralPath $programFiles -Directory -Filter "Python*" `
+            -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName "python.exe" }
+    }
+    $command = Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $command) { $candidates += [string]$command.Source }
+    foreach ($candidate in @($candidates | Sort-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        $versionText = & $candidate -c `
+            "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null
+        [version]$version = $null
+        if ($LASTEXITCODE -eq 0 -and
+            [version]::TryParse([string]$versionText, [ref]$version) -and
+            $version -ge [version]"3.10" -and $version -lt [version]"4.0") {
+            return [IO.Path]::GetFullPath($candidate)
+        }
+    }
+    return $null
+}
+
 if (-not (Test-Path -LiteralPath $ConfigPath)) {
     throw "Missing configuration: $ConfigPath. Run Configure-VibepolloBridge.ps1 first."
 }
@@ -59,12 +88,7 @@ $script:PythonPrefix = ""
 if ($script:Config.PSObject.Properties["python_path"] -and $script:Config.python_path) {
     $script:PythonExe = [string]$script:Config.python_path
 } else {
-    $python = Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-    if ($python) { $script:PythonExe = $python.Source }
-    else {
-        $launcher = Get-Command py.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-        if ($launcher) { $script:PythonExe = $launcher.Source; $script:PythonPrefix = "-3 " }
-    }
+    $script:PythonExe = Get-CompatiblePythonExecutable
 }
 if (-not $script:PythonExe -or -not (Test-Path -LiteralPath $script:PythonExe)) {
     throw "Python 3 was not found. Install Python 3 or set python_path in config.json."
@@ -422,6 +446,134 @@ function Get-VibepolloClientRecords {
     return @(Convert-Collection (Get-PropertyValue $response @("named_certs", "clients") @()))
 }
 
+function Get-VibepolloIdentityInstallRoot {
+    $roots = @{}
+    $uninstallPaths = @(
+        "HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*",
+        "HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*"
+    )
+    foreach ($entry in @(Get-ItemProperty -Path $uninstallPaths -ErrorAction SilentlyContinue)) {
+        if ([string]$entry.DisplayName -notmatch "(?i)vibepollo" -or
+            [string]::IsNullOrWhiteSpace([string]$entry.InstallLocation)) { continue }
+        try {
+            $path = [IO.Path]::GetFullPath([string]$entry.InstallLocation).TrimEnd([char[]]"\/")
+            $item = Get-Item -LiteralPath $path -ErrorAction Stop
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { continue }
+            $roots[$path] = $true
+        } catch { continue }
+    }
+    if ($roots.Count -ne 1) { throw "identity_binding_unsupported" }
+    return [string](@($roots.Keys)[0])
+}
+
+function Get-VibepolloIdentityStatePath {
+    $installRoot = Get-VibepolloIdentityInstallRoot
+    $configRoot = [IO.Path]::GetFullPath((Join-Path $installRoot "config")).TrimEnd([char[]]"\/")
+    $configItem = Get-Item -LiteralPath $configRoot -ErrorAction Stop
+    if (($configItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "identity_binding_unsupported"
+    }
+    $stateName = "sunshine_state.json"
+    $confPath = Join-Path $configRoot "sunshine.conf"
+    if (Test-Path -LiteralPath $confPath -PathType Leaf) {
+        $confItem = Get-Item -LiteralPath $confPath -ErrorAction Stop
+        if (($confItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+            $confItem.Length -gt 1MB) { throw "identity_binding_unsupported" }
+        $configuredValues = @(
+            (Get-Content -LiteralPath $confPath -Raw -ErrorAction Stop) -split "`r?`n" |
+                ForEach-Object {
+                    $line = ($_ -replace '#.*$', '').Trim()
+                    if ($line -match '^file_state\s*=\s*(.*?)\s*$') {
+                        $value = $Matches[1].Trim()
+                        if (($value.StartsWith('"') -and $value.EndsWith('"')) -or
+                            ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+                            $value = $value.Substring(1, $value.Length - 2)
+                        }
+                        if ($value) { $value }
+                    }
+                }
+        )
+        $configured = @($configuredValues | Select-Object -Unique)
+        if ($configured.Count -gt 1) { throw "identity_binding_unsupported" }
+        if ($configured.Count -eq 1) { $stateName = [string]$configured[0] }
+    }
+    try {
+        $statePath = if ([IO.Path]::IsPathRooted($stateName)) {
+            [IO.Path]::GetFullPath($stateName)
+        } else {
+            [IO.Path]::GetFullPath((Join-Path $configRoot $stateName))
+        }
+    } catch { throw "identity_binding_unsupported" }
+    $prefix = $configRoot + [IO.Path]::DirectorySeparatorChar
+    if (-not $statePath.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "identity_binding_unsupported"
+    }
+    $stateItem = Get-Item -LiteralPath $statePath -ErrorAction Stop
+    if (($stateItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0 -or
+        $stateItem.Length -gt 1MB) { throw "identity_binding_unsupported" }
+    return $statePath
+}
+
+function Get-VibepolloLiveUniqueId {
+    try {
+        $apps = Invoke-VibepolloApi "/api/apps"
+        $value = [string](Get-PropertyValue $apps @("host_uuid", "host_uniqueid", "uniqueid") "").Trim()
+        if ($value) { return $value }
+    } catch { }
+    throw "identity_binding_unsupported"
+}
+
+function Get-VibepolloIdentityProof {
+    param(
+        [Parameter(Mandatory)][string]$Challenge,
+        [Parameter(Mandatory)][string]$CertificateSha256,
+        [Parameter(Mandatory)][string]$Signature
+    )
+    if ($Challenge.Length -gt 512 -or
+        [Text.Encoding]::UTF8.GetBytes($Challenge).Length -gt 512 -or
+        $Challenge -notmatch '^moonwaker-vibepollo-identity-v1\n') {
+        throw "identity_proof_invalid"
+    }
+    if ($CertificateSha256 -cnotmatch '^[0-9a-f]{64}$') { throw "identity_proof_invalid" }
+    try {
+        if ($Signature.Length -gt 1400) { throw "signature too large" }
+        $signatureBytes = [Convert]::FromBase64String($Signature)
+        if ($signatureBytes.Length -lt 1 -or $signatureBytes.Length -gt 1024) {
+            throw "signature size"
+        }
+    } catch { throw "identity_proof_invalid" }
+
+    $state = $null
+    try {
+        $state = Read-VibepolloIdentityState (Get-VibepolloIdentityStatePath)
+        if ((Get-VibepolloLiveUniqueId) -cne [string]$state.host_uniqueid) {
+            throw "identity_binding_unsupported"
+        }
+        $matches = @($state.records | Where-Object {
+            [string]$_.fingerprint -ceq $CertificateSha256
+        })
+        if ($matches.Count -eq 0) { throw "pairing_required" }
+        if ($matches.Count -ne 1) { throw "identity_ambiguous" }
+        if (-not (Test-VibepolloIdentitySignature $Challenge $signatureBytes $matches[0].certificate)) {
+            throw "identity_proof_invalid"
+        }
+        $uuid = [string]$matches[0].uuid
+        $liveMatches = @(Get-VibepolloClientRecords | Where-Object {
+            [string](Get-PropertyValue $_ @("uuid") "") -ceq $uuid
+        })
+        if ($liveMatches.Count -eq 0) { throw "pairing_required" }
+        if ($liveMatches.Count -ne 1) { throw "identity_ambiguous" }
+        return [pscustomobject]@{ client_uuid = $uuid }
+    }
+    finally {
+        if ($null -ne $state) {
+            foreach ($record in @($state.records)) {
+                if ($null -ne $record.certificate) { $record.certificate.Dispose() }
+            }
+        }
+    }
+}
+
 function New-ClientUpdatePayload {
     param([Parameter(Mandatory)]$Client, [Parameter(Mandatory)][string]$Name)
     return [ordered]@{
@@ -456,12 +608,25 @@ function Pair-MoonWakerClient {
         $uuid = [string](Get-PropertyValue $client @("uuid") "")
         if ($uuid) { $before[$uuid] = $true }
     }
-    $accepted = Invoke-VibepolloApi "/api/pin" POST @{ pin = $Pin; name = $safeName }
-    if (-not [bool](Get-PropertyValue $accepted @("status") $false)) {
-        throw "Vibepollo did not accept the pending Moonlight pairing PIN"
-    }
+    $pinWait = [Diagnostics.Stopwatch]::StartNew()
+    $pinAttempts = 0
+    do {
+        $pinAttempts++
+        try {
+            $accepted = Invoke-VibepolloApi "/api/pin" POST @{ pin = $Pin; name = $safeName }
+        } catch {
+            throw "Vibepollo PIN submission failed: $($_.Exception.Message)"
+        }
+        if ([bool](Get-PropertyValue $accepted @("status") $false)) { break }
+        if ($pinWait.Elapsed.TotalSeconds -ge 8) {
+            $reason = [string](Get-PropertyValue $accepted @("error", "message") "")
+            $suffix = if ([string]::IsNullOrWhiteSpace($reason)) { "" } else { ": $reason" }
+            throw "Vibepollo did not expose a pending Moonlight pairing session within 8 seconds after $pinAttempts PIN attempts$suffix"
+        }
+        Start-Sleep -Milliseconds 250
+    } while ($true)
 
-    $deadline = (Get-Date).AddSeconds(10)
+    $deadline = (Get-Date).AddSeconds(15)
     $pairedClient = $null
     do {
         Start-Sleep -Milliseconds 150
@@ -474,13 +639,19 @@ function Pair-MoonWakerClient {
         if ($candidates.Count -gt 1) { throw "Vibepollo returned multiple newly paired clients" }
     } while ((Get-Date) -lt $deadline)
     if ($null -eq $pairedClient) {
-        throw "The paired Moonlight client did not appear in Vibepollo before the timeout"
+        throw "Vibepollo accepted the PIN, but the paired Moonlight client did not appear in its client list within 15 seconds"
     }
 
     $payload = New-ClientUpdatePayload $pairedClient $safeName
-    $updated = Invoke-VibepolloApi "/api/clients/update" POST $payload
+    try {
+        $updated = Invoke-VibepolloApi "/api/clients/update" POST $payload
+    } catch {
+        throw "Vibepollo client permission update failed: $($_.Exception.Message)"
+    }
     if (-not [bool](Get-PropertyValue $updated @("status") $false)) {
-        throw "Vibepollo rejected the MoonWaker client permission update"
+        $reason = [string](Get-PropertyValue $updated @("error", "message") "")
+        $suffix = if ([string]::IsNullOrWhiteSpace($reason)) { "" } else { ": $reason" }
+        throw "Vibepollo rejected the MoonWaker client permission update$suffix"
     }
 
     $verified = @(Get-VibepolloClientRecords | Where-Object {
@@ -489,7 +660,7 @@ function Pair-MoonWakerClient {
     $actualPermissions = [uint32](Get-PropertyValue $verified @("perm") 0)
     if (($actualPermissions -band [uint32]$script:MoonWakerClientPermissions) -ne
         [uint32]$script:MoonWakerClientPermissions) {
-        throw "Vibepollo did not persist the required MoonWaker client permissions"
+        throw "Vibepollo paired the client, but did not persist the required MoonWaker permissions (expected $($script:MoonWakerClientPermissions), received $actualPermissions)"
     }
     return [pscustomobject]@{
         ok = $true
@@ -1263,6 +1434,34 @@ try {
                         [pscustomobject]@{}
                     } else { $request.Body | ConvertFrom-Json }
                     Send-JsonResponse $request.Stream (Pair-MoonWakerClient ([string]$body.pin) ([string]$body.name))
+                }
+                '^/identity/verify$' {
+                    if ($request.Method -ne "POST") {
+                        Send-JsonResponse $request.Stream ([pscustomobject]@{
+                                ok = $false; error = "POST required" }) 405
+                        continue
+                    }
+                    $body = if ([string]::IsNullOrWhiteSpace($request.Body)) {
+                        [pscustomobject]@{}
+                    } else { $request.Body | ConvertFrom-Json }
+                    try {
+                        $proof = Get-VibepolloIdentityProof `
+                            ([string]$body.challenge) `
+                            ([string]$body.certificate_sha256) `
+                            ([string]$body.signature)
+                        Send-JsonResponse $request.Stream ([pscustomobject]@{
+                                ok = $true; client_uuid = $proof.client_uuid })
+                    } catch {
+                        $reason = [string]$_.Exception.Message
+                        $status = switch ($reason) {
+                            "pairing_required" { 409; break }
+                            "identity_ambiguous" { 409; break }
+                            "identity_proof_invalid" { 403; break }
+                            default { 503; break }
+                        }
+                        Send-JsonResponse $request.Stream ([pscustomobject]@{
+                                ok = $false; error = $reason; reason = $reason }) $status
+                    }
                 }
                 '^/action/([^/]+)$' {
                     $actionName = $Matches[1]

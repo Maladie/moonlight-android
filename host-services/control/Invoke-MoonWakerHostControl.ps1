@@ -257,6 +257,21 @@ function Test-HttpHealth([string]$Endpoint) {
     } catch { return "offline" }
 }
 
+function Test-ChildProfile([object]$Entry) {
+    return $null -ne $Entry -and
+        $null -ne $Entry.PSObject.Properties["kind"] -and
+        [string]::Equals([string]$Entry.kind, "child",
+            [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Get-ProfileEndpoint([object]$Entry, [string]$Name) {
+    if ($null -ne $Entry -and
+        $null -ne $Entry.PSObject.Properties[$Name]) {
+        return [string]$Entry.($Name)
+    }
+    return ""
+}
+
 function Get-ProfileRoot([object]$Entry, [string]$Id) {
     $expected = [IO.Path]::GetFullPath((Join-Path (Get-InstallRoot) "profiles\$Id")).TrimEnd('\')
     $candidate = ""
@@ -406,8 +421,42 @@ function Get-EndpointPort([object]$Entry, [string]$Property, [int]$Fallback) {
     return $Fallback
 }
 
+function Get-CompatiblePythonExecutable {
+    $candidates = @()
+    foreach ($programFiles in @(
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles),
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86))) {
+        if ([string]::IsNullOrWhiteSpace($programFiles) -or
+            -not (Test-Path -LiteralPath $programFiles -PathType Container)) { continue }
+        $candidates += Get-ChildItem -LiteralPath $programFiles -Directory -Filter "Python*" `
+            -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName "python.exe" }
+    }
+    foreach ($command in @(Get-Command python.exe -CommandType Application `
+            -ErrorAction SilentlyContinue)) {
+        $pathProperty = $command.PSObject.Properties["Path"]
+        if ($null -ne $pathProperty -and
+            -not [string]::IsNullOrWhiteSpace([string]$pathProperty.Value)) {
+            $candidates += [string]$pathProperty.Value
+        }
+    }
+    foreach ($candidate in @($candidates | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_)
+        } | Sort-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        $versionText = & $candidate -c `
+            "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null
+        [version]$version = $null
+        if ($LASTEXITCODE -eq 0 -and
+            [version]::TryParse([string]$versionText, [ref]$version) -and
+            $version -ge [version]"3.10" -and $version -lt [version]"4.0") {
+            return [IO.Path]::GetFullPath($candidate)
+        }
+    }
+    throw "Nie znaleziono zgodnego Python 3.10 lub nowszego. Zaktualizuj MoonWaker Host."
+}
+
 function New-VibepolloToken([string]$Directory, [string]$BaseUrl,
-        [string]$Username, [string]$Password) {
+        [string]$Username, [string]$Password, [string]$PythonExecutable) {
     $transport = Join-Path $Directory "VibepolloTransport.py"
     $scopePath = Join-Path $Directory "moonwaker-token-scopes.example.json"
     if (-not (Test-Path -LiteralPath $transport -PathType Leaf) -or
@@ -424,7 +473,7 @@ function New-VibepolloToken([string]$Directory, [string]$BaseUrl,
         body = @{ scopes = @($scopes.scopes) }
     } | ConvertTo-Json -Depth 20 -Compress
     try {
-        $raw = ($request | & python.exe $transport) -join "`n"
+        $raw = ($request | & $PythonExecutable $transport) -join "`n"
         $transportExitCode = $LASTEXITCODE
         try { $transportResult = $raw | ConvertFrom-Json } catch { $transportResult = $null }
         if ($null -eq $transportResult) {
@@ -522,6 +571,15 @@ function Set-ProfileIntegrations([string]$Id) {
             if ([string]::IsNullOrWhiteSpace($vibepolloUrl)) {
                 $vibepolloUrl = "https://127.0.0.1:47990"
             }
+            $existing = $null
+            try { $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json } catch {}
+            $existingPython = if ($existing -and $existing.PSObject.Properties["python_path"]) {
+                [string]$existing.python_path
+            } else { "" }
+            $python = if (-not [string]::IsNullOrWhiteSpace($existingPython) -and
+                (Test-Path -LiteralPath $existingPython -PathType Leaf)) {
+                [IO.Path]::GetFullPath($existingPython)
+            } else { Get-CompatiblePythonExecutable }
             $uri = $null
             if (-not [uri]::TryCreate($vibepolloUrl, [UriKind]::Absolute, [ref]$uri) -or
                 $uri.Scheme -ne "https" -or $uri.Host -notin @("127.0.0.1", "localhost")) {
@@ -534,7 +592,7 @@ function Set-ProfileIntegrations([string]$Id) {
                 }
                 $plainPassword = Unprotect-ForCurrentUser $vibepolloPassword
                 $plainToken = New-VibepolloToken $directory $vibepolloUrl `
-                    $vibepolloAdmin $plainPassword
+                    $vibepolloAdmin $plainPassword $python
                 $vibepolloToken = Protect-ForCurrentUser $plainToken
             }
             if (-not [string]::IsNullOrWhiteSpace($vibepolloToken)) {
@@ -545,14 +603,10 @@ function Set-ProfileIntegrations([string]$Id) {
             } elseif (-not (Test-Path -LiteralPath $tokenPath -PathType Leaf)) {
                 throw "Utworz token Vibepollo automatycznie albo wklej istniejacy token API."
             }
-            $existing = $null
-            try { $existing = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json } catch {}
             [ordered]@{
                 base_url = $vibepolloUrl.TrimEnd('/')
                 listen_port = Get-EndpointPort $profile.entry "vibepollo_bridge" 8775
-                python_path = if ($existing -and $existing.PSObject.Properties["python_path"]) {
-                    [string]$existing.python_path
-                } else { "" }
+                python_path = $python
             } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $configPath -Encoding UTF8
         }
 
@@ -627,6 +681,7 @@ function Ensure-BackgroundServices([object]$Gateway, [string]$GatewayDirectory, 
     if (-not $Gateway.profiles) { return }
     $currentProfilesRoot = [IO.Path]::GetFullPath((Join-Path (Get-InstallRoot) "profiles"))
     foreach ($property in $Gateway.profiles.PSObject.Properties) {
+        if (Test-ChildProfile $property.Value) { continue }
         $id = [string]$property.Name
         if ($null -ne $property.Value.PSObject.Properties["deletion_tombstone"] -and
             $null -ne $property.Value.deletion_tombstone) { continue }
@@ -675,10 +730,17 @@ function Get-Status {
         foreach ($property in $gateway.profiles.PSObject.Properties) {
             $id = [string]$property.Name
             $entry = $property.Value
+            if (Test-ChildProfile $entry) { continue }
             $root = Get-ProfileRoot $entry $id
             $manuallyStopped = -not [string]::IsNullOrWhiteSpace($root) -and
                 (Test-Path -LiteralPath (Join-Path $root "profile-bridge-manually-stopped"))
             $steamConnected = Test-SteamConnection $root
+            $discordEndpoint = Get-ProfileEndpoint $entry "discord_bridge"
+            $vibepolloEndpoint = Get-ProfileEndpoint $entry "vibepollo_bridge"
+            $gameProviderEndpoint = Get-ProfileEndpoint $entry "game_provider_bridge"
+            if ([string]::IsNullOrWhiteSpace($gameProviderEndpoint)) {
+                $gameProviderEndpoint = Get-ProfileEndpoint $entry "playnite_bridge"
+            }
             $profiles += [ordered]@{
                 id = $id
                 name = if ($entry.PSObject.Properties["name"]) { [string]$entry.name } else { $id }
@@ -704,22 +766,16 @@ function Get-Status {
                 current_user = Test-CurrentProfileOwner $entry
                 supervisor = Get-SupervisorStatus $root
                 supervisor_pid = Get-ProfileProcessId $root "supervisor"
-                discord = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth ([string]$entry.discord_bridge) }
+                discord = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth $discordEndpoint }
                 discord_pid = Get-ProfileProcessId $root "discord"
-                vibepollo = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth ([string]$entry.vibepollo_bridge) }
+                vibepollo = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth $vibepolloEndpoint }
                 vibepollo_pid = Get-ProfileProcessId $root "vibepollo"
                 game_provider = if ($manuallyStopped) { "manually_stopped" } else {
-                    $endpoint = if ($entry.PSObject.Properties["game_provider_bridge"]) {
-                        [string]$entry.game_provider_bridge
-                    } else { [string]$entry.playnite_bridge }
-                    Test-HttpHealth $endpoint
+                    Test-HttpHealth $gameProviderEndpoint
                 }
                 game_provider_pid = Get-ProfileProcessId $root "game-provider"
                 playnite = if ($manuallyStopped) { "manually_stopped" } else {
-                    $endpoint = if ($entry.PSObject.Properties["game_provider_bridge"]) {
-                        [string]$entry.game_provider_bridge
-                    } else { [string]$entry.playnite_bridge }
-                    Test-HttpHealth $endpoint
+                    Test-HttpHealth $gameProviderEndpoint
                 }
                 playnite_pid = Get-ProfileProcessId $root "game-provider"
                 steam_web_api_configured = $steamConnected
@@ -859,6 +915,9 @@ function Resolve-Profile([string]$Id) {
     $config = Get-Content -LiteralPath (Join-Path $directory "gateway.json") -Raw | ConvertFrom-Json
     $property = $config.profiles.PSObject.Properties[$Id]
     if (-not $property) { throw "Unknown profile '$Id'." }
+    if (Test-ChildProfile $property.Value) {
+        throw "Child profiles are managed by the child profile manager."
+    }
     $root = Get-ProfileRoot $property.Value $Id
     return [pscustomobject]@{ gateway_directory = $directory; config = $config; entry = $property.Value; root = $root }
 }

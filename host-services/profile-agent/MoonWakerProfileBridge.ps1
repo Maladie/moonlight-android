@@ -153,6 +153,30 @@ function Write-State([string]$Status) {
     } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $statePath -Encoding UTF8
 }
 
+function Get-CompatiblePythonExecutable {
+    $candidates = @()
+    foreach ($programFiles in @($env:ProgramFiles, ${env:ProgramFiles(x86)})) {
+        if ([string]::IsNullOrWhiteSpace($programFiles) -or
+            -not (Test-Path -LiteralPath $programFiles -PathType Container)) { continue }
+        $candidates += Get-ChildItem -LiteralPath $programFiles -Directory -Filter "Python*" `
+            -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName "python.exe" }
+    }
+    $command = Get-Command python.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($null -ne $command) { $candidates += [string]$command.Source }
+    foreach ($candidate in @($candidates | Sort-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        $versionText = & $candidate -c `
+            "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null
+        [version]$version = $null
+        if ($LASTEXITCODE -eq 0 -and
+            [version]::TryParse([string]$versionText, [ref]$version) -and
+            $version -ge [version]"3.10" -and $version -lt [version]"4.0") {
+            return [IO.Path]::GetFullPath($candidate)
+        }
+    }
+    return $null
+}
+
 function Start-Component([string]$Name) {
     $directory = Join-Path $ProfileRoot $Name
     if (-not (Test-Path -LiteralPath $directory)) { return $null }
@@ -201,7 +225,9 @@ function Start-Component([string]$Name) {
     $script = Join-Path $directory "GameProviderBridge.py"
     $config = Join-Path $directory "config.json"
     if (-not (Test-Path -LiteralPath $script) -or -not (Test-Path -LiteralPath $config)) { return $null }
-    return Start-HiddenProcess "python.exe" ('"{0}" --config "{1}"' -f `
+    $python = Get-CompatiblePythonExecutable
+    if ([string]::IsNullOrWhiteSpace($python)) { return $null }
+    return Start-HiddenProcess $python ('"{0}" --config "{1}"' -f `
         $script.Replace('"', '\"'), $config.Replace('"', '\"')) $directory
 }
 

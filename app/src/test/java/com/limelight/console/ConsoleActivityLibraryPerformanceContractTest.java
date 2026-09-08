@@ -12,6 +12,17 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ConsoleActivityLibraryPerformanceContractTest {
+    @Test public void childHomeUsesTheSameProfileScopedCacheAndImmediateRefresh() throws IOException {
+        String source = consoleActivitySource();
+        String loading = source.substring(source.indexOf("private boolean restoreInitialLocalPresentationData("),
+                source.indexOf("private void settleInitialLocalPresentation("));
+        assertFalse(loading.contains("selectedProfileIsChild"));
+        assertTrue(loading.contains("playniteLibraryRepository.cached(requestKey)"));
+        String frame = source.substring(source.indexOf("protected final void completeInitialCarouselFrame()"),
+                source.indexOf("static boolean initialLocalPresentationReady("));
+        assertTrue(frame.contains("requestPlayniteRefresh(currentHost(selectedHostUuid), false)"));
+    }
+
     @Test public void gridAndArtworkWorkStayBoundedToTheVisibleNeighborhood()
             throws IOException {
         String source = consoleActivitySource();

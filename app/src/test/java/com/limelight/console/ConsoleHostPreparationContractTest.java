@@ -8,6 +8,26 @@ import java.nio.file.Paths;
 import static org.junit.Assert.*;
 
 public class ConsoleHostPreparationContractTest {
+    @Test public void automaticPairingWaitsForBridgeAndReportsItsFailureStage() throws Exception {
+        Path path = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
+        if (!Files.exists(path)) path = Paths.get("app").resolve(path);
+        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        String pairing = section(source, "private void beginAutomaticHostPairing(",
+                "private void cancelPendingPairing(");
+
+        assertFalse(pairing.contains("SystemClock.sleep(200L)"));
+        assertTrue(pairing.contains("console_pair_stage_vibepollo"));
+        assertTrue(pairing.contains("deepestPairingError(error)"));
+        assertTrue(pairing.contains("pairFuture.get(12, TimeUnit.SECONDS)"));
+    }
+
+    @Test public void deepestPairingErrorPrefersTheActionableRootCause() {
+        Exception root = new Exception("Vibepollo has no pending pairing session");
+        Exception wrapper = new Exception("Gateway request failed", root);
+        assertEquals("Vibepollo has no pending pairing session",
+                ConsoleActivity.deepestPairingError(wrapper));
+    }
+
     @Test public void savedPairOnlyAuthorizesPreparationAndBinderJoinIsConsumedOnce() throws Exception {
         Path path = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
         if (!Files.exists(path)) path = Paths.get("app").resolve(path);
@@ -26,7 +46,10 @@ public class ConsoleHostPreparationContractTest {
         assertTrue(source.contains("managerBinder = binder;\n                    dispatchPendingHostPreparation();"));
         assertTrue(source.contains("private void selectHost(ComputerDetails host, boolean focusApps) {\n        pendingHostPreparation = null;"));
         assertTrue(source.contains("private void showHostSelection(String focusUuid) {\n        pendingHostPreparation = null;"));
-        assertTrue(source.contains("protected void onPause() {\n        pendingHostPreparation = null;"));
+        String pause = section(source, "protected void onPause()",
+                "public void onTrimMemory");
+        assertTrue(pause.contains("pendingHostPreparation = null;"));
+        assertTrue(pause.contains("childEligibilityLaunchToken++"));
         String initial = section(source, "private void resolveInitialHostSelection()",
                 "private void showHostSelection(");
         assertTrue(initial.indexOf("if (!active || initialHostSelectionResolved) return;")

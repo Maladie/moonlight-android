@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="child_session_countdown">%1$d:%2$02d</string>
+    <string name="child_session_warning">Pozostało minut: %1$d</string>
+    <string name="child_session_time_expired_title">Czas minął</string>
+    <string name="child_session_time_expired_message">Sesja dziecka została zakończona. Zapisz grę przed upływem czasu.</string>
+    <string name="child_session_ended_title">Sesja dziecka zakończona</string>
+    <string name="child_session_ended_message">Sesja dziecka została zakończona.</string>
+    <string name="child_session_game_access_revoked_message">Rodzic odebrał dostęp do tej gry.</string>
+    <string name="console_child_picker_hours">Godziny</string>
+    <string name="console_child_picker_minutes">Minuty</string>
+    <string name="console_child_picker_hint">Godziny · minuty. Dostępne wartości zależą od przedziału gry.</string>
+    <string name="console_child_limit_adjusted">Limit dzienny został zmniejszony do długości przedziału gry.</string>
+    <string name="child_session_retry_from_library">Połączenie ze strumieniem zostało przerwane. Wróć do biblioteki i uruchom grę ponownie.</string>
+</resources>

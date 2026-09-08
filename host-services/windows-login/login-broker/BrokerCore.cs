@@ -378,6 +378,9 @@ namespace MoonWaker.WindowsLogin
     {
         internal string Id;
         internal string ClientId;
+        // ActorProfileId is the authorized caller profile. Identity remains
+        // the executable Windows profile used by the native provider.
+        internal string ActorProfileId;
         internal string RequestId;
         internal ProfileIdentity Identity;
         internal DateTime CreatedUtc;
@@ -416,21 +419,54 @@ namespace MoonWaker.WindowsLogin
         internal AttemptRecord Begin(string clientId, string requestId, ProfileIdentity identity)
         {
             ValidateBinding(clientId, requestId, identity);
+            return CreatePending(clientId, identity.ProfileId, requestId, identity);
+        }
+
+        internal AttemptRecord AttentionRequired(string clientId, string requestId,
+            ProfileIdentity identity, string reason)
+        {
+            ValidateBinding(clientId, requestId, identity);
+            return CreateAttention(clientId, identity.ProfileId, requestId, identity, reason);
+        }
+
+        internal AttemptRecord BeginChild(string clientId, string actorProfileId,
+            string requestId, ProfileIdentity identity)
+        {
+            ValidateChildBinding(clientId, actorProfileId, requestId, identity);
+            return CreatePending(clientId, actorProfileId, requestId, identity);
+        }
+
+        internal AttemptRecord ChildAttentionRequired(string clientId,
+            string actorProfileId, string requestId, ProfileIdentity identity, string reason)
+        {
+            ValidateChildBinding(clientId, actorProfileId, requestId, identity);
+            return CreateAttention(clientId, actorProfileId, requestId, identity, reason);
+        }
+
+        private AttemptRecord CreatePending(string clientId, string actorProfileId,
+            string requestId, ProfileIdentity identity)
+        {
             lock (gate)
             {
                 DateTime now = utcNow();
                 Expire(now);
                 PurgeOld(now);
-                string requestKey = Key(clientId, identity.ProfileId, requestId);
+                string requestKey = Key(clientId, actorProfileId, requestId);
                 string existingId;
                 AttemptRecord existing;
                 if (byRequest.TryGetValue(requestKey, out existingId) &&
-                    byId.TryGetValue(existingId, out existing)) return Copy(existing);
+                    byId.TryGetValue(existingId, out existing))
+                {
+                    if (!existing.Identity.Same(identity))
+                        throw new BrokerFault("action_required", "attempt_binding_mismatch");
+                    return Copy(existing);
+                }
                 if (byId.Count >= maximumAttempts)
                     throw new BrokerFault("busy", "too_many_attempts");
                 AttemptRecord record = new AttemptRecord {
                     Id = Guid.NewGuid().ToString("N"), ClientId = clientId,
-                    RequestId = requestId, Identity = identity, CreatedUtc = now,
+                    ActorProfileId = actorProfileId, RequestId = requestId,
+                    Identity = identity, CreatedUtc = now,
                     State = "pending", Reason = "none"
                 };
                 byId[record.Id] = record;
@@ -440,30 +476,59 @@ namespace MoonWaker.WindowsLogin
             }
         }
 
-        internal AttemptRecord AttentionRequired(string clientId, string requestId,
-            ProfileIdentity identity, string reason)
+        private AttemptRecord CreateAttention(string clientId, string actorProfileId,
+            string requestId, ProfileIdentity identity, string reason)
         {
-            ValidateBinding(clientId, requestId, identity);
             lock (gate)
             {
                 DateTime now = utcNow();
                 Expire(now);
                 PurgeOld(now);
-                string requestKey = Key(clientId, identity.ProfileId, requestId);
+                string requestKey = Key(clientId, actorProfileId, requestId);
                 string existingId;
                 AttemptRecord existing;
                 if (byRequest.TryGetValue(requestKey, out existingId) &&
-                    byId.TryGetValue(existingId, out existing)) return Copy(existing);
+                    byId.TryGetValue(existingId, out existing))
+                {
+                    if (!existing.Identity.Same(identity))
+                        throw new BrokerFault("action_required", "attempt_binding_mismatch");
+                    return Copy(existing);
+                }
                 if (byId.Count >= maximumAttempts)
                     throw new BrokerFault("busy", "too_many_attempts");
                 AttemptRecord record = new AttemptRecord {
                     Id = Guid.NewGuid().ToString("N"), ClientId = clientId,
-                    RequestId = requestId, Identity = identity, CreatedUtc = now,
+                    ActorProfileId = actorProfileId, RequestId = requestId,
+                    Identity = identity, CreatedUtc = now,
                     State = "attention_required", Reason = SafeReason(reason)
                 };
                 byId[record.Id] = record;
                 byRequest[requestKey] = record.Id;
                 return Copy(record);
+            }
+        }
+
+        internal bool TryByChildRequest(string clientId, string actorProfileId,
+            string requestId, ProfileIdentity identity, out AttemptRecord attempt)
+        {
+            ValidateChildBinding(clientId, actorProfileId, requestId, identity);
+            lock (gate)
+            {
+                DateTime now = utcNow();
+                Expire(now);
+                PurgeOld(now);
+                string existingId;
+                AttemptRecord existing;
+                if (!byRequest.TryGetValue(Key(clientId, actorProfileId, requestId),
+                        out existingId) || !byId.TryGetValue(existingId, out existing))
+                {
+                    attempt = null;
+                    return false;
+                }
+                if (!existing.Identity.Same(identity))
+                    throw new BrokerFault("action_required", "attempt_binding_mismatch");
+                attempt = Copy(existing);
+                return true;
             }
         }
 
@@ -518,11 +583,43 @@ namespace MoonWaker.WindowsLogin
             }
         }
 
-        internal AttemptRecord Acquire(string attemptId, string clientId, string profileId, string requestId)
+        internal AttemptRecord ChildState(string attemptId, string clientId,
+            string actorProfileId, string requestId, ProfileIdentity identity)
+        {
+            ValidateChildBinding(clientId, actorProfileId, requestId, identity);
+            lock (gate)
+            {
+                AttemptRecord record = FindChild(attemptId, clientId, actorProfileId,
+                    requestId, identity);
+                ExpireOne(record, utcNow());
+                return Copy(record);
+            }
+        }
+
+        internal AttemptRecord ChildCancel(string attemptId, string clientId,
+            string actorProfileId, string requestId, ProfileIdentity identity)
+        {
+            ValidateChildBinding(clientId, actorProfileId, requestId, identity);
+            lock (gate)
+            {
+                AttemptRecord record = FindChild(attemptId, clientId, actorProfileId,
+                    requestId, identity);
+                ExpireOne(record, utcNow());
+                if (record.State == "pending" || record.State == "credential_issued")
+                {
+                    record.State = "action_required";
+                    record.Reason = "attempt_cancelled";
+                }
+                return Copy(record);
+            }
+        }
+
+        internal AttemptRecord Acquire(string attemptId, string clientId, string profileId,
+            string requestId)
         {
             lock (gate)
             {
-                AttemptRecord record = Find(attemptId, clientId, profileId, requestId);
+                AttemptRecord record = FindProvider(attemptId, clientId, profileId, requestId);
                 ExpireOne(record, utcNow());
                 if (record.State != "pending")
                     throw new BrokerFault("action_required", "credential_already_issued");
@@ -536,7 +633,7 @@ namespace MoonWaker.WindowsLogin
         {
             lock (gate)
             {
-                AttemptRecord record = Find(attemptId, clientId, profileId, requestId);
+                AttemptRecord record = FindProvider(attemptId, clientId, profileId, requestId);
                 ExpireOne(record, utcNow());
                 if (record.State == "completed" || record.State == "action_required")
                     return Copy(record);
@@ -580,6 +677,32 @@ namespace MoonWaker.WindowsLogin
             AttemptRecord record;
             if (String.IsNullOrWhiteSpace(attemptId) || !byId.TryGetValue(attemptId, out record) ||
                 !String.Equals(record.ClientId, clientId, StringComparison.Ordinal) ||
+                !String.Equals(record.ActorProfileId, profileId, StringComparison.Ordinal) ||
+                !String.Equals(record.Identity.ProfileId, profileId, StringComparison.Ordinal) ||
+                !String.Equals(record.RequestId, requestId, StringComparison.Ordinal))
+                throw new BrokerFault("action_required", "attempt_binding_mismatch");
+            return record;
+        }
+
+        private AttemptRecord FindChild(string attemptId, string clientId,
+            string actorProfileId, string requestId, ProfileIdentity identity)
+        {
+            AttemptRecord record;
+            if (String.IsNullOrWhiteSpace(attemptId) || !byId.TryGetValue(attemptId, out record) ||
+                !String.Equals(record.ClientId, clientId, StringComparison.Ordinal) ||
+                !String.Equals(record.ActorProfileId, actorProfileId, StringComparison.Ordinal) ||
+                !String.Equals(record.RequestId, requestId, StringComparison.Ordinal) ||
+                !record.Identity.Same(identity))
+                throw new BrokerFault("action_required", "attempt_binding_mismatch");
+            return record;
+        }
+
+        private AttemptRecord FindProvider(string attemptId, string clientId,
+            string profileId, string requestId)
+        {
+            AttemptRecord record;
+            if (String.IsNullOrWhiteSpace(attemptId) || !byId.TryGetValue(attemptId, out record) ||
+                !String.Equals(record.ClientId, clientId, StringComparison.Ordinal) ||
                 !String.Equals(record.Identity.ProfileId, profileId, StringComparison.Ordinal) ||
                 !String.Equals(record.RequestId, requestId, StringComparison.Ordinal))
                 throw new BrokerFault("action_required", "attempt_binding_mismatch");
@@ -611,7 +734,7 @@ namespace MoonWaker.WindowsLogin
             {
                 AttemptRecord record = byId[id];
                 byId.Remove(id);
-                byRequest.Remove(Key(record.ClientId, record.Identity.ProfileId, record.RequestId));
+                byRequest.Remove(Key(record.ClientId, record.ActorProfileId, record.RequestId));
             }
         }
 
@@ -637,6 +760,15 @@ namespace MoonWaker.WindowsLogin
                 throw new BrokerFault("action_required", "invalid_attempt_binding");
         }
 
+        private static void ValidateChildBinding(string clientId, string actorProfileId,
+            string requestId, ProfileIdentity identity)
+        {
+            ValidateBinding(clientId, requestId, identity);
+            if (!ProfileIdentity.IsProfileId(actorProfileId) ||
+                String.Equals(actorProfileId, identity.ProfileId, StringComparison.Ordinal))
+                throw new BrokerFault("action_required", "invalid_actor_profile");
+        }
+
         private static bool BoundedToken(string value, int maximum)
         {
             if (String.IsNullOrWhiteSpace(value) || value.Length > maximum) return false;
@@ -648,7 +780,8 @@ namespace MoonWaker.WindowsLogin
         private static AttemptRecord Copy(AttemptRecord value)
         {
             return new AttemptRecord {
-                Id = value.Id, ClientId = value.ClientId, RequestId = value.RequestId,
+                Id = value.Id, ClientId = value.ClientId, ActorProfileId = value.ActorProfileId,
+                RequestId = value.RequestId,
                 Identity = value.Identity, CreatedUtc = value.CreatedUtc,
                 State = value.State, Reason = value.Reason
             };
@@ -669,6 +802,13 @@ namespace MoonWaker.WindowsLogin
         internal const byte GatewayProfileState = 4;
         internal const byte GatewayCapability = 5;
         internal const byte GatewaySwitchSession = 6;
+        // Child operations have their own numbers.  A v1 Broker therefore
+        // returns unsupported instead of treating the actor as execution.
+        internal const byte GatewayBeginChildAttempt = 7;
+        internal const byte GatewayChildAttemptState = 8;
+        internal const byte GatewayCancelChildAttempt = 9;
+        internal const byte GatewaySwitchChildSession = 10;
+        internal const byte GatewayChildProfileApi = 11;
         internal const byte ProviderObserve = 1;
         internal const byte ProviderAcquire = 2;
         internal const byte ProviderReport = 3;
@@ -678,6 +818,7 @@ namespace MoonWaker.WindowsLogin
         private readonly ISessionStateBackend sessions;
         private readonly AttemptLedger attempts;
         private readonly Func<bool> providerReady;
+        private readonly Func<string, string> childProfileApi;
 
         internal BrokerCore(IAccountValidator accounts, ISecretStore secrets,
             ISessionStateBackend sessions, AttemptLedger attempts)
@@ -687,12 +828,20 @@ namespace MoonWaker.WindowsLogin
 
         internal BrokerCore(IAccountValidator accounts, ISecretStore secrets,
             ISessionStateBackend sessions, AttemptLedger attempts, Func<bool> providerReady)
+            : this(accounts, secrets, sessions, attempts, providerReady, null)
+        {
+        }
+
+        internal BrokerCore(IAccountValidator accounts, ISecretStore secrets,
+            ISessionStateBackend sessions, AttemptLedger attempts, Func<bool> providerReady,
+            Func<string, string> childProfileApi)
         {
             this.accounts = accounts;
             this.secrets = secrets;
             this.sessions = sessions;
             this.attempts = attempts;
             this.providerReady = providerReady;
+            this.childProfileApi = childProfileApi;
         }
 
         internal BrokerReply HandleManagement(PipeRequest request)
@@ -760,6 +909,16 @@ namespace MoonWaker.WindowsLogin
         {
             try
             {
+                if (request.Operation == GatewayChildProfileApi)
+                {
+                    string payload = request.Text(1, 4096);
+                    if (childProfileApi == null)
+                        return BrokerReply.Fail("unavailable", "child_profile_writer_unavailable");
+                    string output = childProfileApi(payload);
+                    if (String.IsNullOrWhiteSpace(output))
+                        return BrokerReply.Fail("unavailable", "child_profile_writer_unavailable");
+                    return BrokerReply.Ok("ready").Add(3, output);
+                }
                 if (request.Operation == GatewayCapability)
                     return providerReady()
                         ? BrokerReply.Ok("ready").Add(3, "1")
@@ -783,6 +942,11 @@ namespace MoonWaker.WindowsLogin
                     return BrokerReply.Ok(sessions.GetState(identity))
                         .Add(3, credentialState).Add(4, credentialReason);
                 }
+                if (request.Operation == GatewayBeginChildAttempt ||
+                    request.Operation == GatewayChildAttemptState ||
+                    request.Operation == GatewayCancelChildAttempt ||
+                    request.Operation == GatewaySwitchChildSession)
+                    return HandleChildGateway(request);
                 string clientId = request.Text(1, 128);
                 string profileId = request.Text(2, 64);
                 string requestId = request.Text(3, 128);
@@ -848,6 +1012,63 @@ namespace MoonWaker.WindowsLogin
             catch { return BrokerReply.Fail("action_required", "broker_operation_failed"); }
         }
 
+        private BrokerReply HandleChildGateway(PipeRequest request)
+        {
+            string clientId = request.Text(1, 128);
+            string actorProfileId = request.Text(2, 64);
+            string requestId = request.Text(3, 128);
+            if (request.Operation == GatewayBeginChildAttempt ||
+                request.Operation == GatewaySwitchChildSession)
+            {
+                ProfileIdentity identity = new ProfileIdentity(request.Text(4, 64),
+                    request.Text(5, 184), request.Text(6, 256));
+                AttemptRecord existing;
+                if (attempts.TryByChildRequest(clientId, actorProfileId, requestId,
+                        identity, out existing))
+                    return ChildAttemptReply(existing);
+                if (request.Operation == GatewaySwitchChildSession)
+                {
+                    if (!providerReady())
+                        return BrokerReply.Fail("unavailable", "provider_unavailable");
+                    string switchState = sessions.Switch(identity);
+                    if (switchState == "ready") return BrokerReply.Ok("ready")
+                        .Add(4, actorProfileId).Add(5, identity.ProfileId);
+                }
+                CredentialMaterial stored;
+                if (!secrets.TryRead(identity.ProfileId, out stored))
+                {
+                    AttemptRecord attention = attempts.ChildAttentionRequired(
+                        clientId, actorProfileId, requestId, identity, "credential_missing");
+                    return ChildAttemptReply(attention);
+                }
+                using (stored)
+                    if (!identity.Same(stored.Identity))
+                    {
+                        AttemptRecord attention = attempts.ChildAttentionRequired(
+                            clientId, actorProfileId, requestId, identity,
+                            "credential_identity_mismatch");
+                        return ChildAttemptReply(attention);
+                    }
+                return ChildAttemptReply(attempts.BeginChild(
+                    clientId, actorProfileId, requestId, identity));
+            }
+            ProfileIdentity execution = new ProfileIdentity(request.Text(5, 64),
+                request.Text(6, 184), request.Text(7, 256));
+            AttemptRecord attempt;
+            if (request.Operation == GatewayChildAttemptState)
+                attempt = attempts.ChildState(request.Text(4, 64), clientId,
+                    actorProfileId, requestId, execution);
+            else if (request.Operation == GatewayCancelChildAttempt)
+                attempt = attempts.ChildCancel(request.Text(4, 64), clientId,
+                    actorProfileId, requestId, execution);
+            else return BrokerReply.Fail("unsupported", "unsupported_operation");
+            BrokerReply reply = attempt.State == "action_required"
+                ? BrokerReply.Fail(attempt.State, attempt.Reason)
+                : BrokerReply.Ok(attempt.State);
+            return reply.Add(3, attempt.Id).Add(4, actorProfileId)
+                .Add(5, execution.ProfileId);
+        }
+
         internal BrokerReply HandleProvider(PipeRequest request)
         {
             try
@@ -870,7 +1091,8 @@ namespace MoonWaker.WindowsLogin
                 string requestId = request.Text(4, 128);
                 if (request.Operation == ProviderAcquire)
                 {
-                    AttemptRecord attempt = attempts.Acquire(attemptId, clientId, profileId, requestId);
+                    AttemptRecord attempt = attempts.Acquire(attemptId, clientId, profileId,
+                        requestId);
                     CredentialMaterial credential = null;
                     if (!secrets.TryRead(profileId, out credential) ||
                         !attempt.Identity.Same(credential.Identity))
@@ -918,6 +1140,16 @@ namespace MoonWaker.WindowsLogin
                 ? BrokerReply.Fail(attempt.State, attempt.Reason)
                 : BrokerReply.Ok(attempt.State);
             return reply.Add(3, attempt.Id);
+        }
+
+        private static BrokerReply ChildAttemptReply(AttemptRecord attempt)
+        {
+            BrokerReply reply = attempt.State == "action_required" ||
+                attempt.State == "attention_required"
+                ? BrokerReply.Fail(attempt.State, attempt.Reason)
+                : BrokerReply.Ok(attempt.State);
+            return reply.Add(3, attempt.Id).Add(4, attempt.ActorProfileId)
+                .Add(5, attempt.Identity.ProfileId);
         }
 
         private static string AccountsJson(IList<LocalAccountRecord> accounts)

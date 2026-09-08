@@ -12,6 +12,27 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class PlayniteTransitionGatewayTest {
+    @Test public void childObservationUsesScopedReadsWithoutParentHealth() throws IOException {
+        Path root = Paths.get("src/main/java/com/limelight");
+        if (!Files.exists(root)) root = Paths.get("app/src/main/java/com/limelight");
+        String text = new String(Files.readAllBytes(root.resolve(
+                "console/PlayniteTransitionGateway.java")), StandardCharsets.UTF_8);
+        String snapshot = text.substring(text.indexOf("public Snapshot snapshot()"),
+                text.indexOf("public void startGame("));
+        assertTrue(snapshot.contains("childSession ? null"));
+        assertTrue(snapshot.contains(": client.getPlayniteHealth(connection)"));
+        assertTrue(snapshot.contains("client.getPlayniteCurrentGame(connection)"));
+        assertTrue(snapshot.contains("client.getPlayniteReadiness(connection)"));
+        assertTrue(snapshot.contains("readiness.ready"));
+        assertFalse(snapshot.contains("DEFAULT_PROFILE_ID"));
+        String game = new String(Files.readAllBytes(root.resolve("Game.java")),
+                StandardCharsets.UTF_8);
+        String coordinator = game.substring(game.indexOf(
+                "LaunchTransitionSpec spec) {"), game.indexOf("private void completeInstallationFailure"));
+        assertTrue(coordinator.contains("spec.profileId,"));
+        assertTrue(coordinator.contains("isChildSession());"));
+    }
+
     @Test public void missingConnectionIsDiagnosedWithoutAddressOrCredentials()
             throws IOException {
         Path source = Paths.get(

@@ -7,6 +7,7 @@ import tempfile
 import time
 import unittest
 import urllib.parse
+from datetime import datetime, timezone
 from email.message import Message
 from pathlib import Path
 from types import SimpleNamespace
@@ -415,6 +416,43 @@ class GatewayStateTest(unittest.TestCase):
         with self.assertRaises(PermissionError):
             state.authorize_profile(client, "basia", "remote_sign_in")
 
+    def test_schema2_to3_preserves_standard_identity_and_grants(self):
+        verifier = {
+            "version": 1, "algorithm": "pbkdf2-sha256", "iterations": 100_000,
+            "salt": "MDEyMzQ1Njc4OWFiY2RlZg==", "digest": "preserved-digest",
+        }
+        self.config_path.write_text(json.dumps({
+            "schema_version": 2,
+            "certificate": "cert.pem", "private_key": "key.pem",
+            "profiles": {"basia": {
+                "id": "basia", "name": "Basia", "display_name": "Basia",
+                "enabled": True, "owner_sid": "S-1-5-21-1-2-3-1001",
+                "windows_account_sid": "S-1-5-21-1-2-3-1001",
+                "owner": "HOST\\Basia", "windows_account_name": "HOST\\Basia",
+                "profile_root": "C:\\MoonWaker\\basia", "pin_verifier": verifier,
+                "remote_sign_in_enabled": True,
+            }},
+            "clients": [{
+                "id": "client-1", "token_sha256": sha256_text("schema2-token"),
+                "profile_grants": {"basia": ["use_profile", "remote_sign_in"]},
+            }],
+        }), encoding="utf-8")
+        with mock.patch.object(
+                wakeplay_gateway, "resolve_windows_account_sid",
+                side_effect=AssertionError("schema2 migration resolved a SID")) as resolver:
+            state = GatewayState(self.config_path, None)
+        resolver.assert_not_called()
+        saved = json.loads(self.config_path.read_text(encoding="utf-8"))
+        self.assertEqual(3, saved["schema_version"])
+        self.assertNotIn("default", saved["profiles"])
+        profile = saved["profiles"]["basia"]
+        self.assertEqual("S-1-5-21-1-2-3-1001", profile["windows_account_sid"])
+        self.assertEqual("C:\\MoonWaker\\basia", profile["profile_root"])
+        self.assertEqual(verifier, profile["pin_verifier"])
+        self.assertEqual({"basia": ["use_profile", "remote_sign_in"]},
+                         saved["clients"][0]["profile_grants"])
+        self.assertEqual("basia", state.config["profiles"]["basia"]["id"])
+
     def test_current_schema_missing_or_malformed_grants_fail_closed(self):
         self.config_path.write_text(json.dumps({
             "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
@@ -634,11 +672,27 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertTrue(result["ok"])
         self.assertEqual(("vibepollo", "/pair",
-                          {"pin": "1234", "name": "MoonWaker TV"}, 13.0), calls[0])
+                          {"pin": "1234", "name": "MoonWaker TV"}, 50.0), calls[0])
         with self.assertRaises(PermissionError):
             state.vibepollo_pair_client(
                 "192.0.2.1", client, pairing["stream_pair_ticket"],
                 {"pin": "1234", "name": "MoonWaker TV"})
+
+    def test_stream_pair_failure_preserves_bridge_detail_and_stage(self):
+        state = GatewayState(self.config_path, "123456")
+        pairing = state.pair("192.0.2.1", "123456", "TV")
+        client = state.client_for_token(pairing["token"])
+        state.proxy_json = lambda *args, **kwargs: (
+            False, {"error": "Vibepollo has no pending pairing session"})
+
+        status, result = state.vibepollo_pair_client(
+            "192.0.2.1", client, pairing["stream_pair_ticket"],
+            {"pin": "1234", "name": "MoonWaker TV"})
+
+        self.assertEqual(502, status)
+        self.assertEqual("vibepollo_bridge", result["stage"])
+        self.assertEqual("vibepollo_pairing_failed", result["reason"])
+        self.assertIn("Vibepollo has no pending pairing session", result["error"])
 
     def test_stream_pair_ticket_rejects_another_address(self):
         state = GatewayState(self.config_path, "123456")
@@ -1975,9 +2029,17 @@ class LoginBrokerGatewayTest(unittest.TestCase):
                 {3: "0123456789abcdef0123456789abcdef"})
             self.switch_result = self.reply(
                 True, "pending", fields={3: "0123456789abcdef0123456789abcdef"})
+            self.child_begin_result = self.begin_result
+            self.child_attempt = self.attempt
+            self.child_cancel_result = self.cancel_result
+            self.child_switch_result = self.switch_result
             self.begin_calls = []
             self.cancel_calls = []
             self.switch_calls = []
+            self.child_begin_calls = []
+            self.child_state_calls = []
+            self.child_cancel_calls = []
+            self.child_switch_calls = []
 
         @staticmethod
         def reply(success, state, reason="none", fields=None):
@@ -2004,6 +2066,28 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         def switch_session(self, client_id, profile, request_id):
             self.switch_calls.append((client_id, profile["id"], request_id))
             return self.switch_result
+
+        def begin_child(self, client_id, actor_profile_id, profile, request_id):
+            self.child_begin_calls.append(
+                (client_id, actor_profile_id, profile["id"], request_id))
+            return self.child_begin_result
+
+        def child_attempt_state(self, client_id, actor_profile_id, profile,
+                               request_id, attempt_id):
+            self.child_state_calls.append(
+                (client_id, actor_profile_id, profile["id"], request_id, attempt_id))
+            return self.child_attempt
+
+        def cancel_child(self, client_id, actor_profile_id, profile,
+                         request_id, attempt_id):
+            self.child_cancel_calls.append(
+                (client_id, actor_profile_id, profile["id"], request_id, attempt_id))
+            return self.child_cancel_result
+
+        def switch_child(self, client_id, actor_profile_id, profile, request_id):
+            self.child_switch_calls.append(
+                (client_id, actor_profile_id, profile["id"], request_id))
+            return self.child_switch_result
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -2032,6 +2116,28 @@ class LoginBrokerGatewayTest(unittest.TestCase):
     def tearDown(self):
         self.temporary.cleanup()
 
+    def add_child(self):
+        child = {
+            "id": "kid", "kind": "child", "name": "Kid",
+            "display_name": "Kid", "parent_profile_id": "living-room",
+            "enabled": True, "policy_revision": 0, "allowed_game_keys": [],
+        }
+        self.state.config["profiles"]["kid"] = child
+        return child
+
+    @staticmethod
+    def pin_verifier(pin="2468"):
+        salt = b"0123456789abcdef"
+        return {
+            "version": 1,
+            "algorithm": "pbkdf2-sha256",
+            "iterations": 100_000,
+            "salt": wakeplay_gateway.base64.b64encode(salt).decode("ascii"),
+            "digest": wakeplay_gateway.base64.b64encode(
+                wakeplay_gateway.hashlib.pbkdf2_hmac(
+                    "sha256", pin.encode("ascii"), salt, 100_000)).decode("ascii"),
+        }
+
     def test_binary_gateway_client_matches_mwl_v1(self):
         encoded = wakeplay_gateway.LoginBrokerClient.encode_request(
             4, {1: "living-room", 2: "S-1-5-21-1"})
@@ -2047,6 +2153,124 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         self.assertTrue(decoded["success"])
         self.assertEqual("locked", decoded["state"])
         self.assertEqual("ready", decoded["fields"][3])
+
+    def test_child_profile_is_hidden_from_legacy_and_public_game_routes(self):
+        self.add_child()
+        self.client["profile_grants"]["kid"] = ["use_profile", "remote_sign_in"]
+        self.assertEqual("living-room", self.state.authorize_profile(
+            self.client, "default"))
+        self.assertNotIn("kid", [profile["id"] for profile in
+                                  self.state.profiles_summary(self.client)["profiles"]])
+
+        self.state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+        handler, responses = GatewayStateTest.request_handler(
+            self.state, "/api/v1/playnite/health", "token", "kid")
+        handler.do_GET()
+        self.assertEqual(403, responses[0][0])
+        self.state.playnite_health.assert_not_called()
+        for path in ("/api/v1/system/session/ensure",
+                     "/api/v1/system/session/switch",
+                     "/api/v1/system/session/cancel"):
+            handler, responses = GatewayStateTest.request_handler(
+                self.state, path, "token", "kid")
+            handler.headers["X-Request-Id"] = "child-route-request"
+            handler.do_POST()
+            self.assertEqual(403, responses[0][0], path)
+        with self.assertRaises(PermissionError):
+            self.state.select_profile("kid")
+        self.assertEqual([], self.broker.child_begin_calls)
+
+    def test_child_authorization_binds_parent_execution_and_needs_own_remote_grant(self):
+        child = self.add_child()
+        with self.assertRaises(PermissionError):
+            self.state.authorize_child_profile(self.client, "kid")
+        self.client["profile_grants"]["kid"] = ["use_profile"]
+        with self.assertRaises(PermissionError):
+            self.state.ensure_session(self.client, "kid", "child-request")
+
+        self.client["profile_grants"]["kid"] = ["use_profile", "remote_sign_in"]
+        status, result = self.state.ensure_session(
+            self.client, "kid", "child-request")
+        self.assertEqual(202, status)
+        self.assertEqual("kid", result["actor_profile_id"])
+        self.assertEqual("living-room", result["execution_profile_id"])
+        self.assertEqual(
+            [("android-tv", "kid", "living-room", "child-request")],
+            self.broker.child_begin_calls)
+
+        self.state.request_context.profile_id = "kid"
+        self.state.request_context.actor_profile_id = "kid"
+        self.state.request_context.execution_profile_id = "living-room"
+        self.state.discord_status = mock.Mock(return_value={
+            "bridge_online": False, "rpc_connected": False,
+            "authenticated": False, "error": ""})
+        self.state.proxy = mock.Mock(return_value=(False, {}))
+        self.state.profiles_summary(self.client)
+        self.assertEqual("kid", self.state.profile_id)
+        self.assertEqual("kid", self.state.actor_profile_id)
+        self.assertEqual("living-room", self.state.execution_profile_id)
+
+        self.state.config["profiles"]["living-room"]["enabled"] = False
+        with self.assertRaises(PermissionError):
+            self.state.authorize_child_profile(self.client, "kid")
+        self.state.config["profiles"]["living-room"]["enabled"] = True
+        child["parent_profile_id"] = "missing-parent"
+        with self.assertRaises(PermissionError):
+            self.state.authorize_child_profile(self.client, "kid")
+
+    def test_active_parent_allows_child_use_without_remote_sign_in(self):
+        self.add_child()
+        self.client["profile_grants"]["kid"] = ["use_profile"]
+        self.broker.profile = self.broker.reply(
+            True, "active", fields={3: "ready", 4: "none"})
+        status, result = self.state.ensure_session(
+            self.client, "kid", "active-child-request")
+        self.assertEqual(200, status)
+        self.assertEqual("ready", result["state"])
+        self.assertEqual([], self.broker.child_begin_calls)
+
+    def test_child_management_requires_fresh_parent_pin_session(self):
+        parent = self.state.config["profiles"]["living-room"]
+        parent["pin_verifier"] = self.pin_verifier()
+        self.client["profile_grants"]["living-room"] = [
+            "use_profile", "manage_children"]
+        session_id = "01234567-89ab-cdef-0123-456789abcdef"
+        self.assertEqual(200, self.state.verify_pin(
+            self.client, "living-room", "2468")[0])
+        with self.assertRaises(PermissionError):
+            self.state.require_child_management(
+                self.client, "living-room", session_id, "play-lease")
+        with self.assertRaises(ValueError):
+            self.state.begin_child_management(
+                self.client, "living-room", "2468", None)
+
+        status, result = self.state.begin_child_management(
+            self.client, "living-room", "2468", session_id)
+        self.assertEqual(200, status)
+        self.assertEqual({"ok", "parent_profile_id", "authorization_id",
+                          "expires_in_seconds"}, set(result))
+        self.state.require_child_management(
+            self.client, "living-room", session_id, result["authorization_id"])
+        parent["pin_verifier"]["digest"] = "changed"
+        with self.assertRaises(PermissionError):
+            self.state.require_child_management(
+                self.client, "living-room", session_id, result["authorization_id"])
+
+    def test_child_game_keys_are_parent_qualified(self):
+        child = self.add_child()
+        child["allowed_game_keys"] = ["steam:123"]
+        self.state.save()
+        with self.assertRaises(ValueError):
+            GatewayState(self.config_path, None, broker_client=self.broker)
+        child["allowed_game_keys"] = ["other-parent/steam:123"]
+        self.state.save()
+        with self.assertRaises(ValueError):
+            GatewayState(self.config_path, None, broker_client=self.broker)
+        child["allowed_game_keys"] = ["living-room/steam:123"]
+        self.state.save()
+        restarted = GatewayState(self.config_path, None, broker_client=self.broker)
+        self.assertEqual(["living-room/steam:123"],
+                         restarted.config["profiles"]["kid"]["allowed_game_keys"])
 
     def test_ensure_begins_bound_attempt_only_when_target_needs_login(self):
         status, result = self.state.ensure_session(
@@ -2240,6 +2464,129 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         capability = self.state.remote_windows_sign_in_capability()
         self.assertTrue(capability["available"])
         self.assertEqual(1, capability["protocol_version"])
+
+
+class ChildTimeHousekeepingTest(unittest.TestCase):
+    """The host tick applies local policy changes without becoming a client."""
+
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory()
+        self.config_path = Path(self.temporary.name) / "gateway.json"
+        sid = "S-1-5-21-1-2-3-1001"
+        weekdays = {
+            day: {"enabled": True, "start_minute": 0,
+                  "end_minute": 1440, "daily_limit_seconds": 3600}
+            for day in ("mon", "tue", "wed", "thu", "fri", "sat", "sun")
+        }
+        self.config_path.write_text(json.dumps({
+            "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
+            "certificate": "cert.pem", "private_key": "key.pem",
+            "game_provider_bridge": "http://127.0.0.1:8780",
+            "profiles": {
+                "parent": {
+                    "id": "parent", "kind": "standard", "name": "Parent",
+                    "enabled": True, "windows_account_sid": sid,
+                    "owner_sid": sid, "windows_account_name": "PC\\Parent",
+                    "owner": "PC\\Parent", "account_mapping_status": "resolved",
+                },
+                "kid": {
+                    "id": "kid", "kind": "child", "name": "Kid",
+                    "enabled": True, "parent_profile_id": "parent",
+                    "allowed_game_keys": ["parent/steam:123"],
+                    "policy_revision": 1,
+                    "schedule": {"weekdays": weekdays},
+                },
+            },
+            "clients": [{
+                "id": "tv-1", "token_sha256": sha256_text("child-token"),
+                "profile_grants": {"kid": ["use_profile"]},
+                "vibepollo_client_uuids": {
+                    "parent": "01234567-89ab-cdef-0123-456789abcdef"},
+            }],
+        }), encoding="utf-8")
+        self.state = GatewayState(self.config_path, None)
+        self.client = self.state.client_for_token("child-token")
+        self.clock = [10.0, datetime(2026, 1, 3, 12, 0, tzinfo=timezone.utc)]
+        self.state.child_time_clock = lambda: (self.clock[0], self.clock[1])
+        self.current = {
+            "id": "steam:123", "state": "running",
+            "running_games": [{"game_id": "steam:123", "process_id": 7,
+                               "process_token": "a" * 64}],
+        }
+        self.bridge_actions = []
+
+        def proxy(name, path, timeout=2.5, profile_id=None):
+            del timeout, profile_id
+            if name == "game_provider" and path == "/game/current":
+                return True, {**self.current,
+                              "running_games": [dict(item) for item in
+                                                 self.current["running_games"]]}
+            return True, {}
+
+        def proxy_json(name, path, body, timeout=8.0, profile_id=None):
+            del timeout, profile_id
+            if name == "game_provider" and path == "/child/session":
+                self.bridge_actions.append(body["action"])
+                if body["action"] == "end":
+                    self.current = {"id": "", "state": "idle", "running_games": []}
+                    return True, {"accepted": True, "state": "stopped",
+                                  "session_id": body["session_id"]}
+                return True, {"accepted": True, "state": body["action"],
+                              "session_id": body["session_id"]}
+            return True, {}
+
+        self.state.proxy = proxy
+        self.state.proxy_json = proxy_json
+        self.state.child_time_usage = {
+            "schema_version": wakeplay_gateway.CHILD_USAGE_SCHEMA_VERSION,
+            "usage_revision": 0, "days": {}, "active_session": None,
+        }
+        self.state.child_time_session = {
+            "session_id": "01234567-89ab-cdef-0123-456789abcdef",
+            "request_id": "housekeeping-test", "actor_profile_id": "kid",
+            "execution_profile_id": "parent", "client_id": "tv-1",
+            "game_id": "steam:123",
+            "vibepollo_client_uuid": "01234567-89ab-cdef-0123-456789abcdef",
+            "phase": "running", "started_monotonic": 0.0,
+            "last_monotonic": 0.0, "last_heartbeat_monotonic": 0.0,
+            "last_wall_epoch": self.clock[1].timestamp(),
+            "last_heartbeat_wall_epoch": self.clock[1].timestamp(),
+            "last_playable_seconds": 3600.0, "process_token": "a" * 64,
+            "process_id": 7, "policy_revision": 1,
+        }
+        self.state.child_time_usage["active_session"] = dict(
+            self.state.child_time_session)
+
+    def tearDown(self):
+        self.state.child_time_housekeeping_stop_now()
+        self.temporary.cleanup()
+
+    def test_housekeeping_applies_registry_change_without_client_heartbeat(self):
+        session = self.state.child_time_session
+        registry = json.loads(self.config_path.read_text(encoding="utf-8"))
+        registry["profiles"]["kid"]["enabled"] = False
+        self.config_path.write_text(json.dumps(registry), encoding="utf-8")
+
+        result = self.state.child_time_housekeeping_tick()
+
+        self.assertIsNotNone(result)
+        self.assertIsNone(self.state.child_time_session)
+        self.assertEqual(["end"], self.bridge_actions)
+        self.assertEqual(0.0, session["last_heartbeat_monotonic"])
+        self.assertIn("01234567-89ab-cdef-0123-456789abcdef",
+                      self.state.child_time_completed)
+        self.assertIsNone(self.state.child_time_usage["active_session"])
+
+    def test_housekeeping_renews_game_without_refreshing_absent_client(self):
+        self.clock[0] = wakeplay_gateway.CHILD_TIME_CLIENT_GRACE_SECONDS + 1
+        session = self.state.child_time_session
+
+        result = self.state.child_time_housekeeping_tick()
+
+        self.assertEqual(200, result[0])
+        self.assertEqual(["renew"], self.bridge_actions)
+        self.assertIs(session, self.state.child_time_session)
+        self.assertEqual(0.0, session["last_heartbeat_monotonic"])
 
 
 if __name__ == "__main__":

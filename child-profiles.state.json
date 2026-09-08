@@ -1,0 +1,1915 @@
+{
+  "schema_version": 1,
+  "revision": 48,
+  "last_updated_at": "2026-09-06T10:15:28.278336+02:00",
+  "document_status": "active",
+  "repository": {
+    "path": "D:\\Maladie\\moonlight-android",
+    "branch_at_plan_creation": "codex/multi-profile-remote-sign-in",
+    "head_at_plan_creation": "5744415f4d9de3e5f601b5beec715cfee4316bc5",
+    "working_tree_note": "Existing dirty tree and concurrent MW-POLISH-01 preserved. Reinspect baseline before implementation; do not edit its state.json/state.md from this feature.",
+    "implementation_start": {
+      "branch": "codex/multi-profile-remote-sign-in",
+      "head": "26f5867f4d005c33371b92b417da5743c17ab957",
+      "tracked_tree": "clean",
+      "feature_documents": [
+        "CHILD_PROFILES_DESIGN.md",
+        "child-profiles.state.json"
+      ],
+      "parallel_work": "Preserved; this feature owns only the two documents above."
+    }
+  },
+  "feature": {
+    "id": "moonwaker-child-profiles",
+    "title": "Subprofile dzieci: udostępnianie gier, harmonogram i czas gry",
+    "status": "in_progress",
+    "design_status": "root_review_accepted",
+    "implementation_started": true,
+    "objective": "Julia jest własnym profilem MoonWaker używającym Windows i biblioteki Basi; Basia ręcznie nadaje jej dostęp do konkretnych gier, a host egzekwuje harmonogram i czas.",
+    "acceptance_status": {
+      "automated": "cp01_cp02_cp03_cp04_cp05_cp06_scoped_accepted",
+      "windows_tv": "pending_cp07"
+    },
+    "definition_of_done": [
+      "Dziecko tworzone/edytowane przez autoryzowanego rodzica, kafel zgodny ze zwykłym profilem.",
+      "Dziecko widzi wyłącznie gry jawnie udostępnione przez rodzica; pozostałe są ukryte i niemożliwe do odczytu ani uruchomienia przez każdy wspierany endpoint.",
+      "Rodzic może z panelu kafelka gry atomowo nadać dostęp wybranym własnym dzieciom albo odebrać go wszystkim/wybranym; nowe dziecko zaczyna bez gier.",
+      "Dni, okna i dzienny budżet egzekwowane na hoście, wspólne dla urządzeń tego hosta.",
+      "Po czasie właściwa gra zamknięta, stream przerwany, profil MoonWaker wylogowany; nie Windows rodzica.",
+      "Przerwy po wyjściu/końcu gry nie zużywają budżetu; progi60/30/15/10/5/1min i saldo na kafelku.",
+      "Awaria/restart nie zeruje wykorzystania i nie daje obejścia; obce procesy/sesje zachowane.",
+      "Automatyczna i rzeczywista akceptacja zakończona, dowody zapisane."
+    ]
+  },
+  "capability": {
+    "id": "child_profiles_v1",
+    "status": "disabled",
+    "enabled": false,
+    "enable_after_task": "CP-07",
+    "enable_condition": "Pełna akceptacja CP-07 oraz review root."
+  },
+  "sources_of_truth": {
+    "design": "CHILD_PROFILES_DESIGN.md",
+    "feature_progress": "child-profiles.state.json",
+    "other_feature_progress": "state.json / state.md (unchanged by this task)",
+    "profile_definitions_policy": "Existing machine profile registry, one authorized writer; child records reference parent",
+    "daily_usage_and_reservations": "Host-owned child-control usage with Gateway checkpoint30s and clean stop; strict reservations superseded",
+    "windows_identity": "Parent SID via Login Broker",
+    "game_identity_lifecycle": "Existing GameProvider verified process identity",
+    "child_game_access": "Child record allowed_game_keys in the existing profile registry; Gateway resolves stable canonical provider/game IDs and applies one host policy gate",
+    "android_selection_presentation": "Existing HostGatewayStore keyed by actor profile; no durable budget",
+    "privacy": "LaunchTransitionController",
+    "supervision": "Existing Bridge background loop and profile supervisor/restart with persisted child-session lease120s; no own balance or independent worker"
+  },
+  "invariants": [
+    "No Windows logoff, no child Windows credentials/SID clone/Bridge instance.",
+    "Actor child identity remains through authorization/cache/request/transition; execution parent resolved server-side.",
+    "Child use_profile never grants parent use_profile; remote_sign_in requires explicit child grant.",
+    "No weaker TLS/pinning/Bearer/PIN/rate-limit/IPC/process identity controls.",
+    "Child UI/cache exposes only the parent's games present in allowed_game_keys; no unfiltered parent catalog or desktop/launcher bypass.",
+    "Child grants are scoped to the owning parent and canonical game key; read/start/resume/alias checks cannot be bypassed by a foreign child ID or stale alias.",
+    "Grant/revoke selection is all-or-nothing for one game and the parent's own children; a revoked active game follows the proposed immediate cutoff while preserving already used time.",
+    "No duplicate GameOps journal or stream transition state machine; no Moonlight core change.",
+    "Stop effects target only exact session processes; broad hard_reset_session forbidden for quota expiry.",
+    "An orphan child after parent deletion is denied at runtime; cascade delete is not required, and child edit/cleanup belongs to CP-04.",
+    "Security scope is minimal for a home-network app: reuse existing pairing and parent PIN; do not add enterprise security, generic auth/IPC frameworks or hypothetical threat checklists.",
+    "Cannot mark implementation done from design docs or unit tests alone."
+  ],
+  "decisions": [
+    {
+      "id": "CD-01",
+      "status": "required",
+      "decision": "Julia ma własny kafel i używa Windows oraz biblioteki Basi.",
+      "rationale": "User request"
+    },
+    {
+      "id": "CD-02",
+      "status": "proposed",
+      "decision": "Wylogowanie dotyczy MoonWaker, nie Windows; wspólne zapisy/osiągnięcia jawne w kreatorze.",
+      "rationale": "Consistent with existing no-logoff invariant"
+    },
+    {
+      "id": "CD-03",
+      "status": "proposed",
+      "decision": "Dwa konteksty actor/execution; osobny grant dziecka i świeży PIN rodzica do zarządzania.",
+      "rationale": "Prevent parent authorization/cache bypass"
+    },
+    {
+      "id": "CD-04",
+      "status": "superseded",
+      "decision": "Próg inkluzywny minimum_age<=max_age; unknown ukryte, jawne PEGI i ocena rodzica w v1.",
+      "rationale": "Superseded by the user's manual game-sharing decision; retained as historical design context.",
+      "superseded_by": "CD-15"
+    },
+    {
+      "id": "CD-05",
+      "status": "required",
+      "decision": "Per-day enabled/window/daily quota; czas nie płynie po logout/game close.",
+      "rationale": "User request"
+    },
+    {
+      "id": "CD-06",
+      "status": "proposed",
+      "decision": "Jedno okno dziennie, bez rollover; strefa hosta, elapsed monotoniczny; teraz=min(saldo, koniec okna).",
+      "rationale": "Predictable midnight/window semantics"
+    },
+    {
+      "id": "CD-07",
+      "status": "superseded",
+      "decision": "Trwałe rezerwacje max5s przed zezwoleniem, refundacja na czystym końcu, max5s nadliczenia po crash.",
+      "rationale": "Historical strict enforcement proposal; superseded by the user's accepted emergency tolerance up to 300s.",
+      "superseded_by": "CD-17"
+    },
+    {
+      "id": "CD-08",
+      "status": "superseded",
+      "decision": "Heartbeat5s, timeout15s, lokalny hostowy strażnik zezwolenia niezależny od żywotności Gateway.",
+      "rationale": "Historical strict watchdog proposal; superseded by the user's accepted emergency tolerance up to 300s.",
+      "superseded_by": "CD-17"
+    },
+    {
+      "id": "CD-09",
+      "status": "proposed",
+      "decision": "Na deadline odcięcie dostępu; graceful10s potem exact-process force, brak Windows logoff.",
+      "rationale": "Satisfies requested game close without broad profile hard reset"
+    },
+    {
+      "id": "CD-10",
+      "status": "required",
+      "decision": "Toasty60/30/15/10/5/1min oraz dostępny czas pod profilem.",
+      "rationale": "User request"
+    },
+    {
+      "id": "CD-11",
+      "status": "proposed",
+      "decision": "V1 wyklucza pulpit/otwarte launchery, install/uninstall, Discord/VirtualHere i retained paused game dziecka.",
+      "rationale": "Shared Windows must not expose unrestricted parent paths"
+    },
+    {
+      "id": "CD-12",
+      "status": "proposed",
+      "decision": "Jeden aktywny child i jeden execution profile; budżet wspólny dla TV tego hosta, bez cross-host sync.",
+      "rationale": "Avoid double spending and parent game takeover"
+    },
+    {
+      "id": "CD-13",
+      "status": "proposed",
+      "decision": "Wąski kanał zapisu przez właściciela rejestru dla kreatora TV; manage_children i krótka sesja PIN.",
+      "rationale": "Explicit extension of current elevated Host Control-only management"
+    },
+    {
+      "id": "CD-14",
+      "status": "proposed",
+      "decision": "Feature capability dopiero po kompletnym enforcement; starsze klienty/hosty nie obsługują dzieci.",
+      "rationale": "Fail closed compatibility"
+    },
+    {
+      "id": "CD-15",
+      "status": "required",
+      "decision": "Rodzic ręcznie nadaje i odbiera dostęp do gier w panelu kafelka przez multiselect własnych dzieci; oceny wiekowe nie są wymagane.",
+      "rationale": "User request to replace difficult rating retrieval with explicit per-game sharing; supersedes CD-04.",
+      "supersedes": "CD-04"
+    },
+    {
+      "id": "CD-16",
+      "status": "required",
+      "decision": "Zakres zabezpieczeń jest minimalny dla domowej aplikacji w domowej sieci: używamy istniejącego parowania i PIN-u rodzica, bez enterprise security, ogólnych nowych frameworków auth/IPC i hipotetycznych threat checklist.",
+      "rationale": "User preference; existing TLS/pinning remains unchanged, while child access/quota enforcement, MoonWaker not automatically switching a child to an adult profile, the existing authorized Windows-parent sign-in path and exact-game stop remain functional requirements."
+    },
+    {
+      "id": "CD-17",
+      "status": "required",
+      "decision": "Przy awarii dopuszczalna jest tolerancja do 300 s; zwykły istniejący nadzór hosta i okresowe checkpointy wystarczają, a konkretną częstotliwość nie większą niż 300 s wybierze CP-03. Restart nie zeruje całodziennego usage, a plan, czas końca i exact own-session stop pozostają wymagane.",
+      "rationale": "User preference for a simple home-network behavior; supersedes strict reservation, crash-overcount and independent-heartbeat-watchdog proposals.",
+      "supersedes": [
+        "CD-07",
+        "CD-08"
+      ]
+    },
+    {
+      "id": "CD-18",
+      "status": "required",
+      "decision": "Zamrożone POST API dzieci to /api/v1/profiles/children/{authorize,list,create,update,delete,sharing/get,sharing/set}; mutacje używają parent_profile_id, expected_revision, request_id i istniejącego profile-session header, authorize używa pin, create opcjonalnie grant_current_device=false, a remote_sign_in pozostaje jawną akcją HostControl.",
+      "rationale": "Root accepted CP-04 integration contract; manual sharing, no ratings, empty new-child library and 300s failure tolerance remain unchanged."
+    }
+  ],
+  "verified_baseline": [
+    {
+      "path": "host-services/gateway/wakeplay_gateway.py",
+      "symbols": [
+        "authorize_profile",
+        "profiles_summary",
+        "ensure_session",
+        "playnite_library"
+      ],
+      "finding": "Historical baseline: current profile ID drives both authorization and Bridge selection; library proxy currently returns pages without child sharing/grant policy. Child actor/execution separation and the grant gate remain unimplemented."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/console/PlayniteLibraryGame.java",
+      "finding": "Historical baseline: inspected DTO has no rating/minimum_age fields; provider metadata/capability and playtime exist. Manual grants make rating fields unnecessary for this feature."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/console/PlayIntent.java",
+      "finding": "Pins HostProfileKey and profileId; cannot replace child ID with parent ID globally."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/console/PlayniteLibraryCache.java",
+      "finding": "Existing HostProfileKey cache seam can isolate child projection."
+    },
+    {
+      "path": "host-services/bridges/playnite/GameProviderBridge.py",
+      "symbols": [
+        "_stop_verified_running_game",
+        "hard_reset_session",
+        "stop_game"
+      ],
+      "finding": "Exact-process checks available; hard reset iterates profile inventory and is too broad for quota expiry."
+    },
+    {
+      "path": "host-services/control/MoonWakerHostConfigurator.cs",
+      "symbols": [
+        "GatewayRegistryStore"
+      ],
+      "finding": "Existing registry/PIN management ownership must be retained."
+    }
+  ],
+  "example_policy": {
+    "example_only": true,
+    "child_name": "Julia",
+    "parent_name": "Basia",
+    "allowed_game_keys": [],
+    "timezone_policy": "configured_host_timezone",
+    "weekdays": {
+      "mon": {
+        "enabled": false
+      },
+      "tue": {
+        "enabled": false
+      },
+      "wed": {
+        "enabled": false
+      },
+      "thu": {
+        "enabled": false
+      },
+      "fri": {
+        "enabled": false
+      },
+      "sat": {
+        "enabled": true,
+        "start_minute": 480,
+        "end_minute": 1200,
+        "daily_limit_seconds": 4500
+      },
+      "sun": {
+        "enabled": true,
+        "start_minute": 480,
+        "end_minute": 1200,
+        "daily_limit_seconds": 4500
+      }
+    },
+    "note": "Product examples, not real identities/configuration. New creation starts with no shared games, all days disabled and requires explicit setup."
+  },
+  "tasks": [
+    {
+      "id": "CP-01",
+      "title": "Tożsamość dziecka i uprawnienia",
+      "status": "done",
+      "depends_on": [],
+      "scope": [
+        "host-services/gateway/wakeplay_gateway.py",
+        "host-services/gateway/test_gateway.py",
+        "host-services/control/MoonWakerHostConfigurator.cs",
+        "host-services/control/Test-MoonWakerHostConfigurator.ps1",
+        "host-services/windows-login/login-broker/BrokerCore.cs",
+        "host-services/windows-login/login-broker/BrokerCoreTests.cs",
+        "host-services/windows-login/login-broker/BrokerService.cs"
+      ],
+      "delegated_scope": [
+        {
+          "owner": "cp01_gateway_tests",
+          "model": "gpt-5.6-luna",
+          "status": "completed",
+          "scope": [
+            "host-services/gateway/test_child_profiles.py"
+          ],
+          "summary": "New gateway child-profile contract tests delivered; CP-01 production corrections were verified in diff and regressions by root review."
+        }
+      ],
+      "requirements": [
+        "Własny actor_profile_id, execution profile rozwiązywany tylko na hoście.",
+        "Grant dziecka nie przyznaje parent use_profile; child remote_sign_in jest jawny.",
+        "Zamrożone DTO i wersjonowanie; PIN zarządzania odrębny od lease do grania; brak dzieci dla legacy bez capability.",
+        "Trzymać minimalny domowy zakres zabezpieczeń: istniejące parowanie i PIN rodzica, bez enterprise security ani ogólnych nowych frameworków auth/IPC; nie osłabiać istniejącego TLS/pinningu."
+      ],
+      "acceptance_criteria": [
+        "Podszycie pod rodzica, default fallback, stary klient, brak remote_sign_in, zmiana rodzica/grantów.",
+        "Migracja profilu standardowego zachowuje SID/root/PIN/granty."
+      ],
+      "tests": [
+        "Podszycie pod rodzica, default fallback, stary klient, brak remote_sign_in, zmiana rodzica/grantów.",
+        "Migracja profilu standardowego zachowuje SID/root/PIN/granty."
+      ],
+      "validation": [
+        {
+          "channel": "automated",
+          "command": "python -m unittest test_child_profiles.py",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: 4 tests OK in 0.197s; delegated test scope only."
+        },
+        {
+          "channel": "automated",
+          "command": "python -m py_compile test_child_profiles.py",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: compile completed; delegated test scope only."
+        },
+        {
+          "channel": "automated",
+          "command": "python -m unittest test_gateway.py",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: 116/116 tests."
+        },
+        {
+          "channel": "automated",
+          "command": "Test-MoonWakerHostConfigurator.ps1",
+          "working_directory": "host-services/control",
+          "result": "PASS: all 3 groups."
+        },
+        {
+          "channel": "automated",
+          "command": "Test-MoonWakerLoginBroker.ps1",
+          "working_directory": "host-services/windows-login/login-broker",
+          "result": "PASS: 15/15 tests."
+        },
+        {
+          "channel": "automated",
+          "command": "py_compile",
+          "working_directory": "host-services/gateway",
+          "result": "PASS."
+        },
+        {
+          "channel": "automated",
+          "command": "git diff --check",
+          "working_directory": ".",
+          "result": "PASS."
+        }
+      ],
+      "non_goals": [
+        "No unrelated cleanup, commits, deployment or automatic broad host actions.",
+        "No duplicate state owner or wholesale activity rewrite."
+      ],
+      "work": {
+        "owner": "cp01_identity",
+        "started_at": "2026-09-05T13:10:47.936541+02:00",
+        "completed_at": "2026-09-05T14:27:02.2319535+02:00",
+        "summary": "CP-01 scoped implementation and automated acceptance accepted by root. Gateway 116/116, child module 4/4, Configurator all 3 groups, Broker 15/15, py_compile and git diff check passed; PIN/resolved-parent and manage_children corrections were verified in diff and regressions. Windows/TV runtime acceptance remains pending; BrokerService.cs was untouched.",
+        "files_changed": [
+          "host-services/gateway/wakeplay_gateway.py",
+          "host-services/gateway/test_gateway.py",
+          "host-services/control/MoonWakerHostConfigurator.cs",
+          "host-services/control/Test-MoonWakerHostConfigurator.ps1",
+          "host-services/windows-login/login-broker/BrokerCore.cs",
+          "host-services/windows-login/login-broker/BrokerCoreTests.cs",
+          "host-services/gateway/test_child_profiles.py"
+        ],
+        "unchanged_scope": [
+          "host-services/windows-login/login-broker/BrokerService.cs"
+        ],
+        "blockers": []
+      }
+    },
+    {
+      "id": "CP-02",
+      "title": "Udostępnianie gier i filtrowanie",
+      "status": "done",
+      "depends_on": [
+        "CP-01"
+      ],
+      "scope": [
+        "host-services/bridges/playnite/GameProviderBridge.py",
+        "host-services/bridges/playnite/test_playnite_bridge.py",
+        "host-services/gateway/wakeplay_gateway.py",
+        "host-services/gateway/test_child_sharing.py",
+        "host-services/control/MoonWakerHostConfigurator.cs"
+      ],
+      "delegated_scope": [
+        {
+          "owner": "cp_enforcement_audit",
+          "model": "gpt-5.6-luna",
+          "status": "completed",
+          "scope": [
+            "host-services/bridges/playnite/GameProviderBridge.py",
+            "host-services/bridges/playnite/test_playnite_bridge.py"
+          ],
+          "summary": "Bridge implementation and tests delivered; 163 automated tests passed."
+        },
+        {
+          "owner": "cp01_gateway_tests",
+          "model": "gpt-5.6-luna",
+          "status": "completed",
+          "scope": [
+            "host-services/gateway/test_child_library_integration.py"
+          ],
+          "summary": "Independent injected BridgeState/Handler integration test delivered; 4 tests passed without server or live runtime."
+        }
+      ],
+      "requirements": [
+        "Host/API udostępnia snapshot dzieci rodzica i zapis pełnego wyboru grant/revoke dla jednej gry; prezentacja multiselect należy do CP-04.",
+        "allowed_game_keys pozostaje w rekordzie dziecka w istniejącym rejestrze; stabilny kanoniczny provider/game ID oraz aliasy są rozwiązywane na hoście przed sprawdzeniem.",
+        "Zapis pełnego wyboru jest atomowy: zaznaczone dzieci dostają dostęp, odznaczone go tracą, pusty wybór odbiera dostęp wszystkim własnym dzieciom; własność i oczekiwana rewizja są sprawdzane na hoście.",
+        "Filtrowanie przed paginacją i facetami; jeden hostowy policy gate dla odczytu biblioteki, artwork/details/events/current, start, aliases i resume.",
+        "Revokacja zwiększa rewizję polityki i emituje unieważnienie/cutoff związane z dokładnym dzieckiem, grą i sesją; wykonanie bezpiecznego stopu należy do CP-03."
+      ],
+      "acceptance_criteria": [
+        "Nowe dziecko ma pustą bibliotekę; GET zwraca wszystkie i tylko własne dzieci rodzica oraz zapisane granty dla wskazanej kanonicznej gry.",
+        "POST pełnego wyboru zapisuje grant/revoke jednego lub wszystkich własnych dzieci atomowo; pusty wybór odbiera wszystkim, a błędne ID, brak własności lub gra spoza katalogu nie daje częściowego zapisu.",
+        "Nieudostępniona gra znika z każdej projekcji dziecka, a bezpośredni read/start/resume/alias jest odrzucony; odrzucona gra nie ujawnia nazwy przez artwork/current.",
+        "Cudze child ID, gra spoza katalogu rodzica, stary kursor/polityka i równoległa rewizja są odrzucone bez częściowego zapisu; kanoniczny ID zachowuje grant po zmianie nazwy/reinstalacji.",
+        "Revokacja zmienia rewizję i emituje dokładnie skorelowany sygnał unieważnienia dla downstream cutoff; bezpieczny stop i runtime cutoff pozostają zakresem CP-03/CP-07."
+      ],
+      "tests": [
+        "Nowe dziecko bez gier; GET snapshot wszystkich własnych dzieci i zapisanych grantów; atomowy grant/revoke jednego i wszystkich dzieci.",
+        "Błędne/cudze child ID, gra spoza katalogu, alias i równoległa rewizja kończą się odmową bez częściowego zapisu; kanoniczny ID zachowuje grant po zmianie nazwy/reinstalacji.",
+        "Filtr przed ostatnią stroną/paginacją/facetami oraz odmowa read/start/resume/alias/artwork/current dla nieudostępnionej gry; revokacja emituje skorelowane unieważnienie i zwiększa rewizję."
+      ],
+      "validation": [
+        {
+          "channel": "automated",
+          "command": "test_playnite_bridge.py",
+          "working_directory": "host-services/bridges/playnite",
+          "result": "PASS: 163 tests."
+        },
+        {
+          "channel": "automated",
+          "command": "python -m unittest test_gateway.py",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: 116 tests."
+        },
+        {
+          "channel": "automated",
+          "command": "python -m unittest test_child_sharing.py",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: 4 tests."
+        },
+        {
+          "channel": "automated",
+          "command": "python -m unittest test_child_profiles.py",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: 4 tests."
+        },
+        {
+          "channel": "automated",
+          "command": "Test-MoonWakerHostConfigurator.ps1",
+          "working_directory": "host-services/control",
+          "result": "PASS: all 3 groups."
+        },
+        {
+          "channel": "automated",
+          "command": "test_child_library_integration.py",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: 4 tests with injected BridgeState/Handler; no server/live runtime."
+        },
+        {
+          "channel": "automated",
+          "command": "py_compile",
+          "working_directory": "host-services/gateway",
+          "result": "PASS."
+        },
+        {
+          "channel": "automated",
+          "command": "git diff --check",
+          "working_directory": ".",
+          "result": "PASS."
+        }
+      ],
+      "non_goals": [
+        "No unrelated cleanup, commits, deployment or automatic broad host actions.",
+        "No duplicate state owner or wholesale activity rewrite."
+      ],
+      "work": {
+        "owner": "cp01_identity",
+        "started_at": "2026-09-05T14:27:02.2319535+02:00",
+        "completed_at": "2026-09-05T15:00:58.1863541+02:00",
+        "summary": "CP-02 scoped implementation and automated acceptance accepted by root. Bridge 163 tests, Gateway 116 plus sharing 4 and child profiles 4, Configurator 3 groups, independent child-library integration 4, py_compile and git diff check passed. Injected BridgeState/Handler evidence was not server or live runtime; Windows/TV acceptance remains pending.",
+        "files_changed": [
+          "host-services/bridges/playnite/GameProviderBridge.py",
+          "host-services/bridges/playnite/test_playnite_bridge.py",
+          "host-services/gateway/wakeplay_gateway.py",
+          "host-services/gateway/test_child_sharing.py",
+          "host-services/control/MoonWakerHostConfigurator.cs",
+          "host-services/gateway/test_child_library_integration.py"
+        ],
+        "blockers": []
+      }
+    },
+    {
+      "id": "CP-03",
+      "title": "Hostowy budżet i egzekwowanie",
+      "status": "done",
+      "depends_on": [
+        "CP-01",
+        "CP-02"
+      ],
+      "scope": [
+        "host-services/gateway/",
+        "host-services/bridges/playnite/",
+        "host-services/bridges/vibepollo/",
+        "host-services/profile-agent/"
+      ],
+      "active_ownership": {
+        "cp01_identity": [
+          "host-services/gateway/wakeplay_gateway.py",
+          "host-services/gateway/test_child_time_control.py",
+          "host-services/gateway/test_child_time_contract.py"
+        ],
+        "cp_enforcement_audit": [
+          "host-services/bridges/playnite/GameProviderBridge.py",
+          "host-services/bridges/playnite/test_playnite_bridge.py"
+        ]
+      },
+      "requirements": [
+        "Jeden trwały właściciel czasu; Gateway checkpointuje usage co 30 s, heartbeat co 20 s i grace wynosi 120 s, z zachowaniem usage po restarcie.",
+        "Istniejący Bridge background loop oraz supervisor/restart obsługują persisted child-session.json z lease 120 s; POST /child/session używa action bind|renew|end, a DTO zawiera session_id (tylko generation), child_actor, parent_execution, game, process_token, VibeUUID i deadlineUTC.",
+        "Przed startem sesja ma pendingbind; end accepted nie oznacza stopped i czeka na cleanup confirmation, a stale end nie dotyka sesji dorosłego.",
+        "Awaria może dać najwyżej 300 s tolerancji; bez osobnego niezależnego workera, watchdog ani drugiego budżetu.",
+        "Deadline blokuje grę; graceful stop10s, potem force tylko dokładnie przypisanego procesu.",
+        "Jedna sesja dziecka/execution profile; cleanup_required nie udaje sukcesu.",
+        "Proponowana natychmiastowa revokacja aktywnej gry wykonuje cutoff tylko dla dokładnej sesji dziecka i zachowuje już wykorzystany czas; inne sesje pozostają nietknięte.",
+        "Precyzyjny stop używa własnego procesu i UUID streamu; Gateway zapisuje Gatewaychild-time-usage.json, clean stop oraz schedule, dzienny limit i koniec gry działają normalnie."
+      ],
+      "acceptance_criteria": [
+        "75min z przerwami, 19:50 do20, północ/DST/clock rollback.",
+        "Dwa urządzenia; restart/crash/Gateway/Bridge failure z dopuszczalną tolerancją awaryjną do 300 s i zachowaniem całodziennego usage.",
+        "Revokacja aktywnej gry natychmiast odcina właściwy stream/proces, zatrzymuje naliczanie z zachowaniem wykorzystanego czasu i nie zamyka gry innego dziecka.",
+        "PID reuse/stary timeout po przejściu do Basi nie zamyka cudzej gry."
+      ],
+      "tests": [
+        "75min z przerwami, 19:50 do20, północ/DST/clock rollback.",
+        "Dwa urządzenia; restart/crash/Gateway/Bridge failure z dopuszczalną tolerancją awaryjną do 300 s i zachowaniem całodziennego usage.",
+        "Revokacja aktywnej gry, cutoff właściwej sesji, zachowanie wykorzystanego czasu i brak wpływu na sesje innych dzieci.",
+        "PID reuse/stary timeout po przejściu do Basi nie zamyka cudzej gry."
+      ],
+      "validation": [
+        {
+          "channel": "automated",
+          "command": "test_child_time_control.py and test_child_time_contract.py",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: Gateway 146/146, including 13 time tests and 5 independent real-Bridge lifecycle tests; no SKIP."
+        },
+        {
+          "channel": "automated",
+          "command": "test_playnite_bridge.py",
+          "working_directory": "host-services/bridges/playnite",
+          "result": "PASS: Bridge discover 242/242; no SKIP."
+        },
+        {
+          "channel": "automated",
+          "command": "DST deterministic explicit-offset case",
+          "working_directory": ".",
+          "result": "PASS: 01:50+01 to 03:10+02 accrues 1200s without tzdata."
+        },
+        {
+          "channel": "automated",
+          "command": "py_compile",
+          "working_directory": ".",
+          "result": "PASS."
+        },
+        {
+          "channel": "automated",
+          "command": "git diff --check",
+          "working_directory": ".",
+          "result": "PASS."
+        }
+      ],
+      "non_goals": [
+        "No unrelated cleanup, commits, deployment or automatic broad host actions.",
+        "No duplicate state owner or wholesale activity rewrite."
+      ],
+      "work": {
+        "owner": "cp01_identity",
+        "co_owner": "cp_enforcement_audit",
+        "started_at": "2026-09-05T15:00:58.1863541+02:00",
+        "completed_at": "2026-09-05T16:20:55.9571512+02:00",
+        "summary": "CP-03 scoped implementation and automated acceptance accepted by root. Gateway 146/146 (13 time tests, 5 independent real-Bridge lifecycle tests, remaining regressions), Bridge discover 242/242, py_compile and git diff check passed with no SKIP. DST explicit offsets 01:50+01 to 03:10+02 accrue 1200s without tzdata. Accepted contract uses POST /child/session bind|renew|end, generation-only session_id, pendingbind, lease120s, Gateway checkpoint30s/heartbeat20s/grace120s, persisted child-session.json and Gatewaychild-time-usage.json, and exact own-process/UUID stop; end accepted waits cleanup and stale end cannot touch adult. Windows/TV runtime acceptance remains pending.",
+        "files_changed": [
+          "host-services/gateway/wakeplay_gateway.py",
+          "host-services/bridges/playnite/GameProviderBridge.py",
+          "host-services/gateway/test_child_time_control.py",
+          "host-services/gateway/test_child_time_contract.py",
+          "host-services/bridges/playnite/test_playnite_bridge.py"
+        ],
+        "blockers": []
+      }
+    },
+    {
+      "id": "CP-04",
+      "title": "Tworzenie i edycja dzieci",
+      "status": "done",
+      "depends_on": [
+        "CP-01",
+        "CP-02",
+        "CP-03"
+      ],
+      "scope": [
+        "host-services/control/",
+        "host-services/gateway/",
+        "app/src/main/java/com/limelight/console/",
+        "app/src/main/res/values/strings.xml",
+        "app/src/main/res/values-pl/strings.xml"
+      ],
+      "active_ownership": {
+        "cp01_identity": [
+          "host-services/gateway/",
+          "host-services/control/",
+          "host-services/windows-login/login-broker/"
+        ],
+        "cp_enforcement_audit": [
+          "host-services/control/ChildProfileForms.cs"
+        ],
+        "cp01_gateway_tests": [
+          "app/src/main/java/com/limelight/console/ConsoleChildProfileEditor.java",
+          "app/src/main/java/com/limelight/console/ConsoleChildGameSharingPanel.java",
+          "app/src/main/java/com/limelight/gateway/HostGatewayClient.java",
+          "app/src/main/java/com/limelight/gateway/HostGatewayStore.java",
+          "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+          "app/src/main/java/com/limelight/gateway/HostGatewayClientTest.java",
+          "app/src/main/res/values/strings.xml",
+          "app/src/main/res/values-pl/strings.xml"
+        ]
+      },
+      "delegated_scope": [
+        {
+          "owner": "cp_enforcement_audit",
+          "model": "gpt-5.6-luna",
+          "status": "completed",
+          "scope": [
+            "host-services/gateway/test_child_management_http.py"
+          ],
+          "summary": "Independent realHandler+State/mockBrokerCatalog management HTTP test accepted by root; 6/6 passed without port, registry or Windows runtime."
+        }
+      ],
+      "requirements": [
+        "Kreator imię/awatar, pusty na starcie allowed_game_keys, tygodniowy harmonogram i podsumowanie.",
+        "Zamrożone POST API: /api/v1/profiles/children/{authorize,list,create,update,delete,sharing/get,sharing/set}; mutacje mają parent_profile_id, expected_revision, request_id i istniejący profile-session header, authorize używa pin, a create opcjonalnie grant_current_device=false nadaje child use_profile tylko prawdziwemu klientowi Gateway.",
+        "remote_sign_in pozostaje wyłącznie jawną akcją HostControl; standard /profiles zachowuje manage_children i own_children_count.",
+        "UI używa HH:mm i minut przeliczanych na sekundy; wyłączone dni zachowują plan, DPAD pomija wyłączone dni, Save bez zmian jest noop, a błąd zachowuje draft.",
+        "Panel gry rodzica z opcją Udostępnij grę dziecku: lista wszystkich własnych dzieci, początkowe checkboxy zgodne z zapisanymi grantami oraz pełny wybór grant/revoke.",
+        "Wąski autoryzowany kanał do właściciela rejestru; bez szerokiego zapisu Gateway.",
+        "PIN rodzica, manage_children, ochrona pozostałych dorosłych profili na TV.",
+        "Zapis wyboru atomowy i oparty o expected revision; Anuluj nie zapisuje zmian, a konflikt revision409 nie nadpisuje nowszych decyzji.",
+        "Wyłączenie/usunięcie nie usuwa Windows/gier/zapisów; odebranie aktywnej gry stosuje proponowane natychmiastowe odcięcie i zachowuje rozliczony czas.",
+        "Orphan po usunięciu parenta otrzymuje runtime deny; cascade delete nie jest wymagane, a edycja i cleanup należą do CP-04."
+      ],
+      "acceptance_criteria": [
+        "Pilot i pad przechodzą cały kreator i anulowanie; nowe dziecko ma zero udostępnionych gier.",
+        "Panel rodzica pokazuje opcję tylko przy istniejących dzieciach, wszystkie własne dzieci i prawidłowe początkowe checkboxy; można nadać, odebrać jedno lub wszystkie uprawnienia.",
+        "Anulowanie/B/Wstecz nie mutuje grantów, zapis bez zmian jest nieaktywny, a błąd zachowuje szkic; zapis kończy się komunikatem dopiero po potwierdzeniu hosta.",
+        "Powtórzony request nie duplikuje dziecka; brak PIN/grantu odrzuca zapis.",
+        "Skrócenie aktywnej sesji, usunięcie z cleanup failure, odebranie aktywnego dostępu z zachowaniem czasu i współbieżna edycja kończąca się konfliktem."
+      ],
+      "tests": [
+        "Pilot i pad przechodzą cały kreator i anulowanie; nowe dziecko ma zero udostępnionych gier.",
+        "Multiselect wszystkich własnych dzieci z zapisanymi checkboxami, grant/revoke jednego/wszystkich, nieaktywny zapis bez zmian, Anuluj/B/Wstecz i błąd z zachowaniem szkicu.",
+        "Powtórzony request nie duplikuje dziecka; brak PIN/grantu odrzuca zapis.",
+        "Skrócenie aktywnej sesji, usunięcie z cleanup failure, revokacja aktywnej gry bez resetu czasu i współbieżna edycja/409."
+      ],
+      "validation": [
+        {
+          "channel": "automated",
+          "command": "ChildProfileForms.cs compile/offscreen harness",
+          "working_directory": "host-services/control",
+          "result": "PASS; PNG .tmp/child-profile-form.png is layout-only evidence and not Windows runtime acceptance."
+        },
+        {
+          "channel": "automated",
+          "command": "compileNonRootDebugJavaWithJavac --offline --no-daemon",
+          "working_directory": ".",
+          "result": "PASS before CP-04 integration; covers new Android editor/panel behavior."
+        },
+        {
+          "channel": "automated",
+          "command": "python -m unittest -v test_child_management_http",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: 6/6 with realHandler+State/mockBrokerCatalog; no port, registry or Windows runtime."
+        },
+        {
+          "channel": "automated",
+          "command": "Gateway backend regression",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: 157/157, consisting of 146 earlier plus 5 test_child_management and 6 test_child_management_http."
+        },
+        {
+          "channel": "automated",
+          "command": "Configurator and Broker automated suites",
+          "working_directory": "host-services",
+          "result": "PASS: Configurator; Broker 15/15."
+        },
+        {
+          "channel": "automated",
+          "command": "Host EXE builds",
+          "working_directory": "host-services",
+          "result": "PASS: both EXE builds."
+        },
+        {
+          "channel": "automated",
+          "command": "py_compile",
+          "working_directory": "host-services",
+          "result": "PASS: exit0."
+        },
+        {
+          "channel": "automated",
+          "evidence_date": "2026-09-05",
+          "command": ":app:compileNonRootDebugJavaWithJavac --offline --no-daemon",
+          "working_directory": ".",
+          "result": "PASS: full run; includes Coordinator and countdown."
+        },
+        {
+          "channel": "automated",
+          "evidence_date": "2026-09-05",
+          "command": ":app:testNonRootDebugUnitTest --offline --no-daemon",
+          "working_directory": ".",
+          "result": "PASS: root read XML: 96 files, 954 tests, 0 failures, 0 errors, 0 skipped."
+        },
+        {
+          "channel": "automated",
+          "command": "python -m unittest discover -p 'test*.py'",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: Gateway 159/159."
+        },
+        {
+          "channel": "automated",
+          "command": "Test-MoonWakerHostConfigurator.ps1",
+          "working_directory": "host-services/control",
+          "result": "PASS: registry/UI checks."
+        },
+        {
+          "channel": "automated",
+          "command": "Test-MoonWakerLoginBroker.ps1",
+          "working_directory": "host-services/windows-login/login-broker",
+          "result": "PASS: 15/15."
+        },
+        {
+          "channel": "automated",
+          "command": "HostControl + Configurator build",
+          "working_directory": "host-services",
+          "result": "PASS: exit0."
+        },
+        {
+          "channel": "automated",
+          "command": "Broker build",
+          "working_directory": "host-services/windows-login/login-broker",
+          "result": "PASS: exit0."
+        },
+        {
+          "channel": "automated",
+          "command": "test_child_management_http.py",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: 6/6 included in Gateway 159/159."
+        },
+        {
+          "channel": "automated",
+          "command": "CP-04 contract assertions",
+          "working_directory": "host-services",
+          "result": "PASS: 5s main-daemon Event stop; client lastheartbeat does not renew; local policy changes exact Bridge end/renew; parent-device manage_children+PIN; ChildManager device Use/Remote limited to child parent-SID settings; C# create-current-device/fingerprint-retry/foreign/stale/orphan no-mutation assertions."
+        },
+        {
+          "channel": "automated",
+          "command": "py_compile and git diff --check",
+          "working_directory": ".",
+          "result": "PASS: py_compile exit0; diffcheck exit0."
+        }
+      ],
+      "non_goals": [
+        "No unrelated cleanup, commits, deployment or automatic broad host actions.",
+        "No duplicate state owner or wholesale activity rewrite."
+      ],
+      "work": {
+        "owner": "cp01_identity",
+        "co_owners": [
+          "cp_enforcement_audit",
+          "cp01_gateway_tests"
+        ],
+        "started_at": "2026-09-05T16:20:55.9571512+02:00",
+        "completed_at": "2026-09-05T18:16:36.7043656+02:00",
+        "summary": "CP-04 scoped implementation and automated acceptance accepted by root. Gateway 159/159 including HTTP management 6/6, Configurator registry/UI checks, Broker 15/15, HostControl+Configurator and Broker builds, py_compile and diffcheck all passed. Android fullrun dated 2026-09-05: 96 XML files, 954 tests, 0 failures, 0 errors, 0 skipped; callback fix and compile passed. Contract assertions cover 5s daemon Event stop, non-renewing client heartbeat, exact Bridge end/renew, manage_children+PIN device flow, child parent-SID Use/Remote restrictions and C# no-mutation cases. Windows/TV runtime acceptance remains pending CP-07.",
+        "files_changed": [],
+        "blockers": []
+      }
+    },
+    {
+      "id": "CP-05",
+      "title": "Android: profil, biblioteka i uruchamianie",
+      "status": "done",
+      "depends_on": [
+        "CP-01",
+        "CP-02",
+        "CP-03",
+        "CP-04"
+      ],
+      "scope": [
+        "app/src/main/java/com/limelight/console/",
+        "app/src/main/java/com/limelight/gateway/",
+        "app/src/main/java/com/limelight/stream/",
+        "app/src/main/java/com/limelight/utils/SessionResumeManager.java"
+      ],
+      "active_ownership": {
+        "cp01_identity": [
+          "Gateway public child-session API",
+          "capability/profile filtering",
+          "HTTP gates"
+        ],
+        "cp01_gateway_tests": [
+          "Android IntegrationProfile/Store/Console",
+          "profile selection/cache/start once"
+        ],
+        "cp_enforcement_audit": [
+          "ChildSessionClient",
+          "GatewayTransport",
+          "Game EXTRA constants",
+          "parser and contract tests"
+        ]
+      },
+      "requirements": [
+        "Julia wygląda jak zwykły kafel i pokazuje aktualny pozostały czas.",
+        "App/cache/callback/resume identity pozostaje dzieckiem; Windows target jest rodzicem.",
+        "Start/switch/retained/cold/preflight wymagają aktualnej polityki; wybór nie przełącza Windows.",
+        "Dziecko nie widzi dorosłych katalogów, launchera/pulpitu/Discord; MoonWaker nie przełącza automatycznie dziecka na profil dorosłego, a Windows rodzica nadal używa istniejącej autoryzowanej ścieżki sign-in.",
+        "Prywatny Bridge POST /child/session ma kontrakt bind|renew|end; publiczne /api/v1/child/session/{eligibility,start,status,resume,heartbeat,end} zostały objęte scoped implementation/automated acceptance CP-05, a pełna akceptacja Windows/TV pozostaje zakresem CP-07."
+      ],
+      "acceptance_criteria": [
+        "Basia active oraz signed_out/other_user_active; Julia korzysta z Basi po prawidłowym sign-in.",
+        "Julia→Basia i Basia→Julia z opóźnionymi wynikami oraz unieważnieniem PIN leases.",
+        "Offline/stary cache/stary host/nowa rewizja nie pozwalają launch ani wyciekowi katalogu."
+      ],
+      "tests": [
+        "Basia active oraz signed_out/other_user_active; Julia korzysta z Basi po prawidłowym sign-in.",
+        "Julia→Basia i Basia→Julia z opóźnionymi wynikami oraz unieważnieniem PIN leases.",
+        "Offline/stary cache/stary host/nowa rewizja nie pozwalają launch ani wyciekowi katalogu."
+      ],
+      "validation": [
+        {
+          "channel": "automated",
+          "command": "ProviderOwner actor-correlation diff check",
+          "working_directory": "app/src/main/java/com/limelight/console",
+          "result": "PASS: 59/59 in XML test-com.limelight.console.ConsoleStreamTransitionCoordinatorTest.xml, including differentActorCannotDetachCancelOrTransferExactProviderOwner; covered by the Android 954-test fullrun, with no separate rerun needed."
+        },
+        {
+          "channel": "automated",
+          "command": "Gateway discovery",
+          "working_directory": "host-services/gateway",
+          "result": "PASS: 167/167 in 13.555s, including corrected sparse ended replay for child-only grant, deleted child and end replay; py_compile and diffcheck also PASS."
+        },
+        {
+          "channel": "automated",
+          "command": "sessionless start deny",
+          "working_directory": ".",
+          "result": "PASS: covered by root-accepted Gateway discovery 167/167."
+        },
+        {
+          "channel": "automated",
+          "command": "missing running timing/binding",
+          "working_directory": ".",
+          "result": "PASS: covered by root-accepted Gateway discovery 167/167."
+        },
+        {
+          "channel": "automated",
+          "command": "common Gradle integration",
+          "working_directory": ".",
+          "result": "PASS: :app:testNonRootDebugUnitTest --offline --no-daemon BUILD SUCCESSFUL after 23s; root read 97 XML, 972 tests, 0 failures, 0 errors, 0 skipped."
+        },
+        {
+          "channel": "automated",
+          "evidence_date": "2026-09-05",
+          "command": ":app:testNonRootDebugUnitTest --offline --no-daemon",
+          "working_directory": ".",
+          "result": "PASS: BUILD SUCCESSFUL after 23s; 97 XML, 972 tests, 0 failures, 0 errors, 0 skipped; root read 77330 ended."
+        },
+        {
+          "channel": "automated",
+          "command": "Android onResume adjacent-lines contract",
+          "working_directory": ".",
+          "result": "PASS: targeted contract after moving refreshChildBindingStates behind initial selection; the earlier 972/1 textual-contract failure is historical."
+        }
+      ],
+      "non_goals": [
+        "No unrelated cleanup, commits, deployment or automatic broad host actions.",
+        "No duplicate state owner or wholesale activity rewrite."
+      ],
+      "work": {
+        "owner": "root",
+        "coordinator": "root",
+        "started_at": "2026-09-05T17:03:20.6211713+02:00",
+        "completed_at": "2026-09-05T19:20:22.8123886+02:00",
+        "summary": "Root accepted CP-05 for scoped implementation and automated acceptance. Gateway discovery is PASS at 167/167 including corrected sparse ended replay for child-only grant, deleted child and end replay; py_compile and diffcheck also PASS. Android :app:testNonRootDebugUnitTest --offline --no-daemon is BUILD SUCCESSFUL after 23s with 97 XML, 972 tests, 0 failures, 0 errors and 0 skipped; the earlier 972/1 textual-contract failure was corrected by moving refreshChildBindingStates behind initial selection and the targeted contract passed. CP-05 is done only for automated scope; Windows/TV runtime and CP-07 remain pending.",
+        "files_changed": [],
+        "blockers": []
+      }
+    },
+    {
+      "id": "CP-06",
+      "title": "Toasty i kończenie sesji",
+      "status": "done",
+      "depends_on": [
+        "CP-03",
+        "CP-05"
+      ],
+      "scope": [
+        "app/src/main/java/com/limelight/Game.java",
+        "app/src/main/java/com/limelight/console/ConsoleStreamTransitionCoordinator.java",
+        "app/src/main/java/com/limelight/console/transition/",
+        "app/src/main/java/com/limelight/ui/overlay/"
+      ],
+      "active_ownership": {
+        "cp_enforcement_audit": [
+          "Game lifecycle/countdown/toasts/cutoff/end",
+          "ChildSessionCountdown helper",
+          "PlayniteTransitionGateway connection getter",
+          "child_session_strings EN/PL",
+          "CP-06 test"
+        ],
+        "cp01_gateway_tests": [
+          "Console refreshChildBindingStates terminal to explicit profile gate",
+          "stale callback correlation without automatic adult/child reentry"
+        ]
+      },
+      "requirements": [
+        "Toasty60/30/15/10/5/1min bez fokusu i powtórek po reconnect.",
+        "Deadline zasłania obraz, odcina input/stream i wylogowuje tylko dziecko.",
+        "Game close/logout zatrzymują czas; brak bezpłatnej pozostawionej gry.",
+        "Komunikat expiry/cleanup i następny dozwolony termin; MoonWaker nie przełącza automatycznie dziecka na profil dorosłego, a Windows rodzica nadal używa istniejącej autoryzowanej ścieżki sign-in.",
+        "Używać istniejącego controllera closingStream; expiry nie wywołuje quitApp ani resetu. Heartbeat wynosi 20 s, host grace 120 s, a tolerancja awarii do 300 s.",
+        "Brak durable child autoresume i bezpłatnego retained; po Game finish następuje Console status refresh, bez nowego ActivityResult transportu.",
+        "Checkpoint B autora obejmuje child-only lifecycle exit, clear własnego streamSessionId, guard późnych callbacków, stopConnection przed dialogiem końca OK/back oraz Windows footer warning."
+      ],
+      "acceptance_criteria": [
+        "Każdy próg, limit godzinowy wcześniej niż saldo, zmiana zasad, spóźniony event.",
+        "Ekran końca na TV/padzie/pilocie; nieudany stop bez fałszywego sukcesu.",
+        "Prywatność i fresh-frame gate zachowane; naliczanie biblioteki=0."
+      ],
+      "tests": [
+        "Każdy próg, limit godzinowy wcześniej niż saldo, zmiana zasad, spóźniony event.",
+        "Ekran końca na TV/padzie/pilocie; nieudany stop bez fałszywego sukcesu.",
+        "Prywatność i fresh-frame gate zachowane; naliczanie biblioteki=0."
+      ],
+      "validation": [
+        {
+          "channel": "automated",
+          "command": "standalone JDK24 javac + JUnit4",
+          "working_directory": ".",
+          "result": "PASS: ChildSessionCountdown helper 9/9; output .tmp/child-countdown-tests using existing cache; no Gradle/device."
+        },
+        {
+          "channel": "automated",
+          "evidence_status": "author_reported",
+          "reported_by": "cp_enforcement_audit",
+          "command": "compileNonRootDebugJavaWithJavac",
+          "working_directory": ".",
+          "result": "HISTORICAL INTERMEDIATE: author-reported PASS for CP-06 implementation; superseded by the final root-accepted CP-06 automated evidence (98 XML, 981 tests, zero failures/errors/skipped)."
+        },
+        {
+          "channel": "automated",
+          "evidence_status": "author_reported",
+          "reported_by": "cp_enforcement_audit",
+          "command": "GameChildSessionContractTest",
+          "working_directory": ".",
+          "result": "HISTORICAL INTERMEDIATE: author-reported PASS 6/6; superseded by the final root-accepted CP-06 automated evidence and review below."
+        },
+        {
+          "channel": "automated",
+          "evidence_status": "root_read",
+          "evidence_timestamp": "2026-09-05T18:02:00",
+          "reported_by": "root",
+          "command": "TEST-com.limelight.GameChildSessionContractTest.xml",
+          "working_directory": ".",
+          "result": "PASS: 6 tests, 0 failures, 0 errors, 0 skipped; root read XML. Review B remains open."
+        },
+        {
+          "channel": "automated",
+          "evidence_status": "root_run",
+          "evidence_time_local": "20:08",
+          "reported_by": "root",
+          "command": "Build-MoonWakerHostControl.ps1 -OutputDirectory ./.tmp/cp06-control-validation",
+          "working_directory": "host-services/control",
+          "result": "PASS: exit0; HostControl.exe 70144 bytes and Configurator.exe 139776 bytes. Build only; EXE not run, no deployment and no Windows/TV runtime acceptance."
+        },
+        {
+          "channel": "automated",
+          "evidence_status": "root_accepted",
+          "evidence_date": "2026-09-05",
+          "reported_by": "root",
+          "command": ".\\gradlew.bat :app:testNonRootDebugUnitTest --offline --no-daemon",
+          "working_directory": ".",
+          "result": "PASS: exit0 BUILD SUCCESSFUL after 42s; root read 98 XML, 981 tests, 0 failures, 0 errors, 0 skipped."
+        },
+        {
+          "channel": "automated",
+          "evidence_status": "root_accepted",
+          "reported_by": "root",
+          "command": "targeted CP-06 contract classes",
+          "working_directory": ".",
+          "result": "PASS after 19s: three targeted classes passed after correcting only GameAutoWarmUpContractTest and GameTransitionCancelContractTest; the historical 981/2 failures were legacy literal contract assertions."
+        },
+        {
+          "channel": "review",
+          "evidence_status": "open",
+          "review_id": "CP06-B",
+          "command": "Root review B",
+          "working_directory": ".",
+          "result": "HISTORICAL OPEN: missing dedicated game_access_revoked message; child parkPreparingTransport returns true instead of denying park. Superseded by the final root review record below."
+        },
+        {
+          "channel": "review",
+          "evidence_status": "root_accepted",
+          "review_id": "CP06-final",
+          "reported_by": "root",
+          "command": "Root review B final",
+          "working_directory": ".",
+          "result": "ACCEPTED for scoped implementation/automated acceptance: Game revocation EN/PL and child parkPreparingTransport=false are fixed; Console cleanupRequired is a UI gate without fake cleanup/removal, launchSequence protects a newer game, and the existing 60s cycle closes end/onResume. CP-06 is done only for automated scope; Windows/TV remains pending."
+        }
+      ],
+      "non_goals": [
+        "No unrelated cleanup, commits, deployment or automatic broad host actions.",
+        "No duplicate state owner or wholesale activity rewrite."
+      ],
+      "work": {
+        "owner": "cp_enforcement_audit",
+        "started_at": "2026-09-05T18:00:16.0652098+02:00",
+        "completed_at": "2026-09-05T20:24:31.5394396+02:00",
+        "summary": "Root accepted CP-06 for scoped implementation and automated acceptance under cp_enforcement_audit, with cp01_gateway_tests providing the terminal Console refreshChildBindingStates explicit profile gate and stale callback correlation. Game lifecycle/countdown/toasts/cutoff/end, ChildSessionCountdown helper, PlayniteTransitionGateway connection getter, child_session_strings EN/PL and tests are covered. Contract uses existing closingStream, no quitApp/reset, heartbeat20s, host grace120s and up to 300s failure tolerance; no durable child autoresume/free retained, Game finish triggers Console status refresh, and no new ActivityResult transport. Root accepted the final Gradle run: 98 XML, 981 tests, 0 failures, 0 errors, 0 skipped; targeted three-class run passed after correcting only the two legacy literal contract assertions. Game revocation EN/PL, child parkPreparingTransport=false, cleanupRequired UI gating, newer-game launchSequence protection and existing 60s cycle end/onResume are accepted. Windows/TV runtime acceptance remains pending; CP-06 is done only for automated scope.",
+        "files_changed": [],
+        "blockers": []
+      }
+    },
+    {
+      "id": "CP-07",
+      "title": "Integracja i akceptacja na urządzeniach",
+      "status": "in_progress",
+      "depends_on": [
+        "CP-01",
+        "CP-02",
+        "CP-03",
+        "CP-04",
+        "CP-05",
+        "CP-06"
+      ],
+      "scope": [
+        "CHILD_PROFILES_DESIGN.md",
+        "child-profiles.state.json",
+        "MOONWAKER_ARCHITECTURE.md",
+        "host-services/version.json",
+        "host-services/",
+        "app/"
+      ],
+      "requirements": [
+        "Pełna walidacja Android/host, wersjonowanie i migracja/rollback.",
+        "Manualna akceptacja host/TV i awarii, z tolerancją awaryjną do 300 s oraz sprawdzeniem zachowania obcych procesów.",
+        "CP-03 używa istniejącego Bridge background loop i supervisor/restart, z persisted child-session lease 120 s oraz Gateway checkpointem 30 s; kontrakt POST /child/session jest zapisany scoped, a finalna integracja/runtime pozostaje CP-07.",
+        "Capability włączone dopiero z pełnym enforcement; dokumentacja rozdziela dowody od planów.",
+        "Read-only: schema 2→3 zachowuje dane, a stary host odrzuca schema 3; punkt odniesienia to host 0.7.79/build 2026.09.05/protocol 6 i assemblies 0.7.79.0.",
+        "Capability pozostaje domyślnie wyłączone (false) do pełnej akceptacji CP-07; przełącznik jest zaimplementowany jako jeden lokalny bool w istniejącym config Gateway, startup-only po restarcie, bez nowego GUI ani mutacji LAN; public API addytywne, protocol 6/capability 1 bez zmiany.",
+        "Przyszła autoryzowana akceptacja i rollback: przy zatrzymanych writerach oraz z istniejącą blokadą skopiować gateway/gateway.json schema2 przed migracją; osobno zachować child-time-usage.json, jeśli istnieje. Powrót do pakietu schema2 wykonać przez odtworzenie kopii, bez ręcznego obniżania schema_version; kopie i runtime nie są wykonane ani potwierdzone.",
+        "Rzeczywista instalacja używa domyślnie C:\\Tools\\WakePlayHost, a customInstRoot musi być respektowany; nie tworzyć backup frameworka ani skryptów."
+      ],
+      "active_ownership": {
+        "cp01_identity": [
+          "lokalny config child_profiles_enabled, default false, startup-only i restart",
+          "host patch 0.7.80/protocol 6",
+          "korekta status/physical profile paths, optional endpoint read i fixture child po manual acceptance; root fix review i automated validation PASS"
+        ],
+        "cp01_gateway_tests": [
+          "Android 12.2.23",
+          "code344+assemble"
+        ],
+        "root": [
+          "Build-HostServices z dołączonym wcześniej pomijanym TestHostControl"
+        ],
+        "child_visibility": [
+          "Read-only diagnoza Host Control → registry/grants → Gateway capability/profile summary → Android selection",
+          "Weryfikacja istniejących regresji flagi, nagłówka capability i listingu profilu dziecka; requested reasoning xhigh"
+        ]
+      },
+      "acceptance_criteria": [
+        "Pełne testNonRootDebugUnitTest/assembleNonRootDebug i Build-HostServices.ps1.",
+        "Rzeczywista gra:75min poprzez kontrolowany zegar testowy, stop/start, cutoff i brak przejęcia.",
+        "Rzeczywista Windows/TV acceptance pending: nowy child z pustą biblioteką; ręczne multi-share/cancel/revoke; 75 min stop/start bez naliczania biblioteki; koniec okna; logout/input cutoff; własna gra only; usage po restarcie <=300 s; profil dorosły bez regresji.",
+        "Awaria/restart może dać najwyżej 300 s tolerancji przy zachowaniu całodziennego usage; plan, koniec czasu i exact own-session stop pozostają poprawne.",
+        "Upgrade/downgrade/legacy, IPC ACL, prywatność diagnostyki, brak sekretów."
+      ],
+      "tests": [
+        "Pełne testNonRootDebugUnitTest/assembleNonRootDebug i Build-HostServices.ps1.",
+        "Rzeczywista gra:75min poprzez kontrolowany zegar testowy, stop/start, cutoff i brak przejęcia.",
+        "Awaria/restart może dać najwyżej 300 s tolerancji przy zachowaniu całodziennego usage; plan, koniec czasu i exact own-session stop pozostają poprawne.",
+        "Upgrade/downgrade/legacy, IPC ACL, prywatność diagnostyki, brak sekretów."
+      ],
+      "validation": [
+        {
+          "channel": "automated",
+          "evidence_status": "root_confirmed",
+          "reported_by": "root",
+          "command": "APK artifact and aapt dump badging",
+          "working_directory": "app",
+          "result": "PASS: app-nonRoot-debug.apk 45315388 bytes, SHA256 BF0CAF9764441FC4E7E5028C8471FF7608DC1B741B7581D2AA9BE48D66D1C024; com.limelight.debug version 12.2.23 code344 minSDK21 target34. Build/artifact only, no runtime or deployment."
+        },
+        {
+          "channel": "automated",
+          "evidence_status": "author_reported",
+          "reported_by": "cp01_gateway_tests",
+          "command": "assembleNonRootDebug --offline --no-daemon",
+          "working_directory": ".",
+          "result": "PASS on JDK17. JDK24 attempt reported Unsupported major 68. Android build/artifact evidence is ready; final root documentation review is accepted, and CP-07 remains pending only actual Windows/TV acceptance."
+        },
+        {
+          "channel": "review",
+          "evidence_status": "root_review",
+          "reported_by": "root",
+          "command": "host patch 0.7.80/protocol 6 review",
+          "working_directory": "host-services",
+          "result": "PASS for code correction review; root-verified host build and installer artifact evidence are recorded below. Final root documentation review is accepted, and CP-07 remains pending only actual Windows/TV acceptance."
+        },
+        {
+          "channel": "automated",
+          "evidence_status": "root_confirmed",
+          "reported_by": "root",
+          "command": "Build-HostServices -OutputDirectory .\\host-services\\dist-cp07",
+          "working_directory": "host-services",
+          "result": "PASS: Gateway 171/171, Bridge 242/242, GatewayService PASS, Broker 15/15 and CredentialProvider static/protocol/x64 build PASS. The first full run stopped only at Legendary download because of sandbox network failure; an approved-network -SkipTests retry exited 0 without duplicating the already passed tests."
+        },
+        {
+          "channel": "automated",
+          "evidence_status": "root_confirmed",
+          "reported_by": "root",
+          "command": "Read dist-cp07 installer embedded ZIP and artifact metadata",
+          "working_directory": "host-services\\dist-cp07",
+          "result": "PASS: MoonWakerHostInstaller.exe 9437696 bytes, SHA256 526C6BA52880B6AE0B5063CEE465A0AA31F7A68BFE4A679614083DF062425D9E, file version 0.7.80.0; embedded ZIP 123 entries, version 0.7.80/protocol 6 and CRCall PASS; ChildProfileForms.cs, Gateway, Bridge and version bytes match the current tree; Configurator.exe 140288 bytes and Broker.exe 44032 bytes present. ReflectionOnly inspector was unsupported, so fallback Python ZIP read PASS. Installer was not executed and no deployment/runtime acceptance is claimed."
+        },
+        {
+          "channel": "windows_tv_runtime",
+          "evidence_status": "root_confirmed_partial",
+          "reported_by": "root",
+          "command": "adb -s192.168.1.31:5555 install -r app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+          "working_directory": ".",
+          "result": "PARTIAL: Success; APK 12.2.23/code344 with the previously verified SHA256 BF0CAF9764441FC4E7E5028C8471FF7608DC1B741B7581D2AA9BE48D66D1C024 installed on TV. The app was not launched, tests were not run and the host was not installed by root. This is not Windows/TV acceptance PASS."
+        },
+        {
+          "channel": "windows_tv_runtime",
+          "evidence_status": "user_reported_defect",
+          "reported_by": "user",
+          "command": "Manual HostControl status check after user host installation",
+          "working_directory": ".",
+          "result": "DEFECT FOUND during manual acceptance: HostControl showed `Status niedostępny / property discord_bridge cannot be found`. Root diagnosis is that Invoke-MoonWakerHostControl.ps1 enumerates child as a Windows profile although child intentionally has no such endpoints; Discord bridge code is unchanged."
+        },
+        {
+          "channel": "review",
+          "evidence_status": "root_review_partial",
+          "reported_by": "root",
+          "command": "CP-07 HostControl status/physical-profile-path correction review",
+          "working_directory": "host-services",
+          "result": "PASS: cp01_identity correction is limited to status/physical profile paths, optional endpoint read and fixture child; root fix review and automated validation passed. The user retest remains pending."
+        },
+        {
+          "channel": "automated",
+          "evidence_status": "root_confirmed",
+          "reported_by": "root",
+          "command": "Build-HostServices.ps1 -OutputDirectory .\\host-services\\dist-cp07-0.7.81",
+          "working_directory": "host-services",
+          "result": "PASS: exit0; Gateway 171/171, Bridge 242/242, GatewayService PASS, Broker 15/15, TestHostControl self-tests PASS including child and missing optional endpoints, and CredentialProvider static/protocol/x64 build PASS. Temporary fixture tests only; host was not installed and services were not run."
+        },
+        {
+          "channel": "automated",
+          "evidence_status": "root_confirmed",
+          "reported_by": "root",
+          "command": "Read dist-cp07-0.7.81 installer embedded ZIP and artifact metadata",
+          "working_directory": "host-services\\dist-cp07-0.7.81",
+          "result": "PASS: MoonWakerHostInstaller.exe 9438208 bytes, SHA256 04F30DD8B39E1BE5EA5AEF24B0DCCE517118FE37683B7F0D62E86C8E957B1B5B, embedded ZIP 123 entries, version 0.7.81/protocol 6 and CRC PASS; Invoke-MoonWakerHostControl.ps1 bytes match the current tree; diffcheck PASS. The original 0.7.80 artifact remains historical. Installer was not executed and no deployment/runtime acceptance is claimed."
+        }
+      ],
+      "non_goals": [
+        "No unrelated cleanup, commits, deployment or automatic broad host actions.",
+        "No duplicate state owner or wholesale activity rewrite."
+      ],
+      "work": {
+        "owner": "root",
+        "coordinator": "root",
+        "started_at": "2026-09-05T20:24:31.5394396+02:00",
+        "completed_at": null,
+        "summary": "CP-07 is in_progress after CP-06 scoped automated acceptance. cp01_identity delivered the local Gateway config child_profiles_enabled default false, startup-only/restart behavior and host patch 0.7.80/protocol 6; cp01_gateway_tests delivered Android 12.2.23/code344+assemble. Root confirmed the APK and aapt metadata, the JDK17 assemble, the host patch review, the full host test/build evidence and the dist-cp07 installer artifact. Final root documentation review is accepted. The user installed the APK on TV under a separate command; manual acceptance then found the HostControl discord_bridge status defect. The limited cp01_identity correction and root automated review now pass; Build-HostServices 0.7.81 includes TestHostControl and the root-verified installer artifact. Real user retest remains pending, so actual Windows/TV acceptance is not PASS. Future authorized migration acceptance must copy gateway/gateway.json schema2 before migration with stopped writers and existing lock, keep child-time-usage.json separately if present, and rollback by restoring the copy and schema2 package without manually lowering schema_version. Default install root is C:\\Tools\\WakePlayHost and customInstRoot must be respected. No backup framework/script, runtime opt-in or deployment is claimed; host installation/manual acceptance is user-owned and deployment requires a separate user command.",
+        "files_changed": [],
+        "blockers": []
+      }
+    }
+  ],
+  "audits": [
+    {
+      "id": "cp_enforcement_audit",
+      "title": "Audyt odcięcia streamu i strażnika po awarii Gateway/Bridge",
+      "owner": "Luna Max",
+      "status": "completed",
+      "mode": "read_only",
+      "applicability": "historical_only_superseded_by_CD-17",
+      "scope": [
+        "CO-01"
+      ],
+      "objective": "Sprawdzić istniejące możliwości odcięcia właściwego streamu oraz działania strażnika/IPC, gdy Gateway albo Bridge jest niedostępny.",
+      "non_goals": [
+        "No CP-03 implementation or production changes.",
+        "No deployment, commit or push.",
+        "No enterprise security, generic auth/IPC framework or hypothetical threat checklist."
+      ],
+      "evidence": {
+        "automated": [],
+        "windows_tv_acceptance": []
+      },
+      "started_at": "2026-09-05T13:10:47.936541+02:00",
+      "completed_at": "2026-09-05T13:31:24.4085319+02:00",
+      "summary": "Read-only analysis completed. The audit recorded a stricter historical direction using the existing Profile Bridge supervisor, a Gateway-owned permit, exact-process identity and targeted Vibepollo UUID disconnect, but that direction is superseded for active scope by CD-17's accepted tolerance up to 300s with ordinary host supervision and periodic checkpoints. No service, endpoint, process or runtime test was run; no permit/watchdog was implemented; Gateway-client to Vibepollo-UUID binding is not currently durable. Targeted stream-disconnect semantics and Windows/TV failure behavior remain for CP-07 acceptance. Independent review also found manage_children loss during remote-sign-in/legacy-grant changes and missing resolved-parent validation in CreateChildProfile; corrections were verified in diff and regressions, while runtime acceptance remains pending.",
+      "findings": [
+        "Use the existing Profile Bridge supervisor and one Gateway-owned atomic short permit; do not add a second budget owner.",
+        "Reuse the existing exact-process PID/path/start/SID/session helper outside a live Bridge where needed.",
+        "Use targeted Vibepollo /api/clients/disconnect by UUID; no durable Gateway-client to Vibepollo-UUID assignment exists today.",
+        "Do not use global close-app, hard_reset, or Stop-Components paths.",
+        "The supervisor main loop can block on health/restart; use a small independent worker launched by the existing supervisor, without a new service or second balance.",
+        "The worker may reuse one-shot VibepolloTransport and profile DPAPI credential through stdin, including targeted disconnect after VibepolloBridge death.",
+        "Paid permit max5s and heartbeat liveness max15s are separate; cutoff is the minimum of paid permit, liveness, schedule and budget, with no free10s after Gateway crash.",
+        "No permit/watchdog implementation or runtime evidence was produced by this audit; targeted API semantics remain unconfirmed."
+      ],
+      "review_findings": [
+        {
+          "id": "CPA-01",
+          "status": "verified_scoped_automated",
+          "owner": "cp01_identity",
+          "finding": "Changing remote sign-in or legacy grant UI could lose manage_children; the correction was verified in diff and regressions. Windows/TV runtime remains pending."
+        },
+        {
+          "id": "CPA-02",
+          "status": "verified_scoped_automated",
+          "owner": "cp01_identity",
+          "finding": "CreateChildProfile must validate the resolved Windows parent; the correction was verified in diff and regressions. Windows/TV runtime remains pending."
+        }
+      ],
+      "blockers": []
+    }
+  ],
+  "current_task_id": "CP-07",
+  "next_task_id": null,
+  "known_risks": [
+    {
+      "id": "CR-01",
+      "risk": "Ręczne granty mogą pozostawić dziecko z pustą lub niepełną biblioteką, jeśli rodzic nie udostępni gry.",
+      "mitigation": "Nowe dziecko startuje z pustym allowed_game_keys; panel pokazuje wszystkie własne dzieci i zapisane checkboxy, a pusta biblioteka wyjaśnia rodzicowi, jak dodać grę."
+    },
+    {
+      "id": "CR-02",
+      "risk": "Shared Windows is not a security sandbox against local users or independent Sunshine clients.",
+      "mitigation": "State bounded MoonWaker guarantee, prohibit exposed desktop/launcher, require host stream cutoff."
+    },
+    {
+      "id": "CR-03",
+      "risk": "Existing per-profile hard reset may kill parent's games.",
+      "mitigation": "Separate exact-session process stop; negative stale/PID-reuse tests."
+    },
+    {
+      "id": "CR-04",
+      "risk": "Clock changes/restarts/concurrent devices could reset or overspend quota.",
+      "mitigation": "Gateway checkpoints around 30–60 s, clean stop, single active session, monotonic elapsed and durable date; restart preserves all-day usage and accepted failure tolerance is up to 300 s."
+    },
+    {
+      "id": "CR-05",
+      "risk": "Gateway unavailable cannot itself enforce game stop.",
+      "mitigation": "Active scope accepts up to 300s emergency tolerance; use the existing Bridge loop/supervisor restart, proposed persisted child-session lease around 120s and Gateway checkpoints around 30–60s, preserve all-day usage across restart, and stop only the exact child session. Capability stays blocked until implementation and runtime behavior are proven."
+    },
+    {
+      "id": "CR-06",
+      "risk": "Concurrent MW-POLISH-01 modifies profile UI and other files.",
+      "mitigation": "No production/state edits here; rebase plan against latest tree before CP-05."
+    },
+    {
+      "id": "CR-07",
+      "risk": "TV create/edit requires new privileged registry write boundary.",
+      "mitigation": "Scoped local IPC with validated parent session and exact schema; no broad config or password exposure."
+    },
+    {
+      "id": "CR-08",
+      "risk": "Natychmiastowe odebranie dostępu podczas aktywnej gry może zakończyć niewłaściwą sesję albo rozjechać rozliczenie czasu.",
+      "mitigation": "Proponowane odcięcie wiązać z hostem, dzieckiem, execution profile, game/session/process token i rewizją; zachować wykorzystany czas, zatrzymać naliczanie po cutoff i nie dotykać sesji innych dzieci."
+    }
+  ],
+  "open_items": [
+    {
+      "id": "CO-01",
+      "status": "runtime_acceptance_required",
+      "question": "Verify existing host supervision and periodic checkpoints preserve usage and exact-session cutoff through Gateway or Bridge unavailability within the accepted 300s tolerance.",
+      "audit_id": "cp_enforcement_audit",
+      "audit_outcome": "Read-only analysis completed without service/endpoint/process/runtime tests. Its stricter worker/permit/heartbeat direction is historical and superseded by CD-17; CP-03 scoped automated evidence now covers the existing Bridge loop/supervisor restart, persisted child-session lease120s and Gateway checkpoint30s, with up to 300s emergency tolerance. Exact targeted-disconnect behavior and Windows/TV runtime remain unverified.",
+      "blocks": [
+        "CP-07"
+      ]
+    },
+    {
+      "id": "CO-02",
+      "status": "scoped_automated_verified",
+      "question": "Confirm stable canonical provider/game keys, alias resolution and parent-catalog membership on fixture libraries.",
+      "blocks": []
+    },
+    {
+      "id": "CO-03",
+      "status": "review_recommended",
+      "question": "Review proposed product defaults (shared saves, exact forced expiry stop, active-revocation cutoff, emergency tolerance up to 300s). Planning proceeds with documented choices.",
+      "blocks": []
+    }
+  ],
+  "delegation": {
+    "requested_model": "gpt-5.6-luna",
+    "requested_reasoning_effort": "xhigh",
+    "supervisor": "root",
+    "agents": [
+      {
+        "name": "child_host_design",
+        "status": "errored_usage_limit",
+        "deliverable_received": false
+      },
+      {
+        "name": "child_ui_design",
+        "status": "errored_usage_limit",
+        "deliverable_received": false
+      },
+      {
+        "name": "cp_enforcement_audit",
+        "status": "completed",
+        "model": "gpt-5.6-luna",
+        "task_id": "CP-06",
+        "mode": "implementation",
+        "scope": [
+          "Game lifecycle/countdown/toasts/cutoff/end",
+          "ChildSessionCountdown helper",
+          "PlayniteTransitionGateway connection getter",
+          "child_session_strings EN/PL",
+          "CP-06 test"
+        ],
+        "deliverable_received": true,
+        "validation": [
+          {
+            "channel": "automated",
+            "command": "standalone JDK24 javac + JUnit4",
+            "working_directory": ".",
+            "result": "PASS: existing ChildSessionCountdown helper 9/9; final CP-06 automated evidence is recorded below."
+          },
+          {
+            "channel": "automated",
+            "evidence_status": "root_accepted",
+            "reported_by": "root",
+            "command": ".\\gradlew.bat :app:testNonRootDebugUnitTest --offline --no-daemon",
+            "working_directory": ".",
+            "result": "PASS: exit0 BUILD SUCCESSFUL after 42s; root read 98 XML, 981 tests, 0 failures, 0 errors, 0 skipped."
+          },
+          {
+            "channel": "review",
+            "evidence_status": "root_accepted",
+            "reported_by": "root",
+            "command": "Root review B final",
+            "working_directory": ".",
+            "result": "ACCEPTED for scoped implementation/automated acceptance; Windows/TV runtime remains pending."
+          }
+        ],
+        "summary": "CP-06 implementation delivered under cp_enforcement_audit and accepted by root for scoped implementation/automated acceptance: Game lifecycle/countdown/toasts/cutoff/end, ChildSessionCountdown helper, PlayniteTransitionGateway connection getter, child_session_strings EN/PL and tests. Final Android run passed 98 XML/981 tests with zero failures/errors/skipped; Windows/TV runtime remains pending."
+      },
+      {
+        "name": "cp01_identity",
+        "status": "running",
+        "task_id": "CP-07",
+        "mode": "implementation",
+        "scope": [
+          "lokalny config child_profiles_enabled, default false, startup-only i restart",
+          "host patch 0.7.80/protocol 6"
+        ],
+        "deliverable_received": false,
+        "summary": "CP-07 local Gateway config child_profiles_enabled default false, startup-only/restart behavior and host patch 0.7.80/protocol 6 are implemented; the manual HostControl status/physical-profile-paths/optional-endpoint-read/fixture-child correction and root automated review pass. Root verified Build-HostServices 0.7.81 with TestHostControl; real user retest remains pending."
+      },
+      {
+        "name": "cp01_gateway_tests",
+        "status": "running",
+        "model": "gpt-5.6-luna",
+        "task_id": "CP-07",
+        "mode": "implementation",
+        "scope": [
+          "Android 12.2.23",
+          "code344+assemble"
+        ],
+        "deliverable_received": false,
+        "summary": "CP-07 Android 12.2.23 and code344+assemble are built, with the APK artifact and metadata root confirmed; final documentation review is accepted. CP-07 remains in_progress only for actual Windows/TV acceptance."
+      },
+      {
+        "name": "cp_state",
+        "status": "running",
+        "mode": "documentation",
+        "scope": [
+          "CHILD_PROFILES_DESIGN.md",
+          "child-profiles.state.json"
+        ],
+        "deliverable_received": false
+      },
+      {
+        "name": "cp05_provider_owner",
+        "owner": "cp_enforcement_audit",
+        "status": "completed",
+        "model": "gpt-5.6-luna",
+        "task_id": "CP-05",
+        "mode": "implementation",
+        "scope": [
+          "app/src/main/java/com/limelight/console/ConsoleStreamTransitionCoordinator.java",
+          "corresponding Coordinator test"
+        ],
+        "deliverable_received": true,
+        "summary": "ProviderOwner actor-correlation slice delivered with diffcheck PASS; XML CoordinatorTest is PASS 59/59 and covered by the Android 954-test fullrun. CP-05 full integration is now root-coordinated and remains in_progress."
+      }
+    ],
+    "fallback": "After user 'kontynuuj', root completed inspection/design locally. No completed independent agent review claimed."
+  },
+  "validation": [
+    {
+      "command": "Read AGENTS.md, MOONWAKER_ARCHITECTURE.md, CODEX_WORKFLOW.md, state.json, state.md in bounded chunks",
+      "result": "passed; full source reading after initial truncated bulk output"
+    },
+    {
+      "command": "Targeted rg/Get-Content for Gateway/profile/cache/lifecycle/metadata; official Playnite SDK and PEGI source lookup",
+      "result": "completed; findings and source URLs in design"
+    },
+    {
+      "command": "PowerShell ConvertFrom-Json and task/decision/dependency/path checks; git diff --check and new-file whitespace check",
+      "result": "PASS: ConvertFrom-Json; unique task/decision IDs; all task dependencies and scope/source paths exist; both new files without trailing whitespace. git diff --check exit0 (existing-tree LF/CRLF warnings only)."
+    },
+    {
+      "command": "git diff --stat; git status --short -uno; git status --short -- CHILD_PROFILES_DESIGN.md child-profiles.state.json; git rev-parse HEAD",
+      "result": "Reviewed task-owned files (two new documentation files) and concurrent tracked status. HEAD unchanged at5744415f4d9de3e5f601b5beec715cfee4316bc5. No builds needed for docs-only task."
+    },
+    {
+      "command": "PowerShell ConvertFrom-Json and scoped child-profile consistency checks after manual-sharing revision",
+      "result": "PASS: revision 2; 7 unique task IDs, 15 unique decision IDs, dependencies/scope/source paths valid; CD-04 superseded and CD-15 required; example allowed_game_keys empty; no active age/rating requirements."
+    },
+    {
+      "command": "rg -n -i age/rating terms in CHILD_PROFILES_DESIGN.md and child-profiles.state.json; review modified sections",
+      "result": "PASS: remaining age/rating references are the superseded CD-04, historical baseline, or explicit statement that ratings are not required; active CP-02/CP-04 requirements use manual grants."
+    },
+    {
+      "command": "git diff --check; scoped review of CHILD_PROFILES_DESIGN.md and child-profiles.state.json",
+      "result": "PASS: no whitespace errors reported; only the two task-owned documentation files were edited in this update; no build/implementation/commit/deploy performed."
+    },
+    {
+      "command": "PowerShell ConvertFrom-Json plus scoped child-state/design consistency checks",
+      "result": "PASS: revision 3; CP-01 is in_progress with owner cp01_identity; CP-02–CP-07 remain planned; no task is done; child_profiles_v1 is disabled until CP-07; cp_enforcement_audit is in_progress/read_only for CO-01; manual sharing, multiselect, zero ratings and empty-library rules remain present."
+    },
+    {
+      "command": "git diff --check; UTF-8 scoped trailing-whitespace scan for CHILD_PROFILES_DESIGN.md and child-profiles.state.json",
+      "result": "PASS: git diff --check exit 0 and no trailing whitespace; scoped status shows only the two feature documents as untracked."
+    },
+    {
+      "command": "Record cp_enforcement_audit read-only CO-01 result and inspect CP-01 progress/delegation",
+      "result": "Recorded analysis only: existing ProfileBridge supervisor plus Gateway-owned atomic short permit, existing exact-process helper, and targeted Vibepollo UUID disconnect are the minimal direction; no services, endpoints, processes or runtime were tested, no permit/watchdog was implemented, and no validation PASS is claimed. CP-01 remains in_progress under root review with no production tests reported."
+    },
+    {
+      "command": "PowerShell ConvertFrom-Json plus scoped child-state/design consistency checks after audit handoff",
+      "result": "PASS: CP-01 remains in_progress/running; CP-02–CP-07 remain planned; no task is done; child_profiles_v1.enabled is false; cp_enforcement_audit is completed/read_only with empty automated and Windows/TV evidence channels; cp_state is the documentation owner."
+    },
+    {
+      "command": "Record supplemental cp_enforcement_audit static direction for CP-03",
+      "result": "Recorded accepted direction only: existing-supervisor worker, Gateway-owned paid permit max5s, separate heartbeat liveness max15s, exact-process identity, one-shot VibepolloTransport/DPAPI stdin and targeted UUID disconnect. No CP-03 implementation, service/endpoint/process/runtime test or validation PASS claim."
+    },
+    {
+      "command": "PowerShell ConvertFrom-Json plus scoped child-state/design consistency checks after CP-03 direction update",
+      "result": "PASS: CP-03 remains planned and depends on CP-01/CP-02; capability remains enabled=false; audit remains completed/read_only; CP-01 remains in_progress with no production tests reported; separate automated and Windows/TV evidence channels remain empty."
+    },
+    {
+      "command": "PowerShell ConvertFrom-Json plus scoped CP-01/CP-03/audit/delegation consistency check",
+      "result": "PASS: CP-01 is in_progress/running with wakeplay_gateway.py work under review and empty production validation; CP-03 remains planned with dependencies CP-01/CP-02; no task is done; capability enabled=false; read-only audit completed with no service/endpoint/process/runtime evidence; cp_state is documentation owner."
+    },
+    {
+      "command": "git diff --check; UTF-8 scoped trailing-whitespace scan for the two feature documents",
+      "result": "PASS: no whitespace errors; Git emitted only existing LF/CRLF normalization warnings for unrelated tracked files; state.json/state.md remain unchanged."
+    },
+    {
+      "command": "Scoped active-rule semantic wording check for child-to-adult Windows sign-in",
+      "result": "PASS: current design and active CP-05/CP-06/CD-16 rules use the precise meaning that MoonWaker does not automatically switch a child to an adult profile while Windows parent sign-in continues through the existing authorized path; historical entries were preserved."
+    },
+    {
+      "command": "PowerShell ConvertFrom-Json plus scoped CP-01/CP-02/CP-03/CP-07 and CD-07/CD-08/CD-17 consistency checks",
+      "result": "PASS: JSON parsed; CP-01 done scoped, CP-02 in_progress, CP-03/CP-07 planned, capability false, CD-07/CD-08 superseded by required CD-17, and active CP-03/CP-07 rules are consistent."
+    },
+    {
+      "command": "git diff --check; UTF-8 scoped trailing-whitespace scan for the two feature documents",
+      "result": "PASS: no whitespace errors and no trailing whitespace; only CHILD_PROFILES_DESIGN.md and child-profiles.state.json are untracked task documents, while state.json/state.md remain unchanged."
+    },
+    {
+      "command": "PowerShell ConvertFrom-Json plus scoped CP-01/CP-02/CP-03/CP-07 handoff and ownership checks",
+      "result": "PASS: JSON parsed; CP-01/CP-02 done scoped, CP-03 in_progress with cp01_identity and cp_enforcement_audit, CP-04/CP-07 pending, capability false, and 300s/lease/checkpoint direction present."
+    },
+    {
+      "command": "git diff --check; UTF-8 scoped trailing-whitespace scan for the two feature documents",
+      "result": "PASS: no whitespace errors and no trailing whitespace; state.json/state.md remain unchanged."
+    },
+    {
+      "command": "PowerShell ConvertFrom-Json plus scoped CP-03/CP-04 handoff checks",
+      "result": "PASS: CP-03 done scoped automated, CP-04 in_progress with backend/Windows UI/Android UI ownership, CP-05–CP-07 planned, capability false, Windows/TV pending."
+    },
+    {
+      "command": "PowerShell ConvertFrom-Json plus scoped CP-03/CP-04/CP-05/API consistency checks",
+      "result": "PASS: CP-03 done scoped, CP-04 and CP-05 in_progress, CP-06/CP-07 pending, CD-18 required, frozen POST API present, capability false, and CP-05 targeted test remains pending during active integration."
+    },
+    {
+      "command": "git diff --check; UTF-8 scoped trailing-whitespace scan for the two feature documents",
+      "result": "PASS: no whitespace errors or trailing whitespace; state.json/state.md remain unchanged."
+    },
+    {
+      "command": "PowerShell ConvertFrom-Json plus scoped CP-04/CP-05/CP-06 status, ownership, endpoint and whitespace checks; git diff --check",
+      "result": "PASS: revision 21 before this validation record; CP-01..CP-04 done scoped, CP-05 in_progress with three active owners and three PENDING records, CP-06 helper in_progress, CP-07 planned, capability false, Gateway 167/167 evidence retained, private Bridge/public CP-05 endpoint distinction and expected_revision aligned, no trailing whitespace, root state diff empty, git diff --check exit 0."
+    },
+    {
+      "command": "PowerShell ConvertFrom-Json plus scoped CP-05 acceptance and CP-06 handoff/status/ownership/contract checks; UTF-8 trailing-whitespace scan; git diff --check",
+      "result": "PASS: revision 24 before this validation record; CP-01..CP-05 done scoped automated, CP-06 in_progress implementation under cp_enforcement_audit, CP-07 planned, capability false, Android 97 XML/972 tests with zero failures/errors/skipped, Gateway 167/167, CP-05 has no pending validation, CP-06 closingStream/heartbeat20s/grace120s/tolerance300s contract recorded, root state.json/state.md unchanged, no trailing whitespace, git diff --check exit 0. No new build or runtime test was run in this documentation update."
+    },
+    {
+      "command": "python -m unittest -v test_child_capability.py",
+      "working_directory": "host-services/gateway",
+      "evidence_status": "root_confirmed",
+      "reported_by": "child_visibility",
+      "result": "PASS: 4/4; missing/false/non-boolean values remain disabled, literal true enables, and changing the file requires a new GatewayState (restart)."
+    },
+    {
+      "command": "python -m unittest -v test_gateway.LoginBrokerGatewayTest.test_child_profile_is_hidden_from_legacy_and_public_game_routes test_gateway.LoginBrokerGatewayTest.test_active_parent_allows_child_use_without_remote_sign_in test_gateway.LoginBrokerGatewayTest.test_cancel_and_profile_summary_expose_coarse_states",
+      "working_directory": "host-services/gateway",
+      "evidence_status": "root_confirmed",
+      "reported_by": "child_visibility",
+      "result": "PASS: 3/3; child remains out of legacy surface while disabled, parent execution and profile summary behavior remain correct."
+    },
+    {
+      "command": "python -m unittest -v test_gateway.LoginBrokerGatewayTest.test_child_authorization_binds_parent_execution_and_needs_own_remote_grant test_gateway.LoginBrokerGatewayTest.test_child_management_requires_fresh_parent_pin_session",
+      "working_directory": "host-services/gateway",
+      "evidence_status": "root_confirmed",
+      "reported_by": "child_visibility",
+      "result": "PASS: 2/2; child authorization preserves actor/parent execution separation and management remains parent-PIN/session bound."
+    },
+    {
+      "command": "python -m unittest -v test_child_profiles.py",
+      "working_directory": "host-services/gateway",
+      "evidence_status": "root_confirmed",
+      "reported_by": "child_visibility",
+      "result": "PASS: 4/4; child grants, parent authorization and management lease regressions remain green."
+    },
+    {
+      "command": "python -m unittest -v test_child_sessions_http.ChildSessionsHttpTest.test_old_client_does_not_see_child_and_capability_is_fail_closed test_child_sessions_http.ChildSessionsHttpTest.test_negotiated_profiles_project_child_without_parent_identity",
+      "working_directory": "host-services/gateway",
+      "evidence_status": "root_confirmed",
+      "reported_by": "child_visibility",
+      "result": "PASS: 2/2; missing capability header hides the child, while the negotiated header projects the child with parent execution metadata and no parent identity leak."
+    },
+    {
+      "command": "python -m unittest -v test_child_management.ChildManagementGatewayTest.test_child_api_is_fail_closed_until_capability_is_enabled",
+      "working_directory": "host-services/gateway",
+      "evidence_status": "root_confirmed",
+      "reported_by": "child_visibility",
+      "result": "PASS: 1/1; child management routes fail closed while the server capability is disabled."
+    }
+  ],
+  "agent_update_protocol": {
+    "canonical_file": "child-profiles.state.json",
+    "design_file": "CHILD_PROFILES_DESIGN.md",
+    "allowed_task_statuses": [
+      "planned",
+      "ready",
+      "in_progress",
+      "blocked",
+      "done"
+    ],
+    "before_work": [
+      "Read five root source documents plus both child design/state files.",
+      "Recheck HEAD, current dirty diff and concurrent ownership.",
+      "Root assigns exactly one dependency-ready task; update owner/timestamp/revision."
+    ],
+    "after_work": [
+      "Record exact changed files, command/results and limitations; append history, do not rewrite previous entries.",
+      "Set done only after task acceptance; null current_task_id at handoff and next only dependency-ready.",
+      "Synchronize human design if decisions change; proposed is not user-approved.",
+      "Do not overwrite unrelated state.json/state.md, secrets, builds or prior work; no commit/push without request."
+    ]
+  },
+  "history": [
+    {
+      "at": "2026-09-05",
+      "agent": "root",
+      "task_id": null,
+      "event": "design_created",
+      "summary": "Full required reading and code-grounded design completed. Luna Max agents stopped at usage limit; root completed design after user continuation. Implementation not started."
+    },
+    {
+      "at": "2026-09-05",
+      "agent": "root",
+      "task_id": null,
+      "event": "design_validation_completed",
+      "summary": "JSON structure, IDs/dependencies, source/scope paths and whitespace validated. Existing tracked changes belong to parallel work; this task owns only two new documents. No implementation or runtime acceptance claimed."
+    },
+    {
+      "at": "2026-09-05",
+      "agent": "sharing_plan_update",
+      "task_id": null,
+      "event": "manual_game_sharing_revision",
+      "summary": "Replaced the active age-rating plan with explicit per-game parent grants/revokes. Added CD-15 as the required user decision, retained CD-04 as superseded history, aligned CP-02/CP-04, initialized new children with empty allowed_game_keys, and documented proposed active-session cutoff with preserved usage."
+    },
+    {
+      "at": "2026-09-05T13:10:47.936541+02:00",
+      "agent": "cp01_identity",
+      "task_id": "CP-01",
+      "event": "task_started",
+      "summary": "Started CP-01 on the current clean tracked baseline with the scoped Gateway auth/tests, Configurator model/tests and BrokerCore/Service/Tests files. child_profiles_v1 remains disabled until full CP-07 acceptance and root review; CP-02–CP-07 remain planned. Started independent Luna Max read-only cp_enforcement_audit for CO-01 without CP-03 implementation or deployment."
+    },
+    {
+      "at": "2026-09-05T13:15:15.7724614+02:00",
+      "agent": "root",
+      "task_id": null,
+      "event": "home_network_security_scope_preference",
+      "summary": "Recorded the user's binding preference for minimal home-network security: reuse existing pairing and parent PIN, keep TLS/pinning, and avoid enterprise security, generic auth/IPC frameworks and hypothetical threat checklists. Functional child access/quota enforcement, no automatic parent login and exact-game stop remain required."
+    },
+    {
+      "at": "2026-09-05T13:35:54.280752+02:00",
+      "agent": "cp_enforcement_audit",
+      "task_id": null,
+      "event": "read_only_audit_completed",
+      "summary": "Completed the CO-01 read-only audit. Accepted direction is an existing-supervisor worker with a Gateway-owned paid permit max5s, separate heartbeat liveness max15s, exact-process identity, one-shot VibepolloTransport/DPAPI stdin and targeted UUID disconnect. No services, endpoints, processes or runtime were tested; no permit/watchdog was implemented; targeted API semantics remain unconfirmed."
+    },
+    {
+      "at": "2026-09-05T13:35:54.280752+02:00",
+      "agent": "cp01_identity",
+      "task_id": "CP-01",
+      "event": "implementation_progress_recorded",
+      "summary": "CP-01 remains in progress under root review while wakeplay_gateway.py changes continue. No production tests or runtime acceptance have been reported; CP-03 remains planned and dependent on CP-01/CP-02."
+    },
+    {
+      "at": "2026-09-05T13:59:20.4466276+02:00",
+      "agent": "root",
+      "task_id": null,
+      "event": "home_login_semantics_clarified",
+      "summary": "Clarified the active home-network rule: MoonWaker does not automatically switch a child to an adult profile; Windows parent sign-in continues through the existing authorized path. Historical wording remains preserved."
+    },
+    {
+      "at": "2026-09-05T14:27:02.2319535+02:00",
+      "agent": "root",
+      "task_id": "CP-01",
+      "event": "cp01_scoped_acceptance_cp02_started",
+      "summary": "Root accepted CP-01 for scoped implementation and automated acceptance: Gateway 116/116, child 4/4, Configurator 3 groups, Broker 15/15, py_compile and git diff check passed; PIN/resolved-parent and manage_children corrections were verified in diff/regressions. Windows/TV runtime remains pending and capability false. CP-02 started under cp01_identity on the Gateway/Configurator scope; GameProviderBridge.py is deferred to a separate post-auditor scope."
+    },
+    {
+      "at": "2026-09-05T15:05:22.7454403+02:00",
+      "agent": "root",
+      "task_id": "CP-02",
+      "event": "cp02_scoped_acceptance_cp03_started",
+      "summary": "Root accepted CP-02 for scoped automated acceptance: Bridge 163, Gateway 116, sharing 4, child profiles 4, Configurator 3 groups, independent injected child-library integration 4, py_compile and git diff check passed. No server/live runtime or Windows/TV acceptance claimed. CP-03 started with cp01_identity on Gateway sole usage/time control and cp_enforcement_audit on Bridge lifecycle, using the simple existing-loop/supervisor direction with proposed lease/checkpoints and up to 300s failure tolerance."
+    },
+    {
+      "at": "2026-09-05T16:23:47.409152+02:00",
+      "agent": "root",
+      "task_id": "CP-03",
+      "event": "cp03_scoped_acceptance_cp04_started",
+      "summary": "Root accepted CP-03 for scoped automated acceptance: Gateway 146/146, Bridge discover 242/242, no SKIP, deterministic DST 1200s, py_compile and git diff check passed; CP-04 started in parallel with cp01_identity backend, cp_enforcement_audit Windows ChildProfileForms.cs and cp01_gateway_tests Android UI/new strings. Windows/TV runtime remains pending and capability false."
+    },
+    {
+      "at": "2026-09-05T17:03:20.6211713+02:00",
+      "agent": "root",
+      "task_id": "CP-04",
+      "event": "cp04_contract_and_parallel_ui_progress",
+      "summary": "Recorded CP-04 Windows offscreen/compile and Android pre-integration compile evidence, frozen child-profile POST API semantics, and expanded integration ownership. CP-05 ProviderOwner actor-correlation code is ready with diffcheck PASS but targeted test remains pending during active Android CP-04 integration; no CP-05 done or external-block claim."
+    },
+    {
+      "at": "2026-09-05T18:02:23.6696408+02:00",
+      "agent": "root",
+      "task_id": "CP-04",
+      "event": "cp04_android_fullrun_evidence",
+      "summary": "Recorded Android full compile and unit evidence dated 2026-09-05: 96 files, 954 tests, 0 failures, 0 errors, 0 skipped, including Coordinator/countdown. CP-04 remains in_progress for hosttick without fakeheartbeat, parent manage_children/child use remote grants and the initial-bad-PIN busy-panel callback fix; Windows/TV remains pending."
+    },
+    {
+      "at": "2026-09-05T18:17:55.2951081+02:00",
+      "agent": "root",
+      "task_id": "CP-04",
+      "event": "cp04_scoped_acceptance_cp05_full_integration",
+      "summary": "Root accepted CP-04 for scoped implementation and automated acceptance: Gateway 159/159, Configurator/Broker/HostControl builds and checks, Android 954-test fullrun and final callback compile all passed. Windows/TV remains pending CP-07. CP-05 now moves to root-coordinated full API backend and Android Actor/Lifecycle integration with ownership after contract freeze; CP-06 helper remains partial."
+    },
+    {
+      "at": "2026-09-05T18:52:58.8001447+02:00",
+      "agent": "root",
+      "task_id": "CP-05",
+      "event": "cp04_status_synchronized_cp05_owners_and_pending_evidence",
+      "summary": "Synchronized the current status after CP-04 scoped automated acceptance: CP-04 is done scoped, while CP-05 is in_progress under cp01_identity, cp01_gateway_tests and cp_enforcement_audit. Gateway discovery is 167/167 PASS after the sparse ended replay correction, including child-only grant, deleted child and end replay; sessionless start deny, missing running timing/binding and common Gradle remain PENDING. cp_enforcement_audit has only a read-only CP-06 Game plan; CP-06 remains helper-only and not done. Windows/TV acceptance remains pending and capability stays false."
+    },
+    {
+      "at": "2026-09-05T19:22:15.5664775+02:00",
+      "agent": "root",
+      "task_id": "CP-05",
+      "event": "cp05_scoped_acceptance_cp06_implementation_started",
+      "summary": "Root accepted CP-05 for scoped implementation and automated acceptance after Gateway 167/167 PASS and Android :app:testNonRootDebugUnitTest --offline --no-daemon BUILD SUCCESSFUL: 97 XML, 972 tests, 0 failures, 0 errors, 0 skipped. The earlier 972/1 textual onResume contract failure was corrected behind initial selection and targeted validation passed. CP-06 now starts implementation under cp_enforcement_audit for Game lifecycle/countdown/toasts/cutoff/end, helper, connection getter, EN/PL strings and tests; Windows/TV runtime and capability remain pending."
+    },
+    {
+      "at": "2026-09-05T20:08:33.2245675+02:00",
+      "agent": "root",
+      "task_id": "CP-06",
+      "event": "cp06_checkpoint_b_author_evidence_review_open",
+      "summary": "Recorded CP-06 checkpoint B: cp_enforcement_audit reported child-only lifecycle exit, no retained/autoresume, own streamSessionId clearing, late-callback guards, stopConnection before the end dialog and Windows footer warning; compileNonRootDebugJavaWithJavac PASS and GameChildSessionContractTest 6/6 PASS. Root read the XML as 6 tests with zero failures/errors/skipped, while review B remains open for a dedicated game_access_revoked message and denial of child parkPreparingTransport; cp01_gateway_tests has the explicit profile-gate/stale-callback correction. CP-06 remains in_progress and Windows/TV/capability remain pending."
+    },
+    {
+      "at": "2026-09-05T20:27:54.402678+02:00",
+      "agent": "root",
+      "task_id": "CP-06",
+      "event": "cp06_scoped_acceptance_cp07_started",
+      "summary": "Root accepted CP-06 for scoped implementation and automated acceptance: Gradle 98 XML/981 tests with zero failures/errors/skipped, targeted three-class contract run PASS after legacy literal assertion corrections, Game revocation EN/PL and parkPreparingTransport=false accepted, Console cleanupRequired UI gate and newer-game launchSequence protection accepted, and existing 60s cycle closes end/onResume. Windows/TV remains pending. CP-07 starts in_progress under cp01_identity for local child_profiles_enabled default false/startup-only/restart and host patch 0.7.80/protocol 6, and cp01_gateway_tests for Android 12.2.23/code344+assemble; neither scope is PASS."
+    },
+    {
+      "at": "2026-09-05T20:10:17.4789117+02:00",
+      "agent": "root",
+      "task_id": "CP-06",
+      "event": "cp06_windows_footer_build_evidence",
+      "summary": "Recorded root automated Windows footer build: Build-MoonWakerHostControl.ps1 exited 0 and produced HostControl.exe 70144 bytes plus Configurator.exe 139776 bytes. This was build-only evidence; neither EXE was run, with no deployment and no Windows/TV runtime acceptance."
+    },
+    {
+      "at": "2026-09-05T20:30:44.4345613+02:00",
+      "agent": "root",
+      "task_id": "CP-07",
+      "event": "cp07_build_artifact_and_rollback_plan_recorded",
+      "summary": "Recorded CP-07 build/artifact evidence without claiming full acceptance: root confirmed app-nonRoot-debug.apk 45315388 bytes, SHA256 BF0CAF9764441FC4E7E5028C8471FF7608DC1B741B7581D2AA9BE48D66D1C024 and aapt metadata version12.2.23/code344/minSDK21/target34; JDK17 assemble was reported PASS and JDK24 reported Unsupported major68. Host patch 0.7.80 code review is PASS, while host tests/full packaging remain pending. The future authorized schema2 migration rollback procedure and default C:\\Tools\\WakePlayHost/customInstRoot rule were recorded; no copy, runtime opt-in or deployment is claimed."
+    },
+    {
+      "at": "2026-09-05T20:34:56.4179772+02:00",
+      "agent": "root",
+      "task_id": "CP-07",
+      "event": "cp07_host_build_artifact_verified",
+      "summary": "Root verified the CP-07 host build/artifact checkpoint: Build-HostServices recorded Gateway171/171, Bridge242/242, GatewayService PASS, Broker15/15 and CredentialProvider static/protocol/x64 build PASS; the approved-network -SkipTests retry exited 0 after the Legendary sandbox download failure without duplicating tests. dist-cp07 contains MoonWakerHostInstaller.exe 9437696 bytes, SHA256 526C6BA52880B6AE0B5063CEE465A0AA31F7A68BFE4A679614083DF062425D9E, file version 0.7.80.0, and the embedded ZIP read matched version0.7.80/protocol6, 123 entries, CRCall, current-tree bytes and Configurator/Broker artifacts. Installer execution, deployment and actual Windows/TV acceptance remain pending."
+    },
+    {
+      "at": "2026-09-05T21:20:16.1531886+02:00",
+      "agent": "root",
+      "task_id": "CP-07",
+      "event": "cp07_manual_acceptance_fix_0_7_81_verified",
+      "summary": "Manual acceptance first found HostControl `Status niedostępny / property discord_bridge cannot be found` after the user installed the APK; root did not install the host or run services. The limited status/physical-profile-paths/optional-endpoint-read/fixture-child correction passed root review and automated validation. Root verified Build-HostServices 0.7.81 with TestHostControl self-tests, installer 9438208 bytes SHA256 04F30DD8B39E1BE5EA5AEF24B0DCCE517118FE37683B7F0D62E86C8E957B1B5B, embedded ZIP 123 entries/version0.7.81/protocol6/CRC PASS and Invoke-MoonWakerHostControl.ps1 byte match. Real user retest remains pending; CP-07 is not done."
+    },
+    {
+      "at": "2026-09-05T21:40:45.0685263+02:00",
+      "agent": "child_visibility",
+      "task_id": "CP-07",
+      "event": "cp07_child_visibility_diagnosis_recorded",
+      "summary": "Read-only diagnosis found the installed 0.7.81 Gateway matches the current source by hash, Julia is enabled with the expected parent relationship and device grants, and the missing gateway.json child_profiles_enabled field is the direct cause of Android not listing Julia. GatewayState reads a literal true only at startup; Android already sends the child capability header. Existing capability, authorization, profile-summary, HTTP listing and management regressions passed 16/16. Runtime activation is separately pending under user-authorized enable_child_runtime; CP-07 remains in_progress, capability remains false, and no deployment is claimed."
+    },
+    {
+      "at": "2026-09-05T22:48:17.1238392+02:00",
+      "agent": "root",
+      "task_id": "CP-07",
+      "event": "manual_defect_fixes_started",
+      "summary": "User reported child library authorization, sharing save/list formatting and inherited Discord UI defects; requested profile toolbar redesign. Three Luna xhigh agents assigned disjoint host, console and overlay scopes on the existing dirty tree. Runtime acceptance remains pending; no deployment or commit requested."
+    },
+    {
+      "at": "2026-09-05T23:22:49.0839473+02:00",
+      "agent": "root",
+      "task_id": "CP-07",
+      "event": "manual_defect_fixes_automated_verified",
+      "summary": "Luna xhigh host/console/overlay fixes reviewed: child refresh authorization, redirected UTF8 Configurator sharing writer, sharing revision/layout, profile toolbar and child Discord UI/notification/shortcut/callback gates. Root Android 986/986 and APK PASS; host173/242/15 and Configurator PASS, installer0.7.82 verified. Ordinary initial GET auth remains unconfirmed and Windows/TV retest remains pending. No deployment/commit."
+    },
+    {
+      "at": "2026-09-05T23:23:52.0861379+02:00",
+      "agent": "root",
+      "task_id": "CP-07",
+      "event": "manual_defect_fixes_apk_installed",
+      "summary": "User explicitly requested installation on TV. Root adb install -r returned Success on BRAVIA_4K_VH22 192.168.1.31:5555 for verified APK SHA256276F7785CCF511A617DEE2B4B8C673F2FA6215EBDF976B9034DD986A8AEF4452. App not launched and host not installed; real retest pending."
+    },
+    {
+      "at": "2026-09-05T23:41:14.7021234+02:00",
+      "agent": "root",
+      "task_id": "CP-07",
+      "event": "second_manual_defect_round_started",
+      "summary": "User requests reusable management PIN authorization, redesigned TV child forms/schedule, readable profile icon, diagnosis/fix of Julia Hollow Knight denied at Saturday23:36 with window end24:00, and Basia HK→Contra misreported state/failed close/false-success hard close. Existing Luna xhigh agents assigned bounded UI/Gateway/lifecycle scopes; live diagnostics read-only, runtime mutations not requested."
+    },
+    {
+      "at": "2026-09-06T00:27:41.8111842+02:00",
+      "agent": "root",
+      "task_id": "CP-07",
+      "event": "second_manual_defect_round_automated_verified_tv_installed",
+      "summary": "Luna xhigh PIN/editor/avatar/carousel, child pairing renewal and emulator identity/hard-close fixes reviewed. Final frozen Android991/991+APK PASS, host173/248/15 and installer0.7.83 verified. APK installed on TV Success; host not deployed, real acceptance pending."
+    },
+    {
+      "at": "2026-09-06T10:15:28.278336+02:00",
+      "agent": "root",
+      "task_id": "CP-07",
+      "event": "existing_parent_pairing_migration_local_verified",
+      "summary": "Luna xhigh Bridge/Gateway certificate ownership migration and Android proactive binding reviewed; local tests/build PASS; no TV or host deployment."
+    }
+  ],
+  "active_bugfix": {
+    "status": "automated_verified_runtime_retest_pending",
+    "started_at": "2026-09-05T22:48:17.1238392+02:00",
+    "supervisor": "root",
+    "owners": {
+      "child_backend": "Gateway library authorization and sharing persistence",
+      "console_ui": "Sharing list, console Discord visibility and profile toolbar",
+      "child_overlay": "Child Communities overlay visibility and Discord wiring"
+    },
+    "requirements": [
+      "Fix child library authorization",
+      "Fix game sharing save and child list formatting",
+      "Hide child Discord and Communities without gaps",
+      "Move profile status/actions to toolbar avatar with matching/switchable dot and focused profile name"
+    ],
+    "validation": [
+      "Root Gradle: testNonRootDebugUnitTest assembleNonRootDebug --offline --no-daemon --console=plain, JDK17 with gradle-home-17: exit0 BUILD SUCCESSFUL; 101 XML suites/986 tests/0 failures/0 errors/0 skipped",
+      "Luna host focused tests 24/24; Build-HostServices full build Gateway173/Playnite242/Broker15 PASS; Configurator regression PASS",
+      "Root final installer: 0.7.82, 123 ZIP entries, CRC PASS, Gateway/Configurator/version bytes match source; SHA256 89938cd5623945680f6e134d9f5005b34b476986cf21dab0e47d89992ff2c107",
+      "Root APK: 47949631 bytes, version12.2.23/code344, SHA256 276F7785CCF511A617DEE2B4B8C673F2FA6215EBDF976B9034DD986A8AEF4452",
+      "Root git diff --check PASS; branch codex/multi-profile-remote-sign-in HEAD26f5867f4d005c33371b92b417da5743c17ab957 unchanged"
+    ],
+    "deployment": "User requested TV installation: adb -s 192.168.1.31:5555 install -r app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk returned Success. Host not installed, app not launched, runtime acceptance pending.",
+    "completed_at": "2026-09-05T23:22:49.0839473+02:00",
+    "limitations": [
+      "Ordinary child GET library auth failure not reproduced; HTTP fixtures pass and available logs confirm child manual-refresh 403, now fixed. User runtime retest required.",
+      "No TV visual acceptance, installation, service restart, commit or push performed.",
+      "Console agent preserved only a pre-review snapshot and initial hashes, not complete pre-task copies; root reviewed changed paths/methods on existing dirty tree."
+    ]
+  },
+  "second_bugfix_round": {
+    "status": "automated_verified_tv_installed_runtime_retest_pending",
+    "started_at": "2026-09-05T23:41:14.7021234+02:00",
+    "supervisor": "root",
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "xhigh",
+    "owners": {
+      "child_overlay": "Adult game switch state and exact game/stream shutdown",
+      "child_backend": "Julia missing Vibe client binding: exact authenticated Android pairing renewal and actionable child failure",
+      "console_ui": "Reusable management PIN lease, TV child editor/time UX, readable profile avatar and full-library tile only for games outside carousel"
+    },
+    "validation": [
+      "Root review plus Luna independent pairing review PASS; source snapshots captured; no commit/push; branch codex/multi-profile-remote-sign-in HEAD26f5867f4d005c33371b92b417da5743c17ab957",
+      "Root final frozen JDK17 Gradle testNonRootDebugUnitTest assembleNonRootDebug --offline --no-daemon --console=plain: exit0 BUILD SUCCESSFUL; 102 XML suites,991 tests,0 failures/errors/skipped; source manifest unchanged",
+      "APK12.2.23/code344,46743210 bytes,SHA25627724A8EC7A23D67CE27D4436D251AC329A52FA823E929EDE3D73F1653A2C2C3",
+      "Host Gateway173/Playnite248/Broker15,HostControl,CredentialProvider PASS; network-only packaging retry with SkipTests created installer0.7.83; wrapper exit error documented, artifact independently verified",
+      "Root installer9440256 bytes,version0.7.83.0,SHA2566C82C523107083A2C130912254C34826A1EB46B0F8B9197E031CD853BC67CCA2;123 ZIP entries,CRC PASS,source matches; agent verified114 comparable entries",
+      "adb install -r Success on BRAVIA_4K_VH22 192.168.1.31:5555; dumpsys package lastUpdateTime2026-09-06 00:26:31; app not launched/TV not woken"
+    ],
+    "deployment": "Updated TV APK under prior explicit install instruction; host installer prepared but not installed. Runtime pairing renewal/game start/stop not performed.",
+    "completed_at": "2026-09-06T00:27:41.8111842+02:00",
+    "limitations": [
+      "Julia pairing_required inferred from absent binding and exact Gateway source path; runtime HTTP logs do not include response reason body. Schedule/grant correct.",
+      "TV visual/DPAD and real child launch/HK-to-Contra stop acceptance require user retest on APK and host0.7.83. CP07 remains in_progress.",
+      "Graceful stop may still time out if emulator ignores window-close; explicit hard reset now requires exact identified game process and does not claim success from stream closure alone."
+    ]
+  },
+  "third_bugfix_round": {
+    "status": "local_verified_tv_installed_runtime_testing_paused",
+    "started_at": "2026-09-06T07:32:27.0071509+02:00",
+    "supervisor": "root",
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "xhigh",
+    "requirements": [
+      "Gray blocked child tiles and show immediate pre-launch reason",
+      "Visible redesigned Android TV child creator and hours",
+      "Automatic checkbox sharing save after5s debounce; truthful committed-save status"
+    ],
+    "owners": {
+      "console_ui": "Android TV editor visibility/avatar redesign and pre-launch eligibility presentation/gate",
+      "child_backend": "Sharing Broker response/debounce lifecycle, host eligibility, independent Android review",
+      "root": "Review, eligibility diagnosis, final validation/install"
+    },
+    "validation": [
+      "Host root Build-HostServices full exit0; Gateway177/GameProvider248/Broker15 and Windows component checks PASS; installer0.7.84 SHA256FAADBCDF7B5D1FE9F5F0CFC0E96BB55C0B443A8DA337A165681A847FF0B84A5E;123ZIP entries CRC PASS114comparable source files match",
+      "TV preview create/filled/day enable/time fields/Save focus checked before user pause; avatar wrapping found and code corrected, final visual retest pending",
+      "Root final frozen Gradle testNonRootDebugUnitTest assembleNonRootDebug --offline --no-daemon --console=plain: exit0 BUILD SUCCESSFUL;102 suites/993 tests/0 failures/errors/skipped;11 file source manifest unchanged",
+      "APK12.2.23/code344:46750332 bytes SHA2568A723152858C98259D75BC0DE057E0FD6F874D7E77CC0A9DBB035C8193B21D6C;not installed per TV pause",
+      "Root git diff --check PASS;branch codex/multi-profile-remote-sign-in HEAD26f5867f4d005c33371b92b417da5743c17ab957;no commit/push;existing dirty tree preserved"
+    ],
+    "tv_testing": "User authorized APK installation after pause. Validated APK installed successfully; runtime tests remain paused. No app launch or host installation.",
+    "local_completed_at": "2026-09-06T08:32:24.6270459+02:00",
+    "limitations": [
+      "Final TV visual/debounce/live child launch acceptance paused by user; host0.7.84 prepared but not installed;installed host read-only version0.7.82",
+      "Boundary network failure retries via existing60s refresh or user click;host start remains authoritative",
+      "Detached save failure reports once;restored errored panel may require checkbox change to retry;draft remains in panel memory",
+      "CP07 remains in_progress until runtime acceptance;standalone sharing harness compiled but not executed"
+    ],
+    "deployment": "adb install --no-incremental -r Success on BRAVIA_4K_VH22 192.168.1.31:5555; com.limelight.debug12.2.23/code344 lastUpdateTime2026-09-06 09:04:22; APK SHA2568A723152858C98259D75BC0DE057E0FD6F874D7E77CC0A9DBB035C8193B21D6C verified before install."
+  },
+  "fourth_bugfix_round": {
+    "status": "local_verified_not_deployed_runtime_testing_paused",
+    "completed_at": "2026-09-06T10:15:28.278336+02:00",
+    "supervisor": "root",
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "xhigh",
+    "requirements": [
+      "Reuse the existing parent stream pairing for every child on that TV",
+      "Fill missing Gateway parent execution binding using one-use certificate ownership proof",
+      "Proactive migration after fresh child selection; retry never automatically unpairs"
+    ],
+    "validation": [
+      "Root frozen Android full unit/build PASS: 998 tests, zero failures/errors/skipped; source manifest unchanged",
+      "APK SHA256 7B05E1B7D5443C66662F35CF68B69790FA5FA12B195E76A1136016104DF82F29, 46754336 bytes",
+      "Root full host build exit0: Gateway183/GameProvider248/Broker15 and Windows components PASS; Bridge5 and PS5.1 signature/lookup/path behavioral tests PASS",
+      "Installer0.7.85 SHA256 DC216FACF51FC365FA8DCEBA71F036766CE5F993B4069E8E98C70BDF877A154F; 125 ZIP entries/CRC PASS/116 comparable source files match; source freeze unchanged",
+      "Read-only actual installation check: registered state path resolves, one paired certificate present; authenticated /api/apps.host_uuid exists and matches trusted state uniqueid",
+      "Independent Luna review: proof chain accepted; installation assumptions confirmed by root source/runtime read checks"
+    ],
+    "deployment": "No APK installation, TV operation, host installation or service restart during this round. TV runtime pause remains active.",
+    "limitations": [
+      "The correction requires both the new APK and host0.7.85; currently installed host was0.7.82 at last read",
+      "Discovery supports registered HKLM Vibepollo installation and bounded config/file_state paths; unsupported layouts fail closed",
+      "No real TV private-key proof/game launch acceptance while TV testing is paused; CP07 remains in_progress"
+    ],
+    "evidence": ".tmp/round4-review/"
+  }
+}

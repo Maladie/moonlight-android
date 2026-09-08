@@ -20,6 +20,7 @@ import android.graphics.BitmapFactory;
 import android.graphics.Canvas;
 import android.graphics.Color;
 import android.graphics.Paint;
+import android.graphics.Typeface;
 import android.graphics.Path;
 import android.graphics.PixelFormat;
 import android.graphics.Rect;
@@ -82,6 +83,7 @@ import com.limelight.PcView;
 import com.limelight.R;
 import com.limelight.binding.PlatformBinding;
 import com.limelight.binding.audio.UsbMicrophoneService;
+import com.limelight.binding.crypto.AndroidCryptoProvider;
 import com.limelight.computers.ComputerDatabaseManager;
 import com.limelight.computers.ComputerManagerListener;
 import com.limelight.computers.ComputerManagerService;
@@ -89,6 +91,8 @@ import com.limelight.grid.assets.CachedAppAssetLoader;
 import com.limelight.grid.assets.DiskAssetLoader;
 import com.limelight.grid.assets.NetworkAssetLoader;
 import com.limelight.gateway.GatewayConnection;
+import com.limelight.gateway.ChildSessionClient;
+import com.limelight.gateway.GatewayTransport;
 import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.NvHTTP;
@@ -128,6 +132,8 @@ import java.io.InputStream;
 import java.io.StringReader;
 import java.net.UnknownHostException;
 import java.text.DateFormat;
+import java.text.ParsePosition;
+import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
 import java.util.Collections;
@@ -156,6 +162,7 @@ import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 import java.util.function.BooleanSupplier;
 import java.util.function.Consumer;
+import java.security.cert.X509Certificate;
 
 /** TV-first dashboard adapted from Wake & Play and backed by Moonlight's internal APIs. */
 public class ConsoleActivity extends Activity implements InputManager.InputDeviceListener {
@@ -256,6 +263,54 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final AtomicInteger profileGeneration = new AtomicInteger();
     private final AtomicInteger profileGateGeneration = new AtomicInteger();
     private final AtomicInteger hostProfileRefreshGeneration = new AtomicInteger();
+    private final AtomicInteger childManagementGeneration = new AtomicInteger();
+    private final Map<String, Boolean> childCapabilityByProfile =
+            new ConcurrentHashMap<>();
+    private final ChildSessionClient childSessionClient =
+            new ChildSessionClient(new GatewayTransport());
+    private final Map<String, ChildLaunchBinding> childLaunchBindings =
+            new ConcurrentHashMap<>();
+    private final Set<String> childEligibilityProfileInFlight =
+            ConcurrentHashMap.newKeySet();
+    private final Map<String, Long> childEligibilityObservedAt =
+            new ConcurrentHashMap<>();
+    private final Object childIdentityBindingLock = new Object();
+    private IdentityBindingAttempt childIdentityBindingAttempt;
+    private int childIdentityBindingLifecycleToken;
+    private int childEligibilityLaunchToken;
+    private final AtomicInteger childBindingSequence = new AtomicInteger();
+    private volatile String childLaunchFailureReason = "";
+    private ChildLaunchBinding childStreamHandoff;
+    private volatile String childLaunchHostId = "";
+    private volatile String childLaunchProfileId = "";
+    private volatile boolean childPairingRepairAvailable;
+    private final Runnable childEligibilityBoundary = this::runChildEligibilityBoundary;
+
+    private enum IdentityBindingStart {
+        STARTED,
+        IN_FLIGHT,
+        ATTEMPTED,
+        CONTEXT_UNAVAILABLE
+    }
+
+    private static final class IdentityBindingAttempt {
+        final String contextKey;
+        final int lifecycleToken;
+        boolean inFlight = true;
+        boolean completed;
+
+        IdentityBindingAttempt(String contextKey, int lifecycleToken) {
+            this.contextKey = contextKey;
+            this.lifecycleToken = lifecycleToken;
+        }
+    }
+
+    private void runChildEligibilityBoundary() {
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host == null || !active) return;
+        refreshChildEligibilityCardPresentation(host);
+        refreshChildEligibilityProfile(host);
+    }
     private final Map<String, Integer> hostProfileRefreshGenerations =
             new ConcurrentHashMap<>();
     private final Set<String> hostProfileRefreshInFlight = ConcurrentHashMap.newKeySet();
@@ -363,6 +418,158 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
+    private static final class ChildManagementLease {
+        final String hostId;
+        final String parentProfileId;
+        final GatewayConnection connection;
+        final String authorizationId;
+        final long expiresAtElapsedMs;
+
+        ChildManagementLease(String hostId, String parentProfileId,
+                             GatewayConnection connection, String authorizationId,
+                             int expiresInSeconds) {
+            this.hostId = hostId;
+            this.parentProfileId = parentProfileId;
+            this.connection = connection;
+            this.authorizationId = authorizationId;
+            this.expiresAtElapsedMs = SystemClock.elapsedRealtime()
+                    + Math.max(1, expiresInSeconds) * 1_000L;
+        }
+
+        boolean matches(String expectedHostId, String expectedParentProfileId,
+                        GatewayConnection expectedConnection) {
+            return SystemClock.elapsedRealtime() < expiresAtElapsedMs
+                    && hostId.equals(expectedHostId)
+                    && parentProfileId.equals(expectedParentProfileId)
+                    && connection != null && expectedConnection != null
+                    && connection.endpoint().equals(expectedConnection.endpoint())
+                    && connection.profileId().equals(expectedConnection.profileId())
+                    && connection.token().equals(expectedConnection.token())
+                    && connection.certificateSha256().equals(
+                    expectedConnection.certificateSha256());
+        }
+    }
+
+    /** A single child session binding carried from Gateway start to Game launch. */
+    private static final class ChildLaunchBinding {
+        final String hostId;
+        final String actorProfileId;
+        /** The raw Playnite identifier used by the Android transition/request. */
+        final String requestedGameId;
+        final String sessionId;
+        final String requestId;
+        final int generation;
+        final int launchSequence;
+        volatile GatewayConnection connection;
+        volatile ChildSessionClient.State state;
+        /** The canonical identifier echoed by Gateway (usually playnite:<guid>). */
+        volatile String gameId;
+        volatile String executionProfileId = "";
+        volatile long deadlineElapsedMs;
+        volatile long policyRevision;
+        volatile boolean started;
+        volatile boolean handedToPlayer;
+        volatile boolean endRequested;
+        volatile boolean ended;
+
+        ChildLaunchBinding(String hostId, String actorProfileId, String gameId,
+                           String sessionId, String requestId, int generation,
+                           int launchSequence) {
+            this.hostId = hostId;
+            this.actorProfileId = actorProfileId;
+            this.requestedGameId = gameId;
+            this.gameId = gameId;
+            this.sessionId = sessionId;
+            this.requestId = requestId;
+            this.generation = generation;
+            this.launchSequence = launchSequence;
+        }
+
+        String key() {
+            return hostId + "\n" + actorProfileId + "\n" + requestedGameId;
+        }
+
+        boolean matches(PlayIntent intent) {
+            return intent != null && hostId.equals(intent.hostId)
+                    && actorProfileId.equals(intent.profileId)
+                    && requestedGameId.equals(intent.playniteGameId);
+        }
+    }
+
+    /** A policy denial carries the host's structured reason through preflight. */
+    private static final class ChildLaunchFailure extends IOException {
+        final String reason;
+        final boolean cancelled;
+
+        ChildLaunchFailure(String reason) {
+            this(reason, false);
+        }
+
+        ChildLaunchFailure(String reason, boolean cancelled) {
+            this.reason = reason == null || reason.trim().isEmpty()
+                    ? "child_not_playable" : reason.trim();
+            this.cancelled = cancelled;
+        }
+    }
+
+    private static final class ChildEligibilityProjection {
+        static final ChildEligibilityProjection ADULT =
+                new ChildEligibilityProjection(false, false, "");
+
+        final boolean child;
+        final boolean blocked;
+        final String reason;
+
+        ChildEligibilityProjection(boolean child, boolean blocked, String reason) {
+            this.child = child;
+            this.blocked = blocked;
+            this.reason = reason == null ? "" : reason;
+        }
+    }
+
+    private static final class ChildMutationRetry {
+        final String hostId;
+        final String parentProfileId;
+        final String operation;
+        final String childProfileId;
+        final String gameId;
+        final String signature;
+        final String requestId;
+
+        ChildMutationRetry(String hostId, String parentProfileId, String operation,
+                           String childProfileId, String gameId, String signature,
+                           String requestId) {
+            this.hostId = hostId;
+            this.parentProfileId = parentProfileId;
+            this.operation = operation;
+            this.childProfileId = childProfileId;
+            this.gameId = gameId;
+            this.signature = signature;
+            this.requestId = requestId;
+        }
+
+        boolean matches(String expectedHostId, String expectedParentProfileId,
+                        String expectedOperation, String expectedChildProfileId,
+                        String expectedGameId, String expectedSignature) {
+            return hostId.equals(expectedHostId)
+                    && parentProfileId.equals(expectedParentProfileId)
+                    && operation.equals(expectedOperation)
+                    && childProfileId.equals(expectedChildProfileId)
+                    && gameId.equals(expectedGameId)
+                    && signature.equals(expectedSignature);
+        }
+    }
+
+    private static final class ChildSharingOriginContext {
+        int token;
+        ChildManagementLease lease;
+
+        ChildSharingOriginContext(int token, ChildManagementLease lease) {
+            this.token = token;
+            this.lease = lease;
+        }
+    }
+
     private static final class OfflinePinAttempt {
         final String hostId;
         final String profileId;
@@ -443,6 +650,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String currentPanelKey;
     private View sidePanelBusyBanner;
     private boolean sidePanelTransient;
+    private ChildManagementLease childManagementLease;
+    private ChildMutationRetry childMutationRetry;
     private ImageView artworkBackdrop;
     private ImageView artworkBackdropNext;
     private ImageView artworkHero;
@@ -459,7 +668,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private TextView appsLabel;
     private TextView optionsButton;
     private TextView hostSelector;
-    private TextView profileSelector;
+    private ImageButton profileSelector;
+    private String profileSelectorHint = "";
     private TextView installedFilterButton;
     private TextView playniteLibraryStatus;
     private LinearLayout debugLibraryActions;
@@ -692,8 +902,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final Runnable playniteRefreshCycle = new Runnable() {
         @Override public void run() {
             if (!active || loadingLayer != null && loadingLayer.getVisibility() == View.VISIBLE) return;
+            refreshChildBindingStates();
             ComputerDetails host = hosts.get(selectedHostUuid);
-            if (host != null) requestPlayniteRefresh(host, false);
+            if (host != null) {
+                refreshChildEligibilityProfile(host);
+                requestPlayniteRefresh(host, false);
+            }
         }
     };
 
@@ -933,6 +1147,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 new DiscordDmNotificationCoordinator.Host() {
                     @Override public void showDiscordDmToast(
                             DiscordDmNotificationCoordinator.ToastModel model, boolean announce) {
+                        if (!discordAllowedForSelectedProfile()) {
+                            discordDmToastView.hideDiscordDmToastImmediately();
+                            return;
+                        }
                         discordDmToastView.showDiscordDmToast(model, announce);
                         setDiscordNotificationPending(true);
                     }
@@ -957,7 +1175,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         mainHandler.removeCallbacks(task);
                     }
                 },
-                () -> discordDmNotifications.hasQuickAction(discordDmHostToken),
+                () -> discordAllowedForSelectedProfile()
+                        && discordDmNotifications.hasQuickAction(discordDmHostToken),
                 this::openDiscordDmShortcut);
         consoleFeedback = new ConsoleUiFeedback(this, root, consoleAudioEngine, reducedMotion);
         hostLaunchPreflight = createHostLaunchPreflight();
@@ -1168,17 +1387,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     @Override
     protected void onResume() {
+        childStreamHandoff = null;
         super.onResume();
         microphoneStatePreferences.registerOnSharedPreferenceChangeListener(
                 microphoneStateListener);
-        if (discordDmNotifications != null) {
+        if (discordAllowedForSelectedProfile() && discordDmNotifications != null) {
             discordDmNotifications.activateHost(discordDmHostToken);
             discordDmNotifications.setWindowFocused(
                     discordDmHostToken, getWindow().getDecorView().hasWindowFocus());
         }
-        if (discordSocialPanelController != null) discordSocialPanelController.onActivityResumed();
         active = true;
         if (initialHostsLoaded) resolveInitialHostSelection();
+        refreshChildBindingStates();
+        refreshDiscordAccess();
         // The retained stream Home always belongs to the host backing the live stream.
         // A stale "return to hosts" request from an earlier suspend flow must not move it
         // away from that host's carousel.
@@ -1652,7 +1873,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         if (deferInitialPlayniteRefresh) {
             deferInitialPlayniteRefresh = false;
-            scheduleNextPlayniteRefresh();
+            requestPlayniteRefresh(currentHost(selectedHostUuid), false);
         }
     }
 
@@ -1679,6 +1900,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     @Override
     protected void onPause() {
+        childEligibilityLaunchToken++;
+        synchronized (childIdentityBindingLock) {
+            childIdentityBindingLifecycleToken++;
+            childIdentityBindingAttempt = null;
+        }
+        mainHandler.removeCallbacks(childEligibilityBoundary);
         pendingHostPreparation = null;
         cancelOfflinePinAttempt();
         if (pinProfileId != null) {
@@ -1706,7 +1933,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         mainHandler.removeCallbacks(clockTick);
         getWindow().clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON);
         if (consoleAudioEngine != null) consoleAudioEngine.pause();
-        cancelCurrentPreparation();
+        cancelCurrentPreparation(childStreamHandoff);
         hostPreparationGeneration.incrementAndGet();
         artworkGeneration.incrementAndGet();
         mainHandler.removeCallbacks(controllerRefresh);
@@ -1947,16 +2174,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             header.addView(hostPowerSlot, new LinearLayout.LayoutParams(
                     dp(300), dp(56)));
 
-            profileSelector = compactButton(getString(R.string.gateway_profile_title));
-            profileSelector.setTextSize(11);
-            profileSelector.setMinHeight(dp(36));
-            profileSelector.setOnClickListener(view -> showProfileSelection(
-                    hosts.get(selectedHostUuid)));
-            LinearLayout.LayoutParams profileParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
-            profileParams.leftMargin = dp(8);
-            header.addView(profileSelector, profileParams);
-
             quickActions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
             LinearLayout.LayoutParams toolsParams = portraitLayout
                     ? new LinearLayout.LayoutParams(
@@ -1967,13 +2184,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             header.addView(quickActions, toolsParams);
         } else {
             header.addView(hostSelector, selectorParams);
-            profileSelector = compactButton(getString(R.string.gateway_profile_title));
-            profileSelector.setOnClickListener(view -> showProfileSelection(
-                    hosts.get(selectedHostUuid)));
-            LinearLayout.LayoutParams profileParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(52));
-            profileParams.leftMargin = dp(8);
-            header.addView(profileSelector, profileParams);
         }
         LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -2736,7 +2946,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (token != profileGateGeneration.get()) return;
                 ComputerDetails current = currentHost(host.uuid);
                 if (current == null) return;
-                if (result != null) hostGatewayStore.saveProfiles(host.uuid, result);
+                boolean childWasInvalidated = result != null
+                        && selectedChildWasInvalidated(host.uuid, result);
+                if (result != null) {
+                    saveHostProfiles(host.uuid, result);
+                }
+                if (childWasInvalidated) {
+                    hostGatewayStore.setAutomaticIntegrationProfileId(host.uuid, "");
+                    showProfileGate(current, focusApps, prepareHost);
+                    return;
+                }
                 resolveProfileGate(current, focusApps, prepareHost, token);
             });
         });
@@ -2819,6 +3038,784 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (profile.id.equals(profileId)) return profile;
         }
         return null;
+    }
+
+    private static String childProfileMetadataKey(String hostId, String profileId) {
+        return (hostId == null ? "" : hostId) + "\n"
+                + (profileId == null ? "" : profileId);
+    }
+
+    private void rememberChildCapability(String hostId,
+                                         HostGatewayClient.IntegrationProfiles profiles,
+                                         HostGatewayClient.Capabilities capabilities) {
+        if (hostId == null || profiles == null) return;
+        for (HostGatewayClient.IntegrationProfile profile : profiles.profiles) {
+            if (profile == null) continue;
+            String key = childProfileMetadataKey(hostId, profile.id);
+            if (capabilities == null) childCapabilityByProfile.remove(key);
+            else childCapabilityByProfile.put(key, capabilities.childProfiles);
+        }
+    }
+
+    private boolean childManagementProfileAllowed(ComputerDetails host,
+                                                   HostGatewayClient.IntegrationProfile profile) {
+        if (host == null || profile == null || !profile.useProfile) return false;
+        return profile.manageChildren;
+    }
+
+    private boolean childCapabilityAllowed(ComputerDetails host,
+                                           HostGatewayClient.IntegrationProfile profile) {
+        return host != null && profile != null
+                && Boolean.TRUE.equals(childCapabilityByProfile.get(
+                childProfileMetadataKey(host.uuid, profile.id)));
+    }
+
+    private boolean hasOwnChildren(ComputerDetails host,
+                                    HostGatewayClient.IntegrationProfile profile) {
+        if (host == null || profile == null) return false;
+        return profile.ownChildrenCount > 0;
+    }
+
+    private HostGatewayClient.IntegrationProfile integrationProfile(
+            String hostId, String profileId) {
+        if (hostId == null || profileId == null || hostGatewayStore == null) return null;
+        HostGatewayClient.IntegrationProfiles profiles = hostGatewayStore.profiles(hostId);
+        return profiles == null ? null : profiles.find(profileId);
+    }
+
+    private ChildEligibilityProjection childEligibilityProjection(
+            String hostId, String profileId) {
+        HostGatewayClient.IntegrationProfile profile = integrationProfile(hostId, profileId);
+        if (profile == null || !profile.isChild()) return ChildEligibilityProjection.ADULT;
+        Long observedAt = childEligibilityObservedAt.get(hostId + "\n" + profileId);
+        long now = System.currentTimeMillis();
+        long server = parseChildPolicyTime(profile.serverTime);
+        if (server > 0L && observedAt != null) {
+            now = server + Math.max(0L, SystemClock.elapsedRealtime() - observedAt);
+        }
+        String reason = childEligibilityBlockReason(profile, now, 0L);
+        return new ChildEligibilityProjection(true, !reason.isEmpty(), reason);
+    }
+
+    private static boolean isAllowedChildEligibilityReason(String reason) {
+        String value = reason == null ? "" : reason.trim().toLowerCase(Locale.ROOT);
+        return value.isEmpty() || "none".equals(value);
+    }
+
+    static String childEligibilityBlockReason(HostGatewayClient.IntegrationProfile profile,
+                                              long nowMs, long observedAtMs) {
+        if (profile == null || !profile.isChild()) return "";
+        if (!profile.enabled || !profile.useProfile) return "child_profile_unavailable";
+        String reason = profile.reason == null ? "" : profile.reason.trim();
+        if (!reason.isEmpty() && !isAllowedChildEligibilityReason(reason)) return reason;
+        long server = parseChildPolicyTime(profile.serverTime);
+        long effectiveServer = nowMs;
+        if (server > 0L && observedAtMs > 0L && nowMs >= observedAtMs) {
+            effectiveServer = server + (nowMs - observedAtMs);
+        }
+        long windowEnd = parseChildPolicyTime(profile.windowEnd);
+        if (windowEnd > 0L && effectiveServer >= windowEnd) return "outside_schedule";
+        boolean hasPolicyProjection = profile.policyRevision > 0L
+                || profile.usageRevision > 0L
+                || profile.playableNowSeconds > 0L
+                || profile.remainingDailySeconds > 0L
+                || !profile.nextAllowedAt.isEmpty()
+                || !profile.windowEnd.isEmpty();
+        if (hasPolicyProjection && profile.playableNowSeconds <= 0L) {
+            if (!reason.isEmpty() && !"none".equalsIgnoreCase(reason)) return reason;
+            return !profile.nextAllowedAt.isEmpty()
+                    ? "outside_schedule" : "daily_limit_reached";
+        }
+        return "";
+    }
+
+    static boolean childEligibilityCanLaunch(boolean ok, String state, String reason,
+                                             long playableNowSeconds) {
+        return ok && playableNowSeconds > 0L
+                && "ready".equalsIgnoreCase(state)
+                && isAllowedChildEligibilityReason(reason);
+    }
+
+    static boolean childSessionCanContinue(boolean ok, String state, String reason,
+                                           long playableNowSeconds) {
+        String normalizedState = state == null ? "" : state.trim().toLowerCase(Locale.ROOT);
+        boolean launchState = "running".equals(normalizedState)
+                || "launch_pending".equals(normalizedState);
+        return ok && launchState && playableNowSeconds > 0L
+                && isAllowedChildEligibilityReason(reason);
+    }
+
+    static long parseChildPolicyTime(String value) {
+        String text = value == null ? "" : value.trim();
+        if (text.isEmpty()) return -1L;
+        if (text.endsWith("Z")) text = text.substring(0, text.length() - 1) + "+0000";
+        else if (text.matches(".*[+-]\\d{2}:\\d{2}$")) {
+            text = text.substring(0, text.length() - 3) + text.substring(text.length() - 2);
+        }
+        int fractionStart = text.indexOf('.');
+        if (fractionStart >= 0) {
+            int fractionEnd = fractionStart + 1;
+            while (fractionEnd < text.length()
+                    && Character.isDigit(text.charAt(fractionEnd))) fractionEnd++;
+            String fraction = text.substring(fractionStart + 1, fractionEnd);
+            if (fraction.length() > 3) fraction = fraction.substring(0, 3);
+            while (fraction.length() < 3) fraction += "0";
+            text = text.substring(0, fractionStart + 1) + fraction
+                    + text.substring(fractionEnd);
+        }
+        String[] patterns = {"yyyy-MM-dd'T'HH:mm:ss.SSSZ",
+                "yyyy-MM-dd'T'HH:mm:ssZ", "yyyy-MM-dd HH:mm:ssZ"};
+        for (String pattern : patterns) {
+            try {
+                SimpleDateFormat format = new SimpleDateFormat(pattern, Locale.ROOT);
+                format.setLenient(false);
+                ParsePosition position = new ParsePosition(0);
+                Date parsed = format.parse(text, position);
+                if (parsed != null && position.getIndex() == text.length()) {
+                    return parsed.getTime();
+                }
+            } catch (RuntimeException ignored) {
+                // Try the next server timestamp shape.
+            }
+        }
+        return -1L;
+    }
+
+    private void scheduleChildEligibilityBoundary(ComputerDetails host) {
+        mainHandler.removeCallbacks(childEligibilityBoundary);
+        if (host == null || !host.uuid.equals(selectedHostUuid)) return;
+        HostGatewayClient.IntegrationProfile profile = integrationProfile(
+                host.uuid, selectedProfileId(host.uuid));
+        if (profile == null || !profile.isChild()) return;
+        long server = parseChildPolicyTime(profile.serverTime);
+        long boundary = Long.MAX_VALUE;
+        long nextAllowed = parseChildPolicyTime(profile.nextAllowedAt);
+        long windowEnd = parseChildPolicyTime(profile.windowEnd);
+        if (nextAllowed > 0L) boundary = Math.min(boundary, nextAllowed);
+        if (windowEnd > 0L) boundary = Math.min(boundary, windowEnd);
+        if (boundary == Long.MAX_VALUE) return;
+        long delay = server > 0L ? boundary - server + 1_000L
+                : boundary - System.currentTimeMillis() + 1_000L;
+        if (delay <= 0L) delay = 5_000L;
+        mainHandler.postDelayed(childEligibilityBoundary,
+                Math.min(delay, 24L * 60L * 60L * 1_000L));
+    }
+
+    private void refreshChildEligibilityProfile(ComputerDetails host) {
+        if (!active || host == null || !host.uuid.equals(selectedHostUuid)) return;
+        String profileId = selectedProfileId(host.uuid);
+        HostGatewayClient.IntegrationProfile profile = integrationProfile(host.uuid, profileId);
+        if (profile == null || !profile.isChild()) {
+            scheduleChildEligibilityBoundary(host);
+            return;
+        }
+        GatewayConnection connection = childConnection(host, profileId);
+        if (connection == null) return;
+        String key = "profile:" + host.uuid + "\n" + profileId;
+        if (!childEligibilityProfileInFlight.add(key)) return;
+        String expectedHostId = host.uuid;
+        String expectedProfileId = profileId;
+        int expectedProfileGeneration = profileGeneration.get();
+        executor.execute(() -> {
+            HostGatewayClient.IntegrationProfiles profiles = null;
+            try {
+                profiles = hostGatewayClient.getIntegrationProfiles(connection);
+            } catch (IOException | RuntimeException ignored) {
+                // Keep the last policy projection; a click performs a fresh gate.
+            }
+            HostGatewayClient.IntegrationProfiles result = profiles;
+            mainHandler.post(() -> {
+                childEligibilityProfileInFlight.remove(key);
+                if (result == null || !active || !expectedHostId.equals(selectedHostUuid)
+                        || !expectedProfileId.equals(selectedProfileId(expectedHostId))
+                        || expectedProfileGeneration != profileGeneration.get()) return;
+                ComputerDetails current = currentHost(expectedHostId);
+                if (current == null) return;
+                GatewayConnection currentConnection = childConnection(current, expectedProfileId);
+                if (!sameGatewayProfile(connection, currentConnection)
+                        || !connection.token().equals(currentConnection.token())) return;
+                childEligibilityObservedAt.put(expectedHostId + "\n" + expectedProfileId,
+                        SystemClock.elapsedRealtime());
+                saveHostProfiles(expectedHostId, result);
+                HostGatewayClient.IntegrationProfile refreshedProfile =
+                        result.find(expectedProfileId);
+                if (refreshedProfile != null && refreshedProfile.isChild()
+                        && "pairing_required".equalsIgnoreCase(refreshedProfile.reason)) {
+                    tryBindExistingVibepolloIdentity(expectedHostId, expectedProfileId, false);
+                } else {
+                    clearIdentityBindingAttempt(expectedHostId, expectedProfileId,
+                            expectedProfileGeneration, connection);
+                }
+                scheduleChildEligibilityBoundary(current);
+                if (!currentPlayniteGames.isEmpty()) {
+                    renderPlayniteLibrary(current, currentSunshineApps);
+                }
+            });
+        });
+    }
+
+    private boolean selectedProfileIsChild(String hostId) {
+        HostGatewayClient.IntegrationProfile profile = integrationProfile(
+                hostId, selectedProfileId(hostId));
+        return profile != null && profile.isChild();
+    }
+
+    private boolean discordAllowedForSelectedProfile() {
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host == null || hostGatewayStore == null) return true;
+        HostGatewayStore.ProfileSelection selection = hostGatewayStore.profileSelection(host.uuid);
+        return selection == null || selection.selected == null || !selection.selected.isChild();
+    }
+
+    private boolean discordPanelVisible() {
+        return "discord.community".equals(currentPanelKey)
+                || (currentPanelKey != null
+                && currentPanelKey.startsWith(getString(R.string.discord_panel_title)));
+    }
+
+    private void refreshDiscordAccess() {
+        if (discordAllowedForSelectedProfile()) {
+            if (active && discordDmNotifications != null) {
+                discordDmNotifications.activateHost(discordDmHostToken);
+                discordDmNotifications.setWindowFocused(discordDmHostToken,
+                        getWindow().getDecorView().hasWindowFocus());
+            }
+            if (active && discordSocialPanelController != null) {
+                discordSocialPanelController.onActivityResumed();
+            }
+            return;
+        }
+        if (discordDmShortcut != null) discordDmShortcut.cancel();
+        if (discordDmNotifications != null) {
+            discordDmNotifications.deactivateHost(discordDmHostToken);
+        }
+        setDiscordNotificationPending(false);
+        if (discordSocialPanelController != null) discordSocialPanelController.closePanel();
+        if (discordPanelVisible()) hideSidePanelImmediately();
+    }
+
+    private String executionProfileId(String hostId, String actorProfileId) {
+        HostGatewayClient.IntegrationProfile actor = integrationProfile(hostId, actorProfileId);
+        return actor != null && actor.isChild()
+                ? GatewayConnection.normalizeProfileId(actor.executionProfileId)
+                : GatewayConnection.normalizeProfileId(actorProfileId);
+    }
+
+    private boolean isChildIntent(PlayIntent intent) {
+        return intent != null && intent.kind == PlayIntent.Kind.PLAYNITE_GAME
+                && intent.profileId.equals(selectedProfileId(intent.hostId))
+                && integrationProfile(intent.hostId, intent.profileId) != null
+                && integrationProfile(intent.hostId, intent.profileId).isChild();
+    }
+
+    private boolean isCurrentChildIntentContext(PlayIntent intent) {
+        return active && isChildIntent(intent)
+                && intent.hostId.equals(selectedHostUuid)
+                && currentHost(intent.hostId) != null;
+    }
+
+    private static String childEligibilityErrorReason(IOException error) {
+        if (error instanceof GatewayTransport.GatewayException) {
+            GatewayTransport.GatewayException gateway =
+                    (GatewayTransport.GatewayException) error;
+            String reason = gateway.reason();
+            if (reason != null && !reason.trim().isEmpty()) return reason.trim();
+        }
+        String message = error == null || error.getMessage() == null
+                ? "" : error.getMessage().trim();
+        String normalized = message.toLowerCase(Locale.ROOT);
+        if (normalized.contains("pairing_required")) return "pairing_required";
+        if (normalized.contains("session_in_use")) return "session_in_use";
+        if (normalized.contains("cleanup_required")) return "cleanup_required";
+        if (normalized.contains("parent_unavailable")) return "parent_unavailable";
+        return "policy_unavailable";
+    }
+
+    private IdentityBindingStart tryBindExistingVibepolloIdentity(String hostId, String profileId,
+                                                                  boolean allowRetry) {
+        ComputerDetails host = currentHost(hostId);
+        if (host == null) return IdentityBindingStart.CONTEXT_UNAVAILABLE;
+        GatewayConnection connection = childConnection(host, profileId);
+        if (connection == null) return IdentityBindingStart.CONTEXT_UNAVAILABLE;
+        final int expectedProfileGeneration = profileGeneration.get();
+        final int expectedLifecycleToken;
+        final String attemptKey = identityBindingContextKey(hostId, profileId,
+                expectedProfileGeneration, connection);
+        final IdentityBindingAttempt attempt;
+        synchronized (childIdentityBindingLock) {
+            expectedLifecycleToken = childIdentityBindingLifecycleToken;
+            if (childIdentityBindingAttempt != null
+                    && childIdentityBindingAttempt.contextKey.equals(attemptKey)
+                    && childIdentityBindingAttempt.inFlight) {
+                return IdentityBindingStart.IN_FLIGHT;
+            }
+            if (childIdentityBindingAttempt != null
+                    && childIdentityBindingAttempt.contextKey.equals(attemptKey)
+                    && (childIdentityBindingAttempt.completed || !allowRetry)) {
+                return IdentityBindingStart.ATTEMPTED;
+            }
+            attempt = new IdentityBindingAttempt(attemptKey, expectedLifecycleToken);
+            childIdentityBindingAttempt = attempt;
+        }
+        final String expectedHostId = hostId;
+        final String expectedProfileId = profileId;
+        executor.execute(() -> {
+            String failureReason = "";
+            boolean bound = false;
+            boolean stale = false;
+            try {
+                HostGatewayClient.VibepolloIdentityChallenge challenge =
+                        hostGatewayClient.requestVibepolloIdentityChallenge(connection);
+                if (!isCurrentIdentityBindingContext(expectedHostId, expectedProfileId,
+                        expectedProfileGeneration, expectedLifecycleToken, connection)) {
+                    stale = true;
+                } else {
+                    AndroidCryptoProvider crypto = new AndroidCryptoProvider(this);
+                    hostGatewayClient.bindExistingVibepolloIdentity(connection,
+                            challenge.id, crypto.getClientCertificateSha256(),
+                            crypto.signIdentityChallenge(challenge.challenge));
+                    bound = true;
+                }
+            } catch (GatewayTransport.GatewayException error) {
+                failureReason = identityBindingFailureReason(error);
+            } catch (HostGatewayClient.GatewayException error) {
+                failureReason = identityBindingFailureReason(error);
+            } catch (IOException | RuntimeException error) {
+                failureReason = "identity_proof_invalid";
+            }
+            final boolean resultBound = bound;
+            final String resultReason = failureReason;
+            final boolean resultStale = stale;
+            mainHandler.post(() -> {
+                synchronized (childIdentityBindingLock) {
+                    if (childIdentityBindingAttempt == attempt) {
+                        attempt.inFlight = false;
+                        attempt.completed = resultBound;
+                    }
+                }
+                if (resultStale || !isCurrentIdentityBindingContext(expectedHostId,
+                        expectedProfileId, expectedProfileGeneration,
+                        expectedLifecycleToken, connection)) return;
+                if (resultBound) {
+                    refreshChildEligibilityProfile(currentHost(expectedHostId));
+                    return;
+                }
+                if ("identity_binding_unsupported".equals(resultReason)) {
+                    ConsoleUiFeedback.makeText(this,
+                            R.string.console_child_launch_pairing_upgrade,
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                ConsoleUiFeedback.makeText(this,
+                        R.string.console_child_launch_pairing_retry,
+                        Toast.LENGTH_LONG).show();
+            });
+        });
+        return IdentityBindingStart.STARTED;
+    }
+
+    private static String identityBindingContextKey(String hostId, String profileId,
+                                                    int profileGeneration,
+                                                    GatewayConnection connection) {
+        return hostId + "\n" + profileId + "\n" + profileGeneration + "\n"
+                + connection.endpoint() + "\n" + connection.profileId() + "\n"
+                + connection.certificateSha256() + "\n" + connection.token();
+    }
+
+    private void clearIdentityBindingAttempt(String hostId, String profileId,
+                                             int expectedProfileGeneration,
+                                             GatewayConnection connection) {
+        String key = identityBindingContextKey(hostId, profileId,
+                expectedProfileGeneration, connection);
+        synchronized (childIdentityBindingLock) {
+            if (childIdentityBindingAttempt != null
+                    && childIdentityBindingAttempt.contextKey.equals(key)) {
+                childIdentityBindingAttempt = null;
+            }
+        }
+    }
+
+    private boolean isCurrentIdentityBindingContext(String hostId, String profileId,
+                                                    int expectedProfileGeneration,
+                                                    int expectedLifecycleToken,
+                                                    GatewayConnection expectedConnection) {
+        if (!active || hostId == null || !hostId.equals(selectedHostUuid)
+                || profileId == null || !profileId.equals(selectedProfileId(hostId))
+                || expectedProfileGeneration != profileGeneration.get()) return false;
+        synchronized (childIdentityBindingLock) {
+            if (expectedLifecycleToken != childIdentityBindingLifecycleToken) return false;
+        }
+        ComputerDetails host = currentHost(hostId);
+        if (host == null) return false;
+        GatewayConnection current = childConnection(host, profileId);
+        return sameGatewayProfile(expectedConnection, current)
+                && current != null && expectedConnection.token().equals(current.token());
+    }
+
+    private static String identityBindingFailureReason(
+            GatewayTransport.GatewayException error) {
+        String reason = error == null ? "" : error.reason();
+        return identityBindingFailureReason(
+                reason == null || reason.trim().isEmpty() ? error == null
+                        ? "" : error.getMessage() : reason,
+                error != null && error.statusCode() == 404);
+    }
+
+    private static String identityBindingFailureReason(HostGatewayClient.GatewayException error) {
+        return identityBindingFailureReason(error == null ? "" : error.getMessage(),
+                error != null && error.statusCode == 404);
+    }
+
+    static String identityBindingFailureReason(String message, boolean notFound) {
+        String normalized = message == null ? "" : message.trim().toLowerCase(Locale.ROOT);
+        if (normalized.contains("identity_binding_unsupported")
+                || normalized.contains("child_action_not_allowed")) {
+            return "identity_binding_unsupported";
+        }
+        if (normalized.contains("identity_challenge_expired")) {
+            return "identity_challenge_expired";
+        }
+        if (normalized.contains("identity_ambiguous")) return "identity_ambiguous";
+        if (normalized.contains("identity_proof_invalid")) return "identity_proof_invalid";
+        return notFound ? "identity_binding_unsupported" : "identity_proof_invalid";
+    }
+
+    private void playProviderGame(PlayIntent intent) {
+        sessionOrchestrator.play(intent);
+    }
+
+    private ChildLaunchBinding childBinding(PlayIntent intent) {
+        if (intent == null) return null;
+        return childLaunchBindings.get(intent.hostId + "\n"
+                + intent.profileId + "\n" + intent.playniteGameId);
+    }
+
+    private ChildLaunchBinding startChildSession(PlayIntent intent,
+                                                  BooleanSupplier cancelled) throws IOException {
+        if (!isChildIntent(intent)) return null;
+        HostGatewayClient.IntegrationProfile profile = integrationProfile(
+                intent.hostId, intent.profileId);
+        if (profile == null || !profile.enabled || !profile.useProfile) {
+            throw new ChildLaunchFailure("child_profile_unavailable");
+        }
+        for (ChildLaunchBinding pending : childLaunchBindings.values()) {
+            if (pending.started && !pending.ended && pending.endRequested
+                    && pending.hostId.equals(intent.hostId)) {
+                if (!endChildBindingAndAwait(pending, cancelled)) {
+                    throw new ChildLaunchFailure("cancelled", true);
+                }
+            }
+        }
+        String key = intent.hostId + "\n" + intent.profileId + "\n" + intent.playniteGameId;
+        ChildLaunchBinding binding = childLaunchBindings.get(key);
+        if (binding != null && binding.started) {
+            ChildSessionClient.State state = childSessionClient.status(binding.connection, binding.sessionId);
+            if (state.cleanupRequired) {
+                if (!endChildBindingAndAwait(binding, cancelled)) throw new ChildLaunchFailure("cancelled", true);
+                binding = null;
+            } else if (childStateRemovesBinding(false, state.phase, state.state)) {
+                binding.ended = true;
+                childLaunchBindings.remove(key, binding);
+                binding = null;
+            }
+        }
+        if (binding == null) {
+            ChildLaunchBinding candidate = new ChildLaunchBinding(
+                    intent.hostId, intent.profileId, intent.playniteGameId,
+                    UUID.randomUUID().toString(), UUID.randomUUID().toString(),
+                    profileGeneration.get(), childBindingSequence.incrementAndGet());
+            ChildLaunchBinding existing = childLaunchBindings.putIfAbsent(key, candidate);
+            binding = existing == null ? candidate : existing;
+        }
+        synchronized (binding) {
+            if (binding.ended) throw new IOException("child_session_cancelled");
+            if (binding.started) {
+                ChildSessionClient.State resumed = childSessionClient.heartbeat(
+                        binding.connection, binding.sessionId);
+                validateChildState(intent, profile, resumed, binding.sessionId);
+                if (!childSessionCanContinue(resumed.ok, resumed.state,
+                        resumed.reason, resumed.playableNowSeconds)) {
+                    throw new ChildLaunchFailure(resumed.reason);
+                }
+                binding.state = resumed;
+                binding.deadlineElapsedMs = SystemClock.elapsedRealtime()
+                        + Math.max(0L, resumed.playableNowSeconds) * 1_000L;
+                binding.policyRevision = resumed.policyRevision;
+                return binding;
+            }
+            ComputerDetails host = currentHost(intent.hostId);
+            if (host == null) throw new IOException("host_unavailable");
+            String address = host.activeAddress == null ? null : host.activeAddress.address;
+            GatewayConnection connection = hostGatewayStore.loadForHost(
+                    host.uuid, address, intent.profileId);
+            if (connection == null) throw new IOException("gateway_unavailable");
+            binding.connection = connection;
+            ChildSessionClient.State eligibility = childSessionClient.eligibility(
+                    connection, intent.playniteGameId);
+            binding.state = eligibility;
+            if (eligibility == null || !childEligibilityCanLaunch(eligibility.ok,
+                    eligibility.state, eligibility.reason, eligibility.playableNowSeconds)) {
+                String reason = eligibility == null || eligibility.reason == null
+                        || eligibility.reason.isEmpty()
+                        ? "child_not_playable" : eligibility.reason;
+                throw new ChildLaunchFailure(reason);
+            }
+            if (cancelled.getAsBoolean()) {
+                throw new ChildLaunchFailure("cancelled", true);
+            }
+            ChildSessionClient.State started = childSessionClient.start(
+                    connection, intent.playniteGameId, binding.sessionId, binding.requestId);
+            binding.state = started;
+            if (!started.ok) {
+                String reason = started.reason == null || started.reason.isEmpty()
+                        ? "child_not_playable" : started.reason;
+                throw new ChildLaunchFailure(reason);
+            }
+            validateChildState(intent, profile, started, binding.sessionId);
+            if (started == null || !childSessionCanContinue(started.ok, started.state,
+                    started.reason, started.playableNowSeconds)) {
+                String reason = started == null || started.reason == null
+                        || started.reason.isEmpty()
+                        ? "child_not_playable" : started.reason;
+                throw new ChildLaunchFailure(reason);
+            }
+            binding.gameId = canonicalChildGameId(intent.playniteGameId, started.gameId);
+            binding.executionProfileId = started.executionProfileId.isEmpty()
+                    ? profile.executionProfileId : started.executionProfileId;
+            binding.policyRevision = started.policyRevision;
+            long durationMs = Math.min(Long.MAX_VALUE,
+                    Math.max(0L, started.playableNowSeconds) * 1_000L);
+            binding.deadlineElapsedMs = Math.min(Long.MAX_VALUE,
+                    SystemClock.elapsedRealtime() + durationMs);
+            binding.started = true;
+            if (cancelled.getAsBoolean()) {
+                endChildBinding(binding, "cancelled");
+                throw new ChildLaunchFailure("cancelled", true);
+            }
+            return binding;
+        }
+    }
+
+    private void validateChildState(PlayIntent intent,
+                                    HostGatewayClient.IntegrationProfile profile,
+                                    ChildSessionClient.State state,
+                                    String expectedSessionId) throws IOException {
+        if (state == null || !intent.profileId.equals(state.actorProfileId)
+                || !expectedSessionId.equals(state.sessionId)) {
+            throw new IOException("child_session_binding_mismatch");
+        }
+        String expectedExecution = profile.executionProfileId.isEmpty()
+                ? profile.parentProfileId : profile.executionProfileId;
+        if (!expectedExecution.isEmpty() && !state.executionProfileId.isEmpty()
+                && !expectedExecution.equals(state.executionProfileId)) {
+            throw new IOException("child_execution_profile_mismatch");
+        }
+        if (!state.gameId.isEmpty()
+                && !childGameIdsMatch(intent.playniteGameId, state.gameId)) {
+            throw new IOException("child_game_binding_mismatch");
+        }
+    }
+
+    static String canonicalChildGameId(String requestedGameId, String echoedGameId) {
+        String echoed = echoedGameId == null ? "" : echoedGameId.trim();
+        return normalizeChildGameId(echoed.isEmpty() ? requestedGameId : echoed);
+    }
+
+    static boolean childGameIdsMatch(String requestedGameId, String echoedGameId) {
+        return normalizeChildGameId(requestedGameId)
+                .equalsIgnoreCase(normalizeChildGameId(echoedGameId));
+    }
+
+    private static String normalizeChildGameId(String gameId) {
+        String value = gameId == null ? "" : gameId.trim();
+        if (value.matches("(?i)[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-"
+                + "[0-9a-f]{4}-[0-9a-f]{12}")) {
+            return "playnite:" + value.toLowerCase(Locale.ROOT);
+        }
+        int separator = value.indexOf(':');
+        return separator > 0
+                ? value.substring(0, separator).toLowerCase(Locale.ROOT)
+                + value.substring(separator) : value;
+    }
+
+    private void endChildBinding(ChildLaunchBinding binding, String reason) {
+        if (binding == null || !binding.started || binding.ended) return;
+        synchronized (binding) {
+            if (binding.ended || !binding.started || binding.endRequested) return;
+            binding.endRequested = true;
+        }
+        GatewayConnection connection = binding.connection;
+        if (connection == null) {
+            return;
+        }
+        executor.execute(() -> {
+            try {
+                ChildSessionClient.State ended = childSessionClient.end(
+                        connection, binding.sessionId, reason);
+                mainHandler.post(() -> consumeChildBindingState(binding, ended));
+            } catch (IOException | RuntimeException ignored) {
+                binding.endRequested = false;
+            }
+        });
+    }
+
+    private ChildLaunchBinding activeChildBinding(String hostId, String profileId) {
+        for (ChildLaunchBinding binding : childLaunchBindings.values()) {
+            if (binding.started && !binding.ended && binding.hostId.equals(hostId)
+                    && binding.actorProfileId.equals(profileId)) {
+                return binding;
+            }
+        }
+        return null;
+    }
+
+    private boolean endChildBindingAndAwait(ChildLaunchBinding binding,
+                                             BooleanSupplier cancelled) throws IOException {
+        if (binding == null || !binding.started || binding.ended) return true;
+        GatewayConnection connection = binding.connection;
+        if (connection == null) throw new IOException("child_gateway_unavailable");
+        boolean sendEnd = false;
+        synchronized (binding) {
+            if (binding.ended) return true;
+            if (!binding.endRequested) {
+                binding.endRequested = true;
+                sendEnd = true;
+            }
+        }
+        long deadline = SystemClock.elapsedRealtime() + 120_000L;
+        while (!cancelled.getAsBoolean()
+                && SystemClock.elapsedRealtime() <= deadline) {
+            ChildSessionClient.State state = binding.state;
+            if (sendEnd) {
+                state = childSessionClient.end(connection, binding.sessionId,
+                        "replacement");
+                binding.state = state;
+                sendEnd = false;
+            }
+            if (state == null || !childEndConfirmed(state)) {
+                state = childSessionClient.status(connection, binding.sessionId);
+                binding.state = state;
+            }
+            if (childEndConfirmed(state)) {
+                binding.ended = true;
+                childLaunchBindings.remove(binding.key(), binding);
+                return true;
+            }
+            SystemClock.sleep(250L);
+        }
+        if (cancelled.getAsBoolean()) return false;
+        throw new IOException("child_session_cleanup_required");
+    }
+
+    static boolean childStateRemovesBinding(boolean cleanupRequired,
+                                            String phase, String state) {
+        if (cleanupRequired) return false;
+        return "ended".equalsIgnoreCase(phase)
+                || "ended".equalsIgnoreCase(state)
+                || "stopped".equalsIgnoreCase(phase)
+                || "stopped".equalsIgnoreCase(state)
+                || "already_stopped".equalsIgnoreCase(state);
+    }
+
+    private static boolean childEndConfirmed(ChildSessionClient.State state) {
+        return state != null && childStateRemovesBinding(state.cleanupRequired,
+                state.phase, state.state);
+    }
+
+    private void cancelChildLaunches(String hostId, String profileId) {
+        cancelChildLaunches(hostId, profileId, null);
+    }
+
+    private void cancelChildLaunches(String hostId, String profileId,
+                                     ChildLaunchBinding preservedBinding) {
+        for (ChildLaunchBinding binding : new ArrayList<>(childLaunchBindings.values())) {
+            if (binding != preservedBinding && !binding.handedToPlayer
+                    && (hostId == null || hostId.equals(binding.hostId))
+                    && (profileId == null || profileId.equals(binding.actorProfileId))) {
+                endChildBinding(binding, "cancelled");
+            }
+        }
+    }
+
+    private void refreshChildBindingStates() {
+        for (ChildLaunchBinding binding : new ArrayList<>(childLaunchBindings.values())) {
+            if (!binding.started || binding.ended || binding.connection == null) continue;
+            executor.execute(() -> {
+                try {
+                    ChildSessionClient.State state = childSessionClient.status(
+                            binding.connection, binding.sessionId);
+                    mainHandler.post(() -> consumeChildBindingState(binding, state));
+                } catch (IOException | RuntimeException ignored) { }
+            });
+        }
+    }
+
+    private void consumeChildBindingState(ChildLaunchBinding binding,
+                                          ChildSessionClient.State state) {
+        if (binding == null || state == null
+                || childLaunchBindings.get(binding.key()) != binding
+                || binding.ended || !binding.started) {
+            return;
+        }
+        if (!state.sessionId.isEmpty() && !binding.sessionId.equals(state.sessionId)) return;
+        if (!state.actorProfileId.isEmpty()
+                && !binding.actorProfileId.equals(state.actorProfileId)) return;
+        if (!state.gameId.isEmpty()
+                && !childGameIdsMatch(binding.requestedGameId, state.gameId)) return;
+        binding.state = state;
+        boolean removesBinding = childStateRemovesBinding(state.cleanupRequired,
+                state.phase, state.state);
+        if (!state.cleanupRequired && !removesBinding) return;
+        if (state.cleanupRequired) binding.endRequested = true;
+        if (removesBinding) {
+            binding.ended = true;
+            childLaunchBindings.remove(binding.key(), binding);
+        }
+    }
+
+    private void clearChildLibraryForPolicyChange(String hostId, String profileId) {
+        if (hostGatewayStore == null || !selectedProfileId(hostId).equals(profileId)) return;
+        playniteGeneration.incrementAndGet();
+        cancelPlayniteRequest();
+        cancelPlayniteArtworkPrefetch();
+        artworkGeneration.incrementAndGet();
+        currentPlayniteGames = Collections.emptyList();
+        currentPlayniteHostUuid = null;
+        renderedPlayniteItems = Collections.emptyList();
+        allPlayniteItems = Collections.emptyList();
+        unfilteredPlayniteItems = Collections.emptyList();
+        playniteLibraryCached = false;
+        playniteLibraryCachedAt = 0L;
+        initialLibraryPresentation = null;
+        clearArtwork();
+    }
+
+    private void saveHostProfiles(String hostId,
+                                  HostGatewayClient.IntegrationProfiles profiles) {
+        if (hostGatewayStore == null || hostId == null || profiles == null) return;
+        HostGatewayClient.IntegrationProfiles previous = hostGatewayStore.profiles(hostId);
+        hostGatewayStore.saveProfiles(hostId, profiles);
+        String selected = selectedProfileId(hostId);
+        HostGatewayClient.IntegrationProfile before = previous == null
+                ? null : previous.find(selected);
+        HostGatewayClient.IntegrationProfile after = profiles.find(selected);
+        if (before != null && before.isChild()
+                && (after == null || !after.isChild() || !after.enabled || !after.useProfile
+                || before.policyRevision != after.policyRevision
+                || !before.parentProfileId.equals(after.parentProfileId))) {
+            clearChildLibraryForPolicyChange(hostId, selected);
+        }
+    }
+
+    private boolean selectedChildWasInvalidated(
+            String hostId, HostGatewayClient.IntegrationProfiles profiles) {
+        if (hostGatewayStore == null || hostId == null || profiles == null) return false;
+        String selected = selectedProfileId(hostId);
+        HostGatewayClient.IntegrationProfile before = hostGatewayStore.profiles(hostId)
+                .find(selected);
+        HostGatewayClient.IntegrationProfile after = profiles.find(selected);
+        return before != null && before.isChild()
+                && (after == null || !after.isChild() || !after.enabled || !after.useProfile);
     }
 
     private void showPinEntry(ComputerDetails host,
@@ -2971,7 +3968,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         if (result.profiles != null) {
-            hostGatewayStore.saveProfiles(attempt.hostId, result.profiles);
+            saveHostProfiles(attempt.hostId, result.profiles);
         }
         switch (result.status) {
             case VERIFIED:
@@ -3227,7 +4224,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         PlayIntent relay = pendingWarmUpRelay;
         warmUpRelaySubmitted = true;
-        sessionOrchestrator.play(relay);
+        playProviderGame(relay);
     }
 
     private boolean isPendingWarmUpRelayOwnedOrCompleted(String gameId) {
@@ -3677,6 +4674,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             updateHostSelector();
         }
         if (ConsoleUpdateChannels.has(channels, ConsoleUpdateChannels.INTEGRATIONS)) {
+            if (selected != null) updateProfileSelector(selected);
             refreshDiscordIndicator();
         }
         if (selected != null && ConsoleUpdateChannels.has(
@@ -3729,40 +4727,117 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (profileSelector == null) return;
         HostGatewayStore.ProfileSelection selection = host == null ? null
                 : hostGatewayStore.profileSelection(host.uuid);
-        if (selection == null || selection.selected == null
-                || !selection.showSelector) {
+        if (selection == null || selection.selected == null) {
             profileSelector.setVisibility(View.GONE);
-            if (selection != null && selection.selected != null
-                    && !selection.selected.pinRequired) {
-                hostGatewayStore.setSelectedIntegrationProfileId(
-                        host.uuid, selection.selected.id);
-            }
+            profileSelectorHint = "";
             return;
         }
-        profileSelector.setText(getString(R.string.console_profile_selector,
-                selection.selected.name));
+        if (!selection.showSelector && !selection.selected.pinRequired) {
+            hostGatewayStore.setSelectedIntegrationProfileId(host.uuid,
+                    selection.selected.id);
+        }
+        HostGatewayClient.IntegrationProfile selected = selection.selected;
+        String name = profileDisplayName(selected);
+        HostGatewayClient.IntegrationProfile active = activeAuthorizedProfile(selection);
+        boolean matches = profileWindowsMatch(selected, active);
+        boolean gatewayAvailable = host.state == ComputerDetails.State.ONLINE
+                && hostGatewayStore.loadForHost(host.uuid,
+                host.activeAddress == null ? null : host.activeAddress.address) != null;
+        boolean switchable = !matches && gatewayAvailable
+                && canSwitchWindowsProfile(selected, active);
+        int indicator = matches ? 0xFF36B96C : switchable ? 0xFFFFB74D : 0xFF8795A0;
+        profileSelector.setImageDrawable(new ProfileToolbarDrawable(
+                selected.id, name, indicator, dp(3), dp(10)));
+        profileSelectorHint = name;
         profileSelector.setContentDescription(getString(
-                R.string.console_profile_selector_description,
-                selection.selected.name));
+                R.string.console_profile_selector_description, name));
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            profileSelector.setTooltipText(name);
+        }
         profileSelector.setVisibility(View.VISIBLE);
         profileSelector.setEnabled(true);
+        styleQuickAction(profileSelector, profileSelector.hasFocus());
+        refreshDiscordAccess();
+    }
+
+    private boolean profileWindowsMatch(HostGatewayClient.IntegrationProfile selected,
+                                        HostGatewayClient.IntegrationProfile active) {
+        if (selected == null) return false;
+        String expected = selected.isChild() ? selected.executionProfileId : selected.id;
+        if (active != null && "active".equals(active.sessionState)
+                && expected != null && !expected.isEmpty() && expected.equals(active.id)) {
+            return true;
+        }
+        // A child may be the only authorized row; its parent is then absent from
+        // /profiles. The child session projection still carries the execution match.
+        return selected.isChild() && ("active".equals(selected.sessionState)
+                || "running".equals(selected.sessionState));
+    }
+
+    private boolean canSwitchWindowsProfile(HostGatewayClient.IntegrationProfile selected,
+                                            HostGatewayClient.IntegrationProfile active) {
+        return selected != null && selected.remoteSignIn
+                && (active == null || !profileWindowsMatch(selected, active));
     }
 
     private void showProfileSelection(ComputerDetails host) {
         if (host == null) return;
         HostGatewayStore.ProfileSelection selection =
                 hostGatewayStore.profileSelection(host.uuid);
-        if (!selection.showSelector) return;
+        if (selection == null || selection.selected == null) return;
+        HostGatewayClient.IntegrationProfile selectedProfile = selection.selected;
+        if (childManagementProfileAllowed(host, selectedProfile)
+                && !childCapabilityByProfile.containsKey(childProfileMetadataKey(
+                host.uuid, selectedProfile.id))) {
+            String address = host.activeAddress == null ? null : host.activeAddress.address;
+            if (hostGatewayStore.loadForHost(host.uuid, address) != null) {
+                loadChildCapabilityForMenu(host, selectedProfile);
+                showSidePanelBusy(getString(R.string.console_profile_eyebrow), host.name,
+                        getString(R.string.console_child_management_checking));
+                return;
+            }
+        }
         List<View> actions = new ArrayList<>();
         for (HostGatewayClient.IntegrationProfile profile : selection.profiles) {
-            TextView action = panelAction(profile.name);
+            String name = profileDisplayName(profile);
+            TextView action = panelAction(name);
             action.setContentDescription(getString(
-                    R.string.console_profile_selector_description, profile.name));
+                    R.string.console_profile_selector_description, name));
             action.setOnClickListener(view -> {
                 selectProfile(host, profile.id);
                 hideSidePanel();
             });
             actions.add(action);
+        }
+        HostGatewayClient.IntegrationProfile selected = selectedProfile;
+        HostGatewayClient.IntegrationProfile active = activeAuthorizedProfile(selection);
+        if (active != null && !selected.isChild() && !profileWindowsMatch(selected, active)) {
+            TextView align = panelAction(getString(
+                    R.string.console_use_profile_in_moonwaker,
+                    profileDisplayName(active)));
+            align.setOnClickListener(view -> {
+                selectProfile(host, active.id);
+                hideSidePanel();
+            });
+            actions.add(align);
+        }
+        if (canSwitchWindowsProfile(selected, active)) {
+            boolean online = host.state == ComputerDetails.State.ONLINE;
+            boolean gatewayAvailable = hostGatewayStore.loadForHost(host.uuid,
+                    host.activeAddress == null ? null : host.activeAddress.address) != null;
+            TextView switchProfile = panelAction(getString(
+                    R.string.console_switch_windows_profile, profileDisplayName(selected)));
+            switchProfile.setEnabled(online && gatewayAvailable
+                    && windowsProfileSwitchAttempt == null);
+            switchProfile.setOnClickListener(view -> confirmWindowsProfileSwitch(host, selected));
+            actions.add(switchProfile);
+        }
+        if (childManagementProfileAllowed(host, selected)
+                && childCapabilityAllowed(host, selected)) {
+            TextView children = panelAction(
+                    getString(R.string.console_child_management_action));
+            children.setOnClickListener(view -> beginChildManagement(host));
+            actions.add(children);
         }
         showSidePanel(getString(R.string.console_profile_eyebrow),
                 getString(R.string.gateway_profiles_title),
@@ -3782,6 +4857,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         applySelectedProfile(host, profileId);
     }
 
+    private String profileDisplayName(HostGatewayClient.IntegrationProfile profile) {
+        if (profile == null) return getString(R.string.gateway_profile_title);
+        String name = profile.name == null ? "" : profile.name.trim();
+        if (!name.isEmpty()) return name;
+        return profile.isChild() ? getString(R.string.console_child_profile_title)
+                : getString(R.string.gateway_profile_title);
+    }
+
     private void applySelectedProfile(ComputerDetails host, String profileId) {
         if (!changeSelectedProfile(host, profileId)) return;
         currentSunshineApps = loadApps(host);
@@ -3796,9 +4879,22 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (host == null) return false;
         String selected = GatewayConnection.normalizeProfileId(profileId);
         if (selected.equals(selectedProfileId(host.uuid))) return false;
+        String previousProfileId = selectedProfileId(host.uuid);
+        cancelChildLaunches(host.uuid, previousProfileId);
+        HostGatewayClient.IntegrationProfile nextProfile = integrationProfile(
+                host.uuid, selected);
+        if (nextProfile != null && nextProfile.isChild()) {
+            hostGatewayStore.setAutomaticIntegrationProfileId(host.uuid, "");
+        }
+        childEligibilityLaunchToken++;
+        mainHandler.removeCallbacks(childEligibilityBoundary);
+        childEligibilityObservedAt.remove(host.uuid + "\n" + previousProfileId);
+        childEligibilityObservedAt.remove(host.uuid + "\n" + selected);
+        invalidateChildManagement();
         cancelWindowsProfileSwitch(false);
         if (sessionOrchestrator != null) sessionOrchestrator.cancel();
         hostGatewayStore.setSelectedIntegrationProfileId(host.uuid, selected);
+        if (host.uuid.equalsIgnoreCase(selectedHostUuid)) refreshDiscordAccess();
         profileGeneration.incrementAndGet();
         cancelPlayniteRequest();
         cancelPlayniteArtworkPrefetch();
@@ -3821,21 +4917,58 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String hostId = host.uuid;
         executor.execute(() -> {
             HostGatewayClient.IntegrationProfiles profiles;
+            HostGatewayClient.Capabilities capabilities = null;
             try {
                 profiles = hostGatewayClient.getIntegrationProfiles(connection);
             } catch (IOException | RuntimeException unavailable) {
                 return;
             }
+            try {
+                capabilities = hostGatewayClient.getCapabilities(connection);
+            } catch (IOException | RuntimeException unavailable) {
+                // The profile data remains usable; child controls stay hidden until capability is known.
+            }
+            HostGatewayClient.Capabilities capabilityResult = capabilities;
             mainHandler.post(() -> {
                 if (token != profileGeneration.get() || !hostId.equals(selectedHostUuid)) return;
                 String previous = selectedProfileId(hostId);
-                hostGatewayStore.saveProfiles(hostId, profiles);
+                HostGatewayClient.IntegrationProfiles cachedBefore =
+                        hostGatewayStore.profiles(hostId);
+                HostGatewayClient.IntegrationProfile previousProfile =
+                        cachedBefore == null ? null : cachedBefore.find(previous);
+                HostGatewayClient.IntegrationProfile refreshedProfile =
+                        profiles.find(previous);
+                boolean childWasInvalidated = previousProfile != null
+                        && previousProfile.isChild()
+                        && (refreshedProfile == null || !refreshedProfile.isChild()
+                        || !refreshedProfile.enabled || !refreshedProfile.useProfile);
+                rememberChildCapability(hostId, profiles, capabilityResult);
+                saveHostProfiles(hostId, profiles);
+                HostGatewayClient.IntegrationProfile observedProfile = profiles.find(previous);
+                if (observedProfile != null && observedProfile.isChild()) {
+                    childEligibilityObservedAt.put(hostId + "\n" + previous,
+                            SystemClock.elapsedRealtime());
+                }
+                if (childWasInvalidated) {
+                    hostGatewayStore.setAutomaticIntegrationProfileId(hostId, "");
+                    ComputerDetails current = currentHost(hostId);
+                    if (current != null) showProfileGate(current, true, false);
+                    return;
+                }
                 HostGatewayStore.ProfileSelection selection =
                         hostGatewayStore.profileSelection(hostId);
                 if (selection.selected != null
                         && !previous.equals(selection.selected.id)) {
                     selectProfile(currentHost(hostId), selection.selected.id);
                 } else {
+                    String selectedProfileId = selection.selected == null
+                            ? previous : selection.selected.id;
+                    HostGatewayClient.IntegrationProfile selectedProfile =
+                            profiles.find(selectedProfileId);
+                    if (selectedProfile != null && selectedProfile.isChild()
+                            && "pairing_required".equalsIgnoreCase(selectedProfile.reason)) {
+                        tryBindExistingVibepolloIdentity(hostId, selectedProfileId, false);
+                    }
                     updateProfileSelector(currentHost(hostId));
                     updateHostPowerLabel();
                     updateHostSelectionTile(currentHost(hostId));
@@ -3880,7 +5013,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 }
                 ComputerDetails current = hosts.get(hostId);
                 if (result != null && current != null) {
-                    hostGatewayStore.saveProfiles(hostId, result);
+                    saveHostProfiles(hostId, result);
                     updateHostSelectionTile(current);
                 }
             });
@@ -4311,29 +5444,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (localWarmUp && warmUpStatus == WARM_UP_ERROR) {
             return getString(R.string.console_warm_up_error);
         }
-        ConsoleHostPresentation.Profile profile = consoleProfile(host);
-        if (state == ConsoleHostPresentation.State.ONLINE
-                || state == ConsoleHostPresentation.State.PROFILE_ATTENTION) {
-            switch (profile.state) {
-                case ACTIVE:
-                    return getString(R.string.console_profile_status_active,
-                            profile.selectedName);
-                case OTHER_AUTHORIZED_ACTIVE:
-                    return getString(R.string.console_profile_status_other_named,
-                            profile.selectedName, profile.activeName);
-                case OTHER_ACTIVE:
-                    return getString(R.string.console_profile_status_other,
-                            profile.selectedName);
-                case SIGN_IN_REQUIRED:
-                    return getString(R.string.console_profile_status_sign_in,
-                            profile.selectedName);
-                case UNKNOWN:
-                    return getString(R.string.console_profile_status_unknown,
-                            profile.selectedName);
-                default:
-                    break;
-            }
-        }
         switch (state) {
             case WAKING:
                 return getString(R.string.console_status_waking);
@@ -4459,6 +5569,36 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 actions.toArray(new View[0]));
     }
 
+    private void loadChildCapabilityForMenu(ComputerDetails host,
+                                            HostGatewayClient.IntegrationProfile profile) {
+        if (host == null || profile == null) return;
+        String address = host.activeAddress == null ? null : host.activeAddress.address;
+        GatewayConnection connection = hostGatewayStore.loadForHost(host.uuid, address);
+        if (connection == null) return;
+        String hostId = host.uuid;
+        String profileId = profile.id;
+        int token = childManagementGeneration.incrementAndGet();
+        executor.execute(() -> {
+            boolean available = false;
+            try {
+                available = hostGatewayClient.getCapabilities(connection).childProfiles;
+            } catch (IOException | RuntimeException unavailable) {
+                // Keep the management action hidden until a capability read succeeds.
+            }
+            boolean result = available;
+            mainHandler.post(() -> {
+                if (token != childManagementGeneration.get()
+                        || !hostId.equals(selectedHostUuid)
+                        || !profileId.equals(selectedProfileId(hostId))) return;
+                childCapabilityByProfile.put(childProfileMetadataKey(hostId, profileId), result);
+                ComputerDetails current = currentHost(hostId);
+                if (current != null && sideDialog != null && sideDialog.isShowing()) {
+                    showProfileSelection(current);
+                }
+            });
+        });
+    }
+
     private void showHostSelectionOptions(ComputerDetails host) {
         boolean terminating = resolveSessionSnapshot(host).state
                 == SessionSnapshot.State.TERMINATING;
@@ -4466,13 +5606,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean paired = host.pairState == PairingManager.PairState.PAIRED;
         boolean autoWarmUp = HostAutoWarmUpPreferences.isEnabled(preferences, host.uuid);
         String address = host.activeAddress != null ? host.activeAddress.address : null;
-        boolean gatewayAvailable = hostGatewayStore.loadForHost(host.uuid, address) != null;
+        boolean gatewayAvailable = hostGatewayStore.loadForHost(
+                host.uuid, address, selectedProfileId(host.uuid)) != null;
         boolean canSleep = online && gatewayAvailable;
         HostGatewayStore.ProfileSelection profileSelection =
                 hostGatewayStore.profileSelection(host.uuid);
         HostGatewayClient.IntegrationProfile selectedProfile = profileSelection.selected;
-        HostGatewayClient.IntegrationProfile activeProfile =
-                activeAuthorizedProfile(profileSelection);
+        boolean childProfile = selectedProfile != null && selectedProfile.isChild();
 
         TextView wake = hostSelectionMenuAction(getString(R.string.console_wake_host),
                 !terminating && ConsoleHostPresentation.canWake(host)
@@ -4482,37 +5622,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             wakeHost(host);
         });
         TextView desktop = hostSelectionMenuAction(
-                getString(R.string.console_launch_desktop), online && paired);
+                getString(R.string.console_launch_desktop), online && paired && !childProfile);
         desktop.setContentDescription(getString(R.string.console_launch_desktop_description));
         desktop.setOnClickListener(view -> {
             hideSidePanel();
             launchDesktopSession(host);
         });
-        TextView profiles = hostSelectionMenuAction(
-                getString(R.string.console_choose_moonwaker_profile), true);
-        profiles.setOnClickListener(view -> showProfileSelection(host));
-        TextView alignProfile = activeProfile == null || selectedProfile == null
-                || activeProfile.id.equals(selectedProfile.id) ? null
-                : hostSelectionMenuAction(getString(
-                R.string.console_use_profile_in_moonwaker, activeProfile.name), true);
-        if (alignProfile != null) {
-            alignProfile.setOnClickListener(view -> {
-                selectProfile(host, activeProfile.id);
-                hideSidePanel();
-            });
-        }
-        boolean switchVisible = selectedProfile != null
-                && !"active".equals(selectedProfile.sessionState);
-        TextView switchProfile = switchVisible ? hostSelectionMenuAction(getString(
-                R.string.console_switch_windows_profile, selectedProfile.name),
-                online && gatewayAvailable && selectedProfile.remoteSignIn
-                        && windowsProfileSwitchAttempt == null) : null;
-        if (switchProfile != null) {
-            switchProfile.setOnClickListener(view ->
-                    confirmWindowsProfileSwitch(host, selectedProfile));
-        }
         LinearLayout warmUp = settingsToggle(
                 getString(R.string.console_auto_stream_warm_up), autoWarmUp);
+        warmUp.setEnabled(!childProfile);
         warmUp.setOnClickListener(view -> {
             boolean enabled = !HostAutoWarmUpPreferences.isEnabled(preferences, host.uuid);
             HostAutoWarmUpPreferences.setEnabled(preferences, host.uuid, enabled);
@@ -4520,16 +5638,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (!enabled) cancelOwnedWarmUp(host.uuid, false);
         });
         TextView unpair = hostSelectionMenuAction(getString(R.string.console_unpair_host),
-                online && paired);
+                online && paired && !childProfile);
         unpair.setTextColor(unpair.isEnabled() ? 0xFFFF9B92 : 0x88FF9B92);
         unpair.setOnClickListener(view -> unpairHost(host));
         TextView test = hostSelectionMenuAction(
-                getString(R.string.pcview_menu_test_network), true);
+                getString(R.string.pcview_menu_test_network), !childProfile);
         test.setOnClickListener(view -> {
             hideSidePanel();
             ServerHelper.doNetworkTest(this);
         });
-        TextView sleep = hostSelectionMenuAction(getString(R.string.console_sleep_host), canSleep);
+        TextView sleep = hostSelectionMenuAction(getString(R.string.console_sleep_host),
+                canSleep);
         sleep.setOnClickListener(view -> confirmSleepHost(host));
         TextView terminate = hostSelectionMenuAction(
                 getString(R.string.console_close_stream),
@@ -4538,25 +5657,31 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         terminate.setOnClickListener(view -> confirmCloseHostStream(host));
         TextView hardTerminate = hostSelectionMenuAction(
                 getString(R.string.console_hard_terminate_session),
-                online && paired && gatewayAvailable);
+                online && paired && gatewayAvailable && !childProfile);
         hardTerminate.setTextColor(hardTerminate.isEnabled() ? 0xFFFF6F61 : 0x88FF6F61);
         hardTerminate.setOnClickListener(view -> confirmHardTerminateSession(host));
         List<View> actions = new ArrayList<>();
         actions.add(wake);
-        actions.add(desktop);
-        if (alignProfile != null) actions.add(alignProfile);
-        if (switchProfile != null) actions.add(switchProfile);
-        if (profileSelection.showSelector) actions.add(profiles);
-        actions.add(warmUp);
-        actions.add(terminate);
-        actions.add(hardTerminate);
-        actions.add(unpair);
-        actions.add(test);
-        actions.add(sleep);
+        if (childProfile) {
+            actions.add(terminate);
+            actions.add(sleep);
+        }
+        if (!childProfile) {
+            actions.add(desktop);
+        }
+        if (!childProfile) {
+            actions.add(warmUp);
+            actions.add(terminate);
+            actions.add(hardTerminate);
+            actions.add(unpair);
+            actions.add(test);
+            actions.add(sleep);
+        }
         showSidePanel(getString(R.string.console_host_eyebrow), host.name,
                 getString(online ? R.string.console_host_online_details
-                        : R.string.console_host_offline_details) + "\n\n"
-                        + getString(R.string.console_auto_stream_warm_up_description),
+                        : R.string.console_host_offline_details)
+                        + (childProfile ? "" : "\n\n"
+                        + getString(R.string.console_auto_stream_warm_up_description)),
                 actions.toArray(new View[0]));
     }
 
@@ -4567,6 +5692,693 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if ("active".equals(profile.sessionState)) return profile;
         }
         return null;
+    }
+
+    private interface ChildAuthorizationCallback {
+        void onAuthorized(ChildManagementLease lease, int token);
+    }
+
+    private void invalidateChildManagementPresentation() {
+        childManagementGeneration.incrementAndGet();
+        childMutationRetry = null;
+    }
+
+    private void prepareChildSharingForDeparture() {
+        if (sidePanel == null) return;
+        for (int index = 0; index < sidePanel.getChildCount(); index++) {
+            View child = sidePanel.getChildAt(index);
+            if (child instanceof ConsoleChildGameSharingPanel) {
+                ((ConsoleChildGameSharingPanel) child).prepareForDismiss();
+                return;
+            }
+        }
+    }
+
+    private void invalidateChildManagement() {
+        invalidateChildManagementPresentation();
+        childManagementLease = null;
+    }
+
+    static boolean isChildManagementAuthorizationFailure(IOException error) {
+        if (!(error instanceof HostGatewayClient.GatewayException)) return false;
+        HostGatewayClient.GatewayException gatewayError =
+                (HostGatewayClient.GatewayException) error;
+        String reason = gatewayError.getMessage() == null ? ""
+                : gatewayError.getMessage().trim().toLowerCase(Locale.ROOT);
+        if ("authorization_required".equals(reason)
+                || "authorization_expired".equals(reason)
+                || "management_authorization_expired".equals(reason)
+                || reason.contains("fresh child management session")) return true;
+        return (gatewayError.statusCode == 401 || gatewayError.statusCode == 403)
+                && (reason.contains("child management") || reason.contains("not authorized"));
+    }
+
+    private void clearRejectedChildManagementLease(IOException error) {
+        if (isChildManagementAuthorizationFailure(error)) childManagementLease = null;
+    }
+
+    private GatewayConnection childConnection(ComputerDetails host, String parentProfileId) {
+        if (host == null || parentProfileId == null || parentProfileId.isEmpty()) return null;
+        String address = host.activeAddress == null ? null : host.activeAddress.address;
+        return hostGatewayStore.loadForHost(host.uuid, address, parentProfileId);
+    }
+
+    private boolean isCurrentChildContext(String hostId, String parentProfileId, int token) {
+        return token == childManagementGeneration.get()
+                && hostId != null && hostId.equals(selectedHostUuid)
+                && parentProfileId != null
+                && parentProfileId.equals(selectedProfileId(hostId))
+                && currentHost(hostId) != null;
+    }
+
+    /** Keep an already-enqueued sharing save alive while its panel is dismissed. */
+    private boolean isCurrentChildMutationContext(String hostId, String parentProfileId) {
+        return hostId != null && hostId.equals(selectedHostUuid)
+                && parentProfileId != null
+                && parentProfileId.equals(selectedProfileId(hostId))
+                && currentHost(hostId) != null;
+    }
+
+    private boolean isAttachedChildSharingPanel(ConsoleChildGameSharingPanel panel) {
+        return panel != null && sidePanel != null && panel.getParent() == sidePanel;
+    }
+
+    private ChildManagementLease currentChildLease(ComputerDetails host,
+                                                   String parentProfileId) {
+        GatewayConnection connection = childConnection(host, parentProfileId);
+        if (connection == null || childManagementLease == null
+                || !childManagementLease.matches(host.uuid, parentProfileId, connection)) {
+            childManagementLease = null;
+            return null;
+        }
+        return childManagementLease;
+    }
+
+    private void authorizeChildManagementFor(ComputerDetails host,
+                                             ChildAuthorizationCallback callback) {
+        if (host == null) return;
+        authorizeChildManagementFor(host, childManagementGeneration.incrementAndGet(), true,
+                callback, null);
+    }
+
+    private void authorizeChildManagementFor(ComputerDetails host,
+                                             ChildAuthorizationCallback callback,
+                                             Runnable onFailure) {
+        if (host == null) {
+            if (onFailure != null) onFailure.run();
+            return;
+        }
+        authorizeChildManagementFor(host, childManagementGeneration.incrementAndGet(), true,
+                callback, onFailure);
+    }
+
+    private void reauthorizeChildManagementFor(ComputerDetails host, int token,
+                                               ChildAuthorizationCallback callback,
+                                               Runnable onFailure) {
+        authorizeChildManagementFor(host, token, false, callback, onFailure);
+    }
+
+    private void authorizeChildManagementFor(ComputerDetails host, int token,
+                                             boolean showBusy,
+                                             ChildAuthorizationCallback callback,
+                                             Runnable onFailure) {
+        if (host == null) {
+            if (onFailure != null) onFailure.run();
+            return;
+        }
+        HostGatewayStore.ProfileSelection selection =
+                hostGatewayStore.profileSelection(host.uuid);
+        HostGatewayClient.IntegrationProfile profile = selection.selected;
+        if (!childManagementProfileAllowed(host, profile)
+                || !childCapabilityAllowed(host, profile)) {
+            if (onFailure != null) onFailure.run();
+            return;
+        }
+        String parentProfileId = selectedProfileId(host.uuid);
+        GatewayConnection connection = childConnection(host, parentProfileId);
+        if (connection == null || consoleFeedback == null) {
+            ConsoleUiFeedback.makeText(this,
+                    R.string.console_child_management_authorize_failed,
+                    Toast.LENGTH_LONG).show();
+            if (onFailure != null) onFailure.run();
+            return;
+        }
+        if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+        ChildManagementLease existingLease = currentChildLease(host, parentProfileId);
+        if (existingLease != null) {
+            callback.onAuthorized(existingLease, token);
+            return;
+        }
+        final boolean[] submitted = {false};
+        consoleFeedback.showInput(
+                getString(R.string.console_child_management_pin_title),
+                getString(R.string.console_child_management_pin_message), "",
+                getString(R.string.console_child_management_pin_hint),
+                InputType.TYPE_CLASS_NUMBER, 4,
+                getString(android.R.string.cancel), null, null,
+                getString(R.string.console_child_management_pin_title), value -> {
+                    if (!value.matches("[0-9]{4}")) {
+                        return getString(R.string.console_child_management_pin_invalid);
+                    }
+                    submitted[0] = true;
+                    if (showBusy) {
+                        showSidePanelBusy(getString(R.string.console_child_management_title),
+                                host.name, getString(R.string.console_child_management_authorizing));
+                    }
+                    executor.execute(() -> {
+                        HostGatewayClient.ChildManagementAuthorization authorization = null;
+                        IOException failure = null;
+                        try {
+                            authorization = hostGatewayClient.authorizeChildManagement(
+                                    connection, parentProfileId, value);
+                        } catch (IOException | RuntimeException error) {
+                            failure = error instanceof IOException
+                                    ? (IOException) error : new IOException(error);
+                        }
+                        HostGatewayClient.ChildManagementAuthorization result = authorization;
+                        IOException error = failure;
+                        mainHandler.post(() -> {
+                            if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+                            if (error != null || result == null) {
+                                ConsoleUiFeedback.makeText(this,
+                                        R.string.console_child_management_authorize_failed,
+                                        Toast.LENGTH_LONG).show();
+                                if (onFailure != null) onFailure.run();
+                                return;
+                            }
+                            if (!parentProfileId.equals(result.parentProfileId)
+                                    || result.authorizationId.isEmpty()) {
+                                ConsoleUiFeedback.makeText(this,
+                                        R.string.console_child_management_authorize_failed,
+                                        Toast.LENGTH_LONG).show();
+                                if (onFailure != null) onFailure.run();
+                                return;
+                            }
+                            childManagementLease = new ChildManagementLease(host.uuid,
+                                    parentProfileId, connection, result.authorizationId,
+                                    result.expiresInSeconds);
+                            callback.onAuthorized(childManagementLease, token);
+                        });
+                    });
+                    return null;
+                }, () -> {
+                    if (!submitted[0] && onFailure != null) onFailure.run();
+                });
+    }
+
+    private void beginChildManagement(ComputerDetails host) {
+        childMutationRetry = null;
+        authorizeChildManagementFor(host, (lease, token) ->
+                loadChildProfiles(host, token, false),
+                () -> showChildManagementFailure(host, childManagementGeneration.get()));
+    }
+
+    private void loadChildProfiles(ComputerDetails host, int token, boolean replaceHistory) {
+        if (host == null) return;
+        String parentProfileId = selectedProfileId(host.uuid);
+        ChildManagementLease lease = currentChildLease(host, parentProfileId);
+        if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+        if (lease == null) {
+            reauthorizeChildManagementFor(host, token, (fresh, freshToken) ->
+                    loadChildProfiles(host, freshToken, replaceHistory), null);
+            return;
+        }
+        showSidePanelBusy(getString(R.string.console_child_management_title), host.name,
+                getString(R.string.console_child_management_loading));
+        executor.execute(() -> {
+            HostGatewayClient.ChildProfiles profiles = null;
+            IOException failure = null;
+            try {
+                profiles = hostGatewayClient.listChildProfiles(lease.connection,
+                        parentProfileId, lease.authorizationId);
+            } catch (IOException | RuntimeException error) {
+                failure = error instanceof IOException
+                        ? (IOException) error : new IOException(error);
+            }
+            HostGatewayClient.ChildProfiles result = profiles;
+            IOException error = failure;
+            mainHandler.post(() -> {
+                if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+                if (error != null || result == null) {
+                    clearRejectedChildManagementLease(error);
+                    showChildManagementFailure(host, token);
+                } else {
+                    renderChildManagement(host, result, token, replaceHistory);
+                }
+            });
+        });
+    }
+
+    private void showChildManagementFailure(ComputerDetails host, int token) {
+        if (host == null || !isCurrentChildContext(host.uuid,
+                selectedProfileId(host.uuid), token)) return;
+        TextView retry = panelAction(getString(R.string.console_child_management_refresh));
+        retry.setOnClickListener(view -> loadChildProfiles(host, token, false));
+        TextView close = panelAction(getString(R.string.console_cancel));
+        close.setOnClickListener(view -> handlePanelBack());
+        showSidePanel(getString(R.string.console_child_management_title), host.name,
+                getString(R.string.console_child_management_authorize_failed), retry, close);
+    }
+
+    private void renderChildManagement(ComputerDetails host,
+                                       HostGatewayClient.ChildProfiles profiles,
+                                       int token, boolean replaceHistory) {
+        String parentProfileId = selectedProfileId(host.uuid);
+        if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+        if (replaceHistory) {
+            panelHistory.clear();
+            sidePanelTransient = true;
+        }
+        List<View> actions = new ArrayList<>();
+        TextView add = panelAction(getString(R.string.console_child_management_add));
+        add.setOnClickListener(view -> showChildEditor(host, null, profiles.revision, token));
+        actions.add(add);
+        if (profiles.children.isEmpty()) {
+            TextView empty = text(getString(R.string.console_child_management_empty),
+                    14, 0xFFC1C5D6, false);
+            empty.setFocusable(false);
+            actions.add(empty);
+        } else {
+            for (HostGatewayClient.ChildProfile child : profiles.children) {
+                if (child == null || !parentProfileId.equals(child.parentProfileId)) continue;
+                String name = child.name.isEmpty()
+                        ? getString(R.string.console_child_profile_title) : child.name;
+                TextView edit = panelAction(name);
+                edit.setContentDescription(getString(R.string.console_child_management_edit)
+                        + ": " + name);
+                edit.setOnClickListener(view ->
+                        showChildEditor(host, child, profiles.revision, token));
+                actions.add(edit);
+            }
+        }
+        TextView refresh = panelAction(getString(R.string.console_child_management_refresh));
+        refresh.setOnClickListener(view -> loadChildProfiles(host, token, false));
+        actions.add(refresh);
+        showSidePanel(getString(R.string.console_child_management_title), host.name,
+                getString(R.string.console_child_management_details),
+                actions.toArray(new View[0]));
+    }
+
+    private ConsoleChildProfileEditor.Draft childDraft(
+            HostGatewayClient.ChildProfile child, int revision) {
+        if (child == null) return ConsoleChildProfileEditor.Draft.newChild(revision);
+        List<ConsoleChildProfileEditor.Day> days = child.weekdays;
+        if (days == null || days.size() != 7) {
+            days = new ArrayList<>();
+            for (int index = 0; index < 7; index++) {
+                days.add(new ConsoleChildProfileEditor.Day(false, 0, 1440, 0));
+            }
+        }
+        return new ConsoleChildProfileEditor.Draft(child.id, child.name, child.avatarId,
+                child.enabled, days, Collections.emptyList(), revision, false);
+    }
+
+    private void showChildEditor(ComputerDetails host, HostGatewayClient.ChildProfile child,
+                                 int expectedRevision, int token) {
+        String parentProfileId = selectedProfileId(host.uuid);
+        if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+        ConsoleChildProfileEditor editor = new ConsoleChildProfileEditor(this);
+        TextView refresh = panelAction(getString(R.string.console_child_management_refresh));
+        refresh.setVisibility(View.GONE);
+        refresh.setOnClickListener(view -> loadChildProfiles(host, token, false));
+        TextView delete = null;
+        editor.show(childDraft(child, expectedRevision),
+                (draft, completion) -> saveChildDraft(host, token, draft, refresh, completion),
+                this::handlePanelBack);
+        List<View> outerActions = new ArrayList<>();
+        // Keep the complete editor at the top of the scroll content.  The editor
+        // owns identity, schedule, and Save/Cancel; management actions follow it.
+        outerActions.add(editor);
+        if (child != null) {
+            delete = panelAction(getString(R.string.console_child_management_delete));
+            delete.setTextColor(0xFFFF9B92);
+            delete.setOnClickListener(view -> confirmDeleteChild(host, child,
+                    expectedRevision, token));
+            outerActions.add(delete);
+        }
+        outerActions.add(refresh);
+        showSidePanel(getString(R.string.console_child_management_title),
+                getString(R.string.console_child_profile_title),
+                getString(R.string.console_child_management_details),
+                outerActions.toArray(new View[0]));
+        if (delete != null) editor.setAfterEditorFocus(delete);
+        wireModalFocusTrap(true);
+    }
+
+    private String childDraftSignature(String operation, String childId,
+                                       ConsoleChildProfileEditor.Draft draft) {
+        StringBuilder signature = new StringBuilder(operation).append('|')
+                .append(childId == null ? "" : childId).append('|')
+                .append(draft.expectedRevision).append('|').append(draft.name).append('|')
+                .append(draft.avatar).append('|').append(draft.enabled).append('|')
+                .append(draft.grantCurrentDevice);
+        for (ConsoleChildProfileEditor.Day day : draft.weekdays) {
+            signature.append('|').append(day.enabled).append(':').append(day.startMinute)
+                    .append(':').append(day.endMinute).append(':')
+                    .append(day.dailyLimitSeconds);
+        }
+        return signature.toString();
+    }
+
+    private String childRequestId(String hostId, String parentProfileId, String operation,
+                                  String childId, String gameId, String signature) {
+        if (childMutationRetry == null
+                || !childMutationRetry.matches(hostId, parentProfileId, operation,
+                childId, gameId, signature)) {
+            childMutationRetry = new ChildMutationRetry(hostId, parentProfileId, operation,
+                    childId, gameId, signature, UUID.randomUUID().toString());
+        }
+        return childMutationRetry.requestId;
+    }
+
+    private void saveChildDraft(ComputerDetails host, int token,
+                                 ConsoleChildProfileEditor.Draft draft,
+                                 TextView refresh, ConsoleChildProfileEditor.Completion completion) {
+        String parentProfileId = selectedProfileId(host.uuid);
+        ChildManagementLease lease = currentChildLease(host, parentProfileId);
+        if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+        String operation = draft.profileId.isEmpty() ? "create" : "update";
+        String childId = draft.profileId;
+        String signature = childDraftSignature(operation, childId, draft);
+        if (lease == null) {
+            reauthorizeChildManagementFor(host, token,
+                    (fresh, freshToken) -> saveChildDraft(host, freshToken, draft,
+                            refresh, completion), () -> completion.onFailed(
+                            getString(R.string.console_child_management_authorize_failed),
+                            false));
+            return;
+        }
+        if (!isCurrentChildContext(host.uuid, parentProfileId, token)) {
+            completion.onFailed(getString(R.string.console_child_management_authorize_failed),
+                    false);
+            return;
+        }
+        String requestId = childRequestId(host.uuid, parentProfileId, operation, childId,
+                "", signature);
+        executor.execute(() -> {
+            HostGatewayClient.ChildMutationResult result = null;
+            IOException failure = null;
+            try {
+                result = "create".equals(operation)
+                        ? hostGatewayClient.createChildProfile(lease.connection,
+                        parentProfileId, lease.authorizationId, requestId,
+                        draft.expectedRevision, draft)
+                        : hostGatewayClient.updateChildProfile(lease.connection,
+                        parentProfileId, lease.authorizationId, childId, requestId,
+                        draft.expectedRevision, draft);
+            } catch (IOException | RuntimeException error) {
+                failure = error instanceof IOException
+                        ? (IOException) error : new IOException(error);
+            }
+            HostGatewayClient.ChildMutationResult response = result;
+            IOException error = failure;
+            mainHandler.post(() -> {
+                if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+                if (error != null || response == null
+                        || !parentProfileId.equals(response.parentProfileId)
+                        || response.child == null
+                        || !parentProfileId.equals(response.child.parentProfileId)) {
+                    clearRejectedChildManagementLease(error);
+                    boolean conflict = error instanceof HostGatewayClient.GatewayException
+                            && ((HostGatewayClient.GatewayException) error).statusCode == 409;
+                    completion.onFailed(getString(conflict
+                                    ? R.string.console_child_profile_save_conflict
+                                    : R.string.console_child_profile_save_failed), conflict);
+                    if (conflict) refresh.setVisibility(View.VISIBLE);
+                    return;
+                }
+                childMutationRetry = null;
+                completion.onSaved();
+                ConsoleUiFeedback.makeText(this,
+                        R.string.console_child_management_saved,
+                        Toast.LENGTH_SHORT).show();
+                refreshChildProfileMetadata(host, token,
+                        () -> loadChildProfiles(host, token, true));
+            });
+        });
+    }
+
+    private void confirmDeleteChild(ComputerDetails host,
+                                    HostGatewayClient.ChildProfile child,
+                                    int expectedRevision, int token) {
+        if (host == null || child == null) return;
+        consoleFeedback.showConfirm(getString(R.string.console_child_management_delete),
+                getString(R.string.console_child_management_delete_confirm,
+                        child.name.isEmpty() ? getString(R.string.console_child_profile_title)
+                                : child.name),
+                getString(R.string.console_cancel),
+                getString(R.string.console_child_management_delete), true,
+                () -> deleteChild(host, child, expectedRevision, token));
+    }
+
+    private void deleteChild(ComputerDetails host, HostGatewayClient.ChildProfile child,
+                             int expectedRevision, int token) {
+        String parentProfileId = selectedProfileId(host.uuid);
+        if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+        ChildManagementLease lease = currentChildLease(host, parentProfileId);
+        String signature = "delete|" + child.id + "|" + expectedRevision;
+        if (lease == null) {
+            reauthorizeChildManagementFor(host, token,
+                    (fresh, freshToken) -> deleteChild(host, child, expectedRevision, freshToken),
+                    () -> ConsoleUiFeedback.makeText(this,
+                            R.string.console_child_management_authorize_failed,
+                            Toast.LENGTH_LONG).show());
+            return;
+        }
+        String requestId = childRequestId(host.uuid, parentProfileId, "delete", child.id,
+                "", signature);
+        showSidePanelBusy(getString(R.string.console_child_management_title), host.name,
+                getString(R.string.console_child_management_loading));
+        executor.execute(() -> {
+            IOException failure = null;
+            HostGatewayClient.ChildMutationResult result = null;
+            try {
+                result = hostGatewayClient.deleteChildProfile(lease.connection,
+                        parentProfileId, lease.authorizationId, child.id, requestId,
+                        expectedRevision);
+            } catch (IOException | RuntimeException error) {
+                failure = error instanceof IOException
+                        ? (IOException) error : new IOException(error);
+            }
+            IOException error = failure;
+            HostGatewayClient.ChildMutationResult response = result;
+            mainHandler.post(() -> {
+                if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+                if (error != null || response == null
+                        || !parentProfileId.equals(response.parentProfileId)) {
+                    clearRejectedChildManagementLease(error);
+                    ConsoleUiFeedback.makeText(this,
+                            R.string.console_child_profile_save_failed,
+                            Toast.LENGTH_LONG).show();
+                    return;
+                }
+                childMutationRetry = null;
+                ConsoleUiFeedback.makeText(this,
+                        R.string.console_child_management_deleted,
+                        Toast.LENGTH_SHORT).show();
+                refreshChildProfileMetadata(host, token,
+                        () -> loadChildProfiles(host, token, true));
+            });
+        });
+    }
+
+    private void refreshChildProfileMetadata(ComputerDetails host, int token, Runnable done) {
+        if (host == null) return;
+        String parentProfileId = selectedProfileId(host.uuid);
+        GatewayConnection connection = childConnection(host, parentProfileId);
+        if (connection == null) {
+            if (done != null) done.run();
+            return;
+        }
+        executor.execute(() -> {
+            HostGatewayClient.IntegrationProfiles profiles = null;
+            try {
+                profiles = hostGatewayClient.getIntegrationProfiles(connection);
+            } catch (IOException | RuntimeException ignored) {
+                // The child list remains authoritative when this metadata refresh is unavailable.
+            }
+            HostGatewayClient.IntegrationProfiles result = profiles;
+            mainHandler.post(() -> {
+                if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+                if (result != null) {
+                    saveHostProfiles(host.uuid, result);
+                }
+                if (done != null) done.run();
+            });
+        });
+    }
+
+    private void beginChildSharing(ComputerDetails host, PlayniteDashboardItem item) {
+        if (host == null || item == null) return;
+        String gameId = item.game.playniteGameId;
+        if (!HostGatewayClient.isPlayniteId(gameId)) return;
+        childMutationRetry = null;
+        authorizeChildManagementFor(host,
+                (lease, token) -> loadChildSharing(host, item, lease, token),
+                () -> showChildSharingFailure(host, item, childManagementGeneration.get()));
+    }
+
+    private void loadChildSharing(ComputerDetails host, PlayniteDashboardItem item,
+                                  ChildManagementLease lease, int token) {
+        String parentProfileId = selectedProfileId(host.uuid);
+        if (lease == null || !isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+        showSidePanelBusy(getString(R.string.console_child_sharing_title), item.game.name,
+                getString(R.string.console_child_management_loading));
+        executor.execute(() -> {
+            HostGatewayClient.ChildSharing sharing = null;
+            IOException failure = null;
+            try {
+                sharing = hostGatewayClient.getChildSharing(lease.connection,
+                        parentProfileId, lease.authorizationId, item.game.playniteGameId);
+            } catch (IOException | RuntimeException error) {
+                failure = error instanceof IOException
+                        ? (IOException) error : new IOException(error);
+            }
+            HostGatewayClient.ChildSharing result = sharing;
+            IOException error = failure;
+            mainHandler.post(() -> {
+                if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+                if (error != null || result == null) {
+                    clearRejectedChildManagementLease(error);
+                    showChildSharingFailure(host, item, token);
+                    return;
+                }
+                renderChildSharing(host, item, result, token);
+            });
+        });
+    }
+
+    private void showChildSharingFailure(ComputerDetails host, PlayniteDashboardItem item,
+                                         int token) {
+        TextView retry = panelAction(getString(R.string.console_child_management_refresh));
+        retry.setOnClickListener(view -> {
+            ChildManagementLease lease = currentChildLease(host, selectedProfileId(host.uuid));
+            if (lease != null) loadChildSharing(host, item, lease, token);
+            else reauthorizeChildManagementFor(host, token,
+                    (fresh, freshToken) -> loadChildSharing(host, item, fresh, freshToken), null);
+        });
+        TextView close = panelAction(getString(R.string.console_cancel));
+        close.setOnClickListener(view -> handlePanelBack());
+        showSidePanel(getString(R.string.console_child_sharing_title), item.game.name,
+                getString(R.string.console_child_management_authorize_failed), retry, close);
+    }
+
+    private void renderChildSharing(ComputerDetails host, PlayniteDashboardItem item,
+                                    HostGatewayClient.ChildSharing sharing, int token) {
+        String parentProfileId = selectedProfileId(host.uuid);
+        if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
+        ConsoleChildGameSharingPanel panel = new ConsoleChildGameSharingPanel(this);
+        List<ConsoleChildGameSharingPanel.ChildOption> options = new ArrayList<>();
+        for (HostGatewayClient.ChildShare child : sharing.children) {
+            if (child == null || child.id.isEmpty()) continue;
+            options.add(new ConsoleChildGameSharingPanel.ChildOption(child.id, child.name,
+                    child.granted));
+        }
+        ChildSharingOriginContext origin = new ChildSharingOriginContext(
+                token, currentChildLease(host, parentProfileId));
+        panel.show(item.game.name, options, sharing.revision,
+                (draft, completion) -> saveChildSharing(host, item, panel,
+                        parentProfileId, origin, draft, completion),
+                this::handlePanelBack);
+        panel.setRefreshCallback(() -> {
+            ChildManagementLease lease = currentChildLease(host, parentProfileId);
+            if (lease != null) {
+                origin.lease = lease;
+                loadChildSharing(host, item, lease, origin.token);
+            } else reauthorizeChildManagementFor(host, origin.token,
+                    (fresh, freshToken) -> {
+                        origin.token = freshToken;
+                        origin.lease = fresh;
+                        loadChildSharing(host, item, fresh, freshToken);
+                    },
+                    null);
+        });
+        showSidePanel(getString(R.string.console_child_sharing_title), item.game.name,
+                getString(R.string.console_child_sharing_details));
+        sidePanel.addView(panel, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        wireModalFocusTrap(true);
+    }
+
+    private void saveChildSharing(ComputerDetails host, PlayniteDashboardItem item,
+                                  ConsoleChildGameSharingPanel panel,
+                                  String parentProfileId, ChildSharingOriginContext origin,
+                                  ConsoleChildGameSharingPanel.Draft draft,
+                                  ConsoleChildGameSharingPanel.Completion completion) {
+        String gameId = item.game.playniteGameId;
+        StringBuilder signature = new StringBuilder("sharing|").append(gameId).append('|')
+                .append(draft.expectedRevision);
+        for (String id : draft.selectedChildIds) signature.append('|').append(id);
+        boolean dismissedSave = panel != null && panel.isDismissRequested();
+        int token = origin == null ? -1 : origin.token;
+        boolean currentContext = isCurrentChildContext(host.uuid, parentProfileId, token);
+        boolean originContinuation = dismissedSave && origin != null && origin.lease != null;
+        if (!currentContext && !originContinuation) {
+            if (panel != null) panel.discardPendingSave();
+            completion.onFailed(getString(
+                    R.string.console_child_management_authorize_failed), false);
+            return;
+        }
+        ChildManagementLease lease = dismissedSave
+                ? origin.lease : currentChildLease(host, parentProfileId);
+        if (!dismissedSave && lease != null && origin != null) origin.lease = lease;
+        if (lease == null) {
+            if (dismissedSave) {
+                completion.onFailed(getString(
+                        R.string.console_child_management_authorize_failed), false);
+                return;
+            }
+            reauthorizeChildManagementFor(host, token,
+                    (fresh, freshToken) -> {
+                        origin.token = freshToken;
+                        origin.lease = fresh;
+                        saveChildSharing(host, item, panel, parentProfileId, origin,
+                                draft, completion);
+                    },
+                    () -> completion.onFailed(
+                            getString(R.string.console_child_management_authorize_failed),
+                            false));
+            return;
+        }
+        String requestId = panel.requestIdFor(signature.toString());
+        executor.execute(() -> {
+            HostGatewayClient.ChildMutationResult result = null;
+            IOException failure = null;
+            try {
+                result = hostGatewayClient.setChildSharing(lease.connection, parentProfileId,
+                        lease.authorizationId, gameId, draft.selectedChildIds,
+                        draft.expectedRevision, requestId);
+            } catch (IOException | RuntimeException error) {
+                failure = error instanceof IOException
+                        ? (IOException) error : new IOException(error);
+            }
+            HostGatewayClient.ChildMutationResult response = result;
+            IOException error = failure;
+            mainHandler.post(() -> {
+                boolean current = isCurrentChildMutationContext(host.uuid, parentProfileId);
+                boolean dismissedOrigin = panel != null && panel.isDismissRequested();
+                if (!current && !dismissedOrigin) {
+                    if (panel != null) panel.discardPendingSave();
+                    completion.onFailed(getString(
+                            R.string.console_child_management_authorize_failed), false);
+                    return;
+                }
+                if (error != null || response == null
+                        || !parentProfileId.equals(response.parentProfileId)) {
+                    if (current) clearRejectedChildManagementLease(error);
+                    boolean conflict = error instanceof HostGatewayClient.GatewayException
+                            && ((HostGatewayClient.GatewayException) error).statusCode == 409;
+                    completion.onFailed(getString(conflict
+                                    ? R.string.console_child_sharing_save_conflict
+                                    : R.string.console_child_sharing_save_failed), conflict);
+                    if (conflict && isAttachedChildSharingPanel(panel)) {
+                        wireModalFocusTrap(false);
+                    }
+                    return;
+                }
+                completion.onSaved(response.revision);
+            });
+        });
     }
 
     private void confirmWindowsProfileSwitch(ComputerDetails host,
@@ -4741,7 +6553,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             mainHandler.post(() -> {
                 ComputerDetails current = hosts.get(hostId);
                 if (current == null) return;
-                hostGatewayStore.saveProfiles(hostId, profiles);
+                    saveHostProfiles(hostId, profiles);
                 updateHostSelectionTile(current);
                 if (hostId.equals(selectedHostUuid)) {
                     updateProfileSelector(current);
@@ -5058,6 +6870,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 R.drawable.ic_console_refresh, this::refreshDashboard));
         addQuickAction(globalAction("global.settings", R.string.console_action_stream_settings,
                 R.drawable.ic_console_settings, this::showOptionsPanel));
+        profileSelector = profileQuickAction();
         discordActionButton = addQuickAction(globalAction("global.discord",
                 R.string.console_action_discord, R.drawable.ic_console_discord,
                 this::showDiscordPanel));
@@ -5066,7 +6879,44 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 this::showUsbMicrophonePanel));
         addQuickAction(globalAction("global.leave_host", R.string.console_action_leave_host,
                 R.drawable.ic_console_leave_host,
-                () -> showHostSelection(selectedHostUuid)));
+                this::leaveHost));
+    }
+
+    private ImageButton profileQuickAction() {
+        ImageButton button = new ImageButton(this);
+        button.setId(View.generateViewId());
+        button.setTag("global.profile");
+        button.setImageDrawable(new ProfileToolbarDrawable(
+                "", "", 0xFF8795A0, dp(3), dp(10)));
+        button.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
+        int target = getResources().getDimensionPixelSize(R.dimen.console_action_target);
+        button.setPadding(0, 0, 0, 0);
+        button.setFocusable(true);
+        button.setClickable(true);
+        button.setSoundEffectsEnabled(false);
+        button.setOnClickListener(view -> showProfileSelection(hosts.get(selectedHostUuid)));
+        button.setOnFocusChangeListener((view, focused) -> {
+            styleQuickAction(button, focused);
+            if (quickActionHint != null) {
+                quickActionHint.setText(focused ? profileSelectorHint : "");
+                quickActionHint.setVisibility(focused ? View.VISIBLE : View.INVISIBLE);
+                if (focused) positionQuickActionHint(button);
+            }
+        });
+        styleQuickAction(button, false);
+        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(target, target);
+        params.leftMargin = getResources().getDimensionPixelSize(R.dimen.console_space_s);
+        quickActions.addView(button, params);
+        return button;
+    }
+
+    private void leaveHost() {
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host != null && hostGatewayStore.profileSelection(host.uuid).showSelector) {
+            showProfileGate(host, true, false);
+        } else {
+            showHostSelection(selectedHostUuid);
+        }
     }
 
     private ImageButton addQuickAction(ConsoleAction resolved) {
@@ -5145,7 +6995,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         ImageButton button = discordActionButton;
         if (button == null) return;
         int request = discordStatusGeneration.incrementAndGet();
+        if (!discordAllowedForSelectedProfile()) {
+            button.setVisibility(View.GONE);
+            return;
+        }
         ComputerDetails host = hosts.get(selectedHostUuid);
+        HostGatewayStore.ProfileSelection selection = host == null ? null
+                : hostGatewayStore.profileSelection(host.uuid);
+        button.setVisibility(View.VISIBLE);
         if (host == null) {
             applyDiscordIndicator(button, 0xFFFF6B6B,
                     getString(R.string.console_discord_no_host));
@@ -5217,7 +7074,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void applyDiscordVoiceIndicator(HostGatewayClient.DiscordVoice voice) {
         ImageButton button = discordActionButton;
-        if (button == null || voice == null) return;
+        if (button == null || voice == null || !discordAllowedForSelectedProfile()) return;
         discordStatusGeneration.incrementAndGet();
         String state = voice.connected
                 ? getString(R.string.console_discord_voice_active, voice.channelName)
@@ -5351,6 +7208,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void cancelCurrentPreparation() {
+        cancelCurrentPreparation(null);
+    }
+
+    private void cancelCurrentPreparation(ChildLaunchBinding preservedBinding) {
+        if (preservedBinding == null) childEligibilityLaunchToken++;
+        cancelChildLaunches(selectedHostUuid,
+                selectedHostUuid == null ? null : selectedProfileId(selectedHostUuid),
+                preservedBinding);
         boolean cancelledPreparation = sessionOrchestrator != null
                 && sessionOrchestrator.cancelPreparation(warmUpClientHostId);
         if (cancelledPreparation) {
@@ -5377,6 +7242,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (host == null) return;
         SessionSnapshot snapshot = resolveSessionSnapshot(currentHost(host.uuid));
         if (!snapshot.isResumeAvailable() || snapshot.hostGameAppId == 0) return;
+        if (selectedProfileIsChild(host.uuid)
+                && activeChildBinding(host.uuid, snapshot.profileId) == null) return;
         NvApp running = null;
         for (NvApp app : loadApps(host, true)) {
             if (app.getAppId() == snapshot.hostGameAppId) {
@@ -5400,7 +7267,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 running.getAppId(), running.getAppName(),
                 running.isHdrSupported(), snapshot.playniteGameId,
                 loadingArtworkGameId, "");
-        sessionOrchestrator.play(intent);
+        playProviderGame(intent);
     }
     private String uniquePlayniteGameIdForRunningApp(ComputerDetails host, NvApp app) {
         if (host == null || !host.uuid.equals(selectedHostUuid)) return "";
@@ -5462,7 +7329,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 HostGatewayClient.Pairing pairing = hostGatewayClient.pair(
                         endpoint, gatewayCode, moonWakerClientName());
                 hostGatewayStore.save(host.uuid, pairing.connection);
-                hostGatewayStore.saveProfiles(host.uuid, pairing.profiles);
+                saveHostProfiles(host.uuid, pairing.profiles);
                 if (pairing.profiles.profiles.size() > 1) {
                     mainHandler.post(() -> showPairingProfileSelection(host, pairing));
                     return;
@@ -5473,6 +7340,74 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 showAutomaticPairingFailure(host, error);
             }
         });
+    }
+
+    private void beginChildPairingRepair() {
+        String hostId = childLaunchHostId;
+        String profileId = childLaunchProfileId;
+        IdentityBindingStart binding = tryBindExistingVibepolloIdentity(hostId, profileId, true);
+        if (binding == IdentityBindingStart.STARTED
+                || binding == IdentityBindingStart.IN_FLIGHT) {
+            if (streamLoadingView != null) streamLoadingView.stopAndHide();
+            cancelCurrentPreparation();
+            hostPreparationGeneration.incrementAndGet();
+            showHome();
+            return;
+        }
+        ConsoleUiFeedback.makeText(this,
+                binding == IdentityBindingStart.CONTEXT_UNAVAILABLE
+                        ? R.string.console_child_launch_pairing_required
+                        : R.string.console_child_launch_pairing_retry,
+                Toast.LENGTH_LONG).show();
+    }
+
+    private void beginChildPairingRepair(String hostId, String profileId) {
+        ComputerDetails host = currentHost(hostId);
+        if (host == null || !isChildPairingRepairContextCurrent(hostId, profileId,
+                profileGateGeneration.get())) {
+            ConsoleUiFeedback.makeText(this,
+                    R.string.console_child_launch_pairing_context_changed,
+                    Toast.LENGTH_LONG).show();
+            showHome();
+            return;
+        }
+        GatewayConnection connection = childConnection(host, profileId);
+        if (connection == null) {
+            ConsoleUiFeedback.makeText(this,
+                    R.string.console_child_launch_pairing_unavailable,
+                    Toast.LENGTH_LONG).show();
+            showHome();
+            return;
+        }
+        final int expectedGeneration = profileGateGeneration.get();
+        if (streamLoadingView != null) streamLoadingView.stopAndHide();
+        cancelCurrentPreparation();
+        hostPreparationGeneration.incrementAndGet();
+        showHome();
+        consoleFeedback.showConfirm(
+                getString(R.string.console_pair_host_renew_title),
+                getString(R.string.console_pair_host_renew_details, host.name),
+                getString(android.R.string.cancel),
+                getString(R.string.console_pair_host_renew_action),
+                false,
+                () -> {
+                    if (!isChildPairingRepairContextCurrent(hostId, profileId,
+                            expectedGeneration)) {
+                        ConsoleUiFeedback.makeText(this,
+                                R.string.console_child_launch_pairing_context_changed,
+                                Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    beginAutomaticHostPairing(host, connection, null, true);
+                });
+    }
+
+    private boolean isChildPairingRepairContextCurrent(String hostId, String profileId,
+                                                       int expectedGeneration) {
+        return hostId != null && hostId.equals(selectedHostUuid)
+                && profileId != null && profileId.equals(selectedProfileId(hostId))
+                && expectedGeneration == profileGateGeneration.get()
+                && currentHost(hostId) != null;
     }
 
     private void showPairingProfileSelection(ComputerDetails host,
@@ -5497,27 +7432,83 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void beginAutomaticHostPairing(ComputerDetails host,
                                            GatewayConnection connection,
                                            String initialTicket) {
+        beginAutomaticHostPairing(host, connection, initialTicket, false);
+    }
+
+    private void beginAutomaticHostPairing(ComputerDetails host,
+                                           GatewayConnection connection,
+                                           String initialTicket,
+                                           boolean renewExistingPairing) {
+        final ComputerManagerService.ComputerManagerBinder pairingBinder = managerBinder;
+        final X509Certificate pinnedServerCert = host.serverCert;
+        final String pairingHostUuid = host.uuid;
+        final String pairingProfileId = connection == null ? "" : connection.profileId();
+        final String selectedHostAtStart = selectedHostUuid;
+        final String selectedProfileAtStart = selectedProfileId(pairingHostUuid);
+        final String profileGateHostAtStart = profileGateHostUuid;
+        final int profileGateGenerationAtStart = profileGateGeneration.get();
+        if (pairingBinder == null || (renewExistingPairing && pinnedServerCert == null)) {
+            showAutomaticPairingFailure(host,
+                    new IOException(pairingBinder == null
+                            ? "Host manager is unavailable."
+                            : "Authenticated host renewal requires the pinned host certificate."));
+            return;
+        }
         mainHandler.post(() -> ConsoleUiFeedback.makeText(this, R.string.console_pair_host_stream,
                 Toast.LENGTH_SHORT).show());
         executor.execute(() -> {
             Future<PairingManager.PairState> pairFuture = null;
             NvHTTP http = null;
+            String pairingStage = getString(R.string.console_pair_stage_ticket);
             try {
+                if (renewExistingPairing && !isPairingContextCurrent(pairingHostUuid,
+                        pairingProfileId, selectedHostAtStart, selectedProfileAtStart,
+                        profileGateHostAtStart, profileGateGenerationAtStart)) {
+                    throw new IOException("Host or profile changed during pairing renewal.");
+                }
                 String ticket = initialTicket == null || initialTicket.isEmpty()
                         ? hostGatewayClient.requestVibepolloPairingTicket(connection)
                         : initialTicket;
+                if (renewExistingPairing && !isPairingContextCurrent(pairingHostUuid,
+                        pairingProfileId, selectedHostAtStart, selectedProfileAtStart,
+                        profileGateHostAtStart, profileGateGenerationAtStart)) {
+                    throw new IOException("Host or profile changed during pairing renewal.");
+                }
+                pairingStage = getString(R.string.console_pair_stage_host);
                 http = new NvHTTP(ServerHelper.getCurrentAddressFromComputer(host),
-                        host.httpsPort, managerBinder.getUniqueId(), host.serverCert,
+                        host.httpsPort, pairingBinder.getUniqueId(),
+                        pinnedServerCert,
                         PlatformBinding.getCryptoProvider(this));
-                if (http.getPairState() == PairingManager.PairState.PAIRED) {
+                PairingManager.PairState pairState = http.getPairState();
+                if (pairState == PairingManager.PairState.PAIRED
+                        && !renewExistingPairing) {
                     finishAutomaticHostPairing(host);
                     return;
+                }
+                if (renewExistingPairing && pairState == PairingManager.PairState.PAIRED) {
+                    if (!http.unpairAuthenticated()) {
+                        throw new IOException("The authenticated host pairing could not be renewed.");
+                    }
+                    PairingManager.PairState afterUnpair = http.getPairState();
+                    if (afterUnpair != PairingManager.PairState.NOT_PAIRED) {
+                        throw new IOException("The host still has an authenticated client after renewal.");
+                    }
+                }
+                if (renewExistingPairing && !isPairingContextCurrent(pairingHostUuid,
+                        pairingProfileId, selectedHostAtStart, selectedProfileAtStart,
+                        profileGateHostAtStart, profileGateGenerationAtStart)) {
+                    throw new IOException("Host or profile changed during pairing renewal.");
                 }
                 String pin = PairingManager.generatePinString();
                 PairingManager pairing = http.getPairingManager();
                 String serverInfo = http.getServerInfo(true);
                 pairFuture = executor.submit(() -> pairing.pair(serverInfo, pin));
-                SystemClock.sleep(200L);
+                if (renewExistingPairing && !isPairingContextCurrent(pairingHostUuid,
+                        pairingProfileId, selectedHostAtStart, selectedProfileAtStart,
+                        profileGateHostAtStart, profileGateGenerationAtStart)) {
+                    throw new IOException("Host or profile changed during pairing renewal.");
+                }
+                pairingStage = getString(R.string.console_pair_stage_vibepollo);
                 JSONObject pairedClient = hostGatewayClient.pairVibepolloClient(
                         connection, ticket, pin, moonWakerClientName());
                 int permissions = pairedClient.optInt("permissions", 0);
@@ -5525,27 +7516,69 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         != HostGatewayClient.REQUIRED_GAMEPLAY_PERMISSIONS) {
                     throw new IOException("Vibepollo did not grant the required client permissions.");
                 }
-                PairingManager.PairState state = pairFuture.get(8, TimeUnit.SECONDS);
+                pairingStage = getString(R.string.console_pair_stage_confirmation);
+                PairingManager.PairState state = pairFuture.get(12, TimeUnit.SECONDS);
                 if (state != PairingManager.PairState.PAIRED) {
                     throw new IOException(state == PairingManager.PairState.PIN_WRONG
                             ? getString(R.string.pair_incorrect_pin)
                             : getString(R.string.pair_fail));
                 }
-                ComputerDetails managed = managerBinder.getComputer(host.uuid);
+                if (pinnedServerCert != null && pairing.getPairedCert() != null
+                        && !pinnedServerCert.equals(pairing.getPairedCert())) {
+                    throw new IOException("The host certificate changed during pairing.");
+                }
+                if (renewExistingPairing && !isPairingContextCurrent(pairingHostUuid,
+                        pairingProfileId, selectedHostAtStart, selectedProfileAtStart,
+                        profileGateHostAtStart, profileGateGenerationAtStart)) {
+                    throw new IOException("Host or profile changed during pairing renewal.");
+                }
+                ComputerDetails managed = pairingBinder.getComputer(host.uuid);
                 if (managed != null) managed.serverCert = pairing.getPairedCert();
-                managerBinder.invalidateStateForComputer(host.uuid);
-                finishAutomaticHostPairing(host);
+                pairingBinder.invalidateStateForComputer(host.uuid);
+                finishAutomaticHostPairing(host, renewExistingPairing ? pairingProfileId : null,
+                        renewExistingPairing ? selectedHostAtStart : null,
+                        renewExistingPairing ? selectedProfileAtStart : null,
+                        renewExistingPairing ? profileGateHostAtStart : null,
+                        renewExistingPairing ? profileGateGenerationAtStart : -1);
             } catch (TimeoutException error) {
                 if (pairFuture != null) pairFuture.cancel(true);
-                cancelPendingPairing(http);
+                if (pairFuture != null) cancelPendingPairing(http);
                 showAutomaticPairingFailure(host,
-                        new IOException(getString(R.string.console_pair_host_timeout)));
+                        new IOException(getString(R.string.console_pair_failure_stage,
+                                pairingStage, getString(R.string.console_pair_host_timeout))),
+                        renewExistingPairing ? connection : null,
+                        renewExistingPairing ? pairingProfileId : null,
+                        renewExistingPairing ? selectedHostAtStart : null,
+                        renewExistingPairing ? selectedProfileAtStart : null,
+                        renewExistingPairing ? profileGateHostAtStart : null,
+                        renewExistingPairing ? profileGateGenerationAtStart : -1);
             } catch (Exception error) {
                 if (pairFuture != null && !pairFuture.isDone()) pairFuture.cancel(true);
-                cancelPendingPairing(http);
-                showAutomaticPairingFailure(host, error);
+                if (pairFuture != null) cancelPendingPairing(http);
+                showAutomaticPairingFailure(host,
+                        new IOException(getString(R.string.console_pair_failure_stage,
+                                pairingStage, deepestPairingError(error)), error),
+                        renewExistingPairing ? connection : null,
+                        renewExistingPairing ? pairingProfileId : null,
+                        renewExistingPairing ? selectedHostAtStart : null,
+                        renewExistingPairing ? selectedProfileAtStart : null,
+                        renewExistingPairing ? profileGateHostAtStart : null,
+                        renewExistingPairing ? profileGateGenerationAtStart : -1);
             }
         });
+    }
+
+    static String deepestPairingError(Throwable error) {
+        Throwable current = error;
+        String detail = "";
+        while (current != null) {
+            if (current.getMessage() != null && !current.getMessage().trim().isEmpty()) {
+                detail = current.getMessage().trim();
+            }
+            if (current.getCause() == current) break;
+            current = current.getCause();
+        }
+        return detail.isEmpty() ? "Unknown pairing error." : detail;
     }
 
     private void cancelPendingPairing(NvHTTP http) {
@@ -5564,7 +7597,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void finishAutomaticHostPairing(ComputerDetails host) {
+        finishAutomaticHostPairing(host, null, null, null, null, -1);
+    }
+
+    private void finishAutomaticHostPairing(ComputerDetails host,
+                                            String expectedProfileId,
+                                            String expectedSelectedHostUuid,
+                                            String expectedSelectedProfileId,
+                                            String expectedProfileGateHostUuid,
+                                            int expectedProfileGateGeneration) {
         mainHandler.post(() -> {
+            if (expectedProfileId != null && !isPairingContextCurrent(host.uuid,
+                    expectedProfileId, expectedSelectedHostUuid, expectedSelectedProfileId,
+                    expectedProfileGateHostUuid, expectedProfileGateGeneration)) {
+                return;
+            }
             if (consoleAudioEngine != null) {
                 consoleAudioEngine.play(ConsoleAudioSynthesis.Cue.SUCCESS);
             }
@@ -5576,17 +7623,42 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showAutomaticPairingFailure(ComputerDetails host, Throwable error) {
+        showAutomaticPairingFailure(host, error, null, null, null, null, null, -1);
+    }
+
+    private void showAutomaticPairingFailure(ComputerDetails host, Throwable error,
+                                             GatewayConnection repairConnection,
+                                             String expectedProfileId,
+                                             String expectedSelectedHostUuid,
+                                             String expectedSelectedProfileId,
+                                             String expectedProfileGateHostUuid,
+                                             int expectedProfileGateGeneration) {
         String detail = error == null || error.getMessage() == null
                 ? getString(R.string.pair_fail) : error.getMessage();
         mainHandler.post(() -> {
+            if (expectedProfileId != null && !isPairingContextCurrent(host.uuid,
+                    expectedProfileId, expectedSelectedHostUuid, expectedSelectedProfileId,
+                    expectedProfileGateHostUuid, expectedProfileGateGeneration)) {
+                return;
+            }
             if (consoleAudioEngine != null) {
                 consoleAudioEngine.play(ConsoleAudioSynthesis.Cue.ERROR);
             }
             consoleFeedback.showConfirm(getString(R.string.console_pair_host_failed_title),
                     getString(R.string.console_pair_host_failed_details, detail),
                     getString(android.R.string.cancel),
-                    getString(R.string.console_pair_stream_manually), false,
-                    () -> pairHostManually(host));
+                    getString(repairConnection == null
+                            ? R.string.console_pair_stream_manually
+                            : R.string.console_pair_host_renew_action), false,
+                    () -> {
+                        if (repairConnection == null) {
+                            pairHostManually(host);
+                        } else if (isPairingContextCurrent(host.uuid, expectedProfileId,
+                                expectedSelectedHostUuid, expectedSelectedProfileId,
+                                expectedProfileGateHostUuid, expectedProfileGateGeneration)) {
+                            beginAutomaticHostPairing(host, repairConnection, null, true);
+                        }
+                    });
         });
     }
 
@@ -5696,7 +7768,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void confirmSleepHost(ComputerDetails host) {
         String activeAddress = host.activeAddress != null ? host.activeAddress.address : null;
         GatewayConnection connection =
-                hostGatewayStore.loadForHost(host.uuid, activeAddress);
+                hostGatewayStore.loadForHost(host.uuid, activeAddress, selectedProfileId(host.uuid));
         if (connection == null) {
             ConsoleUiFeedback.makeText(this, R.string.console_gateway_pair_required,
                     Toast.LENGTH_LONG).show();
@@ -5812,6 +7884,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void resumeSuspendedSession(ComputerDetails host) {
         if (host == null) return;
+        if (selectedProfileIsChild(host.uuid)) return;
         SuspendedSessionStore.Session suspended = SuspendedSessionStore.load(
                 this, host.uuid, selectedProfileId(host.uuid));
         if (suspended == null) {
@@ -5830,7 +7903,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 : providerGameIntent(host.uuid, suspended.profileId,
                 target.getAppId(), target.getAppName(),
                 false, suspended.playniteGameId, suspended.playniteGameId, "");
-        sessionOrchestrator.play(intent);
+        playProviderGame(intent);
     }
     private void confirmTerminateSession(ComputerDetails host) {
         confirmTerminateSession(host, "");
@@ -5861,6 +7934,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void requestTerminateSession(ComputerDetails host, String expectedProviderGameId) {
         HostProfileKey profileKey = selectedProfileKey(host.uuid);
+        boolean childProfile = selectedProfileIsChild(host.uuid);
+        ChildLaunchBinding childSession = childProfile
+                ? activeChildBinding(host.uuid, profileKey.profileId) : null;
         SuspendedSessionStore.Session suspended =
                 SuspendedSessionStore.load(this, host.uuid, profileKey.profileId);
         String expectedSuspendId = suspended == null ? "" : suspended.suspendId;
@@ -5876,9 +7952,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         executor.execute(() -> {
             boolean stopped = false;
             try {
-                stopActiveProviderGame(host, providerGameId,
-                        requireProviderVerification, profileKey.profileId);
-                stopped = quitSunshineIfRunning(host);
+                if (childProfile) {
+                    stopped = childSession != null
+                            && endChildBindingAndAwait(childSession, () -> false);
+                } else {
+                    stopActiveProviderGame(host, providerGameId,
+                            requireProviderVerification, profileKey.profileId);
+                    stopped = quitSunshineIfRunning(host);
+                }
             } catch (IOException | XmlPullParserException ignored) { }
             boolean success = stopped;
             mainHandler.post(() -> {
@@ -5905,6 +7986,19 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
     }
 
+    private boolean isPairingContextCurrent(String hostUuid, String expectedProfileId,
+                                            String selectedHostAtStart,
+                                            String selectedProfileAtStart,
+                                            String profileGateHostAtStart,
+                                            int profileGateGenerationAtStart) {
+        return Objects.equals(hostUuid, selectedHostUuid)
+                && Objects.equals(expectedProfileId, selectedProfileId(hostUuid))
+                && Objects.equals(selectedHostAtStart, selectedHostUuid)
+                && Objects.equals(selectedProfileAtStart, selectedProfileId(hostUuid))
+                && Objects.equals(profileGateHostAtStart, profileGateHostUuid)
+                && profileGateGeneration.get() == profileGateGenerationAtStart;
+    }
+
     private void confirmCloseHostStream(ComputerDetails host) {
         if (host == null || host.state != ComputerDetails.State.ONLINE
                 || host.runningGameId == 0 || managerBinder == null) return;
@@ -5922,6 +8016,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void requestCloseHostStream(ComputerDetails host) {
+        if (selectedProfileIsChild(host.uuid)) {
+            if (activeChildBinding(host.uuid, selectedProfileId(host.uuid)) != null) {
+                requestTerminateSession(host);
+                return;
+            }
+        }
         RetainedStreamSessionCoordinator.Snapshot retained =
                 RetainedStreamSessionCoordinator.snapshot();
         boolean exactRetained = retained.hostId.equalsIgnoreCase(host.uuid)
@@ -6247,6 +8347,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean enteringHost = hostSelectionVisible;
         boolean changed = !host.uuid.equals(selectedHostUuid);
         if (changed) {
+            childEligibilityLaunchToken++;
+            mainHandler.removeCallbacks(childEligibilityBoundary);
+            invalidateChildManagement();
             cancelWindowsProfileSwitch(false);
             cancelStreamingAutopilot(false);
             cancelPlayniteArtworkPrefetch();
@@ -6261,6 +8364,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.GONE);
         if (homeLayer != null) homeLayer.setVisibility(View.VISIBLE);
         selectedHostUuid = host.uuid;
+        refreshDiscordAccess();
         if (requiresPreparedInitialCarouselFrame()) {
             initialLocalAppsHostId = "";
             initialLocalLibraryHostId = "";
@@ -6491,6 +8595,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         InitialLibraryPresentation cached = initialLibraryPresentation;
         if (cached == null || !selectedProfileKey(host.uuid).equals(cached.profileKey)
                 || cached.games != currentPlayniteGames) return false;
+        scheduleChildEligibilityBoundary(host);
         allPlayniteItems = cached.allItems;
         unfilteredPlayniteItems = cached.unfilteredItems;
         playniteSessionProjection = cached.sessionProjection;
@@ -6499,9 +8604,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         applyPlayniteDiff(host, currentSunshineApps, cached.carouselItems,
                 "", "", false);
         renderedCarouselSessionSignature = cached.sessionSignature;
-        if (CONSOLE_UI_V2 && !portraitLayout && !unfilteredPlayniteItems.isEmpty()) {
-            addFullLibraryCard();
-        }
+        syncFullLibraryCard(cached.allItems, cached.carouselItems,
+                "playnite:__library__".equals(
+                        getCurrentFocus() == null ? null : getCurrentFocus().getTag()));
+        refreshChildEligibilityCardPresentation(host);
         renderedAppsSignature = null;
         appsLabel.setText(getString(R.string.playnite_library,
                 host.name.toUpperCase(Locale.ROOT)));
@@ -7260,6 +9366,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void renderPlayniteLibrary(ComputerDetails host, List<NvApp> apps) {
         if (host == null || !host.uuid.equals(selectedHostUuid)) return;
+        scheduleChildEligibilityBoundary(host);
         String previousResumeGameId = resumePlayniteGameId;
         String previousSuspendedGameId = suspendedPlayniteGameId;
         String previousSessionSignature = renderedCarouselSessionSignature;
@@ -7333,13 +9440,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 previousSuspendedGameId,
                 !previousSessionSignature.equals(sessionSignature));
         renderedCarouselSessionSignature = sessionSignature;
-        if (CONSOLE_UI_V2 && !portraitLayout && !unfilteredItems.isEmpty()) {
-            addFullLibraryCard();
-            if (libraryTileFocused) {
-                View libraryCard = directChildWithTag(appRow, "playnite:__library__");
-                if (libraryCard != null) libraryCard.post(libraryCard::requestFocus);
-            }
-        }
+        syncFullLibraryCard(allPlayniteItems, dashboardItems, libraryTileFocused);
+        refreshChildEligibilityCardPresentation(host);
         if (expandedLibraryMode) renderExpandedLibrary(host);
         else {
             List<PlayniteDashboardItem> gridPreview = expandedLibraryItems(host);
@@ -7380,6 +9482,42 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         pendingInitialGameFocus = false;
         View resolved = target;
         resolved.post(resolved::requestFocus);
+    }
+
+    private void refreshChildEligibilityCardPresentation(ComputerDetails host) {
+        if (host == null || !host.uuid.equals(selectedHostUuid)) return;
+        refreshChildEligibilityCards(appRow, host);
+        refreshChildEligibilityCards(expandedGrid, host);
+    }
+
+    private void refreshChildEligibilityCards(ViewGroup parent, ComputerDetails host) {
+        if (parent == null) return;
+        for (int index = 0; index < parent.getChildCount(); index++) {
+            View child = parent.getChildAt(index);
+            Object tag = child.getTag();
+            if (tag instanceof String && ((String) tag).startsWith("playnite:")) {
+                String stableId = ((String) tag).substring("playnite:".length());
+                if (!"__library__".equals(stableId)) {
+                    PlayniteDashboardItem item = findPlayniteDashboardItem(stableId);
+                    if (item != null) {
+                        bindPlayniteCard(child, host, item, currentSunshineApps, 0);
+                    }
+                }
+            }
+            if (child instanceof ViewGroup) {
+                refreshChildEligibilityCards((ViewGroup) child, host);
+            }
+        }
+    }
+
+    private PlayniteDashboardItem findPlayniteDashboardItem(String stableId) {
+        for (PlayniteDashboardItem item : allPlayniteItems) {
+            if (item != null && item.stableId().equals(stableId)) return item;
+        }
+        for (PlayniteDashboardItem item : unfilteredPlayniteItems) {
+            if (item != null && item.stableId().equals(stableId)) return item;
+        }
+        return null;
     }
 
     private int maxCarouselGameCount() {
@@ -7489,6 +9627,43 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         card.setOnClickListener(view -> enterExpandedLibrary());
         appRow.addView(card, playniteCardSpacing());
         wireHomeFocusNavigation();
+    }
+
+    static boolean hasGamesOutsideCarousel(List<PlayniteDashboardItem> libraryItems,
+                                            List<PlayniteDashboardItem> carouselItems) {
+        if (libraryItems == null || libraryItems.isEmpty()) return false;
+        Set<String> carouselIds = new HashSet<>();
+        if (carouselItems != null) {
+            for (PlayniteDashboardItem item : carouselItems) {
+                if (item != null) carouselIds.add(item.stableId());
+            }
+        }
+        for (PlayniteDashboardItem item : libraryItems) {
+            if (item != null && !carouselIds.contains(item.stableId())) return true;
+        }
+        return false;
+    }
+
+    private void syncFullLibraryCard(List<PlayniteDashboardItem> libraryItems,
+                                     List<PlayniteDashboardItem> carouselItems,
+                                     boolean restoreFocus) {
+        boolean shouldShow = CONSOLE_UI_V2 && !portraitLayout
+                && hasGamesOutsideCarousel(libraryItems, carouselItems);
+        if (shouldShow) {
+            addFullLibraryCard();
+            if (restoreFocus) {
+                View libraryCard = directChildWithTag(appRow, "playnite:__library__");
+                if (libraryCard != null) libraryCard.post(libraryCard::requestFocus);
+            }
+            return;
+        }
+        View existing = directChildWithTag(appRow, "playnite:__library__");
+        if (existing != null) appRow.removeView(existing);
+        if (restoreFocus) {
+            View target = firstFocusableChild(appRow);
+            if (target != null) target.post(target::requestFocus);
+        }
+        if (existing != null) wireHomeFocusNavigation();
     }
 
     private void enterExpandedLibrary() {
@@ -8943,7 +11118,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         PlayniteSessionPresentation.State sessionState = playniteSessionState(item);
         boolean resumeSession = sessionState
                 == PlayniteSessionPresentation.State.RESUME_ACTIVE;
-        boolean runningSession = isFreshExactRunningManagedGame(host, item);
+        boolean runningSession = isFreshExactRunningManagedGame(host, item)
+                || isFreshExactBridgeRunning(selectedHostUuid, host.uuid,
+                        host.runningGameId, item.stableId(),
+                        activePlayniteGameStates.get(profileStateKey(host.uuid)),
+                        activePlayniteGameIds.get(profileStateKey(host.uuid)),
+                        activePlayniteGameAppIds.getOrDefault(profileStateKey(host.uuid), Integer.MIN_VALUE),
+                        activePlayniteGameResolvedAt.getOrDefault(profileStateKey(host.uuid), 0L),
+                        SystemClock.uptimeMillis(), ACTIVE_GAME_OBSERVATION_TTL_MS);
         boolean suspendedSession = sessionState
                 == PlayniteSessionPresentation.State.RESUME_SUSPENDED;
         stylePlayniteSessionCard(card, card.hasFocus(), resumeSession || suspendedSession);
@@ -8953,7 +11135,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         GameOperationsController.Presentation operation =
                 gameOperationsController.presentation(host.uuid, item.game);
         boolean installing = operation.installActive || operation.uninstallActive;
-        card.setAlpha(playniteCardAlpha(item, operation,
+        ChildEligibilityProjection childPolicy = childEligibilityProjection(
+                host.uuid, selectedProfileId(host.uuid));
+        boolean childGameBlocked = childPolicy.blocked;
+        card.setAlpha(childAwarePlayniteCardAlpha(host.uuid, item, operation,
                 resumeSession || suspendedSession, card.hasFocus()));
         if (!item.game.installed && !installing) {
             android.graphics.ColorMatrix colors = new android.graphics.ColorMatrix();
@@ -8965,6 +11150,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         } else {
             poster.clearColorFilter();
             if (backdrop != null) backdrop.clearColorFilter();
+        }
+        if (childGameBlocked) {
+            android.graphics.ColorMatrix colors = new android.graphics.ColorMatrix();
+            colors.setSaturation(0f);
+            android.graphics.ColorMatrixColorFilter muted =
+                    new android.graphics.ColorMatrixColorFilter(colors);
+            poster.setColorFilter(muted);
+            if (backdrop != null) backdrop.setColorFilter(muted);
         }
         installProgress.setVisibility(installing ? View.VISIBLE : View.GONE);
         installProgress.setIndeterminate(installing && operation.progress < 0);
@@ -9002,7 +11195,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String installKey = playniteInstallKey(host.uuid, item);
         if (completedPlayniteInstallAnimations.remove(installKey)) {
             card.animate().cancel();
-            float restingAlpha = playniteCardAlpha(item, operation,
+            float restingAlpha = childAwarePlayniteCardAlpha(host.uuid, item, operation,
                     resumeSession || suspendedSession, card.hasFocus());
             if (reducedMotion) {
                 card.setAlpha(restingAlpha);
@@ -9029,16 +11222,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
         String sourceName = PlayniteLibrarySources.label(item.game.libraryName.isEmpty()
                 ? item.game.source : item.game.libraryName);
-        card.setContentDescription(getString(R.string.playnite_card_description,
+        String cardDescription = getString(R.string.playnite_card_description,
                 item.game.name, playtimeText, stateText) + ". "
                 + getString(R.string.playnite_source, sourceName)
                 + (runningSession ? ". " + getString(
-                R.string.playnite_running_badge_description, item.game.name) : ""));
+                R.string.playnite_running_badge_description, item.game.name) : "");
+        if (childGameBlocked) {
+            String reason = childPolicy.reason;
+            cardDescription += ". " + childLaunchFailureMessage(reason);
+        }
+        card.setContentDescription(cardDescription);
         card.setOnFocusChangeListener((view, focused) -> {
             stylePlayniteSessionCard(card, focused, resumeSession || suspendedSession);
             GameOperationsController.Presentation focusedOperation =
                     gameOperationsController.presentation(host.uuid, item.game);
-            card.setAlpha(playniteCardAlpha(item, focusedOperation,
+            card.setAlpha(childAwarePlayniteCardAlpha(host.uuid, item, focusedOperation,
                     resumeSession || suspendedSession, focused));
             stylePlayniteStateEmphasis(state, item, focusedOperation,
                     resumeSession || suspendedSession, focused);
@@ -9089,6 +11287,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return .88f;
         }
         return focused || resumeSession ? 1f : .93f;
+    }
+
+    private float childAwarePlayniteCardAlpha(String hostUuid, PlayniteDashboardItem item,
+                                              GameOperationsController.Presentation operation,
+                                              boolean resumeSession, boolean focused) {
+        float alpha = playniteCardAlpha(item, operation, resumeSession, focused);
+        ChildEligibilityProjection projection = childEligibilityProjection(
+                hostUuid, selectedProfileId(hostUuid));
+        return projection.blocked ? Math.min(alpha, .46f) : alpha;
     }
 
     private void stylePlayniteStateEmphasis(TextView state, PlayniteDashboardItem item,
@@ -10108,6 +12315,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
         actions.add(streamSettings);
 
+        HostGatewayStore.ProfileSelection profileSelection =
+                hostGatewayStore.profileSelection(host.uuid);
+        HostGatewayClient.IntegrationProfile selectedProfile = profileSelection.selected;
+        if (HostGatewayClient.isPlayniteId(item.game.playniteGameId)
+                && childManagementProfileAllowed(host, selectedProfile)
+                && childCapabilityAllowed(host, selectedProfile)
+                && hasOwnChildren(host, selectedProfile)) {
+            TextView share = panelAction(getString(R.string.console_child_sharing_action));
+            share.setOnClickListener(view -> beginChildSharing(host, item));
+            actions.add(share);
+        }
+
         TextView autopilot = panelAction(getString(R.string.console_streaming_autopilot_game));
         boolean autopilotAvailable = ConsoleActionCatalog.isOnline(host)
                 && ConsoleActionCatalog.isPaired(host);
@@ -10516,7 +12735,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
         }
         if (item.mappingState == PlayniteDashboardItem.MappingState.MISSING) {
-            sessionOrchestrator.play(PlayIntent.providerGame(
+            playProviderGame(PlayIntent.providerGame(
                     host.uuid, selectedProfileId(host.uuid), 0,
                     item.game.name, false, item.game,
                     playniteStreamSettingsKey(host.uuid, item.game.playniteGameId)));
@@ -10527,7 +12746,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void startPlayniteInstallation(ComputerDetails host,
                                            PlayniteDashboardItem item) {
-        if (host == null || item == null || !item.game.canInstall) return;
+        if (host == null || item == null || !item.game.canInstall
+                || selectedProfileIsChild(host.uuid)) return;
         if (hasPlayniteOperationAwaitingConfirmation()) {
             ConsoleUiFeedback.makeText(this, R.string.playnite_operation_waiting,
                     Toast.LENGTH_LONG).show();
@@ -10588,7 +12808,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void uninstallPlayniteGame(ComputerDetails host,
                                        PlayniteDashboardItem item) {
-        if (item == null || !item.game.canUninstall) return;
+        if (host == null || item == null || !item.game.canUninstall
+                || selectedProfileIsChild(host.uuid)) return;
         if (hasPlayniteOperationAwaitingConfirmation()) {
             ConsoleUiFeedback.makeText(this, R.string.playnite_operation_waiting,
                     Toast.LENGTH_LONG).show();
@@ -10619,7 +12840,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void continuePlayniteInstallation(ComputerDetails host,
                                               PlayniteDashboardItem item) {
-        if (host == null || item == null) return;
+        if (host == null || item == null || selectedProfileIsChild(host.uuid)) return;
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         GatewayConnection connection =
                 hostGatewayStore.loadForHost(host.uuid, address);
@@ -10669,7 +12890,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void launchDesktopSession(ComputerDetails host) {
-        if (host == null) return;
+        if (host == null || selectedProfileIsChild(host.uuid)) return;
         String hostUuid = host.uuid;
         List<NvApp> selectedApps = hostUuid.equalsIgnoreCase(selectedHostUuid)
                 ? currentSunshineApps : Collections.emptyList();
@@ -10691,6 +12912,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void renderApps(ComputerDetails host, List<NvApp> apps) {
+        if (selectedProfileIsChild(host == null ? null : host.uuid)) {
+            apps = Collections.emptyList();
+        }
         String signature = appRenderSignature(host, apps);
         Object firstTag = appRow.getChildCount() > 0 ? appRow.getChildAt(0).getTag() : null;
         if (signature.equals(renderedAppsSignature) && firstTag instanceof String &&
@@ -10884,7 +13108,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void playSunshineApp(ComputerDetails host, NvApp app, String quickLaunchId) {
-        if (host == null || app == null) return;
+        if (host == null || app == null || selectedProfileIsChild(host.uuid)) return;
         sessionOrchestrator.play(PlayIntent.sunshineApp(host.uuid,
                 selectedProfileId(host.uuid), app.getAppId(),
                 app.getAppName(), app.isHdrSupported(), quickLaunchId,
@@ -10894,7 +13118,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void playPlayniteGame(ComputerDetails host, NvApp app,
                                   PlayniteLibraryGame game) {
         if (host == null || app == null || game == null) return;
-        sessionOrchestrator.play(PlayIntent.providerGame(host.uuid,
+        playProviderGame(PlayIntent.providerGame(host.uuid,
                 selectedProfileId(host.uuid), app.getAppId(),
                 game.name, app.isHdrSupported(), game,
                 playniteStreamSettingsKey(host.uuid, game.playniteGameId)));
@@ -10925,6 +13149,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             PlayniteLibraryGame current = findProviderGame(currentPlayniteGames, gameId);
             if (current != null) return current;
         }
+        if (selectedProfileIsChild(hostUuid)) return null;
         PlayniteLibraryCache.Entry cached = playniteLibraryRepository == null
                 ? null : playniteLibraryRepository.cached(key);
         return cached == null ? null : findProviderGame(cached.games, gameId);
@@ -10962,6 +13187,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showAppActions(ComputerDetails host, NvApp app, ImageView poster) {
+        if (host == null || app == null || selectedProfileIsChild(host.uuid)) return;
         if (resolveSessionSnapshot(host).state == SessionSnapshot.State.TERMINATING) {
             showSidePanelBusy(getString(R.string.console_apps_eyebrow), app.getAppName(),
                     getString(R.string.console_status_closing_stream));
@@ -11387,7 +13613,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (connection == null) return null;
                 HostGatewayClient.IntegrationProfiles profiles = hostGatewayClient
                         .getIntegrationProfiles(connection);
-                hostGatewayStore.saveProfiles(hostId, profiles);
+                saveHostProfiles(hostId, profiles);
                 HostGatewayClient.IntegrationProfile profile = profiles.find(profileId);
                 if (profile == null) {
                     return new HostLaunchPreflight.Profile(false, false,
@@ -11461,7 +13687,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (request.action != HostLaunchPreflight.Action.SWITCH_RETAINED
                         || !request.requiresPlaynite()
                         || !retained.hostId.equalsIgnoreCase(request.hostId)
-                        || !retained.profileId.equals(request.profileId)
+                        || !retained.executionProfileId.equals(executionProfileId(request.hostId, request.profileId))
                         || retained.appId != request.appId
                         || !RetainedStreamSessionCoordinator.canSwitchGame(retained)) return null;
                 ComputerDetails host = currentHost(request.hostId);
@@ -11566,6 +13792,38 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return getString(R.string.preflight_target_timeout);
             default:
                 return getString(R.string.playnite_launch_unavailable);
+        }
+    }
+
+    private String childLaunchFailureMessage(String reason) {
+        String normalized = reason == null ? "" : reason.trim().toLowerCase(Locale.ROOT);
+        switch (normalized) {
+            case "outside_schedule":
+            case "outside_allowed_hours":
+                return getString(R.string.console_child_launch_outside_schedule);
+            case "daily_limit_reached":
+            case "daily_limit_exhausted":
+                return getString(R.string.console_child_launch_daily_limit);
+            case "game_not_shared":
+            case "not_shared":
+                return getString(R.string.console_child_launch_not_shared);
+            case "pairing_required":
+                return getString(R.string.console_child_launch_pairing_required);
+            case "parent_unavailable":
+                return getString(R.string.console_child_launch_parent_unavailable);
+            case "policy_unavailable":
+            case "policy_unknown":
+                return getString(R.string.console_child_launch_policy_unavailable);
+            case "session_in_use":
+                return getString(R.string.console_child_launch_session_in_use);
+            case "cleanup_required":
+                return getString(R.string.console_child_launch_cleanup_required);
+            case "gateway_unavailable":
+                return getString(R.string.console_child_launch_gateway_unavailable);
+            case "child_profile_unavailable":
+                return getString(R.string.console_child_launch_profile_unavailable);
+            default:
+                return getString(R.string.console_child_launch_unavailable);
         }
     }
 
@@ -11705,7 +13963,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ComputerDetails host = currentHost(intent.hostId);
                 RetainedStreamSessionCoordinator.Snapshot retained =
                         RetainedStreamSessionCoordinator.snapshot();
-                if (!retained.profileId.equals(intent.profileId)) return false;
+                if (!retained.executionProfileId.equals(executionProfileId(intent.hostId, intent.profileId))) return false;
                 boolean preparing = retained.state
                         == RetainedStreamSessionCoordinator.State.PREPARING;
                 NvApp retainedTarget = PlayniteTargetResolver.findById(
@@ -11718,8 +13976,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                     if (retained.playniteGameId.isEmpty()) {
                         return PlayniteTargetResolver.isNeutralStream(retainedTarget)
-                                && RetainedStreamSessionCoordinator.canSwitchGame(
-                                intent.hostId, intent.profileId, retained.appId);
+                                && RetainedStreamSessionCoordinator.canSwitchOrigin(
+                                intent.hostId, executionProfileId(intent.hostId, intent.profileId), retained.appId);
                     }
                     String stateKey = intent.profileKey.cacheKey();
                     long observedAt = activePlayniteGameResolvedAt.getOrDefault(
@@ -11738,20 +13996,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                             && gameId.equalsIgnoreCase(retained.playniteGameId);
                     return fresh && identityMatches
                             && PlayniteTargetResolver.isNeutralStream(retainedTarget)
-                            && RetainedStreamSessionCoordinator.canSwitchGame(
-                            intent.hostId, intent.profileId, retained.appId);
+                            && RetainedStreamSessionCoordinator.canSwitchOrigin(
+                            intent.hostId, executionProfileId(intent.hostId, intent.profileId), retained.appId);
                 }
                 return (preparing || retained.state
-                        == RetainedStreamSessionCoordinator.State.HOME_LIVE)
+                        == RetainedStreamSessionCoordinator.State.HOME_LIVE
+                        || retained.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE)
                         && host != null
                         && (preparing || host.runningGameId == retained.appId)
                         && retained.hostId.equalsIgnoreCase(intent.hostId)
-                        && retained.profileId.equals(intent.profileId)
-                        && (preparing || !retained.playniteGameId.equalsIgnoreCase(
-                                intent.playniteGameId))
+                        && retained.executionProfileId.equals(executionProfileId(intent.hostId, intent.profileId))
+                        && (preparing || !retained.profileId.equals(intent.profileId)
+                                || !retained.playniteGameId.equalsIgnoreCase(intent.playniteGameId))
                         && PlayniteTargetResolver.isNeutralStream(retainedTarget)
-                        && RetainedStreamSessionCoordinator.canSwitchGame(
-                                intent.hostId, intent.profileId, retained.appId);
+                        && RetainedStreamSessionCoordinator.canSwitchOrigin(
+                                intent.hostId, executionProfileId(intent.hostId, intent.profileId), retained.appId);
             }
 
             @Override public void showLoading(PlayIntent intent,
@@ -11800,6 +14059,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     long orchestrationId,
                     BooleanSupplier cancelled) {
                 long timelineEpoch = streamLoadingEpoch;
+                if (isChildIntent(intent)) {
+                    childLaunchFailureReason = "";
+                    childPairingRepairAvailable = false;
+                    childLaunchHostId = normalizeId(intent.hostId);
+                    childLaunchProfileId = normalizeId(intent.profileId);
+                }
                 LimeLog.info("Launch timeline epoch=" + timelineEpoch
                         + " host=" + intent.hostId
                         + " game=" + intent.transitionGameId()
@@ -11923,6 +14188,45 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             @Override public void launch(PlayIntent intent, NvApp app,
                                          LaunchTransitionType type, String sourceSuspendId,
                                          boolean ownsFreshSunshineSession) {
+                if (!isChildIntent(intent)) {
+                    launchStream(intent, app, type, sourceSuspendId, ownsFreshSunshineSession);
+                    return;
+                }
+                int launchToken = childEligibilityLaunchToken;
+                BooleanSupplier cancelled = () -> launchToken != childEligibilityLaunchToken
+                        || !isCurrentChildIntentContext(intent);
+                executor.execute(() -> {
+                    try {
+                        startChildSession(intent, cancelled);
+                        mainHandler.post(() -> {
+                            if (cancelled.getAsBoolean()) {
+                                endChildBinding(childBinding(intent), "cancelled");
+                                return;
+                            }
+                            launchStream(intent, app, type, sourceSuspendId, ownsFreshSunshineSession);
+                        });
+                    } catch (IOException | RuntimeException error) {
+                        ChildLaunchBinding binding = childBinding(intent);
+                        if (binding != null && binding.started) endChildBinding(binding, "start_failed");
+                        else if (binding != null) childLaunchBindings.remove(binding.key(), binding);
+                        mainHandler.post(() -> {
+                            if (cancelled.getAsBoolean()) return;
+                            childLaunchFailureReason = error instanceof ChildLaunchFailure
+                                    ? ((ChildLaunchFailure) error).reason
+                                    : error instanceof IOException
+                                    ? childEligibilityErrorReason((IOException) error) : "policy_unavailable";
+                            LimeLog.warning("Child session start failed reason=" + childLaunchFailureReason);
+                            preflightFailed(new HostLaunchPreflight.Failure(
+                                    HostLaunchPreflight.Stage.TARGET_READY,
+                                    HostLaunchPreflight.FailureReason.TARGET_UNAVAILABLE));
+                        });
+                    }
+                });
+            }
+
+            private void launchStream(PlayIntent intent, NvApp app,
+                                      LaunchTransitionType type, String sourceSuspendId,
+                                      boolean ownsFreshSunshineSession) {
                 ComputerDetails host = currentHost(intent.hostId);
                 if (host == null) {
                     preflightFailed(new HostLaunchPreflight.Failure(
@@ -12064,11 +14368,22 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
             @Override public void preflightFailed(HostLaunchPreflight.Failure failure) {
                 if (streamLoadingView != null) {
+                    String childReason = childLaunchFailureReason;
+                    boolean pairingRequired = "pairing_required".equals(
+                            childReason == null ? "" : childReason.trim().toLowerCase(Locale.ROOT));
+                    childPairingRepairAvailable = pairingRequired;
+                    childLaunchFailureReason = "";
+                    if (pairingRequired) {
+                        streamLoadingView.setRetryLabel(
+                                R.string.console_child_launch_pairing_action);
+                    }
                     streamLoadingView.showError(
                             getString(failure.stage == HostLaunchPreflight.Stage.NETWORK_READY
                                     ? R.string.console_host_not_ready
                                     : R.string.playnite_launch_unavailable),
-                            preflightFailureMessage(failure));
+                            childReason.isEmpty()
+                                    ? preflightFailureMessage(failure)
+                                    : childLaunchFailureMessage(childReason));
                 }
             }
 
@@ -12133,7 +14448,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void beginInstallationSupportStream(ComputerDetails host, NvApp app,
                                                 String playniteGameId) {
-        if (host == null || app == null) return;
+        if (host == null || app == null || selectedProfileIsChild(host.uuid)) return;
         LaunchTransitionType transitionType = LaunchTransitionType.GENERIC;
         String loadingArtworkGameId = playniteGameId;
         if (handleRetainedStreamLaunch(host, app, playniteGameId)) return;
@@ -12365,6 +14680,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         presentation.putString(Game.EXTRA_CONSOLE_LOADING_ARTWORK, loadingArtworkPath);
         presentation.putString(Game.EXTRA_TRANSITION_ID, transition.id);
         presentation.putString(Game.EXTRA_PROFILE_ID, transition.profileId);
+        presentation.putString(Game.EXTRA_EXECUTION_PROFILE_ID,
+                executionProfileId(transition.hostId, transition.profileId));
+        HostGatewayClient.IntegrationProfile actor = integrationProfile(transition.hostId, transition.profileId);
+        presentation.putBoolean(Game.EXTRA_CHILD_PROFILE, actor != null && actor.isChild());
         presentation.putString(Game.EXTRA_TRANSITION_TYPE, transition.type.name());
         presentation.putString(Game.EXTRA_TRANSITION_HOST_ID, transition.hostId);
         presentation.putString(Game.EXTRA_TRANSITION_PLAYNITE_GAME_ID,
@@ -12372,6 +14691,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         presentation.putLong(Game.EXTRA_TRANSITION_CREATED_AT, transition.createdAtMillis);
         presentation.putBoolean(Game.EXTRA_TRANSITION_START_BEFORE_STREAM,
                 transition.startProviderBeforeStream);
+        ChildLaunchBinding childBinding = childBinding(playIntent);
+        if (childBinding != null && childBinding.started && !childBinding.ended
+                && childBinding.matches(playIntent)) {
+            presentation.putString(Game.EXTRA_CHILD_SESSION_ID, childBinding.sessionId);
+            presentation.putString(Game.EXTRA_CHILD_EXECUTION_PROFILE_ID,
+                    childBinding.executionProfileId);
+            presentation.putString(Game.EXTRA_CHILD_GAME_ID, childBinding.gameId);
+            presentation.putLong(Game.EXTRA_CHILD_DEADLINE_ELAPSED_MS,
+                    childBinding.deadlineElapsedMs);
+            presentation.putLong(Game.EXTRA_CHILD_POLICY_REVISION,
+                    childBinding.policyRevision);
+        }
         presentation.putString(Game.EXTRA_STREAM_TARGET_NAME, app.getAppName());
         presentation.putBoolean(Game.EXTRA_NEUTRAL_STREAM_TARGET,
                 PlayniteTargetResolver.isNeutralStream(app));
@@ -12407,6 +14738,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         refreshSessionOnResume = true;
         ServerHelper.doStart(this, app, host, managerBinder, quickLaunchKey, presentation);
+        // Navigation must not cancel a game already handed to the player.
+        childStreamHandoff = presentation.containsKey(Game.EXTRA_CHILD_SESSION_ID)
+                ? childBinding : null;
+        if (childStreamHandoff != null) childStreamHandoff.handedToPlayer = true;
         overridePendingTransition(0, 0);
     }
 
@@ -12447,7 +14782,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         CountDownLatch completed = new CountDownLatch(1);
         RetainedStreamSessionCoordinator.SwitchResult started =
                 RetainedStreamSessionCoordinator.switchGame(
-                        intent.hostId, intent.profileId, target.getAppId(),
+                        intent.hostId, executionProfileId(intent.hostId, intent.profileId),
+                        intent.profileId, isChildIntent(intent), target.getAppId(),
                         intent.playniteGameId,
                         intent.appName, target.getAppName(), cachedLoadingArtworkPath(
                                 intent.hostId, intent.profileId,
@@ -12558,6 +14894,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void showLoading(String hostName, String appName,
                              LaunchTransitionType transitionType,
                              String loadingArtworkPath) {
+        childPairingRepairAvailable = false;
         if (discordDmNotifications != null) {
             discordDmNotifications.setPresentationBlocked(discordDmHostToken, true);
         }
@@ -12580,12 +14917,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 transitionType == LaunchTransitionType.PLAYNITE);
         streamLoadingView.setActions(new ConsoleStreamLoadingView.Actions() {
             @Override public void onCancel() {
+                childPairingRepairAvailable = false;
                 cancelCurrentPreparation();
                 hostPreparationGeneration.incrementAndGet();
                 showHome();
             }
 
             @Override public void onRetry() {
+                if (childPairingRepairAvailable) {
+                    childPairingRepairAvailable = false;
+                    beginChildPairingRepair();
+                    return;
+                }
                 if (sessionOrchestrator != null) sessionOrchestrator.retry();
             }
 
@@ -12608,6 +14951,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showHome() {
+        childPairingRepairAvailable = false;
         if (discordDmNotifications != null) {
             discordDmNotifications.setPresentationBlocked(discordDmHostToken, false);
         }
@@ -13085,7 +15429,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                 R.string.console_autopilot_calibration_session_active));
                     }
                     hideSidePanel();
-                    sessionOrchestrator.play(calibrationIntent.withCalibration(
+                    playProviderGame(calibrationIntent.withCalibration(
                             appKey, recommendation.width, recommendation.height,
                             recommendation.fps, recommendation.bitrateKbps));
                     return;
@@ -13310,6 +15654,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             hostUuid = hosts.keySet().iterator().next();
         }
         if (hostUuid == null || hostUuid.isEmpty()) {
+            resetScreenSaverTimer();
+            return;
+        }
+        if (selectedProfileIsChild(hostUuid)) {
             resetScreenSaverTimer();
             return;
         }
@@ -13610,11 +15958,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showDiscordPanel() {
+        if (!discordAllowedForSelectedProfile()) return;
         setDiscordNotificationPending(false);
         discordSocialPanelController.showHub();
     }
 
     private void openDiscordDmShortcut() {
+        if (!discordAllowedForSelectedProfile()) {
+            refreshDiscordAccess();
+            return;
+        }
         setDiscordNotificationPending(false);
         long peerId = discordDmNotifications.consumeQuickAction(discordDmHostToken);
         if (sideDialog != null && sideDialog.isShowing()) hideSidePanelImmediately();
@@ -13686,7 +16039,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showCommunityPanel(View shell) {
-        if (communityPanelHost == null) return;
+        if (communityPanelHost == null || !discordAllowedForSelectedProfile()) return;
         boolean alreadyShowing = sideDialog != null && sideDialog.isShowing();
         boolean sameCommunity = alreadyShowing && "discord.community".equals(currentPanelKey)
                 && communityPanelHost.getChildCount() == 1
@@ -13881,6 +16234,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String nextKey = communityShell ? "discord.community" : eyebrow + "\n" + title;
         boolean alreadyShowing = sideDialog != null && sideDialog.isShowing();
         boolean samePanel = alreadyShowing && nextKey.equals(currentPanelKey);
+        if (alreadyShowing && !samePanel) prepareChildSharingForDeparture();
         View previousPanelFocus = samePanel ? getCurrentFocus() : null;
         if (previousPanelFocus != null && !isDescendant(sidePanel, previousPanelFocus)) {
             previousPanelFocus = null;
@@ -14069,6 +16423,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void completeSidePanelDismissal() {
+        prepareChildSharingForDeparture();
+        invalidateChildManagementPresentation();
         if (discordSocialPanelController != null) discordSocialPanelController.closePanel();
         if (discordPanelController != null) discordPanelController.closePanel();
         if (sideDialog != null) sideDialog.dismiss();
@@ -14114,10 +16470,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (streamingAutopilotTask != null) cancelStreamingAutopilot(false);
         if (discordSocialPanelController != null && discordSocialPanelController.prepareForPanelBack()) return;
         if (!panelHistory.isEmpty()) {
+            prepareChildSharingForDeparture();
             PanelSnapshot snapshot = panelHistory.pop();
             applySidePanelFrame("discord.community".equals(snapshot.key));
             sidePanel.removeAllViews();
-            for (View child : snapshot.children) sidePanel.addView(child);
+            for (View child : snapshot.children) {
+                sidePanel.addView(child);
+                if (child instanceof ConsoleChildGameSharingPanel) {
+                    ((ConsoleChildGameSharingPanel) child).resumeAfterRestore();
+                }
+            }
             currentPanelKey = snapshot.key;
             if (!reducedMotion) {
                 sidePanelScroll.animate().cancel();
@@ -14595,9 +16957,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void styleQuickAction(ImageButton button, boolean focused) {
         boolean discord = button == discordActionButton
                 || "global.discord".equals(button.getTag());
+        boolean profile = button == profileSelector
+                || "global.profile".equals(button.getTag());
         int tint = button == usbMicrophoneActionButton
                 ? usbMicrophoneIndicatorColor : 0xFFE8EDF1;
-        button.setColorFilter(focused ? 0xFF24313A
+        if (profile) button.setColorFilter(null);
+        else button.setColorFilter(focused ? 0xFF24313A
                 : discord ? 0xFFF4F6F7 : tint);
         if (focused) {
             GradientDrawable halo = new GradientDrawable();
@@ -15097,6 +17462,76 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             this.dot = dot;
             this.status = status;
             this.options = options;
+        }
+    }
+
+    static final class ProfileToolbarDrawable extends Drawable {
+        private final HostAvatarDrawable avatar;
+        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final String initials;
+        private final int indicatorColor;
+        private final float dotRadius;
+        private final float dotOffset;
+
+        ProfileToolbarDrawable(String profileId, String name, int indicatorColor,
+                               float dotRadius, float dotOffset) {
+            avatar = new HostAvatarDrawable(profileId);
+            initials = profileInitials(name);
+            this.indicatorColor = indicatorColor;
+            this.dotRadius = dotRadius;
+            this.dotOffset = dotOffset;
+            paint.setTypeface(Typeface.DEFAULT_BOLD);
+            paint.setTextAlign(Paint.Align.CENTER);
+        }
+
+        @Override public void draw(Canvas canvas) {
+            Rect bounds = getBounds();
+            float size = Math.min(bounds.width(), bounds.height());
+            float cx = bounds.exactCenterX();
+            float cy = bounds.exactCenterY();
+            // Keep the same avatar treatment as the profile selector while using
+            // the extra toolbar area for a readable face and initials.
+            float radius = size * .38f;
+            Rect avatarBounds = new Rect(Math.round(cx - radius), Math.round(cy - radius),
+                    Math.round(cx + radius), Math.round(cy + radius));
+            avatar.setBounds(avatarBounds);
+            avatar.draw(canvas);
+
+            paint.setStyle(Paint.Style.FILL);
+            paint.setColor(Color.WHITE);
+            paint.setTextSize(size * .24f);
+            Paint.FontMetrics metrics = paint.getFontMetrics();
+            float baseline = cy - (metrics.ascent + metrics.descent) / 2f;
+            canvas.drawText(initials, cx, baseline, paint);
+
+            float dotX = cx + dotOffset;
+            float dotY = cy + dotOffset;
+            paint.setColor(indicatorColor);
+            canvas.drawCircle(dotX, dotY, dotRadius, paint);
+        }
+
+        @Override public void setAlpha(int alpha) {
+            avatar.setAlpha(alpha);
+            paint.setAlpha(alpha);
+        }
+
+        @Override public void setColorFilter(android.graphics.ColorFilter filter) {
+            avatar.setColorFilter(filter);
+            paint.setColorFilter(null);
+        }
+
+        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
+
+        private static String profileInitials(String value) {
+            String name = value == null ? "" : value.trim();
+            if (name.isEmpty()) return "MW";
+            String[] words = name.split("\\s+");
+            if (words.length > 1) {
+                return (words[0].substring(0, 1) + words[words.length - 1].substring(0, 1))
+                        .toUpperCase(Locale.ROOT);
+            }
+            return words[0].substring(0, Math.min(2, words[0].length()))
+                    .toUpperCase(Locale.ROOT);
         }
     }
 

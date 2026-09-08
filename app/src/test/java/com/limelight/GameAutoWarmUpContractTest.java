@@ -114,7 +114,8 @@ public class GameAutoWarmUpContractTest {
         assertTrue(start.indexOf("new AndroidAudioRenderer")
                 < start.indexOf("setVolume(0f)"));
         assertTrue(connected.contains(
-                "if (!isOwnedHiddenAutoWarmUp()) setInputGrabState(true)"));
+                "if (!isDestroyed() && !isOwnedHiddenAutoWarmUp())"));
+        assertTrue(connected.contains("setInputGrabState(true)"));
     }
 
     @Test public void preparingHomeDoesNotEnterHomeAndBackgroundUsesFullToken()

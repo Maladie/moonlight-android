@@ -27,7 +27,8 @@ public class GameTransitionCancelContractTest {
         String cleanup = text.substring(text.indexOf(
                         "private boolean cleanupUnrevealedProviderLaunch("),
                 text.indexOf("private boolean isFreshOwnedFailureCleanup("));
-        assertTrue(cleanup.contains("if (userInitiatedDisconnect) return false"));
+        assertTrue(cleanup.contains(
+                "if (userInitiatedDisconnect) return false"));
     }
 
     @Test public void repeatedSnapshotsDoNotRecoverOverlayButReadinessRegressionDoes() {

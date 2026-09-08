@@ -1,7 +1,7 @@
 #requires -Version 5.1
 [CmdletBinding()]
 param(
-    [string]$InstallDirectory = (Join-Path (
+    [ValidateNotNullOrEmpty()][string]$InstallDirectory = (Join-Path (
         [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles)) "MoonWaker"),
     [string]$GatewayDirectory = "",
     [int]$GatewayPort = 8785,
@@ -19,6 +19,9 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
     throw "Install-WakePlayHost.ps1 must run from an elevated PowerShell prompt."
 }
 
+if ([string]::IsNullOrWhiteSpace($InstallDirectory)) {
+    throw "The MoonWaker install directory is empty."
+}
 $InstallDirectory = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
 if ([string]::IsNullOrWhiteSpace($GatewayDirectory)) {
     $GatewayDirectory = Join-Path $InstallDirectory "gateway"
@@ -51,9 +54,20 @@ $profileAgentSource = Join-Path $hostServicesRoot "profile-agent"
 $controlSource = Join-Path $hostServicesRoot "control"
 $toolsSource = Join-Path $hostServicesRoot "tools"
 $windowsLoginSource = Join-Path $hostServicesRoot "windows-login"
-foreach ($required in @($versionSource, $gatewaySource, $bridgeSource,
-        $profileAgentSource, $controlSource, $toolsSource, $windowsLoginSource)) {
-    if (-not (Test-Path -LiteralPath $required)) {
+$packagedProfileStop = Join-Path $profileAgentSource "Stop-MoonWakerProfileBridge.ps1"
+$packagedProviderUninstall = Join-Path $windowsLoginSource `
+    "credential-provider\Uninstall-MoonWakerCredentialProvider.ps1"
+if (-not (Test-Path -LiteralPath $versionSource -PathType Leaf)) {
+    throw "Run this installer from the complete versioned host-services package. Missing: $versionSource"
+}
+foreach ($required in @($gatewaySource, $bridgeSource, $profileAgentSource,
+        $controlSource, $toolsSource, $windowsLoginSource)) {
+    if (-not (Test-Path -LiteralPath $required -PathType Container)) {
+        throw "Run this installer from the complete versioned host-services package. Missing: $required"
+    }
+}
+foreach ($required in @($packagedProfileStop, $packagedProviderUninstall)) {
+    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
         throw "Run this installer from the complete versioned host-services package. Missing: $required"
     }
 }
@@ -92,7 +106,8 @@ foreach ($profilesRoot in @(
     Get-ChildItem -LiteralPath $profilesRoot -Directory | ForEach-Object {
         $stopProfile = Join-Path $_.FullName "Stop-MoonWakerProfileBridge.ps1"
         if (Test-Path -LiteralPath $stopProfile -PathType Leaf) {
-            & $stopProfile -ProfileRoot $_.FullName
+            # Never elevate a script from the mutable existing installation.
+            & $packagedProfileStop -ProfileRoot $_.FullName
             if ($profilesRoot.Equals((Join-Path $InstallDirectory "profiles"),
                     [StringComparison]::OrdinalIgnoreCase)) {
                 $profilesToRestart += $_.Name
@@ -122,7 +137,8 @@ $loginBrokerDirectory = Join-Path $windowsLoginDirectory "login-broker"
 $installedProviderUninstall = Join-Path $windowsLoginDirectory `
     "credential-provider\Uninstall-MoonWakerCredentialProvider.ps1"
 if (Test-Path -LiteralPath $installedProviderUninstall -PathType Leaf) {
-    & $installedProviderUninstall -Confirm:$false
+    # Unregister with the verified package script, not mutable installed code.
+    & $packagedProviderUninstall -Confirm:$false
 }
 New-Item -ItemType Directory -Path $InstallDirectory, $sourceDirectory,
     $profileAgentDirectory, $controlDirectory, $toolsDirectory, $installScripts,
@@ -174,14 +190,21 @@ Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Uninstall-MoonWakerHostServices
 
 $brokerInstaller = Join-Path $loginBrokerDirectory "Install-MoonWakerLoginBroker.ps1"
 $brokerBinary = Join-Path $windowsLoginSource "login-broker\MoonWakerLoginBroker.exe"
+foreach ($required in @($brokerInstaller, $brokerBinary)) {
+    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+        throw "The MoonWaker Login Broker package is incomplete. Missing: $required"
+    }
+}
 & $brokerInstaller -BinaryPath $brokerBinary -InstallDirectory $loginBrokerDirectory `
     -SkipStart:$SkipStart
 
 $providerDirectory = Join-Path $windowsLoginDirectory "credential-provider"
 $providerInstaller = Join-Path $providerDirectory "Install-MoonWakerCredentialProvider.ps1"
 $providerBinary = Join-Path $providerDirectory "MoonWakerCredentialProvider.dll"
-if (-not (Test-Path -LiteralPath $providerBinary -PathType Leaf)) {
-    throw "The MoonWaker Credential Provider binary is missing from the package."
+foreach ($required in @($providerInstaller, $providerBinary)) {
+    if (-not (Test-Path -LiteralPath $required -PathType Leaf)) {
+        throw "The MoonWaker Credential Provider package is incomplete. Missing: $required"
+    }
 }
 & $providerInstaller -DllPath $providerBinary -Confirm:$false
 

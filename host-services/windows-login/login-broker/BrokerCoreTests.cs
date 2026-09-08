@@ -14,6 +14,7 @@ namespace MoonWaker.WindowsLogin
     internal static class SelfTestProgram
     {
         private const string ProfileId = "living-room";
+        private const string ChildActorId = "child-living-room";
         private const string Sid = "S-1-5-21-100-200-300-1001";
         private const string OtherSid = "S-1-5-21-100-200-300-1002";
         private const string Account = "TESTPC\\Player";
@@ -39,6 +40,7 @@ namespace MoonWaker.WindowsLogin
                 Run("session switch records missing credentials only after LogonUI", TestSwitchMissingCredential);
                 Run("session switch failure creates no target attempt", TestSwitchFailureBeforeAttempt);
                 Run("session switch rejects unsafe active-session states", TestSwitchRejections);
+                Run("child attempts bind actor, execution, client and request", TestChildActorBinding);
                 Console.WriteLine("PASS: " + passed + " Login Broker tests");
                 return 0;
             }
@@ -436,6 +438,70 @@ namespace MoonWaker.WindowsLogin
                 State = "active" } }, true, "rdp_session_active");
             AssertSwitchFault(identity, new[] { console }, false,
                 "fast_user_switching_disabled");
+        }
+
+        private static void TestChildActorBinding()
+        {
+            Harness harness = new Harness();
+            Configure(harness);
+            string attemptId;
+            using (BrokerReply begin = Gateway(harness.Core,
+                BrokerCore.GatewayBeginChildAttempt,
+                1, "android-tv", 2, ChildActorId, 3, "child-request",
+                4, ProfileId, 5, Sid, 6, Account))
+            {
+                AssertOk(begin, "pending");
+                attemptId = (string)begin.Extra[3];
+                Assert((string)begin.Extra[4] == ChildActorId &&
+                    (string)begin.Extra[5] == ProfileId,
+                    "child attempt did not return actor and execution IDs");
+            }
+            Assert(harness.Signals == 1, "child begin did not signal exactly once");
+            using (BrokerReply observed = Provider(harness.Core, BrokerCore.ProviderObserve))
+            {
+                AssertOk(observed, "pending");
+                Assert((string)observed.Extra[3] == attemptId &&
+                    (string)observed.Extra[5] == ProfileId &&
+                    (string)observed.Extra[7] == Sid,
+                    "provider did not receive child execution identity");
+            }
+            using (BrokerReply acquired = Provider(harness.Core, BrokerCore.ProviderAcquire,
+                1, attemptId, 2, "android-tv", 3, ProfileId, 4, "child-request"))
+            {
+                AssertOk(acquired, "credential_issued");
+                char[] password = (char[])acquired.Extra[4];
+                Assert(new string(password) == Password,
+                    "child provider did not receive the parent credential");
+                acquired.Dispose();
+                Assert(AllZero(password), "child provider response retained the password");
+            }
+            using (BrokerReply legacyState = Gateway(harness.Core,
+                BrokerCore.GatewayAttemptState,
+                1, "android-tv", 2, ProfileId, 3, "child-request", 4, attemptId))
+                AssertFail(legacyState, "action_required", "attempt_binding_mismatch");
+            using (BrokerReply changedExecution = Gateway(harness.Core,
+                BrokerCore.GatewayChildAttemptState,
+                1, "android-tv", 2, ChildActorId, 3, "child-request", 4, attemptId,
+                5, ProfileId, 6, OtherSid, 7, Account))
+                AssertFail(changedExecution, "action_required", "attempt_binding_mismatch");
+            using (BrokerReply wrongActor = Gateway(harness.Core,
+                BrokerCore.GatewayChildAttemptState,
+                1, "android-tv", 2, "other-child", 3, "child-request", 4, attemptId,
+                5, ProfileId, 6, Sid, 7, Account))
+                AssertFail(wrongActor, "action_required", "attempt_binding_mismatch");
+            using (BrokerReply reported = Provider(harness.Core, BrokerCore.ProviderReport,
+                1, attemptId, 2, "android-tv", 3, ProfileId, 4, "child-request",
+                5, "success", 6, "provider-ok"))
+                AssertOk(reported, "completed");
+            using (BrokerReply state = Gateway(harness.Core,
+                BrokerCore.GatewayChildAttemptState,
+                1, "android-tv", 2, ChildActorId, 3, "child-request", 4, attemptId,
+                5, ProfileId, 6, Sid, 7, Account))
+                AssertOk(state, "completed");
+            using (BrokerReply legacyCancel = Gateway(harness.Core,
+                BrokerCore.GatewayCancelAttempt,
+                1, "android-tv", 2, ProfileId, 3, "child-request", 4, attemptId))
+                AssertFail(legacyCancel, "action_required", "attempt_binding_mismatch");
         }
 
         private static void AssertSwitchFault(ProfileIdentity identity,

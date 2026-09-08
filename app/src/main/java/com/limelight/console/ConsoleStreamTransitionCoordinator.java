@@ -277,7 +277,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 || transitionSpec.playniteGameId.isEmpty()
                 || !providerOwnerKey().equals(replacement.providerOwnerKey())
                 || !normalizeOwnerPart(transitionSpec.playniteGameId).equals(
-                normalizeOwnerPart(replacement.transitionSpec.playniteGameId))) {
+                normalizeOwnerPart(replacement.transitionSpec.playniteGameId))
+                || !transitionSpec.profileId.equals(replacement.transitionSpec.profileId)) {
             return transitionSpec.playniteGameId.isEmpty();
         }
         synchronized (PROVIDER_OWNERS_LOCK) {
@@ -1010,15 +1011,18 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     private static final class ProviderOwner {
         final String transitionId;
         final String gameId;
+        final String profileId;
 
         ProviderOwner(LaunchTransitionSpec spec) {
             transitionId = spec.id;
             gameId = normalizeOwnerPart(spec.playniteGameId);
+            profileId = spec.profileId;
         }
 
         boolean matches(LaunchTransitionSpec spec) {
             return transitionId.equals(spec.id)
-                    && gameId.equals(normalizeOwnerPart(spec.playniteGameId));
+                    && gameId.equals(normalizeOwnerPart(spec.playniteGameId))
+                    && profileId.equals(spec.profileId);
         }
     }
 }

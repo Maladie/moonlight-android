@@ -107,9 +107,11 @@ public final class PlayniteTransitionGateway {
 
     private final HostGatewayClient client = new HostGatewayClient();
     private final GatewayConnection connection;
+    private final boolean childSession;
 
-    private PlayniteTransitionGateway(GatewayConnection connection) {
+    private PlayniteTransitionGateway(GatewayConnection connection, boolean childSession) {
         this.connection = connection;
+        this.childSession = childSession;
     }
 
     public static PlayniteTransitionGateway connect(Context context, String hostId,
@@ -121,6 +123,12 @@ public final class PlayniteTransitionGateway {
     public static PlayniteTransitionGateway connect(Context context, String hostId,
                                                     String activeHost,
                                                     String profileId) {
+        return connect(context, hostId, activeHost, profileId, false);
+    }
+
+    public static PlayniteTransitionGateway connect(Context context, String hostId,
+                                                    String activeHost, String profileId,
+                                                    boolean childSession) {
         GatewayConnection connection = new HostGatewayStore(context)
                 .loadForHost(hostId, activeHost, profileId);
         if (connection == null) {
@@ -130,16 +138,19 @@ public final class PlayniteTransitionGateway {
                     "reason", "connection_missing");
             return null;
         }
-        return new PlayniteTransitionGateway(connection);
+        return new PlayniteTransitionGateway(connection, childSession);
     }
 
     public Snapshot snapshot() throws IOException {
-        HostGatewayClient.PlayniteHealth health = client.getPlayniteHealth(connection);
+        // Child actors may read their authorised game's state, but cannot inspect
+        // the parent profile's provider health. Do not widen their API permissions.
+        HostGatewayClient.PlayniteHealth health = childSession ? null
+                : client.getPlayniteHealth(connection);
         HostGatewayClient.PlayniteCurrentGame current =
                 client.getPlayniteCurrentGame(connection);
         HostGatewayClient.PlayniteReadiness readiness =
                 client.getPlayniteReadiness(connection);
-        boolean connectorReady = health.connectorConnected
+        boolean connectorReady = childSession || health.connectorConnected
                 || (!current.id.isEmpty() && !current.requiresConnector);
         return new Snapshot(true, connectorReady, current.state, current.id,
                 current.processId, readiness.ready, readiness.targetKind,
@@ -174,6 +185,11 @@ public final class PlayniteTransitionGateway {
 
     public void focusInstallation(String gameId) throws IOException {
         client.focusPlayniteInstallation(connection, gameId);
+    }
+
+    /** Returns the actor-bound request context used by this Gateway facade. */
+    public GatewayConnection gatewayConnection() {
+        return connection;
     }
 
     public boolean verifyInstallation(String gameId) throws IOException {

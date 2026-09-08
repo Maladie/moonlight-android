@@ -985,7 +985,7 @@ $vibepolloDirectory = $null
 if (-not $SkipVibepollo) {
     Stop-InstalledBridge "vibepollo" "Stop-VibepolloBridge.ps1"
     $vibepolloDirectory = Install-BridgeFiles "vibepollo" @(
-        "VibepolloBridge.ps1", "VibepolloTransport.py",
+        "VibepolloBridge.ps1", "VibepolloIdentity.ps1", "VibepolloTransport.py",
         "Configure-VibepolloBridge.ps1", "config.example.json",
         "moonwaker-token-scopes.example.json",
         "Start-VibepolloBridge.ps1", "Stop-VibepolloBridge.ps1",

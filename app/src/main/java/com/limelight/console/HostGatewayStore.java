@@ -212,9 +212,24 @@ public final class HostGatewayStore {
                 JSONObject value = new JSONObject();
                 value.put("id", profile.id);
                 value.put("name", profile.name);
+                value.put("kind", profile.kind);
+                value.put("parent_profile_id", profile.parentProfileId);
+                value.put("execution_profile_id", profile.executionProfileId);
+                value.put("avatar_id", profile.avatarId);
+                value.put("enabled", profile.enabled);
+                value.put("policy_revision", profile.policyRevision);
+                value.put("usage_revision", profile.usageRevision);
+                value.put("remaining_daily_seconds", profile.remainingDailySeconds);
+                value.put("playable_now_seconds", profile.playableNowSeconds);
+                value.put("next_allowed_at", profile.nextAllowedAt);
+                value.put("window_end", profile.windowEnd);
+                value.put("server_time", profile.serverTime);
+                value.put("reason", profile.reason);
                 value.put("permissions", new JSONObject()
-                        .put("use_profile", true)
-                        .put("remote_sign_in", profile.remoteSignIn));
+                        .put("use_profile", profile.useProfile)
+                        .put("remote_sign_in", profile.remoteSignIn)
+                        .put("manage_children", profile.manageChildren));
+                value.put("own_children_count", profile.ownChildrenCount);
                 value.put("session_state", profile.sessionState);
                 value.put("remote_sign_in_state", profile.remoteSignInState);
                 value.put("pin_required", profile.pinRequired);
@@ -278,13 +293,23 @@ public final class HostGatewayStore {
                 ? Collections.emptyList() : selection.profiles;
         String automatic = automaticProfileId == null ? "" : automaticProfileId;
         HostGatewayClient.IntegrationProfile selected = find(profiles, automatic);
+        // Child selection is an explicit actor choice for this process. Never turn a
+        // stale automatic-login preference into an implicit child promotion.
         boolean invalidAutomatic = !automatic.isEmpty()
-                && (selected == null || selected.pinRequired);
+                && (selected == null || selected.pinRequired || selected.isChild());
         if (selected != null && selected.pinRequired) selected = null;
-        if (profiles.size() > 1 && selected == null) {
+        if (selected != null && selected.isChild()) selected = null;
+        if ((profiles.size() > 1 || invalidAutomatic) && selected == null) {
             return new ProfileGate(null, true, invalidAutomatic);
         }
-        if (selected == null && profiles.size() == 1) selected = profiles.get(0);
+        if (selected == null && profiles.size() == 1 && !invalidAutomatic) {
+            // A child is always an explicit actor choice, even when it is the only
+            // profile still visible in a stale or partially refreshed profile list.
+            if (profiles.get(0).isChild() || selection == null || selection.selected == null) {
+                return new ProfileGate(null, true, false);
+            }
+            selected = profiles.get(0);
+        }
         return new ProfileGate(selected, false, invalidAutomatic);
     }
 

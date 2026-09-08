@@ -58,7 +58,8 @@ $configuratorArguments = @(
     "/reference:System.dll", "/reference:System.Core.dll", "/reference:System.Drawing.dll",
     "/reference:System.Windows.Forms.dll", "/reference:System.Web.Extensions.dll",
     "/reference:System.Management.dll", "/reference:System.Security.dll",
-    (Join-Path $PSScriptRoot "MoonWakerHostConfigurator.cs"))
+    (Join-Path $PSScriptRoot "MoonWakerHostConfigurator.cs"),
+    (Join-Path $PSScriptRoot "ChildProfileForms.cs"))
 & $compiler @configuratorArguments
 if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $configuratorOutput)) {
     throw "MoonWaker Host Configurator compilation failed."

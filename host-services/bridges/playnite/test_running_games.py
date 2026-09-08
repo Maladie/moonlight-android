@@ -1,4 +1,5 @@
 import ctypes
+import os
 import time
 import unittest
 from unittest import mock
@@ -129,6 +130,92 @@ class RunningGamesTest(unittest.TestCase):
         self.state.library["steam:2"] = {"id": "steam:2", "provider": "steam", "exe": self.hk["process_path"]}
         self.assertEqual([], self.state._verified_running_games()[0])
 
+    def test_hollow_knight_to_contra_uses_fresh_connector_process_identity(self):
+        guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+        emulator = identity(44, r"C:\Emulators\retroarch.exe", 400)
+        self.state.library = {
+            "steam:367520": {"id": "steam:367520", "provider": "steam",
+                              "installDir": r"C:\Games\Hollow Knight",
+                              "exe": r"C:\Games\Hollow Knight\hollow_knight.exe"},
+            guid: {"id": guid, "provider": "playnite", "playniteGameId": guid,
+                   "installDir": r"C:\Games\Contra", "exe": ""}}
+        self.state.connected = True
+        self.state.current = {"state": "idle"}
+        hollow = identity(55, r"C:\Games\Hollow Knight\hollow_knight.exe", 300)
+        self.probe.scan_running_processes.return_value = ([hollow, emulator], "complete")
+        own = {"process_id": os.getpid(), "process_path": r"C:\Bridge\bridge.exe",
+               "process_started_filetime": 500, "user_sid": "own-sid", "session_id": 1}
+        self.probe.process_identity.side_effect = lambda pid, include_owner=False: (
+            dict(own) if pid == os.getpid() else dict(emulator))
+        self.state.running_process_probe = self.probe
+        self.state.handle_message({"type": "status", "status": {
+            "name": "gameStarted", "id": guid, "processId": 44}})
+
+        running, status, _revision = self.state._verified_running_games()
+
+        self.assertEqual("complete", status)
+        self.assertEqual({"steam:367520", guid},
+                         {game["game_id"] for game in running})
+        self.assertEqual(44, next(game["process_id"] for game in running
+                                  if game["game_id"] == guid))
+
+    def test_shared_playnite_emulator_rejects_foreign_process_identity(self):
+        guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+        emulator = identity(44, r"C:\Emulators\retroarch.exe", 400)
+        self.state.library = {
+            guid: {"id": guid, "provider": "playnite", "playniteGameId": guid,
+                   "installDir": r"C:\Games\Contra", "exe": ""}}
+        self.state.connected = True
+        self.state.current = {"state": "running", "id": guid, "processId": 44,
+                              "processStartedFiletime": 400}
+        self.state._native_reconciliation_confirmation = (guid, 44)
+        self.probe.scan_running_processes.return_value = ([emulator], "complete")
+        own = {"process_id": os.getpid(), "process_path": r"C:\Bridge\bridge.exe",
+               "process_started_filetime": 500, "user_sid": "own-sid", "session_id": 1}
+        self.probe.process_identity.side_effect = lambda pid, include_owner=False: (
+            dict(own) if pid == os.getpid() else {**emulator, "user_sid": "foreign"})
+
+        running, _status, _revision = self.state._verified_running_games()
+
+        self.assertEqual([], running)
+
+    def test_shared_playnite_emulator_rejects_stale_connector_confirmation(self):
+        guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+        emulator = identity(44, r"C:\Emulators\retroarch.exe", 400)
+        self.state.library = {
+            guid: {"id": guid, "provider": "playnite", "playniteGameId": guid,
+                   "installDir": r"C:\Games\Contra", "exe": ""}}
+        self.state.connected = True
+        self.state.current = {"state": "running", "id": guid, "processId": 44,
+                              "processStartedFiletime": 400}
+        self.state._native_reconciliation_confirmation = (guid, 45)
+        self.probe.scan_running_processes.return_value = ([emulator], "complete")
+        own = {"process_id": os.getpid(), "process_path": r"C:\Bridge\bridge.exe",
+               "process_started_filetime": 500, "user_sid": "own-sid", "session_id": 1}
+        self.probe.process_identity.side_effect = lambda pid, include_owner=False: (
+            dict(own) if pid == os.getpid() else dict(emulator))
+
+        running, _status, _revision = self.state._verified_running_games()
+
+        self.assertEqual([], running)
+
+    def test_playnite_process_replacement_invalidates_connector_confirmation(self):
+        guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+        self.state.current = {"state": "running", "id": guid,
+                              "provider": "playnite", "processId": 44,
+                              "processPath": r"C:\Emulators\retroarch.exe"}
+        self.state.readiness = {"target_kind": "game", "ready": True}
+        self.state._native_reconciliation_confirmation = (guid, 44)
+
+        self.state.apply_window_sample({
+            "qualified": False, "reason": "target_not_fullscreen",
+            "replacement_process": True, "process_id": 45,
+            "process_path": r"C:\Emulators\retroarch.exe",
+            "observed_game_id": guid,
+        })
+
+        self.assertIsNone(self.state._native_reconciliation_confirmation)
+
     def test_unconfirmed_stop_leaves_inventory_current_and_readiness(self):
         token = self.token()
         before = self.state.current_snapshot(), dict(self.state.readiness)
@@ -160,6 +247,30 @@ class RunningGamesTest(unittest.TestCase):
 
         self.assertFalse(result["accepted"])
         self.assertEqual("running_game_inventory_unavailable", result["reason"])
+        self.assertEqual(before, (self.state.current, self.state.readiness))
+        self.probe.force_terminate_verified_process.assert_not_called()
+
+    def test_hard_reset_fails_closed_when_active_game_has_no_verified_identity(self):
+        before = dict(self.state.current), dict(self.state.readiness)
+        self.probe.scan_running_processes.return_value = ([], "complete")
+        self.probe.process_identity.return_value = None
+
+        result = self.state.hard_reset_session()
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual("running_game_identity_unconfirmed", result["reason"])
+        self.assertEqual(before, (self.state.current, self.state.readiness))
+        self.probe.force_terminate_verified_process.assert_not_called()
+
+    def test_hard_reset_does_not_clear_active_game_for_unrelated_inventory(self):
+        before = dict(self.state.current), dict(self.state.readiness)
+        self.probe.scan_running_processes.return_value = ([self.hk], "complete")
+        self.probe.process_identity.return_value = None
+
+        result = self.state.hard_reset_session()
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual("running_game_identity_unconfirmed", result["reason"])
         self.assertEqual(before, (self.state.current, self.state.readiness))
         self.probe.force_terminate_verified_process.assert_not_called()
 

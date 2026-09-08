@@ -15,9 +15,9 @@ using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.79.0")]
-[assembly: AssemblyFileVersion("0.7.79.0")]
-[assembly: AssemblyInformationalVersion("0.7.79+2026.09.05")]
+[assembly: AssemblyVersion("0.7.95.0")]
+[assembly: AssemblyFileVersion("0.7.95.0")]
+[assembly: AssemblyInformationalVersion("0.7.95+2026.09.08")]
 
 namespace MoonWaker.HostControl
 {
@@ -44,6 +44,7 @@ namespace MoonWaker.HostControl
 
     internal sealed class ControlForm : Form
     {
+        private const int ProfileCreatedExitCode = 10;
         private readonly Color background = Color.FromArgb(17, 20, 28);
         private readonly Color panel = Color.FromArgb(28, 33, 45);
         private readonly Color accent = Color.FromArgb(116, 100, 255);
@@ -190,18 +191,20 @@ namespace MoonWaker.HostControl
             profilePanel.Controls.Add(profiles);
 
             Button addProfile = AddActionButton(profilePanel, "Dodaj profil", 24, 232,
-                delegate { LaunchConfigurator("add", null); }, 140);
+                delegate { LaunchConfigurator("add", null); }, 120);
             addProfile.BackColor = accent;
             addProfile.FlatAppearance.BorderSize = 0;
-            AddActionButton(profilePanel, "Edytuj profil", 174, 232,
-                delegate { LaunchSelectedConfigurator("edit"); }, 140);
-            AddActionButton(profilePanel, "Zdalne logowanie", 324, 232,
-                delegate { LaunchSelectedConfigurator("remote-sign-in"); }, 180);
-            AddActionButton(profilePanel, "Urządzenia i dostęp", 514, 232,
-                delegate { LaunchSelectedConfigurator("devices"); }, 190);
-            Button remove = AddActionButton(profilePanel, "Usuń profil", 714, 232,
-                delegate { LaunchSelectedConfigurator("remove"); }, 140);
+            AddActionButton(profilePanel, "Edytuj profil", 154, 232,
+                delegate { LaunchSelectedConfigurator("edit"); }, 120);
+            AddActionButton(profilePanel, "Zdalne logowanie", 284, 232,
+                delegate { LaunchSelectedConfigurator("remote-sign-in"); }, 150);
+            AddActionButton(profilePanel, "Urządzenia i dostęp", 444, 232,
+                delegate { LaunchSelectedConfigurator("devices"); }, 165);
+            Button remove = AddActionButton(profilePanel, "Usuń profil", 619, 232,
+                delegate { LaunchSelectedConfigurator("remove"); }, 120);
             remove.ForeColor = Color.FromArgb(255, 180, 180);
+            AddActionButton(profilePanel, "Profile dzieci", 749, 232,
+                delegate { LaunchSelectedConfigurator("children"); }, 160);
             AddActionButton(profilePanel, "Uruchom Bridge", 24, 282,
                 delegate { RunProfileAction("StartProfile"); }, 140);
             AddActionButton(profilePanel, "Zatrzymaj", 174, 282,
@@ -820,6 +823,8 @@ namespace MoonWaker.HostControl
                 using (Process process = Process.Start(info))
                 {
                     await Task.Run(delegate { process.WaitForExit(); });
+                    if (mode == "add" && process.ExitCode == ProfileCreatedExitCode)
+                        OpenVibepolloAccountPage();
                 }
                 RefreshStatus();
             }
@@ -829,6 +834,21 @@ namespace MoonWaker.HostControl
                     MessageBox.Show(this, ex.Message, "MoonWaker Host Control",
                         MessageBoxButtons.OK, MessageBoxIcon.Error);
                 RefreshStatus();
+            }
+        }
+
+        private void OpenVibepolloAccountPage()
+        {
+            try
+            {
+                ProcessStartInfo info = new ProcessStartInfo("https://127.0.0.1:47990");
+                info.UseShellExecute = true;
+                Process.Start(info);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, "Nie udało się otworzyć panelu Vibepollo: " + ex.Message,
+                    "MoonWaker Host Control", MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         }
 
