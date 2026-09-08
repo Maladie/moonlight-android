@@ -208,6 +208,10 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         this.actions = actions;
     }
 
+    public void setRetryLabel(int labelResId) {
+        retryView.setText(labelResId);
+    }
+
     public void showNeutralWarmUpAppearance() {
         if (stopped) return;
         hideSplashArtwork();

@@ -8,7 +8,9 @@ import time
 from pathlib import Path
 from unittest import mock
 from email.message import Message
+from http import HTTPStatus
 from types import SimpleNamespace
+from datetime import datetime, timezone
 
 import GameProviderBridge
 
@@ -28,6 +30,7 @@ from GameProviderBridge import (
     ProviderDiagnostics,
     REQUIRED_GAME_STABLE_SAMPLES, REQUIRED_LAUNCHER_STABLE_SAMPLES,
     REQUIRED_STABLE_SAMPLES,
+    StaleCatalogRevision,
     STEAM_CANCELLATION_EVIDENCE_TIMEOUT,
     STEAM_PRIMARY_START_TIMEOUT,
     StreamDisplayResolver, WindowProbe, WindowsPipeClient,
@@ -1171,6 +1174,39 @@ class BridgeStateTest(unittest.TestCase):
             lambda process_id: identity if process_id == trace["process_id"] else None,
             lambda _path: list(identities) if identities is not None else [identity])
 
+    def _child_payload(self, action="bind", session_id="11111111-1111-4111-8111-111111111111",
+                       token="", deadline=None, client_uuid="22222222-2222-4222-8222-222222222222"):
+        return {
+            "action": action, "session_id": session_id,
+            "actor_profile_id": "child-one", "execution_profile_id": "parent",
+            "game_id": "steam:1", "process_token": token,
+            "vibepollo_client_uuid": client_uuid,
+            "deadline_utc": datetime.fromtimestamp(
+                self.now + 120 if deadline is None else deadline,
+                timezone.utc).isoformat().replace("+00:00", "Z"),
+        }
+
+    def _child_probe(self, state, process_id=4242, started=133700000000000000,
+                     process_path=r"C:\Games\Child\game.exe"):
+        probe = mock.Mock()
+        own = {"process_id": os.getpid(), "process_path": r"C:\Bridge\bridge.exe",
+               "process_started_filetime": 1, "user_sid": "own-sid", "session_id": 1}
+        child = {"process_id": process_id, "process_path": process_path,
+                 "process_started_filetime": started, "user_sid": "own-sid",
+                 "session_id": 1, "visible_window": True}
+        def identity(pid, include_owner=False):
+            del include_owner
+            return child if pid == process_id else own if pid == os.getpid() else None
+        probe.process_identity.side_effect = identity
+        probe.scan_running_processes.return_value = ([], "complete")
+        probe.force_terminate_verified_process.return_value = True
+        state.running_process_probe = probe
+        state.library["steam:1"] = {
+            "id": "steam:1", "name": "Child game", "provider": "steam",
+            "providerGameId": "1", "installDir": r"C:\Games\Child",
+        }
+        return probe, child
+
     def _put_native_game(self, game_id=GAME_ID):
         with self.state.lock:
             self.state.library[game_id] = {
@@ -1686,6 +1722,192 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual(14, second["games"][0]["playCount"])
         self.assertEqual("GOG", second["games"][0]["source"])
         self.assertEqual("", second["next_cursor"])
+
+    def test_filtered_library_filters_before_page_counts_and_global_facets(self):
+        with self.state.lock:
+            self.state.library = {
+                "steam:100": {
+                    "id": "steam:100", "name": "Zulu", "provider": "steam",
+                    "providerGameId": "100", "libraryKey": "steam",
+                    "libraryName": "Steam",
+                },
+                "steam:200": {
+                    "id": "steam:200", "name": "Aardvark hidden", "provider": "steam",
+                    "providerGameId": "200", "libraryKey": "steam",
+                    "libraryName": "Steam",
+                },
+                "epic:ExactAppName": {
+                    "id": "epic:ExactAppName", "name": "Alpha", "provider": "epic",
+                    "providerGameId": "ExactAppName", "libraryKey": "epic",
+                    "libraryName": "Epic",
+                },
+            }
+            self.state.library_revision = "rev-1"
+            self.state.categories = [{"id": "action"}]
+            self.state.plugins = [{"id": "steam"}, {"id": "epic"}]
+            self.state.provider_health = {
+                "steam": {"available": True, "globalCount": 2},
+                "epic": {"available": True, "globalCount": 1},
+                "playnite": {"available": True, "globalCount": 3},
+            }
+
+        page = self.state.library_page(
+            "0", 1,
+            allowed_game_ids=["steam:100", "epic:ExactAppName"],
+            catalog_revision="rev-1")
+
+        self.assertEqual(["Alpha"], [game["name"] for game in page["games"]])
+        self.assertEqual(2, page["total"])
+        self.assertEqual("1", page["next_cursor"])
+        self.assertEqual([
+            {"key": "epic", "name": "Epic", "provider": "epic", "gameCount": 1},
+            {"key": "steam", "name": "Steam", "provider": "steam", "gameCount": 1},
+        ], page["libraries"])
+        self.assertEqual([], page["categories"])
+        self.assertEqual([], page["plugins"])
+        self.assertEqual({}, page["providers"])
+
+    def test_filtered_library_unknown_and_empty_membership_do_not_leak_catalog(self):
+        with self.state.lock:
+            self.state.library = {
+                "steam:100": {
+                    "id": "steam:100", "name": "Secret", "provider": "steam",
+                    "providerGameId": "100",
+                },
+            }
+            self.state.library_revision = "rev-2"
+            self.state.categories = [{"id": "secret"}]
+            self.state.plugins = [{"id": "private"}]
+            self.state.provider_health = {"steam": {"globalCount": 1}}
+
+        for allowed in ([], ["steam:missing", "malformed", None]):
+            with self.subTest(allowed=allowed):
+                page = self.state.library_page(
+                    "0", 10, allowed_game_ids=allowed, catalog_revision="rev-2")
+                self.assertEqual([], page["games"])
+                self.assertEqual(0, page["total"])
+                self.assertEqual("", page["next_cursor"])
+                self.assertEqual([], page["libraries"])
+                self.assertEqual([], page["categories"])
+                self.assertEqual([], page["plugins"])
+                self.assertEqual({}, page["providers"])
+
+    def test_library_resolve_supports_playnite_aliases_and_raw_fallback(self):
+        with self.state.lock:
+            self.state.library = {
+                GAME_ID: {
+                    "id": GAME_ID, "name": "Mapped", "provider": "playnite",
+                    "providerGameId": GAME_ID, "playniteGameId": GAME_ID,
+                },
+                SECOND_GAME_ID: {
+                    "id": SECOND_GAME_ID, "name": "Raw fallback", "provider": "playnite",
+                },
+            }
+            self.state.library_revision = "rev-3"
+
+        upper_prefixed = "playnite:" + GAME_ID.upper()
+        self.assertEqual(GAME_ID, self.state.resolve_game_id(upper_prefixed))
+        self.assertEqual(SECOND_GAME_ID, self.state.resolve_game_id(
+            "playnite:" + SECOND_GAME_ID.upper()))
+        self.assertEqual({
+            "game_id": GAME_ID,
+            "canonical_game_id": "playnite:" + GAME_ID,
+            "revision": "rev-3",
+        }, self.state.resolve_game_membership(upper_prefixed))
+        self.assertEqual({
+            "game_id": SECOND_GAME_ID,
+            "canonical_game_id": "playnite:" + SECOND_GAME_ID,
+            "revision": "rev-3",
+        }, self.state.resolve_game_membership(
+            "playnite:" + SECOND_GAME_ID.upper()))
+
+    def test_library_resolve_preserves_steam_and_epic_provider_ids(self):
+        with self.state.lock:
+            self.state.library = {
+                "steam:224760": {
+                    "id": "steam:224760", "provider": "steam",
+                    "providerGameId": "224760",
+                },
+                "epic:ExactAppName": {
+                    "id": "epic:ExactAppName", "provider": "epic",
+                    "providerGameId": "ExactAppName",
+                },
+            }
+            self.state.library_revision = "rev-4"
+
+        self.assertEqual({
+            "game_id": "steam:224760",
+            "canonical_game_id": "steam:224760",
+            "revision": "rev-4",
+        }, self.state.resolve_game_membership("steam:224760"))
+        self.assertEqual({
+            "game_id": "epic:ExactAppName",
+            "canonical_game_id": "epic:ExactAppName",
+            "revision": "rev-4",
+        }, self.state.resolve_game_membership("epic:ExactAppName"))
+        with self.assertRaises(FileNotFoundError):
+            self.state.resolve_game_membership("epic:exactappname")
+
+    def test_filtered_library_rejects_stale_revision(self):
+        with self.state.lock:
+            self.state.library = {
+                "steam:100": {
+                    "id": "steam:100", "name": "Game", "provider": "steam",
+                    "providerGameId": "100",
+                },
+            }
+            self.state.library_revision = "rev-current"
+
+        with self.assertRaises(StaleCatalogRevision):
+            self.state.library_page(
+                "0", 10, allowed_game_ids=["steam:100"],
+                catalog_revision="rev-old")
+
+    def test_post_library_requires_allowed_ids_and_reports_stale_revision(self):
+        def invoke(body):
+            handler = object.__new__(GameProviderHandler)
+            handler.server = SimpleNamespace(state=self.state)
+            handler.path = "/library/list"
+            handler.read_json = mock.Mock(return_value=body)
+            handler.send_json = mock.Mock()
+            handler._begin_diagnostics = mock.Mock()
+            handler._finish_diagnostics = mock.Mock()
+            handler.do_POST()
+            return handler.send_json.call_args.args
+
+        for body in ({}, {"allowed_game_ids": None}):
+            with self.subTest(body=body):
+                status, response = invoke(body)
+                self.assertEqual(HTTPStatus.BAD_REQUEST, status)
+                self.assertFalse(response["ok"])
+
+        with self.state.lock:
+            self.state.library = {
+                "steam:100": {
+                    "id": "steam:100", "name": "Game", "provider": "steam",
+                    "providerGameId": "100",
+                },
+            }
+            self.state.library_revision = "rev-current"
+        status, response = invoke({
+            "allowed_game_ids": ["steam:100"], "catalog_revision": "rev-old",
+        })
+        self.assertEqual(HTTPStatus.CONFLICT, status)
+        self.assertEqual({
+            "ok": False, "error": "catalog_revision_stale", "status": 409,
+        }, response)
+
+        handler = object.__new__(GameProviderHandler)
+        handler.server = SimpleNamespace(state=self.state)
+        handler.path = "/library/resolve"
+        handler.read_json = mock.Mock(return_value={"game_id": "steam:missing"})
+        handler.send_json = mock.Mock()
+        handler._begin_diagnostics = mock.Mock()
+        handler._finish_diagnostics = mock.Mock()
+        handler.do_POST()
+        status, response = handler.send_json.call_args.args
+        self.assertEqual(HTTPStatus.NOT_FOUND, status)
+        self.assertEqual({"ok": False, "error": "Game record was not found."}, response)
 
     def test_complete_snapshot_is_loaded_from_disk_after_restart(self):
         with tempfile.TemporaryDirectory() as temporary:
@@ -3875,6 +4097,254 @@ class BridgeStateTest(unittest.TestCase):
         self.assertFalse(self.state.library[GAME_ID]["installed"])
         self.assertTrue(self.state.library[GAME_ID]["legendaryImportRequired"])
         dispatch.assert_called_once()
+
+
+    def test_child_bind_is_pending_before_launch_and_is_persisted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.state.profile_id = "parent"
+            self.state.child_session_path = Path(temporary) / "child-session.json"
+            self._child_probe(self.state)
+
+            result = self.state.child_session_action(self._child_payload())
+
+            self.assertTrue(result["accepted"])
+            self.assertEqual("pending", result["state"])
+            saved = json.loads(self.state.child_session_path.read_text(encoding="utf-8"))
+            self.assertEqual("child-one", saved["actor_profile_id"])
+            self.assertEqual("parent", saved["execution_profile_id"])
+            self.assertEqual("", saved["process_token"])
+
+    def test_child_end_echoes_requested_id_when_already_stopped(self):
+        requested = "55555555-5555-4555-8555-555555555555"
+
+        result = self.state.child_session_action({
+            "action": "end", "session_id": requested})
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual("already_stopped", result["reason"])
+        self.assertEqual(requested, result["session_id"])
+
+    def test_child_cutoff_captures_verified_process_then_graceful_and_scoped_force(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.state.profile_id = "parent"
+            self.state.child_session_path = Path(temporary) / "child-session.json"
+            probe, child = self._child_probe(self.state)
+            self.state.child_session_action(self._child_payload())
+            self.now += 5.1
+            self.state.current = {
+                "state": "running", "id": "steam:1",
+                "processId": child["process_id"], "processPath": child["process_path"],
+                "processStartedFiletime": child["process_started_filetime"],
+                "launchRequestedAt": self.now,
+            }
+            probe.scan_running_processes.return_value = ([child], "complete")
+            self.state.child_session["last_identity_probe_at"] = 0
+            self.state.enforce_child_session()
+            token = self.state.child_session["process_token"]
+            self.assertRegex(token, r"^[0-9a-f]{64}$")
+
+            self.state.graceful_close = mock.Mock(return_value=True)
+            self.now = self.now + 120.1
+
+            graceful = self.state.enforce_child_session()
+
+            self.assertEqual("graceful_close_requested", graceful["reason"])
+            self.state.graceful_close.assert_called_once_with(child["process_id"])
+            probe.force_terminate_verified_process.assert_not_called()
+            self.now += GameProviderBridge.CHILD_SESSION_GRACE_SECONDS + 0.1
+
+            forced = self.state.enforce_child_session()
+
+            self.assertTrue(forced["accepted"])
+            self.assertEqual("stopped", forced["state"])
+            probe.force_terminate_verified_process.assert_called_once()
+            self.assertEqual(token,
+                             probe.force_terminate_verified_process.call_args.args[0][
+                                 "process_token"])
+            self.assertEqual("idle", self.state.current["state"])
+            self.assertFalse(self.state.child_session_path.exists())
+
+    def test_stale_child_end_does_not_touch_new_session(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.state.profile_id = "parent"
+            self.state.child_session_path = Path(temporary) / "child-session.json"
+            self._child_probe(self.state)
+            first = self._child_payload(
+                session_id="11111111-1111-4111-8111-111111111111")
+            second = self._child_payload(
+                session_id="33333333-3333-4333-8333-333333333333",
+                client_uuid="44444444-4444-4444-8444-444444444444")
+            self.state.child_session_action(first)
+            with self.state.lock:
+                self.state._clear_child_session_locked("test_replace")
+            self.state.child_session_action(second)
+            self.state.graceful_close = mock.Mock(return_value=True)
+
+            result = self.state.child_session_action({
+                "action": "end", "session_id": first["session_id"]})
+
+            self.assertFalse(result["accepted"])
+            self.assertEqual("stale_session", result["reason"])
+            self.assertEqual(first["session_id"].lower(), result["session_id"])
+            self.assertEqual(second["session_id"].lower(),
+                             self.state.child_session["session_id"])
+            self.state.graceful_close.assert_not_called()
+
+    def test_child_timeout_after_parent_switch_clears_without_cutoff_effects(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.state.profile_id = "parent"
+            self.state.child_session_path = Path(temporary) / "child-session.json"
+            self._child_probe(self.state)
+            self.state.child_session_action(self._child_payload())
+            self.state.current = {"state": "running", "id": "steam:parent"}
+            self.now += 120.1
+            self.state.graceful_close = mock.Mock(return_value=True)
+            force = self.state.running_process_probe.force_terminate_verified_process
+
+            result = self.state.enforce_child_session()
+
+            self.assertTrue(result["accepted"])
+            self.assertEqual("stale", result["state"])
+            self.assertEqual("child_game_changed", result["reason"])
+            self.assertIsNone(self.state.child_session)
+            self.state.graceful_close.assert_not_called()
+            force.assert_not_called()
+
+    def test_child_restart_checks_persisted_identity_when_current_is_idle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            child_path = Path(temporary) / "child-session.json"
+            self.state.profile_id = "parent"
+            self.state.child_session_path = child_path
+            probe, child = self._child_probe(self.state)
+            self.state.child_session_action(self._child_payload())
+            self.now += 5.1
+            self.state.current = {
+                "state": "running", "id": "steam:1",
+                "processId": child["process_id"], "processPath": child["process_path"],
+                "processStartedFiletime": child["process_started_filetime"],
+                "launchRequestedAt": self.now,
+            }
+            probe.scan_running_processes.return_value = ([child], "complete")
+            self.state.child_session["last_identity_probe_at"] = 0
+            self.state.enforce_child_session()
+            self.now += 120.1
+
+            restored = BridgeState(
+                child_session_path=child_path,
+                game_operations=self.state.game_operations,
+                clock=lambda: self.now, profile_id="parent")
+            restored.library["steam:1"] = dict(self.state.library["steam:1"])
+            restored.running_process_probe = probe
+            restored.graceful_close = mock.Mock(return_value=True)
+
+            graceful = restored.enforce_child_session()
+
+            self.assertEqual("graceful_close_requested", graceful["reason"])
+            restored.graceful_close.assert_called_once_with(child["process_id"])
+            self.now += GameProviderBridge.CHILD_SESSION_GRACE_SECONDS + 0.1
+            forced = restored.enforce_child_session()
+
+            self.assertEqual("stopped", forced["state"])
+            probe.force_terminate_verified_process.assert_called_once()
+            self.assertIsNone(restored.child_session)
+            self.assertFalse(child_path.exists())
+
+    def test_child_bind_rejects_verified_process_when_current_is_idle(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.state.profile_id = "parent"
+            self.state.child_session_path = Path(temporary) / "child-session.json"
+            probe, child = self._child_probe(self.state)
+            probe.scan_running_processes.return_value = ([child], "complete")
+
+            result = self.state.child_session_action(self._child_payload())
+
+            self.assertFalse(result["accepted"])
+            self.assertEqual("game_already_in_use", result["reason"])
+            self.assertIsNone(self.state.child_session)
+            self.assertFalse(self.state.child_session_path.exists())
+
+    def test_child_pid_reuse_keeps_cleanup_required_without_process_effect(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            self.state.profile_id = "parent"
+            self.state.child_session_path = Path(temporary) / "child-session.json"
+            probe, child = self._child_probe(self.state)
+            self.state.child_session_action(self._child_payload())
+            self.now += 5.1
+            self.state.current = {
+                "state": "running", "id": "steam:1",
+                "processId": child["process_id"], "processPath": child["process_path"],
+                "processStartedFiletime": child["process_started_filetime"],
+                "launchRequestedAt": self.now,
+            }
+            probe.scan_running_processes.return_value = ([child], "complete")
+            self.state.child_session["last_identity_probe_at"] = 0
+            self.state.enforce_child_session()
+            probe.process_identity.side_effect = lambda pid, include_owner=False: (
+                {**child, "process_started_filetime": child["process_started_filetime"] + 1}
+                if pid == child["process_id"] else
+                {"process_id": os.getpid(), "process_path": r"C:\Bridge\bridge.exe",
+                 "process_started_filetime": 1, "user_sid": "own-sid", "session_id": 1})
+            self.state.graceful_close = mock.Mock(return_value=True)
+            self.now += 120.1
+
+            result = self.state.enforce_child_session()
+
+            self.assertFalse(result["accepted"])
+            self.assertTrue(result["cleanup_required"])
+            self.state.graceful_close.assert_not_called()
+            probe.force_terminate_verified_process.assert_not_called()
+            self.assertIsNotNone(self.state.child_session)
+
+    def test_child_restart_retains_deadline_and_stops_exact_process(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            child_path = root / "child-session.json"
+            trace_path = root / "active-game.json"
+            self.state.profile_id = "parent"
+            self.state.child_session_path = child_path
+            probe, child = self._child_probe(self.state)
+            self.state.child_session_action(self._child_payload())
+            self.now += 5.1
+            self.state.current = {
+                "state": "running", "id": "steam:1",
+                "processId": child["process_id"], "processPath": child["process_path"],
+                "processStartedFiletime": child["process_started_filetime"],
+                "launchRequestedAt": self.now,
+            }
+            probe.scan_running_processes.return_value = ([child], "complete")
+            self.state.child_session["last_identity_probe_at"] = 0
+            self.state.enforce_child_session()
+            trace = self._active_trace(
+                game_id="steam:1", provider="steam", provider_game_id="1",
+                process_id=child["process_id"], process_path=child["process_path"],
+                started=child["process_started_filetime"])
+            self._write_trace(trace_path, trace)
+            deadline = self.state.child_session["deadline_utc"]
+            self.now += 120.1
+
+            restored = BridgeState(
+                active_game_path=trace_path, child_session_path=child_path,
+                game_operations=self.state.game_operations,
+                clock=lambda: self.now, profile_id="parent")
+            restored.library["steam:1"] = dict(self.state.library["steam:1"])
+            restored.running_process_probe = probe
+            restored.graceful_close = mock.Mock(return_value=True)
+            identity = {key: child[key] for key in (
+                "process_id", "process_path", "process_started_filetime")}
+            restored.set_reconciliation_actions(
+                lambda _pid: identity, lambda _path: [identity])
+
+            self.assertEqual(deadline, restored.child_session["deadline_utc"])
+            result = restored.enforce_child_session()
+
+            self.assertEqual("graceful_close_requested", result["reason"])
+            self.now += GameProviderBridge.CHILD_SESSION_GRACE_SECONDS + 0.1
+            result = restored.enforce_child_session()
+            self.assertEqual("stopped", result["state"])
+            probe.force_terminate_verified_process.assert_called_once()
+            self.assertFalse(child_path.exists())
+            self.assertFalse(trace_path.exists())
+
 
 class ProviderDiagnosticsTest(unittest.TestCase):
     def test_publish_projection_preserves_domain_event_and_omits_traps(self):

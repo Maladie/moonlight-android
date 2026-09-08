@@ -2,7 +2,6 @@ package com.limelight.preferences;
 
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.content.DialogInterface;
 import android.os.Bundle;
 import android.os.Handler;
 import android.preference.CheckBoxPreference;
@@ -19,6 +18,9 @@ import android.widget.LinearLayout;
 
 import com.limelight.R;
 import com.limelight.utils.UiHelper;
+
+import java.util.ArrayList;
+import java.util.List;
 
 public class AppStreamSettings extends Activity {
     public static final String EXTRA_APP_KEY = "AppKey";
@@ -42,7 +44,7 @@ public class AppStreamSettings extends Activity {
 
         UiHelper.setLocale(this);
         setContentView(R.layout.activity_stream_settings);
-        setTitle("Settings - " + appName);
+        setTitle(getString(R.string.app_stream_settings_title, appName));
 
         getFragmentManager().beginTransaction().replace(
                 R.id.stream_settings, new AppSettingsFragment()
@@ -52,8 +54,45 @@ public class AppStreamSettings extends Activity {
     }
 
     public static class AppSettingsFragment extends PreferenceFragment {
+        private static final String CUSTOM_VALUE = "__custom__";
+
         private String currentResolution;
+        private String currentFps;
         private boolean isQuickLaunch;
+
+        private void setupStandardPreference(ListPreference pref, int entriesResourceId,
+                                             int valuesResourceId, String currentValue,
+                                             boolean fps) {
+            String[] standardEntries = getResources().getStringArray(entriesResourceId);
+            String[] standardValues = getResources().getStringArray(valuesResourceId);
+            List<CharSequence> entries = new ArrayList<>();
+            List<CharSequence> values = new ArrayList<>();
+
+            entries.add(getString(isQuickLaunch
+                    ? R.string.app_stream_use_app_value
+                    : R.string.app_stream_use_global_value));
+            values.add("");
+            for (int i = 0; i < standardEntries.length; i++) {
+                entries.add(standardEntries[i]);
+                values.add(standardValues[i]);
+            }
+
+            boolean standard = currentValue == null || currentValue.isEmpty();
+            for (String value : standardValues) {
+                standard |= value.equals(currentValue);
+            }
+            if (!standard) {
+                String displayValue = fps ? currentValue + " FPS" : currentValue;
+                entries.add(getString(R.string.app_stream_saved_custom_value, displayValue));
+                values.add(currentValue);
+            }
+
+            entries.add(getString(R.string.app_stream_custom_value));
+            values.add(CUSTOM_VALUE);
+            pref.setEntries(entries.toArray(new CharSequence[0]));
+            pref.setEntryValues(values.toArray(new CharSequence[0]));
+            pref.setValue(currentValue == null ? "" : currentValue);
+        }
 
         private void setupFramePacingPreference(ListPreference framePacingPref, String currentValue, boolean isQuickLaunch) {
             // Get original arrays from resources
@@ -65,7 +104,9 @@ public class AppStreamSettings extends Activity {
             String[] newValues = new String[originalValues.length + 1];
 
             // Use different label depending on whether this is a quick launch item or app
-            newEntries[0] = isQuickLaunch ? "[Use app default]" : "[Use global default]";
+            newEntries[0] = getString(isQuickLaunch
+                    ? R.string.app_stream_use_app_value
+                    : R.string.app_stream_use_global_value);
             newValues[0] = ""; // Empty string represents null/default
 
             // Copy original arrays starting from index 1
@@ -90,7 +131,9 @@ public class AppStreamSettings extends Activity {
             String[] newValues = new String[originalValues.length + 1];
 
             // Use different label depending on whether this is a quick launch item or app
-            newEntries[0] = isQuickLaunch ? "[Use app default]" : "[Use global default]";
+            newEntries[0] = getString(isQuickLaunch
+                    ? R.string.app_stream_use_app_value
+                    : R.string.app_stream_use_global_value);
             newValues[0] = ""; // Empty string represents null/default
 
             // Copy original arrays starting from index 1
@@ -107,18 +150,18 @@ public class AppStreamSettings extends Activity {
 
         private void showCustomResolutionDialog() {
             AlertDialog.Builder builder = new AlertDialog.Builder(getActivity());
-            builder.setTitle("Resolution");
+            builder.setTitle(R.string.app_stream_resolution_dialog_title);
             
             LinearLayout layout = new LinearLayout(getActivity());
             layout.setOrientation(LinearLayout.VERTICAL);
             layout.setPadding(50, 40, 50, 10);
             
             final EditText widthInput = new EditText(getActivity());
-            widthInput.setHint("Width (e.g. 1920)");
+            widthInput.setHint(R.string.app_stream_resolution_width_hint);
             widthInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
             
             final EditText heightInput = new EditText(getActivity());
-            heightInput.setHint("Height (e.g. 1080)");
+            heightInput.setHint(R.string.app_stream_resolution_height_hint);
             heightInput.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
             
             // Pre-populate with current resolution if it exists
@@ -134,37 +177,78 @@ public class AppStreamSettings extends Activity {
             layout.addView(heightInput);
             builder.setView(layout);
             
-            builder.setPositiveButton("OK", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
+            builder.setPositiveButton(android.R.string.ok, null);
+            builder.setNeutralButton(R.string.app_stream_clear_value, null);
+            builder.setNegativeButton(android.R.string.cancel, null);
+
+            AlertDialog dialog = builder.create();
+            dialog.setOnShowListener(ignored -> {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
                     String width = widthInput.getText().toString().trim();
                     String height = heightInput.getText().toString().trim();
-                    
-                    if (validateResolution(width, height)) {
-                        currentResolution = width + "x" + height;
-                        updatePreferenceSummaries();
-                        saveSettings();
+                    if (!validateResolution(width, height)) {
+                        heightInput.setError(getString(R.string.app_stream_invalid_resolution));
+                        return;
                     }
-                }
-            });
-            
-            builder.setNeutralButton("Clear", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    currentResolution = null;
+                    currentResolution = width + "x" + height;
+                    setupStandardPreference((ListPreference) findPreference("pref_app_resolution"),
+                            R.array.resolution_names, R.array.resolution_values,
+                            currentResolution, false);
                     updatePreferenceSummaries();
                     saveSettings();
-                }
+                    dialog.dismiss();
+                });
+                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+                    currentResolution = null;
+                    setupStandardPreference((ListPreference) findPreference("pref_app_resolution"),
+                            R.array.resolution_names, R.array.resolution_values, null, false);
+                    updatePreferenceSummaries();
+                    saveSettings();
+                    dialog.dismiss();
+                });
             });
-            
-            builder.setNegativeButton("Cancel", new DialogInterface.OnClickListener() {
-                @Override
-                public void onClick(DialogInterface dialog, int which) {
-                    // Do nothing on cancel
-                }
+            dialog.show();
+        }
+
+        private void showCustomFpsDialog() {
+            final EditText input = new EditText(getActivity());
+            input.setHint(R.string.app_stream_fps_hint);
+            input.setInputType(android.text.InputType.TYPE_CLASS_NUMBER);
+            if (currentFps != null) input.setText(currentFps);
+
+            AlertDialog dialog = new AlertDialog.Builder(getActivity())
+                    .setTitle(R.string.app_stream_fps_dialog_title)
+                    .setView(input)
+                    .setPositiveButton(android.R.string.ok, null)
+                    .setNeutralButton(R.string.app_stream_clear_value, null)
+                    .setNegativeButton(android.R.string.cancel, null)
+                    .create();
+            dialog.setOnShowListener(ignored -> {
+                dialog.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(view -> {
+                    String value = input.getText().toString().trim();
+                    try {
+                        if (Integer.parseInt(value) <= 0) throw new NumberFormatException();
+                    } catch (NumberFormatException e) {
+                        input.setError(getString(R.string.app_stream_invalid_fps));
+                        return;
+                    }
+                    currentFps = value;
+                    setupStandardPreference((ListPreference) findPreference("text_app_fps"),
+                            R.array.fps_names, R.array.fps_values, currentFps, true);
+                    updatePreferenceSummaries();
+                    saveSettings();
+                    dialog.dismiss();
+                });
+                dialog.getButton(AlertDialog.BUTTON_NEUTRAL).setOnClickListener(view -> {
+                    currentFps = null;
+                    setupStandardPreference((ListPreference) findPreference("text_app_fps"),
+                            R.array.fps_names, R.array.fps_values, null, true);
+                    updatePreferenceSummaries();
+                    saveSettings();
+                    dialog.dismiss();
+                });
             });
-            
-            builder.show();
+            dialog.show();
         }
         
         private boolean validateResolution(String width, String height) {
@@ -204,8 +288,8 @@ public class AppStreamSettings extends Activity {
                     || activity.appKey != null && activity.appKey.split(":").length == 3;
 
             CheckBoxPreference useGlobalPref = (CheckBoxPreference) findPreference("checkbox_use_global_settings");
-            Preference resolutionPref = findPreference("pref_app_resolution");
-            EditTextPreference fpsPref = (EditTextPreference) findPreference("text_app_fps");
+            ListPreference resolutionPref = (ListPreference) findPreference("pref_app_resolution");
+            ListPreference fpsPref = (ListPreference) findPreference("text_app_fps");
             EditTextPreference bitratePref = (EditTextPreference) findPreference("text_app_bitrate_kbps");
             EditTextPreference actualDisplayRefreshRatePref = (EditTextPreference) findPreference("text_app_actual_display_refresh_rate");
             ListPreference enableHdrPref = (ListPreference) findPreference("list_app_enable_hdr");
@@ -214,14 +298,18 @@ public class AppStreamSettings extends Activity {
 
             // Update checkbox label and summary based on whether this is a quick launch item
             if (isQuickLaunch) {
-                useGlobalPref.setTitle("Use App Settings");
-                useGlobalPref.setSummary("Do not use custom settings, instead use the app or global settings");
+                useGlobalPref.setTitle(R.string.app_stream_use_app_settings_title);
+                useGlobalPref.setSummary(R.string.app_stream_use_app_settings_summary);
             }
 
             // Initialize fields
             currentResolution = currentSettings.resolution;
+            currentFps = currentSettings.fps > 0 ? String.valueOf(currentSettings.fps) : null;
             useGlobalPref.setChecked(currentSettings.useGlobalSettings);
-            fpsPref.setText(currentSettings.fps > 0 ? String.valueOf(currentSettings.fps) : "");
+            setupStandardPreference(resolutionPref, R.array.resolution_names,
+                    R.array.resolution_values, currentResolution, false);
+            setupStandardPreference(fpsPref, R.array.fps_names, R.array.fps_values,
+                    currentFps, true);
             bitratePref.setText(currentSettings.bitrate > 0 ? String.valueOf(currentSettings.bitrate / 1000) : "");
             actualDisplayRefreshRatePref.setText(currentSettings.actualDisplayRefreshRate > 0 ? String.valueOf(currentSettings.actualDisplayRefreshRate) : "");
             setupFramePacingPreference(framePacingPref, currentSettings.framePacing, isQuickLaunch);
@@ -234,28 +322,39 @@ public class AppStreamSettings extends Activity {
             // Set the app-specific category title with the app name
             PreferenceCategory appCategory = (PreferenceCategory) findPreference("category_app_specific");
             if (appCategory != null) {
-                appCategory.setTitle(activity.appName + " Settings");
+                appCategory.setTitle(getString(
+                        R.string.app_stream_named_category_title, activity.appName));
             }
 
-            // Set up resolution preference click handler
-            resolutionPref.setOnPreferenceClickListener(new Preference.OnPreferenceClickListener() {
+            resolutionPref.setOnPreferenceChangeListener(new Preference.OnPreferenceChangeListener() {
                 @Override
-                public boolean onPreferenceClick(Preference preference) {
-                    showCustomResolutionDialog();
+                public boolean onPreferenceChange(Preference preference, Object newValue) {
+                    String value = String.valueOf(newValue);
+                    if (CUSTOM_VALUE.equals(value)) {
+                        showCustomResolutionDialog();
+                        return false;
+                    }
+                    currentResolution = value.isEmpty() ? null : value;
+                    new Handler().post(() -> {
+                        updatePreferenceSummaries();
+                        saveSettings();
+                    });
                     return true;
                 }
             });
-            
-            // Add listeners for FPS and Frame Pacing to update summaries
+
             fpsPref.setOnPreferenceChangeListener(new Preference.OnPreferenceChangeListener() {
                 @Override
                 public boolean onPreferenceChange(Preference preference, Object newValue) {
-                    new Handler().post(new Runnable() {
-                        @Override
-                        public void run() {
-                            updatePreferenceSummaries();
-                            saveSettings();
-                        }
+                    String value = String.valueOf(newValue);
+                    if (CUSTOM_VALUE.equals(value)) {
+                        showCustomFpsDialog();
+                        return false;
+                    }
+                    currentFps = value.isEmpty() ? null : value;
+                    new Handler().post(() -> {
+                        updatePreferenceSummaries();
+                        saveSettings();
                     });
                     return true;
                 }
@@ -359,28 +458,16 @@ public class AppStreamSettings extends Activity {
         }
         
         private void updatePreferenceSummaries() {
-            Preference resolutionPref = findPreference("pref_app_resolution");
-            EditTextPreference fpsPref = (EditTextPreference) findPreference("text_app_fps");
+            ListPreference resolutionPref = (ListPreference) findPreference("pref_app_resolution");
+            ListPreference fpsPref = (ListPreference) findPreference("text_app_fps");
             EditTextPreference bitratePref = (EditTextPreference) findPreference("text_app_bitrate_kbps");
             ListPreference framePacingPref = (ListPreference) findPreference("list_app_frame_pacing");
             EditTextPreference actualDisplayRefreshRatePref = (EditTextPreference) findPreference("text_app_actual_display_refresh_rate");
             ListPreference enableHdrPref = (ListPreference) findPreference("list_app_enable_hdr");
             ListPreference enablePerfOverlayPref = (ListPreference) findPreference("list_app_enable_perf_overlay");
 
-            // Set resolution summary
-            if (currentResolution != null && !currentResolution.isEmpty()) {
-                resolutionPref.setSummary(currentResolution);
-            } else {
-                resolutionPref.setSummary(android.text.Html.fromHtml("<i>Not set</i>"));
-            }
-
-            // Set FPS summary
-            String fps = fpsPref.getText();
-            if (fps != null && !fps.isEmpty() && !fps.equals("0")) {
-                fpsPref.setSummary(fps + " FPS");
-            } else {
-                fpsPref.setSummary(android.text.Html.fromHtml("<i>Not set</i>"));
-            }
+            resolutionPref.setSummary(resolutionPref.getEntry());
+            fpsPref.setSummary(fpsPref.getEntry());
 
             // Set bitrate summary
             String bitrateMbps = bitratePref.getText();
@@ -442,8 +529,6 @@ public class AppStreamSettings extends Activity {
             if (activity == null) return;
 
             CheckBoxPreference useGlobalPref = (CheckBoxPreference) findPreference("checkbox_use_global_settings");
-            Preference resolutionPref = findPreference("pref_app_resolution");
-            EditTextPreference fpsPref = (EditTextPreference) findPreference("text_app_fps");
             EditTextPreference bitratePref = (EditTextPreference) findPreference("text_app_bitrate_kbps");
             ListPreference framePacingPref = (ListPreference) findPreference("list_app_frame_pacing");
             EditTextPreference actualDisplayRefreshRatePref = (EditTextPreference) findPreference("text_app_actual_display_refresh_rate");
@@ -451,10 +536,9 @@ public class AppStreamSettings extends Activity {
             ListPreference enablePerfOverlayPref = (ListPreference) findPreference("list_app_enable_perf_overlay");
 
             int fps = 0;
-            String fpsText = fpsPref.getText();
-            if (fpsText != null && !fpsText.isEmpty()) {
+            if (currentFps != null && !currentFps.isEmpty()) {
                 try {
-                    fps = Integer.parseInt(fpsText);
+                    fps = Integer.parseInt(currentFps);
                 } catch (NumberFormatException ignored) {
                 }
             }

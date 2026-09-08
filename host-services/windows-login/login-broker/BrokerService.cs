@@ -1,13 +1,17 @@
 using System;
+using System.Diagnostics;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
 using Microsoft.Win32;
 using System.Runtime.InteropServices;
+using System.Reflection;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.ServiceProcess;
+using System.Text;
 using System.Threading;
+using System.Threading.Tasks;
 
 namespace MoonWaker.WindowsLogin
 {
@@ -205,7 +209,7 @@ namespace MoonWaker.WindowsLogin
                 new LsaSecretStore(), sessions,
                 new AttemptLedger(delegate { return DateTime.UtcNow; },
                     TimeSpan.FromMinutes(2), 128, delegate { attemptEvent.Set(); }),
-                ProviderReady);
+                ProviderReady, RunChildProfileApi);
             endpoints = new PipeEndpoint[] {
                 new PipeEndpoint(ManagementPipe, BrokerChannel.Management, core.HandleManagement),
                 new PipeEndpoint(GatewayPipe, BrokerChannel.Gateway, core.HandleGateway),
@@ -273,6 +277,56 @@ namespace MoonWaker.WindowsLogin
                 }
             }
             catch { return false; }
+        }
+
+        private static string RunChildProfileApi(string payload)
+        {
+            try
+            {
+                string brokerDirectory = Path.GetDirectoryName(
+                    Assembly.GetExecutingAssembly().Location);
+                string configurator = Path.GetFullPath(Path.Combine(
+                    brokerDirectory, "..", "..", "control",
+                    "MoonWakerHostConfigurator.exe"));
+                if (!File.Exists(configurator))
+                    return "{\"ok\":false,\"reason\":\"child_profile_writer_unavailable\"}";
+                ProcessStartInfo info = new ProcessStartInfo {
+                    FileName = configurator,
+                    Arguments = "--mode child-api",
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                    RedirectStandardInput = true,
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true
+                };
+                info.StandardOutputEncoding = new UTF8Encoding(false);
+                info.StandardErrorEncoding = new UTF8Encoding(false);
+                using (Process process = Process.Start(info))
+                {
+                    if (process == null)
+                        return "{\"ok\":false,\"reason\":\"child_profile_writer_unavailable\"}";
+                    byte[] input = new UTF8Encoding(false).GetBytes(payload ?? "");
+                    process.StandardInput.BaseStream.Write(input, 0, input.Length);
+                    process.StandardInput.BaseStream.Flush();
+                    process.StandardInput.Close();
+                    Task<string> output = process.StandardOutput.ReadToEndAsync();
+                    Task<string> error = process.StandardError.ReadToEndAsync();
+                    if (!process.WaitForExit(10000))
+                    {
+                        try { process.Kill(); } catch { }
+                        return "{\"ok\":false,\"reason\":\"child_profile_writer_timeout\"}";
+                    }
+                    process.WaitForExit();
+                    if (!Task.WaitAll(new Task[] { output, error }, 2000) ||
+                        process.ExitCode != 0 || String.IsNullOrWhiteSpace(output.Result))
+                        return "{\"ok\":false,\"reason\":\"child_profile_writer_failed\"}";
+                    return output.Result.Trim();
+                }
+            }
+            catch
+            {
+                return "{\"ok\":false,\"reason\":\"child_profile_writer_unavailable\"}";
+            }
         }
     }
 

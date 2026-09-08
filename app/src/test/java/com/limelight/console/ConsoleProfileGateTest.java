@@ -83,6 +83,53 @@ public class ConsoleProfileGateTest {
         assertEquals("basia", gate.profile.id);
     }
 
+    @Test public void childProfileIsNeverSelectedAutomatically() {
+        HostGatewayClient.IntegrationProfile child = new HostGatewayClient.IntegrationProfile(
+                "child-1", "Child", false, false, false, false, false, false, false,
+                true, false, "active", "unavailable", false, false, 0,
+                "child", "parent", "execution-child-1", "purple", true,
+                4L, 0L, 1_200L, 600L, "", "", "none");
+        HostGatewayStore.ProfileSelection selection = HostGatewayStore.projectProfiles(
+                Collections.singletonList(child), "", "");
+
+        HostGatewayStore.ProfileGate gate =
+                HostGatewayStore.resolveProfileGate(selection, "");
+
+        assertTrue(gate.showGate);
+        assertNull(gate.profile);
+    }
+
+    @Test public void childRemovalRefreshReturnsToExplicitGateWithoutAdultSelection()
+            throws Exception {
+        String source = new String(Files.readAllBytes(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java")),
+                StandardCharsets.UTF_8);
+        String save = between(source, "private void saveHostProfiles(",
+                "private void showPinEntry(");
+        String refresh = between(source, "private void refreshHostProfiles(",
+                "private void refreshVisibleHostProfiles(");
+
+        assertTrue(save.contains("before != null && before.isChild()"));
+        assertTrue(save.contains("after == null"));
+        assertTrue(refresh.contains("childWasInvalidated"));
+        assertTrue(refresh.contains("showProfileGate(current, true, false)"));
+        assertTrue(refresh.indexOf("showProfileGate(current, true, false)")
+                < refresh.indexOf("HostGatewayStore.ProfileSelection selection"));
+    }
+
+    @Test public void endingChildGameKeepsProfileAndLibrary() throws Exception {
+        String source = new String(Files.readAllBytes(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java")), StandardCharsets.UTF_8);
+        String consume = between(source, "private void consumeChildBindingState(",
+                "private void clearChildLibraryForPolicyChange(");
+        assertTrue(consume.contains("binding.sessionId.equals(state.sessionId)"));
+        assertTrue(consume.contains("childLaunchBindings.remove(binding.key(), binding)"));
+        assertFalse(consume.contains("showProfileGate("));
+        assertFalse(consume.contains("clearChildLibraryForPolicyChange("));
+        assertFalse(ConsoleActivity.childStateRemovesBinding(true, "ending", "ending"));
+        assertTrue(ConsoleActivity.childStateRemovesBinding(false, "stopped", ""));
+    }
+
     @Test public void hostActivationCannotLoadLibraryBeforeGateResolution() throws Exception {
         String source = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/limelight/console/ConsoleActivity.java")),
@@ -101,6 +148,19 @@ public class ConsoleProfileGateTest {
         assertFalse(activation.contains("selectHost("));
         assertTrue(libraryLoad.contains("profileGateHostUuid != null"));
         assertTrue(libraryRefresh.contains("profileGateHostUuid != null"));
+    }
+
+    @Test public void toolbarLeaveReturnsToProfileGateWhenMultipleProfilesExist()
+            throws Exception {
+        String source = new String(Files.readAllBytes(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java")),
+                StandardCharsets.UTF_8);
+        String leave = between(source, "private void leaveHost()",
+                "private ImageButton addQuickAction(");
+
+        assertTrue(leave.contains("profileSelection(host.uuid).showSelector"));
+        assertTrue(leave.contains("showProfileGate(host, true, false)"));
+        assertTrue(leave.contains("showHostSelection(selectedHostUuid)"));
     }
 
     @Test public void sameHostProfileChangeInvalidatesOldLibraryBeforeEntry() throws Exception {

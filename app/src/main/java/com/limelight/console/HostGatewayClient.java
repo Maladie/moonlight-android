@@ -19,6 +19,7 @@ final class HostGatewayClient {
     static final int DEFAULT_PORT = 8785;
     static final int REQUIRED_GAMEPLAY_PERMISSIONS = 0x07001F00;
     private static final int READ_TIMEOUT_MS = 5_000;
+    private static final int MANAGEMENT_TIMEOUT_MS = 15_000;
     private static final int NETWORK_PROBE_BYTES = 8 * 1024 * 1024;
     private static final long NETWORK_TARGET_NANOS = 8_000_000_000L;
     private final GatewayTransport transport = new GatewayTransport();
@@ -43,19 +44,41 @@ final class HostGatewayClient {
         final boolean discord;
         final boolean virtualHere;
         final boolean playnite;
+        final boolean childProfiles;
 
         Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere) {
-            this(vibepolloFix, discord, virtualHere, false);
+            this(vibepolloFix, discord, virtualHere, false, false);
         }
 
         Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere,
                      boolean playnite) {
+            this(vibepolloFix, discord, virtualHere, playnite, false);
+        }
+
+        Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere,
+                     boolean playnite, boolean childProfiles) {
             this.vibepolloFix = vibepolloFix;
             this.discord = discord;
             this.virtualHere = virtualHere;
             this.playnite = playnite;
+            this.childProfiles = childProfiles;
         }
     }
+
+    static final class VibepolloIdentityChallenge {
+        final String id;
+        final String challenge;
+        final int expiresInSeconds;
+
+        VibepolloIdentityChallenge(String id, String challenge, int expiresInSeconds) {
+            this.id = id;
+            this.challenge = challenge;
+            this.expiresInSeconds = Math.max(1, expiresInSeconds);
+        }
+    }
+
+    private static final String IDENTITY_CHALLENGE_PREFIX =
+            "moonwaker-vibepollo-identity-v1\n";
 
     static final class IntegrationProfile {
         final String id;
@@ -72,6 +95,22 @@ final class HostGatewayClient {
         final boolean playniteBridgeOnline;
         final boolean playniteConnectorConnected;
         final boolean virtualHereAvailable;
+        final boolean manageChildren;
+        final int ownChildrenCount;
+        /** Public profile metadata returned by the child-aware /profiles endpoint. */
+        final String kind;
+        final String parentProfileId;
+        final String executionProfileId;
+        final String avatarId;
+        final boolean enabled;
+        final long policyRevision;
+        final long usageRevision;
+        final long remainingDailySeconds;
+        final long playableNowSeconds;
+        final String nextAllowedAt;
+        final String windowEnd;
+        final String serverTime;
+        final String reason;
 
         IntegrationProfile(String id, String name, boolean discordBridgeOnline,
                            boolean discordRpcConnected, boolean discordAuthenticated,
@@ -112,7 +151,7 @@ final class HostGatewayClient {
             this(id, name, discordBridgeOnline, discordRpcConnected,
                     discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
                     playniteConnectorConnected, virtualHereAvailable, useProfile,
-                    remoteSignIn, sessionState, remoteSignInState, false);
+                    remoteSignIn, sessionState, remoteSignInState, false, false);
         }
 
         IntegrationProfile(String id, String name, boolean discordBridgeOnline,
@@ -122,6 +161,79 @@ final class HostGatewayClient {
                            boolean virtualHereAvailable, boolean useProfile,
                            boolean remoteSignIn, String sessionState,
                            String remoteSignInState, boolean pinRequired) {
+            this(id, name, discordBridgeOnline, discordRpcConnected,
+                    discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
+                    playniteConnectorConnected, virtualHereAvailable, useProfile,
+                    remoteSignIn, sessionState, remoteSignInState, pinRequired, false);
+        }
+
+        IntegrationProfile(String id, String name, boolean discordBridgeOnline,
+                           boolean discordRpcConnected, boolean discordAuthenticated,
+                           boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
+                           boolean playniteConnectorConnected,
+                           boolean virtualHereAvailable, boolean useProfile,
+                           boolean remoteSignIn, String sessionState,
+                           String remoteSignInState, boolean pinRequired,
+                           boolean manageChildren) {
+            this(id, name, discordBridgeOnline, discordRpcConnected,
+                    discordAuthenticated, vibepolloBridgeOnline, playniteBridgeOnline,
+                    playniteConnectorConnected, virtualHereAvailable, useProfile,
+                    remoteSignIn, sessionState, remoteSignInState, pinRequired,
+                    manageChildren, 0);
+        }
+
+        IntegrationProfile(String id, String name, boolean discordBridgeOnline,
+                           boolean discordRpcConnected, boolean discordAuthenticated,
+                           boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
+                           boolean playniteConnectorConnected,
+                           boolean virtualHereAvailable, boolean useProfile,
+                           boolean remoteSignIn, String sessionState,
+                           String remoteSignInState, boolean pinRequired,
+                           boolean manageChildren, int ownChildrenCount) {
+            this(id, name, discordBridgeOnline, discordRpcConnected, discordAuthenticated,
+                    vibepolloBridgeOnline, playniteBridgeOnline, playniteConnectorConnected,
+                    virtualHereAvailable, useProfile, remoteSignIn, sessionState,
+                    remoteSignInState, pinRequired, manageChildren, ownChildrenCount,
+                    "standard", "", id, "", true, 0L, 0L, 0L, 0L,
+                    "", "", "");
+        }
+
+        IntegrationProfile(String id, String name, boolean discordBridgeOnline,
+                           boolean discordRpcConnected, boolean discordAuthenticated,
+                           boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
+                           boolean playniteConnectorConnected,
+                           boolean virtualHereAvailable, boolean useProfile,
+                           boolean remoteSignIn, String sessionState,
+                           String remoteSignInState, boolean pinRequired,
+                           boolean manageChildren, int ownChildrenCount,
+                           String kind, String parentProfileId,
+                           String executionProfileId, String avatarId, boolean enabled,
+                           long policyRevision, long usageRevision,
+                           long remainingDailySeconds, long playableNowSeconds,
+                           String nextAllowedAt, String serverTime, String reason) {
+            this(id, name, discordBridgeOnline, discordRpcConnected, discordAuthenticated,
+                    vibepolloBridgeOnline, playniteBridgeOnline, playniteConnectorConnected,
+                    virtualHereAvailable, useProfile, remoteSignIn, sessionState,
+                    remoteSignInState, pinRequired, manageChildren, ownChildrenCount,
+                    kind, parentProfileId, executionProfileId, avatarId, enabled,
+                    policyRevision, usageRevision, remainingDailySeconds, playableNowSeconds,
+                    nextAllowedAt, serverTime, reason, "");
+        }
+
+        IntegrationProfile(String id, String name, boolean discordBridgeOnline,
+                           boolean discordRpcConnected, boolean discordAuthenticated,
+                           boolean vibepolloBridgeOnline, boolean playniteBridgeOnline,
+                           boolean playniteConnectorConnected,
+                           boolean virtualHereAvailable, boolean useProfile,
+                           boolean remoteSignIn, String sessionState,
+                           String remoteSignInState, boolean pinRequired,
+                           boolean manageChildren, int ownChildrenCount,
+                           String kind, String parentProfileId,
+                           String executionProfileId, String avatarId, boolean enabled,
+                           long policyRevision, long usageRevision,
+                           long remainingDailySeconds, long playableNowSeconds,
+                           String nextAllowedAt, String serverTime, String reason,
+                           String windowEnd) {
             this.id = id;
             this.name = name;
             this.useProfile = useProfile;
@@ -136,6 +248,27 @@ final class HostGatewayClient {
             this.playniteBridgeOnline = playniteBridgeOnline;
             this.playniteConnectorConnected = playniteConnectorConnected;
             this.virtualHereAvailable = virtualHereAvailable;
+            this.manageChildren = manageChildren;
+            this.ownChildrenCount = Math.max(0, ownChildrenCount);
+            this.kind = "child".equalsIgnoreCase(kind == null ? "" : kind.trim())
+                    ? "child" : "standard";
+            this.parentProfileId = parentProfileId == null ? "" : parentProfileId.trim();
+            String execution = executionProfileId == null ? "" : executionProfileId.trim();
+            this.executionProfileId = execution.isEmpty() ? this.id : execution;
+            this.avatarId = avatarId == null ? "" : avatarId.trim();
+            this.enabled = enabled;
+            this.policyRevision = Math.max(0L, policyRevision);
+            this.usageRevision = Math.max(0L, usageRevision);
+            this.remainingDailySeconds = Math.max(0L, remainingDailySeconds);
+            this.playableNowSeconds = Math.max(0L, playableNowSeconds);
+            this.nextAllowedAt = nextAllowedAt == null ? "" : nextAllowedAt.trim();
+            this.windowEnd = windowEnd == null ? "" : windowEnd.trim();
+            this.serverTime = serverTime == null ? "" : serverTime.trim();
+            this.reason = reason == null ? "" : reason.trim();
+        }
+
+        boolean isChild() {
+            return "child".equals(kind);
         }
     }
 
@@ -543,6 +676,101 @@ final class HostGatewayClient {
         }
     }
 
+    static final class ChildManagementAuthorization {
+        final String parentProfileId;
+        final String authorizationId;
+        final int expiresInSeconds;
+
+        ChildManagementAuthorization(String parentProfileId, String authorizationId,
+                                     int expiresInSeconds) {
+            this.parentProfileId = parentProfileId == null ? "" : parentProfileId;
+            this.authorizationId = authorizationId == null ? "" : authorizationId;
+            this.expiresInSeconds = Math.max(1, expiresInSeconds);
+        }
+    }
+
+    static final class ChildProfile {
+        final String id;
+        final String name;
+        final String avatarId;
+        final boolean enabled;
+        final String parentProfileId;
+        final int policyRevision;
+        final List<ConsoleChildProfileEditor.Day> weekdays;
+
+        ChildProfile(String id, String name, String avatarId, boolean enabled,
+                     String parentProfileId, int policyRevision,
+                     List<ConsoleChildProfileEditor.Day> weekdays) {
+            this.id = id == null ? "" : id;
+            this.name = name == null ? "" : name;
+            this.avatarId = avatarId == null ? "" : avatarId;
+            this.enabled = enabled;
+            this.parentProfileId = parentProfileId == null ? "" : parentProfileId;
+            this.policyRevision = policyRevision;
+            this.weekdays = Collections.unmodifiableList(new ArrayList<>(weekdays));
+        }
+    }
+
+    static final class ChildProfiles {
+        final String parentProfileId;
+        final int revision;
+        final List<ChildProfile> children;
+
+        ChildProfiles(String parentProfileId, int revision, List<ChildProfile> children) {
+            this.parentProfileId = parentProfileId == null ? "" : parentProfileId;
+            this.revision = revision;
+            this.children = Collections.unmodifiableList(new ArrayList<>(children));
+        }
+    }
+
+    static final class ChildShare {
+        final String id;
+        final String name;
+        final boolean granted;
+
+        ChildShare(String id, String name, boolean granted) {
+            this.id = id == null ? "" : id;
+            this.name = name == null ? "" : name;
+            this.granted = granted;
+        }
+    }
+
+    static final class ChildSharing {
+        final String parentProfileId;
+        final String gameKey;
+        final int revision;
+        final List<ChildShare> children;
+
+        ChildSharing(String parentProfileId, String gameKey, int revision,
+                     List<ChildShare> children) {
+            this.parentProfileId = parentProfileId == null ? "" : parentProfileId;
+            this.gameKey = gameKey == null ? "" : gameKey;
+            this.revision = revision;
+            this.children = Collections.unmodifiableList(new ArrayList<>(children));
+        }
+    }
+
+    static final class ChildMutationResult {
+        final String parentProfileId;
+        final String gameKey;
+        final int revision;
+        final ChildProfile child;
+        final List<String> selectedChildIds;
+        final boolean cleanupRequired;
+
+        ChildMutationResult(String parentProfileId, String gameKey, int revision,
+                            ChildProfile child, List<String> selectedChildIds,
+                            boolean cleanupRequired) {
+            this.parentProfileId = parentProfileId == null ? "" : parentProfileId;
+            this.gameKey = gameKey == null ? "" : gameKey;
+            this.revision = revision;
+            this.child = child;
+            this.selectedChildIds = Collections.unmodifiableList(
+                    new ArrayList<>(selectedChildIds));
+            this.cleanupRequired = cleanupRequired;
+        }
+    }
+
     static final class WindowsSession {
         final String state;
         final String reason;
@@ -852,6 +1080,58 @@ final class HostGatewayClient {
         return ticket;
     }
 
+    VibepolloIdentityChallenge requestVibepolloIdentityChallenge(
+            GatewayConnection connection) throws IOException {
+        JSONObject response = transport.postJson(connection,
+                "/api/v1/vibepollo/identity/challenge", new JSONObject(), READ_TIMEOUT_MS);
+        if (!response.optBoolean("ok", false)) {
+            throw new GatewayException(response.optString("error",
+                    "The existing Vibepollo pairing could not be verified."), 0);
+        }
+        String id = requireOpaqueId(response.optString("challenge_id", ""), "challenge_id");
+        String challenge = response.optString("challenge", "");
+        if (!isValidIdentityChallenge(challenge)) {
+            throw new GatewayException("Invalid identity challenge.", 0);
+        }
+        return new VibepolloIdentityChallenge(id, challenge,
+                response.optInt("expires_seconds", 60));
+    }
+
+    static boolean isValidIdentityChallenge(String challenge) {
+        return challenge != null && challenge.startsWith(IDENTITY_CHALLENGE_PREFIX)
+                && challenge.length() <= 512
+                && challenge.substring(IDENTITY_CHALLENGE_PREFIX.length())
+                .matches("[\\x20-\\x7e\\n]+");
+    }
+
+    void bindExistingVibepolloIdentity(GatewayConnection connection,
+                                       String challengeId, String certificateSha256,
+                                       String signature) throws IOException {
+        String id = requireOpaqueId(challengeId, "challenge_id");
+        String fingerprint = certificateSha256 == null ? ""
+                : certificateSha256.trim().toLowerCase(Locale.ROOT);
+        if (!fingerprint.matches("[0-9a-f]{64}")) {
+            throw new IllegalArgumentException("Invalid client certificate fingerprint");
+        }
+        if (signature == null || signature.trim().isEmpty()) {
+            throw new IllegalArgumentException("Missing identity signature");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("challenge_id", id);
+            body.put("certificate_sha256", fingerprint);
+            body.put("signature", signature.trim());
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = transport.postJson(connection,
+                "/api/v1/vibepollo/identity/bind", body, MANAGEMENT_TIMEOUT_MS);
+        if (!response.optBoolean("ok", false) || !response.optBoolean("bound", false)) {
+            throw new GatewayException(response.optString("error",
+                    "The existing Vibepollo pairing could not be bound."), 0);
+        }
+    }
+
     JSONObject pairVibepolloClient(GatewayConnection connection, String ticket,
                                    String pin, String name) throws IOException {
         if (ticket == null || ticket.trim().isEmpty()) {
@@ -874,7 +1154,7 @@ final class HostGatewayClient {
             throw new IOException(impossible);
         }
         JSONObject response = request(connection,
-                "/api/v1/vibepollo/pair", "POST", body, 16_000);
+                "/api/v1/vibepollo/pair", "POST", body, 55_000);
         if (!response.optBoolean("ok", false)) {
             throw new GatewayException(response.optString("error",
                     "The Moonlight client could not be paired."), 0);
@@ -885,11 +1165,16 @@ final class HostGatewayClient {
     Capabilities getCapabilities(GatewayConnection connection) throws IOException {
         JSONObject response = request(connection, "/api/v1/capabilities", "GET",
                 null, READ_TIMEOUT_MS);
+        return parseCapabilities(response);
+    }
+
+    static Capabilities parseCapabilities(JSONObject response) {
         JSONObject capabilities = response.optJSONObject("capabilities");
         return new Capabilities(available(capabilities, "vibepollo_fix"),
                 available(capabilities, "discord"),
                 available(capabilities, "virtualhere"),
-                available(capabilities, "playnite"));
+                available(capabilities, "playnite"),
+                available(capabilities, "child_profiles_v1"));
     }
 
     IntegrationProfiles getIntegrationProfiles(GatewayConnection connection) throws IOException {
@@ -913,6 +1198,356 @@ final class HostGatewayClient {
         if (!response.optBoolean("unlocked", false)) {
             throw new GatewayException("pin_verification_failed", 502);
         }
+    }
+
+    ChildManagementAuthorization authorizeChildManagement(
+            GatewayConnection connection, String parentProfileId, String pin) throws IOException {
+        String parent = requireProfileId(parentProfileId);
+        if (pin == null || !pin.matches("[0-9]{4}")) {
+            throw new IllegalArgumentException("PIN must contain four digits");
+        }
+        JSONObject body = new JSONObject();
+        try {
+            body.put("parent_profile_id", parent);
+            body.put("pin", pin);
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection, "/api/v1/profiles/children/authorize",
+                "POST", body, MANAGEMENT_TIMEOUT_MS);
+        requireChildOk(response, "Child profile management could not be authorized.");
+        requireResponseParent(response, parent);
+        String authorizationId = requireOpaqueId(response.optString("authorization_id", ""),
+                "authorization_id");
+        return new ChildManagementAuthorization(
+                response.optString("parent_profile_id", ""), authorizationId,
+                response.optInt("expires_in_seconds", 300));
+    }
+
+    ChildProfiles listChildProfiles(GatewayConnection connection, String parentProfileId,
+                                    String authorizationId) throws IOException {
+        String parent = requireProfileId(parentProfileId);
+        JSONObject response = request(connection, "/api/v1/profiles/children/list", "POST",
+                childManagementBody(parent, authorizationId), MANAGEMENT_TIMEOUT_MS);
+        requireChildOk(response, "Child profiles could not be loaded.");
+        requireResponseParent(response, parent);
+        JSONArray values = response.optJSONArray("children");
+        if (values == null) throw invalidChildResponse();
+        List<ChildProfile> children = new ArrayList<>();
+        if (values != null) {
+            for (int index = 0; index < values.length(); index++) {
+                JSONObject value = values.optJSONObject(index);
+                if (value == null) continue;
+                ChildProfile child = parseChildProfile(value, parent);
+                if (child == null || !parent.equals(child.parentProfileId)) {
+                    throw invalidChildResponse();
+                }
+                children.add(child);
+            }
+        }
+        return new ChildProfiles(response.optString("parent_profile_id", ""),
+                response.optInt("revision", 0), children);
+    }
+
+    ChildMutationResult createChildProfile(
+            GatewayConnection connection, String parentProfileId, String authorizationId,
+            String requestId, int expectedRevision,
+            ConsoleChildProfileEditor.Draft draft) throws IOException {
+        return mutateChildProfile(connection, "create", parentProfileId, authorizationId,
+                requestId, expectedRevision, "", draft);
+    }
+
+    ChildMutationResult updateChildProfile(
+            GatewayConnection connection, String parentProfileId, String authorizationId,
+            String childProfileId, String requestId, int expectedRevision,
+            ConsoleChildProfileEditor.Draft draft) throws IOException {
+        return mutateChildProfile(connection, "update", parentProfileId, authorizationId,
+                requestId, expectedRevision, childProfileId, draft);
+    }
+
+    ChildMutationResult deleteChildProfile(
+            GatewayConnection connection, String parentProfileId, String authorizationId,
+            String childProfileId, String requestId, int expectedRevision) throws IOException {
+        String child = requireOpaqueId(childProfileId, "child_profile_id");
+        JSONObject body = childManagementBody(parentProfileId, authorizationId);
+        try {
+            body.put("child_profile_id", child);
+            body.put("request_id", requireOpaqueId(requestId, "request_id"));
+            body.put("expected_revision", expectedRevision);
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection, "/api/v1/profiles/children/delete",
+                "POST", body, MANAGEMENT_TIMEOUT_MS);
+        requireChildOk(response, "Child profile could not be deleted.");
+        String parent = requireProfileId(parentProfileId);
+        requireResponseParent(response, parent);
+        JSONObject childValue = response.optJSONObject("child");
+        ChildProfile deletedProfile = childValue == null
+                ? null : parseChildProfile(childValue, "");
+        if (deletedProfile != null && !parent.equals(deletedProfile.parentProfileId)) {
+            throw invalidChildResponse();
+        }
+        return new ChildMutationResult(
+                response.optString("parent_profile_id", ""),
+                response.optString("game_key", ""), response.optInt("revision", 0),
+                deletedProfile,
+                parseStringArray(response.optJSONArray("selected_child_ids")),
+                response.optBoolean("cleanup_required", false));
+    }
+
+    ChildSharing getChildSharing(GatewayConnection connection, String parentProfileId,
+                                 String authorizationId, String gameId) throws IOException {
+        JSONObject body = childManagementBody(parentProfileId, authorizationId);
+        try {
+            body.put("game_id", requestGameId(requireGameId(gameId)));
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection, "/api/v1/profiles/children/sharing/get",
+                "POST", body, MANAGEMENT_TIMEOUT_MS);
+        requireChildOk(response, "Game sharing could not be loaded.");
+        String parent = requireProfileId(parentProfileId);
+        requireResponseParent(response, parent);
+        JSONArray values = response.optJSONArray("children");
+        if (values == null) throw invalidChildResponse();
+        List<ChildShare> children = new ArrayList<>();
+        if (values != null) {
+            for (int index = 0; index < values.length(); index++) {
+                JSONObject value = values.optJSONObject(index);
+                if (value == null) continue;
+                String id = value.optString("id", "").trim();
+                if (id.isEmpty()) continue;
+                children.add(new ChildShare(id, value.optString("name", "").trim(),
+                        value.optBoolean("granted", false)));
+            }
+        }
+        return new ChildSharing(response.optString("parent_profile_id", ""),
+                response.optString("game_key", ""),
+                response.optInt("revision", 0), children);
+    }
+
+    ChildMutationResult setChildSharing(
+            GatewayConnection connection, String parentProfileId, String authorizationId,
+            String gameId, List<String> selectedChildIds, int expectedRevision,
+            String requestId) throws IOException {
+        JSONObject body = childSharingRequestBody(parentProfileId, authorizationId, gameId,
+                selectedChildIds, expectedRevision, requestId);
+        List<String> unique = parseStringArray(body.optJSONArray("selected_child_ids"));
+        JSONObject response = request(connection, "/api/v1/profiles/children/sharing/set",
+                "POST", body, MANAGEMENT_TIMEOUT_MS);
+        requireChildOk(response, "Game sharing could not be updated.");
+        String parent = requireProfileId(parentProfileId);
+        requireResponseParent(response, parent);
+        JSONArray echoedValues = response.optJSONArray("selected_child_ids");
+        if (echoedValues == null) throw invalidChildResponse();
+        List<String> echoed = parseStringArray(echoedValues);
+        if (!sameIds(unique, echoed)) throw invalidChildResponse();
+        return new ChildMutationResult(
+                response.optString("parent_profile_id", ""),
+                response.optString("game_key", ""), response.optInt("revision", 0), null,
+                echoed,
+                response.optBoolean("cleanup_required", false));
+    }
+
+    private ChildMutationResult mutateChildProfile(
+            GatewayConnection connection, String operation, String parentProfileId,
+            String authorizationId, String requestId, int expectedRevision,
+            String childProfileId, ConsoleChildProfileEditor.Draft draft) throws IOException {
+        if (!"create".equals(operation) && !"update".equals(operation)) {
+            throw new IllegalArgumentException("Unknown child profile operation");
+        }
+        JSONObject body = childManagementBody(parentProfileId, authorizationId);
+        try {
+            body.put("request_id", requireOpaqueId(requestId, "request_id"));
+            body.put("expected_revision", expectedRevision);
+            if ("update".equals(operation)) {
+                body.put("child_profile_id", requireOpaqueId(childProfileId,
+                        "child_profile_id"));
+            } else if (draft != null) {
+                body.put("grant_current_device", draft.grantCurrentDevice);
+            }
+            body.put("draft", childDraftBody(draft));
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection, "/api/v1/profiles/children/" + operation,
+                "POST", body, MANAGEMENT_TIMEOUT_MS);
+        requireChildOk(response, "Child profile could not be saved.");
+        JSONObject childValue = response.optJSONObject("child");
+        ChildProfile child = childValue == null ? null : parseChildProfile(childValue, "");
+        String parent = requireProfileId(parentProfileId);
+        requireResponseParent(response, parent);
+        if (child == null || !parent.equals(child.parentProfileId)) {
+            throw invalidChildResponse();
+        }
+        return new ChildMutationResult(
+                response.optString("parent_profile_id", ""),
+                response.optString("game_key", ""), response.optInt("revision", 0),
+                child,
+                parseStringArray(response.optJSONArray("selected_child_ids")),
+                response.optBoolean("cleanup_required", false));
+    }
+
+    private static JSONObject childManagementBody(String parentProfileId,
+                                                  String authorizationId) {
+        String parent = requireProfileId(parentProfileId);
+        String authorization = requireOpaqueId(authorizationId, "authorization_id");
+        JSONObject body = new JSONObject();
+        try {
+            body.put("parent_profile_id", parent);
+            body.put("authorization_id", authorization);
+        } catch (JSONException impossible) {
+            throw new IllegalStateException(impossible);
+        }
+        return body;
+    }
+
+    static JSONObject childSharingRequestBody(String parentProfileId, String authorizationId,
+                                              String gameId, List<String> selectedChildIds,
+                                              int expectedRevision, String requestId)
+            throws IOException {
+        JSONObject body = childManagementBody(parentProfileId, authorizationId);
+        JSONArray selected = new JSONArray();
+        if (selectedChildIds != null) {
+            for (String value : selectedChildIds) {
+                String id = requireOpaqueId(value, "child_profile_id");
+                boolean present = false;
+                for (int index = 0; index < selected.length(); index++) {
+                    if (id.equals(selected.optString(index, ""))) {
+                        present = true;
+                        break;
+                    }
+                }
+                if (!present) selected.put(id);
+            }
+        }
+        try {
+            body.put("game_id", requestGameId(requireGameId(gameId)));
+            body.put("selected_child_ids", selected);
+            body.put("expected_revision", expectedRevision);
+            body.put("request_id", requireOpaqueId(requestId, "request_id"));
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        return body;
+    }
+
+    static JSONObject childDraftBody(ConsoleChildProfileEditor.Draft draft)
+            throws JSONException {
+        if (draft == null) throw new IllegalArgumentException("Missing child profile draft");
+        if (draft.weekdays == null || draft.weekdays.size() != 7) {
+            throw new IllegalArgumentException("Child profile draft must contain seven days");
+        }
+        String name = draft.name == null ? "" : draft.name.trim();
+        if (name.isEmpty() || name.length() > 80 || hasControlCharacters(name)) {
+            throw new IllegalArgumentException("Invalid child profile name");
+        }
+        String avatar = draft.avatar == null ? "" : draft.avatar.trim();
+        if (avatar.length() > 128 || hasControlCharacters(avatar)) {
+            throw new IllegalArgumentException("Invalid child profile avatar");
+        }
+        JSONObject weekdays = new JSONObject();
+        String[] names = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"};
+        for (int index = 0; index < names.length; index++) {
+            ConsoleChildProfileEditor.Day day = draft.weekdays.get(index);
+            if (day == null || day.startMinute < 0 || day.startMinute > 1440
+                    || day.endMinute < 0 || day.endMinute > 1440
+                    || day.dailyLimitSeconds < 0 || day.dailyLimitSeconds > 86_400
+                    || day.enabled && day.startMinute >= day.endMinute) {
+                throw new IllegalArgumentException("Invalid child profile schedule");
+            }
+            weekdays.put(names[index], new JSONObject()
+                    .put("enabled", day.enabled)
+                    .put("start_minute", day.startMinute)
+                    .put("end_minute", day.endMinute)
+                    .put("daily_limit_seconds", day.dailyLimitSeconds));
+        }
+        return new JSONObject()
+                .put("name", name)
+                .put("avatar_id", avatar)
+                .put("enabled", draft.enabled)
+                .put("schedule", new JSONObject().put("weekdays", weekdays));
+    }
+
+    private static ChildProfile parseChildProfile(JSONObject value, String fallbackParent) {
+        String id = value.optString("id", "").trim();
+        if (id.isEmpty()) return null;
+        JSONObject schedule = value.optJSONObject("schedule");
+        JSONObject weekdays = schedule == null ? null : schedule.optJSONObject("weekdays");
+        String[] names = {"mon", "tue", "wed", "thu", "fri", "sat", "sun"};
+        List<ConsoleChildProfileEditor.Day> days = new ArrayList<>(7);
+        for (String name : names) {
+            JSONObject day = weekdays == null ? null : weekdays.optJSONObject(name);
+            days.add(new ConsoleChildProfileEditor.Day(
+                    day != null && day.optBoolean("enabled", false),
+                    day == null ? 0 : day.optInt("start_minute", 0),
+                    day == null ? 1440 : day.optInt("end_minute", 1440),
+                    day == null ? 0 : day.optInt("daily_limit_seconds", 0)));
+        }
+        return new ChildProfile(id, value.optString("name", "").trim(),
+                value.optString("avatar_id", ""), value.optBoolean("enabled", false),
+                value.optString("parent_profile_id", fallbackParent),
+                value.optInt("policy_revision", 0), days);
+    }
+
+    private static List<String> parseStringArray(JSONArray values) {
+        List<String> result = new ArrayList<>();
+        if (values == null) return result;
+        for (int index = 0; index < values.length(); index++) {
+            String value = values.optString(index, "").trim();
+            if (!value.isEmpty() && !result.contains(value)) result.add(value);
+        }
+        return result;
+    }
+
+    private static void requireChildOk(JSONObject response, String fallback) throws IOException {
+        if (response == null || !response.optBoolean("ok", false)) {
+            String reason = response == null ? "" : response.optString("error", "");
+            throw new GatewayException(reason.isEmpty() ? fallback : reason, 0);
+        }
+    }
+
+    private static void requireResponseParent(JSONObject response, String expected)
+            throws IOException {
+        if (response == null || !expected.equals(response.optString("parent_profile_id", ""))) {
+            throw invalidChildResponse();
+        }
+    }
+
+    private static boolean sameIds(List<String> expected, List<String> actual) {
+        return expected.size() == actual.size() && expected.containsAll(actual)
+                && actual.containsAll(expected);
+    }
+
+    private static GatewayException invalidChildResponse() {
+        return new GatewayException("invalid_response", 0);
+    }
+
+    private static String requireProfileId(String value) {
+        String normalized = value == null ? "" : value.trim();
+        if (!normalized.matches("[A-Za-z0-9._-]{1,64}")) {
+            throw new IllegalArgumentException("Invalid parent profile ID");
+        }
+        return normalized;
+    }
+
+    private static String requireOpaqueId(String value, String field) {
+        String normalized = value == null ? "" : value.trim();
+        if (!normalized.matches("[A-Za-z0-9][A-Za-z0-9._:-]{0,255}")) {
+            throw new IllegalArgumentException("Invalid " + field);
+        }
+        return normalized;
+    }
+
+    private static String requireGameId(String value) {
+        String normalized = value == null ? "" : value.trim();
+        if (!isPlayniteId(normalized)) throw new IllegalArgumentException("Invalid game record ID");
+        return normalized;
+    }
+
+    private static boolean hasControlCharacters(String value) {
+        return value.matches(".*[\\x00-\\x1f\\x7f].*");
     }
 
     WindowsSession ensureWindowsSession(GatewayConnection connection, String requestId)
@@ -1060,10 +1695,14 @@ final class HostGatewayClient {
                 if (value == null) continue;
                 String id = value.optString("id", "").trim();
                 if (!id.matches("[A-Za-z0-9._-]{1,64}")) continue;
-                String name = value.optString("name", id).trim();
+                String kind = value.optString("kind", "standard").trim();
+                boolean child = "child".equalsIgnoreCase(kind);
+                String name = value.optString("name", "").trim();
+                // A malformed child row must never make its opaque ID user-visible.
+                if (name.isEmpty() && !child) name = id;
                 JSONObject permissions = value.optJSONObject("permissions");
                 profiles.add(new IntegrationProfile(
-                        id, name.isEmpty() ? id : name,
+                        id, name,
                         value.optBoolean("discord_bridge_online", false),
                         value.optBoolean("discord_rpc_connected", false),
                         value.optBoolean("discord_authenticated", false),
@@ -1077,7 +1716,23 @@ final class HostGatewayClient {
                                 "remote_sign_in", false),
                         value.optString("session_state", "unknown"),
                         value.optString("remote_sign_in_state", "unavailable"),
-                        value.optBoolean("pin_required", false)));
+                        value.optBoolean("pin_required", false),
+                        permissions != null && permissions.optBoolean(
+                                "manage_children", false),
+                        value.optInt("own_children_count", 0),
+                        kind,
+                        value.optString("parent_profile_id", ""),
+                        value.optString("execution_profile_id", id),
+                        value.optString("avatar_id", ""),
+                        value.optBoolean("enabled", true),
+                        value.optLong("policy_revision", 0L),
+                        value.optLong("usage_revision", 0L),
+                        value.optLong("remaining_daily_seconds", 0L),
+                        value.optLong("playable_now_seconds", 0L),
+                        value.optString("next_allowed_at", ""),
+                        value.optString("server_time", ""),
+                        value.optString("reason", ""),
+                        value.optString("window_end", "")));
             }
         }
         return new IntegrationProfiles(profiles,

@@ -329,7 +329,7 @@ final class SessionOrchestrator implements AutoCloseable {
             }
         }
 
-        boolean matches = intent.matches(snapshot);
+        boolean matches = intent.matches(snapshot) && !effects.canAttemptRetainedSwitch(intent);
         if (snapshot.state == SessionSnapshot.State.ACTIVE && matches) {
             if (snapshot.retainedTransport) {
                 returnToRetained(request, intent);
@@ -354,7 +354,7 @@ final class SessionOrchestrator implements AutoCloseable {
             connect(request, intent, opaqueReady, preparedTarget, snapshot, pass);
             return;
         }
-        if (snapshot.state == SessionSnapshot.State.NONE) {
+        if (snapshot.state == SessionSnapshot.State.NONE && !effects.canAttemptRetainedSwitch(intent)) {
             if (!opaqueReady) {
                 awaitOpaque(request, intent, freshType(intent), replacementAuthorized,
                         reuseOnly, preparedTarget, pass);
@@ -462,7 +462,8 @@ final class SessionOrchestrator implements AutoCloseable {
                                        int pass) {
         SessionSnapshot beforeClose = effects.resolve(intent.profileKey);
         if (!current(request)) return;
-        if (beforeClose.state == SessionSnapshot.State.NONE || intent.matches(beforeClose)) {
+        if ((beforeClose.state == SessionSnapshot.State.NONE || intent.matches(beforeClose))
+                && !effects.canAttemptRetainedSwitch(intent)) {
             evaluate(request, intent, replacementAuthorized, reuseOnly,
                     true, preparedTarget, pass + 1);
             return;

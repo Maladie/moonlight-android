@@ -136,7 +136,8 @@ final class ConsoleProfileGateView extends FrameLayout {
                 if (profile == null) continue;
                 String profileId = safeId(profile.id);
                 LinearLayout tile = profileTile(profile,
-                        profileId.equals(safeId(automaticProfileId)), scroll, listener);
+                        profileId.equals(safeId(automaticProfileId)), scroll, listener,
+                        profiles);
                 LinearLayout.LayoutParams tileParams = new LinearLayout.LayoutParams(
                         dp(176), dp(204));
                 tileParams.leftMargin = dp(8);
@@ -183,7 +184,8 @@ final class ConsoleProfileGateView extends FrameLayout {
 
     private LinearLayout profileTile(HostGatewayClient.IntegrationProfile profile,
                                      boolean automatic, HorizontalScrollView scroll,
-                                     Listener listener) {
+                                     Listener listener,
+                                     List<HostGatewayClient.IntegrationProfile> profiles) {
         String profileId = safeId(profile.id);
         String name = safeName(profile.name);
         LinearLayout tile = new LinearLayout(getContext());
@@ -202,6 +204,11 @@ final class ConsoleProfileGateView extends FrameLayout {
         FrameLayout avatar = new FrameLayout(getContext());
         ImageView artwork = new ImageView(getContext());
         artwork.setImageDrawable(new ConsoleActivity.HostAvatarDrawable(profileId));
+        if (profile.isChild() && ConsoleChildProfileEditor.isKnownAvatar(profile.avatarId)
+                && !"default".equals(profile.avatarId)) {
+            artwork.setColorFilter(ConsoleChildProfileEditor.avatarColor(profile.avatarId),
+                    android.graphics.PorterDuff.Mode.SRC_ATOP);
+        }
         artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
         artwork.setAlpha(.92f);
         avatar.addView(artwork, new FrameLayout.LayoutParams(
@@ -226,6 +233,20 @@ final class ConsoleProfileGateView extends FrameLayout {
         LinearLayout badges = new LinearLayout(getContext());
         badges.setOrientation(LinearLayout.VERTICAL);
         badges.setGravity(Gravity.CENTER_HORIZONTAL);
+        if (profile.isChild()) {
+            String parentName = parentName(profile, profiles);
+            addBadge(badges, parentName.isEmpty()
+                            ? getContext().getString(R.string.console_profile_gate_child)
+                            : getContext().getString(
+                            R.string.console_profile_gate_child_of, parentName),
+                    0xFFB9A5FF, 0x403E2D6C);
+            if (profile.remainingDailySeconds > 0L) {
+                addBadge(badges, getContext().getString(
+                                R.string.console_profile_gate_remaining,
+                                remainingMinutes(profile.remainingDailySeconds)),
+                        0xFF73D7FF, 0x40305F76);
+            }
+        }
         if ("active".equals(profile.sessionState)) {
             addBadge(badges, getContext().getString(R.string.console_profile_gate_active),
                     0xFF69F0AE, 0x40206C49);
@@ -241,7 +262,7 @@ final class ConsoleProfileGateView extends FrameLayout {
         tile.addView(badges, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(46)));
 
-        String status = profileStatus(profile, automatic);
+        String status = profileStatus(profile, automatic, profiles);
         tile.setContentDescription(getContext().getString(
                 R.string.console_profile_gate_tile_description, name, status));
         styleTile(tile, false);
@@ -259,7 +280,9 @@ final class ConsoleProfileGateView extends FrameLayout {
                     && (keyCode == KeyEvent.KEYCODE_MENU
                     || keyCode == KeyEvent.KEYCODE_BUTTON_START)) {
                 // Consume Options on protected profiles so no lower layer can act on it.
-                if (!profile.pinRequired) listener.onAutomaticProfileToggled(profileId);
+                if (!profile.pinRequired && !profile.isChild()) {
+                    listener.onAutomaticProfileToggled(profileId);
+                }
                 return true;
             }
             return false;
@@ -358,7 +381,8 @@ final class ConsoleProfileGateView extends FrameLayout {
                         ? ControllerGlyphs.text(playStationButtons, ControllerGlyphs.Button.CANCEL)
                         : "↩",
                 getContext().getString(R.string.console_profile_gate_back), controllerPresent);
-        if (focusedProfile != null && !focusedProfile.pinRequired) {
+        if (focusedProfile != null && !focusedProfile.pinRequired
+                && !focusedProfile.isChild()) {
             addLegendItem(controllerPresent
                             ? ControllerGlyphs.text(playStationButtons, ControllerGlyphs.Button.MENU)
                             : "≡",
@@ -397,8 +421,18 @@ final class ConsoleProfileGateView extends FrameLayout {
     }
 
     private String profileStatus(HostGatewayClient.IntegrationProfile profile,
-                                 boolean automatic) {
+                                 boolean automatic,
+                                 List<HostGatewayClient.IntegrationProfile> profiles) {
         StringBuilder status = new StringBuilder();
+        if (profile.isChild()) {
+            String parentName = parentName(profile, profiles);
+            appendStatus(status, parentName.isEmpty()
+                    ? getContext().getString(R.string.console_profile_gate_child)
+                    : getContext().getString(R.string.console_profile_gate_child_of, parentName));
+            if (profile.remainingDailySeconds > 0L) appendStatus(status,
+                    getContext().getString(R.string.console_profile_gate_remaining,
+                            remainingMinutes(profile.remainingDailySeconds)));
+        }
         if ("active".equals(profile.sessionState)) {
             status.append(getContext().getString(R.string.console_profile_gate_active));
         }
@@ -412,6 +446,23 @@ final class ConsoleProfileGateView extends FrameLayout {
     private void appendStatus(StringBuilder status, String value) {
         if (status.length() > 0) status.append(" · ");
         status.append(value);
+    }
+
+    private String parentName(HostGatewayClient.IntegrationProfile profile,
+                              List<HostGatewayClient.IntegrationProfile> profiles) {
+        if (profile == null || profile.parentProfileId == null
+                || profile.parentProfileId.isEmpty() || profiles == null) return "";
+        for (HostGatewayClient.IntegrationProfile candidate : profiles) {
+            if (candidate != null && profile.parentProfileId.equals(candidate.id)) {
+                String value = candidate.name == null ? "" : candidate.name.trim();
+                return value.isEmpty() ? "" : value;
+            }
+        }
+        return "";
+    }
+
+    private int remainingMinutes(long seconds) {
+        return (int) Math.max(1L, (seconds + 59L) / 60L);
     }
 
     private TextView label(String text, float size, int color, boolean bold) {

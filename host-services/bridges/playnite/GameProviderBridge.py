@@ -42,6 +42,9 @@ PLAYNITE_ID_PATTERN = re.compile(
 GAME_ID_PATTERN = re.compile(
     r"^(?:[a-z][a-z0-9_-]{1,31}:[A-Za-z0-9._-]{1,128}|[0-9A-Fa-f]{8}-"
     r"[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})$")
+PROFILE_ID_PATTERN = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+PROCESS_TOKEN_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+VIBEPOOLLO_ID_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 REQUEST_ID_PATTERN = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$")
 DIAGNOSTIC_TOKEN_PATTERN = re.compile(r"^[A-Za-z0-9._:$-]{1,256}$")
 DIAGNOSTIC_ROUTE_PATTERN = re.compile(r"^/[A-Za-z0-9._:{}/-]{0,255}$")
@@ -55,6 +58,9 @@ DIAGNOSTIC_FIELDS = {"method", "route", "request_id", "profile_id", "status",
 MAX_BODY_BYTES = 16 * 1024
 MAX_ARTWORK_BYTES = 8 * 1024 * 1024
 MAX_ACTIVE_GAME_TRACE_BYTES = 16 * 1024
+MAX_CHILD_SESSION_BYTES = 16 * 1024
+CHILD_SESSION_MAX_LEASE_SECONDS = 120.0
+CHILD_SESSION_GRACE_SECONDS = 10.0
 REQUIRED_STABLE_SAMPLES = 3
 REQUIRED_GAME_STABLE_SAMPLES = 4
 REQUIRED_LAUNCHER_STABLE_SAMPLES = 4
@@ -79,6 +85,10 @@ INSTALLER_EXCLUDED_IMAGES = PLAYNITE_UI_IMAGES | {
     "explorer.exe", "searchhost.exe", "searchapp.exe", "shellexperiencehost.exe",
     "startmenuexperiencehost.exe", "textinputhost.exe", "lockapp.exe",
 }
+
+
+class StaleCatalogRevision(ValueError):
+    """The caller used a catalog snapshot that is no longer current."""
 
 
 def diagnostic_route(target: str) -> str:
@@ -1533,6 +1543,7 @@ class BridgeState:
                  version_path: Path | None = None,
                  operations_path: Path | None = None,
                  active_game_path: Path | None = None,
+                 child_session_path: Path | None = None,
                  game_operations: GameOperationsService | None = None,
                  clock: Callable[[], float] | None = None,
                  operation_audit: Callable[[str, dict[str, Any]], None] | None = None,
@@ -1566,6 +1577,10 @@ class BridgeState:
         self.plugins: list[dict[str, Any]] = []
         self.current: dict[str, Any] = {"state": "idle"}
         self.active_game_path = active_game_path
+        self.child_session_path = child_session_path or (
+            active_game_path.with_name("child-session.json")
+            if active_game_path is not None else None)
+        self.child_session: dict[str, Any] | None = None
         self._active_game_trace: dict[str, Any] | None = None
         self._process_identity_action: Callable[[int], dict[str, Any] | None] | None = None
         self._process_identities_action: Callable[
@@ -1682,6 +1697,7 @@ class BridgeState:
         self.started_at = int(time.time())
         self.version_info = self._load_version_info(version_path)
         self._load_library_cache()
+        self._load_child_session()
         self._load_active_game_trace()
 
     @staticmethod
@@ -1831,6 +1847,156 @@ class BridgeState:
                 "error": type(error).__name__,
             }, separators=(",", ":")), flush=True)
 
+    def _remove_child_session(self) -> None:
+        if self.child_session_path is None:
+            return
+        try:
+            self.child_session_path.unlink(missing_ok=True)
+            self.child_session_path.with_name(
+                self.child_session_path.name + ".tmp").unlink(missing_ok=True)
+        except OSError as error:
+            print(json.dumps({
+                "event": "child_session_warning",
+                "operation": "remove",
+                "error": type(error).__name__,
+            }, separators=(",", ":")), flush=True)
+
+    @staticmethod
+    def _child_uuid(value: Any, field: str) -> str:
+        result = str(value or "").strip().lower()
+        if not PLAYNITE_ID_PATTERN.fullmatch(result):
+            raise ValueError(f"Invalid child session {field}.")
+        return result
+
+    @staticmethod
+    def _child_client_id(value: Any) -> str:
+        result = str(value or "").strip()
+        if not VIBEPOOLLO_ID_PATTERN.fullmatch(result):
+            raise ValueError("Invalid child session Vibepollo client UUID.")
+        return result
+
+    def _child_deadline(self, value: Any, allow_expired: bool = False) \
+            -> tuple[str, float]:
+        text = str(value or "").strip()
+        if not text:
+            raise ValueError("Child session deadline is required.")
+        try:
+            parsed = datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except (TypeError, ValueError) as error:
+            raise ValueError("Invalid child session deadline.") from error
+        if parsed.tzinfo is None:
+            raise ValueError("Child session deadline must include a timezone.")
+        epoch = parsed.astimezone(timezone.utc).timestamp()
+        now = self.clock()
+        if not math.isfinite(epoch):
+            raise ValueError("Invalid child session deadline.")
+        if epoch > now + CHILD_SESSION_MAX_LEASE_SECONDS + 1.0:
+            raise ValueError("Child session lease is too long.")
+        if not allow_expired and epoch <= now:
+            raise ValueError("Child session deadline has expired.")
+        normalized = datetime.fromtimestamp(epoch, timezone.utc).isoformat(
+            timespec="milliseconds").replace("+00:00", "Z")
+        return normalized, epoch
+
+    def _normalize_child_session_record(self, value: Any, *, allow_expired: bool,
+                                        require_game: bool = False) \
+            -> dict[str, Any]:
+        if not isinstance(value, dict) or value.get("version", 1) != 1:
+            raise ValueError("Malformed child session.")
+        session_id = self._child_uuid(value.get("session_id"), "ID")
+        actor = str(value.get("actor_profile_id") or "").strip()
+        execution = str(value.get("execution_profile_id") or "").strip()
+        if not PROFILE_ID_PATTERN.fullmatch(actor) \
+                or not PROFILE_ID_PATTERN.fullmatch(execution) or actor == execution:
+            raise ValueError("Invalid child session profile.")
+        if self.profile_id and execution != self.profile_id:
+            raise ValueError("Child session execution profile does not match Bridge.")
+        game_id = self.game_id(value.get("game_id"))
+        if require_game and self.library.get(game_id) is None:
+            raise FileNotFoundError("Game record was not found.")
+        process_token = str(value.get("process_token") or "").strip().lower()
+        if process_token and not PROCESS_TOKEN_PATTERN.fullmatch(process_token):
+            raise ValueError("Invalid child process token.")
+        client_uuid = self._child_client_id(value.get("vibepollo_client_uuid"))
+        deadline_utc, _deadline = self._child_deadline(
+            value.get("deadline_utc"), allow_expired=allow_expired)
+        phase = str(value.get("phase") or ("active" if process_token else "pending")) \
+            .strip().casefold()
+        if phase not in {"pending", "active", "ending"}:
+            raise ValueError("Invalid child session state.")
+        process_id = int(value.get("process_id") or 0)
+        process_path = self._normalized_process_path(value.get("process_path"))
+        process_started = int(value.get("process_started_filetime") or 0)
+        if process_id < 0 or process_started < 0 or len(process_path) > 8192 \
+                or process_path and not ntpath.isabs(process_path):
+            raise ValueError("Malformed child process identity.")
+        bound_at = float(value.get("bound_at") or 0.0)
+        graceful_at = value.get("graceful_requested_at")
+        graceful_at = None if graceful_at in (None, "") else float(graceful_at)
+        launch_observed = float(value.get("launch_observed_at") or 0.0)
+        if any(not math.isfinite(number) or number < 0 for number in (
+                bound_at, launch_observed) if number is not None) \
+                or graceful_at is not None \
+                and (not math.isfinite(graceful_at) or graceful_at < 0):
+            raise ValueError("Malformed child session timing.")
+        return {
+            "version": 1,
+            "session_id": session_id,
+            "actor_profile_id": actor,
+            "execution_profile_id": execution,
+            "game_id": game_id,
+            "process_token": process_token,
+            "vibepollo_client_uuid": client_uuid,
+            "deadline_utc": deadline_utc,
+            "phase": phase,
+            "bound_at": bound_at,
+            "process_id": process_id,
+            "process_path": process_path,
+            "process_started_filetime": process_started,
+            "graceful_requested_at": graceful_at,
+            "cleanup_required": bool(value.get("cleanup_required", False)),
+            "launch_observed_at": launch_observed,
+            "process_exited": bool(value.get("process_exited", False)),
+        }
+
+    def _load_child_session(self) -> None:
+        path = self.child_session_path
+        if path is None or not path.is_file():
+            return
+        try:
+            if path.stat().st_size > MAX_CHILD_SESSION_BYTES:
+                raise ValueError("Oversized child session")
+            value = json.loads(path.read_text(encoding="utf-8-sig"))
+            self.child_session = self._normalize_child_session_record(
+                value, allow_expired=True)
+        except (OSError, ValueError, TypeError, OverflowError, json.JSONDecodeError):
+            self.child_session = None
+            self._remove_child_session()
+
+    def _save_child_session_locked(self) -> None:
+        if self.child_session_path is None or self.child_session is None:
+            return
+        temporary = self.child_session_path.with_name(
+            self.child_session_path.name + ".tmp")
+        try:
+            self.child_session_path.parent.mkdir(parents=True, exist_ok=True)
+            with temporary.open("w", encoding="utf-8", newline="") as output:
+                json.dump(self.child_session, output, ensure_ascii=False,
+                          separators=(",", ":"))
+                output.flush()
+                os.fsync(output.fileno())
+            os.replace(temporary, self.child_session_path)
+        except OSError as error:
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
+            print(json.dumps({
+                "event": "child_session_warning",
+                "operation": "save",
+                "error": type(error).__name__,
+            }, separators=(",", ":")), flush=True)
+
     def _load_active_game_trace(self) -> None:
         path = self.active_game_path
         if path is None or not path.is_file():
@@ -1915,9 +2081,12 @@ class BridgeState:
 
     def _clear_reconciliation_locked(self, reason: str) -> None:
         previous = dict(self.current)
+        child = self.child_session
         self._active_game_trace = None
         self._native_reconciliation_confirmation = None
         self._remove_active_game_trace()
+        if child is not None and child.get("game_id") == str(previous.get("id") or ""):
+            self._clear_child_session_locked(reason)
         self.current = {"state": "idle"}
         self.readiness = {
             "ready": False, "reason": reason,
@@ -2011,6 +2180,36 @@ class BridgeState:
         }
         self._last_window_signature = None
         self._publish_locked("game-reconciled", dict(self.current))
+
+    def _capture_connector_process_identity_locked(self, game_id: str,
+                                                   process_id: int) -> bool:
+        """Keep fresh connector PID evidence transiently on the current game."""
+        if process_id <= 0 or str(self.current.get("id") or "") != game_id \
+                or str((self.library.get(game_id) or {}).get("provider") or
+                       "").casefold() != "playnite":
+            return False
+        probe = self.running_process_probe
+        identity_action = getattr(probe, "process_identity", None)
+        if not callable(identity_action):
+            return False
+        try:
+            own = identity_action(os.getpid(), include_owner=True)
+            identity = identity_action(process_id, include_owner=True)
+        except (OSError, TypeError, ValueError):
+            return False
+        if own is None or identity is None \
+                or int(identity.get("process_id") or 0) != process_id \
+                or identity.get("user_sid") != own.get("user_sid") \
+                or int(identity.get("session_id") or 0) != int(
+                    own.get("session_id") or 0):
+            return False
+        process_path = self._normalized_process_path(identity.get("process_path"))
+        process_started = int(identity.get("process_started_filetime") or 0)
+        if not process_path or process_started <= 0:
+            return False
+        self.current["processPath"] = process_path
+        self.current["processStartedFiletime"] = process_started
+        return True
 
     def _save_active_game_trace_locked(self) -> None:
         if self.active_game_path is None \
@@ -2127,6 +2326,7 @@ class BridgeState:
                         baseline["game"] = dict(game)
                     session["baseline"] = baseline
 
+
     def _schedule_external_reconciliation_locked(self) -> None:
         if self.external_reconciliation_inflight:
             return
@@ -2216,22 +2416,86 @@ class BridgeState:
             raise ValueError("Invalid game record ID.")
         if ":" in result:
             provider, provider_id = result.split(":", 1)
-            return provider.casefold() + ":" + provider_id
+            provider = provider.casefold()
+            if provider == "playnite" and PLAYNITE_ID_PATTERN.fullmatch(provider_id):
+                provider_id = provider_id.casefold()
+            return provider + ":" + provider_id
         return result.casefold()
+
+    @staticmethod
+    def canonical_game_id(value: Any) -> str:
+        """Return the provider-qualified wire identity for a game record."""
+        normalized = BridgeState.game_id(value)
+        return normalized if ":" in normalized else "playnite:" + normalized
+
+    def canonical_game_id_for_record(self, game_id: Any,
+                                     game: dict[str, Any]) -> str:
+        """Resolve a library record to its stable provider-qualified identity."""
+        provider = str(game.get("provider") or "").strip().casefold()
+        if provider not in {"steam", "epic", "playnite"}:
+            provider = self.game_operations.provider_label(game)
+        provider_game_id = str(game.get("providerGameId") or "").strip()
+        if provider == "playnite":
+            provider_game_id = str(
+                game.get("playniteGameId") or provider_game_id or game_id).strip()
+        if provider in {"steam", "epic", "playnite"} and provider_game_id:
+            try:
+                return self.game_id(provider + ":" + provider_game_id)
+            except ValueError:
+                pass
+        return self.canonical_game_id(game_id)
 
     def resolve_game_id(self, value: Any) -> str:
         normalized = self.game_id(value)
         with self.lock:
             if normalized in self.library:
                 return normalized
+        if ":" in normalized:
+            provider, provider_id = normalized.split(":", 1)
+            if provider == "playnite" and PLAYNITE_ID_PATTERN.fullmatch(provider_id):
+                with self.lock:
+                    matches = [game_id for game_id, game in self.library.items()
+                               if str(game.get("playniteGameId") or "").casefold()
+                               == provider_id.casefold()
+                               or (
+                                   PLAYNITE_ID_PATTERN.fullmatch(str(game_id))
+                                   and self.game_operations.provider_label(game)
+                                   == "playnite"
+                                   and str(game_id).casefold() == provider_id.casefold()
+                               )]
+                if len(matches) == 1:
+                    return matches[0]
         if PLAYNITE_ID_PATTERN.fullmatch(normalized):
             with self.lock:
                 matches = [game_id for game_id, game in self.library.items()
                            if str(game.get("playniteGameId") or "").casefold()
-                           == normalized]
+                           == normalized
+                           or (
+                               PLAYNITE_ID_PATTERN.fullmatch(str(game_id))
+                               and self.game_operations.provider_label(game)
+                               == "playnite"
+                               and str(game_id).casefold() == normalized
+                           )]
             if len(matches) == 1:
                 return matches[0]
         return normalized
+
+    def resolve_game_membership(self, value: Any) -> dict[str, Any]:
+        """Resolve a current library member without returning its metadata."""
+        try:
+            normalized = self.resolve_game_id(value)
+        except (TypeError, ValueError):
+            raise FileNotFoundError("Game record was not found.") from None
+        with self.lock:
+            game = self.library.get(normalized)
+            if game is None:
+                raise FileNotFoundError("Game record was not found.")
+            return {
+                "game_id": normalized,
+                "canonical_game_id": self.canonical_game_id_for_record(
+                    normalized, game),
+                "revision": self.library_revision,
+            }
 
     def _schedule_catalog_refresh_locked(self) -> None:
         if self.catalog_refresh_inflight:
@@ -2561,6 +2825,9 @@ class BridgeState:
                         self.current = {"state": "running", **status}
                         self._native_reconciliation_confirmation = (
                             playnite_id, int(status.get("processId") or status.get("process_id") or 0))
+                        self._capture_connector_process_identity_locked(
+                            game_id, int(status.get("processId") or
+                                         status.get("process_id") or 0))
                         self.readiness = {
                             "ready": False,
                             "reason": "waiting_for_game_window",
@@ -2771,6 +3038,26 @@ class BridgeState:
                 raise FileNotFoundError("Game record was not found.")
             current_id = str(self.current.get("id") or "")
             current_state = str(self.current.get("state") or "").casefold()
+            child = self.child_session
+            if child is not None and child.get("phase") == "ending":
+                return {
+                    "accepted": False, "command": "launch",
+                    "reason": "child_session_ending",
+                    "active_game_id": str(child.get("game_id") or ""),
+                }
+            if child is not None and child.get("game_id") != normalized:
+                return {
+                    "accepted": False, "command": "launch",
+                    "reason": "child_session_active",
+                    "active_game_id": str(child.get("game_id") or ""),
+                }
+            if child is not None and child.get("phase") == "active" \
+                    and current_state in {"idle", "failed"}:
+                return {
+                    "accepted": False, "command": "launch",
+                    "reason": "child_session_active",
+                    "active_game_id": str(child.get("game_id") or ""),
+                }
             if current_state in {"reconciling", "ambiguous"}:
                 return {
                     "accepted": False,
@@ -3732,6 +4019,9 @@ class BridgeState:
         self._active_game_trace = None
         self._native_reconciliation_confirmation = None
         self._remove_active_game_trace()
+        if self.child_session is not None \
+                and self.child_session.get("game_id") == str(previous.get("id") or ""):
+            self._clear_child_session_locked("game_stopped")
         self.current = {"state": "idle"}
         self.readiness = {
             "ready": False,
@@ -3855,6 +4145,48 @@ class BridgeState:
                 continue
             value["process_token"] = hashlib.sha256(compact_json(fingerprint)).hexdigest()
             matches.setdefault(game_id, []).append(value)
+
+        # Playnite emulator entries often have no executable and point at a ROM
+        # directory, while the connector reports the emulator PID.  The fresh
+        # connector identity is the authority for this current game; require the
+        # same PID/start time/owner/session evidence before adding it to the
+        # verified inventory.
+        current_id = str(current.get("id") or "")
+        current_state = str(current.get("state") or "").casefold()
+        current_game = next((game for game in games
+                             if str(game.get("id") or "") == current_id), None)
+        current_pid = int(current.get("processId") or current.get("process_id") or 0)
+        current_started = int(current.get("processStartedFiletime") or
+                             current.get("process_started_filetime") or 0)
+        playnite_id = str((current_game or {}).get("playniteGameId") or "").casefold()
+        confirmed = native_confirmation
+        if current_game is not None and \
+                str(current_game.get("provider") or "").casefold() == "playnite" \
+                and current_state in {"starting", "running", "stopping"} \
+                and current_pid > 0 and current_started > 0 \
+                and confirmed == (playnite_id, current_pid) \
+                and current_id and current_pid not in {
+                    int(value.get("process_id") or 0)
+                    for values in matches.values() for value in values
+                }:
+            own = probe.process_identity(os.getpid(), include_owner=True)
+            fresh = probe.process_identity(current_pid, include_owner=True)
+            if own is not None and fresh is not None \
+                    and fresh.get("user_sid") == own.get("user_sid") \
+                    and int(fresh.get("session_id") or 0) == int(
+                        own.get("session_id") or 0) \
+                    and int(fresh.get("process_started_filetime") or 0) == current_started:
+                path = self._normalized_process_path(fresh.get("process_path"))
+                if path:
+                    value = {**fresh, "process_path": path, "game_id": current_id}
+                    fingerprint = [self.profile_id, current_id, value.get("user_sid"),
+                                   value.get("session_id"), value.get("process_id"), path,
+                                   value.get("process_started_filetime")]
+                    if value.get("user_sid") and int(value.get("process_id") or 0) > 0 \
+                            and int(value.get("process_started_filetime") or 0) > 0:
+                        value["process_token"] = hashlib.sha256(
+                            compact_json(fingerprint)).hexdigest()
+                        matches.setdefault(current_id, []).append(value)
         verified = []
         for values in matches.values():
             if len(values) == 1:
@@ -3995,6 +4327,550 @@ class BridgeState:
             return {"accepted": True, "command": "stop", "force": False,
                     "stopped_game_id": normalized, "stopped_current": stopped_current}
 
+    def _clear_child_session_locked(self, reason: str = "") -> None:
+        if self.child_session is None:
+            return
+        self.child_session = None
+        self._remove_child_session()
+        if reason:
+            self._publish_locked("child-session-cleared", {"reason": reason})
+
+    def _child_response_locked(self, action: str, accepted: bool = True,
+                               reason: str = "", include_session: bool = True) \
+            -> dict[str, Any]:
+        session = self.child_session
+        if session is None or not include_session:
+            return {
+                "accepted": accepted,
+                "action": action,
+                "state": "stopped" if session is None else "stale",
+                "reason": reason or ("none" if session is None else "stale_session"),
+                "cleanup_required": False,
+            }
+        process_token = str(session.get("process_token") or "")
+        phase = str(session.get("phase") or "pending")
+        return {
+            "accepted": accepted,
+            "action": action,
+            "state": "ending" if phase == "ending" else
+                ("active" if process_token else "pending"),
+            "phase": phase,
+            "reason": reason or "none",
+            "session_id": str(session["session_id"]),
+            "actor_profile_id": str(session["actor_profile_id"]),
+            "execution_profile_id": str(session["execution_profile_id"]),
+            "game_id": str(session["game_id"]),
+            "process_token": process_token,
+            "process_id": int(session.get("process_id") or 0),
+            "vibepollo_client_uuid": str(session["vibepollo_client_uuid"]),
+            "deadline_utc": str(session["deadline_utc"]),
+            "cleanup_required": bool(session.get("cleanup_required", False)),
+        }
+
+    def _child_current_matches_locked(self, expected: dict[str, Any]) -> bool:
+        current = self.current
+        current_id = str(current.get("id") or "")
+        if current_id != str(expected.get("game_id") or ""):
+            return False
+        if str(current.get("state") or "").casefold() not in {
+                "running", "stopping", "reconciling", "ambiguous"}:
+            return False
+        current_pid = int(current.get("processId") or current.get("process_id") or 0)
+        if current_pid and current_pid != int(expected.get("process_id") or 0):
+            return False
+        current_path = self._normalized_process_path(
+            current.get("processPath") or current.get("process_path"))
+        if current_path and current_path != str(expected.get("process_path") or ""):
+            return False
+        current_started = int(current.get("processStartedFiletime") or
+                              current.get("process_started_filetime") or 0)
+        return not current_started or current_started == int(
+            expected.get("process_started_filetime") or 0)
+
+    def _child_owner_matches_locked(self, session: dict[str, Any]) -> bool:
+        current = self.current
+        current_id = str(current.get("id") or "")
+        current_state = str(current.get("state") or "").casefold()
+        game_id = str(session.get("game_id") or "")
+        return not (current_id and current_id != game_id) and not (
+            current_state in {"starting", "running", "stopping"} and
+            current_id != game_id)
+
+    def _child_expected_process(self, session: dict[str, Any],
+                                candidate: dict[str, Any] | None = None) \
+            -> dict[str, Any] | None:
+        with self.lock:
+            game_id = str(session.get("game_id") or "")
+            game = dict(self.library.get(game_id) or {})
+            current = dict(self.current)
+            trace = dict(self._active_game_trace or {})
+            probe = self.running_process_probe
+        if not game or probe is None or bool(session.get("process_exited")):
+            return None
+        current_id = str(current.get("id") or "")
+        current_state = str(current.get("state") or "").casefold()
+        if current_id and current_id != game_id:
+            return None
+        if current_state in {"failed", "starting"}:
+            return None
+        if current_state in {"reconciling", "ambiguous"} \
+                and str(trace.get("game_id") or "") != game_id:
+            return None
+        if not current_id and current_state not in {
+                "idle", "reconciling", "ambiguous"}:
+            return None
+
+        candidate = candidate if isinstance(candidate, dict) else {}
+        current_pid = int(current.get("processId") or current.get("process_id") or 0)
+        trace_pid = int(trace.get("process_id") or 0) \
+            if str(trace.get("game_id") or "") == game_id else 0
+        stored_pid = int(session.get("process_id") or 0)
+        candidate_pid = int(candidate.get("process_id") or 0)
+        process_id = current_pid or trace_pid or stored_pid or candidate_pid
+        if process_id <= 0:
+            return None
+        expected_path = self._normalized_process_path(
+            current.get("processPath") or current.get("process_path") or
+            trace.get("process_path") or session.get("process_path") or
+            candidate.get("process_path"))
+        expected_started = int(current.get("processStartedFiletime") or
+                               current.get("process_started_filetime") or
+                               trace.get("process_started_filetime") or
+                               session.get("process_started_filetime") or
+                               candidate.get("process_started_filetime") or 0)
+        if current_pid and stored_pid and current_pid != stored_pid:
+            return None
+        if not current_pid and stored_pid and candidate_pid and stored_pid != candidate_pid:
+            return None
+        identity_action = getattr(probe, "process_identity", None)
+        if not callable(identity_action):
+            return None
+        try:
+            fresh = identity_action(process_id, include_owner=True)
+            own = identity_action(os.getpid(), include_owner=True)
+        except Exception:
+            return None
+        if not isinstance(fresh, dict) or not isinstance(own, dict):
+            return None
+        fresh_path = self._normalized_process_path(fresh.get("process_path"))
+        fresh_started = int(fresh.get("process_started_filetime") or 0)
+        if int(fresh.get("process_id") or 0) != process_id \
+                or not fresh_path or fresh_started <= 0 \
+                or expected_path and fresh_path != expected_path \
+                or expected_started and fresh_started != expected_started:
+            return None
+        if not fresh.get("user_sid") or not own.get("user_sid") \
+                or fresh.get("user_sid") != own.get("user_sid") \
+                or fresh.get("session_id") != own.get("session_id"):
+            return None
+        try:
+            if not self._trace_path_matches_game({"process_path": fresh_path}, game):
+                return None
+        except (KeyError, TypeError, ValueError):
+            return None
+        if not str(session.get("process_token") or ""):
+            bound_at = float(session.get("bound_at") or 0.0)
+            launch_requested_at = float(current.get("launchRequestedAt") or 0.0)
+            launch_observed_at = float(session.get("launch_observed_at") or 0.0)
+            if launch_observed_at <= 0 and (
+                    launch_requested_at <= 0 or launch_requested_at + 0.001 < bound_at):
+                return None
+        fingerprint = [self.profile_id, game_id, fresh.get("user_sid"),
+                       fresh.get("session_id"), process_id, fresh_path, fresh_started]
+        token = hashlib.sha256(compact_json(fingerprint)).hexdigest()
+        supplied = str(session.get("process_token") or "").casefold()
+        if supplied and supplied != token:
+            return None
+        return {**fresh, "process_path": fresh_path,
+                "process_started_filetime": fresh_started,
+                "game_id": game_id, "process_token": token}
+
+    @staticmethod
+    def _child_process_is_absent(session: dict[str, Any],
+                                 probe: WindowProbe | None) -> bool:
+        if bool(session.get("process_exited")):
+            return True
+        process_id = int(session.get("process_id") or 0)
+        if process_id <= 0:
+            return True
+        identity_action = getattr(probe, "process_identity", None) \
+            if probe is not None else None
+        if not callable(identity_action):
+            return False
+        try:
+            return identity_action(process_id, include_owner=True) is None
+        except Exception:
+            return False
+
+    def _child_verified_candidate(self, session: dict[str, Any]) \
+            -> dict[str, Any] | None:
+        try:
+            games, status, revision = self._verified_running_games()
+        except Exception:
+            return None
+        if status == "unavailable":
+            return None
+        with self.lock:
+            if self.child_session is None \
+                    or self.child_session.get("session_id") != session.get("session_id") \
+                    or revision != self.library_revision:
+                return None
+        matches = [game for game in games
+                   if str(game.get("game_id") or "") == str(session.get("game_id") or "")]
+        return dict(matches[0]) if len(matches) == 1 else None
+
+    def child_session_action(self, body: dict[str, Any]) -> dict[str, Any]:
+        if not isinstance(body, dict):
+            raise ValueError("JSON object expected.")
+        action = str(body.get("action") or "").strip().casefold()
+        if action not in {"bind", "renew", "end"}:
+            raise ValueError("Unknown child session action.")
+        session_id = self._child_uuid(body.get("session_id"), "ID")
+        if action == "end":
+            with self.lock:
+                current = self.child_session
+                if current is None:
+                    result = self._child_response_locked("end", True, "already_stopped")
+                    result["session_id"] = session_id
+                    return result
+                if current.get("session_id") != session_id:
+                    result = self._child_response_locked(
+                        "end", False, "stale_session", include_session=False)
+                    result["session_id"] = session_id
+                    return result
+                current["phase"] = "ending"
+                current["cleanup_required"] = True
+                self._save_child_session_locked()
+            self.enforce_child_session()
+            with self.lock:
+                result = self._child_response_locked("end", True, "end_requested")
+                result["session_id"] = session_id
+                return result
+
+        normalized = self._normalize_child_session_record(
+            body, allow_expired=False, require_game=True)
+        with self.lock:
+            current = dict(self.child_session) if self.child_session is not None else None
+            if current is not None and current.get("session_id") != session_id:
+                return self._child_response_locked(
+                    action, False, "child_session_active", include_session=False)
+            if current is None:
+                current_state = str(self.current.get("state") or "").casefold()
+                if current_state in {"starting", "running", "stopping",
+                                     "reconciling", "ambiguous"}:
+                    return self._child_response_locked(
+                        action, False, "game_already_in_use", include_session=False)
+                probe = self.running_process_probe
+            else:
+                probe = None
+        if current is None and probe is not None:
+            try:
+                running, scan_status, _revision = self._verified_running_games()
+            except Exception:
+                running, scan_status = [], "unavailable"
+            if scan_status != "unavailable" and running:
+                return {
+                    "accepted": False, "action": action, "state": "stale",
+                    "reason": "game_already_in_use", "cleanup_required": False,
+                }
+        with self.lock:
+            current = dict(self.child_session) if self.child_session is not None else None
+            if current is not None and current.get("session_id") != session_id:
+                return self._child_response_locked(
+                    action, False, "child_session_active", include_session=False)
+            if current is None:
+                current_state = str(self.current.get("state") or "").casefold()
+                if current_state in {"starting", "running", "stopping",
+                                     "reconciling", "ambiguous"}:
+                    return self._child_response_locked(
+                        action, False, "game_already_in_use", include_session=False)
+                self.child_session = normalized
+                self.child_session.update({
+                    "phase": "pending" if not normalized["process_token"] else "active",
+                    "bound_at": self.clock(),
+                    "process_id": 0, "process_path": "",
+                    "process_started_filetime": 0,
+                    "graceful_requested_at": None,
+                    "cleanup_required": False,
+                    "launch_observed_at": 0.0,
+                    "process_exited": False,
+                })
+                self._save_child_session_locked()
+            else:
+                if current.get("phase") == "ending":
+                    return self._child_response_locked(
+                        action, False, "child_session_ending")
+                identity_keys = ("actor_profile_id", "execution_profile_id",
+                                 "game_id", "vibepollo_client_uuid")
+                if any(current.get(key) != normalized.get(key) for key in identity_keys):
+                    return self._child_response_locked(
+                        action, False, "child_session_identity_mismatch")
+                supplied_token = str(normalized.get("process_token") or "")
+                current_token = str(current.get("process_token") or "")
+                if supplied_token and current_token and supplied_token != current_token:
+                    return self._child_response_locked(
+                        action, False, "process_identity_changed")
+                current["deadline_utc"] = normalized["deadline_utc"]
+                if supplied_token and not current_token:
+                    current["process_token"] = supplied_token
+                self.child_session = current
+                self._save_child_session_locked()
+        self.enforce_child_session()
+        with self.lock:
+            return self._child_response_locked(action, True, "renewed" if action == "renew"
+                                               else "bound")
+
+    def enforce_child_session(self) -> dict[str, Any]:
+        with self.lock:
+            if self.child_session is None:
+                return {"accepted": True, "action": "enforce", "state": "stopped",
+                        "cleanup_required": False}
+            session = dict(self.child_session)
+            now = self.clock()
+            try:
+                _deadline_text, deadline = self._child_deadline(
+                    session.get("deadline_utc"), allow_expired=True)
+            except (TypeError, ValueError, OverflowError):
+                deadline = now
+                self.child_session["cleanup_required"] = True
+                self._save_child_session_locked()
+            phase = str(session.get("phase") or "pending")
+            due = phase == "ending" or now >= deadline
+            current_id = str(self.current.get("id") or "")
+            current_state = str(self.current.get("state") or "").casefold()
+
+            if not due and not session.get("process_token"):
+                last_probe = float(session.get("last_identity_probe_at") or 0.0)
+                if now - last_probe >= 5.0:
+                    self.child_session["last_identity_probe_at"] = now
+                    probe_session = dict(self.child_session)
+                else:
+                    probe_session = None
+            else:
+                probe_session = None
+        if probe_session is not None:
+            candidate = self._child_verified_candidate(probe_session)
+            expected = self._child_expected_process(probe_session, candidate)
+            if expected is not None:
+                with self.lock:
+                    if self.child_session is not None \
+                            and self.child_session.get("session_id") == probe_session.get("session_id"):
+                        self.child_session.update({
+                            "phase": "active",
+                            "process_token": expected["process_token"],
+                            "process_id": int(expected["process_id"]),
+                            "process_path": expected["process_path"],
+                            "process_started_filetime": int(
+                                expected["process_started_filetime"]),
+                            "launch_observed_at": self.clock(),
+                        })
+                        self._save_child_session_locked()
+            with self.lock:
+                return self._child_response_locked("enforce", True, "pending")
+
+        if not due:
+            with self.lock:
+                return self._child_response_locked("enforce", True, "active")
+
+        # Check ownership before any stream or process effect.  A late lease
+        # must never disconnect a newer adult game on the same TV.
+        with self.lock:
+            if self.child_session is None \
+                    or self.child_session.get("session_id") != session.get("session_id"):
+                return {"accepted": True, "action": "enforce", "state": "stale",
+                        "cleanup_required": False}
+            session = dict(self.child_session)
+            if not self._child_owner_matches_locked(session):
+                self._clear_child_session_locked("child_game_changed")
+                return {"accepted": True, "action": "enforce", "state": "stale",
+                        "reason": "child_game_changed", "cleanup_required": False}
+            probe = self.running_process_probe
+
+        # A time allowance owns the game process, never the reusable stream.
+        # Revalidate ownership before inspecting or terminating the process.
+        with self.lock:
+            if self.child_session is None:
+                return {"accepted": True, "action": "enforce", "state": "stopped",
+                        "cleanup_required": False}
+            session = dict(self.child_session)
+            if not self._child_owner_matches_locked(session):
+                self._clear_child_session_locked("child_game_changed")
+                return {"accepted": True, "action": "enforce", "state": "stale",
+                        "reason": "child_game_changed", "cleanup_required": False}
+            current_state = str(self.current.get("state") or "").casefold()
+
+        candidate = None
+        if not session.get("process_token") and current_state not in {"idle", "failed"}:
+            candidate = self._child_verified_candidate(session)
+        expected = self._child_expected_process(session, candidate)
+        if expected is None and current_state in {"idle", "failed"}:
+            # Idle is not evidence that a persisted child process is gone.  The
+            # exact identity helper gets the last chance to find it; only a
+            # missing or reused process remains blocked for manual cleanup.
+            with self.lock:
+                same_session = self.child_session is not None \
+                    and self.child_session.get("session_id") == session.get("session_id")
+                if same_session and self._child_process_is_absent(session, probe):
+                    self._clear_child_session_locked("child_process_absent")
+                    return {"accepted": True, "action": "enforce", "state": "stopped",
+                            "reason": "child_process_absent", "cleanup_required": False}
+                if same_session:
+                    self.child_session["cleanup_required"] = True
+                    self._save_child_session_locked()
+            return {"accepted": False, "action": "enforce", "state": "ending",
+                    "reason": "cleanup_required", "cleanup_required": True}
+        if expected is None:
+            with self.lock:
+                if self.child_session is not None \
+                        and self.child_session.get("session_id") == session.get("session_id"):
+                    self.child_session["cleanup_required"] = True
+                    self._save_child_session_locked()
+            return {"accepted": False, "action": "enforce", "state": "ending",
+                    "reason": "cleanup_required", "cleanup_required": True}
+
+        if not session.get("process_token"):
+            with self.lock:
+                if self.child_session is not None \
+                        and self.child_session.get("session_id") == session.get("session_id"):
+                    self.child_session.update({
+                        "phase": "ending",
+                        "process_token": expected["process_token"],
+                        "process_id": int(expected["process_id"]),
+                        "process_path": expected["process_path"],
+                        "process_started_filetime": int(
+                            expected["process_started_filetime"]),
+                        "launch_observed_at": self.clock(),
+                    })
+                    self._save_child_session_locked()
+                    session = dict(self.child_session)
+
+        expected = self._child_expected_process(session)
+        if expected is None:
+            with self.lock:
+                if self.child_session is not None \
+                        and self.child_session.get("session_id") == session.get("session_id"):
+                    self.child_session["cleanup_required"] = True
+                    self._save_child_session_locked()
+            return {"accepted": False, "action": "enforce", "state": "ending",
+                    "reason": "cleanup_required", "cleanup_required": True}
+
+        probe = self.running_process_probe
+        graceful_at = session.get("graceful_requested_at")
+        if graceful_at is None:
+            with self.lock:
+                if self.child_session is None \
+                        or self.child_session.get("session_id") != session.get("session_id"):
+                    return {"accepted": True, "action": "enforce", "state": "stale",
+                            "cleanup_required": False}
+                if not self._child_owner_matches_locked(session):
+                    self._clear_child_session_locked("child_game_changed")
+                    return {"accepted": True, "action": "enforce", "state": "stale",
+                            "reason": "child_game_changed", "cleanup_required": False}
+                graceful = self.graceful_close
+            graceful_ok = False
+            if graceful is not None:
+                try:
+                    graceful_ok = bool(graceful(int(expected["process_id"])))
+                except Exception:
+                    graceful_ok = False
+            with self.lock:
+                if self.child_session is not None \
+                        and self.child_session.get("session_id") == session.get("session_id"):
+                    self.child_session["phase"] = "ending"
+                    self.child_session["graceful_requested_at"] = now
+                    self.child_session["cleanup_required"] |= not graceful_ok
+                    cleanup_required = bool(self.child_session["cleanup_required"])
+                    self._save_child_session_locked()
+                    self._publish_locked("child-session-graceful-requested", {
+                        "accepted": graceful_ok})
+                else:
+                    cleanup_required = True
+            return {"accepted": graceful_ok, "action": "enforce", "state": "ending",
+                    "reason": "graceful_close_requested" if graceful_ok else
+                        "cleanup_required", "cleanup_required": cleanup_required}
+        if now - float(graceful_at) < CHILD_SESSION_GRACE_SECONDS:
+            with self.lock:
+                return self._child_response_locked("enforce", True,
+                                                   "graceful_close_pending")
+
+        # The adult game may have replaced the child during the grace period.
+        # Recheck ownership and identity immediately before the scoped force.
+        with self.lock:
+            if self.child_session is None \
+                    or self.child_session.get("session_id") != session.get("session_id"):
+                return {"accepted": True, "action": "enforce", "state": "stale",
+                        "cleanup_required": False}
+            if not self._child_owner_matches_locked(session):
+                self._clear_child_session_locked("child_game_changed")
+                return {"accepted": True, "action": "enforce", "state": "stale",
+                        "reason": "child_game_changed", "cleanup_required": False}
+            session = dict(self.child_session)
+            probe = self.running_process_probe
+        expected = self._child_expected_process(session)
+        if expected is None:
+            with self.lock:
+                if self.child_session is not None \
+                        and self.child_session.get("session_id") == session.get("session_id"):
+                    self.child_session["cleanup_required"] = True
+                    self._save_child_session_locked()
+            return {"accepted": False, "action": "enforce", "state": "ending",
+                    "reason": "cleanup_required", "cleanup_required": True}
+        with self.lock:
+            if self.child_session is None \
+                    or self.child_session.get("session_id") != session.get("session_id"):
+                return {"accepted": True, "action": "enforce", "state": "stale",
+                        "cleanup_required": False}
+            if not self._child_owner_matches_locked(session):
+                self._clear_child_session_locked("child_game_changed")
+                return {"accepted": True, "action": "enforce", "state": "stale",
+                        "reason": "child_game_changed", "cleanup_required": False}
+        if probe is None:
+            with self.lock:
+                if self.child_session is not None:
+                    self.child_session["cleanup_required"] = True
+                    self._save_child_session_locked()
+            return {"accepted": False, "action": "enforce", "state": "ending",
+                    "reason": "cleanup_required", "cleanup_required": True}
+        try:
+            forced = bool(probe.force_terminate_verified_process(expected, 5.0))
+        except Exception:
+            forced = False
+        with self.lock:
+            if self.child_session is None \
+                    or self.child_session.get("session_id") != session.get("session_id"):
+                return {"accepted": False, "action": "enforce", "state": "stale",
+                        "cleanup_required": False}
+            if not self._child_owner_matches_locked(session):
+                self._clear_child_session_locked("child_game_changed")
+                return {"accepted": True, "action": "enforce", "state": "stale",
+                        "reason": "child_game_changed", "cleanup_required": False}
+            if not forced:
+                self.child_session["cleanup_required"] = True
+                self._save_child_session_locked()
+                return {"accepted": False, "action": "enforce", "state": "ending",
+                        "reason": "cleanup_required", "cleanup_required": True}
+            self.child_session["process_exited"] = True
+            current_is_exact = self._child_current_matches_locked(expected)
+            current_is_idle = str(self.current.get("state") or "").casefold() \
+                in {"idle", "failed"}
+            if current_is_exact or current_is_idle:
+                if current_is_exact:
+                    self._complete_game_stop_locked()
+                else:
+                    trace = self._active_game_trace
+                    if trace is not None \
+                            and str(trace.get("game_id") or "") == str(
+                                expected.get("game_id") or ""):
+                        self._active_game_trace = None
+                        self._remove_active_game_trace()
+                    self._clear_child_session_locked("child_process_stopped")
+                return {"accepted": True, "action": "enforce", "state": "stopped",
+                        "reason": "forced_stop", "cleanup_required": False}
+            self.child_session["cleanup_required"] = True
+            self._save_child_session_locked()
+            return {"accepted": True, "action": "enforce", "state": "ending",
+                    "reason": "cleanup_required", "cleanup_required": True}
+
     def hard_reset_session(self) -> dict[str, Any]:
         with self.events_changed:
             games: list[dict[str, Any]] = []
@@ -4023,6 +4899,17 @@ class BridgeState:
                         and int(fresh.get("process_started_filetime") or 0) == candidate_started:
                     games.append({**fresh, "process_path": candidate_path,
                                   "game_id": candidate_id})
+
+            current_state = str(self.current.get("state") or "").casefold()
+            current_id = str(self.current.get("id") or "")
+            trace_id = str((self._active_game_trace or {}).get("game_id") or "")
+            verified_ids = {str(game.get("game_id") or "") for game in games}
+            active_ids = {value for value in (current_id, trace_id) if value}
+            if (self._active_game_trace is not None or
+                    current_state not in {"idle", "failed"}) \
+                    and (not active_ids or not active_ids.issubset(verified_ids)):
+                return {"accepted": False, "command": "hard-reset", "force": True,
+                        "reason": "running_game_identity_unconfirmed"}
 
             failed = []
             stopped = []
@@ -4209,7 +5096,12 @@ class BridgeState:
             if target_kind == "game" and current_state == "stopping":
                 process_id = int(sample.get("process_id") or 0)
                 if process_id > 0 and not sample.get("launcher_candidate"):
+                    previous_process_id = int(self.current.get("processId") or
+                                              self.current.get("process_id") or 0)
                     self.current["processId"] = process_id
+                    if str(self.current.get("provider") or "").casefold() == "playnite" \
+                            and previous_process_id != process_id:
+                        self._native_reconciliation_confirmation = None
                     if not self._request_game_close_locked(process_id):
                         self.readiness.update({
                             "ready": False, "reason": "game_stop_close_rejected",
@@ -4224,10 +5116,20 @@ class BridgeState:
             if target_kind == "game" and current_state == "running" \
                     and sample.get("replacement_process") \
                     and int(sample.get("process_id") or 0) > 0:
+                previous_process_id = int(self.current.get("processId") or
+                                          self.current.get("process_id") or 0)
+                previous_process_path = self._normalized_process_path(
+                    self.current.get("processPath") or self.current.get("process_path"))
+                replacement_process_path = self._normalized_process_path(
+                    sample.get("process_path"))
                 self.current.update({
                     "processId": int(sample["process_id"]),
                     "processPath": str(sample.get("process_path") or ""),
                 })
+                if str(self.current.get("provider") or "").casefold() == "playnite" \
+                        and (previous_process_id != int(sample["process_id"]) or
+                             previous_process_path != replacement_process_path):
+                    self._native_reconciliation_confirmation = None
                 self._save_active_game_trace_locked()
             if target_kind == "game" and current_state == "running" \
                     and not sample.get("launcher_candidate") \
@@ -4398,12 +5300,42 @@ class BridgeState:
             if ready and not previous_ready:
                 self._publish_locked("target-window-ready", dict(self.readiness))
 
-    def library_page(self, cursor: str, limit: int) -> dict[str, Any]:
+    def _filtered_games_locked(self, allowed_game_ids: list[str] | None) \
+            -> list[dict[str, Any]]:
+        if allowed_game_ids is None:
+            return list(self.library.values())
+        if not isinstance(allowed_game_ids, list):
+            raise ValueError("allowed_game_ids must be a list.")
+        selected: dict[str, dict[str, Any]] = {}
+        for value in allowed_game_ids:
+            if not isinstance(value, str):
+                continue
+            try:
+                requested = self.game_id(value)
+                internal = self.resolve_game_id(requested)
+            except (TypeError, ValueError):
+                continue
+            game = self.library.get(internal)
+            if game is None or self.canonical_game_id_for_record(internal, game) != requested:
+                continue
+            selected[internal] = game
+        return list(selected.values())
+
+    def library_page(self, cursor: str, limit: int,
+                     allowed_game_ids: list[str] | None = None,
+                     catalog_revision: str | None = None) -> dict[str, Any]:
         offset = int(cursor or "0")
-        if offset < 0 or limit < 1 or limit > 100:
+        if isinstance(limit, bool) or not isinstance(limit, int) \
+                or offset < 0 or limit < 1 or limit > 100:
             raise ValueError("Invalid library page.")
+        if catalog_revision is not None and (
+                not isinstance(catalog_revision, str) or len(catalog_revision) > 128):
+            raise ValueError("Invalid catalog revision.")
         with self.lock:
-            games = sorted(self.library.values(), key=lambda game: str(game.get("name", "")).casefold())
+            if catalog_revision is not None and catalog_revision != self.library_revision:
+                raise StaleCatalogRevision("The catalog revision is stale.")
+            games = sorted(self._filtered_games_locked(allowed_game_ids),
+                           key=lambda game: str(game.get("name", "")).casefold())
             page = games[offset:offset + limit]
             next_offset = offset + len(page)
             counts: dict[tuple[str, str, str], int] = {}
@@ -4414,18 +5346,30 @@ class BridgeState:
                     str(game.get("provider") or "playnite"),
                 )
                 counts[descriptor] = counts.get(descriptor, 0) + 1
+            filtered = allowed_game_ids is not None
+            if filtered:
+                # The connector supplies categories/plugins as global snapshots,
+                # with no per-game membership. Do not guess associations or leak
+                # global provider health through a child-scoped response.
+                categories = []
+                plugins = []
+                providers = {}
+            else:
+                categories = list(self.categories)
+                plugins = list(self.plugins)
+                providers = dict(self.provider_health)
             return {
                 "games": page,
                 "next_cursor": str(next_offset) if next_offset < len(games) else "",
                 "total": len(games),
                 "revision": self.library_revision,
-                "categories": list(self.categories),
-                "plugins": list(self.plugins),
+                "categories": categories,
+                "plugins": plugins,
                 "libraries": [{"key": key, "name": name, "provider": provider,
                                "gameCount": count}
                               for (key, name, provider), count in sorted(
                                   counts.items(), key=lambda item: item[0][1].casefold())],
-                "providers": dict(self.provider_health),
+                "providers": providers,
             }
 
     def refresh_library(self) -> dict[str, Any]:
@@ -4597,6 +5541,12 @@ class WindowReadinessWorker:
             if time.monotonic() - last_running_scan >= 5.0:
                 self.state.refresh_running_games()
                 last_running_scan = time.monotonic()
+            try:
+                self.state.enforce_child_session()
+            except Exception:
+                # Child cleanup is bounded and advisory to readiness; the existing
+                # worker must keep probing windows after a transient effect failure.
+                pass
             time.sleep(0.25)
 
 class WindowsPipeClient:
@@ -4909,6 +5859,38 @@ class GameProviderHandler(BaseHTTPRequestHandler):
         try:
             body = self.read_json()
             path = urllib.parse.urlsplit(self.path).path
+            if path == "/library/list":
+                if not isinstance(body.get("allowed_game_ids"), list):
+                    raise ValueError("allowed_game_ids must be a list.")
+                result = self.state.library_page(
+                    body.get("cursor", "0"), body.get("limit", 50),
+                    allowed_game_ids=body["allowed_game_ids"],
+                    catalog_revision=body.get("catalog_revision")
+                    if "catalog_revision" in body else None)
+                self.send_json(HTTPStatus.OK, result)
+                return
+            if path == "/library/resolve":
+                try:
+                    result = self.state.resolve_game_membership(body.get("game_id"))
+                except FileNotFoundError as error:
+                    self._diagnostic_error = error
+                    self.send_json(HTTPStatus.NOT_FOUND, {
+                        "ok": False, "error": "Game record was not found."})
+                    return
+                self.send_json(HTTPStatus.OK, result)
+                return
+            if path == "/child/session":
+                try:
+                    result = self.state.child_session_action(body)
+                except FileNotFoundError as error:
+                    self._diagnostic_error = error
+                    self.send_json(HTTPStatus.NOT_FOUND, {
+                        "ok": False, "error": "Game record was not found."})
+                    return
+                status = HTTPStatus.ACCEPTED if result.get("accepted") else \
+                    HTTPStatus.CONFLICT
+                self.send_json(status, {"ok": bool(result.get("accepted")), **result})
+                return
             if path == "/game/start":
                 result = self.state.start_game(body.get("game_id"))
             elif path == "/game/install":
@@ -4942,6 +5924,11 @@ class GameProviderHandler(BaseHTTPRequestHandler):
                 self.send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found."})
                 return
             self.send_json(HTTPStatus.ACCEPTED, {"ok": True, **result})
+        except StaleCatalogRevision as error:
+            self._diagnostic_error = error
+            self.send_json(HTTPStatus.CONFLICT, {
+                "ok": False, "error": "catalog_revision_stale",
+                "status": int(HTTPStatus.CONFLICT)})
         except ConnectionError as error:
             self._diagnostic_error = error
             self.send_json(HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "error": str(error)})
@@ -5020,6 +6007,7 @@ def main() -> None:
     state = BridgeState(expected_display, config_path.with_name("library-cache.json"),
                         config_path.parent.parent / "moonwaker-version.json",
                         active_game_path=config_path.with_name("active-game.json"),
+                        child_session_path=config_path.with_name("child-session.json"),
                         game_operations=game_operations,
                         operation_audit=lambda event, payload: append_operation_audit(
                             audit_path, event, payload),
@@ -5038,7 +6026,8 @@ def main() -> None:
         ensure_playnite_desktop(str(
             config.get("playnite_desktop_executable", "")).strip())
     fullscreen_path = str(config.get("playnite_fullscreen_executable", "")).strip()
-    display_resolver = StreamDisplayResolver(str(config.get("vibepollo_bridge", "")).strip())
+    vibepollo_bridge = str(config.get("vibepollo_bridge", "")).strip()
+    display_resolver = StreamDisplayResolver(vibepollo_bridge)
     state.set_window_actions(
         window_probe.request_graceful_close,
         lambda: window_probe.show_playnite_fullscreen(fullscreen_path),

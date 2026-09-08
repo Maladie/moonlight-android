@@ -21,6 +21,7 @@ public final class RetainedStreamSessionCoordinator {
 
     public interface Controller {
         boolean isRetainedTransportLive();
+        default String getExecutionProfileId() { return null; }
         boolean parkRetainedTransport();
         default boolean parkPreparingTransport(Snapshot preparing) { return false; }
         default boolean cancelPreparingTransport(Snapshot preparing) { return false; }
@@ -45,6 +46,9 @@ public final class RetainedStreamSessionCoordinator {
         public final String streamSessionId;
         public final String hostId;
         public final String profileId;
+        public final String executionProfileId;
+        public final String targetProfileId;
+        public final boolean targetIsChild;
         public final int appId;
         public final String oldGameId;
         public final String newGameId;
@@ -71,9 +75,23 @@ public final class RetainedStreamSessionCoordinator {
                              String streamTargetName, String artworkPath,
                              String transitionId, long attempt, boolean preparing,
                              java.util.function.BooleanSupplier cancelled) {
+            this(streamSessionId, hostId, profileId, profileId, profileId, false,
+                    appId, oldGameId, newGameId, newGameName, streamTargetName, artworkPath,
+                    transitionId, attempt, preparing, cancelled);
+        }
+
+        public SwitchRequest(String streamSessionId, String hostId, String profileId,
+                             String executionProfileId, String targetProfileId, boolean targetIsChild,
+                             int appId, String oldGameId, String newGameId, String newGameName,
+                             String streamTargetName, String artworkPath, String transitionId,
+                             long attempt, boolean preparing,
+                             java.util.function.BooleanSupplier cancelled) {
             this.streamSessionId = normalize(streamSessionId);
             this.hostId = normalize(hostId);
             this.profileId = GatewayConnection.normalizeProfileId(profileId);
+            this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);
+            this.targetProfileId = GatewayConnection.normalizeProfileId(targetProfileId);
+            this.targetIsChild = targetIsChild;
             this.appId = appId;
             this.oldGameId = normalize(oldGameId);
             this.newGameId = normalize(newGameId);
@@ -94,6 +112,7 @@ public final class RetainedStreamSessionCoordinator {
         public final String streamSessionId;
         public final String hostId;
         public final String profileId;
+        public final String executionProfileId;
         public final int appId;
         public final String playniteGameId;
         public final String transitionId;
@@ -106,6 +125,7 @@ public final class RetainedStreamSessionCoordinator {
             this.streamSessionId = streamSessionId;
             this.hostId = hostId;
             this.profileId = profileId;
+            this.executionProfileId = RetainedStreamSessionCoordinator.executionProfileId;
             this.appId = appId;
             this.playniteGameId = playniteGameId;
             this.transitionId = transitionId;
@@ -118,6 +138,7 @@ public final class RetainedStreamSessionCoordinator {
     private static String streamSessionId = "";
     private static String hostId = "";
     private static String profileId = GatewayConnection.DEFAULT_PROFILE_ID;
+    private static String executionProfileId = GatewayConnection.DEFAULT_PROFILE_ID;
     private static int appId;
     private static String playniteGameId = "";
     private static String transitionId = "";
@@ -157,6 +178,7 @@ public final class RetainedStreamSessionCoordinator {
         streamSessionId = sessionId;
         hostId = retainedHostId == null ? "" : retainedHostId;
         profileId = GatewayConnection.normalizeProfileId(retainedProfileId);
+        executionProfileId = origin(owner, profileId);
         appId = retainedAppId;
         playniteGameId = retainedPlayniteGameId == null ? "" : retainedPlayniteGameId;
         transitionId = "";
@@ -201,6 +223,7 @@ public final class RetainedStreamSessionCoordinator {
         streamSessionId = sessionId;
         hostId = host;
         profileId = profile;
+        executionProfileId = origin(owner, profileId);
         appId = preparingAppId;
         playniteGameId = normalize(preparingPlayniteGameId);
         transitionId = transition;
@@ -466,7 +489,7 @@ public final class RetainedStreamSessionCoordinator {
         return expected != null && state == expected.state
                 && streamSessionId.equals(expected.streamSessionId)
                 && transitionId.equals(expected.transitionId) && attempt == expected.attempt
-                && profileId.equals(expected.profileId)
+                && executionProfileId.equals(expected.executionProfileId)
                 && playniteGameId.equalsIgnoreCase(expected.playniteGameId)
                 && canSwitchGame(expected.hostId, expected.profileId, expected.appId);
     }
@@ -481,11 +504,29 @@ public final class RetainedStreamSessionCoordinator {
                                                       String expectedProfileId,
                                                       int expectedAppId) {
         Controller owner = state == State.PREPARING
-                ? controller.get() : state == State.HOME_LIVE ? liveControllerLocked() : null;
+                ? controller.get() : (state == State.HOME_LIVE || state == State.PARKED_LIVE) ? liveControllerLocked() : null;
         return owner != null && switchOwner == null
                 && appId == expectedAppId
                 && normalize(expectedHostId).equalsIgnoreCase(hostId)
                 && GatewayConnection.normalizeProfileId(expectedProfileId).equals(profileId);
+    }
+
+    private static String origin(Controller owner, String actor) {
+        String value = owner == null ? null : owner.getExecutionProfileId();
+        return GatewayConnection.normalizeProfileId(value == null ? actor : value);
+    }
+
+    public static synchronized boolean canSwitchOrigin(String host, String origin, int targetAppId) {
+        return executionProfileId.equals(GatewayConnection.normalizeProfileId(origin))
+                && canSwitchGame(host, profileId, targetAppId);
+    }
+
+    public static synchronized boolean bindActor(Controller owner, String sessionId,
+                                                  String actor, String origin) {
+        if (controller.get() != owner || !streamSessionId.equals(sessionId)
+                || !executionProfileId.equals(GatewayConnection.normalizeProfileId(origin))) return false;
+        profileId = GatewayConnection.normalizeProfileId(actor);
+        return true;
     }
 
     public static synchronized boolean isPreparingSwitchOwned(
@@ -516,14 +557,26 @@ public final class RetainedStreamSessionCoordinator {
                                           String artworkPath,
                                           java.util.function.BooleanSupplier cancelled,
                                           SwitchCallback completion) {
+        return switchGame(expectedHostId, expectedProfileId, expectedProfileId, false,
+                expectedAppId, newGameId, newGameName, streamTargetName, artworkPath,
+                cancelled, completion);
+    }
+
+    public static SwitchResult switchGame(String expectedHostId, String expectedExecutionProfileId,
+                                          String targetProfileId, boolean targetIsChild,
+                                          int expectedAppId, String newGameId, String newGameName,
+                                          String streamTargetName, String artworkPath,
+                                          java.util.function.BooleanSupplier cancelled,
+                                          SwitchCallback completion) {
         Controller owner;
         SwitchRequest request;
         synchronized (RetainedStreamSessionCoordinator.class) {
-            if (!canSwitchGame(expectedHostId, expectedProfileId, expectedAppId)) {
+            if (!canSwitchOrigin(expectedHostId, expectedExecutionProfileId, expectedAppId)) {
                 return SwitchResult.NOT_ELIGIBLE;
             }
             owner = controller.get();
-            request = new SwitchRequest(streamSessionId, hostId, profileId, appId,
+            request = new SwitchRequest(streamSessionId, hostId, profileId,
+                    executionProfileId, targetProfileId, targetIsChild, appId,
                     playniteGameId, newGameId, newGameName, streamTargetName,
                     artworkPath, transitionId, attempt, state == State.PREPARING,
                     cancelled);
@@ -612,7 +665,7 @@ public final class RetainedStreamSessionCoordinator {
     public static synchronized boolean updateOwnedSwitchGame(
             Controller expectedOwner, SwitchRequest request,
             String expectedOldGameId, String newGameId) {
-        if (request == null || state != State.HOME_LIVE
+        if (request == null || (state != State.HOME_LIVE && state != State.PARKED_LIVE)
                 || controller.get() != expectedOwner || switchOwner != expectedOwner
                 || !switchSessionId.equals(request.streamSessionId)
                 || !switchTransitionId.equals(request.transitionId)
@@ -684,6 +737,7 @@ public final class RetainedStreamSessionCoordinator {
             controller = new WeakReference<>(expectedOwner);
             streamSessionId = sessionId;
             hostId = expectedHost;
+            executionProfileId = origin(expectedOwner, profileId);
             appId = expectedAppId;
             playniteGameId = "";
             setStateLocked(State.HOME_LIVE);
@@ -772,6 +826,7 @@ public final class RetainedStreamSessionCoordinator {
         streamSessionId = "";
         hostId = "";
         profileId = GatewayConnection.DEFAULT_PROFILE_ID;
+        executionProfileId = GatewayConnection.DEFAULT_PROFILE_ID;
         appId = 0;
         playniteGameId = "";
         transitionId = "";

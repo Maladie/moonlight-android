@@ -19,6 +19,22 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class SessionOrchestratorTest {
+    @Test public void sameOriginActorChangeReusesEvenWhenNewActorSeesIdleOrTheSameGame() {
+        for (SessionSnapshot.State state : new SessionSnapshot.State[] {
+                SessionSnapshot.State.NONE, SessionSnapshot.State.ACTIVE}) {
+            Fake effects = new Fake();
+            effects.snapshot = snapshot(state, state == SessionSnapshot.State.NONE ? 0 : 42,
+                    state == SessionSnapshot.State.NONE ? "" : "game");
+            effects.canSwitch = true;
+            effects.closeResult = SessionOrchestrator.CloseResult.REUSED;
+            orchestrator(effects).play(game());
+            assertEquals(HostLaunchPreflight.Action.SWITCH_RETAINED, effects.preflightAction);
+            assertEquals(1, effects.closes);
+            assertEquals(1, effects.returned);
+            assertEquals(0, effects.launches);
+        }
+    }
+
     @Test public void savedPairAllowsOnePreparationButNotOrdinaryPlay() {
         Fake effects = new Fake();
         effects.paired = false;

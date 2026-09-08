@@ -257,6 +257,7 @@ public final class GatewayTransport {
             headers.put("Authorization", "Bearer " + connection.token());
             headers.put("X-WakePlay-Profile", connection.profileId());
             headers.put("X-MoonWaker-Profile-Session", PROFILE_SESSION_ID);
+            headers.put("X-MoonWaker-Capabilities", "child_profiles_v1");
         }
         if (post) {
             headers.put("Content-Type", "application/json; charset=utf-8");
@@ -276,7 +277,7 @@ public final class GatewayTransport {
         if (status < HttpURLConnection.HTTP_OK || status >= 300) {
             throw new GatewayException(
                     response.optString("error", "Host gateway request failed."), status,
-                    Math.max(0, response.optInt("retry_after_seconds", 0)));
+                    Math.max(0, response.optInt("retry_after_seconds", 0)), response);
         }
         return response;
     }
@@ -572,15 +573,22 @@ public final class GatewayTransport {
     public static final class GatewayException extends IOException {
         private final int statusCode;
         private final int retryAfterSeconds;
+        private final JSONObject responseBody;
 
         public GatewayException(String message, int statusCode) {
-            this(message, statusCode, 0);
+            this(message, statusCode, 0, null);
         }
 
         GatewayException(String message, int statusCode, int retryAfterSeconds) {
+            this(message, statusCode, retryAfterSeconds, null);
+        }
+
+        GatewayException(String message, int statusCode, int retryAfterSeconds,
+                         JSONObject responseBody) {
             super(message);
             this.statusCode = statusCode;
             this.retryAfterSeconds = retryAfterSeconds;
+            this.responseBody = responseBody;
         }
 
         public int statusCode() {
@@ -589,6 +597,14 @@ public final class GatewayTransport {
 
         public int retryAfterSeconds() {
             return retryAfterSeconds;
+        }
+
+        public JSONObject responseBody() {
+            return responseBody;
+        }
+
+        public String reason() {
+            return responseBody == null ? null : responseBody.optString("reason", null);
         }
     }
 

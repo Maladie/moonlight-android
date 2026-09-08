@@ -721,6 +721,23 @@ public class NvHTTP {
     public void unpair() throws IOException {
         openHttpConnectionToString(httpClientLongConnectTimeout, baseUrlHttp, "unpair");
     }
+
+    /**
+     * Remove the currently authenticated client from the host.
+     *
+     * The legacy unpair() request intentionally uses the plaintext pairing
+     * endpoint and only cancels a pending handshake.  A repair flow that must
+     * replace an already paired client has to use HTTPS so Vibepollo can bind
+     * the removal to this client's pinned certificate.
+     */
+    public boolean unpairAuthenticated() throws IOException, XmlPullParserException {
+        if (serverCert == null) {
+            throw new IOException("Cannot renew authenticated pairing without a pinned host certificate.");
+        }
+        String response = openHttpConnectionToString(httpClientLongConnectTimeout,
+                getHttpsUrl(true), "unpair");
+        return "1".equals(NvHTTP.getXmlString(response, "unpaired", false));
+    }
     
     public InputStream getBoxArt(NvApp app) throws IOException {
         ResponseBody resp = openHttpConnection(httpClientLongConnectTimeout, getHttpsUrl(true), "appasset", "appid=" + app.getAppId() + "&AssetType=2&AssetIdx=0");

@@ -1,7 +1,8 @@
 #requires -Version 5.1
 [CmdletBinding()]
-param([string]$ProfileRoot = $PSScriptRoot)
+param([ValidateNotNullOrEmpty()][string]$ProfileRoot = $PSScriptRoot)
 $ErrorActionPreference = "SilentlyContinue"
+$ProfileRoot = [IO.Path]::GetFullPath($ProfileRoot).TrimEnd('\')
 $statePath = Join-Path $ProfileRoot "profile-bridge-state.json"
 $stopPath = Join-Path $ProfileRoot "profile-bridge-stop"
 New-Item -ItemType File -Path (Join-Path $ProfileRoot "profile-bridge-manually-stopped") -Force | Out-Null

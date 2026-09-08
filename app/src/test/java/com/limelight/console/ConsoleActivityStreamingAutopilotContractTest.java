@@ -33,7 +33,7 @@ public class ConsoleActivityStreamingAutopilotContractTest {
         assertTrue(classic.contains("PlayIntent.sunshineApp"));
         assertTrue(preview.contains("StreamingAutopilotController.applyGlobal"));
         assertTrue(preview.contains("StreamingAutopilotController.applyForApp"));
-        assertTrue(preview.contains("sessionOrchestrator.play(calibrationIntent.withCalibration("));
+        assertTrue(preview.contains("playProviderGame(calibrationIntent.withCalibration("));
         assertTrue(preview.contains("console_autopilot_preview_details"));
         assertTrue(preview.contains("console_autopilot_calibration_preview_details"));
     }

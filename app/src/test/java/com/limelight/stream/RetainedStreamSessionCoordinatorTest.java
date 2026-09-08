@@ -15,6 +15,8 @@ public class RetainedStreamSessionCoordinatorTest {
 
     private static class FakeController
             implements RetainedStreamSessionCoordinator.Controller {
+        String origin;
+        @Override public String getExecutionProfileId() { return origin; }
         boolean parkResult = true;
         boolean disconnected;
         boolean terminated;
@@ -75,8 +77,67 @@ public class RetainedStreamSessionCoordinatorTest {
         }
     }
 
+    @Test public void familySwitchRetainsTransportButRebindsActorAndRejectsOtherOrigins() {
+        FakeController owner = new FakeController();
+        owner.origin = "parent";
+        RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A, "host", "parent", 7, "game-a");
+        for (String actor : new String[] {"child-a", "child-b", "parent"}) {
+            RetainedStreamSessionCoordinator.Snapshot before = RetainedStreamSessionCoordinator.snapshot();
+            assertFalse(RetainedStreamSessionCoordinator.canSwitchOrigin("host", "other", 7));
+            assertFalse(RetainedStreamSessionCoordinator.canSwitchOrigin("other-host", "parent", 7));
+            assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                    RetainedStreamSessionCoordinator.switchGame("host", "parent", actor,
+                            !actor.equals("parent"), 7, "game-b", "Game", "Stream", "", () -> false,
+                            (outcome, error) -> { }));
+            assertEquals(actor, owner.switchRequest.targetProfileId);
+            assertEquals("parent", owner.switchRequest.executionProfileId);
+            assertTrue(RetainedStreamSessionCoordinator.bindActor(owner, SESSION_A, actor, "parent"));
+            assertTrue(RetainedStreamSessionCoordinator.updateOwnedSwitchGame(owner,
+                    owner.switchRequest, before.playniteGameId, "game-b"));
+            owner.switchCompletion.complete(RetainedStreamSessionCoordinator.SwitchOutcome.REUSED, "");
+            RetainedStreamSessionCoordinator.finishSwitch(SESSION_A, owner);
+            assertFalse(RetainedStreamSessionCoordinator.canResumeInstantly(before));
+            assertEquals(actor, RetainedStreamSessionCoordinator.snapshot().profileId);
+            assertEquals(SESSION_A, RetainedStreamSessionCoordinator.snapshot().streamSessionId);
+            assertFalse(owner.disconnected);
+            assertFalse(owner.terminated);
+        }
+    }
+
+    @Test public void parkedFamilyTransportCanChangeGameWithoutDisconnect() {
+        FakeController owner = new FakeController();
+        owner.origin = "parent";
+        RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A, "host", "child-a", 7, "game-a");
+        assertTrue(RetainedStreamSessionCoordinator.parkForBackground(SESSION_A));
+        assertTrue(RetainedStreamSessionCoordinator.canSwitchOrigin("host", "parent", 7));
+        assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                RetainedStreamSessionCoordinator.switchGame("host", "parent", "child-b", true,
+                        7, "game-b", "Game", "Stream", "", () -> false, (outcome, error) -> { }));
+        assertTrue(RetainedStreamSessionCoordinator.bindActor(owner, SESSION_A, "child-b", "parent"));
+        assertTrue(RetainedStreamSessionCoordinator.updateOwnedSwitchGame(owner,
+                owner.switchRequest, "game-a", "game-b"));
+        assertFalse(owner.disconnected);
+    }
+
     @After public void reset() {
         RetainedStreamSessionCoordinator.clear();
+    }
+
+    @Test public void childAndParentReturnInstantlyFromDashboardAndBackground() {
+        for (String profile : new String[] {"parent", "child"}) {
+            RetainedStreamSessionCoordinator.clear();
+            FakeController owner = new FakeController();
+            RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A,
+                    "host", profile, 7, "steam:367520");
+            assertTrue(RetainedStreamSessionCoordinator.canResumeInstantly());
+            assertTrue(RetainedStreamSessionCoordinator.parkForBackground(SESSION_A));
+            assertTrue(RetainedStreamSessionCoordinator.canResumeInstantly());
+            assertEquals(profile, RetainedStreamSessionCoordinator.snapshot().profileId);
+            assertFalse(owner.disconnected);
+            assertFalse(owner.terminated);
+            RetainedStreamSessionCoordinator.clearIfMatches(SESSION_A);
+            assertFalse(RetainedStreamSessionCoordinator.canResumeInstantly());
+        }
     }
 
     @Test public void exactSwitchSnapshotRejectsStaleTokenAndDeadOwner() {
@@ -817,7 +878,7 @@ public class RetainedStreamSessionCoordinatorTest {
         assertEquals("other", RetainedStreamSessionCoordinator.snapshot().playniteGameId);
     }
 
-    @Test public void parkedDifferentHostAndDifferentAppCannotReuseTransport() {
+    @Test public void parkedTransportReusesOnlyTheSameHostAndApp() {
         FakeController controller = new FakeController();
         RetainedStreamSessionCoordinator.enterHome(
                 controller, SESSION_A, "host", 7, "old");
@@ -826,7 +887,7 @@ public class RetainedStreamSessionCoordinatorTest {
 
         RetainedStreamSessionCoordinator.markParked(SESSION_A);
 
-        assertFalse(RetainedStreamSessionCoordinator.canSwitchGame("host", 7));
+        assertTrue(RetainedStreamSessionCoordinator.canSwitchGame("host", 7));
     }
 
     @Test public void terminalCallbackReleasesSwitchButNotBeforeItArrives() {

@@ -2,8 +2,8 @@
 #requires -RunAsAdministrator
 [CmdletBinding()]
 param(
-    [string]$BinaryPath = (Join-Path $PSScriptRoot "dist\MoonWakerLoginBroker.exe"),
-    [string]$InstallDirectory = (Join-Path $env:ProgramFiles "MoonWaker\windows-login\login-broker"),
+    [ValidateNotNullOrEmpty()][string]$BinaryPath = (Join-Path $PSScriptRoot "dist\MoonWakerLoginBroker.exe"),
+    [ValidateNotNullOrEmpty()][string]$InstallDirectory = (Join-Path $env:ProgramFiles "MoonWaker\windows-login\login-broker"),
     [switch]$SkipStart
 )
 
@@ -33,6 +33,9 @@ if ($null -eq $service) {
         -StartupType Automatic | Out-Null
 }
 $serviceConfig = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+if ($null -eq $serviceConfig) {
+    throw "Windows did not expose the MoonWaker Login Broker service after installation."
+}
 $change = Invoke-CimMethod -InputObject $serviceConfig -MethodName Change -Arguments @{
     PathName = $quotedBinary
     StartMode = "Automatic"

@@ -17,27 +17,29 @@ using System.Web.Script.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
-[assembly: System.Reflection.AssemblyVersion("0.7.79.0")]
-[assembly: System.Reflection.AssemblyFileVersion("0.7.79.0")]
-[assembly: System.Reflection.AssemblyInformationalVersion("0.7.79+2026.09.05")]
+[assembly: System.Reflection.AssemblyVersion("0.7.95.0")]
+[assembly: System.Reflection.AssemblyFileVersion("0.7.95.0")]
+[assembly: System.Reflection.AssemblyInformationalVersion("0.7.95+2026.09.08")]
 
 namespace MoonWaker.HostConfigurator
 {
     internal static class Program
     {
         [STAThread]
-        private static void Main(string[] args)
+        private static int Main(string[] args)
         {
+            string mode = Argument(args, "--mode") ?? "edit";
+            if (String.Equals(mode, "child-api", StringComparison.OrdinalIgnoreCase))
+                return RunChildApi();
             Application.EnableVisualStyles();
             Application.SetCompatibleTextRenderingDefault(false);
             if (!IsAdministrator())
             {
                 MessageBox.Show("Konfigurator wymaga uprawnień administratora.",
                     "MoonWaker Host Configurator", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                return;
+                return 0;
             }
 
-            string mode = Argument(args, "--mode") ?? "edit";
             string profileId = Argument(args, "--profile");
             try
             {
@@ -48,19 +50,80 @@ namespace MoonWaker.HostConfigurator
                 {
                     if (!GatewayRegistryStore.IsValidProfileId(profileId))
                         throw new InvalidOperationException("Wybierz prawidłowy profil MoonWaker.");
-                    if (mode == "edit") form = new EditProfileForm(store, profileId);
-                    else if (mode == "remote-sign-in") form = new RemoteSignInForm(store, profileId);
-                    else if (mode == "devices") form = new DeviceGrantsForm(store, profileId);
-                    else if (mode == "remove") form = new RemoveProfileForm(store, profileId);
+                     if (mode == "edit") form = new EditProfileForm(store, profileId);
+                     else if (mode == "remote-sign-in") form = new RemoteSignInForm(store, profileId);
+                     else if (mode == "devices") form = new DeviceGrantsForm(store, profileId);
+                     else if (mode == "children") form = new ChildProfileManagerForm(store, profileId);
+                     else if (mode == "remove") form = new RemoveProfileForm(store, profileId);
                     else throw new InvalidOperationException("Nieznany tryb konfiguratora.");
                 }
                 Application.Run(form);
+                if (mode == "add" && form.DialogResult == DialogResult.OK) return 10;
             }
             catch (Exception ex)
             {
                 MessageBox.Show(ex.Message, "MoonWaker Host Configurator",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
+            return 0;
+        }
+
+        private static int RunChildApi()
+        {
+            JavaScriptSerializer serializer = new JavaScriptSerializer();
+            serializer.MaxJsonLength = 4 * 1024 * 1024;
+            Dictionary<string, object> result;
+            using (StreamReader input = new StreamReader(
+                Console.OpenStandardInput(), new UTF8Encoding(false)))
+            {
+                try
+                {
+                    if (!IsAdministrator()) result = ChildApiFailure("administrator_required");
+                    else
+                    {
+                        string raw = input.ReadToEnd();
+                        if (String.IsNullOrWhiteSpace(raw) || raw.Length > 4 * 1024 * 1024)
+                            throw new InvalidOperationException("invalid_child_profile_request");
+                        Dictionary<string, object> request =
+                            serializer.Deserialize<Dictionary<string, object>>(raw);
+                        result = GatewayRegistryStore.ForInstalledHost()
+                            .ApplyChildProfileRequest(request);
+                    }
+                }
+                catch (Exception error)
+                {
+                    result = ChildApiFailure(ChildApiReason(error));
+                }
+            }
+            // The Broker launches this mode with redirected standard streams and
+            // no console handle. Setting Console.InputEncoding/OutputEncoding
+            // therefore throws IOException before the request can be read.
+            using (StreamWriter output = new StreamWriter(
+                Console.OpenStandardOutput(), new UTF8Encoding(false)))
+            {
+                output.WriteLine(serializer.Serialize(result));
+            }
+            return 0;
+        }
+
+        private static Dictionary<string, object> ChildApiFailure(string reason)
+        {
+            return new Dictionary<string, object> {
+                { "ok", false }, { "reason", reason }, { "error", reason }
+            };
+        }
+
+        private static string ChildApiReason(Exception error)
+        {
+            string message = error == null ? "" : error.Message;
+            foreach (string known in new string[] {
+                "child_policy_revision_stale", "request_id_reused",
+                "administrator_required", "invalid_child_profile_request",
+                "child_profile_not_owned", "game_not_in_parent_catalog",
+                "invalid_child_game_key" })
+                if (message.IndexOf(known, StringComparison.OrdinalIgnoreCase) >= 0)
+                    return known;
+            return "child_profile_write_failed";
         }
 
         private static string Argument(string[] args, string name)
@@ -228,6 +291,12 @@ namespace MoonWaker.HostConfigurator
     internal sealed class ProfileRecord
     {
         internal string Id;
+        internal string Kind;
+        internal string ParentProfileId;
+        internal string AvatarId;
+        internal int PolicyRevision;
+        internal List<string> AllowedGameKeys;
+        internal List<ChildDayDraft> Days;
         internal string DisplayName;
         internal string Sid;
         internal string AccountName;
@@ -264,17 +333,66 @@ namespace MoonWaker.HostConfigurator
         internal long LastSeenAt;
         internal bool UseProfile;
         internal bool RemoteSignIn;
+        internal bool ManageChildren;
     }
 
     internal sealed class DeviceGrant
     {
         internal bool UseProfile;
         internal bool RemoteSignIn;
+        internal bool ManageChildren;
+    }
+
+    internal sealed class ChildGameGrantRecord
+    {
+        internal string Id;
+        internal string DisplayName;
+        internal bool Enabled;
+        internal bool Granted;
+        internal int PolicyRevision;
+    }
+
+    internal sealed class ChildGameInvalidation
+    {
+        internal string ChildProfileId;
+        internal string GameKey;
+        internal int PolicyRevision;
+    }
+
+    internal sealed class ChildGameSharingSnapshot
+    {
+        internal string ParentProfileId;
+        internal string GameKey;
+        internal int Revision;
+        internal List<ChildGameGrantRecord> Children;
+    }
+
+    internal sealed class ChildGameSharingResult
+    {
+        internal string ParentProfileId;
+        internal string GameKey;
+        internal int Revision;
+        internal List<string> ChildProfileIds;
+        internal List<ChildGameInvalidation> Invalidations;
+        internal bool Idempotent;
     }
 
     internal sealed class GatewayRegistryStore
     {
-        private const int SchemaVersion = 2;
+        private const int SchemaVersion = 3;
+        private const string ChildParentPolicyRevisionField = "children_policy_revision";
+        private const string ChildSharingRequestsField = "child_sharing_requests";
+        private const int MaxChildSharingRequests = 32;
+        private const string ChildProfileRequestsField = "child_profile_requests";
+        private const int MaxChildProfileRequests = 32;
+        private static readonly string[] ChildWeekdays = new string[] {
+            "mon", "tue", "wed", "thu", "fri", "sat", "sun" };
+        private const string ChildGameKeyPattern =
+            "^[A-Za-z0-9._-]{1,64}/[a-z][a-z0-9_-]{1,31}:[A-Za-z0-9._-]{1,128}$";
+        private const string GameRecordIdPattern =
+            "^[a-z][a-z0-9_-]{1,31}:[A-Za-z0-9._-]{1,128}$";
+        private const string RequestIdPattern =
+            "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$";
         private readonly JavaScriptSerializer json = new JavaScriptSerializer();
         private readonly int lockTimeoutMilliseconds;
         internal readonly string ConfigPath;
@@ -331,12 +449,523 @@ namespace MoonWaker.HostConfigurator
             foreach (KeyValuePair<string, object> item in profiles)
             {
                 Dictionary<string, object> profile = item.Value as Dictionary<string, object>;
-                if (profile != null) result.Add(ToProfile(item.Key, profile));
+                if (profile != null && !String.Equals(Text(profile, "kind", "standard"),
+                        "child", StringComparison.OrdinalIgnoreCase))
+                    result.Add(ToProfile(item.Key, profile));
             }
             result.Sort(delegate(ProfileRecord left, ProfileRecord right) {
                 return StringComparer.CurrentCultureIgnoreCase.Compare(left.DisplayName, right.DisplayName);
             });
             return result;
+        }
+
+        internal List<ProfileRecord> GetChildren(string parentProfileId)
+        {
+            if (!IsValidProfileId(parentProfileId))
+                throw new InvalidOperationException("Wybierz prawidłowy profil rodzica.");
+            Dictionary<string, object> document = ReadDocument();
+            List<ProfileRecord> result = new List<ProfileRecord>();
+            foreach (KeyValuePair<string, object> item in
+                Dictionary(document, "profiles", false))
+            {
+                Dictionary<string, object> profile = item.Value as Dictionary<string, object>;
+                if (profile != null && String.Equals(Text(profile, "kind", "standard"),
+                        "child", StringComparison.OrdinalIgnoreCase) &&
+                    String.Equals(Text(profile, "parent_profile_id", ""), parentProfileId,
+                        StringComparison.Ordinal))
+                    result.Add(ToProfile(item.Key, profile));
+            }
+            result.Sort(delegate(ProfileRecord left, ProfileRecord right) {
+                return StringComparer.CurrentCultureIgnoreCase.Compare(left.DisplayName, right.DisplayName);
+            });
+            return result;
+        }
+
+        internal int GetChildPolicyRevision(string parentProfileId)
+        {
+            if (!IsValidProfileId(parentProfileId))
+                throw new InvalidOperationException("Wybierz prawidłowy profil rodzica.");
+            Dictionary<string, object> document = ReadDocument();
+            object value;
+            Dictionary<string, object> parent;
+            if (!Dictionary(document, "profiles", false).TryGetValue(parentProfileId,
+                    out value) || (parent = value as Dictionary<string, object>) == null ||
+                !String.Equals(Text(parent, "kind", "standard"), "standard",
+                    StringComparison.OrdinalIgnoreCase))
+                return 0;
+            return ChildPolicyRevision(parent);
+        }
+
+        // Local administrator cleanup is allowed to remove an orphan record even
+        // when its former parent is gone or disabled.  It never removes Windows
+        // identity or profile data, and it intentionally does not cascade.
+        internal void RemoveChildProfileLocal(string childProfileId)
+        {
+            if (!IsValidProfileId(childProfileId))
+                throw new InvalidOperationException("Wybierz prawidłowy profil dziecka.");
+            using (RegistryFileLock.Acquire(RegistryLockPath, lockTimeoutMilliseconds))
+            {
+                Dictionary<string, object> document = ReadDocument();
+                Dictionary<string, object> profiles = Dictionary(document, "profiles", false);
+                object value;
+                Dictionary<string, object> child;
+                if (!profiles.TryGetValue(childProfileId, out value) ||
+                    (child = value as Dictionary<string, object>) == null ||
+                    !IsOwnedChild(child, Text(child, "parent_profile_id", "")))
+                    throw new InvalidOperationException("Profil dziecka nie istnieje.");
+                string parentProfileId = Text(child, "parent_profile_id", "");
+                profiles.Remove(childProfileId);
+                RemoveProfileGrants(document, childProfileId);
+                object parentValue;
+                Dictionary<string, object> parent;
+                if (profiles.TryGetValue(parentProfileId, out parentValue) &&
+                    (parent = parentValue as Dictionary<string, object>) != null &&
+                    String.Equals(Text(parent, "kind", "standard"), "standard",
+                        StringComparison.OrdinalIgnoreCase))
+                    parent[ChildParentPolicyRevisionField] = ChildPolicyRevision(parent) + 1;
+                WriteDocument(document);
+            }
+        }
+
+        internal ChildGameSharingSnapshot GetChildGameSharing(string parentProfileId,
+            string gameKey)
+        {
+            if (!IsValidProfileId(parentProfileId))
+                throw new InvalidOperationException("Wybierz prawidłowy profil rodzica.");
+            Dictionary<string, object> document = ReadDocument();
+            Dictionary<string, object> parent = Profile(document, parentProfileId);
+            EnsureChildPolicyParent(parent);
+            string canonicalKey = NormalizeChildGameKey(parentProfileId, gameKey);
+            List<ChildGameGrantRecord> children = new List<ChildGameGrantRecord>();
+            foreach (KeyValuePair<string, object> item in
+                Dictionary(document, "profiles", false))
+            {
+                Dictionary<string, object> child = item.Value as Dictionary<string, object>;
+                if (!IsOwnedChild(child, parentProfileId)) continue;
+                children.Add(new ChildGameGrantRecord {
+                    Id = item.Key,
+                    DisplayName = Text(child, "display_name", Text(child, "name", item.Key)),
+                    Enabled = BooleanValue(child, "enabled") &&
+                        Value(child, "deletion_tombstone") == null,
+                    Granted = ContainsGameKey(child, canonicalKey),
+                    PolicyRevision = ChildPolicyRevision(child)
+                });
+            }
+            children.Sort(delegate(ChildGameGrantRecord left,
+                ChildGameGrantRecord right) {
+                return StringComparer.CurrentCultureIgnoreCase.Compare(
+                    left.DisplayName, right.DisplayName);
+            });
+            return new ChildGameSharingSnapshot {
+                ParentProfileId = parentProfileId,
+                GameKey = canonicalKey,
+                Revision = ChildPolicyRevision(parent),
+                Children = children
+            };
+        }
+
+        internal ChildGameSharingResult UpdateChildGameSharing(string parentProfileId,
+            string gameKey, IEnumerable<string> selectedChildProfileIds,
+            int expectedRevision, string requestId,
+            IEnumerable<string> parentCatalogGameKeys)
+        {
+            if (!IsValidProfileId(parentProfileId))
+                throw new InvalidOperationException("Wybierz prawidłowy profil rodzica.");
+            if (!System.Text.RegularExpressions.Regex.IsMatch(
+                    requestId ?? "", RequestIdPattern))
+                throw new InvalidOperationException("Nieprawidłowy identyfikator żądania udostępniania.");
+            if (expectedRevision < 0)
+                throw new InvalidOperationException("Nieprawidłowa rewizja zasad dzieci.");
+            if (selectedChildProfileIds == null || parentCatalogGameKeys == null)
+                throw new InvalidOperationException("Brak pełnego wyboru udostępniania gry.");
+
+            List<string> selected = new List<string>();
+            HashSet<string> selectedSet = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string value in selectedChildProfileIds)
+            {
+                string childId = value == null ? "" : value.Trim();
+                if (!IsValidProfileId(childId) || !selectedSet.Add(childId))
+                    throw new InvalidOperationException("invalid_child_profile_request");
+                selected.Add(childId);
+            }
+            HashSet<string> catalog = new HashSet<string>(StringComparer.Ordinal);
+            foreach (string value in parentCatalogGameKeys)
+            {
+                string normalized = value == null ? "" : value.Trim();
+                if (normalized.Length > 0) catalog.Add(normalized);
+            }
+
+            using (RegistryFileLock.Acquire(RegistryLockPath, lockTimeoutMilliseconds))
+            {
+                Dictionary<string, object> document = ReadDocument();
+                Dictionary<string, object> profiles = Dictionary(document, "profiles", false);
+                Dictionary<string, object> parent = Profile(document, parentProfileId);
+                EnsureChildPolicyParent(parent);
+                string canonicalKey = NormalizeChildGameKey(parentProfileId, gameKey);
+                if (!catalog.Contains(canonicalKey))
+                    throw new InvalidOperationException("game_not_in_parent_catalog");
+                int currentRevision = ChildPolicyRevision(parent);
+                Dictionary<string, object> requests = ChildSharingRequests(parent, true);
+                string fingerprint = SharingFingerprint(canonicalKey, expectedRevision, selected);
+                object priorValue;
+                if (requests.TryGetValue(requestId, out priorValue))
+                {
+                    Dictionary<string, object> prior = priorValue as Dictionary<string, object>;
+                    if (prior == null || !String.Equals(Text(prior, "fingerprint", ""),
+                        fingerprint, StringComparison.Ordinal))
+                        throw new InvalidOperationException("request_id_reused");
+                    return SharingResultFromRecord(parentProfileId, canonicalKey,
+                        prior, true);
+                }
+                if (expectedRevision != currentRevision)
+                    throw new InvalidOperationException("child_policy_revision_stale");
+
+                Dictionary<string, Dictionary<string, object>> ownChildren =
+                    new Dictionary<string, Dictionary<string, object>>(StringComparer.Ordinal);
+                foreach (KeyValuePair<string, object> item in profiles)
+                {
+                    Dictionary<string, object> child = item.Value as Dictionary<string, object>;
+                    if (IsOwnedChild(child, parentProfileId)) ownChildren[item.Key] = child;
+                }
+                foreach (string childId in selected)
+                    if (!ownChildren.ContainsKey(childId))
+                        throw new InvalidOperationException(
+                            "child_profile_not_owned");
+
+                List<ChildGameInvalidation> invalidations =
+                    new List<ChildGameInvalidation>();
+                bool changed = false;
+                foreach (KeyValuePair<string, Dictionary<string, object>> item in ownChildren)
+                {
+                    bool shouldGrant = selectedSet.Contains(item.Key);
+                    Dictionary<string, object> child = item.Value;
+                    bool currentlyGranted = ContainsGameKey(child, canonicalKey);
+                    if (currentlyGranted == shouldGrant) continue;
+                    changed = true;
+                    List<object> keys = ChildGameKeys(child);
+                    if (shouldGrant) keys.Add(canonicalKey);
+                    else
+                    {
+                        for (int index = keys.Count - 1; index >= 0; index--)
+                            if (String.Equals(Convert.ToString(keys[index]), canonicalKey,
+                                StringComparison.Ordinal)) keys.RemoveAt(index);
+                    }
+                    child["allowed_game_keys"] = keys.ToArray();
+                    int childRevision = ChildPolicyRevision(child) + 1;
+                    child["policy_revision"] = childRevision;
+                    if (!shouldGrant)
+                    {
+                        invalidations.Add(new ChildGameInvalidation {
+                            ChildProfileId = item.Key,
+                            GameKey = canonicalKey,
+                            PolicyRevision = childRevision
+                        });
+                    }
+                }
+                int revision = currentRevision;
+                if (changed)
+                {
+                    revision++;
+                    parent[ChildParentPolicyRevisionField] = revision;
+                }
+                Dictionary<string, object> record = SharingRequestRecord(
+                    fingerprint, revision, selected, invalidations);
+                requests[requestId] = record;
+                TrimChildSharingRequests(requests);
+                WriteDocument(document);
+                return SharingResultFromRecord(parentProfileId, canonicalKey,
+                    record, false);
+            }
+        }
+
+        internal ProfileRecord CreateChildProfile(string parentProfileId,
+            string displayName, string avatarId)
+        {
+            ValidateDisplayName(displayName);
+            if (!IsValidProfileId(parentProfileId))
+                throw new InvalidOperationException("Wybierz prawidłowy profil rodzica.");
+            if (avatarId == null) avatarId = "";
+            if (avatarId.Length > 128 ||
+                System.Text.RegularExpressions.Regex.IsMatch(avatarId, "[\\x00-\\x1f\\x7f]"))
+                throw new InvalidOperationException("Nieprawidłowy identyfikator awatara.");
+            using (RegistryFileLock.Acquire(RegistryLockPath, lockTimeoutMilliseconds))
+            {
+                Dictionary<string, object> document = ReadDocument();
+                Dictionary<string, object> profiles = Dictionary(document, "profiles", false);
+                Dictionary<string, object> parent = Profile(document, parentProfileId);
+                EnsureStandardProfile(parent);
+                if (!BooleanValue(parent, "enabled") || Value(parent, "deletion_tombstone") != null)
+                    throw new InvalidOperationException("Rodzic profilu dziecka jest wyłączony.");
+                if (Value(parent, "pin_verifier") == null)
+                    throw new InvalidOperationException(
+                        "Rodzic profilu dziecka musi mieć ustawiony PIN aplikacji.");
+                if (!IsSid(Text(parent, "windows_account_sid",
+                        Text(parent, "owner_sid", ""))) ||
+                    String.IsNullOrWhiteSpace(Text(parent, "windows_account_name",
+                        Text(parent, "owner", ""))) ||
+                    !String.Equals(Text(parent, "account_mapping_status", ""),
+                        "resolved", StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "Rodzic profilu dziecka musi mieć rozpoznane konto Windows.");
+                string id;
+                do { id = NewProfileId(); } while (profiles.ContainsKey(id));
+                Dictionary<string, object> child = new Dictionary<string, object>();
+                child["id"] = id;
+                child["kind"] = "child";
+                child["name"] = displayName.Trim();
+                child["display_name"] = displayName.Trim();
+                child["avatar_id"] = avatarId;
+                child["parent_profile_id"] = parentProfileId;
+                child["enabled"] = true;
+                child["policy_revision"] = 0;
+                child["allowed_game_keys"] = new object[0];
+                child["schedule"] = DefaultChildSchedule();
+                profiles[id] = child;
+                parent[ChildParentPolicyRevisionField] =
+                    ChildPolicyRevision(parent) + 1;
+                WriteDocument(document);
+                return ToProfile(id, child);
+            }
+        }
+
+        // The Gateway sends this narrow DTO through the Broker.  Keep the
+        // registry mutation here so every caller uses the same lock, revision
+        // check, and idempotency record.
+        internal Dictionary<string, object> ApplyChildProfileRequest(
+            Dictionary<string, object> request)
+        {
+            if (request == null) throw new InvalidOperationException("Brak żądania profilu dziecka.");
+            string operation = Text(request, "operation", "").Trim().ToLowerInvariant();
+            if (operation == "sharing_set")
+                return ApplyChildGameSharingRequest(request);
+            if (operation != "create" && operation != "update" && operation != "delete")
+                throw new InvalidOperationException("Nieznana operacja profilu dziecka.");
+            string parentProfileId = Text(request, "parent_profile_id", "").Trim();
+            if (!IsValidProfileId(parentProfileId))
+                throw new InvalidOperationException("Wybierz prawidłowy profil rodzica.");
+            string requestId = Text(request, "request_id", "").Trim();
+            if (!System.Text.RegularExpressions.Regex.IsMatch(requestId, RequestIdPattern))
+                throw new InvalidOperationException("Nieprawidłowy identyfikator żądania profilu dziecka.");
+            int expectedRevision = RequiredNonNegativeInt(request, "expected_revision");
+            string childProfileId = Text(request, "child_profile_id", "").Trim();
+            if (operation != "create" && !IsValidProfileId(childProfileId))
+                throw new InvalidOperationException("Wybierz prawidłowy profil dziecka.");
+            Dictionary<string, object> draft = null;
+            if (operation != "delete")
+                draft = NormalizeChildDraft(Value(request, "draft") as Dictionary<string, object>);
+            bool grantCurrentDevice = false;
+            string grantClientId = "";
+            if (operation == "create")
+            {
+                object grantValue = Value(request, "grant_current_device");
+                if (grantValue != null && !(grantValue is bool))
+                    throw new InvalidOperationException(
+                        "Żądanie profilu dziecka ma nieprawidłowy grant urządzenia.");
+                grantCurrentDevice = grantValue is bool && (bool)grantValue;
+                grantClientId = Text(request, "grant_client_id", "").Trim();
+                if (grantCurrentDevice && String.IsNullOrWhiteSpace(grantClientId))
+                    throw new InvalidOperationException(
+                        "Żądanie profilu dziecka nie wskazuje urządzenia.");
+                if (!grantCurrentDevice && grantClientId.Length > 0)
+                    throw new InvalidOperationException(
+                        "Żądanie profilu dziecka ma nieprawidłowy grant urządzenia.");
+            }
+            string fingerprint = ChildProfileFingerprint(operation, parentProfileId,
+                childProfileId, expectedRevision, draft, grantCurrentDevice, grantClientId);
+
+            using (RegistryFileLock.Acquire(RegistryLockPath, lockTimeoutMilliseconds))
+            {
+                Dictionary<string, object> document = ReadDocument();
+                Dictionary<string, object> profiles = Dictionary(document, "profiles", false);
+                Dictionary<string, object> parent = Profile(document, parentProfileId);
+                EnsureChildPolicyParent(parent);
+                if (Value(parent, "pin_verifier") == null)
+                    throw new InvalidOperationException(
+                        "Rodzic profilu dziecka musi mieć ustawiony PIN aplikacji.");
+                int currentRevision = ChildPolicyRevision(parent);
+                Dictionary<string, object> requests = ChildProfileRequests(parent, true);
+                object priorValue;
+                if (requests.TryGetValue(requestId, out priorValue))
+                {
+                    Dictionary<string, object> prior = priorValue as Dictionary<string, object>;
+                    if (prior == null || !String.Equals(Text(prior, "fingerprint", ""),
+                        fingerprint, StringComparison.Ordinal))
+                        throw new InvalidOperationException("request_id_reused");
+                    Dictionary<string, object> priorResult = Value(prior, "result") as
+                        Dictionary<string, object>;
+                    if (priorResult == null)
+                        throw new InvalidOperationException("Rejestr ma nieprawidłowy wynik żądania profilu dziecka.");
+                    Dictionary<string, object> replay =
+                        new Dictionary<string, object>(priorResult);
+                    replay["idempotent"] = true;
+                    return replay;
+                }
+                if (expectedRevision != currentRevision)
+                    throw new InvalidOperationException("child_policy_revision_stale");
+
+                Dictionary<string, object> result;
+                if (operation == "create")
+                {
+                    string id;
+                    do { id = NewProfileId(); } while (profiles.ContainsKey(id));
+                    Dictionary<string, object> child = new Dictionary<string, object> {
+                        { "id", id }, { "kind", "child" },
+                        { "name", draft["name"] }, { "display_name", draft["name"] },
+                        { "avatar_id", draft["avatar_id"] },
+                        { "parent_profile_id", parentProfileId },
+                        { "enabled", draft["enabled"] }, { "policy_revision", 0 },
+                        { "allowed_game_keys", new object[0] },
+                        { "schedule", draft["schedule"] }
+                    };
+                    profiles[id] = child;
+                    if (grantCurrentDevice)
+                        GrantChildUseProfile(document, grantClientId, id);
+                    int revision = currentRevision + 1;
+                    parent[ChildParentPolicyRevisionField] = revision;
+                    result = ChildProfileMutationResult(parentProfileId, revision,
+                        ChildProfileDto(child), false, false);
+                }
+                else
+                {
+                    object childValue;
+                    Dictionary<string, object> child;
+                    if (!profiles.TryGetValue(childProfileId, out childValue) ||
+                        (child = childValue as Dictionary<string, object>) == null ||
+                        !IsOwnedChild(child, parentProfileId))
+                        throw new InvalidOperationException("child_profile_not_owned");
+                    if (operation == "delete")
+                    {
+                        profiles.Remove(childProfileId);
+                        RemoveProfileGrants(document, childProfileId);
+                        int revision = currentRevision + 1;
+                        parent[ChildParentPolicyRevisionField] = revision;
+                        result = ChildProfileMutationResult(parentProfileId, revision,
+                            null, false, true);
+                        result["child_profile_id"] = childProfileId;
+                        result["affected_child_profile_ids"] = new object[] { childProfileId };
+                    }
+                    else
+                    {
+                        bool scheduleChanged = !String.Equals(ScheduleFingerprint(
+                                StoredChildSchedule(child)),
+                                ScheduleFingerprint((Dictionary<string, object>)draft["schedule"]),
+                                StringComparison.Ordinal);
+                        bool enabledChanged = !BooleanEquals(child, "enabled",
+                            (bool)draft["enabled"]);
+                        bool changed = !String.Equals(Text(child, "name",
+                                Text(child, "display_name", "")),
+                                Convert.ToString(draft["name"]), StringComparison.Ordinal) ||
+                            !String.Equals(Text(child, "display_name", ""),
+                                Convert.ToString(draft["name"]), StringComparison.Ordinal) ||
+                            !String.Equals(Text(child, "avatar_id", ""),
+                                Convert.ToString(draft["avatar_id"]), StringComparison.Ordinal) ||
+                            enabledChanged || scheduleChanged;
+                        bool policyChanged = enabledChanged ||
+                            ChildScheduleShrank(StoredChildSchedule(child),
+                                (Dictionary<string, object>)draft["schedule"]);
+                        if (changed)
+                        {
+                            child["name"] = draft["name"];
+                            child["display_name"] = draft["name"];
+                            child["avatar_id"] = draft["avatar_id"];
+                            child["enabled"] = draft["enabled"];
+                            child["schedule"] = draft["schedule"];
+                            child["policy_revision"] = ChildPolicyRevision(child) + 1;
+                            currentRevision++;
+                            parent[ChildParentPolicyRevisionField] = currentRevision;
+                        }
+                        result = ChildProfileMutationResult(parentProfileId, currentRevision,
+                            ChildProfileDto(child), false, policyChanged);
+                        if (policyChanged)
+                            result["affected_child_profile_ids"] = new object[] { childProfileId };
+                    }
+                }
+                requests[requestId] = new Dictionary<string, object> {
+                    { "fingerprint", fingerprint }, { "result", result }
+                };
+                TrimChildProfileRequests(requests);
+                WriteDocument(document);
+                return result;
+            }
+        }
+
+        private Dictionary<string, object> ApplyChildGameSharingRequest(
+            Dictionary<string, object> request)
+        {
+            string parentProfileId = Text(request, "parent_profile_id", "").Trim();
+            string gameKey = Text(request, "game_key", "").Trim();
+            string requestId = Text(request, "request_id", "").Trim();
+            int expectedRevision = RequiredNonNegativeInt(request, "expected_revision");
+            List<string> selected = RequiredStringList(request, "selected_child_ids");
+            List<string> catalog = RequiredStringList(request, "parent_catalog_game_keys");
+            ChildGameSharingResult result = UpdateChildGameSharing(
+                parentProfileId, gameKey, selected, expectedRevision, requestId, catalog);
+            return ChildGameSharingMutationResult(result);
+        }
+
+        private static List<string> RequiredStringList(
+            Dictionary<string, object> source, string key)
+        {
+            IEnumerable values = Value(source, key) as IEnumerable;
+            if (values == null || values is string)
+                throw new InvalidOperationException("Żądanie zawiera niepełną listę.");
+            List<string> result = new List<string>();
+            foreach (object value in values)
+            {
+                string text = value as string;
+                if (text == null) throw new InvalidOperationException(
+                    "Żądanie zawiera nieprawidłową listę.");
+                result.Add(text);
+            }
+            return result;
+        }
+
+        private static Dictionary<string, object> ChildGameSharingMutationResult(
+            ChildGameSharingResult value)
+        {
+            List<object> selected = new List<object>();
+            foreach (string childId in value.ChildProfileIds) selected.Add(childId);
+            List<object> invalidations = new List<object>();
+            List<object> affected = new List<object>();
+            HashSet<string> affectedIds = new HashSet<string>(StringComparer.Ordinal);
+            foreach (ChildGameInvalidation invalidation in value.Invalidations)
+            {
+                invalidations.Add(new Dictionary<string, object> {
+                    { "child_profile_id", invalidation.ChildProfileId },
+                    { "game_key", invalidation.GameKey },
+                    { "policy_revision", invalidation.PolicyRevision }
+                });
+                if (affectedIds.Add(invalidation.ChildProfileId))
+                    affected.Add(invalidation.ChildProfileId);
+            }
+            Dictionary<string, object> result = new Dictionary<string, object> {
+                { "ok", true }, { "parent_profile_id", value.ParentProfileId },
+                { "game_key", value.GameKey }, { "revision", value.Revision },
+                { "selected_child_ids", selected.ToArray() },
+                { "invalidations", invalidations.ToArray() },
+                { "idempotent", value.Idempotent },
+                { "cleanup_required", affected.Count > 0 }
+            };
+            if (affected.Count > 0)
+                result["affected_child_profile_ids"] = affected.ToArray();
+            return result;
+        }
+
+        private static void GrantChildUseProfile(Dictionary<string, object> document,
+            string clientId, string childProfileId)
+        {
+            if (String.IsNullOrWhiteSpace(clientId) || clientId.Length > 128 ||
+                System.Text.RegularExpressions.Regex.IsMatch(clientId, "[\\x00-\\x1f\\x7f]"))
+                throw new InvalidOperationException("Żądanie wskazuje nieprawidłowe urządzenie.");
+            foreach (Dictionary<string, object> client in Clients(document))
+            {
+                if (!String.Equals(Text(client, "id", ""), clientId,
+                    StringComparison.Ordinal)) continue;
+                Dictionary<string, object> grants = Dictionary(client, "profile_grants", true);
+                grants[childProfileId] = new object[] { "use_profile" };
+                return;
+            }
+            throw new InvalidOperationException("Wskazane urządzenie nie jest sparowane.");
         }
 
         internal ProfileRecord ReserveProfile(LocalAccount account, string displayName)
@@ -390,10 +1019,12 @@ namespace MoonWaker.HostConfigurator
             {
                 Dictionary<string, object> document = ReadDocument();
                 Dictionary<string, object> profile = Profile(document, expected.Id);
+                EnsureStandardProfile(profile);
                 EnsureProvisioningReservation(profile, expected);
                 provision();
                 document = ReadDocument();
                 profile = Profile(document, expected.Id);
+                EnsureStandardProfile(profile);
                 EnsureProvisioningReservation(profile, expected);
                 profile["enabled"] = true;
                 WriteDocument(document);
@@ -469,9 +1100,21 @@ namespace MoonWaker.HostConfigurator
             {
                 Dictionary<string, object> document = ReadDocument();
                 Dictionary<string, object> profile = Profile(document, id);
-                EnsureSid(profile, expectedSid);
-                EnsureNotTombstoned(profile);
-                bool remoteEnabled = BooleanValue(profile, "remote_sign_in_enabled");
+                bool child = IsChildProfile(profile);
+                Dictionary<string, object> policyParent = profile;
+                if (child)
+                {
+                    policyParent = EnsureChildGrantParent(document, profile, true);
+                    EnsureNotTombstoned(profile);
+                    EnsureSid(policyParent, expectedSid);
+                }
+                else
+                {
+                    EnsureStandardProfile(profile);
+                    EnsureSid(profile, expectedSid);
+                    EnsureNotTombstoned(profile);
+                }
+                bool remoteEnabled = BooleanValue(policyParent, "remote_sign_in_enabled");
                 foreach (Dictionary<string, object> client in Clients(document))
                 {
                     string clientId = Text(client, "id", "");
@@ -481,11 +1124,25 @@ namespace MoonWaker.HostConfigurator
                     if (grant.RemoteSignIn && (!grant.UseProfile || !remoteEnabled))
                         throw new InvalidOperationException(
                             "Zdalny dostęp wymaga zwykłego dostępu i gotowych danych logowania profilu.");
+                    if (grant.ManageChildren && !grant.UseProfile)
+                        throw new InvalidOperationException(
+                            "Zarządzanie dziećmi wymaga zwykłego dostępu do profilu rodzica.");
+                    if (child && grant.ManageChildren)
+                        throw new InvalidOperationException(
+                            "Profil dziecka nie może zarządzać profilami dzieci.");
+                    if (!child && grant.ManageChildren &&
+                        Value(profile, "pin_verifier") == null)
+                        throw new InvalidOperationException(
+                            "Zarządzanie dziećmi wymaga ustawionego PIN-u aplikacji rodzica.");
                     Dictionary<string, object> grants = Dictionary(client, "profile_grants", true);
                     if (!grant.UseProfile) grants.Remove(id);
-                    else grants[id] = grant.RemoteSignIn
-                        ? new object[] { "use_profile", "remote_sign_in" }
-                        : new object[] { "use_profile" };
+                    else
+                    {
+                        List<object> permissions = new List<object> { "use_profile" };
+                        if (grant.RemoteSignIn) permissions.Add("remote_sign_in");
+                        if (grant.ManageChildren) permissions.Add("manage_children");
+                        grants[id] = permissions.ToArray();
+                    }
                 }
                 WriteDocument(document);
             }
@@ -494,7 +1151,10 @@ namespace MoonWaker.HostConfigurator
         internal List<DeviceRecord> GetDevices(string profileId)
         {
             Dictionary<string, object> document = ReadDocument();
-            Profile(document, profileId);
+            Dictionary<string, object> selected = Profile(document, profileId);
+            bool child = IsChildProfile(selected);
+            if (child) EnsureChildGrantParent(document, selected, false);
+            else EnsureStandardProfile(selected);
             Dictionary<string, long> activity = ReadActivity();
             List<DeviceRecord> result = new List<DeviceRecord>();
             foreach (Dictionary<string, object> client in Clients(document))
@@ -513,7 +1173,8 @@ namespace MoonWaker.HostConfigurator
                     PairedAt = paired,
                     LastSeenAt = seen,
                     UseProfile = permissions.Contains("use_profile"),
-                    RemoteSignIn = permissions.Contains("remote_sign_in")
+                    RemoteSignIn = permissions.Contains("remote_sign_in"),
+                    ManageChildren = !child && permissions.Contains("manage_children")
                 });
             }
             result.Sort(delegate(DeviceRecord left, DeviceRecord right) {
@@ -555,6 +1216,7 @@ namespace MoonWaker.HostConfigurator
             {
                 Dictionary<string, object> document = ReadDocument();
                 Dictionary<string, object> profile = Profile(document, expected.Id);
+                EnsureStandardProfile(profile);
                 EnsureRemovalIdentity(profile, expected);
                 Dictionary<string, object> tombstone = Value(profile,
                     "deletion_tombstone") as Dictionary<string, object>;
@@ -600,6 +1262,7 @@ namespace MoonWaker.HostConfigurator
                 Dictionary<string, object> document = ReadDocument();
                 Dictionary<string, object> profiles = Dictionary(document, "profiles", false);
                 Dictionary<string, object> profile = Profile(document, expected.Id);
+                EnsureStandardProfile(profile);
                 EnsureRemovalIdentity(profile, expected);
                 EnsureDeletionTombstone(profile, expected);
                 string expectedRoot = Path.GetFullPath(Path.Combine(ProfilesRoot, expected.Id));
@@ -621,6 +1284,7 @@ namespace MoonWaker.HostConfigurator
             {
                 Dictionary<string, object> document = ReadDocument();
                 Dictionary<string, object> profile = Profile(document, id);
+                EnsureStandardProfile(profile);
                 EnsureSid(profile, expectedSid);
                 EnsureNotTombstoned(profile);
                 mutation(document, profile);
@@ -641,13 +1305,125 @@ namespace MoonWaker.HostConfigurator
                 throw new InvalidOperationException("Rejestr profili Gateway jest uszkodzony.", ex);
             }
             object clients = document == null ? null : Value(document, "clients");
+            if (document != null && IntValue(document, "schema_version") == 2)
+                UpgradeSchema2(document);
             if (document == null || IntValue(document, "schema_version") != SchemaVersion ||
                 !(Value(document, "profiles") is Dictionary<string, object>) ||
                 !(clients is IEnumerable) || clients is string ||
                 clients is Dictionary<string, object>)
                 throw new InvalidOperationException(
-                    "Gateway musi najpierw uruchomić migrację rejestru do schematu 2.");
+                    "Gateway musi najpierw uruchomić migrację rejestru do schematu 3.");
+            ValidateProfileRegistry(Dictionary(document, "profiles", false));
             return document;
+        }
+
+        private static void UpgradeSchema2(Dictionary<string, object> document)
+        {
+            Dictionary<string, object> profiles = Dictionary(document, "profiles", false);
+            foreach (KeyValuePair<string, object> item in profiles)
+            {
+                Dictionary<string, object> profile = item.Value as Dictionary<string, object>;
+                if (profile == null) throw new InvalidOperationException(
+                    "Rejestr Gateway ma nieprawidłową strukturę profili.");
+                if (!profile.ContainsKey("id")) profile["id"] = item.Key;
+                if (!profile.ContainsKey("kind")) profile["kind"] = "standard";
+                if (String.Equals(Text(profile, "kind", "standard"), "child",
+                        StringComparison.OrdinalIgnoreCase) &&
+                    !profile.ContainsKey("schedule"))
+                    profile["schedule"] = DefaultChildSchedule();
+            }
+            // 2 -> 3 is a representation upgrade only.  It never adds a
+            // profile, resolves a SID, or changes grants.
+            document["schema_version"] = SchemaVersion;
+        }
+
+        private static Dictionary<string, object> DefaultChildSchedule()
+        {
+            Dictionary<string, object> weekdays = new Dictionary<string, object>();
+            foreach (string day in ChildWeekdays)
+                weekdays[day] = new Dictionary<string, object> {
+                    { "enabled", false }, { "start_minute", 0 },
+                    { "end_minute", 1440 }, { "daily_limit_seconds", 0 }
+                };
+            return new Dictionary<string, object> {
+                { "weekdays", weekdays }
+            };
+        }
+
+        private static void ValidateProfileRegistry(Dictionary<string, object> profiles)
+        {
+            foreach (KeyValuePair<string, object> item in profiles)
+            {
+                Dictionary<string, object> profile = item.Value as Dictionary<string, object>;
+                if (profile == null || !IsValidProfileId(item.Key) ||
+                    !String.Equals(Text(profile, "id", item.Key), item.Key,
+                        StringComparison.Ordinal))
+                    throw new InvalidOperationException("Rejestr Gateway ma nieprawidłową tożsamość profilu.");
+                string kind = Text(profile, "kind", "standard");
+                if (String.Equals(kind, "standard", StringComparison.OrdinalIgnoreCase))
+                {
+                    if (!String.IsNullOrWhiteSpace(Text(profile, "parent_profile_id", "")))
+                        throw new InvalidOperationException("Standardowy profil nie może mieć rodzica.");
+                    if (profile.ContainsKey(ChildParentPolicyRevisionField) &&
+                        !IsNonNegativeInt(Value(profile, ChildParentPolicyRevisionField)))
+                        throw new InvalidOperationException(
+                            "Rejestr ma nieprawidłową rewizję zasad dzieci.");
+                    if (profile.ContainsKey(ChildSharingRequestsField) &&
+                        !(Value(profile, ChildSharingRequestsField) is Dictionary<string, object>))
+                        throw new InvalidOperationException(
+                            "Rejestr ma nieprawidłowe żądania udostępniania.");
+                    if (profile.ContainsKey(ChildProfileRequestsField) &&
+                        !(Value(profile, ChildProfileRequestsField) is Dictionary<string, object>))
+                        throw new InvalidOperationException(
+                            "Rejestr ma nieprawidłowe żądania profili dzieci.");
+                    continue;
+                }
+                if (!String.Equals(kind, "child", StringComparison.OrdinalIgnoreCase) ||
+                    !(Value(profile, "id") is string) ||
+                    !String.Equals(Text(profile, "id", ""), item.Key,
+                        StringComparison.Ordinal) ||
+                    !IsValidProfileId(Text(profile, "parent_profile_id", "")) ||
+                    !(Value(profile, "enabled") is bool) ||
+                    !(Value(profile, "allowed_game_keys") is IEnumerable) ||
+                    Value(profile, "allowed_game_keys") is string)
+                    throw new InvalidOperationException("Rejestr Gateway ma nieprawidłowy profil dziecka.");
+                int policyRevision = IntValue(profile, "policy_revision");
+                if (policyRevision < 0)
+                    throw new InvalidOperationException("Profil dziecka ma nieprawidłową wersję zasad.");
+                if (profile.ContainsKey("schedule") &&
+                    !(Value(profile, "schedule") is Dictionary<string, object>))
+                    throw new InvalidOperationException("Profil dziecka ma nieprawidłowy harmonogram.");
+                StoredChildSchedule(profile);
+                string parentProfileId = Text(profile, "parent_profile_id", "");
+                foreach (object gameKey in (IEnumerable)Value(profile, "allowed_game_keys"))
+                    if (!(gameKey is string) ||
+                        !System.Text.RegularExpressions.Regex.IsMatch((string)gameKey,
+                            ChildGameKeyPattern) ||
+                        !((string)gameKey).StartsWith(parentProfileId + "/",
+                            StringComparison.Ordinal))
+                        throw new InvalidOperationException("Profil dziecka ma nieprawidłową listę gier.");
+                if (profile.ContainsKey("ratings"))
+                    throw new InvalidOperationException("Profil dziecka nie może zawierać ocen gier.");
+                Dictionary<string, object> parent;
+                object parentValue;
+                if (profiles.TryGetValue(parentProfileId, out parentValue))
+                {
+                    parent = parentValue as Dictionary<string, object>;
+                    if (parent == null ||
+                        !String.Equals(Text(parent, "kind", "standard"), "standard",
+                            StringComparison.OrdinalIgnoreCase))
+                        throw new InvalidOperationException("Profil dziecka wskazuje profil bez konta Windows.");
+                }
+                foreach (string forbidden in new string[] {
+                    "windows_account_sid", "owner_sid", "windows_account_name", "owner",
+                    "profile_root", "discord_bridge", "vibepollo_bridge",
+                    "game_provider_bridge", "playnite_bridge", "integration_token",
+                    "pin_verifier", "account_mapping_status", "reservation_nonce",
+                    "remote_sign_in_enabled",
+                    "ratings", "minimum_age", "age_rating", "pegi", "esrb" })
+                    if (profile.ContainsKey(forbidden))
+                        throw new InvalidOperationException("Profil dziecka zawiera dane wykonywania.");
+            }
         }
 
         private void WriteDocument(Dictionary<string, object> document)
@@ -703,14 +1479,435 @@ namespace MoonWaker.HostConfigurator
             return profile;
         }
 
+        private static bool IsOwnedChild(Dictionary<string, object> profile,
+            string parentProfileId)
+        {
+            return profile != null &&
+                String.Equals(Text(profile, "kind", "standard"), "child",
+                    StringComparison.OrdinalIgnoreCase) &&
+                String.Equals(Text(profile, "parent_profile_id", ""),
+                    parentProfileId, StringComparison.Ordinal);
+        }
+
+        private static bool IsChildProfile(Dictionary<string, object> profile)
+        {
+            return profile != null && String.Equals(Text(profile, "kind", "standard"),
+                "child", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static Dictionary<string, object> EnsureChildGrantParent(
+            Dictionary<string, object> document, Dictionary<string, object> child,
+            bool requireActive)
+        {
+            string parentProfileId = Text(child, "parent_profile_id", "").Trim();
+            if (!IsValidProfileId(parentProfileId))
+                throw new InvalidOperationException(
+                    "Profil dziecka nie ma prawidłowego rodzica.");
+            Dictionary<string, object> parent = Profile(document, parentProfileId);
+            EnsureStandardProfile(parent);
+            if (requireActive) EnsureChildPolicyParent(parent);
+            return parent;
+        }
+
+        private static void EnsureChildPolicyParent(Dictionary<string, object> parent)
+        {
+            EnsureStandardProfile(parent);
+            if (!BooleanValue(parent, "enabled") ||
+                Value(parent, "deletion_tombstone") != null)
+                throw new InvalidOperationException("Rodzic profilu dziecka jest wyłączony.");
+            if (!IsSid(Text(parent, "windows_account_sid",
+                    Text(parent, "owner_sid", ""))) ||
+                String.IsNullOrWhiteSpace(Text(parent, "windows_account_name",
+                    Text(parent, "owner", ""))) ||
+                !String.Equals(Text(parent, "account_mapping_status", ""),
+                    "resolved", StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    "Rodzic profilu dziecka musi mieć rozpoznane konto Windows.");
+        }
+
+        private static int ChildPolicyRevision(Dictionary<string, object> profile)
+        {
+            object value = Value(profile, ChildParentPolicyRevisionField);
+            if (value == null && String.Equals(Text(profile, "kind", "standard"),
+                    "child", StringComparison.OrdinalIgnoreCase))
+                value = Value(profile, "policy_revision");
+            if (value == null) return 0;
+            int revision;
+            if (!Int32.TryParse(Convert.ToString(value), out revision) || revision < 0)
+                throw new InvalidOperationException("Rejestr ma nieprawidłową rewizję zasad dzieci.");
+            return revision;
+        }
+
+        private static string NormalizeChildGameKey(string parentProfileId, string gameKey)
+        {
+            string normalized = gameKey == null ? "" : gameKey.Trim();
+            if (!System.Text.RegularExpressions.Regex.IsMatch(normalized, ChildGameKeyPattern) ||
+                !normalized.StartsWith(parentProfileId + "/", StringComparison.Ordinal))
+                throw new InvalidOperationException("invalid_child_game_key");
+            string canonical = normalized.Substring(parentProfileId.Length + 1);
+            if (!System.Text.RegularExpressions.Regex.IsMatch(canonical, GameRecordIdPattern))
+                throw new InvalidOperationException("invalid_child_game_key");
+            return normalized;
+        }
+
+        private static List<object> ChildGameKeys(Dictionary<string, object> child)
+        {
+            List<object> result = new List<object>();
+            IEnumerable values = Value(child, "allowed_game_keys") as IEnumerable;
+            if (values == null || values is string)
+                throw new InvalidOperationException("Profil dziecka ma nieprawidłową listę gier.");
+            HashSet<string> seen = new HashSet<string>(StringComparer.Ordinal);
+            foreach (object value in values)
+            {
+                string text = value as string;
+                if (text != null && seen.Add(text)) result.Add(text);
+            }
+            return result;
+        }
+
+        private static bool ContainsGameKey(Dictionary<string, object> child,
+            string gameKey)
+        {
+            foreach (object value in ChildGameKeys(child))
+                if (String.Equals(Convert.ToString(value), gameKey,
+                    StringComparison.Ordinal)) return true;
+            return false;
+        }
+
+        private static Dictionary<string, object> ChildSharingRequests(
+            Dictionary<string, object> parent, bool create)
+        {
+            object value = Value(parent, ChildSharingRequestsField);
+            Dictionary<string, object> result = value as Dictionary<string, object>;
+            if (result == null && create)
+            {
+                result = new Dictionary<string, object>(StringComparer.Ordinal);
+                parent[ChildSharingRequestsField] = result;
+            }
+            if (result == null)
+                throw new InvalidOperationException("Rejestr ma nieprawidłowe żądania udostępniania.");
+            return result;
+        }
+
+        private static Dictionary<string, object> ChildProfileRequests(
+            Dictionary<string, object> parent, bool create)
+        {
+            object value = Value(parent, ChildProfileRequestsField);
+            Dictionary<string, object> result = value as Dictionary<string, object>;
+            if (result == null && create)
+            {
+                result = new Dictionary<string, object>(StringComparer.Ordinal);
+                parent[ChildProfileRequestsField] = result;
+            }
+            if (result == null)
+                throw new InvalidOperationException(
+                    "Rejestr ma nieprawidłowe żądania profili dzieci.");
+            return result;
+        }
+
+        private static void TrimChildProfileRequests(Dictionary<string, object> requests)
+        {
+            while (requests.Count > MaxChildProfileRequests)
+            {
+                string oldest = null;
+                foreach (string key in requests.Keys) { oldest = key; break; }
+                if (oldest == null) break;
+                requests.Remove(oldest);
+            }
+        }
+
+        private static int RequiredNonNegativeInt(Dictionary<string, object> source,
+            string key)
+        {
+            object value = Value(source, key);
+            if (value is bool || value == null)
+                throw new InvalidOperationException("Rejestr ma nieprawidłową wartość " + key + ".");
+            int result;
+            if (value is int) result = (int)value;
+            else if (value is long && (long)value <= Int32.MaxValue) result = (int)(long)value;
+            else if (!Int32.TryParse(Convert.ToString(value), out result))
+                throw new InvalidOperationException("Rejestr ma nieprawidłową wartość " + key + ".");
+            if (result < 0)
+                throw new InvalidOperationException("Rejestr ma nieprawidłową wartość " + key + ".");
+            return result;
+        }
+
+        private static bool BooleanEquals(Dictionary<string, object> source,
+            string key, bool expected)
+        {
+            object value = Value(source, key);
+            return value is bool && (bool)value == expected;
+        }
+
+        private static Dictionary<string, object> NormalizeChildDraft(
+            Dictionary<string, object> source)
+        {
+            if (source == null)
+                throw new InvalidOperationException("Brak danych profilu dziecka.");
+            string name = Text(source, "name", "").Trim();
+            ValidateDisplayName(name);
+            string avatar = Text(source, "avatar_id", "").Trim();
+            if (avatar.Length > 128 ||
+                System.Text.RegularExpressions.Regex.IsMatch(avatar, "[\\x00-\\x1f\\x7f]"))
+                throw new InvalidOperationException("Nieprawidłowy identyfikator awatara.");
+            object enabledValue = Value(source, "enabled");
+            if (!(enabledValue is bool))
+                throw new InvalidOperationException("Profil dziecka ma nieprawidłowy stan aktywności.");
+            object allowedValue = Value(source, "allowed_game_keys");
+            if (allowedValue != null)
+            {
+                IEnumerable allowed = allowedValue as IEnumerable;
+                if (allowed == null || allowedValue is string)
+                    throw new InvalidOperationException("Granty gier dzieci są zarządzane osobno.");
+                foreach (object value in allowed)
+                    throw new InvalidOperationException("Granty gier dzieci są zarządzane osobno.");
+            }
+            Dictionary<string, object> schedule = NormalizeChildSchedule(
+                Value(source, "schedule") as Dictionary<string, object>);
+            return new Dictionary<string, object> {
+                { "name", name }, { "avatar_id", avatar },
+                { "enabled", (bool)enabledValue }, { "schedule", schedule }
+            };
+        }
+
+        private static Dictionary<string, object> NormalizeChildSchedule(
+            Dictionary<string, object> source)
+        {
+            if (source == null)
+                throw new InvalidOperationException("Profil dziecka ma nieprawidłowy harmonogram.");
+            Dictionary<string, object> weekdays = Value(source, "weekdays") as
+                Dictionary<string, object>;
+            if (weekdays == null)
+                throw new InvalidOperationException("Profil dziecka ma nieprawidłowy harmonogram.");
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            foreach (string day in ChildWeekdays)
+            {
+                Dictionary<string, object> entry = Value(weekdays, day) as
+                    Dictionary<string, object>;
+                if (entry == null)
+                    throw new InvalidOperationException("Profil dziecka ma nieprawidłowy harmonogram.");
+                object enabled = Value(entry, "enabled");
+                if (!(enabled is bool))
+                    throw new InvalidOperationException("Profil dziecka ma nieprawidłowy harmonogram.");
+                int start = RequiredNonNegativeInt(entry, "start_minute");
+                int end = RequiredNonNegativeInt(entry, "end_minute");
+                int limit = RequiredNonNegativeInt(entry, "daily_limit_seconds");
+                if (start >= 1440 || end < 1 || end > 1440 || start >= end ||
+                    limit > 24 * 60 * 60 || limit % 60 != 0)
+                    throw new InvalidOperationException("Profil dziecka ma nieprawidłowy harmonogram.");
+                result[day] = new Dictionary<string, object> {
+                    { "enabled", (bool)enabled }, { "start_minute", start },
+                    { "end_minute", end }, { "daily_limit_seconds", limit }
+                };
+            }
+            return new Dictionary<string, object> { { "weekdays", result } };
+        }
+
+        private static Dictionary<string, object> StoredChildSchedule(
+            Dictionary<string, object> profile)
+        {
+            Dictionary<string, object> source = Value(profile, "schedule") as
+                Dictionary<string, object>;
+            Dictionary<string, object> weekdays = source == null ? null :
+                Value(source, "weekdays") as Dictionary<string, object>;
+            Dictionary<string, object> result = new Dictionary<string, object>();
+            foreach (string day in ChildWeekdays)
+            {
+                Dictionary<string, object> entry = weekdays == null ? null :
+                    Value(weekdays, day) as Dictionary<string, object>;
+                bool enabled = entry != null && BooleanValue(entry, "enabled");
+                int start = OptionalNonNegativeInt(entry, "start_minute", 0);
+                int end = OptionalNonNegativeInt(entry, "end_minute", 1440);
+                int limit = OptionalNonNegativeInt(entry, "daily_limit_seconds", 0);
+                if (start >= 1440 || end < 1 || end > 1440 || start >= end ||
+                    limit > 24 * 60 * 60 || limit % 60 != 0)
+                    throw new InvalidOperationException("Profil dziecka ma nieprawidłowy harmonogram.");
+                result[day] = new Dictionary<string, object> {
+                    { "enabled", enabled }, { "start_minute", start },
+                    { "end_minute", end }, { "daily_limit_seconds", limit }
+                };
+            }
+            return new Dictionary<string, object> { { "weekdays", result } };
+        }
+
+        private static int OptionalNonNegativeInt(Dictionary<string, object> source,
+            string key, int fallback)
+        {
+            if (source == null || Value(source, key) == null) return fallback;
+            return RequiredNonNegativeInt(source, key);
+        }
+
+        private static string ScheduleFingerprint(Dictionary<string, object> schedule)
+        {
+            Dictionary<string, object> weekdays = Value(schedule, "weekdays") as
+                Dictionary<string, object>;
+            StringBuilder result = new StringBuilder();
+            foreach (string day in ChildWeekdays)
+            {
+                Dictionary<string, object> entry = weekdays == null ? null :
+                    Value(weekdays, day) as Dictionary<string, object>;
+                result.Append(day).Append(':')
+                    .Append(entry != null && BooleanValue(entry, "enabled") ? '1' : '0')
+                    .Append(':').Append(OptionalNonNegativeInt(entry, "start_minute", 0))
+                    .Append(':').Append(OptionalNonNegativeInt(entry, "end_minute", 1440))
+                    .Append(':').Append(OptionalNonNegativeInt(entry,
+                        "daily_limit_seconds", 0)).Append(';');
+            }
+            return result.ToString();
+        }
+
+        private static string ChildProfileFingerprint(string operation,
+            string parentProfileId, string childProfileId, int expectedRevision,
+            Dictionary<string, object> draft, bool grantCurrentDevice,
+            string grantClientId)
+        {
+            StringBuilder result = new StringBuilder();
+            result.Append(operation).Append('\n').Append(parentProfileId).Append('\n')
+                .Append(childProfileId).Append('\n').Append(expectedRevision)
+                .Append('\n').Append(grantCurrentDevice ? '1' : '0')
+                .Append('\n').Append(grantClientId ?? "");
+            if (draft != null)
+                result.Append('\n').Append(Convert.ToString(draft["name"]))
+                    .Append('\n').Append(Convert.ToString(draft["avatar_id"]))
+                    .Append('\n').Append((bool)draft["enabled"] ? '1' : '0')
+                    .Append('\n').Append(ScheduleFingerprint(
+                        (Dictionary<string, object>)draft["schedule"]));
+            return result.ToString();
+        }
+
+        private static bool ChildScheduleShrank(
+            Dictionary<string, object> oldSchedule,
+            Dictionary<string, object> newSchedule)
+        {
+            Dictionary<string, object> oldDays = Value(oldSchedule, "weekdays") as
+                Dictionary<string, object>;
+            Dictionary<string, object> newDays = Value(newSchedule, "weekdays") as
+                Dictionary<string, object>;
+            foreach (string day in ChildWeekdays)
+            {
+                Dictionary<string, object> oldEntry = oldDays == null ? null :
+                    Value(oldDays, day) as Dictionary<string, object>;
+                Dictionary<string, object> newEntry = newDays == null ? null :
+                    Value(newDays, day) as Dictionary<string, object>;
+                bool oldEnabled = oldEntry != null && BooleanValue(oldEntry, "enabled");
+                bool newEnabled = newEntry != null && BooleanValue(newEntry, "enabled");
+                if (oldEnabled && !newEnabled) return true;
+                if (!oldEnabled || !newEnabled) continue;
+                if (OptionalNonNegativeInt(newEntry, "start_minute", 0) >
+                        OptionalNonNegativeInt(oldEntry, "start_minute", 0) ||
+                    OptionalNonNegativeInt(newEntry, "end_minute", 1440) <
+                        OptionalNonNegativeInt(oldEntry, "end_minute", 1440) ||
+                    OptionalNonNegativeInt(newEntry, "daily_limit_seconds", 0) <
+                        OptionalNonNegativeInt(oldEntry, "daily_limit_seconds", 0))
+                    return true;
+            }
+            return false;
+        }
+
+        private static Dictionary<string, object> ChildProfileMutationResult(
+            string parentProfileId, int revision,
+            Dictionary<string, object> child, bool idempotent,
+            bool cleanupRequired)
+        {
+            Dictionary<string, object> result = new Dictionary<string, object> {
+                { "ok", true }, { "parent_profile_id", parentProfileId },
+                { "revision", revision }, { "idempotent", idempotent },
+                { "cleanup_required", cleanupRequired }
+            };
+            if (child != null) result["child"] = child;
+            return result;
+        }
+
+        private static string SharingFingerprint(string gameKey, int expectedRevision,
+            List<string> selected)
+        {
+            return expectedRevision.ToString() + "\n" + gameKey + "\n" +
+                String.Join("\n", selected.ToArray());
+        }
+
+        private static Dictionary<string, object> SharingRequestRecord(string fingerprint,
+            int revision, List<string> selected,
+            List<ChildGameInvalidation> invalidations)
+        {
+            List<object> selectedValues = new List<object>();
+            foreach (string value in selected) selectedValues.Add(value);
+            List<object> invalidationValues = new List<object>();
+            foreach (ChildGameInvalidation value in invalidations)
+                invalidationValues.Add(new Dictionary<string, object> {
+                    { "child_profile_id", value.ChildProfileId },
+                    { "game_key", value.GameKey },
+                    { "policy_revision", value.PolicyRevision }
+                });
+            return new Dictionary<string, object> {
+                { "fingerprint", fingerprint },
+                { "revision", revision },
+                { "child_profile_ids", selectedValues.ToArray() },
+                { "invalidations", invalidationValues.ToArray() }
+            };
+        }
+
+        private static ChildGameSharingResult SharingResultFromRecord(
+            string parentProfileId, string gameKey,
+            Dictionary<string, object> record, bool idempotent)
+        {
+            List<string> selected = new List<string>();
+            IEnumerable selectedValues = Value(record, "child_profile_ids") as IEnumerable;
+            if (selectedValues != null && !(selectedValues is string))
+                foreach (object value in selectedValues)
+                    if (value is string) selected.Add((string)value);
+            List<ChildGameInvalidation> invalidations =
+                new List<ChildGameInvalidation>();
+            IEnumerable invalidationValues = Value(record, "invalidations") as IEnumerable;
+            if (invalidationValues != null && !(invalidationValues is string))
+                foreach (object raw in invalidationValues)
+                {
+                    Dictionary<string, object> value = raw as Dictionary<string, object>;
+                    if (value == null) continue;
+                    invalidations.Add(new ChildGameInvalidation {
+                        ChildProfileId = Text(value, "child_profile_id", ""),
+                        GameKey = Text(value, "game_key", gameKey),
+                        PolicyRevision = IntValue(value, "policy_revision")
+                    });
+                }
+            return new ChildGameSharingResult {
+                ParentProfileId = parentProfileId,
+                GameKey = gameKey,
+                Revision = IntValue(record, "revision"),
+                ChildProfileIds = selected,
+                Invalidations = invalidations,
+                Idempotent = idempotent
+            };
+        }
+
+        private static void TrimChildSharingRequests(Dictionary<string, object> requests)
+        {
+            while (requests.Count > MaxChildSharingRequests)
+            {
+                string oldest = null;
+                foreach (string key in requests.Keys) { oldest = key; break; }
+                if (oldest == null) break;
+                requests.Remove(oldest);
+            }
+        }
+
         private static ProfileRecord ToProfile(string id, Dictionary<string, object> profile)
         {
             string provider = Text(profile, "game_provider_bridge",
                 Text(profile, "playnite_bridge", ""));
+            List<string> allowedGameKeys = new List<string>();
+            IEnumerable allowed = Value(profile, "allowed_game_keys") as IEnumerable;
+            if (allowed != null && !(allowed is string))
+                foreach (object value in allowed)
+                    if (value is string) allowedGameKeys.Add((string)value);
             Dictionary<string, object> tombstone = Value(profile,
                 "deletion_tombstone") as Dictionary<string, object>;
             return new ProfileRecord {
                 Id = id,
+                Kind = Text(profile, "kind", "standard"),
+                ParentProfileId = Text(profile, "parent_profile_id", ""),
+                AvatarId = Text(profile, "avatar_id", ""),
+                PolicyRevision = IntValue(profile, "policy_revision"),
+                AllowedGameKeys = allowedGameKeys,
                 DisplayName = Text(profile, "display_name", Text(profile, "name", id)),
                 Sid = Text(profile, "windows_account_sid", Text(profile, "owner_sid", "")),
                 AccountName = Text(profile, "windows_account_name", Text(profile, "owner", "")),
@@ -724,7 +1921,46 @@ namespace MoonWaker.HostConfigurator
                 MappingStatus = Text(profile, "account_mapping_status", "action_required"),
                 DeletionNonce = tombstone == null ? "" : Text(tombstone, "nonce", ""),
                 DeletionGeneration = tombstone == null ? 0 : LongValue(tombstone, "generation"),
-                ReservationNonce = Text(profile, "reservation_nonce", "")
+                ReservationNonce = Text(profile, "reservation_nonce", ""),
+                Days = String.Equals(Text(profile, "kind", "standard"), "child",
+                    StringComparison.OrdinalIgnoreCase)
+                    ? ChildDays(StoredChildSchedule(profile))
+                    : new List<ChildDayDraft>()
+            };
+        }
+
+        private static List<ChildDayDraft> ChildDays(Dictionary<string, object> schedule)
+        {
+            List<ChildDayDraft> result = new List<ChildDayDraft>();
+            Dictionary<string, object> weekdays = Value(schedule, "weekdays") as
+                Dictionary<string, object>;
+            foreach (string day in ChildWeekdays)
+            {
+                Dictionary<string, object> entry = weekdays == null ? null :
+                    Value(weekdays, day) as Dictionary<string, object>;
+                result.Add(new ChildDayDraft {
+                    Enabled = entry != null && BooleanValue(entry, "enabled"),
+                    StartMinute = OptionalNonNegativeInt(entry, "start_minute", 0),
+                    EndMinute = OptionalNonNegativeInt(entry, "end_minute", 1440),
+                    DailyLimitSeconds = OptionalNonNegativeInt(entry,
+                        "daily_limit_seconds", 0)
+                });
+            }
+            return result;
+        }
+
+        private static Dictionary<string, object> ChildProfileDto(
+            Dictionary<string, object> profile)
+        {
+            string id = Text(profile, "id", "");
+            return new Dictionary<string, object> {
+                { "id", id },
+                { "name", Text(profile, "display_name", Text(profile, "name", id)) },
+                { "avatar_id", Text(profile, "avatar_id", "") },
+                { "enabled", BooleanValue(profile, "enabled") },
+                { "parent_profile_id", Text(profile, "parent_profile_id", "") },
+                { "policy_revision", ChildPolicyRevision(profile) },
+                { "schedule", StoredChildSchedule(profile) }
             };
         }
 
@@ -743,6 +1979,14 @@ namespace MoonWaker.HostConfigurator
                     StringComparison.OrdinalIgnoreCase))
                 throw new InvalidOperationException(
                     "Rezerwacja profilu zmieniła się lub została usunięta podczas instalacji.");
+        }
+
+        private static void EnsureStandardProfile(Dictionary<string, object> profile)
+        {
+            if (String.Equals(Text(profile, "kind", "standard"), "child",
+                    StringComparison.OrdinalIgnoreCase))
+                throw new InvalidOperationException(
+                    "Profil dziecka nie ma konta Windows ani katalogu wykonywania.");
         }
 
         private static IEnumerable<Dictionary<string, object>> Clients(Dictionary<string, object> document)
@@ -768,7 +2012,8 @@ namespace MoonWaker.HostConfigurator
             foreach (object permission in permissions)
             {
                 string text = permission as string;
-                if (text == "use_profile" || text == "remote_sign_in") result.Add(text);
+                if (text == "use_profile" || text == "remote_sign_in" ||
+                    text == "manage_children") result.Add(text);
             }
             return result;
         }
@@ -791,10 +2036,19 @@ namespace MoonWaker.HostConfigurator
                 if (grants == null || !grants.TryGetValue(id, out permissionsValue)) continue;
                 IEnumerable permissions = permissionsValue as IEnumerable;
                 bool use = false;
+                bool manageChildren = false;
                 if (permissions != null && !(permissionsValue is string))
                     foreach (object permission in permissions)
+                    {
                         if (Convert.ToString(permission) == "use_profile") use = true;
-                if (use) grants[id] = new object[] { "use_profile" };
+                        if (Convert.ToString(permission) == "manage_children") manageChildren = true;
+                    }
+                if (use)
+                {
+                    List<object> kept = new List<object> { "use_profile" };
+                    if (manageChildren) kept.Add("manage_children");
+                    grants[id] = kept.ToArray();
+                }
                 else grants.Remove(id);
             }
         }
@@ -987,6 +2241,13 @@ namespace MoonWaker.HostConfigurator
         {
             long result;
             return Int64.TryParse(Convert.ToString(Value(source, key)), out result) ? result : 0;
+        }
+
+        private static bool IsNonNegativeInt(object value)
+        {
+            if (value is bool || value == null) return false;
+            int parsed;
+            return Int32.TryParse(Convert.ToString(value), out parsed) && parsed >= 0;
         }
     }
 
@@ -1856,13 +3117,13 @@ namespace MoonWaker.HostConfigurator
                     ? MessageBox.Show(this,
                         "Profil został utworzony dla " + reservation.AccountName +
                         ". Zdalne logowanie będzie dostępne po zainstalowaniu usługi Login Broker. " +
-                        "Discord i Vibepollo skonfigurujesz przyciskiem Integracje w Host Control.",
+                        "Po zamknięciu konfiguratora otworzy się panel Vibepollo, aby utworzyć konto.",
                         "MoonWaker Host Configurator", MessageBoxButtons.OK,
                         MessageBoxIcon.Information)
                     : MessageBox.Show(this,
                         "Profil został utworzony dla " + reservation.AccountName +
                         ". Zdalne logowanie pozostaje wyłączone, dopóki nie zapiszesz hasła w Login Broker.\n\n" +
-                        "Skonfigurować je teraz? Discord i Vibepollo ustawisz później przyciskiem Integracje w Host Control.",
+                        "Skonfigurować je teraz? Po zamknięciu konfiguratora otworzy się panel Vibepollo, aby utworzyć konto.",
                         "MoonWaker Host Configurator", MessageBoxButtons.YesNo,
                         MessageBoxIcon.Information);
                 if (configureRemote == DialogResult.Yes)
@@ -1877,6 +3138,7 @@ namespace MoonWaker.HostConfigurator
                         using (DeviceGrantsForm devices = new DeviceGrantsForm(store, reservation.Id))
                             devices.ShowDialog(this);
                 }
+                DialogResult = DialogResult.OK;
                 Close();
             }
             catch (Exception ex)
@@ -2256,6 +3518,10 @@ namespace MoonWaker.HostConfigurator
     {
         private readonly GatewayRegistryStore store;
         private readonly ProfileRecord profile;
+        private readonly ProfileRecord grantParent;
+        private readonly bool childProfile;
+        private readonly string updateSid;
+        private readonly string accountDisplayName;
         private readonly DataGridView grid = new DataGridView();
         private bool loading;
 
@@ -2264,10 +3530,32 @@ namespace MoonWaker.HostConfigurator
             this.store = store;
             profile = store.GetProfile(profileId);
             profile.EnsureMutable();
+            childProfile = String.Equals(profile.Kind, "child",
+                StringComparison.OrdinalIgnoreCase);
+            if (childProfile)
+            {
+                grantParent = store.GetProfile(profile.ParentProfileId);
+                if (!String.Equals(grantParent.Kind, "standard",
+                        StringComparison.OrdinalIgnoreCase))
+                    throw new InvalidOperationException(
+                        "Profil dziecka wymaga standardowego profilu rodzica.");
+                updateSid = grantParent.Sid;
+                accountDisplayName = grantParent.AccountName;
+            }
+            else
+            {
+                grantParent = null;
+                updateSid = profile.Sid;
+                accountDisplayName = profile.AccountName;
+            }
             Ui.Prepare(this, "Urządzenia i dostęp", 940, 570);
             Ui.Label(this, "Urządzenia i dostęp", 24, 18, 700, 38, 18F, FontStyle.Bold, Color.White);
-            Ui.Label(this, "Profil: " + profile.DisplayName, 26, 58, 500, 24, 9.5F,
+            Ui.Label(this, (childProfile ? "Profil dziecka: " : "Profil: ") +
+                profile.DisplayName, 26, 58, 500, 24, 9.5F,
                 FontStyle.Regular, Ui.Muted);
+            if (childProfile)
+                Ui.Label(this, "Konto Windows rodzica: " + accountDisplayName,
+                    520, 58, 390, 24, 9.5F, FontStyle.Regular, Ui.Muted);
             Ui.Label(this,
                 "Zdalne logowanie jest uprawnieniem podwyższonego ryzyka. Wymaga zwykłego dostępu i osobnego potwierdzenia.",
                 26, 88, 880, 34, 9F, FontStyle.Bold, Ui.Danger);
@@ -2286,6 +3574,9 @@ namespace MoonWaker.HostConfigurator
             grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Ostatnio widziane", ReadOnly = true });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "Dostęp do profilu" });
             grid.Columns.Add(new DataGridViewCheckBoxColumn { HeaderText = "ZDALNE LOGOWANIE" });
+            if (!childProfile)
+                grid.Columns.Add(new DataGridViewCheckBoxColumn {
+                    HeaderText = "ZARZĄDZANIE DZIEĆMI" });
             grid.CurrentCellDirtyStateChanged += delegate {
                 if (grid.IsCurrentCellDirty) grid.CommitEdit(DataGridViewDataErrorContexts.Commit);
             };
@@ -2338,6 +3629,7 @@ namespace MoonWaker.HostConfigurator
                 {
                     int index = grid.Rows.Add(device.Name, device.SafeId, FormatTime(device.PairedAt),
                         FormatTime(device.LastSeenAt), device.UseProfile, device.RemoteSignIn);
+                    if (!childProfile) grid.Rows[index].Cells[6].Value = device.ManageChildren;
                     grid.Rows[index].Tag = device.Id;
                 }
             }
@@ -2352,6 +3644,7 @@ namespace MoonWaker.HostConfigurator
             {
                 loading = true;
                 row.Cells[5].Value = false;
+                if (!childProfile) row.Cells[6].Value = false;
                 loading = false;
             }
             if (e.ColumnIndex == 5 && Convert.ToBoolean(row.Cells[5].Value))
@@ -2359,11 +3652,22 @@ namespace MoonWaker.HostConfigurator
                 string name = Convert.ToString(row.Cells[0].Value);
                 DialogResult confirmed = MessageBox.Show(this,
                     "Nadać urządzeniu „" + name + "” uprzywilejowane prawo do zdalnego zalogowania lub " +
-                    "odblokowania konta " + profile.AccountName + "?",
+                    "odblokowania konta " + accountDisplayName + "?",
                     "Potwierdź zdalne logowanie", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
                 loading = true;
                 if (confirmed == DialogResult.Yes) row.Cells[4].Value = true;
                 else row.Cells[5].Value = false;
+                loading = false;
+            }
+            if (!childProfile && e.ColumnIndex == 6 &&
+                Convert.ToBoolean(row.Cells[6].Value) && !profile.AppPinRequired)
+            {
+                MessageBox.Show(this,
+                    "Zarządzanie dziećmi wymaga ustawionego PIN-u aplikacji rodzica.",
+                    "Ustaw PIN aplikacji", MessageBoxButtons.OK,
+                    MessageBoxIcon.Information);
+                loading = true;
+                row.Cells[6].Value = false;
                 loading = false;
             }
         }
@@ -2379,10 +3683,12 @@ namespace MoonWaker.HostConfigurator
                     if (String.IsNullOrWhiteSpace(id)) continue;
                     grants[id] = new DeviceGrant {
                         UseProfile = Convert.ToBoolean(row.Cells[4].Value),
-                        RemoteSignIn = Convert.ToBoolean(row.Cells[5].Value)
+                        RemoteSignIn = Convert.ToBoolean(row.Cells[5].Value),
+                        ManageChildren = !childProfile &&
+                            Convert.ToBoolean(row.Cells[6].Value)
                     };
                 }
-                store.UpdateGrants(profile.Id, profile.Sid, grants);
+                store.UpdateGrants(profile.Id, updateSid, grants);
                 MessageBox.Show(this, "Uprawnienia zapisano. Gateway zastosuje je przy następnym żądaniu.",
                     "MoonWaker Host Configurator", MessageBoxButtons.OK, MessageBoxIcon.Information);
                 Close();
@@ -2394,11 +3700,279 @@ namespace MoonWaker.HostConfigurator
             }
         }
 
+        internal static DeviceGrant PreserveManageChildren(DeviceGrant requested,
+            DeviceRecord existing)
+        {
+            if (requested == null) throw new ArgumentNullException("requested");
+            requested.ManageChildren = requested.UseProfile && existing != null &&
+                existing.ManageChildren;
+            return requested;
+        }
+
         private static string FormatTime(long unix)
         {
             if (unix <= 0) return "nigdy";
             try { return DateTimeOffset.FromUnixTimeSeconds(unix).ToLocalTime().ToString("g"); }
             catch { return "nieznany"; }
+        }
+    }
+
+    internal sealed class ChildProfileManagerForm : Form
+    {
+        private static readonly string[] Days = new string[] {
+            "mon", "tue", "wed", "thu", "fri", "sat", "sun" };
+        private readonly GatewayRegistryStore store;
+        private readonly string parentProfileId;
+        private readonly string parentProfileName;
+        private readonly ListBox children = new ListBox();
+        private readonly Label status = new Label();
+        private int loadedRevision;
+        private bool parentAvailable;
+        private bool parentNeedsLocalCleanup;
+
+        internal ChildProfileManagerForm(GatewayRegistryStore store,
+            string parentProfileId)
+        {
+            this.store = store;
+            this.parentProfileId = parentProfileId;
+            ProfileRecord parent = null;
+            try { parent = store.GetProfile(parentProfileId); } catch { }
+            parentProfileName = parent == null ? parentProfileId : parent.DisplayName;
+
+            Ui.Prepare(this, "Profile dzieci", 760, 500);
+            Ui.Label(this, "Profile dzieci", 28, 22, 680, 34, 18F,
+                FontStyle.Bold, Color.White);
+            Ui.Label(this, "Rodzic: " + parentProfileName,
+                30, 62, 690, 28, 10F, FontStyle.Regular, Ui.Muted);
+            children.SetBounds(30, 105, 700, 285);
+            children.BackColor = Ui.Panel;
+            children.ForeColor = Color.White;
+            children.BorderStyle = BorderStyle.FixedSingle;
+            children.IntegralHeight = false;
+            Controls.Add(children);
+
+            status.SetBounds(30, 400, 700, 28);
+            status.ForeColor = Ui.Muted;
+            Controls.Add(status);
+            Ui.Button(this, "Dodaj dziecko", 30, 440, 140,
+                delegate { CreateClicked(); }, true);
+            Ui.Button(this, "Edytuj", 180, 440, 110,
+                delegate { EditClicked(); }, false);
+            Ui.Button(this, "Usuń", 300, 440, 110,
+                delegate { DeleteClicked(); }, false);
+            Ui.Button(this, "Urządzenia", 420, 440, 130,
+                delegate { DevicesClicked(); }, false);
+            Ui.Button(this, "Zamknij", 616, 440, 114,
+                delegate { Close(); }, false);
+            LoadChildren();
+        }
+
+        private void DevicesClicked()
+        {
+            ChildListItem selected = children.SelectedItem as ChildListItem;
+            if (selected == null)
+            {
+                MessageBox.Show(this, "Wybierz profil dziecka.", "Profile dzieci",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            try
+            {
+                using (DeviceGrantsForm form = new DeviceGrantsForm(store,
+                    selected.Profile.Id)) form.ShowDialog(this);
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "Urządzenia profilu dziecka",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void LoadChildren()
+        {
+            children.Items.Clear();
+            try
+            {
+                // Capture the list revision before reading the rows.  Every
+                // editor opened from this snapshot uses this exact revision,
+                // so a concurrent TV/Windows edit becomes a visible 409.
+                loadedRevision = store.GetChildPolicyRevision(parentProfileId);
+                ProfileRecord parent = null;
+                try { parent = store.GetProfile(parentProfileId); } catch { }
+                parentAvailable = parent != null &&
+                    String.Equals(parent.Kind, "standard", StringComparison.OrdinalIgnoreCase) &&
+                    parent.Enabled && parent.AppPinRequired &&
+                    !String.IsNullOrWhiteSpace(parent.Sid) &&
+                    !String.IsNullOrWhiteSpace(parent.AccountName) &&
+                    String.Equals(parent.MappingStatus, "resolved",
+                        StringComparison.OrdinalIgnoreCase);
+                parentNeedsLocalCleanup = parent == null ||
+                    !String.Equals(parent.Kind, "standard", StringComparison.OrdinalIgnoreCase) ||
+                    !parent.Enabled;
+                foreach (ProfileRecord child in store.GetChildren(parentProfileId))
+                    children.Items.Add(new ChildListItem(child));
+                status.Text = children.Items.Count == 0
+                    ? "Brak profili dzieci."
+                    : "Profile dzieci: " + children.Items.Count;
+                if (!parentAvailable && !parentNeedsLocalCleanup)
+                    status.Text += " Rodzic wymaga ponownego skonfigurowania.";
+            }
+            catch (Exception ex)
+            {
+                parentAvailable = false;
+                parentNeedsLocalCleanup = false;
+                status.Text = ex.Message;
+            }
+        }
+
+        private void CreateClicked()
+        {
+            int expectedRevision = loadedRevision;
+            using (ChildProfileForm form = new ChildProfileForm(
+                ChildProfileDraft.New(),
+                delegate(ChildProfileDraft draft) { SaveNew(draft, expectedRevision); },
+                parentProfileName))
+            {
+                form.ShowDialog(this);
+            }
+            LoadChildren();
+        }
+
+        private void EditClicked()
+        {
+            ChildListItem selected = children.SelectedItem as ChildListItem;
+            if (selected == null)
+            {
+                MessageBox.Show(this, "Wybierz profil dziecka.", "Profile dzieci",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            ProfileRecord profile = selected.Profile;
+            int expectedRevision = loadedRevision;
+            using (ChildProfileForm form = new ChildProfileForm(
+                DraftFromProfile(profile),
+                delegate(ChildProfileDraft draft) {
+                    SaveExisting(profile, draft, expectedRevision);
+                },
+                parentProfileName))
+            {
+                form.ShowDialog(this);
+            }
+            LoadChildren();
+        }
+
+        private void DeleteClicked()
+        {
+            ChildListItem selected = children.SelectedItem as ChildListItem;
+            if (selected == null)
+            {
+                MessageBox.Show(this, "Wybierz profil dziecka.", "Profile dzieci",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+            if (MessageBox.Show(this,
+                    "Usunąć profil dziecka „" + selected.Profile.DisplayName + "”?",
+                    "Profile dzieci", MessageBoxButtons.YesNo,
+                    MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            try
+            {
+                if (parentNeedsLocalCleanup)
+                {
+                    // This local cleanup path deliberately works for an orphan
+                    // or a disabled former parent.  A live parent always uses
+                    // the revision checked writer path below.
+                    store.RemoveChildProfileLocal(selected.Profile.Id);
+                }
+                else
+                {
+                    store.ApplyChildProfileRequest(Mutation("delete",
+                        selected.Profile.Id, null, loadedRevision));
+                }
+                LoadChildren();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(this, ex.Message, "Profile dzieci",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void SaveNew(ChildProfileDraft draft, int expectedRevision)
+        {
+            store.ApplyChildProfileRequest(Mutation("create", "", draft,
+                expectedRevision));
+        }
+
+        private void SaveExisting(ProfileRecord profile, ChildProfileDraft draft,
+            int expectedRevision)
+        {
+            store.ApplyChildProfileRequest(Mutation("update", profile.Id, draft,
+                expectedRevision));
+        }
+
+        private Dictionary<string, object> Mutation(string operation,
+            string childProfileId, ChildProfileDraft draft, int expectedRevision)
+        {
+            Dictionary<string, object> request = new Dictionary<string, object> {
+                { "operation", operation },
+                { "parent_profile_id", parentProfileId },
+                { "child_profile_id", childProfileId },
+                { "request_id", "ui-" + Guid.NewGuid().ToString("N") },
+                { "expected_revision", expectedRevision },
+                { "grant_current_device", false },
+                { "grant_client_id", "" }
+            };
+            if (draft != null) request["draft"] = DraftObject(draft);
+            return request;
+        }
+
+        private static ChildProfileDraft DraftFromProfile(ProfileRecord profile)
+        {
+            ChildProfileDraft result = ChildProfileDraft.New();
+            result.Name = profile.DisplayName ?? "";
+            result.AvatarId = profile.AvatarId ?? "";
+            result.Enabled = profile.Enabled;
+            if (profile.Days != null && profile.Days.Count == Days.Length)
+            {
+                result.Days.Clear();
+                foreach (ChildDayDraft day in profile.Days)
+                    result.Days.Add(day == null ? new ChildDayDraft() : day.Clone());
+            }
+            return result;
+        }
+
+        private static Dictionary<string, object> DraftObject(ChildProfileDraft draft)
+        {
+            Dictionary<string, object> weekdays = new Dictionary<string, object>();
+            for (int index = 0; index < Days.Length; index++)
+            {
+                ChildDayDraft day = draft.Days != null && index < draft.Days.Count
+                    ? draft.Days[index] : new ChildDayDraft();
+                if (day == null) day = new ChildDayDraft();
+                weekdays[Days[index]] = new Dictionary<string, object> {
+                    { "enabled", day.Enabled }, { "start_minute", day.StartMinute },
+                    { "end_minute", day.EndMinute },
+                    { "daily_limit_seconds", day.DailyLimitSeconds }
+                };
+            }
+            return new Dictionary<string, object> {
+                { "name", (draft.Name ?? "").Trim() },
+                { "avatar_id", (draft.AvatarId ?? "").Trim() },
+                { "enabled", draft.Enabled },
+                { "schedule", new Dictionary<string, object> { { "weekdays", weekdays } } }
+            };
+        }
+
+        private sealed class ChildListItem
+        {
+            internal readonly ProfileRecord Profile;
+
+            internal ChildListItem(ProfileRecord profile) { Profile = profile; }
+
+            public override string ToString()
+            {
+                return Profile.DisplayName + (Profile.Enabled ? "" : "  (wyłączony)");
+            }
         }
     }
 
@@ -2524,7 +4098,7 @@ namespace MoonWaker.HostConfigurator
                 string sidB = "S-1-5-21-100-200-300-1002";
                 string legacyRecordedRoot = Path.Combine(root, "legacy-profile-location", "default");
                 File.WriteAllText(config,
-                    "{\"schema_version\":2,\"unknown_top\":{\"keep\":true},\"profiles\":{" +
+                    "{\"schema_version\":2,\"child_profiles_enabled\":true,\"unknown_top\":{\"keep\":true},\"profiles\":{" +
                     "\"profile-a\":{\"id\":\"profile-a\",\"name\":\"A\",\"display_name\":\"A\"," +
                     "\"owner_sid\":\"" + sidA + "\",\"windows_account_sid\":\"" + sidA + "\"," +
                     "\"owner\":\"PC\\\\A\",\"windows_account_name\":\"PC\\\\A\",\"enabled\":true," +
@@ -2556,14 +4130,345 @@ namespace MoonWaker.HostConfigurator
                     "Generated profile IDs are not stable opaque values.");
                 store.UpdateProfile("profile-a", sidA, "Renamed", false);
                 string raw = File.ReadAllText(config);
-                Assert(raw.Contains("unknown_top") && raw.Contains("unknown_profile") &&
+                Dictionary<string, object> roundTrip = jsonDocument(raw);
+                Assert(roundTrip.ContainsKey("child_profiles_enabled") &&
+                    roundTrip["child_profiles_enabled"] is bool &&
+                    (bool)roundTrip["child_profiles_enabled"] &&
+                    raw.Contains("unknown_top") && raw.Contains("unknown_profile") &&
                     raw.Contains("unknown_client") && raw.Contains("SECRET_HASH") &&
                     raw.Contains("C:\\\\MoonWaker\\\\profiles\\\\profile-a"),
                     "Targeted mutation did not preserve unrelated registry data.");
                 ProfileRecord edited = store.GetProfile("profile-a");
                 Assert(edited.DisplayName == "Renamed" && edited.Sid == sidA && !edited.Enabled,
                     "Profile edit did not preserve immutable SID.");
+                store.UpdateProfile("profile-a", sidA, "Renamed", true);
+                int childrenBeforePin = store.GetChildren("profile-a").Count;
+                bool childWithoutPinBlocked = false;
+                try { store.CreateChildProfile("profile-a", "No Pin", ""); }
+                catch (InvalidOperationException) { childWithoutPinBlocked = true; }
+                Assert(childWithoutPinBlocked && store.GetChildren("profile-a").Count == childrenBeforePin,
+                    "A parent without an app PIN accepted a child or changed the registry.");
+                bool managementWithoutPinBlocked = false;
+                try
+                {
+                    store.UpdateGrants("profile-a", sidA,
+                        new Dictionary<string, DeviceGrant> { {
+                            "client-abcdefghijklmnop",
+                            new DeviceGrant { UseProfile = true,
+                                ManageChildren = true }
+                        } });
+                }
+                catch (InvalidOperationException error)
+                {
+                    managementWithoutPinBlocked = error.Message.IndexOf(
+                        "PIN-u aplikacji rodzica", StringComparison.OrdinalIgnoreCase) >= 0;
+                }
+                Assert(managementWithoutPinBlocked,
+                    "A parent without an app PIN accepted child-management access.");
                 store.SetAppPin("profile-a", sidA, "4826");
+                ProfileRecord child = store.CreateChildProfile("profile-a", "Kid", "avatar-1");
+                Assert(child.Kind == "child" && child.ParentProfileId == "profile-a" &&
+                    child.AllowedGameKeys.Count == 0 && child.Sid == "" && child.Root == "" &&
+                    child.DiscordEndpoint == "" && child.VibepolloEndpoint == "" &&
+                    child.GameProviderEndpoint == "" && !child.AppPinRequired,
+                    "Child profile inherited executable identity or policy data.");
+                Assert(store.GetProfiles().Find(delegate(ProfileRecord value) {
+                    return value.Id == child.Id;
+                }) == null && store.GetChildren("profile-a").Count == 1,
+                    "Child profile leaked into the standard profile list.");
+                Dictionary<string, object> childRaw = dictionaryValue(
+                    dictionaryValue(jsonDocument(File.ReadAllText(config)), "profiles"), child.Id);
+                foreach (string forbidden in new string[] { "windows_account_sid", "profile_root",
+                    "discord_bridge", "vibepollo_bridge", "game_provider_bridge", "playnite_bridge",
+                    "pin_verifier", "reservation_nonce" })
+                    Assert(!childRaw.ContainsKey(forbidden), "Child profile cloned " + forbidden + ".");
+                Dictionary<string, object> weekdays = dictionaryValue(
+                    dictionaryValue(childRaw, "schedule"), "weekdays");
+                foreach (string day in new string[] {
+                    "mon", "tue", "wed", "thu", "fri", "sat", "sun" })
+                    Assert(!Convert.ToBoolean(dictionaryValue(weekdays, day)["enabled"]),
+                        "Child profile did not start with a disabled " + day + " schedule.");
+                Assert(!File.ReadAllText(config).Contains("\"" + child.Id + "\":[\"use_profile\"]"),
+                    "Child profile received an implicit client grant.");
+                store.UpdateProfile("profile-a", sidA, "Renamed", false);
+                bool childCreateBlocked = false;
+                try { store.CreateChildProfile("profile-a", "Blocked", ""); }
+                catch (InvalidOperationException) { childCreateBlocked = true; }
+                Assert(childCreateBlocked, "A disabled parent accepted a new child.");
+                store.UpdateProfile("profile-a", sidA, "Renamed", true);
+                store.SetAppPin("profile-a", sidA, "4826");
+                ProfileRecord secondChild = store.CreateChildProfile("profile-a", "Kid 2", "avatar-2");
+                string sharedGameKey = "profile-a/steam:123";
+                ChildGameSharingSnapshot sharing = store.GetChildGameSharing(
+                    "profile-a", sharedGameKey);
+                Assert(sharing.Revision == 2 && sharing.Children.Count == 2 &&
+                    !sharing.Children[0].Granted && !sharing.Children[1].Granted,
+                    "Child sharing snapshot did not include all own children or revision.");
+                ChildGameSharingResult grantedOne = store.UpdateChildGameSharing(
+                    "profile-a", sharedGameKey, new string[] { child.Id },
+                    sharing.Revision, "share-one", new string[] { sharedGameKey });
+                Assert(!grantedOne.Idempotent && grantedOne.Revision == 3 &&
+                    grantedOne.Invalidations.Count == 0 &&
+                    store.GetChildGameSharing("profile-a", sharedGameKey).Children.Find(
+                        delegate(ChildGameGrantRecord value) { return value.Id == child.Id; }).Granted,
+                    "Granting one own child was not atomic or did not advance revision.");
+                ChildGameSharingResult retryGrant = store.UpdateChildGameSharing(
+                    "profile-a", sharedGameKey, new string[] { child.Id }, 2,
+                    "share-one", new string[] { sharedGameKey });
+                Assert(retryGrant.Idempotent && retryGrant.Revision == grantedOne.Revision,
+                    "Retrying an identical child sharing request was not idempotent.");
+                ChildGameSharingResult grantedAll = store.UpdateChildGameSharing(
+                    "profile-a", sharedGameKey,
+                    new string[] { child.Id, secondChild.Id }, grantedOne.Revision,
+                    "share-all", new string[] { sharedGameKey });
+                Assert(grantedAll.Revision == 4 &&
+                    store.GetChildGameSharing("profile-a", sharedGameKey).Children.Find(
+                        delegate(ChildGameGrantRecord value) { return value.Id == secondChild.Id; }).Granted,
+                    "Granting all own children did not preserve the full selection.");
+                ChildGameSharingResult revokedOne = store.UpdateChildGameSharing(
+                    "profile-a", sharedGameKey, new string[] { secondChild.Id },
+                    grantedAll.Revision, "revoke-one", new string[] { sharedGameKey });
+                Assert(revokedOne.Revision == 5 && revokedOne.Invalidations.Count == 1 &&
+                    revokedOne.Invalidations[0].ChildProfileId == child.Id &&
+                    revokedOne.Invalidations[0].GameKey == sharedGameKey,
+                    "Revoking one child did not emit its exact invalidation.");
+                ChildGameSharingResult revokedAll = store.UpdateChildGameSharing(
+                    "profile-a", sharedGameKey, new string[0], revokedOne.Revision,
+                    "revoke-all", new string[] { sharedGameKey });
+                Assert(revokedAll.Revision == 6 && revokedAll.Invalidations.Count == 1 &&
+                    revokedAll.Invalidations[0].ChildProfileId == secondChild.Id,
+                    "Revoking all children did not clear the own selection atomically.");
+                int stableSharingRevision = revokedAll.Revision;
+                bool foreignDenied = false;
+                try
+                {
+                    store.UpdateChildGameSharing("profile-a", sharedGameKey,
+                        new string[] { "foreign-child" }, stableSharingRevision,
+                        "foreign-child-request", new string[] { sharedGameKey });
+                }
+                catch (InvalidOperationException) { foreignDenied = true; }
+                bool outsideCatalogDenied = false;
+                try
+                {
+                    store.UpdateChildGameSharing("profile-a", sharedGameKey,
+                        new string[] { child.Id }, stableSharingRevision,
+                        "outside-catalog-request", new string[] { "profile-a/steam:999" });
+                }
+                catch (InvalidOperationException) { outsideCatalogDenied = true; }
+                bool staleDenied = false;
+                try
+                {
+                    store.UpdateChildGameSharing("profile-a", sharedGameKey,
+                        new string[] { child.Id }, stableSharingRevision - 1,
+                        "stale-request", new string[] { sharedGameKey });
+                }
+                catch (InvalidOperationException) { staleDenied = true; }
+                ChildGameSharingSnapshot afterRejected = store.GetChildGameSharing(
+                    "profile-a", sharedGameKey);
+                Assert(foreignDenied && outsideCatalogDenied && staleDenied &&
+                    afterRejected.Revision == stableSharingRevision &&
+                    !afterRejected.Children.Find(delegate(ChildGameGrantRecord value) {
+                        return value.Id == child.Id;
+                    }).Granted,
+                    "Rejected child sharing requests changed the registry.");
+                Dictionary<string, object> childMutationWeekdays =
+                    new Dictionary<string, object>();
+                foreach (string day in new string[] {
+                    "mon", "tue", "wed", "thu", "fri", "sat", "sun" })
+                    childMutationWeekdays[day] = new Dictionary<string, object> {
+                        { "enabled", false }, { "start_minute", 0 },
+                        { "end_minute", 1440 }, { "daily_limit_seconds", 0 }
+                    };
+                Dictionary<string, object> childMutationDraft =
+                    new Dictionary<string, object> {
+                        { "name", "Retry child" }, { "avatar_id", "" },
+                        { "enabled", true }, { "schedule",
+                            new Dictionary<string, object> {
+                                { "weekdays", childMutationWeekdays } } }
+                    };
+                int mutationRevision = store.GetChildPolicyRevision("profile-a");
+                string beforeRejectedApply = File.ReadAllText(config);
+                bool foreignApplyDenied = false;
+                try
+                {
+                    store.ApplyChildProfileRequest(new Dictionary<string, object> {
+                        { "operation", "update" },
+                        { "parent_profile_id", "profile-a" },
+                        { "child_profile_id", "foreign-child" },
+                        { "request_id", "apply-foreign-child" },
+                        { "expected_revision", mutationRevision },
+                        { "draft", childMutationDraft }
+                    });
+                }
+                catch (InvalidOperationException error)
+                {
+                    foreignApplyDenied = error.Message == "child_profile_not_owned";
+                }
+                bool staleApplyDenied = false;
+                try
+                {
+                    store.ApplyChildProfileRequest(new Dictionary<string, object> {
+                        { "operation", "update" },
+                        { "parent_profile_id", "profile-a" },
+                        { "child_profile_id", child.Id },
+                        { "request_id", "apply-stale-child" },
+                        { "expected_revision", mutationRevision - 1 },
+                        { "draft", childMutationDraft }
+                    });
+                }
+                catch (InvalidOperationException error)
+                {
+                    staleApplyDenied = error.Message == "child_policy_revision_stale";
+                }
+                Assert(foreignApplyDenied && staleApplyDenied &&
+                    mutationRevision == store.GetChildPolicyRevision("profile-a") &&
+                    beforeRejectedApply == File.ReadAllText(config),
+                    "Rejected child profile mutations changed the registry.");
+                Dictionary<string, object> createChildRequest =
+                    new Dictionary<string, object> {
+                        { "operation", "create" },
+                        { "parent_profile_id", "profile-a" },
+                        { "child_profile_id", "" },
+                        { "request_id", "create-child-retry" },
+                        { "expected_revision", mutationRevision },
+                        { "draft", childMutationDraft },
+                        { "grant_current_device", true },
+                        { "grant_client_id", "client-abcdefghijklmnop" }
+                    };
+                Dictionary<string, object> createdChildResult =
+                    store.ApplyChildProfileRequest(createChildRequest);
+                string createdChildId = Convert.ToString(dictionaryValue(
+                    createdChildResult, "child")["id"]);
+                List<DeviceRecord> createdChildDevices = store.GetDevices(createdChildId);
+                Dictionary<string, object> createdChildDocument = jsonDocument(
+                    File.ReadAllText(config));
+                Dictionary<string, object> createdClient = null;
+                foreach (Dictionary<string, object> clientRecord in ClientsForTest(
+                    createdChildDocument))
+                    if (Convert.ToString(clientRecord["id"]) ==
+                        "client-abcdefghijklmnop") createdClient = clientRecord;
+                IList childPermissions = null;
+                if (createdClient != null)
+                {
+                    Dictionary<string, object> rawGrants = dictionaryValue(
+                        createdClient, "profile_grants");
+                    object grantValue;
+                    if (rawGrants.TryGetValue(createdChildId, out grantValue))
+                        childPermissions = grantValue as IList;
+                }
+                Assert(createdChildDevices.Count == 1 && createdChildDevices[0].UseProfile &&
+                    !createdChildDevices[0].RemoteSignIn &&
+                    !createdChildDevices[0].ManageChildren && createdClient != null &&
+                    childPermissions != null && childPermissions.Count == 1 &&
+                    Convert.ToString(childPermissions[0]) == "use_profile",
+                    "Current-device child grant was not written to the child profile.");
+                IList parentPermissionsBeforeChildEdit = null;
+                if (createdClient != null)
+                {
+                    Dictionary<string, object> rawGrants = dictionaryValue(
+                        createdClient, "profile_grants");
+                    object parentGrantValue;
+                    if (rawGrants.TryGetValue("profile-a", out parentGrantValue))
+                        parentPermissionsBeforeChildEdit = parentGrantValue as IList;
+                }
+                store.UpdateGrants(createdChildId, sidA,
+                    new Dictionary<string, DeviceGrant> { {
+                        "client-abcdefghijklmnop",
+                        new DeviceGrant { UseProfile = true }
+                    } });
+                bool childRemoteDenied = false;
+                try
+                {
+                    store.UpdateGrants(createdChildId, sidA,
+                        new Dictionary<string, DeviceGrant> { {
+                            "client-abcdefghijklmnop",
+                            new DeviceGrant { UseProfile = true, RemoteSignIn = true }
+                        } });
+                }
+                catch (InvalidOperationException) { childRemoteDenied = true; }
+                Dictionary<string, object> afterChildGrantDocument = jsonDocument(
+                    File.ReadAllText(config));
+                Dictionary<string, object> afterChildGrantClient = null;
+                foreach (Dictionary<string, object> clientRecord in ClientsForTest(
+                    afterChildGrantDocument))
+                    if (Convert.ToString(clientRecord["id"]) ==
+                        "client-abcdefghijklmnop") afterChildGrantClient = clientRecord;
+                IList afterChildParentPermissions = null;
+                if (afterChildGrantClient != null)
+                {
+                    Dictionary<string, object> rawGrants = dictionaryValue(
+                        afterChildGrantClient, "profile_grants");
+                    object parentGrantValue;
+                    if (rawGrants.TryGetValue("profile-a", out parentGrantValue))
+                        afterChildParentPermissions = parentGrantValue as IList;
+                }
+                Assert(childRemoteDenied && parentPermissionsBeforeChildEdit != null &&
+                    afterChildParentPermissions != null &&
+                    parentPermissionsBeforeChildEdit.Count == afterChildParentPermissions.Count &&
+                    Convert.ToString(parentPermissionsBeforeChildEdit[0]) ==
+                        Convert.ToString(afterChildParentPermissions[0]),
+                    "Child device grants changed the parent grant or bypassed parent remote policy.");
+                Dictionary<string, object> retriedChildResult =
+                    store.ApplyChildProfileRequest(createChildRequest);
+                Assert(createdChildId == Convert.ToString(dictionaryValue(
+                        retriedChildResult, "child")["id"]) &&
+                    Convert.ToBoolean(retriedChildResult["idempotent"]),
+                    "Retrying an identical child create did not replay its result.");
+                childMutationDraft["name"] = "Different child";
+                bool createRequestReuseDenied = false;
+                try { store.ApplyChildProfileRequest(createChildRequest); }
+                catch (InvalidOperationException error) {
+                    createRequestReuseDenied = error.Message == "request_id_reused";
+                }
+                Assert(createRequestReuseDenied,
+                    "Reusing a child create request ID with a new payload was accepted.");
+                Dictionary<string, object> deleteChildRequest =
+                    new Dictionary<string, object> {
+                        { "operation", "delete" },
+                        { "parent_profile_id", "profile-a" },
+                        { "child_profile_id", createdChildId },
+                        { "request_id", "delete-child-retry" },
+                        { "expected_revision", Convert.ToInt32(
+                            createdChildResult["revision"]) }
+                    };
+                Dictionary<string, object> deletedChildResult =
+                    store.ApplyChildProfileRequest(deleteChildRequest);
+                Dictionary<string, object> retriedDeleteResult =
+                    store.ApplyChildProfileRequest(deleteChildRequest);
+                Assert(Convert.ToBoolean(deletedChildResult["ok"]) &&
+                    Convert.ToBoolean(retriedDeleteResult["idempotent"]) &&
+                    store.GetChildren("profile-a").Find(delegate(ProfileRecord value) {
+                        return value.Id == createdChildId;
+                    }) == null,
+                    "Retrying a child delete was not idempotent or left the child present.");
+                ProfileRecord parentBeforeOrphanCleanup = store.GetProfile("profile-a");
+                Dictionary<string, object> orphanDocument = jsonDocument(
+                    File.ReadAllText(config));
+                Dictionary<string, object> orphanProfiles = dictionaryValue(
+                    orphanDocument, "profiles");
+                orphanProfiles["orphan-child"] = new Dictionary<string, object> {
+                    { "id", "orphan-child" }, { "kind", "child" },
+                    { "name", "Orphan" }, { "display_name", "Orphan" },
+                    { "avatar_id", "" }, { "parent_profile_id", "missing-parent" },
+                    { "enabled", false }, { "policy_revision", 3 },
+                    { "allowed_game_keys", new object[0] },
+                    { "schedule", childMutationDraft["schedule"] }
+                };
+                orphanDocument["child_time_usage"] = new Dictionary<string, object> {
+                    { "keep", "usage-marker" } };
+                File.WriteAllText(config, new JavaScriptSerializer().Serialize(
+                    orphanDocument), new UTF8Encoding(false));
+                store.RemoveChildProfileLocal("orphan-child");
+                Dictionary<string, object> afterOrphanDocument = jsonDocument(
+                    File.ReadAllText(config));
+                Dictionary<string, object> afterOrphanParent = dictionaryValue(
+                    dictionaryValue(afterOrphanDocument, "profiles"), "profile-a");
+                Assert(!dictionaryValue(afterOrphanDocument, "profiles").ContainsKey("orphan-child") &&
+                    Convert.ToString(afterOrphanParent["windows_account_sid"]) == parentBeforeOrphanCleanup.Sid &&
+                    Convert.ToString(afterOrphanParent["profile_root"]) == parentBeforeOrphanCleanup.Root &&
+                    Convert.ToString(dictionaryValue(afterOrphanDocument,
+                        "child_time_usage")["keep"]) == "usage-marker",
+                    "Orphan cleanup changed the parent Windows identity or child usage data.");
                 raw = File.ReadAllText(config);
                 Dictionary<string, object> withPin = jsonDocument(raw);
                 Dictionary<string, object> pinProfile = dictionaryValue(
@@ -2682,18 +4587,28 @@ namespace MoonWaker.HostConfigurator
                 catch (InvalidOperationException) { remoteDeniedByDefault = true; }
                 Assert(remoteDeniedByDefault,
                     "A remote sign-in grant was accepted before profile credential enablement.");
+                store.SetAppPin("profile-a", sidA, "4826");
                 store.SetRemoteSignInEnabled("profile-a", sidA, true);
                 store.UpdateGrants("profile-a", sidA,
                     new Dictionary<string, DeviceGrant> { {
-                        devices[0].Id, new DeviceGrant { UseProfile = true, RemoteSignIn = true }
+                        devices[0].Id, new DeviceGrant {
+                            UseProfile = true, RemoteSignIn = true, ManageChildren = true }
                     } });
                 devices = store.GetDevices("profile-a");
-                Assert(devices[0].UseProfile && devices[0].RemoteSignIn,
+                Assert(devices[0].UseProfile && devices[0].RemoteSignIn && devices[0].ManageChildren,
                     "Explicit profile grants were not persisted.");
                 store.SetRemoteSignInEnabled("profile-a", sidA, false);
                 devices = store.GetDevices("profile-a");
-                Assert(devices[0].UseProfile && !devices[0].RemoteSignIn,
-                    "Disabling remote sign-in did not revoke only the privileged grant.");
+                Assert(devices[0].UseProfile && !devices[0].RemoteSignIn && devices[0].ManageChildren,
+                    "Disabling remote sign-in dropped the unrelated child-management grant.");
+                DeviceGrant preservedManagement = DeviceGrantsForm.PreserveManageChildren(
+                    new DeviceGrant { UseProfile = true, RemoteSignIn = false },
+                    new DeviceRecord { ManageChildren = true });
+                DeviceGrant removedManagement = DeviceGrantsForm.PreserveManageChildren(
+                    new DeviceGrant { UseProfile = false, RemoteSignIn = false },
+                    new DeviceRecord { ManageChildren = true });
+                Assert(preservedManagement.ManageChildren && !removedManagement.ManageChildren,
+                    "The device editor did not preserve management on unrelated edits.");
                 bool lockBlocked = false;
                 using (RegistryFileLock held = RegistryFileLock.Acquire(store.RegistryLockPath, 250))
                 {
@@ -2729,6 +4644,18 @@ namespace MoonWaker.HostConfigurator
             Dictionary<string, object> source, string key)
         {
             return (Dictionary<string, object>)source[key];
+        }
+
+        private static IEnumerable<Dictionary<string, object>> ClientsForTest(
+            Dictionary<string, object> document)
+        {
+            IList values = document["clients"] as IList;
+            if (values == null) yield break;
+            foreach (object value in values)
+            {
+                Dictionary<string, object> client = value as Dictionary<string, object>;
+                if (client != null) yield return client;
+            }
         }
     }
 }

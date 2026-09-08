@@ -14,9 +14,9 @@ using System.Text;
 using System.Threading.Tasks;
 using System.Windows.Forms;
 
-[assembly: AssemblyVersion("0.7.79.0")]
-[assembly: AssemblyFileVersion("0.7.79.0")]
-[assembly: AssemblyInformationalVersion("0.7.79+2026.09.05")]
+[assembly: AssemblyVersion("0.7.95.0")]
+[assembly: AssemblyFileVersion("0.7.95.0")]
+[assembly: AssemblyInformationalVersion("0.7.95+2026.09.08")]
 
 namespace MoonWaker.HostInstaller
 {
@@ -284,10 +284,10 @@ namespace MoonWaker.HostInstaller
 
         private void BuildVibepolloPage()
         {
-            Panel page = CreatePage(2, 520);
+            Panel page = CreatePage(2, 480);
             AddPageHeading(page, "Set up Vibepollo", "Skonfiguruj Vibepollo",
-                "MoonWaker installs Vibepollo here; profile access is configured after the host installation.",
-                "MoonWaker instaluje tutaj Vibepollo; dostęp profilu skonfigurujesz po instalacji hosta.");
+                "Choose the Vibepollo folder; MoonWaker also installs its required controller driver.",
+                "Wybierz katalog Vibepollo; MoonWaker zainstaluje też wymagany sterownik kontrolerów.");
             Panel statusCard = MakeCard(page, 112, 82, Color.FromArgb(255, 166, 76));
             vibepolloSetupStatus.SetBounds(24, 15, 650, 25);
             vibepolloSetupStatus.Font = new Font("Segoe UI", 10.5F, FontStyle.Bold);
@@ -295,19 +295,12 @@ namespace MoonWaker.HostInstaller
             vibepolloSetupDetails.SetBounds(24, 45, 650, 24);
             vibepolloSetupDetails.ForeColor = Muted;
             statusCard.Controls.Add(vibepolloSetupDetails);
-            Panel setupCard = MakeCard(page, 208, 156, Accent);
-            AddLocalizedLabel(setupCard, "No password is collected here", "Tutaj nie podajesz hasła",
-                13F, FontStyle.Bold, 24, 16, 500, 28);
+            Panel setupCard = MakeCard(page, 208, 126, Accent);
             Label setupNote = AddLocalizedLabel(setupCard,
-                "After installation, create a profile in Host Control and choose Integrations. You can paste a Vibepollo token or let MoonWaker request one, and configure Discord there too.",
-                "Po instalacji utwórz profil w Host Control i wybierz Integracje. Możesz wkleić token Vibepollo albo pobrać go automatycznie; tam skonfigurujesz też Discorda.",
-                9F, FontStyle.Regular, 24, 58, 650, 70);
+                "If Vibepollo is missing, its signed setup will open during the next step. Choose the destination folder and keep Vibepollo Display Driver selected. MoonWaker installs the archived ViGEmBus driver separately for virtual gamepads.",
+                "Jeśli brakuje Vibepollo, w następnym kroku otworzy się jego podpisany instalator. Wybierz katalog docelowy i pozostaw sterownik Vibepollo Display Driver. MoonWaker osobno zainstaluje zarchiwizowany ViGEmBus dla wirtualnych gamepadów.",
+                9F, FontStyle.Regular, 24, 23, 650, 75);
             setupNote.ForeColor = Muted;
-            Label safety = AddLocalizedLabel(page,
-                "The MoonWaker installer never receives or logs a Vibepollo password.",
-                "Instalator MoonWaker nigdy nie otrzymuje ani nie zapisuje hasła Vibepollo.",
-                8.8F, FontStyle.Regular, 34, 388, 680, 44);
-            safety.ForeColor = Color.FromArgb(133, 143, 162);
         }
 
         private void BuildOptionsPage()
@@ -568,11 +561,11 @@ namespace MoonWaker.HostInstaller
             else
             {
                 SetStatus(vibepolloDetectionStatus,
-                    T("Not installed — the official signed MSI will be downloaded",
-                      "Brak instalacji — zostanie pobrany oficjalny podpisany MSI"), Warning);
+                    T("Not installed — the official signed setup will be downloaded",
+                      "Brak instalacji — zostanie pobrany oficjalny podpisany instalator"), Warning);
                 SetStatus(vibepolloSetupStatus,
-                    T("Not installed — the official signed MSI will be downloaded",
-                      "Brak instalacji — zostanie pobrany oficjalny podpisany MSI"), Warning);
+                    T("Not installed — the official signed setup will be downloaded",
+                      "Brak instalacji — zostanie pobrany oficjalny podpisany instalator"), Warning);
                 vibepolloDetectionDetails.Text = T(
                     "The latest stable release is downloaded directly from Nonary/Vibepollo on GitHub.",
                     "Najnowsze stabilne wydanie zostanie pobrane bezpośrednio z Nonary/Vibepollo na GitHub.");
@@ -638,8 +631,15 @@ namespace MoonWaker.HostInstaller
                         {
                             using (RegistryKey entry = uninstall.OpenSubKey(name))
                             {
+                                if (entry == null) continue;
                                 string display = Convert.ToString(entry.GetValue("DisplayName"));
                                 if (display.IndexOf("Vibepollo", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                                string location = Convert.ToString(entry.GetValue("InstallLocation"));
+                                if (String.IsNullOrWhiteSpace(location)) continue;
+                                string executable;
+                                try { executable = Path.Combine(Path.GetFullPath(location), "sunshine.exe"); }
+                                catch { continue; }
+                                if (!File.Exists(executable)) continue;
                                 return Convert.ToString(entry.GetValue("DisplayVersion")) ?? "";
                             }
                         }
@@ -647,9 +647,15 @@ namespace MoonWaker.HostInstaller
                 }
                 catch { }
             }
-            string executable = Path.Combine(Environment.GetFolderPath(
-                Environment.SpecialFolder.ProgramFiles), "Vibepollo", "sunshine.exe");
-            return File.Exists(executable) ? "" : null;
+            foreach (Environment.SpecialFolder folder in new[] {
+                Environment.SpecialFolder.ProgramFiles, Environment.SpecialFolder.ProgramFilesX86 })
+            {
+                string root = Environment.GetFolderPath(folder);
+                if (String.IsNullOrWhiteSpace(root)) continue;
+                string executable = Path.Combine(root, "Vibepollo", "sunshine.exe");
+                if (File.Exists(executable)) return "";
+            }
+            return null;
         }
 
         private async Task InstallAsync()
@@ -740,6 +746,7 @@ namespace MoonWaker.HostInstaller
         private string RunInstaller()
         {
             string temporary = CreateProtectedStagingDirectory();
+            Exception installError = null;
             try
             {
                 ReportProgress(10, T("Unpacking verified host components…",
@@ -753,16 +760,17 @@ namespace MoonWaker.HostInstaller
                     !File.Exists(prerequisiteScript)) throw new InvalidOperationException(T(
                     "The embedded host package is incomplete.", "Osadzony pakiet hosta jest niekompletny."));
                 bool ensureVibepollo = !vibepolloInstalled;
+                bool ensureViGEmBus = true;
                 bool enableWakeOnLan = wakeOnLan.Supported && !wakeOnLan.Armed;
                 StringBuilder combinedOutput = new StringBuilder();
-                if (installMachine.Checked || ensureVibepollo || enableWakeOnLan)
+                if (installMachine.Checked || ensureVibepollo || ensureViGEmBus || enableWakeOnLan)
                 {
-                    ReportProgress(28, ensureVibepollo
-                        ? T("Downloading and configuring Vibepollo…", "Pobieranie i konfigurowanie Vibepollo…")
-                        : T("Configuring Windows host services…", "Konfigurowanie usług hosta Windows…"));
+                    ReportProgress(28, T("Checking required components and drivers…",
+                        "Sprawdzanie wymaganych składników i sterowników…"));
                     combinedOutput.Append(RunMachineInstall(hostScript, machineWrapper,
                         prerequisiteScript, Path.GetFullPath(installPath.Text.Trim()), temporary,
-                        installMachine.Checked, enableWakeOnLan, ensureVibepollo));
+                        installMachine.Checked, enableWakeOnLan, ensureVibepollo, ensureViGEmBus,
+                        true, true));
                 }
                 if (combinedOutput.Length == 0) combinedOutput.AppendLine(T(
                     "Machine host components are already up to date.",
@@ -771,12 +779,18 @@ namespace MoonWaker.HostInstaller
                     "Usługi komputera są zainstalowane i uruchamiane; otwórz Host Control, aby sparować urządzenie lub zarządzać profilami."));
                 return combinedOutput.ToString();
             }
-            finally { DeleteProtectedStagingDirectory(temporary); }
+            catch (Exception error) { installError = error; throw; }
+            finally
+            {
+                try { DeleteProtectedStagingDirectory(temporary); }
+                catch { if (installError == null) throw; }
+            }
         }
 
         private string RunUninstaller(string directory)
         {
             string temporary = CreateProtectedStagingDirectory();
+            Exception uninstallError = null;
             try
             {
                 ExtractPayload(temporary);
@@ -794,20 +808,27 @@ namespace MoonWaker.HostInstaller
                 info.EnvironmentVariables["PSModulePath"] = TrustedPowerShellModulePath();
                 using (Process process = Process.Start(info))
                 {
-                    string stdout = process.StandardOutput.ReadToEnd();
-                    string stderr = process.StandardError.ReadToEnd();
+                    Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+                    Task<string> stderr = process.StandardError.ReadToEndAsync();
                     process.WaitForExit();
+                    Task.WaitAll(new Task[] { stdout, stderr });
                     if (process.ExitCode != 0) throw new InvalidOperationException(
-                        String.IsNullOrWhiteSpace(stderr) ? stdout : stderr);
-                    return stdout;
+                        String.IsNullOrWhiteSpace(stderr.Result) ? stdout.Result : stderr.Result);
+                    return stdout.Result;
                 }
             }
-            finally { DeleteProtectedStagingDirectory(temporary); }
+            catch (Exception error) { uninstallError = error; throw; }
+            finally
+            {
+                try { DeleteProtectedStagingDirectory(temporary); }
+                catch { if (uninstallError == null) throw; }
+            }
         }
 
         private static string RunMachineInstall(string hostScript, string wrapper,
             string prerequisiteScript, string directory, string temporaryDirectory,
-            bool installHost, bool enableWakeOnLan, bool ensureVibepollo)
+            bool installHost, bool enableWakeOnLan, bool ensureVibepollo, bool ensureViGEmBus,
+            bool ensurePython, bool ensureOpenSsl)
         {
             if (!File.Exists(wrapper)) throw new InvalidOperationException(
                 "The machine installation module is missing.");
@@ -822,13 +843,25 @@ namespace MoonWaker.HostInstaller
             if (!installHost) arguments += " -SkipMoonWakerHost";
             if (enableWakeOnLan) arguments += " -EnableWakeOnLan";
             if (ensureVibepollo) arguments += " -EnsureVibepollo";
+            if (ensureViGEmBus) arguments += " -EnsureViGEmBus";
+            if (ensurePython) arguments += " -EnsurePython";
+            if (ensureOpenSsl) arguments += " -EnsureOpenSsl";
             ProcessStartInfo info = new ProcessStartInfo(WindowsPowerShellPath(), arguments);
             info.UseShellExecute = false; info.CreateNoWindow = true;
+            info.RedirectStandardOutput = true; info.RedirectStandardError = true;
+            info.StandardOutputEncoding = Encoding.UTF8; info.StandardErrorEncoding = Encoding.UTF8;
             info.EnvironmentVariables["PSModulePath"] = TrustedPowerShellModulePath();
             using (Process process = Process.Start(info))
             {
+                Task<string> stdout = process.StandardOutput.ReadToEndAsync();
+                Task<string> stderr = process.StandardError.ReadToEndAsync();
                 process.WaitForExit();
+                Task.WaitAll(new Task[] { stdout, stderr });
                 string details = File.Exists(resultPath) ? File.ReadAllText(resultPath).Trim() : "";
+                if (String.IsNullOrWhiteSpace(details) && !String.IsNullOrWhiteSpace(stderr.Result))
+                    details = stderr.Result.Trim();
+                if (String.IsNullOrWhiteSpace(details) && !String.IsNullOrWhiteSpace(stdout.Result))
+                    details = stdout.Result.Trim();
                 if (process.ExitCode != 0) throw new InvalidOperationException(
                     "Machine preparation failed (" + process.ExitCode + ")." +
                     (String.IsNullOrWhiteSpace(details) ? "" : "\r\n\r\n" + details));
@@ -917,11 +950,17 @@ namespace MoonWaker.HostInstaller
             string path = installPath.Text.Trim();
             if (String.IsNullOrWhiteSpace(path) || !Path.IsPathRooted(path))
                 return T("Choose an absolute installation path.", "Wybierz bezwzględną ścieżkę instalacji.");
-            string root = Path.GetPathRoot(Path.GetFullPath(path));
+            string full;
+            string root;
+            try { full = Path.GetFullPath(path); root = Path.GetPathRoot(full); }
+            catch
+            {
+                return T("The installation path is invalid.", "Ścieżka instalacji jest nieprawidłowa.");
+            }
             if (String.IsNullOrWhiteSpace(root) || !Directory.Exists(root))
                 return T("The selected drive is unavailable.", "Wybrany dysk jest niedostępny.");
             if (!installMachine.Checked && !File.Exists(Path.Combine(
-                    Path.GetFullPath(path), "gateway", "gateway.json")))
+                    full, "gateway", "gateway.json")))
                 return T("Install shared MoonWaker components first or select an existing installation.",
                     "Najpierw zainstaluj wspólne komponenty MoonWaker albo wybierz istniejącą instalację.");
             return null;
@@ -1186,7 +1225,16 @@ namespace MoonWaker.HostInstaller
             try
             {
                 string directory = Path.GetFullPath(root);
-                if (!File.Exists(Path.Combine(directory, "tools", "legendary", "legendary.exe"))) return true;
+                foreach (string required in new[] {
+                    Path.Combine("gateway", "MoonWakerGatewayService.exe"),
+                    Path.Combine("windows-login", "login-broker", "MoonWakerLoginBroker.exe"),
+                    Path.Combine("windows-login", "credential-provider", "MoonWakerCredentialProvider.dll"),
+                    Path.Combine("control", "MoonWakerHostControl.exe"),
+                    Path.Combine("control", "MoonWakerHostConfigurator.exe"),
+                    Path.Combine("tools", "legendary", "legendary.exe") })
+                {
+                    if (!File.Exists(Path.Combine(directory, required))) return true;
+                }
                 return !String.Equals(ReadInstalledVersion(directory), payloadVersion,
                            StringComparison.OrdinalIgnoreCase) ||
                     !String.Equals(ReadInstalledVersion(Path.Combine(directory, "gateway")),

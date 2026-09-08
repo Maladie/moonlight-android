@@ -16,9 +16,48 @@ $plain = "0" * 32
 $listenerProcess = $null
 $closeListenerProcess = $null
 $uiSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "MoonWakerHostControl.cs") -Raw
+$configuratorSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "MoonWakerHostConfigurator.cs") -Raw
 $hostControlSource = Get-Content -LiteralPath (Join-Path $PSScriptRoot "Invoke-MoonWakerHostControl.ps1") -Raw
+$profileAgentSource = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) `
+    "profile-agent\MoonWakerProfileBridge.ps1") -Raw
+$vibepolloBridgeSource = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) `
+    "bridges\vibepollo\VibepolloBridge.ps1") -Raw
 if (-not $uiSource.Contains('vibepolloUrl.Text = vibepolloConfigured ? "" :')) {
     throw "The integrations dialog no longer preserves an existing Vibepollo base URL."
+}
+foreach ($contract in @(
+    'private const int ProfileCreatedExitCode = 10;',
+    'process.ExitCode == ProfileCreatedExitCode',
+    'ProcessStartInfo("https://127.0.0.1:47990")'
+)) {
+    if (-not $uiSource.Contains($contract)) {
+        throw "Host Control profile-to-Vibepollo redirect is missing: $contract"
+    }
+}
+if (-not $configuratorSource.Contains(
+        'if (mode == "add" && form.DialogResult == DialogResult.OK) return 10;') -or
+    -not $configuratorSource.Contains('DialogResult = DialogResult.OK;')) {
+    throw "The elevated profile configurator does not report successful profile creation."
+}
+foreach ($contract in @(
+    'function Get-CompatiblePythonExecutable',
+    '$request | & $PythonExecutable $transport',
+    'python_path = $python',
+    '[string]::IsNullOrWhiteSpace($existingPython)',
+    '-not [string]::IsNullOrWhiteSpace($_)',
+    'Get-Command python.exe -CommandType Application'
+)) {
+    if (-not $hostControlSource.Contains($contract)) {
+        throw "Host Control Vibepollo Python resolution is missing: $contract"
+    }
+}
+if ($hostControlSource.Contains(
+        'Test-Path -LiteralPath ([string]$existing.python_path)')) {
+    throw "Host Control can still pass an empty configured Python path to LiteralPath."
+}
+if (-not $vibepolloBridgeSource.Contains('$script:PythonExe = Get-CompatiblePythonExecutable') -or
+    -not $profileAgentSource.Contains('return Start-HiddenProcess $python')) {
+    throw "Profile Bridges do not use the resolved Python executable."
 }
 if (-not $uiSource.Contains('Ctrl+Alt+Shift+End') -or
     -not $uiSource.Contains('RegisterHotKey(Handle, StreamHotkeyId') -or
@@ -79,12 +118,26 @@ try {
                 owner_sid = "S-1-5-21-100-200-300-4999"
                 windows_account_sid = "S-1-5-21-100-200-300-4999"
                 profile_root = $foreignProfile
-                discord_bridge = ""
-                vibepollo_bridge = ""
-                game_provider_bridge = ""
+            }
+            child = [ordered]@{
+                id = "child"
+                kind = "child"
+                name = "Child profile"
+                enabled = $true
+                parent_profile_id = "default"
+                allowed_game_keys = @()
+                policy_revision = 0
             }
         }
     } | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath (Join-Path $gateway "gateway.json") -Encoding UTF8
+    # Fresh profiles intentionally start without a pinned Python path. This must
+    # fall through to discovery instead of reaching Test-Path with an empty value.
+    [ordered]@{
+        base_url = "https://127.0.0.1:47990"
+        listen_port = $vibepolloPort
+        python_path = ""
+    } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $profile `
+        "vibepollo\config.json") -Encoding UTF8
     [ordered]@{ version = "test"; build = "test"; protocol_version = 1 } |
         ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root "version.json") -Encoding UTF8
     New-Item -ItemType File -Path (Join-Path $gateway "gateway-manually-stopped") -Force | Out-Null
@@ -298,7 +351,8 @@ print(json.dumps({"ok": True, "status": 200,
     $vibepolloConfig = Get-Content -LiteralPath (Join-Path $profile `
         "vibepollo\config.json") -Raw | ConvertFrom-Json
     if (-not $autoIntegration.ok -or $savedVibepollo -ne $autoToken -or
-        [string]$vibepolloConfig.base_url -ne $customVibepolloUrl) {
+        [string]$vibepolloConfig.base_url -ne $customVibepolloUrl -or
+        -not (Test-Path -LiteralPath ([string]$vibepolloConfig.python_path) -PathType Leaf)) {
         throw "Automatic Vibepollo token configuration did not preserve the URL or store the token."
     }
 
@@ -404,8 +458,16 @@ print(json.dumps({"ok": True, "status": 200,
     $status = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
     $current = @($status.profiles | Where-Object id -eq "default")[0]
     $foreign = @($status.profiles | Where-Object id -eq "foreign")[0]
+    $child = @($status.profiles | Where-Object id -eq "child")
+    if ($child.Count -ne 0) {
+        throw "Host Control exposed a child profile as a Windows account."
+    }
     if (-not $current.current_user -or $foreign.current_user) {
         throw "Host Control did not correlate profiles with their Windows owner."
+    }
+    if ($foreign.discord -ne "disabled" -or $foreign.vibepollo -ne "disabled" -or
+        $foreign.game_provider -ne "disabled" -or $foreign.playnite -ne "disabled") {
+        throw "Host Control did not tolerate missing optional standard profile endpoints."
     }
     if (-not $current.discord_configured -or -not $current.vibepollo_configured) {
         throw "Host Control status did not report configured profile integrations."

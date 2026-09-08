@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="child_session_countdown">%1$d:%2$02d</string>
+    <string name="child_session_warning">%1$d min remaining</string>
+    <string name="child_session_time_expired_title">Time is up</string>
+    <string name="child_session_time_expired_message">The child session has ended. Save your game before time runs out.</string>
+    <string name="child_session_ended_title">Child session ended</string>
+    <string name="child_session_ended_message">The child session has ended.</string>
+    <string name="child_session_game_access_revoked_message">Parent removed access to this game.</string>
+    <string name="console_child_picker_hours">Hours</string>
+    <string name="console_child_picker_minutes">Minutes</string>
+    <string name="console_child_picker_hint">Hours · minutes. Available values depend on the playing window.</string>
+    <string name="console_child_limit_adjusted">The daily limit was reduced to fit the playing window.</string>
+    <string name="child_session_retry_from_library">The stream is disconnected. Return to the library and start the game again.</string>
+</resources>

@@ -22,18 +22,19 @@ public class ConsoleWindowsProfileSwitchTest {
         assertSame(gry, ConsoleActivity.activeAuthorizedProfile(selection));
 
         String menu = between(source(),
-                "private void showHostSelectionOptions(ComputerDetails host)",
-                "static HostGatewayClient.IntegrationProfile activeAuthorizedProfile(");
-        String align = between(menu, "if (alignProfile != null) {", "boolean switchVisible");
-        assertTrue(align.contains("selectProfile(host, activeProfile.id)"));
+                "private void showProfileSelection(ComputerDetails host)",
+                "private void selectProfile(ComputerDetails host, String profileId)");
+        String align = between(menu, "if (active != null && !selected.isChild()",
+                "if (canSwitchWindowsProfile");
+        assertTrue(align.contains("selectProfile(host, active.id)"));
         assertFalse(align.contains("switchWindowsSession("));
     }
 
     @Test public void explicitSwitchRequiresConfirmationBeforeEndpoint() throws Exception {
         String source = source();
         String menu = between(source,
-                "private void showHostSelectionOptions(ComputerDetails host)",
-                "static HostGatewayClient.IntegrationProfile activeAuthorizedProfile(");
+                "private void showProfileSelection(ComputerDetails host)",
+                "private void selectProfile(ComputerDetails host, String profileId)");
         String confirmation = between(source,
                 "private void confirmWindowsProfileSwitch(",
                 "private void requestWindowsProfileSwitch(");
@@ -44,7 +45,7 @@ public class ConsoleWindowsProfileSwitchTest {
                 "private void runWindowsProfileSwitch(",
                 "static boolean canPollWindowsProfileSwitch(");
 
-        assertTrue(menu.contains("confirmWindowsProfileSwitch(host, selectedProfile)"));
+        assertTrue(menu.contains("confirmWindowsProfileSwitch(host, selected)"));
         assertTrue(confirmation.contains("requestWindowsProfileSwitch(host, profile)"));
         assertFalse(request.contains("switchWindowsSession("));
         assertTrue(run.contains("hostGatewayClient.switchWindowsSession("));
@@ -104,6 +105,21 @@ public class ConsoleWindowsProfileSwitchTest {
 
         assertFalse(refresh.contains("switchWindowsSession("));
         assertFalse(profileRefresh.contains("switchWindowsSession("));
+    }
+
+    @Test public void childActorCannotUseWindowsOrDesktopHostActions() throws Exception {
+        String source = source();
+        String menu = between(source,
+                "private void showHostSelectionOptions(ComputerDetails host)",
+                "static HostGatewayClient.IntegrationProfile activeAuthorizedProfile(");
+        String close = between(source,
+                "@Override public SessionOrchestrator.CloseResult closePreviousSession(",
+                "@Override public void launch(PlayIntent intent");
+        assertTrue(menu.contains("boolean childProfile"));
+        assertTrue(menu.contains("!childProfile"));
+        assertFalse(close.contains("if (isChildIntent(intent))"));
+        assertTrue(close.contains("switchRetainedProviderGame"));
+        assertTrue(close.contains("if (!allowDestructiveClose)"));
     }
 
     @Test public void everyTerminalPathRefreshesAndStaleResultsCannotTouchUi()

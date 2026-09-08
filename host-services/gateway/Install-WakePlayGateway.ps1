@@ -2,8 +2,8 @@
 #requires -RunAsAdministrator
 [CmdletBinding()]
 param(
-    [string]$InstallDirectory = "C:\Tools\WakePlayGateway",
-    [int]$Port = 8785,
+    [ValidateNotNullOrEmpty()][string]$InstallDirectory = "C:\Tools\WakePlayGateway",
+    [ValidateRange(1, 65535)][int]$Port = 8785,
     [switch]$SkipFirewall,
     [switch]$SkipStart
 )
@@ -27,9 +27,40 @@ $files = @(
     "README.md"
 )
 
-$python = [IO.Path]::GetFullPath((Get-Command python.exe -ErrorAction Stop).Source)
-if (-not (Test-Path -LiteralPath $python -PathType Leaf)) {
-    throw "Python executable was not found."
+$InstallDirectory = [IO.Path]::GetFullPath($InstallDirectory).TrimEnd('\')
+if ($InstallDirectory -eq [IO.Path]::GetPathRoot($InstallDirectory)) {
+    throw "Choose a dedicated Gateway installation directory."
+}
+
+function Get-MachinePythonExecutable {
+    $candidates = @()
+    foreach ($programFiles in @(
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles),
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86))) {
+        if ([string]::IsNullOrWhiteSpace($programFiles) -or
+            -not (Test-Path -LiteralPath $programFiles -PathType Container)) { continue }
+        $candidates += Get-ChildItem -LiteralPath $programFiles -Directory -Filter "Python*" `
+            -ErrorAction SilentlyContinue | ForEach-Object { Join-Path $_.FullName "python.exe" }
+    }
+    foreach ($candidate in @($candidates | Where-Object {
+        -not [string]::IsNullOrWhiteSpace($_)
+    } | Sort-Object -Unique)) {
+        if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+        $versionText = & $candidate -c `
+            "import sys; print('.'.join(map(str, sys.version_info[:3])))" 2>$null
+        if ($LASTEXITCODE -ne 0) { continue }
+        [version]$version = $null
+        if ([version]::TryParse([string]$versionText, [ref]$version) -and
+            $version -ge [version]"3.10" -and $version -lt [version]"4.0") {
+            return [IO.Path]::GetFullPath($candidate)
+        }
+    }
+    return $null
+}
+
+$python = Get-MachinePythonExecutable
+if ($null -eq $python) {
+    throw "A system-wide Python 3.10 or newer installation was not found."
 }
 
 $existingService = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
@@ -56,7 +87,13 @@ if (-not (Test-Path -LiteralPath $configPath)) {
     $config.profiles = [pscustomobject]@{}
     $config | ConvertTo-Json -Depth 20 | Set-Content -LiteralPath $configPath -Encoding UTF8
 }
-$listenPort = [int](Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json).listen_port
+try {
+    $gatewayConfig = Get-Content -LiteralPath $configPath -Raw | ConvertFrom-Json
+    $listenPort = [int]$gatewayConfig.listen_port
+    if ($listenPort -lt 1 -or $listenPort -gt 65535) { throw "out of range" }
+} catch {
+    throw "Gateway configuration is invalid or has no valid listen_port: $configPath"
+}
 
 $lockPath = "$configPath.lock"
 if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
@@ -70,8 +107,41 @@ if (-not (Test-Path -LiteralPath $lockPath -PathType Leaf)) {
 
 $certificate = Join-Path $InstallDirectory "gateway-cert.pem"
 $privateKey = Join-Path $InstallDirectory "gateway-key.pem"
-if (-not (Test-Path -LiteralPath $certificate) -or -not (Test-Path -LiteralPath $privateKey)) {
-    $openssl = [IO.Path]::GetFullPath((Get-Command openssl.exe -ErrorAction Stop).Source)
+$certificateReady = (Test-Path -LiteralPath $certificate -PathType Leaf) -and
+    (Get-Item -LiteralPath $certificate).Length -gt 0
+$privateKeyReady = (Test-Path -LiteralPath $privateKey -PathType Leaf) -and
+    (Get-Item -LiteralPath $privateKey).Length -gt 0
+if (-not $certificateReady -or -not $privateKeyReady) {
+    $openssl = $null
+    foreach ($command in @(Get-Command openssl.exe -CommandType Application `
+            -ErrorAction SilentlyContinue)) {
+        $pathProperty = $command.PSObject.Properties["Path"]
+        $candidate = if ($null -ne $pathProperty) { [string]$pathProperty.Value } else { "" }
+        if (-not [string]::IsNullOrWhiteSpace($candidate) -and
+            (Test-Path -LiteralPath $candidate -PathType Leaf)) {
+            $openssl = $candidate
+            break
+        }
+    }
+    $candidates = @()
+    foreach ($programFiles in @(
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFiles),
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::ProgramFilesX86))) {
+        if ([string]::IsNullOrWhiteSpace($programFiles)) { continue }
+        $candidates += Join-Path $programFiles "OpenSSL-Win64\bin\openssl.exe"
+        $candidates += Join-Path $programFiles "OpenSSL-Win32\bin\openssl.exe"
+        $candidates += Join-Path $programFiles "OpenSSL\bin\openssl.exe"
+    }
+    if ([string]::IsNullOrWhiteSpace($openssl)) {
+        $openssl = $candidates | Where-Object {
+            -not [string]::IsNullOrWhiteSpace($_) -and
+            (Test-Path -LiteralPath $_ -PathType Leaf)
+        } | Select-Object -First 1
+    }
+    if ([string]::IsNullOrWhiteSpace($openssl)) {
+        throw "OpenSSL executable was not found after prerequisite installation."
+    }
+    $openssl = [IO.Path]::GetFullPath($openssl)
     if (-not (Test-Path -LiteralPath $openssl -PathType Leaf)) {
         throw "OpenSSL executable was not found."
     }
@@ -87,9 +157,18 @@ if (-not (Test-Path -LiteralPath $certificate) -or -not (Test-Path -LiteralPath 
         $ErrorActionPreference = $previousErrorActionPreference
     }
     if ($opensslExitCode -ne 0) { throw "OpenSSL certificate generation failed." }
+    foreach ($generated in @($certificate, $privateKey)) {
+        if (-not (Test-Path -LiteralPath $generated -PathType Leaf) -or
+            (Get-Item -LiteralPath $generated).Length -eq 0) {
+            throw "OpenSSL did not create the required Gateway certificate files."
+        }
+    }
 }
 
 $serviceHost = Join-Path $InstallDirectory "MoonWakerGatewayService.exe"
+if (-not (Test-Path -LiteralPath $serviceHost -PathType Leaf)) {
+    throw "The installed Gateway service executable is missing."
+}
 $serviceImage = '"{0}" --gateway-dir "{1}" --python "{2}"' -f `
     $serviceHost, $InstallDirectory, $python
 $sc = Join-Path ([Environment]::SystemDirectory) "sc.exe"
@@ -100,6 +179,9 @@ if ($null -eq $existingService) {
         -StartupType Automatic | Out-Null
 }
 $serviceConfig = Get-CimInstance Win32_Service -Filter "Name='$serviceName'"
+if ($null -eq $serviceConfig) {
+    throw "Windows did not expose the MoonWaker Gateway service after installation."
+}
 $change = Invoke-CimMethod -InputObject $serviceConfig -MethodName Change -Arguments @{
     DisplayName = "MoonWaker Gateway"
     PathName = $serviceImage
@@ -161,8 +243,10 @@ if (-not $SkipFirewall) {
 
 $pairingCode = $null
 $processId = $null
+$startupErrorPath = Join-Path $InstallDirectory "gateway-startup-error.txt"
 Remove-Item -LiteralPath (Join-Path $InstallDirectory "gateway-manually-stopped"),
-    (Join-Path $InstallDirectory "gateway-supervisor-stop") -Force -ErrorAction SilentlyContinue
+    (Join-Path $InstallDirectory "gateway-supervisor-stop"), $startupErrorPath `
+    -Force -ErrorAction SilentlyContinue
 if (-not $SkipStart) {
     $pairingCode = [string](Get-Random -Minimum 100000 -Maximum 999999)
     $sha = [Security.Cryptography.SHA256]::Create()
@@ -179,7 +263,7 @@ if (-not $SkipStart) {
         [ServiceProcess.ServiceControllerStatus]::Running, [TimeSpan]::FromSeconds(15))
     $processId = [int](Get-CimInstance Win32_Service -Filter "Name='$serviceName'").ProcessId
     $ready = $false
-    $deadline = [DateTime]::UtcNow.AddSeconds(15)
+    $deadline = [DateTime]::UtcNow.AddSeconds(30)
     while ([DateTime]::UtcNow -lt $deadline) {
         $probe = [Net.Sockets.TcpClient]::new()
         try {
@@ -189,7 +273,13 @@ if (-not $SkipStart) {
         Start-Sleep -Milliseconds 250
     }
     if (-not $ready) {
-        throw "MoonWaker Gateway service started, but its Gateway process did not open port $listenPort."
+        $startupError = if (Test-Path -LiteralPath $startupErrorPath -PathType Leaf) {
+            (Get-Content -LiteralPath $startupErrorPath -Raw).Trim()
+        } else { "No Python startup error was recorded." }
+        if ([string]::IsNullOrWhiteSpace($startupError)) {
+            $startupError = "The Gateway process produced an empty startup diagnostic."
+        }
+        throw "MoonWaker Gateway did not open port $listenPort. $startupError"
     }
 }
 

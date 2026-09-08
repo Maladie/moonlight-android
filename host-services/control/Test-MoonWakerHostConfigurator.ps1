@@ -22,13 +22,66 @@ try {
         "/reference:System.dll", "/reference:System.Core.dll", "/reference:System.Drawing.dll",
         "/reference:System.Windows.Forms.dll", "/reference:System.Web.Extensions.dll",
         "/reference:System.Management.dll", "/reference:System.Security.dll",
-        (Join-Path $PSScriptRoot "MoonWakerHostConfigurator.cs"))
+        (Join-Path $PSScriptRoot "MoonWakerHostConfigurator.cs"),
+        (Join-Path $PSScriptRoot "ChildProfileForms.cs"))
     & $compiler @arguments
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $testExecutable)) {
         throw "MoonWaker Host Configurator test compilation failed."
     }
     & $testExecutable
     if ($LASTEXITCODE -ne 0) { throw "MoonWaker Host Configurator tests failed." }
+
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = New-Object Security.Principal.WindowsPrincipal($identity)
+    if ($principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        Write-Output "MoonWaker Host Configurator redirected child-api test skipped for an elevated token."
+    } else {
+        $childApiExecutable = Join-Path $temporary "MoonWakerHostConfiguratorChildApi.exe"
+        $childApiArguments = @(
+            "/nologo", "/target:exe", "/platform:x64", "/optimize+",
+            "/main:MoonWaker.HostConfigurator.Program", "/out:$childApiExecutable",
+            "/reference:System.dll", "/reference:System.Core.dll", "/reference:System.Drawing.dll",
+            "/reference:System.Windows.Forms.dll", "/reference:System.Web.Extensions.dll",
+            "/reference:System.Management.dll", "/reference:System.Security.dll",
+            (Join-Path $PSScriptRoot "MoonWakerHostConfigurator.cs"),
+            (Join-Path $PSScriptRoot "ChildProfileForms.cs"))
+        & $compiler @childApiArguments
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $childApiExecutable)) {
+            throw "MoonWaker Host Configurator child-api test compilation failed."
+        }
+        $startInfo = New-Object System.Diagnostics.ProcessStartInfo
+        $startInfo.FileName = $childApiExecutable
+        $startInfo.Arguments = "--mode child-api"
+        $startInfo.UseShellExecute = $false
+        $startInfo.CreateNoWindow = $true
+        $startInfo.RedirectStandardInput = $true
+        $startInfo.RedirectStandardOutput = $true
+        $startInfo.RedirectStandardError = $true
+        $process = New-Object System.Diagnostics.Process
+        $process.StartInfo = $startInfo
+        [void]$process.Start()
+        $childApiRequest = @'
+{"operation":"sharing_set","parent_profile_id":"parent","game_key":"steam:demo","selected_child_ids":[],"parent_catalog_game_keys":["parent/steam:demo"],"expected_revision":0,"request_id":"redirected-unicode","label":"Żółć"}
+'@
+        $childApiBytes = [Text.UTF8Encoding]::new($false).GetBytes($childApiRequest)
+        $process.StandardInput.BaseStream.Write(
+            $childApiBytes, 0, $childApiBytes.Length)
+        $process.StandardInput.Close()
+        $childApiOutput = $process.StandardOutput.ReadToEnd()
+        $childApiError = $process.StandardError.ReadToEnd()
+        $process.WaitForExit()
+        if ($process.ExitCode -ne 0 -or -not [string]::IsNullOrWhiteSpace($childApiError)) {
+            throw "MoonWaker Host Configurator child-api redirected stream test failed."
+        }
+        try { $childApiResult = $childApiOutput | ConvertFrom-Json }
+        catch { throw "MoonWaker Host Configurator child-api returned invalid JSON." }
+        if (-not $childApiResult.ok -and
+            $childApiResult.reason -eq "administrator_required") {
+            Write-Output "MoonWaker Host Configurator redirected child-api test passed."
+        } else {
+            throw "MoonWaker Host Configurator child-api did not fail closed before registry access."
+        }
+    }
 
     $hostControlSource = Get-Content -LiteralPath (
         Join-Path $PSScriptRoot "MoonWakerHostControl.cs") -Raw
@@ -53,7 +106,8 @@ try {
         'FileAccess.ReadWrite', 'File.Replace(temporary, ConfigPath',
         'ProvisionAndFinalize', 'reservation_nonce', 'EnsureProvisioningReservation',
         'deletion_tombstone', 'if (profile.RemoteSignInEnabled)',
-        'RequestMayHaveReachedBroker')) {
+        'RequestMayHaveReachedBroker', 'SchemaVersion = 3', 'CreateChildProfile',
+        'parent_profile_id', 'allowed_game_keys', 'ManageChildren')) {
         if (-not $source.Contains($required)) {
             throw "Configurator contract is missing: $required"
         }

@@ -362,7 +362,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(method.contains("!retained.playniteGameId.equalsIgnoreCase("));
         assertTrue(method.contains("PlayniteTargetResolver.findById("));
         assertTrue(method.contains("PlayniteTargetResolver.isNeutralStream(retainedTarget)"));
-        assertTrue(method.contains("RetainedStreamSessionCoordinator.canSwitchGame("));
+        assertTrue(method.contains("RetainedStreamSessionCoordinator.canSwitchOrigin("));
     }
 
     @Test public void retryKeepsIntentAndFreshObservationRestoresResumePresentation()
@@ -419,7 +419,7 @@ public class ConsoleActivityEnsureContractTest {
 
         assertTrue(cancel.contains("cancelCurrentPreparation()"));
         assertTrue(back.contains("cancelCurrentPreparation()"));
-        assertTrue(pause.contains("cancelCurrentPreparation()"));
+        assertTrue(pause.contains("cancelCurrentPreparation(childStreamHandoff)"));
         assertFalse(pause.contains("showHome()"));
         assertTrue(scopedCancel.contains("cancelPreparation(warmUpClientHostId)"));
         assertTrue(scopedCancel.contains("renderHosts();"));
@@ -480,12 +480,13 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(mismatch.contains("warmUpStatus = WARM_UP_ERROR"));
         assertTrue(mismatch.contains("showHome()"));
         assertFalse(mismatch.contains("sessionOrchestrator.play("));
+        assertFalse(mismatch.contains("playProviderGame("));
         assertFalse(arm.contains("showLoading("));
         assertFalse(arm.contains("dispatchPendingWarmUpRelay()"));
         assertTrue(accepted.indexOf("showLoading(")
                 < accepted.indexOf("dispatchPendingWarmUpRelay()"));
         assertTrue(relay.contains("!warmUpHomeFrameAccepted"));
-        int play = relay.indexOf("sessionOrchestrator.play(relay)");
+        int play = relay.indexOf("playProviderGame(relay)");
         assertTrue(relay.indexOf("warmUpRelaySubmitted = true") < play);
         assertEquals(-1, relay.indexOf("clearPendingWarmUpRelay()", play));
         assertTrue(relay.contains("isPendingWarmUpRelayOwnedOrCompleted"));

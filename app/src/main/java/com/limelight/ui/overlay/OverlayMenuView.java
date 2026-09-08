@@ -291,6 +291,8 @@ public class OverlayMenuView extends LinearLayout {
     private int pendingBitrateKbps = 10000;
     private OverlayMenuButton bitrateValueButton;
     private boolean bitrateControlEnabled;
+    private boolean discordFeatureEnabled = true;
+    private boolean hostActionsAvailable = true;
     private boolean discordConfigured;
     private boolean discordLoading;
     private String discordError;
@@ -576,12 +578,14 @@ public class OverlayMenuView extends LinearLayout {
                     getContext().getString(R.string.overlay_menu_end_game),
                     ACTION_END_GAME, spacing);
         }
-        addVerticalButton(R.drawable.ic_overlay_power,
-            getContext().getString(R.string.overlay_menu_suspend_session),
-            ACTION_SUSPEND_SESSION, spacing);
-        addVerticalButton(R.drawable.ic_overlay_power,
-            getContext().getString(R.string.overlay_menu_quit_session), ACTION_QUIT, spacing);
-        if (shouldShowDiscordCard(discordConfigured, discordSocialAvailable)) {
+        if (hostActionsAvailable) {
+            addVerticalButton(R.drawable.ic_overlay_power,
+                getContext().getString(R.string.overlay_menu_suspend_session),
+                ACTION_SUSPEND_SESSION, spacing);
+            addVerticalButton(R.drawable.ic_overlay_power,
+                getContext().getString(R.string.overlay_menu_quit_session), ACTION_QUIT, spacing);
+        }
+        if (canShowDiscordCard()) {
             addVerticalButton(R.drawable.ic_console_discord,
                     getContext().getString(R.string.discord_community_title),
                     ACTION_DISCORD_SOCIAL_FRIENDS, spacing);
@@ -868,7 +872,7 @@ public class OverlayMenuView extends LinearLayout {
     }
 
     private void openCommunity() {
-        if (!shouldShowDiscordCard(discordConfigured, discordSocialAvailable)) return;
+        if (!canShowDiscordCard()) return;
         if (!communityOpenNotifies(overlayMode)) return;
         invalidateCommunityProjectionCache();
         overlayMode = OverlayMode.COMMUNITY;
@@ -934,8 +938,7 @@ public class OverlayMenuView extends LinearLayout {
         horizontalScrollView.setVisibility(community ? GONE : VISIBLE);
         batteryContainer.setVisibility(community || batteryContainer.getChildCount() == 0 ? GONE : VISIBLE);
         menuSpacer.setVisibility(community ? GONE : VISIBLE);
-        discordContainer.setVisibility(community && shouldShowDiscordCard(discordConfigured,
-                discordSocialAvailable) ? VISIBLE : GONE);
+        discordContainer.setVisibility(community && canShowDiscordCard() ? VISIBLE : GONE);
     }
 
     static OverlayMode backMode(OverlayMode mode) {
@@ -1142,6 +1145,10 @@ public class OverlayMenuView extends LinearLayout {
         this.actionListener = listener;
     }
 
+    public void setHostActionsAvailable(boolean available) {
+        hostActionsAvailable = available;
+    }
+
     public void setEndGameAvailable(boolean available) {
         endGameAvailable = available;
     }
@@ -1171,6 +1178,15 @@ public class OverlayMenuView extends LinearLayout {
 
     public void setBitrateControlEnabled(boolean enabled) {
         bitrateControlEnabled = enabled;
+    }
+
+    /** Hides the entire Discord surface for stream profiles that cannot use it. */
+    public void setDiscordFeatureEnabled(boolean enabled) {
+        discordFeatureEnabled = enabled;
+        if (!enabled && overlayMode == OverlayMode.COMMUNITY) {
+            returnToMenu();
+        }
+        renderDiscordCard();
     }
 
     public void setDiscordRejoinTarget(boolean available, String channelName) {
@@ -1280,9 +1296,9 @@ public class OverlayMenuView extends LinearLayout {
 
     private void renderDiscordCard() {
         if (discordContainer == null || discordContentContainer == null) return;
-        discordContainer.setVisibility(communityVisible(overlayMode,
-                shouldShowDiscordCard(discordConfigured, discordSocialAvailable)) ? VISIBLE : GONE);
-        if (!shouldShowDiscordCard(discordConfigured, discordSocialAvailable)) return;
+        discordContainer.setVisibility(communityVisible(overlayMode, canShowDiscordCard())
+                ? VISIBLE : GONE);
+        if (!canShowDiscordCard()) return;
 
         renderDiscordQuickHeaderIfChanged();
         ensureDiscordActions();
@@ -2330,6 +2346,11 @@ public class OverlayMenuView extends LinearLayout {
 
     static boolean shouldShowDiscordCard(boolean hostVoiceConfigured, boolean socialAvailable) {
         return hostVoiceConfigured || socialAvailable;
+    }
+
+    private boolean canShowDiscordCard() {
+        return discordFeatureEnabled && shouldShowDiscordCard(discordConfigured,
+                discordSocialAvailable);
     }
 
     static int socialActionLabel(boolean socialConnected, boolean socialExpanded) {

@@ -30,6 +30,7 @@ if (-not $SkipTests) {
     if ($LASTEXITCODE -ne 0) { throw "Game Provider Bridge tests failed." }
     & (Join-Path $hostServices "gateway\Test-MoonWakerGatewayService.ps1")
     & (Join-Path $hostServices "windows-login\login-broker\Test-MoonWakerLoginBroker.ps1")
+    & (Join-Path $hostServices "control\Test-MoonWakerHostControl.ps1")
 }
 
 $temporary = Join-Path ([IO.Path]::GetTempPath()) ("moonwaker-host-build-" + [guid]::NewGuid().ToString("N"))
@@ -79,7 +80,8 @@ try {
         -Destination $controlTarget -Force
     foreach ($file in @("Build-MoonWakerHostControl.ps1", "Invoke-MoonWakerHostControl.ps1",
         "MoonWakerHostControl.cs", "MoonWakerHostControl.manifest",
-        "MoonWakerHostConfigurator.cs", "MoonWakerHostConfigurator.manifest")) {
+        "MoonWakerHostConfigurator.cs", "ChildProfileForms.cs",
+        "MoonWakerHostConfigurator.manifest")) {
         Copy-Item -LiteralPath (Join-Path $hostServices "control\$file") `
             -Destination $controlTarget -Force
     }

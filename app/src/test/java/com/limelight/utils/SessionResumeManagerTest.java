@@ -13,6 +13,22 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class SessionResumeManagerTest {
+    @Test public void reconnectPreservesChildSessionAndPolicyContext() throws IOException {
+        Path source = Paths.get("src/main/java/com/limelight/utils/SessionResumeManager.java");
+        if (!Files.exists(source)) source = Paths.get(
+                "app/src/main/java/com/limelight/utils/SessionResumeManager.java");
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String save = text.substring(text.indexOf("private static void save("),
+                text.indexOf("public static synchronized PendingSession pendingSession("));
+        String restore = text.substring(text.indexOf("public static synchronized Intent buildResumeIntent("),
+                text.indexOf("public static synchronized boolean clearIfMatches("));
+        for (String extra : new String[] {"EXTRA_EXECUTION_PROFILE_ID", "EXTRA_CHILD_PROFILE", "EXTRA_CHILD_SESSION_ID", "EXTRA_CHILD_EXECUTION_PROFILE_ID",
+                "EXTRA_CHILD_GAME_ID", "EXTRA_CHILD_DEADLINE_ELAPSED_MS", "EXTRA_CHILD_POLICY_REVISION"}) {
+            assertTrue(extra, save.contains("Game." + extra));
+            assertTrue(extra, restore.contains("Game." + extra));
+        }
+    }
+
     @Test public void processLossReconnectPreservesStoredStreamSessionId() {
         assertEquals("stream-a", SessionResumeManager.resolveStreamSessionId(
                 "stream-a", "host", 42, "client"));
