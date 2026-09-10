@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "plan_id": "S03-SCENARIOS-UNBOUND-TEMPLATE",
+  "task_id": "S03",
+  "binding_status": "UNBOUND",
+  "source_fingerprint": null,
+  "apk": {
+    "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+    "sha256": null
+  },
+  "device": {
+    "controller_id": "UNBOUND",
+    "android_serial": "UNBOUND",
+    "host_id": "UNBOUND"
+  },
+  "authorization": null,
+  "steps": {
+    "setup": [
+      {
+        "id": "verify-controller-contract",
+        "argv": ["{python}", "lab/s03_scenarios.py", "--repo", ".", "--config", "lab/s03-scenarios.unbound.json", "--scenario", "verify", "--step-id", "verify-controller-contract", "--plan-sha256", "{plan_sha256}", "--apk-sha256", "{apk_sha256}", "--controller-id", "{controller_id}", "--android-serial", "{android_serial}", "--host-id", "{host_id}"],
+        "timeout_seconds": 30,
+        "required_assertions": ["config_bound", "locale_pinned", "console_resolvable", "installed_apk_matches"]
+      }
+    ],
+    "scenarios": [
+      {
+        "id": "cold-sign-in-success",
+        "argv": ["{python}", "lab/s03_scenarios.py", "--repo", ".", "--config", "lab/s03-scenarios.unbound.json", "--scenario", "success", "--step-id", "cold-sign-in-success", "--plan-sha256", "{plan_sha256}", "--apk-sha256", "{apk_sha256}", "--controller-id", "{controller_id}", "--android-serial", "{android_serial}", "--host-id", "{host_id}"],
+        "timeout_seconds": 180,
+        "required_assertions": ["console_ui_only", "locale_pinned", "fresh_action_attempt", "exact_terminal", "single_terminal", "settled_no_late_effects", "gateway_before_streamer", "requested_identity_ready", "streamer_ready", "remote_sign_in_granted", "single_session_attempt", "single_preparation", "single_session", "single_transport", "single_launch"]
+      },
+      {
+        "id": "automatic-warmup",
+        "argv": ["{python}", "lab/s03_scenarios.py", "--repo", ".", "--config", "lab/s03-scenarios.unbound.json", "--scenario", "warmup", "--step-id", "automatic-warmup", "--plan-sha256", "{plan_sha256}", "--apk-sha256", "{apk_sha256}", "--controller-id", "{controller_id}", "--android-serial", "{android_serial}", "--host-id", "{host_id}"],
+        "timeout_seconds": 180,
+        "required_assertions": ["console_ui_only", "locale_pinned", "fresh_action_attempt", "exact_terminal", "single_terminal", "settled_no_late_effects", "gateway_before_streamer", "requested_identity_ready", "streamer_ready", "remote_sign_in_granted", "single_session_attempt", "single_preparation", "single_session", "single_transport", "warmup_without_game"]
+      },
+      {
+        "id": "remote-sign-in-denied",
+        "argv": ["{python}", "lab/s03_scenarios.py", "--repo", ".", "--config", "lab/s03-scenarios.unbound.json", "--scenario", "denied", "--step-id", "remote-sign-in-denied", "--plan-sha256", "{plan_sha256}", "--apk-sha256", "{apk_sha256}", "--controller-id", "{controller_id}", "--android-serial", "{android_serial}", "--host-id", "{host_id}"],
+        "timeout_seconds": 180,
+        "required_assertions": ["console_ui_only", "locale_pinned", "fresh_action_attempt", "exact_terminal", "single_terminal", "settled_no_late_effects", "remote_sign_in_denied", "no_session_attempt", "no_session_effect", "no_launch"]
+      },
+      {
+        "id": "wrong-active-windows-identity",
+        "argv": ["{python}", "lab/s03_scenarios.py", "--repo", ".", "--config", "lab/s03-scenarios.unbound.json", "--scenario", "wrong_identity", "--step-id", "wrong-active-windows-identity", "--plan-sha256", "{plan_sha256}", "--apk-sha256", "{apk_sha256}", "--controller-id", "{controller_id}", "--android-serial", "{android_serial}", "--host-id", "{host_id}"],
+        "timeout_seconds": 180,
+        "required_assertions": ["console_ui_only", "locale_pinned", "fresh_action_attempt", "exact_terminal", "single_terminal", "settled_no_late_effects", "wrong_identity_blocked", "no_takeover", "no_session_attempt", "no_session_effect", "no_launch"]
+      },
+      {
+        "id": "timeout-late-ready-unbound",
+        "argv": ["{python}", "lab/s03_scenarios.py", "--repo", ".", "--config", "lab/s03-scenarios.unbound.json", "--scenario", "timeout_late_ready", "--step-id", "timeout-late-ready-unbound", "--plan-sha256", "{plan_sha256}", "--apk-sha256", "{apk_sha256}", "--controller-id", "{controller_id}", "--android-serial", "{android_serial}", "--host-id", "{host_id}"],
+        "timeout_seconds": 30,
+        "required_assertions": ["controlled_pending_fixture_bound", "timeout_observed", "late_ready_rejected", "no_launch"]
+      }
+    ],
+    "cleanup": [
+      {
+        "id": "restore-test-owned-state",
+        "argv": ["{python}", "lab/s03_scenarios.py", "--repo", ".", "--config", "lab/s03-scenarios.unbound.json", "--scenario", "cleanup", "--step-id", "restore-test-owned-state", "--plan-sha256", "{plan_sha256}", "--apk-sha256", "{apk_sha256}", "--controller-id", "{controller_id}", "--android-serial", "{android_serial}", "--host-id", "{host_id}"],
+        "timeout_seconds": 30,
+        "required_assertions": ["test_owned_state_restored", "no_game_running", "no_stream_running"]
+      }
+    ]
+  }
+}

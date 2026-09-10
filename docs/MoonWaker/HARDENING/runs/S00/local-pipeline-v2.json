@@ -1,0 +1,346 @@
+{
+  "plan_id": "S00-corrected-local-pipeline-20260909",
+  "task_id": "S00",
+  "binding_status": "BOUND",
+  "source_fingerprint": "sha256:db6880c0f0597149222d926db820b8438b2ca836d046cdb8c86dac8aacc7a387",
+  "checkpoint_plan_sha256": "sha256:443ef6d5eb137a921b4fbf15442da400a803a2208cc2642a3b9c13a28a1273b9",
+  "lab_authorization_ref": null,
+  "notes": [
+    "All checks exercise the corrected candidate; no reuse of old-source passing rows.",
+    "Seven F rows are deterministic production-owner floors, not device/E2E proof. T43 is an aggregate held pending independent final review.",
+    "Host test uses only a fixture stopper. Process-local Windows PowerShell module path avoids incompatible PS7 module inheritance.",
+    "Gateway service state is read before/after packaging and must be unchanged. No service control is part of this plan."
+  ],
+  "checks": [
+    {
+      "id": "S00-BRANCH-GUARD",
+      "kind": "CHECK",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "{python}",
+        "docs/MoonWaker/HARDENING/tools/packet.py",
+        "branch-check",
+        "--repo",
+        "."
+      ]
+    },
+    {
+      "id": "S00-PACKET-METADATA",
+      "kind": "CHECK",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "{python}",
+        "docs/MoonWaker/HARDENING/tools/packet.py",
+        "validate"
+      ]
+    },
+    {
+      "id": "S00-PACKET-TOOLS",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "{python}",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "docs/MoonWaker/HARDENING/tools",
+        "-p",
+        "test*.py"
+      ],
+      "observation": {
+        "format": "unittest_log",
+        "minimum_executed": 70,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "S00-F01",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.console.HostLaunchPreflightTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"
+      ],
+      "observation": {
+        "format": "junit_xml",
+        "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.console.HostLaunchPreflightTest.xml",
+        "minimum_executed": 30,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "S00-F02",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.stream.RetainedStreamSessionCoordinatorTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"
+      ],
+      "observation": {
+        "format": "junit_xml",
+        "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.stream.RetainedStreamSessionCoordinatorTest.xml",
+        "minimum_executed": 52,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "S00-F03",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.console.SessionOrchestratorTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"
+      ],
+      "observation": {
+        "format": "junit_xml",
+        "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.console.SessionOrchestratorTest.xml",
+        "minimum_executed": 50,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "S00-F04",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.console.AuthoritativeSessionTransitionTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"
+      ],
+      "observation": {
+        "format": "junit_xml",
+        "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.console.AuthoritativeSessionTransitionTest.xml",
+        "minimum_executed": 5,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "S00-F05",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.stream.BackgroundStreamCorrelationTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"
+      ],
+      "observation": {
+        "format": "junit_xml",
+        "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.stream.BackgroundStreamCorrelationTest.xml",
+        "minimum_executed": 3,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "S00-F06",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.console.ConsoleStreamTransitionCoordinatorTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"
+      ],
+      "observation": {
+        "format": "junit_xml",
+        "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.console.ConsoleStreamTransitionCoordinatorTest.xml",
+        "minimum_executed": 59,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "S00-F07",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.gateway.ChildSessionClientTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"
+      ],
+      "observation": {
+        "format": "junit_xml",
+        "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.gateway.ChildSessionClientTest.xml",
+        "minimum_executed": 12,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "S00-ANDROID-UNIT",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --offline --no-daemon --console=plain; exit $LASTEXITCODE"
+      ],
+      "observation": {
+        "format": "junit_xml",
+        "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-*.xml",
+        "minimum_executed": 1011,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "S00-ANDROID-DEBUG-BUILD",
+      "kind": "BUILD",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat assembleNonRootDebug --offline --no-daemon --console=plain; exit $LASTEXITCODE"
+      ]
+    },
+    {
+      "id": "S00-ANDROID-RELEASE-BUILD",
+      "kind": "BUILD",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat assembleNonRootRelease --offline --no-daemon --console=plain; exit $LASTEXITCODE"
+      ]
+    },
+    {
+      "id": "S00-GATEWAY-UNIT",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "{python}",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "host-services/gateway",
+        "-p",
+        "test*.py"
+      ],
+      "observation": {
+        "format": "unittest_log",
+        "minimum_executed": 191,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "S00-BRIDGE-UNIT",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "{python}",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "host-services/bridges/playnite",
+        "-p",
+        "test*.py"
+      ],
+      "observation": {
+        "format": "unittest_log",
+        "minimum_executed": 248,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "S00-BROKER-SELFTEST",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$ErrorActionPreference = 'Stop'; $lines = @(& ./host-services/windows-login/login-broker/Test-MoonWakerLoginBroker.ps1); $lines | ForEach-Object { Write-Output $_ }; $summary = @($lines | Select-String '^PASS: ([0-9]+) Login Broker tests$'); if ($summary.Count -ne 1) { throw 'Missing unique Broker test summary' }; Write-Output ('Ran ' + $summary[0].Matches[0].Groups[1].Value + ' tests in Broker self-test'); Write-Output 'OK'"
+      ],
+      "observation": {
+        "format": "unittest_log",
+        "minimum_executed": 15,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "S00-HOST-PACKAGE",
+      "kind": "BUILD",
+      "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": [
+        "powershell.exe",
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$ErrorActionPreference = 'Stop'; $env:PSModulePath = 'C:/Windows/System32/WindowsPowerShell/v1.0/Modules;C:/Program Files/WindowsPowerShell/Modules'; Import-Module C:/Windows/System32/WindowsPowerShell/v1.0/Modules/Microsoft.PowerShell.Security/Microsoft.PowerShell.Security.psd1 -ErrorAction Stop; $before = (Get-Service -Name MoonWakerGateway).Status.ToString(); Write-Output ('GATEWAY_SERVICE_BEFORE=' + $before); try { & ./Build-HostServices.ps1 -OutputDirectory docs/MoonWaker/HARDENING/runs/S00/build-artifacts/host-corrected; if ($LASTEXITCODE -ne 0) { throw 'Host package failed' } } finally { $after = (Get-Service -Name MoonWakerGateway).Status.ToString(); Write-Output ('GATEWAY_SERVICE_AFTER=' + $after); if ($before -ne $after) { throw 'Gateway service state changed; no automatic recovery performed' } }"
+      ],
+      "notes": "Fixture-scoped Host Control stopper plus forbidden-service canaries; existing service only observed before/after, never controlled."
+    },
+    {
+      "id": "S00-RUNNER-CONTRACT",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "timeout_seconds": 120,
+      "argv": [
+        "{python}",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        "docs/MoonWaker/HARDENING/tools",
+        "-p",
+        "test_run_checks.py"
+      ],
+      "observation": {
+        "format": "unittest_log",
+        "minimum_executed": 22,
+        "maximum_skipped": 0
+      }
+    }
+  ]
+}

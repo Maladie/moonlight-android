@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "plan_id": "EXAMPLE_NOT_A_COMPLETE_CHECKPOINT",
+  "task_id": "S00",
+  "binding_status": "UNBOUND",
+  "source_fingerprint": null,
+  "checkpoint_plan_sha256": null,
+  "lab_authorization_ref": null,
+  "notes": "Only existing suite candidates. S00 must inspect safety/discovery and bind exact fingerprint/plan hash. Add builds, protected smoke and target/device checks required by the checkpoint. Do not count this example as the complete gate.",
+  "checks": [
+    {
+      "id": "android-unit",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "cwd": ".",
+      "argv_unix": [
+        "./gradlew",
+        "testNonRootDebugUnitTest",
+        "--rerun-tasks"
+      ],
+      "argv_windows": [
+        "cmd.exe",
+        "/d",
+        "/c",
+        "gradlew.bat",
+        "testNonRootDebugUnitTest",
+        "--rerun-tasks"
+      ],
+      "timeout_seconds": 1800,
+      "observation": {
+        "format": "junit_xml",
+        "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-*.xml",
+        "minimum_executed": 1,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "gateway-unit",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "cwd": "host-services/gateway",
+      "argv": [
+        "{python}",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".",
+        "-p",
+        "test_*.py",
+        "-v"
+      ],
+      "timeout_seconds": 300,
+      "observation": {
+        "format": "unittest_log",
+        "minimum_executed": 1,
+        "maximum_skipped": 0
+      }
+    },
+    {
+      "id": "bridge-unit",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "cwd": "host-services/bridges/playnite",
+      "argv": [
+        "{python}",
+        "-m",
+        "unittest",
+        "discover",
+        "-s",
+        ".",
+        "-p",
+        "test_*.py",
+        "-v"
+      ],
+      "timeout_seconds": 300,
+      "observation": {
+        "format": "unittest_log",
+        "minimum_executed": 1,
+        "maximum_skipped": 0
+      }
+    }
+  ]
+}

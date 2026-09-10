@@ -1,0 +1,23 @@
+{
+  "schema_version": 1,
+  "task_id": "S00",
+  "plan_id": "S00-host-package-explicit-module-20260909",
+  "command_plan_sha256": "sha256:3878fb2b7701e4027a2e713b5d14cd7e53223624a8bb2a6f76d801accd2196d4",
+  "checkpoint_plan_sha256": "sha256:7cda84bac8442124f5793fd6f745eff43d03c44817f493b8fe64123801866708",
+  "source_fingerprint": "sha256:70df35295a70dd9bc033c1adb7d8571cc0b67de7dde09e14d10066f5a964d8a7",
+  "status": "FAIL",
+  "checks": [
+    {
+      "id": "S00-HOST-PACKAGE",
+      "kind": "BUILD",
+      "effect": "LOCAL",
+      "status": "FAIL",
+      "exit_code": 1,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S00\\host-run-01\\S00-HOST-PACKAGE.log",
+      "log_sha256": "sha256:8a879a5ce79113b2fd600cba5c8960c3a64564a515d00bedaa4f46012a4f6f81",
+      "elapsed_seconds": 0.292,
+      "reason": "Nonzero command exit"
+    }
+  ],
+  "source_fingerprint_after": "sha256:70df35295a70dd9bc033c1adb7d8571cc0b67de7dde09e14d10066f5a964d8a7"
+}

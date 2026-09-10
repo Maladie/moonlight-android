@@ -16,6 +16,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertSame;
 import static org.junit.Assert.assertTrue;
 
 public class SessionOrchestratorTest {
@@ -324,6 +325,50 @@ public class SessionOrchestratorTest {
         assertEquals(1, effects.reconnects);
         assertEquals(1, effects.readiness);
         assertEquals(0, effects.launches);
+    }
+
+    @Test public void neutralWarmUpReconnectHandsOffGameWithoutReplacement() {
+        Fake effects = new Fake();
+        SessionStateResolver.Observations observations =
+                new SessionStateResolver.Observations(
+                        "host", "default", 77, "",
+                        RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
+                        "host", "default", 77, "", "", "default", 0, "",
+                        -1L, 0L, false, true, "host", "default", 77,
+                        "", false, false);
+        observations.hostOnline = true;
+        observations.bridgeGameState = "idle";
+        observations.retainedOwnerLive = false;
+        observations.neutralStreamTarget = true;
+        effects.snapshot = new SessionStateResolver().resolve(observations);
+
+        PlayIntent game = game();
+        orchestrator(effects).play(game);
+
+        assertEquals(SessionSnapshot.State.RECONNECT_REQUIRED, effects.snapshot.state);
+        assertNull(effects.confirmation);
+        assertEquals(HostLaunchPreflight.Action.RECONNECT, effects.preflightAction);
+        assertEquals(1, effects.reconnects);
+        assertSame(game, effects.reconnectIntent);
+        assertEquals(0, effects.closes);
+        assertEquals(0, effects.launches);
+    }
+
+    @Test public void cancelledNeutralWarmUpReconnectIgnoresStaleOpaqueFrame() {
+        Fake effects = new Fake();
+        effects.snapshot = new SessionSnapshot("host",
+                SessionSnapshot.State.RECONNECT_REQUIRED, 77, "",
+                false, false, false, false, false, "", true);
+        effects.deferLoading = true;
+        SessionOrchestrator orchestrator = orchestrator(effects);
+
+        orchestrator.play(game());
+        orchestrator.cancel();
+        effects.opaqueCallbacks.remove().run();
+
+        assertNull(effects.confirmation);
+        assertEquals(0, effects.readiness);
+        assertEquals(0, effects.reconnects);
     }
 
     @Test public void suspendedTargetReadiesAndConnectsGenerically() {
@@ -790,6 +835,7 @@ public class SessionOrchestratorTest {
 
         int returned;
         int reconnects;
+        PlayIntent reconnectIntent;
         int readiness;
         int loadings;
         int refreshes;
@@ -810,6 +856,10 @@ public class SessionOrchestratorTest {
         @Override public SessionSnapshot resolve(String hostId) { return snapshot; }
         @Override public void returnToRetainedStream() { returned++; }
         @Override public void reconnectSavedSession() { reconnects++; }
+        @Override public void reconnectSavedSession(PlayIntent intent) {
+            reconnects++;
+            reconnectIntent = intent;
+        }
         @Override public void reject(SessionOrchestrator.Rejection reason) {
             rejection = reason;
         }

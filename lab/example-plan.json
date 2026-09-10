@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "plan_id": "S03-WINDOWS-SIGNIN-UNBOUND-EXAMPLE",
+  "task_id": "S03",
+  "binding_status": "UNBOUND",
+  "source_fingerprint": null,
+  "apk": {
+    "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+    "sha256": null
+  },
+  "device": {
+    "controller_id": "UNBOUND",
+    "android_serial": "UNBOUND",
+    "host_id": "UNBOUND"
+  },
+  "authorization": null,
+  "steps": {
+    "setup": [
+      {
+        "id": "verify-device-state",
+        "argv": ["{python}", "lab/steps/UNBOUND_verify_device_state.py"],
+        "timeout_seconds": 30,
+        "required_assertions": ["controller_ready", "device_identity_matches"]
+      }
+    ],
+    "scenarios": [
+      {
+        "id": "gateway-before-streamer",
+        "argv": ["{python}", "lab/steps/UNBOUND_gateway_before_streamer.py"],
+        "timeout_seconds": 180,
+        "required_assertions": ["gateway_authorized_first", "requested_identity_ready", "single_launch"]
+      }
+    ],
+    "cleanup": [
+      {
+        "id": "restore-test-owned-state",
+        "argv": ["{python}", "lab/steps/UNBOUND_restore_test_state.py"],
+        "timeout_seconds": 60,
+        "required_assertions": ["test_owned_state_restored"]
+      }
+    ]
+  }
+}

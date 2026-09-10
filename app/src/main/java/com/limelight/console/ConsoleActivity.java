@@ -3301,6 +3301,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 : GatewayConnection.normalizeProfileId(actorProfileId);
     }
 
+    private PlayniteTransitionGateway.ActorContext gatewayActorContext(
+            String hostId, String actorProfileId) {
+        HostGatewayClient.IntegrationProfile actor =
+                integrationProfile(hostId, actorProfileId);
+        return actor != null && actor.isChild()
+                ? PlayniteTransitionGateway.ActorContext.child(
+                actorProfileId, actor.executionProfileId)
+                : PlayniteTransitionGateway.ActorContext.parent(actorProfileId);
+    }
+
     private boolean isChildIntent(PlayIntent intent) {
         return intent != null && intent.kind == PlayIntent.Kind.PLAYNITE_GAME
                 && intent.profileId.equals(selectedProfileId(intent.hostId))
@@ -13597,14 +13607,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
             ComputerDetails target = currentHost(hostId);
             if (target == null) return false;
-            if (action == HostLaunchPreflight.Action.WARM_UP) {
-                return HostReadiness.awaitAfterWakeDecision(
-                        () -> managerBinder == null ? null : managerBinder.getComputer(hostId),
-                        target, false, cancelled, ignored -> { }, "", "") != null;
+            if (target.state == ComputerDetails.State.OFFLINE) {
+                HostReadiness.requestWake(target);
             }
-            return HostReadiness.await(
-                    () -> managerBinder == null ? null : managerBinder.getComputer(hostId),
-                    target, cancelled, ignored -> { }, "", "") != null;
+            return !cancelled.getAsBoolean();
         };
         HostLaunchPreflight.Gateway gateway = new HostLaunchPreflight.Gateway() {
             @Override public HostLaunchPreflight.Profile profile(String hostId, String profileId)
@@ -13619,7 +13625,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     return new HostLaunchPreflight.Profile(false, false,
                             false, false);
                 }
-                return new HostLaunchPreflight.Profile(profile.name, profile.useProfile,
+                return new HostLaunchPreflight.Profile(profile.id,
+                        profile.executionProfileId, profile.name, profile.useProfile,
                         profile.playniteBridgeOnline,
                         profile.playniteConnectorConnected,
                         profile.vibepolloBridgeOnline);
@@ -13677,7 +13684,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             private HostLaunchPreflight.Session session(
                     HostGatewayClient.WindowsSession value) {
                 return new HostLaunchPreflight.Session(value.state, value.reason,
-                        value.attemptId, value.retryAfterMs);
+                        value.attemptId, value.retryAfterMs, value.requestId,
+                        value.actorProfileId, value.executionProfileId);
             }
         };
         HostLaunchPreflight.Sunshine sunshine = new HostLaunchPreflight.Sunshine() {
@@ -13780,6 +13788,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return getString(R.string.preflight_windows_sign_in_timeout,
                         failure.profileName);
             case WINDOWS_SIGN_IN_FAILED:
+            case WINDOWS_IDENTITY_MISMATCH:
                 return getString(R.string.preflight_windows_sign_in_failed,
                         failure.profileName);
             case PLAYNITE_BRIDGE_OFFLINE:
@@ -13932,6 +13941,22 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 Intent resume = SessionResumeManager.buildResumeIntent(
                         ConsoleActivity.this, pending);
                 if (resume == null) return;
+                RetainedStreamSessionCoordinator.Snapshot retained =
+                        RetainedStreamSessionCoordinator.snapshot();
+                if (pending.neutralStreamTarget
+                        && retained.state
+                        == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED) {
+                    if (warmUpClientAttempt <= 0L
+                            || !retained.hostId.equalsIgnoreCase(pending.hostUuid)
+                            || !retained.profileId.equals(pending.profileId)
+                            || retained.appId != pending.appId
+                            || !retained.streamSessionId.equals(pending.streamSessionId)) return;
+                    LaunchTransitionSpec transition = LaunchTransitionSpec.create(
+                            pending.hostUuid, pending.profileId,
+                            LaunchTransitionType.GENERIC, pending.appId, "",
+                            System.currentTimeMillis());
+                    applyWarmUpIntent(resume, transition, intent, warmUpClientAttempt);
+                }
                 refreshSessionOnResume = true;
                 startActivity(resume);
                 overridePendingTransition(0, 0);
@@ -14294,24 +14319,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                     return null;
                 }
-                WarmUpBridgeProbe initialBridge = probeWarmUpBridge(host, intent.profileId);
-                boolean sendWake = SessionOrchestrator.shouldSendWarmUpWake(
-                        retained.state, initialBridge.responded, host.state);
                 setWarmUpStatus(intent.hostId, request,
-                        sendWake ? WARM_UP_WAKING : WARM_UP_PREPARING);
-                ComputerDetails ready = HostReadiness.awaitAfterWakeDecision(
-                        () -> managerBinder == null ? null
-                                : managerBinder.getComputer(intent.hostId),
-                        host, sendWake, cancelled, ignored -> { },
-                        getString(R.string.console_wol_status, host.name),
-                        getString(R.string.console_waiting_stream_ports));
-                if (ready == null || cancelled.getAsBoolean()) {
-                    if (!cancelled.getAsBoolean()) {
-                        setWarmUpStatus(intent.hostId, request, WARM_UP_ERROR);
-                    }
-                    return null;
-                }
-                setWarmUpStatus(intent.hostId, request, WARM_UP_PREPARING);
+                        host.state == ComputerDetails.State.OFFLINE
+                                ? WARM_UP_WAKING : WARM_UP_PREPARING);
                 HostLaunchPreflight.Result result = hostLaunchPreflight.run(
                         HostLaunchPreflight.Request.from(intent,
                                 HostLaunchPreflight.Action.WARM_UP, request),
@@ -14323,8 +14333,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                     return null;
                 }
+                ComputerDetails ready;
                 try {
-                    ready = refreshWarmUpHost(ready);
+                    ready = refreshWarmUpHost(host);
                 } catch (IOException unavailable) {
                     if (!cancelled.getAsBoolean()) {
                         setWarmUpStatus(intent.hostId, request, WARM_UP_ERROR);
@@ -14481,7 +14492,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (ready != null && restoringSuspendedSession) {
                 PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
                         this, host.uuid, ready.activeAddress != null
-                                ? ready.activeAddress.address : null, transitionProfileId);
+                                ? ready.activeAddress.address : null,
+                        gatewayActorContext(host.uuid, transitionProfileId));
                 if (gateway != null) {
                     try {
                         gateway.focusGame();
@@ -15886,8 +15898,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void setBackgroundStreamRetention(int minutes) {
         backgroundStreamRetentionMinutes = minutes;
-        preferences.edit().putInt(BackgroundStreamPreferences.KEY_RETENTION_MINUTES,
-                minutes).apply();
+        BackgroundStreamPreferences.writeMinutes(this, minutes);
         showOptionsPanel();
     }
 

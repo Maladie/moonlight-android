@@ -335,7 +335,9 @@ public class ConsoleActivityEnsureContractTest {
                         "@Override public SessionOrchestrator.CloseResult closePreviousSession(")));
 
         assertTrue(preflight.indexOf("Action.SWITCH_RETAINED")
-                < preflight.indexOf("HostReadiness.await("));
+                < preflight.indexOf("HostReadiness.requestWake("));
+        assertFalse(preflight.contains("HostReadiness.await("));
+        assertFalse(preflight.contains("HostReadiness.awaitAfterWakeDecision("));
         assertTrue(preflight.contains("State.HOME_LIVE"));
         assertTrue(preflight.contains("State.PREPARING"));
         assertTrue(close.contains("PlayniteTargetResolver.isNeutralStream(target)"));
@@ -447,11 +449,11 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(status.contains("if (localWarmUp && preparingHost)"));
         assertFalse(status.contains("&& warmUpStatus == WARM_UP_PREPARING) {\n"
                 + "            return getString(R.string.console_warm_up_preparing);"));
-        int ready = worker.indexOf("if (ready == null || cancelled.getAsBoolean())");
-        int preparing = worker.indexOf(
-                "setWarmUpStatus(intent.hostId, request, WARM_UP_PREPARING);", ready);
-        int preflight = worker.indexOf("hostLaunchPreflight.run(", ready);
-        assertTrue(ready >= 0 && preparing > ready && preparing < preflight);
+        int preflight = worker.indexOf("hostLaunchPreflight.run(");
+        int streamer = worker.indexOf("refreshWarmUpHost(host)");
+        assertTrue(preflight >= 0 && streamer > preflight);
+        assertFalse(worker.contains("HostReadiness.await("));
+        assertFalse(worker.contains("HostReadiness.awaitAfterWakeDecision("));
         assertTrue(source.contains("return HostReadiness.mergeFreshDetails(\n"
                 + "                    host, connection.getComputerDetails(true));"));
         assertTrue(english.contains("name=\"console_warm_up_fallback_details\""));

@@ -58,7 +58,7 @@ public class ConsoleHostPreparationContractTest {
         assertTrue(prepare.indexOf("if (!active) return;")
                 < prepare.indexOf("pendingHostPreparation = host.uuid;"));
         assertTrue(dispatch.contains("if (active && hostId != null"));
-        String fresh = source.substring(source.indexOf("ready = refreshWarmUpHost(ready)"));
+        String fresh = source.substring(source.indexOf("ready = refreshWarmUpHost(host)"));
         assertTrue(fresh.indexOf("!ConsoleActionCatalog.isPaired(ready)")
                 < fresh.indexOf("new SessionOrchestrator.PreparedWarmUp("));
         String retained = section(source, "@Override public NvApp verifiedRetainedTarget(",
@@ -70,6 +70,31 @@ public class ConsoleHostPreparationContractTest {
         assertTrue(retained.contains("findById(loadApps(host, true), retained.appId)"));
         assertTrue(retained.contains("PlayniteTargetResolver.isNeutralStream(target)"));
         assertEquals(3, retained.split("canSwitchGame\\(retained\\)", -1).length);
+    }
+
+    @Test public void interruptedNeutralWarmUpResumesWithThePendingGame() throws Exception {
+        String console = source("src/main/java/com/limelight/console/ConsoleActivity.java");
+        String reconnect = section(console,
+                "@Override public void reconnectSavedSession(PlayIntent intent)",
+                "@Override public void reject(");
+        assertTrue(reconnect.contains("pending.neutralStreamTarget"));
+        assertTrue(reconnect.contains("RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED"));
+        assertTrue(reconnect.contains("retained.streamSessionId.equals(pending.streamSessionId)"));
+        assertTrue(reconnect.contains(
+                "applyWarmUpIntent(resume, transition, intent, warmUpClientAttempt)"));
+
+        String game = source("src/main/java/com/limelight/Game.java");
+        String home = section(game, "private void launchConsoleHome(",
+                "private void showOverlayMenuWithBattery(");
+        assertTrue(home.contains("EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR"));
+        assertTrue(home.contains("EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM"));
+        assertTrue(home.contains("EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM"));
+    }
+
+    private static String source(String relative) throws Exception {
+        Path path = Paths.get(relative);
+        if (!Files.exists(path)) path = Paths.get("app").resolve(relative);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
     }
 
     private static String section(String source, String begin, String end) {

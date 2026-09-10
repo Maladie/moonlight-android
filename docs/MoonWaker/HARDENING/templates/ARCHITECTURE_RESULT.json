@@ -1,0 +1,22 @@
+{
+  "task_id": null,
+  "status": "NOT_RUN",
+  "responsibilities": [
+    {
+      "responsibility": null,
+      "old_owner": null,
+      "new_owner": null,
+      "state_moved": [],
+      "effects_moved": [],
+      "callers_migrated": [],
+      "obsolete_paths_removed": [],
+      "production_wiring_evidence": null,
+      "packaging_evidence": null,
+      "lifetime_notes": null
+    }
+  ],
+  "remaining_monolith_responsibilities": [],
+  "no_extraction_needed_justification": null,
+  "duplicate_authoritative_owners": [],
+  "review_evidence": null
+}

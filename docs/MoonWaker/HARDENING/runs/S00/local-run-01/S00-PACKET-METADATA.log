@@ -1,0 +1,8 @@
+{
+  "status": "VALID_PACKET_METADATA",
+  "tasks": 11,
+  "findings": 11,
+  "scenarios": 46,
+  "invariants": 28,
+  "warning": "Metadata validation is not code, test, review or device verification."
+}

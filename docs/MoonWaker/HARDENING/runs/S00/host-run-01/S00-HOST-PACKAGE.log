@@ -1,0 +1,14 @@
+Import-Module : The following error occurred while loading the extended type data file: Error in TypeData "System.Secur
+ity.AccessControl.ObjectSecurity": The member AuditToString is already present.
+Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member AccessToString is already present.
+Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Sddl is already present.
+Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Access is already present.
+Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Group is already present.
+Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Owner is already present.
+Error in TypeData "System.Security.AccessControl.ObjectSecurity": The member Path is already present.
+At line:1 char:34
++ ... e = 'Stop'; Import-Module Microsoft.PowerShell.Security -ErrorAction  ...
++                 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    + CategoryInfo          : InvalidOperation: (:) [Import-Module], RuntimeException
+    + FullyQualifiedErrorId : FormatXmlUpdateException,Microsoft.PowerShell.Commands.ImportModuleCommand
+ 

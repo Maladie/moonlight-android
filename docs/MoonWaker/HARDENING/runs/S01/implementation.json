@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "task_id": "S01",
+  "run_id": "S01-worker-20260909T0850Z",
+  "role": "worker",
+  "actual_model": null,
+  "status": "REVIEW_PENDING",
+  "source": {
+    "repository": "Maladie/moonlight-android",
+    "branch": "codex/session-hardening",
+    "head_before": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+    "head_after": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+    "input_fingerprint": "sha256:db6880c0f0597149222d926db820b8438b2ca836d046cdb8c86dac8aacc7a387",
+    "output_fingerprint": "sha256:ff1458b66850bbb923c134c88d1e042072d66c0f456029440be35ee2988155fc",
+    "diff_artifact": "runs/S01/owned-changes.md",
+    "dirty_baseline_preserved": true
+  },
+  "dependency_reports": [
+    "runs/S00/implementation.json",
+    "runs/S00/review.json"
+  ],
+  "finding_dispositions": [
+    {
+      "id": "H02",
+      "status": "FIXED_CODE_VERIFIED",
+      "evidence": "Child full quit captures ActorContext before delayed work and PlayniteTransitionGateway.snapshot omits parent health for that immutable child actor while retaining child current/readiness/stop."
+    }
+  ],
+  "changed_files": [
+    "app/src/main/java/com/limelight/console/PlayniteTransitionGateway.java",
+    "app/src/main/java/com/limelight/console/HostGatewayClient.java",
+    "app/src/main/java/com/limelight/Game.java",
+    "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+    "app/src/test/java/com/limelight/console/PlayniteTransitionGatewayTest.java",
+    "app/src/test/java/com/limelight/GameTransitionCancelContractTest.java",
+    "host-services/gateway/test_child_sessions_http.py"
+  ],
+  "contracts_changed": [
+    "PlayniteTransitionGateway has one connect method requiring immutable ActorContext; parent-default and boolean overloads are removed.",
+    "ActorContext binds actor profile, Windows execution profile and actor kind; GatewayConnection must match the actor profile.",
+    "Child snapshot uses existing child-permitted current/readiness routes and never selects parent-only health; parent snapshot behavior is unchanged.",
+    "Delayed Game stop/quit/suspend/retained operations capture their actor context before asynchronous execution."
+  ],
+  "compatibility_notes": [
+    "No host wire schema, route permission, TLS, pinning, Bearer auth, profile-session, capability or request-ID behavior changed.",
+    "New Android works with the existing host because it uses the same actor profile header and existing routes.",
+    "Existing Android and host combinations are unaffected; no coordinated deployment or data migration is required."
+  ],
+  "task_checks": [
+    {"id":"S01-BRANCH-GUARD","requirement":"Prepared branch/base binding","status":"PASS","command":"See runs/S01/local-pipeline.json","exit_code":0,"expected":"Prepared work branch","observed":"codex/session-hardening at recorded base ancestry","evidence_artifact":"runs/S01/local-run-02/S01-BRANCH-GUARD.log"},
+    {"id":"S01-PACKET-TOOLS","requirement":"Packet tool regressions","status":"PASS","command":"python -m unittest discover -s docs/MoonWaker/HARDENING/tools -p test*.py","exit_code":0,"expected":"At least 70, no fail/skip","observed":"70 executed; 0 failed; 0 skipped","evidence_artifact":"runs/S01/local-run-02/S01-PACKET-TOOLS.log"},
+    {"id":"S01-RUNNER-CONTRACT","requirement":"Evidence runner contract","status":"PASS","command":"python -m unittest discover -s docs/MoonWaker/HARDENING/tools -p test_run_checks.py","exit_code":0,"expected":"At least 22, no fail/skip","observed":"22 executed; 0 failed; 0 skipped","evidence_artifact":"runs/S01/local-run-02/S01-RUNNER-CONTRACT.log"},
+    {"id":"S01-ACTOR-CONTEXT","requirement":"T09/T16/T37 production facade and caller context","status":"PASS","command":"Gradle PlayniteTransitionGatewayTest","exit_code":0,"expected":"At least 10, no fail/skip","observed":"10 executed; exact parent/child routes, actor profiles, credentials/pin descriptor and all 10 production callers asserted","evidence_artifact":"runs/S01/local-run-02/S01-ACTOR-CONTEXT.log"},
+    {"id":"S01-CHILD-ROUTE-AUTH","requirement":"T22 actual Gateway child allowlist","status":"PASS","command":"Python test_child_sessions_http.py","exit_code":0,"expected":"At least 14, no fail/skip","observed":"14 executed; child current/readiness/focus/stop allowed; health/Discord/management/sharing denied","evidence_artifact":"runs/S01/local-run-02/S01-CHILD-ROUTE-AUTH.log"},
+    {"id":"S01-ADVERSE-ORDERING","requirement":"T46 deterministic stale/rebind ordering","status":"PASS","command":"Gradle capturedContextSurvivesDeterministicActorRebindOrdering","exit_code":0,"expected":"One deterministic test","observed":"1 executed; child-parent-child request profile trace remained kid,kid,parent,parent,parent,kid","evidence_artifact":"runs/S01/local-run-02/S01-ADVERSE-ORDERING.log"},
+    {"id":"S01-F01","requirement":"Cold authorized start floor","status":"PASS","command":"Gradle HostLaunchPreflightTest","exit_code":0,"expected":"At least 30","observed":"30 executed; 0 failed/skipped","evidence_artifact":"runs/S01/local-run-02/S01-F01.log"},
+    {"id":"S01-F02","requirement":"Game-only stop floor","status":"PASS","command":"Gradle RetainedStreamSessionCoordinatorTest","exit_code":0,"expected":"At least 52","observed":"52 executed; 0 failed/skipped","evidence_artifact":"runs/S01/local-run-02/S01-F02.log"},
+    {"id":"S01-F03","requirement":"Retained switch floor","status":"PASS","command":"Gradle SessionOrchestratorTest","exit_code":0,"expected":"At least 50","observed":"50 executed; 0 failed/skipped","evidence_artifact":"runs/S01/local-run-02/S01-F03.log"},
+    {"id":"S01-F04","requirement":"Whole quit floor","status":"PASS","command":"Gradle AuthoritativeSessionTransitionTest","exit_code":0,"expected":"At least 5","observed":"5 executed; 0 failed/skipped; S01 actor-context target also covers child full quit routing","evidence_artifact":"runs/S01/local-run-02/S01-F04.log"},
+    {"id":"S01-F05","requirement":"Home/resume floor","status":"PASS","command":"Gradle BackgroundStreamCorrelationTest","exit_code":0,"expected":"At least 3","observed":"3 executed; 0 failed/skipped","evidence_artifact":"runs/S01/local-run-02/S01-F05.log"},
+    {"id":"S01-F06","requirement":"Warm-up/transition floor","status":"PASS","command":"Gradle ConsoleStreamTransitionCoordinatorTest","exit_code":0,"expected":"At least 59","observed":"59 executed; 0 failed/skipped","evidence_artifact":"runs/S01/local-run-02/S01-F06.log"},
+    {"id":"S01-F07","requirement":"Child permissions/time floor","status":"PASS","command":"Gradle ChildSessionClientTest","exit_code":0,"expected":"At least 12","observed":"12 executed; 0 failed/skipped; actual host allowlist covered separately","evidence_artifact":"runs/S01/local-run-02/S01-F07.log"},
+    {"id":"S01-ANDROID-UNIT","requirement":"Full Android unit regression","status":"PASS","command":"Gradle testNonRootDebugUnitTest --rerun-tasks","exit_code":0,"expected":"Nonzero full suite, no fail/skip","observed":"1015 executed; 0 failed; 0 skipped","evidence_artifact":"runs/S01/local-run-02/S01-ANDROID-UNIT.log"},
+    {"id":"S01-GATEWAY-UNIT","requirement":"Full Gateway regression","status":"PASS","command":"python -m unittest discover -s host-services/gateway -p test*.py","exit_code":0,"expected":"Nonzero full suite, no fail/skip","observed":"193 executed; 0 failed; 0 skipped","evidence_artifact":"runs/S01/local-run-02/S01-GATEWAY-UNIT.log"},
+    {"id":"S01-BRIDGE-UNIT","requirement":"Full Playnite Bridge regression","status":"PASS","command":"python -m unittest discover -s host-services/bridges/playnite -p test*.py","exit_code":0,"expected":"Nonzero full suite, no fail/skip","observed":"248 executed; 0 failed; 0 skipped","evidence_artifact":"runs/S01/local-run-02/S01-BRIDGE-UNIT.log"},
+    {"id":"S01-ANDROID-DEBUG-BUILD","requirement":"Debug APK build","status":"PASS","command":"Gradle assembleNonRootDebug","exit_code":0,"expected":"Successful build","observed":"BUILD SUCCESSFUL","evidence_artifact":"runs/S01/local-run-02/S01-ANDROID-DEBUG-BUILD.log"},
+    {"id":"S01-ANDROID-RELEASE-BUILD","requirement":"Minified release APK build","status":"PASS","command":"Gradle assembleNonRootRelease","exit_code":0,"expected":"Successful build","observed":"BUILD SUCCESSFUL","evidence_artifact":"runs/S01/local-run-02/S01-ANDROID-RELEASE-BUILD.log"},
+    {"id":"S01-ANDROID-PACKAGE-WIRING","requirement":"T45 debug/release actor-context wiring","status":"PASS","command":"apkanalyzer dex/files plus release mapping inspection","exit_code":0,"expected":"Facade/context in produced artifacts","observed":"PACKAGED_GATEWAY_ACTOR_CONTEXT=debug+release","evidence_artifact":"runs/S01/local-run-02/S01-ANDROID-PACKAGE-WIRING.log"}
+  ],
+  "scenario_evidence": [
+    {"test_id":"T09","covered_assertions":["Parent snapshot retains health/current/readiness/stop","Child full-quit facade uses current/readiness/stop and no health","Game captures actor context before full-quit delayed work"],"code_status":"PASS","device_status":"NOT_REQUIRED_BY_S01_PLAN","evidence_artifacts":["runs/S01/local-run-02/S01-ACTOR-CONTEXT.log","runs/S01/local-run-02/S01-CHILD-ROUTE-AUTH.log"],"remaining_scope":"Physical quit latency/native completion remains H03/H09 and is not claimed."},
+    {"test_id":"T16","covered_assertions":["Equivalent parent/child gameplay endpoints preserve distinct actor routing","Retained old/target actor callers migrated"],"code_status":"PASS","device_status":"NOT_REQUIRED_BY_S01_PLAN","evidence_artifacts":["runs/S01/local-run-02/S01-ACTOR-CONTEXT.log","runs/S01/local-run-02/S01-F02.log","runs/S01/local-run-02/S01-F03.log"],"remaining_scope":"No physical transport claim."},
+    {"test_id":"T22","covered_assertions":["Actual handler denies child health, Discord, create/update child and sharing mutation","Permitted child current/readiness/focus/stop continue working","Denied routes cause no Bridge effect"],"code_status":"PASS","device_status":"NOT_REQUIRED","evidence_artifacts":["runs/S01/local-run-02/S01-CHILD-ROUTE-AUTH.log","runs/S01/local-run-02/S01-GATEWAY-UNIT.log"],"remaining_scope":null},
+    {"test_id":"T37","covered_assertions":["Actor and execution identity stay separate","Old child facade remains child-bound after parent rebind"],"code_status":"PASS","device_status":"NOT_REQUIRED_BY_S01_PLAN","evidence_artifacts":["runs/S01/local-run-02/S01-ACTOR-CONTEXT.log","runs/S01/local-run-02/S01-ADVERSE-ORDERING.log"],"remaining_scope":"No live transport reauthorization claim."},
+    {"test_id":"T43","covered_assertions":["All 19 input-bound checks PASS","No host/schema/deployment follow-up is required for the actor-routing improvement"],"code_status":"REVIEW_PENDING","device_status":"NOT_REQUIRED_BY_S01_PLAN","evidence_artifacts":["runs/S01/local-run-02/gate.json","runs/S01/checkpoint-plan.json"],"remaining_scope":"Independent behavioral and architecture review."},
+    {"test_id":"T44","covered_assertions":["Actor/execution state, route effect and all direct callers have one Gateway owner","Default overloads and boolean field removed"],"code_status":"REVIEW_PENDING","device_status":"NOT_REQUIRED_BY_S01_PLAN","evidence_artifacts":["runs/S01/architecture.json","runs/S01/local-run-02/S01-ACTOR-CONTEXT.log"],"remaining_scope":"Independent architecture review."},
+    {"test_id":"T45","covered_assertions":["Debug dex contains facade","Release mapping contains facade and ActorContext","Release APK contains classes.dex"],"code_status":"PASS","device_status":"NOT_REQUIRED_BY_S01_PLAN","evidence_artifacts":["runs/S01/local-run-02/S01-ANDROID-PACKAGE-WIRING.log"],"remaining_scope":null},
+    {"test_id":"T46","covered_assertions":["Fixed child-parent-child schedule produces exact actor-profile trace","No sleeps/retries; immutable captured contexts retain their generations"],"code_status":"PASS","device_status":"NOT_REQUIRED_BY_S01_PLAN","evidence_artifacts":["runs/S01/local-run-02/S01-ADVERSE-ORDERING.log"],"remaining_scope":null}
+  ],
+  "validation_commands": [
+    "python docs/MoonWaker/HARDENING/tools/run_checks.py --plan docs/MoonWaker/HARDENING/runs/S01/local-pipeline.json --repo . --output docs/MoonWaker/HARDENING/runs/S01/local-run-02 --execute -> PASS",
+    "python docs/MoonWaker/HARDENING/tools/packet.py fingerprint --repo . -> sha256:ff1458b66850bbb923c134c88d1e042072d66c0f456029440be35ee2988155fc",
+    "git diff --check -> exit 0"
+  ],
+  "blockers": [],
+  "device_gates_pending": [
+    "No mandatory device check is bound to S01. Physical Windows/TV/native F01-F07 were not run and are not claimed."
+  ],
+  "risks": [
+    "H03/H09 full-quit latency and physical stop-completion remain pre-existing and assigned to S04/S05; S01 does not claim them fixed.",
+    "The release build retains the existing Kotlin metadata lint warning; no dependency or suppression change was made.",
+    "The first complete run is preserved at local-run-01 with one obsolete source-contract assertion failure; local-run-02 is the only final fingerprint-bound gate."
+  ],
+  "next_action": "Coordinator dispatches an independent reviewer for the exact output fingerprint and input-bound checkpoint plan. Worker does not update STATE or self-accept.",
+  "checkpoint": {
+    "usable_without_followup": true,
+    "production_path_integrated": true,
+    "future_task_required": false,
+    "improvement": "Child full quit/gameplay now reaches its authorized existing routes through one immutable actor/execution context; parent behavior and host permission boundaries remain intact.",
+    "plan_artifact": "runs/S01/checkpoint-plan.json",
+    "plan_sha256": "sha256:8e771fa4dfa2409ade36dcccdbaac3805ce9a7139ecdd8755c76b706a172ee00",
+    "gate_report": "runs/S01/local-run-02/gate.json",
+    "architecture_artifact": "runs/S01/architecture.json",
+    "compatibility_artifact": "runs/S01/compatibility.md",
+    "recovery_artifact": "runs/S01/recovery.md",
+    "protected_flows": [
+      {"flow_id":"F01","status":"PASS_BASELINE_FLOOR","check_ids":["S01-F01"],"original_defects":["H07","H08"],"device_status":"NOT_RUN"},
+      {"flow_id":"F02","status":"PASS_FIXED","check_ids":["S01-F02","S01-ACTOR-CONTEXT"],"original_defects":[],"device_status":"NOT_RUN"},
+      {"flow_id":"F03","status":"PASS_BASELINE_FLOOR","check_ids":["S01-F03"],"original_defects":["H10"],"device_status":"NOT_RUN"},
+      {"flow_id":"F04","status":"PASS_FIXED","check_ids":["S01-F04","S01-ACTOR-CONTEXT"],"original_defects":["H03","H09"],"device_status":"NOT_RUN"},
+      {"flow_id":"F05","status":"PASS_BASELINE_FLOOR","check_ids":["S01-F05"],"original_defects":["H04","H05"],"device_status":"NOT_RUN"},
+      {"flow_id":"F06","status":"PASS_BASELINE_FLOOR","check_ids":["S01-F06"],"original_defects":["H06","H10","H11"],"device_status":"NOT_RUN"},
+      {"flow_id":"F07","status":"PASS_FIXED","check_ids":["S01-F07","S01-CHILD-ROUTE-AUTH"],"original_defects":["H01","H07","H08"],"device_status":"NOT_RUN"}
+    ],
+    "remaining_original_findings": ["H01","H03","H04","H05","H06","H07","H08","H09","H10","H11"]
+  },
+  "artifacts": [
+    {"path":"app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk","bytes":46760872,"sha256":"sha256:7bd96a199a2986b3d1c7cc02b5d863df9a9b21d01dbc605d133b29a22020c1a7","status":"LOCAL_VALIDATION_ONLY; never deployed/installed"},
+    {"path":"app/build/outputs/apk/nonRoot/release/app-nonRoot-release-unsigned.apk","bytes":42573050,"sha256":"sha256:45bb7595311d0c19df2c44aeeafe1e5964ddba0d3e58dfe5d33a15c1eb18ff23","status":"LOCAL_VALIDATION_ONLY; never deployed/installed"},
+    {"path":"app/build/outputs/mapping/nonRootRelease/mapping.txt","bytes":2392279,"sha256":"sha256:91b88fc51be69e4b1f7ede62a774d48d77f5239204b2db9ea0584fd1f0acabc8","status":"LOCAL_VALIDATION_ONLY"},
+    {"path":"docs/MoonWaker/HARDENING/runs/S01/local-run-02/gate.json","bytes":11309,"sha256":"sha256:1775d5f0348077ac8da596eaa60d607a104110f7190d4e8a2ec6eb26e50abd31","status":"FINAL_WORKER_GATE"}
+  ],
+  "model_note": "The worker runtime did not expose a selectable/attestable model identifier; actual_model is null rather than fabricating the Sol routing hint."
+}

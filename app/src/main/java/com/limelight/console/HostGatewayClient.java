@@ -15,7 +15,7 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Locale;
 
-final class HostGatewayClient {
+class HostGatewayClient {
     static final int DEFAULT_PORT = 8785;
     static final int REQUIRED_GAMEPLAY_PERMISSIONS = 0x07001F00;
     private static final int READ_TIMEOUT_MS = 5_000;
@@ -775,12 +775,25 @@ final class HostGatewayClient {
         final String state;
         final String reason;
         final String attemptId;
+        final String requestId;
+        final String actorProfileId;
+        final String executionProfileId;
         final int retryAfterMs;
 
         WindowsSession(String state, String reason, String attemptId, int retryAfterMs) {
+            this(state, reason, attemptId, retryAfterMs, "", "", "");
+        }
+
+        WindowsSession(String state, String reason, String attemptId, int retryAfterMs,
+                       String requestId, String actorProfileId,
+                       String executionProfileId) {
             this.state = normalizedState(state, "failed");
             this.reason = normalizedState(reason, "manual_sign_in_required");
             this.attemptId = attemptId == null ? "" : attemptId.trim();
+            this.requestId = requestId == null ? "" : requestId.trim();
+            this.actorProfileId = actorProfileId == null ? "" : actorProfileId.trim();
+            this.executionProfileId = executionProfileId == null
+                    ? "" : executionProfileId.trim();
             this.retryAfterMs = retryAfterMs > 0 ? retryAfterMs : 1_000;
         }
     }
@@ -1619,7 +1632,10 @@ final class HostGatewayClient {
         return new WindowsSession(response.optString("state", "failed"),
                 response.optString("reason", "manual_sign_in_required"),
                 response.optString("attempt_id", ""),
-                response.optInt("retry_after_ms", 1_000));
+                response.optInt("retry_after_ms", 1_000),
+                response.optString("request_id", ""),
+                response.optString("actor_profile_id", ""),
+                response.optString("execution_profile_id", ""));
     }
 
     static WindowsSession sessionFailure(
@@ -2654,8 +2670,8 @@ final class HostGatewayClient {
         return capability != null && capability.optBoolean("available", false);
     }
 
-    private JSONObject request(GatewayConnection connection, String path, String method,
-                               JSONObject body, int readTimeoutMs) throws IOException {
+    JSONObject request(GatewayConnection connection, String path, String method,
+                       JSONObject body, int readTimeoutMs) throws IOException {
         try {
             return "POST".equals(method)
                     ? transport.postJson(connection, path, body, readTimeoutMs)

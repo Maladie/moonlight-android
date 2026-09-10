@@ -338,7 +338,12 @@ final class SessionOrchestrator implements AutoCloseable {
             }
             return;
         }
-        if (snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED && matches) {
+        boolean reconnectingWarmUp = snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
+                && snapshot.neutralStreamTarget
+                && snapshot.playniteGameId.isEmpty()
+                && intent.kind == PlayIntent.Kind.PLAYNITE_GAME;
+        if (snapshot.state == SessionSnapshot.State.RECONNECT_REQUIRED
+                && (matches || reconnectingWarmUp)) {
             if (!opaqueReady) {
                 awaitOpaque(request, intent, LaunchTransitionType.GENERIC,
                         replacementAuthorized, reuseOnly, preparedTarget, pass);

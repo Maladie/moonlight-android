@@ -1,0 +1,76 @@
+{
+  "schema_version": 1,
+  "task_id": "S02",
+  "stage": "CODE",
+  "run_id": "S02-independent-review-20260909T1050Z-astra",
+  "actual_model": "gpt-6-astra",
+  "implementer_run_id": "S02-worker-20260909T0920Z",
+  "independent_context": true,
+  "verdict": "ACCEPT",
+  "reviewed_fingerprint": "sha256:02e6f8918a8027db3cb7b1270a22b1ed4ac520345c1f368093d85b2f95ca31bd",
+  "reviewed_diff_artifact": "runs/S02/owned-changes.md",
+  "checks_run": [
+    {
+      "id": "REVIEW-BRANCH-SOURCE",
+      "status": "PASS",
+      "command": "git status --short; git diff --check; git remote get-url origin; python docs/MoonWaker/HARDENING/tools/packet.py branch-check --repo .; python docs/MoonWaker/HARDENING/tools/packet.py fingerprint --repo .",
+      "observed": "Prepared codex/session-hardening branch at recorded base 00366fd92a1f283bf3aa04171ed3455ce62897ac; origin https://github.com/Maladie/moonlight-android.git. Fingerprint matches 02e6f8918a8027db3cb7b1270a22b1ed4ac520345c1f368093d85b2f95ca31bd before and after independent checks. Read branch setup, dispatch, applicable repository instructions and accepted S00/S01 reports. Diff whitespace passes; accepted prior changes and unrelated untracked work remain present. No fetch, refork, source correction, reset, commit or deployment performed."
+    },
+    {
+      "id": "REVIEW-BOUND-GATE",
+      "status": "PASS",
+      "command": "PowerShell ConvertFrom-Json, Compare-Object and Get-FileHash over checkpoint-plan.json, local-pipeline.json, local-run-01/gate.json, every log and implementation artifact",
+      "observed": "All 23 required IDs match the gate. All 23 rows have PASS, exit 0 and matching log hashes. Every TEST row has nonzero discovery, zero failures and zero skips. Counts: packet 70, runner 22, retention debug/release/migration/separation 5/5/2/1, cumulative S01 10/14/1, F01-F07 30/52/50/5/3/59/12, full Android 1020, Gateway 193, Bridge 248. Checkpoint hash 26ab982bcc2f14b98308880c7b100215910bf6c295d59457c03c6bc91b32e240, command-plan hash ca9d7803a193fef147bbd811ede8af7beb7f42b11af797b934dbf5d56fd244ce and gate hash 575a341c98c3aa072b8e61ef2564b268e7b58338a294829863ef211a5ad50009 match. Both APK sizes/hashes and release mapping size/hash match implementation.json. Successful debug/release build logs inspected."
+    },
+    {
+      "id": "REVIEW-RETENTION-BOTH-VARIANTS",
+      "status": "PASS",
+      "command": "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --tests com.limelight.stream.BackgroundStreamPreferencesTest testNonRootReleaseUnitTest --tests com.limelight.stream.BackgroundStreamPreferencesTest --rerun-tasks --offline --no-daemon --console=plain",
+      "observed": "Independent forced execution passed in 1m 12s, 44 tasks executed. Debug XML timestamp 2026-09-09T10:49:18 and release XML timestamp 2026-09-09T10:49:38 each contain five tests, zero failures/errors/skips. An initial sandbox wrapper attempt failed before tests due cache/network access; approved outside-sandbox retry used the existing cache but returned UP-TO-DATE. That cached result was not counted as new test execution, and the forced command above produced the fresh evidence. No device/service action occurred."
+    },
+    {
+      "id": "REVIEW-PRODUCTION-DEFAULT-MIGRATION-WIRING",
+      "status": "PASS",
+      "command": "Inspect full BackgroundStreamPreferences and BackgroundStreamService, S02 diff, all key/read/write callers and focused tests; trace Game lifecycle/park/warm-up and Console settings paths",
+      "observed": "Absent storage resolves to the literal authorized 30 in both variants without writing the key. Every stored integer is returned unchanged, including zero/off and -1/no-limit; no BuildConfig default branch remains. Public Context readers/writers delegate to the same package-visible SharedPreferences owner. Console retains only UI presentation state and delegates the existing preference write. Both Service recovery fallbacks resolve through the owner; its field initializer references the same default. Game already consumes this owner, with explicit zero preventing normal parking. Its existing park path passes the resolved minutes to Service, whose existing positive-minute timer uses long arithmetic. No competing five-minute/default-zero persistence path, pending consumer, new host API or migration task remains. The inherited source's 5/0 absent default contradicts the new test's independently specified 30 oracle; no physical before/after reproduction is claimed."
+    },
+    {
+      "id": "REVIEW-HOME-PICKER-OWNERSHIP",
+      "status": "PASS",
+      "command": "Inspect Game openConsoleHome/launchConsoleHome/onStop/canParkBackgroundStream, ConsoleActivity showHostSelection, RetainedStreamSessionCoordinator enterHome/parking callers and S02 production diff",
+      "observed": "App Home enters the retained coordinator and sets streamHomeVisible; Game.onStop returns for that presentation state before bounded background parking. Host selection changes presentation/profile-gate state without introducing the retention preference or a timer. RetainedStreamSessionCoordinator receives no new timeout, mutable owner or physical lifecycle change. The source-text separation tests complement this caller review; they are not physical transport evidence. H05 remains the original Activity-owned physical transport limitation assigned to S07; no S02 Game physical-ownership change was made."
+    },
+    {
+      "id": "REVIEW-PACKAGED-WIRING",
+      "status": "PASS",
+      "command": "apkanalyzer.bat dex packages app/build/outputs/apk/nonRoot/release/app-nonRoot-release-unsigned.apk; inspect release mapping, AndroidManifest.xml and hash-bound worker debug/release package check",
+      "observed": "Independent release DEX inspection finds BackgroundStreamPreferences with both Context and SharedPreferences read/write methods, and BackgroundStreamService with onStartCommand/startParking and its existing lifecycle methods. Service registration remains in AndroidManifest.xml. Worker debug DEX check and both build logs match their hashed evidence. No host module or packaging/deployment migration is introduced."
+    },
+    {
+      "id": "REVIEW-SCENARIOS-AND-WHOLE-SLICE",
+      "status": "PASS",
+      "command": "Compare T05/T07/T27/T43/T44/T45/T46 claims, checkpoint plan, architecture.json, compatibility.md, recovery.md and actual production source/cumulative test evidence",
+      "observed": "T27 policy semantics and explicit-value persistence run against the production preference owner in both variants. T05/T07 provide bounded code/caller evidence only. T43 is the whole 23-check policy slice, not the runner suite alone. T44 reuses one existing narrow owner and removes the Activity persistence effect and divergent fallbacks. T45 package wiring is verified independently. T46 reruns the accepted deterministic S01 actor-context schedule; S02 introduces no asynchronous owner and makes no new native-ordering claim. New-client/old-host and old-client/new-host behavior requires no protocol change. Recovery preserves the preference key/encoding and accepted S00/S01 source. No later task is needed for the new default or explicit-value preservation to function."
+    },
+    {
+      "id": "REVIEW-METADATA-CORRECTION",
+      "status": "PASS",
+      "command": "Read current implementation.json T43 row and recompute unchanged source/plan/command-plan/gate bindings; python docs/MoonWaker/HARDENING/tools/packet.py validate",
+      "observed": "Reviewer identified a report-only 24-versus-23 check-count typo. Worker corrected T43 to All 23 input-bound checks pass; current row verified. Source, checkpoint plan, command plan and gate hashes are unchanged. Packet metadata validates. Coordinator may finalize architecture status/review_evidence and T43/T44 review status using this ACCEPT without altering their reviewed scope or physical limitations."
+    }
+  ],
+  "findings": [],
+  "unverified_claims": [
+    "Physical Android TV/Windows/native F01-F07 and T05/T07/T27 device exercises remain NOT_RUN. S02 is an input-bound policy/wiring checkpoint with no mandatory device check IDs; acceptance is not MoonWaker E2E qualification.",
+    "Source-text production-caller/separation assertions are structural evidence, supported here by direct source review; they do not execute Android Activity/Service lifecycle, display, input or real transport continuity.",
+    "H05 Activity destruction/physical transport lifetime remains original S07 scope. S02 neither fixes it nor claims socket survival across process death.",
+    "The independently rerun unit tasks used local JVM fixtures. The full 23-check cumulative gate and APK builds are hash-verified worker evidence; this reviewer did not rerun the complete pipeline or host package."
+  ],
+  "accepted_task_scope": "Complete S02 Android-local retention policy slice: user-authorized 30-minute absent default in debug and release, exact explicit-value preservation, one preference persistence/default owner, integrated Service/Console callers and unchanged Home/host-picker timing. Both variant regressions/builds/package evidence and cumulative S00/S01/F01-F07 local floors pass. No later implementation or host migration is required for this behavior.",
+  "pending_integrated_or_device_gates": [],
+  "next_action": "Coordinator may accept S02 at this exact source fingerprint and checkpoint plan. Reuse the prepared branch/base for subsequent tasks. Keep physical evidence NOT_RUN and require actual device checks whenever a later affected plan mandates them. Source or plan changes require fresh applicable evidence and review.",
+  "behavioral_verdict": "ACCEPT",
+  "architecture_verdict": "ACCEPT",
+  "reviewed_plan_sha256": "sha256:26ab982bcc2f14b98308880c7b100215910bf6c295d59457c03c6bc91b32e240",
+  "whole_slice_independently_usable": true
+}

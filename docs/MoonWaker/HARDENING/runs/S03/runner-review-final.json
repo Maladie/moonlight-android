@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "task_id": "S03",
+  "amendment": "S03-A01-DETERMINISTIC-LAB-RUNNER",
+  "stage": "CODE_TOOLING_ONLY",
+  "run_id": "S03-A01-independent-final-review-corrected-09-20260909",
+  "actual_model": null,
+  "model_selection_note": "Independent inherited reviewer context; no model override selected or inferred.",
+  "independent_context": true,
+  "verdict": "ACCEPT",
+  "checkpoint_acceptance": false,
+  "reviewed_branch": "codex/session-hardening",
+  "reviewed_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "reviewed_fingerprint": "sha256:9260d5029301eb41ee423b876b6b1344d7127b9f103bf2d652bd9b464e3a073f",
+  "reviewed_plan_sha256": "sha256:1f2b7ed7ae7cff729c3ea3e3a71564826d7810f5a34b9cfa5f6c69af9ec4e80a",
+  "reviewed_gate_artifact": "runs/S03/runner-only-09/gate.json",
+  "reviewed_gate_sha256": "sha256:a39bbd3a806e5428097f04ae47cf7b393b1461ab832ae8bdee1cbf01a2ed2525",
+  "reviewed_runner_sha256": "sha256:be3749fb083b2030f757275d546e184cab1df181f05089569afc1931aff42500",
+  "reviewed_tests_sha256": "sha256:f9c39231161fb3c5ed76f43a38847759e3788d2a1ebbfee54117fa81a71cb9a6",
+  "reviewed_readme_sha256": "sha256:367ad79fe3a69fefca41f4c1871e2305ff5da8bfcc65c5e3e83cf9e12d39de90",
+  "findings": [],
+  "resolved_findings": [
+    {
+      "id": "R1",
+      "status": "RESOLVED",
+      "evidence": "Windows retains the scoped Job handle, requests TerminateJobObject when active processes remain, and queries BasicAccounting.ActiveProcesses until zero before closing the handle. Failure to confirm completion within the bounded grace period raises an error, preventing PASS. Suspended creation and job assignment before resume preserve ownership after direct-parent exit. Both inherited-stdout and quiet-stdout descendant regressions executed and passed independently on Windows; the quiet-child case confirms its listening socket is released before the invocation returns."
+    },
+    {
+      "id": "R2",
+      "status": "RESOLVED",
+      "evidence": "prevalidate_step_paths resolves every setup/scenario/cleanup cwd, recognized script and executable before execute_plan creates output or starts setup. Bare commands are resolved with shutil.which; explicit executable paths must exist within the permitted repository scope, with the interpreter placeholder handled explicitly. It retains the resolved absolute argv, cwd and sanitized environment in prepared_steps, and run_step uses that prepared tuple without repeating lookup. The missing cleanup executable regression now returns 2 with neither trace nor evidence directory. A real nonzero cleanup exit and a separately injected interrupted-cleanup/evidence-write error both preserve later cleanup and a final FAIL report."
+    },
+    {
+      "id": "R3",
+      "status": "RESOLVED",
+      "evidence": "Recognized Python forms require a .py script and recognized PowerShell forms require exact -File plus a .ps1 script, with explicitly supported preceding options. The regression rejects the previously accepted -c, -e, implicit PowerShell and sh.exe -c forms. Accepted interpreter parsing was inspected; no PowerShell lab scenario was executed."
+    }
+  ],
+  "checks": [
+    "Previously read applicable AGENTS.md, repository architecture/workflow, START_HERE, RULES, CHECKPOINTS, DECOMPOSITION and automation/TEST_STRATEGY remain the governing review contract.",
+    "Re-read the full corrected lab runner, tests and README; checked the unchanged UNBOUND example, prior review findings, amended checkpoint plan, updated implementation/architecture/owned-changes and runner-only-09 gate.",
+    "python -m unittest discover -s lab -p test_lab_runner.py -v: 18 tests passed independently in 13.277 seconds, exit 0; no failures or skips, including the Windows-only quiet-descendant test.",
+    "python -m py_compile lab/lab_runner.py lab/test_lab_runner.py: exit 0.",
+    "python lab/lab_runner.py --plan lab/example-plan.json --repo .: exit 0, DRY_RUN_NOT_EVIDENCE, UNBOUND, expected setup/scenario/cleanup order; example hash sha256:bdfeda9676ba286ab39b726f6a7222fe75f6e9be8499951043f413e2ee3d4fbc.",
+    "packet.py fingerprint --repo . independently returns the reviewed fingerprint; branch and HEAD independently match the recorded values.",
+    "All four runner-only-09 evidence logs match their recorded SHA-256 values; logs show 18 tests with OK, compile exit 0, UNBOUND dry-run and the current source fingerprint.",
+    "Runner, test, README, checkpoint-plan and runner-only-09 gate hashes independently match the reviewed bindings.",
+    "git diff --check passes with existing line-ending warnings. No Gradle command, APK build, installation, deployment, device action, service action, sign-in or sleep was performed.",
+    "No source/product/test file or STATE was changed by the reviewer; only this review artifact was updated, plus normal Python bytecode from the authorized compile check."
+  ],
+  "prior_component_evidence": {
+    "artifact": "runs/S03/local-run-08/gate.json",
+    "sha256": "sha256:b29d81045f5d56f05cc8ef8df63413a747a14fb1e08c25d714b09ab066b076e0",
+    "source_fingerprint": "sha256:ddbb8c19e4f0b67ac0bd5fb177f6876e02cca9234217ea1f29816b520788ab83",
+    "interpretation": "Preserved evidence for the unchanged prior Android/product component only. It is not a whole-current-source gate and is not reused as current runner evidence.",
+    "review_observations": "Its gate hash is unchanged. The earlier independent review verified 30 local PASS rows, all log hashes, nonzero test observations with zero failures/skips, and exact debug/release APK and mapping hashes. That prior gate still has aggregate FAIL because S03-LAB-WINDOWS-SIGNIN is NOT_RUN.",
+    "android_artifact_binding": {
+      "debug_apk_sha256": "sha256:667127002ef99067bd6d6a3874cef4240e43a774e61ade64658785e6909814b0",
+      "release_apk_sha256": "sha256:a2c30c5b36ee31a6f956a4dd8ec14c57720c6e79baea2542e9f51164941c5e02"
+    }
+  },
+  "review_history": [
+    {
+      "fingerprint": "sha256:9dea46fbbfc8348170fc353407d4fa98a6e75c9308ad90f7c7edcbe332eb3f4e",
+      "verdict": "CHANGES_REQUESTED",
+      "artifact": "runs/S03/runner-review-initial.json",
+      "findings": [
+        "R1 process-tree lifetime",
+        "R2 prevalidation and cleanup isolation",
+        "R3 interpreter forms"
+      ]
+    },
+    {
+      "fingerprint": "sha256:ddbb8c19e4f0b67ac0bd5fb177f6876e02cca9234217ea1f29816b520788ab83",
+      "verdict": "CHANGES_REQUESTED",
+      "findings": [
+        "R1 descendant completion independent of stdout",
+        "R2 executable prevalidation"
+      ],
+      "note": "Previous contents of this final review artifact; both residual findings are closed by the current candidate."
+    }
+  ],
+  "architecture_assessment": "ACCEPT for the Windows-tested deterministic runner foundation. A single repository-local external owner handles argv sequencing, scoped process lifetime and bounded JSON evidence without introducing a product state machine, credential owner, endpoint or production bypass. The focused corrections satisfy the earlier review without requiring product changes.",
+  "evidence_limits": [
+    "This is runner amendment acceptance only, not S03 checkpoint acceptance or a complete independent review of all S03 Android behavior.",
+    "S03-LAB-WINDOWS-SIGNIN remains NOT_RUN. No Windows credential-provider/sign-in, Android TV or physical-device claim is made; synthetic Windows subprocess tests are not device evidence.",
+    "POSIX process-group behavior was inspected but not independently executed on this Windows reviewer host.",
+    "Source/APK hashes and passing focused tests establish bounded evidence, not an OS sandbox or guarantees about arbitrary reviewed scripts.",
+    "Any later runner/source/plan change requires appropriately rebound evidence. The current runner-only gate does not replace a complete source-bound checkpoint gate."
+  ],
+  "next_action": "Coordinator may retain the runner foundation as accepted tooling. Add reviewed deterministic device scripts and a separately authorized BOUND plan later; S03 remains device-pending and cannot become checkpoint-accepted while S03-LAB-WINDOWS-SIGNIN is NOT_RUN."
+}

@@ -3,6 +3,11 @@
 param()
 
 $ErrorActionPreference = "Stop"
+# Any accidental return to a machine-service path must fail this fixture.
+function Get-Service { throw "Host Control fixture must not inspect installed services." }
+function Start-Service { throw "Host Control fixture must not start installed services." }
+function Stop-Service { throw "Host Control fixture must not stop installed services." }
+function Restart-Service { throw "Host Control fixture must not restart installed services." }
 $root = Join-Path ([IO.Path]::GetTempPath()) ("MoonWakerHostControlTest-" + [guid]::NewGuid().ToString("N"))
 $control = Join-Path $root "control"
 $gateway = Join-Path $root "gateway"
@@ -90,8 +95,36 @@ try {
         $foreignProfile -Force | Out-Null
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot "Invoke-MoonWakerHostControl.ps1") `
         -Destination (Join-Path $control "Invoke-MoonWakerHostControl.ps1")
-    Copy-Item -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) `
-        "gateway\Stop-MoonWakerGateway.ps1") -Destination $gateway
+    # Exercise Host Control's delegation with a fixture-owned listener stopper.
+    # The production stopper also controls machine services and legacy installs,
+    # so copying it into a temporary directory does not isolate those effects.
+    $fixtureStopScript = Join-Path $gateway "Stop-MoonWakerGateway.ps1"
+    @'
+param([string]$GatewayDirectory)
+$ErrorActionPreference = "Stop"
+if ([IO.Path]::GetFullPath($GatewayDirectory) -ne [IO.Path]::GetFullPath($PSScriptRoot)) {
+    throw "Fixture stop directory mismatch."
+}
+$runtimePath = Join-Path $PSScriptRoot "gateway-runtime.json"
+if (-not (Test-Path -LiteralPath $runtimePath -PathType Leaf)) {
+    throw "Fixture listener has no captured runtime identity."
+}
+$runtime = Get-Content -LiteralPath $runtimePath -Raw | ConvertFrom-Json
+$process = Get-Process -Id ([int]$runtime.pid) -ErrorAction Stop
+$started = [DateTimeOffset]::new($process.StartTime).ToUnixTimeSeconds()
+if ($started -ne [int64]$runtime.started_at) { throw "Fixture listener identity changed." }
+Stop-Process -Id $process.Id -Force -ErrorAction Stop
+New-Item -ItemType File -Path (Join-Path $PSScriptRoot "gateway-manually-stopped"), `
+    (Join-Path $PSScriptRoot "gateway-supervisor-stop") -Force | Out-Null
+'@ | Set-Content -LiteralPath $fixtureStopScript -Encoding UTF8
+    # A wrong root must be rejected before any file/process/service effect.
+    $foreignStopRejected = $false
+    try { & $fixtureStopScript -GatewayDirectory $foreignProfile }
+    catch {
+        if ($_.Exception.Message -ne "Fixture stop directory mismatch.") { throw }
+        $foreignStopRejected = $true
+    }
+    if (-not $foreignStopRejected) { throw "Fixture stopper accepted a foreign directory." }
     $gatewayPort = Get-FreeTcpPort
     $vibepolloPort = Get-FreeTcpPort
     $currentIdentity = [Security.Principal.WindowsIdentity]::GetCurrent()

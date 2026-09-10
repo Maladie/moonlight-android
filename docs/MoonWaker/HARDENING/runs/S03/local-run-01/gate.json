@@ -1,0 +1,501 @@
+{
+  "schema_version": 1,
+  "task_id": "S03",
+  "plan_id": "S03-local-pipeline-20260909",
+  "command_plan_sha256": "sha256:eda809dbd98fef461ddbb18c433185f14212d7ebbd9fac7b833d7ac3b1ae3135",
+  "checkpoint_plan_sha256": "sha256:a63bcbb9c5aa768cfead094981b66fd9a3c9c67c41d7f8289a063e1c8b8289f2",
+  "source_fingerprint": "sha256:3ed2e7d8169345305c9d8a61dfe8c4110b7491ffc36f4c7b4d8d49d8087a639e",
+  "status": "FAIL",
+  "checks": [
+    {
+      "id": "S03-BRANCH-GUARD",
+      "kind": "CHECK",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-BRANCH-GUARD.log",
+      "log_sha256": "sha256:0444b67f2a898cce78f5778e54e3d4a9a9665f6e50698e63854b873a70c09f4f",
+      "elapsed_seconds": 0.539,
+      "observation": {
+        "format": "exit_status",
+        "tests_executed": null
+      }
+    },
+    {
+      "id": "S03-PACKET-TOOLS",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-PACKET-TOOLS.log",
+      "log_sha256": "sha256:3e90486f710e75b4be4e7302f4897b725c4ea90abf4c41517b99cbea12fdb982",
+      "elapsed_seconds": 16.861,
+      "observation": {
+        "format": "unittest_log",
+        "tests_run": 70,
+        "tests_executed": 70,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-RUNNER-CONTRACT",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-RUNNER-CONTRACT.log",
+      "log_sha256": "sha256:3508cb8db117a6e07a0fac6c3b6a658489c815bff284b57f8f5780ac04ade861",
+      "elapsed_seconds": 3.058,
+      "observation": {
+        "format": "unittest_log",
+        "tests_run": 22,
+        "tests_executed": 22,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-PREFLIGHT-ORDERING",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-PREFLIGHT-ORDERING.log",
+      "log_sha256": "sha256:36cff3356d575254b97486f48b4b9f22e651a0fc52a58a33662dc55d00598ffd",
+      "elapsed_seconds": 48.447,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 3,
+        "tests_executed": 3,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-TYPED-OUTCOMES",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-TYPED-OUTCOMES.log",
+      "log_sha256": "sha256:c65342f211f5dbe192facab4978c1caf399cd5006187f9d6511e3607704d24c4",
+      "elapsed_seconds": 39.627,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 5,
+        "tests_executed": 5,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-CANCEL-LATE",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-CANCEL-LATE.log",
+      "log_sha256": "sha256:e669b52ac99d72ceeaa03b3e08fa2a8d74b820a295fd75787d15b0a88b661efc",
+      "elapsed_seconds": 40.987,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 3,
+        "tests_executed": 3,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-WRONG-IDENTITY",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-WRONG-IDENTITY.log",
+      "log_sha256": "sha256:0e8b223fd4116bab4c9ba06d4c4cb795c72bc9e3a4b691d3ac76bcba95d47570",
+      "elapsed_seconds": 40.058,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 2,
+        "tests_executed": 2,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-WARMUP-PATH",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-WARMUP-PATH.log",
+      "log_sha256": "sha256:f27fbf38d851b75a07f3d1e9cf2e8b11f0129954d50ca9f21d50c6eaf78fa780",
+      "elapsed_seconds": 40.045,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 3,
+        "tests_executed": 3,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S02-RETENTION-DEBUG",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S02-RETENTION-DEBUG.log",
+      "log_sha256": "sha256:52abf97967f3d899bcc95d8d94d2a7b77170fb3497846f66d28cea2797cc2040",
+      "elapsed_seconds": 41.314,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 5,
+        "tests_executed": 5,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S02-RETENTION-RELEASE",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S02-RETENTION-RELEASE.log",
+      "log_sha256": "sha256:687b0e255692e0014a114f18fa4c992a6d960963491d3788bda12c46382f37af",
+      "elapsed_seconds": 41.789,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 5,
+        "tests_executed": 5,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S02-RETENTION-MIGRATION",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S02-RETENTION-MIGRATION.log",
+      "log_sha256": "sha256:424defff922a79b5641166dd34c8bd212c7e96f5e8e8f673e6e252a7e54380bf",
+      "elapsed_seconds": 42.241,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 2,
+        "tests_executed": 2,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S02-HOME-PICKER-SEPARATION",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S02-HOME-PICKER-SEPARATION.log",
+      "log_sha256": "sha256:68b72ddb1e12c66b965d490529f6a974f7188e087f87dcf3f0c9db7185ca5715",
+      "elapsed_seconds": 40.056,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 1,
+        "tests_executed": 1,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S01-ACTOR-CONTEXT",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S01-ACTOR-CONTEXT.log",
+      "log_sha256": "sha256:541720b08b64a6a144cbbaf2441aac875925a60d888765568f56e3a259a0413c",
+      "elapsed_seconds": 39.63,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 10,
+        "tests_executed": 10,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S01-CHILD-ROUTE-AUTH",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S01-CHILD-ROUTE-AUTH.log",
+      "log_sha256": "sha256:9969c27408dcb894663481072d9663a38f9b91947a0acfd6054c015cf91b4eb6",
+      "elapsed_seconds": 0.632,
+      "observation": {
+        "format": "unittest_log",
+        "tests_run": 14,
+        "tests_executed": 14,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S01-ADVERSE-ORDERING",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S01-ADVERSE-ORDERING.log",
+      "log_sha256": "sha256:424defff922a79b5641166dd34c8bd212c7e96f5e8e8f673e6e252a7e54380bf",
+      "elapsed_seconds": 41.511,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 1,
+        "tests_executed": 1,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-F01",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-F01.log",
+      "log_sha256": "sha256:f13348ee02d95a98b3ab0fe63738c17c242dca45325bc3b977dce9b9f13dc04b",
+      "elapsed_seconds": 42.556,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 37,
+        "tests_executed": 37,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-F02",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-F02.log",
+      "log_sha256": "sha256:a996a7897cae1ce180f7d70541af61e40109fd8f2f1086bfbd3a8663962982ab",
+      "elapsed_seconds": 41.953,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 52,
+        "tests_executed": 52,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-F03",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-F03.log",
+      "log_sha256": "sha256:8c83bde12a92c26515ea55efa92e4e4941567c5f53b55031b0e0e7e3836730d0",
+      "elapsed_seconds": 40.163,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 50,
+        "tests_executed": 50,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-F04",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-F04.log",
+      "log_sha256": "sha256:8267b15b1fa84fb06aaec72416261a66640fe9965422b46716c098aefdf34ce0",
+      "elapsed_seconds": 41.423,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 5,
+        "tests_executed": 5,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-F05",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-F05.log",
+      "log_sha256": "sha256:5837bd8aed26ee951cd9b112c0dbb6e7a1107553723f89f76ac380f106e15759",
+      "elapsed_seconds": 41.005,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 3,
+        "tests_executed": 3,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-F06",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-F06.log",
+      "log_sha256": "sha256:b65a4b91f949a3ea4acae2ffbacfbc4faaa1b87b3d0483591cc46ad444d8558f",
+      "elapsed_seconds": 40.587,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 59,
+        "tests_executed": 59,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-F07",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-F07.log",
+      "log_sha256": "sha256:f9a0c855e8558d02d85207ab6b6bcddf18334f33baafe1e053a52b97d38832c3",
+      "elapsed_seconds": 41.713,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 12,
+        "tests_executed": 12,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-ANDROID-UNIT",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-ANDROID-UNIT.log",
+      "log_sha256": "sha256:48676dcd240990c33b734e0bcdaf20f5628cdd4eb4cd6bca2e9689b590678f9d",
+      "elapsed_seconds": 54.819,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 1027,
+        "tests_executed": 1027,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-GATEWAY-UNIT",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-GATEWAY-UNIT.log",
+      "log_sha256": "sha256:bfc2f9ef34ac4ea3c83ddf31263f9d61de695efb898a8e5fcec9b13e77c926eb",
+      "elapsed_seconds": 13.412,
+      "observation": {
+        "format": "unittest_log",
+        "tests_run": 193,
+        "tests_executed": 193,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-BRIDGE-UNIT",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-BRIDGE-UNIT.log",
+      "log_sha256": "sha256:ca21e6c8336ad5f1cc5862f5095b113f0a01366930153de21419bd4b6e98a437",
+      "elapsed_seconds": 4.075,
+      "observation": {
+        "format": "unittest_log",
+        "tests_run": 248,
+        "tests_executed": 248,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-BROKER-SELFTEST",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-BROKER-SELFTEST.log",
+      "log_sha256": "sha256:66f75434bf9fff4aadce38f9bcf7e22da8cdaf2c768d99834c7fbc3d376d669d",
+      "elapsed_seconds": 1.75,
+      "observation": {
+        "format": "unittest_log",
+        "tests_run": 15,
+        "tests_executed": 15,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    },
+    {
+      "id": "S03-ANDROID-DEBUG-BUILD",
+      "kind": "BUILD",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-ANDROID-DEBUG-BUILD.log",
+      "log_sha256": "sha256:5b6a6858beb460c3e8e6d3cee7c3b51dbfb0dab0a983411765646ca10357e246",
+      "elapsed_seconds": 57.57,
+      "observation": {
+        "format": "exit_status",
+        "tests_executed": null
+      }
+    },
+    {
+      "id": "S03-ANDROID-RELEASE-BUILD",
+      "kind": "BUILD",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-ANDROID-RELEASE-BUILD.log",
+      "log_sha256": "sha256:b6fb30f796a784f1324804b1f6db058e49f449031d4082e16bfb36254b0697c4",
+      "elapsed_seconds": 56.257,
+      "observation": {
+        "format": "exit_status",
+        "tests_executed": null
+      }
+    },
+    {
+      "id": "S03-ANDROID-PACKAGE-WIRING",
+      "kind": "CHECK",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S03\\local-run-01\\S03-ANDROID-PACKAGE-WIRING.log",
+      "log_sha256": "sha256:71b12d9ccb868a72df7a4a956665b187dac536cdc8a2e106d0033f4b62ef7233",
+      "elapsed_seconds": 4.657,
+      "observation": {
+        "format": "exit_status",
+        "tests_executed": null
+      }
+    },
+    {
+      "id": "S03-LAB-WINDOWS-SIGNIN",
+      "kind": "CHECK",
+      "effect": "LAB",
+      "status": "NOT_RUN",
+      "exit_code": null,
+      "reason": "LAB check requires explicit bounded authorization plus --allow-lab; no command executed"
+    }
+  ],
+  "source_fingerprint_after": "sha256:3ed2e7d8169345305c9d8a61dfe8c4110b7491ffc36f4c7b4d8d49d8087a639e"
+}

@@ -72,8 +72,9 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("private void restoreParkedStream("));
 
         assertTrue(terminate.contains("terminateWholeSessionVerified("));
+        assertTrue(helper.contains("else stopVerifiedProviderGame("));
         assertTrue(helper.contains(
-                "else stopVerifiedProviderGame(expectedHostId, expectedGameId, afterProvider)"));
+                "expectedHostId, expectedGameId, actorContext, afterProvider)"));
         assertTrue(helper.contains("verifySunshineSessionStopped("));
         assertTrue(finish.contains("if (success)"));
         assertTrue(finish.indexOf("completion.complete(true)")

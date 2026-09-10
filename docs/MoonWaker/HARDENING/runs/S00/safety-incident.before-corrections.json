@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "task_id": "S00",
+  "status": "BLOCKED",
+  "observed_at_utc": "2026-09-09T07:50:23.9038499Z",
+  "summary": "A supposedly isolated Host Control self-test invoked a copied production script that can stop the installed MoonWakerGateway service. The worker's initial safety classification was incorrect. All further host execution stopped; no recovery mutation performed.",
+  "authorization": "User explicitly excluded service changes. Local build/test authorization did not authorize this installed-service boundary.",
+  "call_path": [
+    "Build-HostServices.ps1:33 -> Test-MoonWakerHostControl.ps1",
+    "Test-MoonWakerHostControl.ps1:94 copies production Stop-MoonWakerGateway.ps1 into temporary fixture",
+    "Test-MoonWakerHostControl.ps1:557 and :578 invoke copied Host Control -Action StopGateway",
+    "Invoke-MoonWakerHostControl.ps1:837 -> copied Stop-MoonWakerGateway.ps1 -GatewayDirectory <temporary fixture>",
+    "Stop-MoonWakerGateway.ps1:20-25 inspects fixed legacy installation roots; :27-36 gets actual MoonWakerGateway service and invokes Stop-Service if not already stopped, independently of temporary GatewayDirectory"
+  ],
+  "execution_evidence": {
+    "log": "runs/S00/host-run-02/S00-HOST-PACKAGE.log",
+    "log_sha256": "sha256:fa75576481c34e2af3241cddb0005da88ee019e825a4ea8395abfc0678bcc69b",
+    "log_created_utc": "2026-09-09T07:48:20Z",
+    "log_last_write_utc": "2026-09-09T07:49:23Z",
+    "observed_text": "MoonWaker Gateway service is stopped. (twice)",
+    "runner_result": "Interrupted with Ctrl-C after package artifact completed, while runner had no gate.json yet. Outer exec exit 1; cannot claim a completed passing gate."
+  },
+  "read_only_observations": [
+    {
+      "command": "Get-CimInstance Win32_Service -Filter \"Name='MoonWakerGateway'\" | Select-Object Name,State,StartMode,ProcessId",
+      "result": {
+        "Name": "MoonWakerGateway",
+        "State": "Stopped",
+        "StartMode": "Auto",
+        "ProcessId": 0
+      }
+    },
+    {
+      "command": "Get-WinEvent System ID7036 for prior two hours",
+      "result": "No events found matching selection criteria; cannot infer prior service state or transition."
+    },
+    {
+      "command": "Get-Item four known gateway-manually-stopped/gateway-supervisor-stop marker paths under C:/Tools/WakePlayHost/gateway and C:/Tools/WakePlayGateway",
+      "result": "No marker files found; no contents of configuration/secrets read."
+    }
+  ],
+  "known_impact": "Installed Gateway is currently stopped. No pre-test service-state snapshot exists, so whether the test changed its state is unproven. The invocation reached code capable of the unauthorized stop.",
+  "recovery": "Do not restart/start/stop/install/repair any service automatically. User/coordinator must authorize any concrete service recovery separately.",
+  "pipeline_action": "S00-HOST-PACKAGE is BLOCKED; local-pipeline.json changed to UNBOUND. Historical executed plans/logs preserved for audit and must not be rerun. Isolate test service/legacy-path effects and independently review before rebinding.",
+  "required_followup": "Fix the test boundary within S00 under coordinator direction; do not mask or skip required host packaging tests and do not proceed to dependent S01."
+}

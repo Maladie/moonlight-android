@@ -1,0 +1,161 @@
+{
+  "schema_version": 1,
+  "source": "reference/AUDIT_ORIGINAL_PL.md",
+  "audit_base_sha": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "current_execution_verification": "NOT_RUN",
+  "records": [
+    {
+      "id": "H01",
+      "priority": "P0",
+      "title": "Child time expiry retains stream",
+      "symbols": [
+        "Game.java::finishChildSession",
+        "Game.java::endManagedGameKeepingStream",
+        "GameProviderBridge.py::enforce_child_session",
+        "wakeplay_gateway.py::_child_time_finish"
+      ],
+      "inherited_static_observation": "Client follows keep-stream termination and host enforces game process, not the stream.",
+      "repair_contract": "Terminal child expiry must disconnect the bound stream without affecting a newer parent session.",
+      "evidence_status": "INHERITED_STATIC_AUDIT_REQUIRES_REVALIDATION",
+      "runtime_reproduced": false
+    },
+    {
+      "id": "H02",
+      "priority": "P1",
+      "title": "Child full quit uses parent-style Gateway snapshot",
+      "symbols": [
+        "Game.java::stopVerifiedProviderGame",
+        "PlayniteTransitionGateway.connect",
+        "PlayniteTransitionGateway.snapshot"
+      ],
+      "inherited_static_observation": "The overload defaults childSession=false and snapshot reads health forbidden to a child.",
+      "repair_contract": "Propagate actor/execution context; do not expand child endpoint permission to hide a caller bug.",
+      "evidence_status": "INHERITED_STATIC_AUDIT_REQUIRES_REVALIDATION",
+      "runtime_reproduced": false
+    },
+    {
+      "id": "H03",
+      "priority": "P1",
+      "title": "Full quit waits for host before local disconnect",
+      "symbols": [
+        "Game.java::terminateWholeSessionVerified",
+        "Game.java::verifySunshineSessionStopped",
+        "Game.java::finishWholeSessionTermination"
+      ],
+      "inherited_static_observation": "Host verification/polling precedes local stop, and failure can retain the stream.",
+      "repair_contract": "Separate unconditional local stop from asynchronous fenced host cleanup and honest status.",
+      "evidence_status": "INHERITED_STATIC_AUDIT_REQUIRES_REVALIDATION",
+      "runtime_reproduced": false
+    },
+    {
+      "id": "H04",
+      "priority": "P1",
+      "title": "Release default disables background retention",
+      "symbols": [
+        "BackgroundStreamPreferences.readMinutes",
+        "Game.java::canParkBackgroundStream",
+        "Game.java::onStop"
+      ],
+      "inherited_static_observation": "Inherited audit reports default debug=5 minutes and release=0.",
+      "repair_contract": "Unify absent-setting policy, preserve explicit choices and validate fresh release as well as debug.",
+      "evidence_status": "INHERITED_STATIC_AUDIT_REQUIRES_REVALIDATION",
+      "runtime_reproduced": false
+    },
+    {
+      "id": "H05",
+      "priority": "P1",
+      "title": "Game Activity owns live transport",
+      "symbols": [
+        "Game.java::NvConnection ownership",
+        "Game.java::onDestroy",
+        "RetainedStreamSessionCoordinator",
+        "BackgroundStreamService"
+      ],
+      "inherited_static_observation": "Destroying the resource owner can stop a logically retained connection.",
+      "repair_contract": "Move physical lifetime behind a stable existing facade; distinguish Activity recreation from process death.",
+      "evidence_status": "INHERITED_STATIC_AUDIT_REQUIRES_REVALIDATION",
+      "runtime_reproduced": false
+    },
+    {
+      "id": "H06",
+      "priority": "P1",
+      "title": "Game identity mismatch invalidates transport projection",
+      "symbols": [
+        "SessionStateResolver.resolve",
+        "ConsoleActivity.resolveSessionSnapshot",
+        "ConsoleActivity.hostStatus",
+        "ConsoleActivity.consoleHostState"
+      ],
+      "inherited_static_observation": "retainedLive depends on gameId agreement, and multiple projections can turn unknown game into idle host.",
+      "repair_contract": "Independent axes and one derived projection for badge, tile and launch decisions.",
+      "evidence_status": "INHERITED_STATIC_AUDIT_REQUIRES_REVALIDATION",
+      "runtime_reproduced": false
+    },
+    {
+      "id": "H07",
+      "priority": "P1",
+      "title": "Preflight waits for streamer before enabling login",
+      "symbols": [
+        "HostLaunchPreflight.runInternal",
+        "ConsoleActivity.createHostLaunchPreflight",
+        "HostReadiness.await"
+      ],
+      "inherited_static_observation": "Streamer readiness can gate the Windows sign-in that starts per-profile components.",
+      "repair_contract": "Gateway availability, authorized Windows session and streamer readiness need ordered separate stages.",
+      "evidence_status": "INHERITED_STATIC_AUDIT_REQUIRES_REVALIDATION",
+      "runtime_reproduced": false
+    },
+    {
+      "id": "H08",
+      "priority": "P1",
+      "title": "Missing or timed-out sign-in can look ready",
+      "symbols": [
+        "HostLaunchPreflight.awaitInteractiveSession",
+        "HostLaunchPreflight.allowsManualSignIn"
+      ],
+      "inherited_static_observation": "null represents continue but is also returned for some unknown states and expired waiting.",
+      "repair_contract": "Typed outcomes; only positive correct-identity READY permits automatic continuation.",
+      "evidence_status": "INHERITED_STATIC_AUDIT_REQUIRES_REVALIDATION",
+      "runtime_reproduced": false
+    },
+    {
+      "id": "H09",
+      "priority": "P1",
+      "title": "Stop callbacks can precede actual native stop",
+      "symbols": [
+        "Game.java::stopConnection(Runnable)",
+        "Game.java::finishWholeSessionTermination"
+      ],
+      "inherited_static_observation": "Flags clear before background stop; later callers or upper completion can finish early.",
+      "repair_contract": "Shared actual stop result per generation, tested with a deliberately blocked stop.",
+      "evidence_status": "INHERITED_STATIC_AUDIT_REQUIRES_REVALIDATION",
+      "runtime_reproduced": false
+    },
+    {
+      "id": "H10",
+      "priority": "P1",
+      "title": "Readiness combines different host moments",
+      "symbols": [
+        "PlayniteTransitionGateway.snapshot",
+        "ConsoleStreamTransitionCoordinator.applySnapshot"
+      ],
+      "inherited_static_observation": "Separate health/current/readiness responses lack a shared host revision.",
+      "repair_contract": "Coherent atomically versioned observation and epoch fencing, not only local transition IDs.",
+      "evidence_status": "INHERITED_STATIC_AUDIT_REQUIRES_REVALIDATION",
+      "runtime_reproduced": false
+    },
+    {
+      "id": "H11",
+      "priority": "P2",
+      "title": "Cover callback can be lost with view detachment",
+      "symbols": [
+        "ConsoleStreamLoadingView.doAfterNextFrame",
+        "StreamHomeActivity.onCreate"
+      ],
+      "inherited_static_observation": "Two postOnAnimation callbacks do not prove frame submission; detachment can drop continuation.",
+      "repair_contract": "Explicit frame barrier outcomes, canonical reveal gate and terminal cleanup independent of drawing.",
+      "evidence_status": "INHERITED_STATIC_AUDIT_REQUIRES_REVALIDATION",
+      "runtime_reproduced": false
+    }
+  ]
+}

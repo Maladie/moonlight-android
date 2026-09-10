@@ -1,0 +1,3 @@
+branch-check: PREPARED_WORK_BRANCH_VERIFIED; branch=codex/session-hardening; head=00366fd92a1f283bf3aa04171ed3455ce62897ac
+validate: VALID_PACKET_METADATA; tasks=11; findings=11; scenarios=46; invariants=28
+fingerprint: sha256:6b30961fb65c507a009634acc5f6cdb976151387e97908b99a7cf103240e94ca

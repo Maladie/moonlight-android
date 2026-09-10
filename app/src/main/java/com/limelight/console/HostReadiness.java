@@ -19,6 +19,12 @@ final class HostReadiness {
 
     private HostReadiness() {}
 
+    static void requestWake(ComputerDetails target) {
+        try {
+            WakeOnLanSender.sendWolPacket(target);
+        } catch (IOException | RuntimeException ignored) { }
+    }
+
     static ComputerDetails mergeFreshDetails(ComputerDetails known,
                                               ComputerDetails fresh) {
         ComputerDetails merged = new ComputerDetails(known);
@@ -37,9 +43,7 @@ final class HostReadiness {
         return awaitAfterWakeDecision(currentHost, wakeTarget, sendWakeOnce,
                 cancelled, status, wakeStatus, waitingStatus,
                 target -> {
-                    try {
-                        WakeOnLanSender.sendWolPacket(target);
-                    } catch (IOException ignored) { }
+                    requestWake(target);
                 });
     }
 
@@ -80,9 +84,7 @@ final class HostReadiness {
             long now = System.currentTimeMillis();
             if (wakeTarget != null && now >= nextWake) {
                 status.accept(wakeStatus);
-                try {
-                    WakeOnLanSender.sendWolPacket(wakeTarget);
-                } catch (IOException | RuntimeException ignored) {}
+                requestWake(wakeTarget);
                 nextWake = now + WAKE_INTERVAL_MS;
             } else {
                 status.accept(waitingStatus);

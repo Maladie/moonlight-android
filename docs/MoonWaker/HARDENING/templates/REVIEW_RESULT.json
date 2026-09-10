@@ -1,0 +1,22 @@
+{
+  "schema_version": 1,
+  "task_id": null,
+  "stage": "CODE",
+  "run_id": null,
+  "actual_model": null,
+  "implementer_run_id": null,
+  "independent_context": null,
+  "verdict": "BLOCKED",
+  "reviewed_fingerprint": null,
+  "reviewed_diff_artifact": null,
+  "checks_run": [],
+  "findings": [],
+  "unverified_claims": [],
+  "accepted_task_scope": null,
+  "pending_integrated_or_device_gates": [],
+  "next_action": null,
+  "behavioral_verdict": "BLOCKED",
+  "architecture_verdict": "BLOCKED",
+  "reviewed_plan_sha256": null,
+  "whole_slice_independently_usable": null
+}

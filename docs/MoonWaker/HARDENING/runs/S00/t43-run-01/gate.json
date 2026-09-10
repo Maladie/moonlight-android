@@ -1,0 +1,29 @@
+{
+  "schema_version": 1,
+  "task_id": "S00",
+  "plan_id": "S00-T43-runnable-infrastructure-20260909",
+  "command_plan_sha256": "sha256:452d6be137a1df470564aa80d799ebec95cf9ac22cebe090e3852633e3061f96",
+  "checkpoint_plan_sha256": "sha256:7cda84bac8442124f5793fd6f745eff43d03c44817f493b8fe64123801866708",
+  "source_fingerprint": "sha256:70df35295a70dd9bc033c1adb7d8571cc0b67de7dde09e14d10066f5a964d8a7",
+  "status": "PASS",
+  "checks": [
+    {
+      "id": "T43",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "D:\\Maladie\\moonlight-android\\docs\\MoonWaker\\HARDENING\\runs\\S00\\t43-run-01\\T43.log",
+      "log_sha256": "sha256:9a82167bfd1071a9f9bfb5eb5b7b4dd2ec3deecb476e2e7dfb67cf4ef43cfc98",
+      "elapsed_seconds": 15.046,
+      "observation": {
+        "format": "unittest_log",
+        "tests_run": 21,
+        "tests_executed": 21,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      }
+    }
+  ],
+  "source_fingerprint_after": "sha256:70df35295a70dd9bc033c1adb7d8571cc0b67de7dde09e14d10066f5a964d8a7"
+}

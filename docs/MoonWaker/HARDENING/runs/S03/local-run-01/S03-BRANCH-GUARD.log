@@ -1,0 +1,9 @@
+{
+  "status": "PREPARED_WORK_BRANCH_VERIFIED",
+  "branch": "codex/session-hardening",
+  "head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "base_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "fetched_remote_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "branch_setup_report": "runs/branch-setup.json",
+  "warning": "Local consistency check only; no fetch, branch creation, product test or remote-freshness proof."
+}

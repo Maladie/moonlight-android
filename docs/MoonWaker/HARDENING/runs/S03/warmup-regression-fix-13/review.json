@@ -1,0 +1,26 @@
+{
+  "schema_version": 1,
+  "task_id": "S03",
+  "stage": "CODE_AND_EXACT_DEBUG_ARTIFACT",
+  "run_id": "S03-independent-review-warmup-fix-20260910",
+  "independent_context": true,
+  "verdict": "ACCEPT_CODE_VERIFIED_DEVICE_PENDING",
+  "reviewed_fingerprint": "sha256:a9190d904a6eb83d319672a81f4d3b7383c7fdb0bcc3371e2ad5aa8abea991c8",
+  "reviewed_gate_sha256": "sha256:394eca1a17ee0144219de24b46ec3e7b65a6dc4de8008160c5f6746ee015b650",
+  "reviewed_implementation_sha256": "sha256:1980c42df0bd874153d59ab9938ee488494d1192f9f3c54c9e71f1251b9ec4b2",
+  "reviewed_debug_apk_sha256": "sha256:5e0faa84d976e93904567a45b98b7bf91a79f51fb377d219a32574a681148d07",
+  "behavioral_verdict": "ACCEPT_CODE_ONLY",
+  "architecture_verdict": "ACCEPT",
+  "checks": [
+    "The exact neutral retained RECONNECT_REQUIRED state is preserved ahead of the same neutral Sunshine app projection, while a different live app remains ACTIVE.",
+    "The production resolver-to-orchestrator regression reconnects with the pending game and performs no replacement confirmation, destructive close or fresh launch.",
+    "Host/profile/app/stream/attempt fencing, stale callbacks, cancellation and provider capability relay remain enforced.",
+    "The cumulative Android report contains 1031 tests with zero failures, errors or skips; the targeted reports contain 85 tests with zero failures, errors or skips.",
+    "Independent read-only ADB verification found one installed base APK whose SHA-256 matches the local debug APK; package version is 12.2.23 (344).",
+    "All current LAB source hashes, sizes, test counts and evidence references in implementation.json match; older runner evidence is explicitly historical."
+  ],
+  "findings": [],
+  "device_scenario_evidence": "NOT_RUN_FOR_CORRECTED_CANDIDATE",
+  "checkpoint_accepted": false,
+  "note": "Code and exact debug artifact are accepted for retest. APK installation and read-only package verification are not S03 scenario evidence."
+}

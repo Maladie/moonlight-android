@@ -3303,7 +3303,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         RetainedSwitch operation = new RetainedSwitch(
-                request, completion, transitionSpec, transitionCoordinator);
+                request, completion, transitionSpec, transitionCoordinator,
+                currentGatewayActorContext());
         retainedSwitch = operation;
         stopChildMonitoring();
         cancelPendingAutomaticReveal();
@@ -3359,7 +3360,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         try {
             PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
                     this, operation.request.hostId,
-                    getIntent().getStringExtra(EXTRA_HOST), operation.request.profileId, isChildSession());
+                    getIntent().getStringExtra(EXTRA_HOST), operation.actorContext);
             if (gateway == null) throw new IOException("gateway_unavailable");
             PlayniteTransitionGateway.Snapshot current = gateway.snapshot();
             String exactGame = operation.request.oldGameId.isEmpty()
@@ -3484,7 +3485,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 if (operation.request.targetIsChild) {
                     PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
                             this, next.hostId, getIntent().getStringExtra(EXTRA_HOST),
-                            next.profileId, true);
+                            PlayniteTransitionGateway.ActorContext.child(
+                                    next.profileId, operation.request.executionProfileId));
                     if (gateway == null) throw new IOException("gateway_unavailable");
                     allowance = new ChildSessionClient(new GatewayTransport()).start(
                             gateway.gatewayConnection(), next.playniteGameId,
@@ -3544,7 +3546,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         new Thread(() -> {
             try {
                 PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                        this, spec.hostId, getIntent().getStringExtra(EXTRA_HOST), spec.profileId, true);
+                        this, spec.hostId, getIntent().getStringExtra(EXTRA_HOST),
+                        PlayniteTransitionGateway.ActorContext.child(
+                                spec.profileId, allowance.executionProfileId));
                 if (gateway != null) new ChildSessionClient(new GatewayTransport()).end(
                         gateway.gatewayConnection(), allowance.sessionId, "cancelled");
             } catch (IOException | RuntimeException error) {
@@ -3941,6 +3945,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         final RetainedStreamSessionCoordinator.SwitchCallback completion;
         final LaunchTransitionSpec oldSpec;
         final ConsoleStreamTransitionCoordinator oldCoordinator;
+        final PlayniteTransitionGateway.ActorContext actorContext;
         final AtomicBoolean completed = new AtomicBoolean();
         final AtomicBoolean consoleSignalled = new AtomicBoolean();
         LaunchTransitionSpec newSpec;
@@ -3954,11 +3959,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         RetainedSwitch(RetainedStreamSessionCoordinator.SwitchRequest request,
                        RetainedStreamSessionCoordinator.SwitchCallback completion,
                        LaunchTransitionSpec oldSpec,
-                       ConsoleStreamTransitionCoordinator oldCoordinator) {
+                       ConsoleStreamTransitionCoordinator oldCoordinator,
+                       PlayniteTransitionGateway.ActorContext actorContext) {
             this.request = request;
             this.completion = completion;
             this.oldSpec = oldSpec;
             this.oldCoordinator = oldCoordinator;
+            this.actorContext = actorContext;
         }
     }
 
@@ -3981,11 +3988,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         String gameId = transitionSpec.playniteGameId;
         String hostId = transitionSpec.hostId;
         String activeHost = getIntent().getStringExtra(EXTRA_HOST);
+        PlayniteTransitionGateway.ActorContext actorContext = currentGatewayActorContext();
         new Thread(() -> {
             boolean success = false;
             try {
                 PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                        Game.this, hostId, activeHost, currentProfileId());
+                        Game.this, hostId, activeHost, actorContext);
                 if (gateway == null) {
                     LimeLog.warning("Unable to stop provider game: Gateway unavailable");
                 } else {
@@ -4019,6 +4027,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
             final String expectedGameId = transitionSpec == null
                     ? "" : transitionSpec.playniteGameId;
+            final PlayniteTransitionGateway.ActorContext actorContext =
+                    currentGatewayActorContext();
             if (expectedSessionId.isEmpty() || expectedHostId.isEmpty()
                     || transitionSpec == null
                     || !expectedHostId.equalsIgnoreCase(transitionSpec.hostId)
@@ -4057,7 +4067,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             };
             Runnable stopProvider = () -> {
                 if (providerAlreadyStopped) afterProvider.complete(true);
-                else stopVerifiedProviderGame(expectedHostId, expectedGameId, afterProvider);
+                else stopVerifiedProviderGame(
+                        expectedHostId, expectedGameId, actorContext, afterProvider);
             };
             providerStopInFlight = true;
             if (!backgroundStreamParked && !streamHomeVisible
@@ -4143,6 +4154,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void stopVerifiedProviderGame(
             String expectedHostId, String expectedGameId,
+            PlayniteTransitionGateway.ActorContext actorContext,
             ProviderStopCallback completion) {
         final String activeHost = getIntent().getStringExtra(EXTRA_HOST);
         new Thread(() -> {
@@ -4150,7 +4162,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             String reason = "provider_state_unverified";
             try {
                 PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                        Game.this, expectedHostId, activeHost, currentProfileId());
+                        Game.this, expectedHostId, activeHost, actorContext);
                 if (gateway == null) {
                     reason = "gateway_unavailable";
                 } else {
@@ -4691,8 +4703,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private ConsoleStreamTransitionCoordinator createTransitionCoordinator(
             LaunchTransitionSpec spec) {
         PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                this, spec.hostId, getIntent().getStringExtra(EXTRA_HOST), spec.profileId,
-                isChildSession());
+                this, spec.hostId, getIntent().getStringExtra(EXTRA_HOST),
+                currentGatewayActorContext());
         if (isChildSession() && gateway != null) {
             childGatewayConnection = gateway.gatewayConnection();
         }
@@ -6211,6 +6223,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             home.putExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_QUICK_LAUNCH,
                     getIntent().getStringExtra(
                             ConsoleActivity.EXTRA_WARM_UP_PENDING_QUICK_LAUNCH));
+            home.putExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR,
+                    getIntent().getBooleanExtra(
+                            ConsoleActivity.EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR, true));
+            home.putExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM,
+                    getIntent().getBooleanExtra(
+                            ConsoleActivity.EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM, false));
+            home.putExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM,
+                    getIntent().getBooleanExtra(
+                            ConsoleActivity.EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM, false));
         }
         startActivity(home);
         overridePendingTransition(preparing ? 0 : android.R.anim.fade_in, 0);
@@ -6278,13 +6299,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 || transitionSpec == null || transitionSpec.playniteGameId.isEmpty()) return;
         stopChildMonitoring();
         LaunchTransitionSpec expected = transitionSpec;
+        PlayniteTransitionGateway.ActorContext actorContext = currentGatewayActorContext();
         providerEndGameInFlight = true;
         consoleLoadingView.showOpaque();
         consoleLoadingView.doAfterNextFrame(() -> new Thread(() -> {
             try {
                 PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
                         Game.this, expected.hostId, getIntent().getStringExtra(EXTRA_HOST),
-                        expected.profileId, isChildSession());
+                        actorContext);
                 if (gateway == null) throw new IOException("gateway_unavailable");
                 if (!childSessionId.isEmpty()) {
                     endChildAllowanceAndWait();
@@ -6340,40 +6362,43 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         final String host = getIntent().getStringExtra(EXTRA_HOST);
         final String artwork = getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_ARTWORK);
         final String suspendId = UUID.randomUUID().toString();
+        final LaunchTransitionSpec expected = transitionSpec;
+        final PlayniteTransitionGateway.ActorContext actorContext =
+                currentGatewayActorContext();
         new Thread(() -> {
             PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                    Game.this, transitionSpec.hostId, host, transitionSpec.profileId);
+                    Game.this, expected.hostId, host, actorContext);
             if (gateway == null) {
                 runOnUiThread(() -> {
-                    transitionController.cancel(transitionSpec.id);
+                    transitionController.cancel(expected.id);
                     consoleLoadingView.stopAndHide();
                     displayTransientMessage(getString(R.string.overlay_menu_suspend_unavailable));
                 });
                 return;
             }
             try {
-                String playniteGameId = transitionSpec.playniteGameId;
+                String playniteGameId = expected.playniteGameId;
                 if (playniteGameId == null || playniteGameId.isEmpty()) {
                     playniteGameId = getSharedPreferences("console_dashboard", MODE_PRIVATE)
-                            .getString("selected_playnite." + transitionSpec.hostId, "");
+                            .getString("selected_playnite." + expected.hostId, "");
                 }
                 PlayniteTransitionGateway.SuspendAcceptance acceptance =
-                        gateway.suspendSession(suspendId, transitionSpec.sunshineAppId,
+                        gateway.suspendSession(suspendId, expected.sunshineAppId,
                                 playniteGameId, appName);
-                if (!acceptance.matches(suspendId, transitionSpec.sunshineAppId,
+                if (!acceptance.matches(suspendId, expected.sunshineAppId,
                         playniteGameId)) {
                     throw new IOException("Host rejected the correlated suspend request.");
                 }
                 SuspendedSessionStore.save(Game.this,
-                        new SuspendedSessionStore.Session(suspendId, transitionSpec.hostId,
-                                transitionSpec.profileId,
-                                transitionSpec.sunshineAppId, playniteGameId, appName,
+                        new SuspendedSessionStore.Session(suspendId, expected.hostId,
+                                expected.profileId,
+                                expected.sunshineAppId, playniteGameId, appName,
                                 artwork, System.currentTimeMillis()));
-                SuspendedSessionStore.requestHostSelection(Game.this, transitionSpec.hostId);
+                SuspendedSessionStore.requestHostSelection(Game.this, expected.hostId);
                 runOnUiThread(() -> closeStreamWithPrivacy(false));
             } catch (Exception error) {
                 runOnUiThread(() -> {
-                    transitionController.cancel(transitionSpec.id);
+                    transitionController.cancel(expected.id);
                     consoleLoadingView.stopAndHide();
                     displayTransientMessage(getString(R.string.overlay_menu_suspend_failed));
                 });
@@ -6782,7 +6807,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (childGatewayConnection == null) {
             PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
                     this, transitionSpec.hostId, getIntent().getStringExtra(EXTRA_HOST),
-                    childActorProfileId);
+                    PlayniteTransitionGateway.ActorContext.child(
+                            childActorProfileId, childExecutionProfileId));
             if (gateway == null) return false;
             childGatewayConnection = gateway.gatewayConnection();
         }
@@ -7101,6 +7127,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private String currentProfileId() {
         return com.limelight.gateway.GatewayConnection.normalizeProfileId(
                 getIntent().getStringExtra(EXTRA_PROFILE_ID));
+    }
+
+    private PlayniteTransitionGateway.ActorContext currentGatewayActorContext() {
+        String actorProfileId = currentProfileId();
+        return isChildSession()
+                ? PlayniteTransitionGateway.ActorContext.child(
+                actorProfileId, getExecutionProfileId())
+                : PlayniteTransitionGateway.ActorContext.parent(actorProfileId);
     }
 
     private static String normalizeOpaqueId(String value) {

@@ -287,6 +287,22 @@ public class SessionStateResolverTest {
         assertTrue(snapshot.isResumeAvailable());
     }
 
+    @Test public void neutralRetainedReconnectDoesNotOverrideAnotherLiveTarget() {
+        Facts facts = new Facts();
+        facts.runningApp = 99;
+        facts.retainedState = RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED;
+        facts.retainedHost = "host";
+        facts.retainedApp = 42;
+        facts.bridgeState = "idle";
+        facts.neutralStreamTarget = true;
+        facts.retainedOwnerLive = false;
+
+        SessionSnapshot snapshot = resolver.resolve(facts.build());
+
+        assertEquals(SessionSnapshot.State.ACTIVE, snapshot.state);
+        assertEquals(99, snapshot.hostGameAppId);
+    }
+
     @Test public void wrongHostReconnectIsIgnoredAndDifferentLiveAppWins() {
         Facts wrongHost = new Facts();
         wrongHost.pending = true;

@@ -32,11 +32,17 @@ public class HostGatewayClientTest {
                 new JSONObject().put("state", "session_starting")
                         .put("reason", "none")
                         .put("attempt_id", "0123456789abcdef0123456789abcdef")
+                        .put("request_id", "android-42")
+                        .put("actor_profile_id", "kid")
+                        .put("execution_profile_id", "parent")
                         .put("retry_after_ms", 750));
 
         assertEquals("session_starting", session.state);
         assertEquals("none", session.reason);
         assertEquals("0123456789abcdef0123456789abcdef", session.attemptId);
+        assertEquals("android-42", session.requestId);
+        assertEquals("kid", session.actorProfileId);
+        assertEquals("parent", session.executionProfileId);
         assertEquals(750, session.retryAfterMs);
     }
 

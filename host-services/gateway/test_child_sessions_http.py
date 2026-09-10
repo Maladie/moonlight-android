@@ -247,6 +247,50 @@ class ChildSessionsHttpTest(unittest.TestCase):
                               profile="kid", capability=True)
         self.assertEqual(403, status)
 
+    def test_child_snapshot_routes_exclude_parent_health(self):
+        for path in ("/api/v1/game/current", "/api/v1/window/readiness"):
+            with self.subTest(path=path):
+                status, _ = self.get(path, profile="kid", capability=True)
+                self.assertEqual(200, status)
+        status, result = self.get("/api/v1/game-provider/health",
+                                  profile="kid", capability=True)
+        self.assertEqual(403, status)
+        self.assertEqual("child_action_not_allowed", result["error"])
+
+        status, result = self.get("/api/v1/game-provider/health",
+                                  profile="parent", capability=True)
+        self.assertEqual(200, status)
+        self.assertTrue(result["bridge"]["connector_connected"])
+
+    def test_child_cannot_inherit_parent_management_discord_or_sharing(self):
+        before = list(self.bridge_calls)
+        for path in ("/api/v1/discord/status", "/api/v1/discord/home"):
+            with self.subTest(path=path):
+                if path.endswith("/status"):
+                    status, _ = self.get(path, profile="kid", capability=True)
+                else:
+                    status, _ = self.post(path, {}, profile="kid", capability=True)
+                self.assertEqual(403, status)
+
+        child_mutations = (
+            ("/api/v1/profiles/children/create", {
+                "parent_profile_id": "kid", "authorization_id": "parent-lease",
+                "request_id": "child-create", "expected_revision": 1, "draft": {}}),
+            ("/api/v1/profiles/children/update", {
+                "parent_profile_id": "kid", "child_profile_id": "kid",
+                "authorization_id": "parent-lease", "request_id": "child-update",
+                "expected_revision": 1, "draft": {}}),
+            ("/api/v1/profiles/children/sharing/set", {
+                "parent_profile_id": "kid", "game_id": "steam:123",
+                "selected_child_ids": ["kid"], "authorization_id": "parent-lease",
+                "request_id": "child-share", "expected_revision": 1}),
+        )
+        for path, body in child_mutations:
+            with self.subTest(path=path):
+                status, _ = self.post(path, body, profile="kid", capability=True)
+                self.assertEqual(403, status)
+        self.assertEqual(before, self.bridge_calls)
+
     def test_child_only_grant_can_list_start_delete_end_and_replay(self):
         # A child device must not need the parent's use_profile grant to run
         # against the host-resolved parent execution identity.

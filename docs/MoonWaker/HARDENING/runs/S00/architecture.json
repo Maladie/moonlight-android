@@ -1,0 +1,378 @@
+{
+  "task_id": "S00",
+  "status": "PASS",
+  "responsibilities": [
+    {
+      "responsibility": "Game: physical stream lifetime and stop completion",
+      "old_owner": "Game.java:177,1645,4342",
+      "new_owner": "Unchanged in S00; S04 concrete stop owner and S07 runtime behind existing RetainedStreamSessionCoordinator facade",
+      "state": [
+        "conn",
+        "connecting/connected",
+        "decoderRenderer/switchableVideoRenderer",
+        "controllerHandler/audioRenderer",
+        "streamSessionId",
+        "backgroundStreamParked"
+      ],
+      "effects": [
+        "NvConnection start/stop",
+        "decoder surface attachment",
+        "input/audio detachment",
+        "service/resume notifications"
+      ],
+      "callers": [
+        "Game.onStop/onDestroy/stageFailed",
+        "RetainedStreamSessionCoordinator.Controller callbacks",
+        "BackgroundStreamService and ConsoleActivity retained resume/quit"
+      ],
+      "lifetime": "Activity owns physical resources; static facade weakly references Controller, persisted SessionResumeManager describes reconnect only.",
+      "packaging": "app main source auto-packaged into both nonRoot variants; manifest Game and BackgroundStreamService registrations unchanged.",
+      "seam": "RetainedStreamSessionCoordinatorTest/BackgroundStreamCorrelationTest exercise facade and identity; native blocked-stop and Activity recreation/device evidence still needed in S04/S07.",
+      "state_moved": [],
+      "effects_moved": [],
+      "callers_migrated": [],
+      "obsolete_paths_removed": [],
+      "production_wiring_evidence": [
+        "Game.onStop/onDestroy/stageFailed",
+        "RetainedStreamSessionCoordinator.Controller callbacks",
+        "BackgroundStreamService and ConsoleActivity retained resume/quit"
+      ],
+      "packaging_evidence": "app main source auto-packaged into both nonRoot variants; manifest Game and BackgroundStreamService registrations unchanged.",
+      "lifetime_notes": "Activity owns physical resources; static facade weakly references Controller, persisted SessionResumeManager describes reconnect only."
+    },
+    {
+      "responsibility": "Game: host termination, child terminal enforcement and neutral settlement",
+      "old_owner": "Game.java:4007,4144,4196,6276,6986",
+      "new_owner": "Unchanged in S00; S05 narrow termination owner must move full state/effects and retain canonical privacy/retained facades",
+      "state": [
+        "wholeSessionTerminationInFlight",
+        "providerStopInFlight/providerStopConfirmed",
+        "providerEndGameInFlight",
+        "childSessionId/actor/execution/game IDs",
+        "transitionSpec captured at action"
+      ],
+      "effects": [
+        "provider stop",
+        "Sunshine quitApp + polls",
+        "child allowance end",
+        "privacy cover/input suppression",
+        "neutral retained settlement and navigation"
+      ],
+      "callers": [
+        "overlay full quit / game-only stop",
+        "retained Controller termination",
+        "child heartbeat/countdown terminal callbacks",
+        "provider natural-stop observations"
+      ],
+      "lifetime": "One captured operation per active Game/transport; current implementation mixes host effects and Activity callbacks, confirmed H01/H03/H09.",
+      "packaging": "Existing Gateway/Bridge HTTP contracts and Android manifest remain unchanged; no new module introduced.",
+      "seam": "AuthoritativeSessionTransitionTest + GameChildSessionContractTest (source-only) + host child suites; future tests must block native stop/host reply and assert forbidden cross-generation effects.",
+      "state_moved": [],
+      "effects_moved": [],
+      "callers_migrated": [],
+      "obsolete_paths_removed": [],
+      "production_wiring_evidence": [
+        "overlay full quit / game-only stop",
+        "retained Controller termination",
+        "child heartbeat/countdown terminal callbacks",
+        "provider natural-stop observations"
+      ],
+      "packaging_evidence": "Existing Gateway/Bridge HTTP contracts and Android manifest remain unchanged; no new module introduced.",
+      "lifetime_notes": "One captured operation per active Game/transport; current implementation mixes host effects and Activity callbacks, confirmed H01/H03/H09."
+    },
+    {
+      "responsibility": "ConsoleActivity: preparation, Play and warm-up intent composition",
+      "old_owner": "ConsoleActivity.java:createHostLaunchPreflight/createSessionOrchestrator and warm-up entrypoints",
+      "new_owner": "Unchanged in S00; S03 HostLaunchPreflight and S08 SessionOrchestrator own full sequencing with narrow Activity adapters",
+      "state": [
+        "hostLaunchPreflight",
+        "sessionOrchestrator",
+        "warmUpClientHostId/warmUpStatus",
+        "active preparation/cancel callbacks",
+        "selected host/profile request context"
+      ],
+      "effects": [
+        "WakeOnLan via HostReadiness",
+        "Gateway ensure/status/cancel",
+        "target resolution",
+        "start Game/retained switch",
+        "status rendering"
+      ],
+      "callers": [
+        "intentional host/profile entry",
+        "Play click",
+        "child eligibility continuation",
+        "warm-up completion"
+      ],
+      "lifetime": "Activity holds UI composition; operation cancellation/identity must survive stale responses without preserving Activity via catch-all helper.",
+      "packaging": "All existing console Java owners compile into both APKs. No new dependency/manifest entry.",
+      "seam": "HostLaunchPreflightTest and SessionOrchestratorTest use real production classes with injected clocks/services/effects. Production Network adapter still gates on streamer port (H07); null sign-in continuation H08.",
+      "state_moved": [],
+      "effects_moved": [],
+      "callers_migrated": [],
+      "obsolete_paths_removed": [],
+      "production_wiring_evidence": [
+        "intentional host/profile entry",
+        "Play click",
+        "child eligibility continuation",
+        "warm-up completion"
+      ],
+      "packaging_evidence": "All existing console Java owners compile into both APKs. No new dependency/manifest entry.",
+      "lifetime_notes": "Activity holds UI composition; operation cancellation/identity must survive stale responses without preserving Activity via catch-all helper."
+    },
+    {
+      "responsibility": "ConsoleActivity: observation resolution and badge/tile/launch projection",
+      "old_owner": "ConsoleActivity.java:5309,5381,5469 and SessionStateResolver.java:resolve",
+      "new_owner": "Unchanged in S00; S06 existing SessionStateResolver plus one shared projection owner",
+      "state": [
+        "activePlayniteGameIds/states/appIds/resolvedAt maps",
+        "retained/suspended/resume observations",
+        "host state controller projection",
+        "warm-up UI flags"
+      ],
+      "effects": [
+        "read/refresh Gateway and manager observations",
+        "render host badge, tiles and available actions"
+      ],
+      "callers": [
+        "host rendering",
+        "tile rendering",
+        "active session name",
+        "start/resume decisions",
+        "warm-up state"
+      ],
+      "lifetime": "Per host+profile in-memory UI observations; host durable state remains authoritative. Current independent reads/projections can disagree (H06/H10).",
+      "packaging": "Existing Java source sets; no schema changes.",
+      "seam": "SessionStateResolverTest, ConsoleHostPresentationTest, ConsoleHostStateControllerTest; future S06 coherent producer tests must correlate actual Gateway/Bridge snapshot rather than caller-generated IDs.",
+      "state_moved": [],
+      "effects_moved": [],
+      "callers_migrated": [],
+      "obsolete_paths_removed": [],
+      "production_wiring_evidence": [
+        "host rendering",
+        "tile rendering",
+        "active session name",
+        "start/resume decisions",
+        "warm-up state"
+      ],
+      "packaging_evidence": "Existing Java source sets; no schema changes.",
+      "lifetime_notes": "Per host+profile in-memory UI observations; host durable state remains authoritative. Current independent reads/projections can disagree (H06/H10)."
+    },
+    {
+      "responsibility": "Gateway: authenticated routing and actor/execution authorization",
+      "old_owner": "wakeplay_gateway.py:GatewayHandler/GatewayState",
+      "new_owner": "Unchanged in S00; S01 Android immutable context, S05 host effect fencing kept separate from routing",
+      "state": [
+        "config profile/client registry",
+        "thread-local request_context",
+        "grant and profile PIN authorization caches",
+        "request IDs and paired-client identity"
+      ],
+      "effects": [
+        "HTTPS auth/permission checks",
+        "endpoint-specific loopback Bridge calls",
+        "Broker request boundary"
+      ],
+      "callers": [
+        "Android GatewayTransport/domain clients",
+        "GatewayHandler profile-scoped routes",
+        "Host Control trusted local management boundary"
+      ],
+      "lifetime": "Gateway service process; durable profile registry owns definitions/grants, Broker owns credentials. No credential contents inspected.",
+      "packaging": "Build-HostServices.ps1 copies gateway; Start-WakePlayGateway.ps1 starts wakeplay_gateway.py. Bridges remain loopback-only.",
+      "seam": "Gateway unittest handler tests use synthetic config, requests and temporary fixtures; child HTTP tests cover real handler path on local ephemeral sockets; no live host requests.",
+      "state_moved": [],
+      "effects_moved": [],
+      "callers_migrated": [],
+      "obsolete_paths_removed": [],
+      "production_wiring_evidence": [
+        "Android GatewayTransport/domain clients",
+        "GatewayHandler profile-scoped routes",
+        "Host Control trusted local management boundary"
+      ],
+      "packaging_evidence": "Build-HostServices.ps1 copies gateway; Start-WakePlayGateway.ps1 starts wakeplay_gateway.py. Bridges remain loopback-only.",
+      "lifetime_notes": "Gateway service process; durable profile registry owns definitions/grants, Broker owns credentials. No credential contents inspected."
+    },
+    {
+      "responsibility": "Gateway: child budget/session lifecycle and terminal host effects",
+      "old_owner": "wakeplay_gateway.py:GatewayState child_time_* (state lines 782-799; finish 3857)",
+      "new_owner": "Unchanged in S00; S05 effect-time fencing separated without replacing durable budget owner",
+      "state": [
+        "child_time_usage persisted store",
+        "child_time_session active object",
+        "child_time_completed",
+        "child_time revision/monotonic clock",
+        "housekeeping thread/lock"
+      ],
+      "effects": [
+        "account elapsed time",
+        "checkpoint usage",
+        "Bridge bind/renew/end",
+        "policy and terminal responses"
+      ],
+      "callers": [
+        "child/session eligibility,start,resume,status,heartbeat,end",
+        "housekeeping",
+        "profile/share revocation"
+      ],
+      "lifetime": "Gateway service/host-authoritative persistence across client loss; object identity guard only protects bookkeeping after Bridge result, not all remote global stream effects.",
+      "packaging": "Gateway package/version 0.7.95 unchanged. No added service/worker.",
+      "seam": "test_child_time_control/contract and child_sessions_http verify clocks, stale end, budgets/permissions with controlled Bridge; actual stream cutoff is absent H01.",
+      "state_moved": [],
+      "effects_moved": [],
+      "callers_migrated": [],
+      "obsolete_paths_removed": [],
+      "production_wiring_evidence": [
+        "child/session eligibility,start,resume,status,heartbeat,end",
+        "housekeeping",
+        "profile/share revocation"
+      ],
+      "packaging_evidence": "Gateway package/version 0.7.95 unchanged. No added service/worker.",
+      "lifetime_notes": "Gateway service/host-authoritative persistence across client loss; object identity guard only protects bookkeeping after Bridge result, not all remote global stream effects."
+    },
+    {
+      "responsibility": "Provider Bridge: authoritative game/process observation and child enforcement",
+      "old_owner": "GameProviderBridge.py:BridgeState,WindowProbe,enforce_child_session (4623)",
+      "new_owner": "Unchanged in S00; S05 narrow fenced effect boundary and S06 coherent observation producer",
+      "state": [
+        "BridgeState lock/current/running scan",
+        "child_session persisted record/process_token",
+        "events seq/library_revision",
+        "readiness samples/window ownership"
+      ],
+      "effects": [
+        "verified process scan/close/terminate",
+        "Playnite IPC launch/stop",
+        "child lease persistence",
+        "event publication",
+        "window readiness"
+      ],
+      "callers": [
+        "GameProviderHandler loopback game/readiness/current/child/session routes",
+        "Bridge background loop",
+        "Gateway child/game routes"
+      ],
+      "lifetime": "Per Windows execution profile; locks delimit observations, external process identity revalidated. Session UUID alone is not sufficient authorization epoch for streamer-client disconnect.",
+      "packaging": "Install-WakePlayProfile.ps1 explicit list contains GameProviderBridge.py, GameOperations.py, OperationJournal.py; future extracted modules must join this list and Build-HostServices payload.",
+      "seam": "test_playnite_bridge.py/test_running_games.py use WindowProbe/mocks with synthetic process identities, clock and temporary storage; no live process termination. Physical PID/session/stream proof remains pending.",
+      "state_moved": [],
+      "effects_moved": [],
+      "callers_migrated": [],
+      "obsolete_paths_removed": [],
+      "production_wiring_evidence": [
+        "GameProviderHandler loopback game/readiness/current/child/session routes",
+        "Bridge background loop",
+        "Gateway child/game routes"
+      ],
+      "packaging_evidence": "Install-WakePlayProfile.ps1 explicit list contains GameProviderBridge.py, GameOperations.py, OperationJournal.py; future extracted modules must join this list and Build-HostServices payload.",
+      "lifetime_notes": "Per Windows execution profile; locks delimit observations, external process identity revalidated. Session UUID alone is not sufficient authorization epoch for streamer-client disconnect."
+    },
+    {
+      "responsibility": "Provider Bridge: GameOps/library/launcher responsibilities outside this hardening behavior",
+      "old_owner": "GameProviderBridge.py plus existing GameOperations.py/OperationJournal.py",
+      "new_owner": "Existing owners retained; no blanket monolith rewrite",
+      "state": [
+        "library cache/catalog revision",
+        "GameOperationsService request projection",
+        "OperationJournal durable install lifecycle"
+      ],
+      "effects": [
+        "allow-listed launcher automation",
+        "catalog reads",
+        "installation operations"
+      ],
+      "callers": [
+        "Gateway library/GameOps endpoints",
+        "provider HTTP handlers",
+        "Playnite IPC events"
+      ],
+      "lifetime": "Per-profile bridge, OperationJournal durable truth unchanged.",
+      "packaging": "Explicit installer module copy list must remain intact; complete host package build checks current wiring.",
+      "seam": "test_game_operations.py/test_operation_journal.py/test_playtime.py remain cumulative baseline; no service deployment or real installer execution authorized.",
+      "state_moved": [],
+      "effects_moved": [],
+      "callers_migrated": [],
+      "obsolete_paths_removed": [],
+      "production_wiring_evidence": [
+        "Gateway library/GameOps endpoints",
+        "provider HTTP handlers",
+        "Playnite IPC events"
+      ],
+      "packaging_evidence": "Explicit installer module copy list must remain intact; complete host package build checks current wiring.",
+      "lifetime_notes": "Per-profile bridge, OperationJournal durable truth unchanged."
+    }
+  ],
+  "original_metrics": [
+    {
+      "path": "app/src/main/java/com/limelight/Game.java",
+      "lines": 7114,
+      "bytes": 338348
+    },
+    {
+      "path": "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+      "lines": 17700,
+      "bytes": 895493
+    },
+    {
+      "path": "host-services/gateway/wakeplay_gateway.py",
+      "lines": 6156,
+      "bytes": 322415
+    },
+    {
+      "path": "host-services/bridges/playnite/GameProviderBridge.py",
+      "lines": 6060,
+      "bytes": 318430
+    }
+  ],
+  "remaining_monolith_responsibilities": [
+    {
+      "responsibility": "Game: physical stream lifetime and stop completion",
+      "assigned_owner": "Unchanged in S00; S04 concrete stop owner and S07 runtime behind existing RetainedStreamSessionCoordinator facade"
+    },
+    {
+      "responsibility": "Game: host termination, child terminal enforcement and neutral settlement",
+      "assigned_owner": "Unchanged in S00; S05 narrow termination owner must move full state/effects and retain canonical privacy/retained facades"
+    },
+    {
+      "responsibility": "ConsoleActivity: preparation, Play and warm-up intent composition",
+      "assigned_owner": "Unchanged in S00; S03 HostLaunchPreflight and S08 SessionOrchestrator own full sequencing with narrow Activity adapters"
+    },
+    {
+      "responsibility": "ConsoleActivity: observation resolution and badge/tile/launch projection",
+      "assigned_owner": "Unchanged in S00; S06 existing SessionStateResolver plus one shared projection owner"
+    },
+    {
+      "responsibility": "Gateway: authenticated routing and actor/execution authorization",
+      "assigned_owner": "Unchanged in S00; S01 Android immutable context, S05 host effect fencing kept separate from routing"
+    },
+    {
+      "responsibility": "Gateway: child budget/session lifecycle and terminal host effects",
+      "assigned_owner": "Unchanged in S00; S05 effect-time fencing separated without replacing durable budget owner"
+    },
+    {
+      "responsibility": "Provider Bridge: authoritative game/process observation and child enforcement",
+      "assigned_owner": "Unchanged in S00; S05 narrow fenced effect boundary and S06 coherent observation producer"
+    },
+    {
+      "responsibility": "Provider Bridge: GameOps/library/launcher responsibilities outside this hardening behavior",
+      "assigned_owner": "Existing owners retained; no blanket monolith rewrite"
+    }
+  ],
+  "no_extraction_needed_justification": "S00 explicitly forbids product restructuring and claims unchanged gameplay. This is a responsibility inventory, not a blanket NO_EXTRACTION_NEEDED decision for S01-S09. Relevant later slices must move state/effects/direct callers and remove obsolete ownership together.",
+  "duplicate_authoritative_owners": [],
+  "review_evidence": null,
+  "existing_inherited_ownership_findings": [
+    "Existing Activity transport ownership versus retained weak facade is H05; no new owner introduced.",
+    "Existing Activity independent projections are H06; no new projection introduced."
+  ],
+  "status_scope": "Worker assessment: S00 responsibility inventory and test boundary complete; not independent checkpoint acceptance. Original H05/H06 product ownership findings are preserved separately and are not new duplicate owners introduced by S00.",
+  "test_boundary_correction": {
+    "owner": "host-services/control/Test-MoonWakerHostControl.ps1",
+    "state": "Temporary gateway root and test-created listener PID/creation timestamp only.",
+    "effects": "Fixture stopper terminates only matching captured listener and writes two markers under that exact root. Service cmdlet canaries forbid installed-service access.",
+    "callers": "Build-HostServices.ps1 -> Test-MoonWakerHostControl.ps1 -> copied Invoke-MoonWakerHostControl.ps1 -> fixture stopper.",
+    "obsolete_ownership_removed": "The test no longer copies/invokes production Stop-MoonWakerGateway.ps1, eliminating its installed service and fixed legacy-root ownership from this fixture.",
+    "independent_pre_execution_review": "runs/S00/review.json#pre_execution_safety_reviews",
+    "production_behavior_change": false
+  }
+}

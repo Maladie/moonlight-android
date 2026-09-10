@@ -160,6 +160,8 @@ final class SessionStateResolver {
         boolean retainedLive = facts.retainedOwnerLive && retainedMatches
                 && (facts.retainedState == RetainedStreamSessionCoordinator.State.HOME_LIVE
                 || facts.retainedState == RetainedStreamSessionCoordinator.State.PARKED_LIVE);
+        boolean retainedReconnect = retainedMatches && facts.retainedState
+                == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED;
         boolean suspendedMatches = facts.hostId.equals(facts.suspendedHostId)
                 && facts.profileId.equals(facts.suspendedProfileId);
         boolean pendingMatches = facts.pendingResume
@@ -207,6 +209,13 @@ final class SessionStateResolver {
                     true, suspensionSleepObserved, sleepRequested, sleepObserved);
         }
 
+        if (retainedReconnect && facts.neutralStreamTarget
+                && facts.retainedPlayniteGameId.isEmpty() && !bridgeRunning) {
+            return snapshot(facts, SessionSnapshot.State.RECONNECT_REQUIRED,
+                    facts.retainedAppId, "", false, false, false,
+                    sleepRequested, sleepObserved);
+        }
+
         boolean hostLive = facts.hostOnline && facts.runningGameAppId != 0;
         boolean bridgeLive = facts.hostOnline && bridgeRunning;
         if (retainedLive || hostLive || bridgeLive) {
@@ -232,8 +241,6 @@ final class SessionStateResolver {
                     true, suspensionSleepObserved, sleepRequested, sleepObserved);
         }
 
-        boolean retainedReconnect = retainedMatches && facts.retainedState
-                == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED;
         if (retainedReconnect || pendingMatches) {
             int appId = retainedReconnect ? facts.retainedAppId : facts.pendingResumeAppId;
             String gameId = retainedReconnect && !bridgeIdle

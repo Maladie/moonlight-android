@@ -46,6 +46,7 @@ final class HostLaunchPreflight {
         WINDOWS_SIGN_IN_EXPIRED,
         WINDOWS_SIGN_IN_CANCELLED,
         WINDOWS_SIGN_IN_TIMEOUT,
+        WINDOWS_IDENTITY_MISMATCH,
         PLAYNITE_BRIDGE_OFFLINE,
         PLAYNITE_CONNECTOR_DISCONNECTED,
         VIBEPOLLO_UNAVAILABLE,
@@ -62,7 +63,7 @@ final class HostLaunchPreflight {
     }
 
     interface Network {
-        boolean awaitReady(String hostId, Action action, BooleanSupplier cancelled);
+        boolean prepare(String hostId, Action action, BooleanSupplier cancelled);
     }
 
     interface Gateway {
@@ -145,6 +146,8 @@ final class HostLaunchPreflight {
     }
 
     static final class Profile {
+        final String actorProfileId;
+        final String executionProfileId;
         final String name;
         final boolean selected;
         final boolean playniteBridgeOnline;
@@ -153,31 +156,67 @@ final class HostLaunchPreflight {
 
         Profile(boolean selected, boolean playniteBridgeOnline,
                 boolean playniteConnectorConnected, boolean vibepolloBridgeOnline) {
-            this("", selected, playniteBridgeOnline, playniteConnectorConnected,
+            this("default", "default", "", selected, playniteBridgeOnline,
+                    playniteConnectorConnected,
                     vibepolloBridgeOnline);
         }
 
         Profile(String name, boolean selected, boolean playniteBridgeOnline,
                 boolean playniteConnectorConnected, boolean vibepolloBridgeOnline) {
+            this(name, name, name, selected, playniteBridgeOnline,
+                    playniteConnectorConnected, vibepolloBridgeOnline);
+        }
+
+        Profile(String actorProfileId, String executionProfileId, String name,
+                boolean selected, boolean playniteBridgeOnline,
+                boolean playniteConnectorConnected, boolean vibepolloBridgeOnline) {
+            this.actorProfileId = normalizeIdentity(actorProfileId);
+            this.executionProfileId = normalizeIdentity(executionProfileId);
             this.name = name == null ? "" : name.trim();
             this.selected = selected;
             this.playniteBridgeOnline = playniteBridgeOnline;
             this.playniteConnectorConnected = playniteConnectorConnected;
             this.vibepolloBridgeOnline = vibepolloBridgeOnline;
         }
+
+        boolean matches(Request request) {
+            return actorProfileId.equals(request.profileId) && !executionProfileId.isEmpty();
+        }
+
+        private static String normalizeIdentity(String value) {
+            return value == null ? "" : value.trim();
+        }
     }
 
     static final class Session {
+        enum Outcome { READY, PENDING, FAILED }
+
+        final Outcome outcome;
         final String state;
         final String reason;
         final String attemptId;
+        final String requestId;
+        final String actorProfileId;
+        final String executionProfileId;
         final int retryAfterMs;
 
         Session(String state, String reason, String attemptId, int retryAfterMs) {
+            this(state, reason, attemptId, retryAfterMs, "", "", "");
+        }
+
+        Session(String state, String reason, String attemptId, int retryAfterMs,
+                String requestId, String actorProfileId, String executionProfileId) {
             this.state = normalizeState(state, "failed");
             this.reason = normalizeState(reason, "manual_sign_in_required");
             this.attemptId = attemptId == null ? "" : attemptId.trim();
+            this.requestId = requestId == null ? "" : requestId.trim();
+            this.actorProfileId = actorProfileId == null ? "" : actorProfileId.trim();
+            this.executionProfileId = executionProfileId == null
+                    ? "" : executionProfileId.trim();
             this.retryAfterMs = Math.max(250, Math.min(3_000, retryAfterMs));
+            this.outcome = "ready".equals(this.state) ? Outcome.READY
+                    : canPollState(this.state) && !this.attemptId.isEmpty()
+                    ? Outcome.PENDING : Outcome.FAILED;
         }
 
         static Session ready() {
@@ -185,17 +224,31 @@ final class HostLaunchPreflight {
         }
 
         boolean isReady() {
-            return "ready".equals(state);
+            return outcome == Outcome.READY;
         }
 
         boolean canPoll() {
-            return !attemptId.isEmpty() && ("pending".equals(state)
+            return outcome == Outcome.PENDING;
+        }
+
+        boolean matches(Request request, Profile profile, String expectedAttemptId) {
+            if (!requestId.isEmpty() && !requestId.equals(request.requestId)) return false;
+            if (!actorProfileId.isEmpty()
+                    && !actorProfileId.equals(profile.actorProfileId)) return false;
+            if (!executionProfileId.isEmpty()
+                    && !executionProfileId.equals(profile.executionProfileId)) return false;
+            return expectedAttemptId == null || expectedAttemptId.isEmpty()
+                    || attemptId.isEmpty() || expectedAttemptId.equals(attemptId);
+        }
+
+        private static boolean canPollState(String state) {
+            return "pending".equals(state)
                     || "credential_available".equals(state)
                     || "credential_issued".equals(state)
                     || "credential_acquired".equals(state)
                     || "credential_submitted".equals(state)
                     || "sign_in_requested".equals(state)
-                    || "session_starting".equals(state));
+                    || "session_starting".equals(state);
         }
 
         private static String normalizeState(String value, String fallback) {
@@ -324,7 +377,7 @@ final class HostLaunchPreflight {
     private Result runInternal(Request request, BooleanSupplier cancelled, Progress progress) {
         if (cancelled.getAsBoolean()) return Result.cancelled();
         progress.onStage(Stage.NETWORK_READY);
-        if (!network.awaitReady(request.hostId, request.action, cancelled)) {
+        if (!network.prepare(request.hostId, request.action, cancelled)) {
             return cancelled.getAsBoolean() ? Result.cancelled()
                     : Result.failed(Stage.NETWORK_READY,
                     FailureReason.NETWORK_UNAVAILABLE);
@@ -343,11 +396,14 @@ final class HostLaunchPreflight {
             return Result.failed(Stage.PROFILE_AUTHORIZED,
                     FailureReason.SELECTED_PROFILE_UNAVAILABLE);
         }
+        if (!profile.matches(request)) {
+            return Result.failed(Stage.PROFILE_AUTHORIZED,
+                    FailureReason.WINDOWS_IDENTITY_MISMATCH, profile.name);
+        }
 
         progress.onStage(Stage.INTERACTIVE_SESSION_READY);
-        Result sessionResult = awaitInteractiveSession(
-                request, profile.name, cancelled);
-        if (sessionResult != null) return sessionResult;
+        Result sessionResult = awaitInteractiveSession(request, profile, cancelled);
+        if (sessionResult.status != Status.READY) return sessionResult;
 
         progress.onStage(Stage.PROFILE_READY);
         if (request.requiresPlayniteBridge()) {
@@ -361,6 +417,10 @@ final class HostLaunchPreflight {
             if (!profile.selected) {
                 return Result.failed(Stage.PROFILE_AUTHORIZED,
                         FailureReason.SELECTED_PROFILE_UNAVAILABLE);
+            }
+            if (!profile.matches(request)) {
+                return Result.failed(Stage.PROFILE_AUTHORIZED,
+                        FailureReason.WINDOWS_IDENTITY_MISMATCH, profile.name);
             }
             if (!profile.playniteBridgeOnline) {
                 return Result.failed(Stage.PLAYNITE_READY,
@@ -435,6 +495,10 @@ final class HostLaunchPreflight {
             return Result.failed(Stage.VIBEPOLLO_READY,
                     FailureReason.VIBEPOLLO_UNAVAILABLE);
         }
+        if (!profile.matches(request)) {
+            return Result.failed(Stage.PROFILE_AUTHORIZED,
+                    FailureReason.WINDOWS_IDENTITY_MISMATCH, profile.name);
+        }
         EnsuredTarget ensured;
         try {
             ensured = gateway.ensureTarget(request.hostId, request.profileId,
@@ -468,7 +532,6 @@ final class HostLaunchPreflight {
             try {
                 Profile profile = gateway.profile(request.hostId, request.profileId);
                 if (profile != null) return profile;
-                return null;
             } catch (IOException | RuntimeException unavailable) {
                 if (cancelled.getAsBoolean()) return null;
                 lastError = unavailable;
@@ -480,8 +543,7 @@ final class HostLaunchPreflight {
         return null;
     }
 
-    /** Returns a terminal result, or null when the interactive session is ready. */
-    private Result awaitInteractiveSession(Request request, String profileName,
+    private Result awaitInteractiveSession(Request request, Profile profile,
                                            BooleanSupplier cancelled) {
         Session session;
         try {
@@ -493,16 +555,25 @@ final class HostLaunchPreflight {
             }
             return cancelled.getAsBoolean() ? Result.cancelled()
                     : Result.failed(Stage.INTERACTIVE_SESSION_READY,
-                    FailureReason.GATEWAY_UNAVAILABLE, profileName);
+                    FailureReason.GATEWAY_UNAVAILABLE, profile.name);
         }
         if (session == null) {
-            return null;
+            return Result.failed(Stage.INTERACTIVE_SESSION_READY,
+                    FailureReason.WINDOWS_SIGN_IN_FAILED, profile.name);
         }
-        if (session.isReady()) return null;
+        if (cancelled.getAsBoolean()) {
+            cancelAttempt(request, session.attemptId);
+            return Result.cancelled();
+        }
+        if (!session.matches(request, profile, "")) {
+            cancelAttempt(request, session.attemptId);
+            return Result.failed(Stage.INTERACTIVE_SESSION_READY,
+                    FailureReason.WINDOWS_IDENTITY_MISMATCH, profile.name);
+        }
+        if (session.isReady()) return Result.ready(null, null);
         if (!session.canPoll()) {
-            FailureReason failure = sessionFailure(session);
-            return allowsManualSignIn(failure) ? null
-                    : Result.failed(Stage.INTERACTIVE_SESSION_READY, failure, profileName);
+            return Result.failed(Stage.INTERACTIVE_SESSION_READY,
+                    sessionFailure(session), profile.name);
         }
 
         String attemptId = session.attemptId;
@@ -515,17 +586,26 @@ final class HostLaunchPreflight {
             } catch (IOException | RuntimeException unavailable) {
                 continue;
             }
+            if (cancelled.getAsBoolean()) {
+                cancelAttempt(request, attemptId);
+                return Result.cancelled();
+            }
             if (session == null) continue;
-            if (session.isReady()) return null;
+            if (!session.matches(request, profile, attemptId)) {
+                cancelAttempt(request, attemptId);
+                return Result.failed(Stage.INTERACTIVE_SESSION_READY,
+                        FailureReason.WINDOWS_IDENTITY_MISMATCH, profile.name);
+            }
+            if (session.isReady()) return Result.ready(null, null);
             if (!session.canPoll()) {
-                FailureReason failure = sessionFailure(session);
-                return allowsManualSignIn(failure) ? null
-                        : Result.failed(Stage.INTERACTIVE_SESSION_READY, failure, profileName);
+                return Result.failed(Stage.INTERACTIVE_SESSION_READY,
+                        sessionFailure(session), profile.name);
             }
         }
         cancelAttempt(request, attemptId);
         return cancelled.getAsBoolean() ? Result.cancelled()
-                : null;
+                : Result.failed(Stage.INTERACTIVE_SESSION_READY,
+                FailureReason.WINDOWS_SIGN_IN_TIMEOUT, profile.name);
     }
 
     private Profile awaitPlayniteProfile(Request request, Profile initial,
@@ -601,10 +681,6 @@ final class HostLaunchPreflight {
             return FailureReason.CREDENTIAL_ACTION_REQUIRED;
         }
         return FailureReason.WINDOWS_SIGN_IN_FAILED;
-    }
-
-    private static boolean allowsManualSignIn(FailureReason failure) {
-        return failure != FailureReason.OTHER_PROFILE_ACTIVE;
     }
 
     private Result awaitEnsuredTarget(Request request, EnsuredTarget ensured,

@@ -1,0 +1,16 @@
+{
+  "status": "DRY_RUN_NOT_EVIDENCE",
+  "binding_status": "UNBOUND",
+  "plan_sha256": "sha256:bdfeda9676ba286ab39b726f6a7222fe75f6e9be8499951043f413e2ee3d4fbc",
+  "steps": {
+    "setup": [
+      "verify-device-state"
+    ],
+    "scenarios": [
+      "gateway-before-streamer"
+    ],
+    "cleanup": [
+      "restore-test-owned-state"
+    ]
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "status": "DRY_RUN_NOT_EVIDENCE",
+  "binding_status": "UNBOUND",
+  "plan_sha256": "sha256:ac70bda932ecf4a1fc19ec1db37776e6be0e33cfbbf50631577462261d993e4a",
+  "steps": {
+    "setup": ["verify-controller-contract"],
+    "scenarios": ["cold-sign-in-success", "automatic-warmup", "remote-sign-in-denied", "wrong-active-windows-identity", "timeout-late-ready-unbound"],
+    "cleanup": ["restore-test-owned-state"]
+  }
+}

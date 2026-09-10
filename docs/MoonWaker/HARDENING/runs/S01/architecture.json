@@ -1,0 +1,50 @@
+{
+  "task_id": "S01",
+  "status": "PASS",
+  "responsibilities": [
+    {
+      "responsibility": "Immutable Android Gateway actor/execution routing context",
+      "old_owner": "PlayniteTransitionGateway childSession boolean plus parent-default connect overloads; several Game callers re-read mutable Activity intent inside delayed work",
+      "new_owner": "PlayniteTransitionGateway.ActorContext, bound once to the canonical actor-profile GatewayConnection",
+      "state_moved": [
+        "actor profile ID",
+        "Windows execution profile ID",
+        "parent/child actor kind"
+      ],
+      "effects_moved": [
+        "selection of parent health plus gameplay reads versus child-scoped gameplay reads",
+        "binding of the canonical X-WakePlay-Profile value through GatewayConnection"
+      ],
+      "callers_migrated": [
+        "Game retained old-game switch",
+        "Game retained target-child allowance start",
+        "Game unused child allowance release",
+        "Game game-only provider stop",
+        "Game full-quit verified provider stop",
+        "Game transition coordinator creation",
+        "Game overlay managed-game stop",
+        "Game overlay suspend",
+        "Game child-session preparation",
+        "ConsoleActivity suspended-session restore"
+      ],
+      "obsolete_paths_removed": [
+        "connect(Context, hostId, activeHost)",
+        "connect(Context, hostId, activeHost, profileId)",
+        "connect(Context, hostId, activeHost, profileId, boolean childSession)",
+        "PlayniteTransitionGateway.childSession field",
+        "delayed full-quit/game-stop profile re-resolution"
+      ],
+      "production_wiring_evidence": "The only remaining public connect method requires ActorContext. Game captures context before retained switch, game stop, full quit, overlay end-game and suspend async boundaries. Production-facade tests record exact route/profile order; the real Gateway handler tests child allow/deny behavior.",
+      "packaging_evidence": "S01-ANDROID-PACKAGE-WIRING finds PlayniteTransitionGateway in the debug APK dex, ActorContext in the release R8 mapping, and classes.dex in the release APK.",
+      "lifetime_notes": "ActorContext is final and immutable for one facade/operation. GatewayConnection remains the credential-bearing request descriptor; GatewayTransport remains the sole TLS/auth/profile-header executor. Host resolves the child actor to its execution profile and remains authoritative."
+    }
+  ],
+  "remaining_monolith_responsibilities": [
+    "Game still owns host termination orchestration and physical stream completion; these pre-existing responsibilities remain assigned to S04/S05.",
+    "ConsoleActivity retains broader profile and launch composition responsibilities assigned to later slices."
+  ],
+  "no_extraction_needed_justification": null,
+  "duplicate_authoritative_owners": [],
+  "review_evidence": "runs/S01/review.json",
+  "test_seam": "HostGatewayClient remains package-private; its request method is package-visible and class non-final only so the existing PlayniteTransitionGateway production path can be exercised with a recording request boundary. Production construction still uses the unchanged GatewayTransport."
+}

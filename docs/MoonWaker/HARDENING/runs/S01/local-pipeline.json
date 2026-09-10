@@ -1,0 +1,112 @@
+{
+  "plan_id": "S01-local-pipeline-20260909",
+  "task_id": "S01",
+  "binding_status": "BOUND",
+  "source_fingerprint": "sha256:ff1458b66850bbb923c134c88d1e042072d66c0f456029440be35ee2988155fc",
+  "checkpoint_plan_sha256": "sha256:8e771fa4dfa2409ade36dcccdbaac3805ce9a7139ecdd8755c76b706a172ee00",
+  "lab_authorization_ref": null,
+  "notes": [
+    "Policy-and-wiring slice: no device checks are required by the coordinator plan.",
+    "Targeted checks exercise the production Android facade and real Gateway handler with synthetic stores/effects.",
+    "Seven flow rows remain deterministic production-owner floors, not physical E2E evidence."
+  ],
+  "checks": [
+    {
+      "id": "S01-BRANCH-GUARD", "kind": "CHECK", "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": ["{python}", "docs/MoonWaker/HARDENING/tools/packet.py", "branch-check", "--repo", "."]
+    },
+    {
+      "id": "S01-PACKET-TOOLS", "kind": "TEST", "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": ["{python}", "-m", "unittest", "discover", "-s", "docs/MoonWaker/HARDENING/tools", "-p", "test*.py"],
+      "observation": {"format": "unittest_log", "minimum_executed": 70, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-RUNNER-CONTRACT", "kind": "TEST", "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": ["{python}", "-m", "unittest", "discover", "-s", "docs/MoonWaker/HARDENING/tools", "-p", "test_run_checks.py"],
+      "observation": {"format": "unittest_log", "minimum_executed": 22, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-ACTOR-CONTEXT", "kind": "TEST", "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.console.PlayniteTransitionGatewayTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"],
+      "observation": {"format": "junit_xml", "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.console.PlayniteTransitionGatewayTest.xml", "minimum_executed": 10, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-CHILD-ROUTE-AUTH", "kind": "TEST", "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": ["{python}", "-m", "unittest", "discover", "-s", "host-services/gateway", "-p", "test_child_sessions_http.py"],
+      "observation": {"format": "unittest_log", "minimum_executed": 14, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-ADVERSE-ORDERING", "kind": "TEST", "effect": "LOCAL",
+      "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.console.PlayniteTransitionGatewayTest.capturedContextSurvivesDeterministicActorRebindOrdering --offline --no-daemon --console=plain; exit $LASTEXITCODE"],
+      "observation": {"format": "junit_xml", "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.console.PlayniteTransitionGatewayTest.xml", "minimum_executed": 1, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-F01", "kind": "TEST", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.console.HostLaunchPreflightTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"],
+      "observation": {"format": "junit_xml", "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.console.HostLaunchPreflightTest.xml", "minimum_executed": 30, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-F02", "kind": "TEST", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.stream.RetainedStreamSessionCoordinatorTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"],
+      "observation": {"format": "junit_xml", "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.stream.RetainedStreamSessionCoordinatorTest.xml", "minimum_executed": 52, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-F03", "kind": "TEST", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.console.SessionOrchestratorTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"],
+      "observation": {"format": "junit_xml", "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.console.SessionOrchestratorTest.xml", "minimum_executed": 50, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-F04", "kind": "TEST", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.console.AuthoritativeSessionTransitionTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"],
+      "observation": {"format": "junit_xml", "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.console.AuthoritativeSessionTransitionTest.xml", "minimum_executed": 5, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-F05", "kind": "TEST", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.stream.BackgroundStreamCorrelationTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"],
+      "observation": {"format": "junit_xml", "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.stream.BackgroundStreamCorrelationTest.xml", "minimum_executed": 3, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-F06", "kind": "TEST", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.console.ConsoleStreamTransitionCoordinatorTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"],
+      "observation": {"format": "junit_xml", "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.console.ConsoleStreamTransitionCoordinatorTest.xml", "minimum_executed": 59, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-F07", "kind": "TEST", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --tests com.limelight.gateway.ChildSessionClientTest --offline --no-daemon --console=plain; exit $LASTEXITCODE"],
+      "observation": {"format": "junit_xml", "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-com.limelight.gateway.ChildSessionClientTest.xml", "minimum_executed": 12, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-ANDROID-UNIT", "kind": "TEST", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat testNonRootDebugUnitTest --rerun-tasks --offline --no-daemon --console=plain; exit $LASTEXITCODE"],
+      "observation": {"format": "junit_xml", "glob": "app/build/test-results/testNonRootDebugUnitTest/TEST-*.xml", "minimum_executed": 1011, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-GATEWAY-UNIT", "kind": "TEST", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["{python}", "-m", "unittest", "discover", "-s", "host-services/gateway", "-p", "test*.py"],
+      "observation": {"format": "unittest_log", "minimum_executed": 191, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-BRIDGE-UNIT", "kind": "TEST", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["{python}", "-m", "unittest", "discover", "-s", "host-services/bridges/playnite", "-p", "test*.py"],
+      "observation": {"format": "unittest_log", "minimum_executed": 248, "maximum_skipped": 0}
+    },
+    {
+      "id": "S01-ANDROID-DEBUG-BUILD", "kind": "BUILD", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat assembleNonRootDebug --offline --no-daemon --console=plain; exit $LASTEXITCODE"]
+    },
+    {
+      "id": "S01-ANDROID-RELEASE-BUILD", "kind": "BUILD", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$env:JAVA_HOME = 'C:/Users/Basia/.jdks/openjdk-17.0.2'; & ./gradlew.bat assembleNonRootRelease --offline --no-daemon --console=plain; exit $LASTEXITCODE"]
+    },
+    {
+      "id": "S01-ANDROID-PACKAGE-WIRING", "kind": "CHECK", "effect": "LOCAL", "timeout_seconds": 1800,
+      "argv": ["powershell.exe", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", "$ErrorActionPreference = 'Stop'; $analyzer = 'C:/Users/Basia/Documents/Codex/android-sdk/cmdline-tools/latest/bin/apkanalyzer.bat'; $debug = 'app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk'; $release = 'app/build/outputs/apk/nonRoot/release/app-nonRoot-release-unsigned.apk'; $mapping = 'app/build/outputs/mapping/nonRootRelease/mapping.txt'; if (!(Test-Path -LiteralPath $debug) -or !(Test-Path -LiteralPath $release) -or !(Test-Path -LiteralPath $mapping)) { throw 'Missing APK or release mapping' }; $packages = @(& $analyzer dex packages $debug); if ($LASTEXITCODE -ne 0 -or !($packages -match 'com.limelight.console.PlayniteTransitionGateway')) { throw 'Debug APK lacks PlayniteTransitionGateway' }; $mapped = Get-Content -Raw -LiteralPath $mapping; if (!$mapped.Contains('com.limelight.console.PlayniteTransitionGateway') -or !$mapped.Contains('com.limelight.console.PlayniteTransitionGateway$ActorContext')) { throw 'Release mapping lacks Gateway actor context' }; $files = @(& $analyzer files list $release); if ($LASTEXITCODE -ne 0 -or !($files -match '^/classes.dex$')) { throw 'Release APK lacks classes.dex' }; Write-Output 'PACKAGED_GATEWAY_ACTOR_CONTEXT=debug+release'"]
+    }
+  ]
+}

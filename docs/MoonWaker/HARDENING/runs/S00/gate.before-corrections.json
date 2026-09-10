@@ -1,0 +1,334 @@
+{
+  "schema_version": 1,
+  "task_id": "S00",
+  "status": "FAIL",
+  "report_kind": "WORKER_COMPOSITE_CANDIDATE_NOT_ACCEPTANCE",
+  "historical_command_plan_archives": ["runs/S00/run-plan.executed.txt", "runs/S00/host-run-plan.executed.txt", "runs/S00/host-run-plan-v2.executed.txt"],
+  "checkpoint_plan_sha256": "sha256:7cda84bac8442124f5793fd6f745eff43d03c44817f493b8fe64123801866708",
+  "source_fingerprint": "sha256:70df35295a70dd9bc033c1adb7d8571cc0b67de7dde09e14d10066f5a964d8a7",
+  "source_fingerprint_after": "sha256:70df35295a70dd9bc033c1adb7d8571cc0b67de7dde09e14d10066f5a964d8a7",
+  "source_evidence_reports": [
+    "runs/S00/local-run-02/gate.json",
+    "runs/S00/packet-fix-run-01/gate.json",
+    "runs/S00/t43-run-01/gate.json"
+  ],
+  "failed_history": [
+    "runs/S00/local-run-01/gate.json",
+    "runs/S00/local-run-02/gate.json",
+    "runs/S00/host-run-01/gate.json",
+    "runs/S00/host-run-02/S00-HOST-PACKAGE.log"
+  ],
+  "checks": [
+    {
+      "id": "S00-BRANCH-GUARD",
+      "kind": "CHECK",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-BRANCH-GUARD.log",
+      "log_sha256": "sha256:0444b67f2a898cce78f5778e54e3d4a9a9665f6e50698e63854b873a70c09f4f",
+      "elapsed_seconds": 0.554,
+      "observation": {
+        "format": "exit_status",
+        "tests_executed": null
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-PACKET-METADATA",
+      "kind": "CHECK",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-PACKET-METADATA.log",
+      "log_sha256": "sha256:72cb3850a95c4719c1ae206e828b03efcbfc05efd8b9ca8251289ae59db721ab",
+      "elapsed_seconds": 0.177,
+      "observation": {
+        "format": "exit_status",
+        "tests_executed": null
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-F01",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-F01.log",
+      "log_sha256": "sha256:ff68cf3e4f8a28560cc0b5be5a614f36de14b740afe001479f09e27cbb6cd60b",
+      "elapsed_seconds": 91.522,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 30,
+        "tests_executed": 30,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-F02",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-F02.log",
+      "log_sha256": "sha256:a40db99b398e9fdd4d5af7294c15f693284abdaebfdf5b8b616aee184a4dcbd5",
+      "elapsed_seconds": 45.859,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 52,
+        "tests_executed": 52,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-F03",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-F03.log",
+      "log_sha256": "sha256:02cc7e204f8a10d7517584a8be9d5bcbbec1ddcd78ab4a0eb4d3263f7df70848",
+      "elapsed_seconds": 50.388,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 50,
+        "tests_executed": 50,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-F04",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-F04.log",
+      "log_sha256": "sha256:5cbf96b7b59a13042add05da3725c7032ee5164f81f465be02f72a3304c585bc",
+      "elapsed_seconds": 43.143,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 5,
+        "tests_executed": 5,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-F05",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-F05.log",
+      "log_sha256": "sha256:021d75587fc640ef6940ead440a01fa6fd97e30381b677f0df36b7fe6caa4313",
+      "elapsed_seconds": 44.723,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 3,
+        "tests_executed": 3,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-F06",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-F06.log",
+      "log_sha256": "sha256:f27fbf38d851b75a07f3d1e9cf2e8b11f0129954d50ca9f21d50c6eaf78fa780",
+      "elapsed_seconds": 39.942,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 59,
+        "tests_executed": 59,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-F07",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-F07.log",
+      "log_sha256": "sha256:b2e289b208178236861cb82e3a4ac1fe11fe1323a6242fba6c97b9b033621382",
+      "elapsed_seconds": 42.25,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 12,
+        "tests_executed": 12,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-ANDROID-UNIT",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-ANDROID-UNIT.log",
+      "log_sha256": "sha256:a494b080dff22576c1ac09f89a78e7530526e344fca024c1e9431b1230307c7b",
+      "elapsed_seconds": 53.344,
+      "observation": {
+        "format": "junit_xml",
+        "tests_run": 1011,
+        "tests_executed": 1011,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-ANDROID-DEBUG-BUILD",
+      "kind": "BUILD",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-ANDROID-DEBUG-BUILD.log",
+      "log_sha256": "sha256:28733c0e769f5562259b2ef4beae01a3bc06d363b349bf895b009199340a5480",
+      "elapsed_seconds": 21.367,
+      "observation": {
+        "format": "exit_status",
+        "tests_executed": null
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-ANDROID-RELEASE-BUILD",
+      "kind": "BUILD",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-ANDROID-RELEASE-BUILD.log",
+      "log_sha256": "sha256:cd116dfa41039052ed3eabf55cd6c004290cd665acafe90024cdd0f3d5b37f11",
+      "elapsed_seconds": 84.796,
+      "observation": {
+        "format": "exit_status",
+        "tests_executed": null
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-GATEWAY-UNIT",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-GATEWAY-UNIT.log",
+      "log_sha256": "sha256:36c7d9edc41d53d6be8ea6c16e88c6ac0343dc7469da6e640ec5bde48e3e05f5",
+      "elapsed_seconds": 13.827,
+      "observation": {
+        "format": "unittest_log",
+        "tests_run": 191,
+        "tests_executed": 191,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-BRIDGE-UNIT",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-BRIDGE-UNIT.log",
+      "log_sha256": "sha256:5cceab351c47dea5d6008a1c162516f13a0a331400f7467002243f0777060fc9",
+      "elapsed_seconds": 3.32,
+      "observation": {
+        "format": "unittest_log",
+        "tests_run": 248,
+        "tests_executed": 248,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-BROKER-SELFTEST",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/local-run-02/S00-BROKER-SELFTEST.log",
+      "log_sha256": "sha256:66f75434bf9fff4aadce38f9bcf7e22da8cdaf2c768d99834c7fbc3d376d669d",
+      "elapsed_seconds": 1.274,
+      "observation": {
+        "format": "unittest_log",
+        "tests_run": 15,
+        "tests_executed": 15,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/local-run-02/gate.json"
+    },
+    {
+      "id": "S00-PACKET-TOOLS",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/packet-fix-run-01/S00-PACKET-TOOLS.log",
+      "log_sha256": "sha256:6159780a0e05ddbf453af3e08808ec34ee4b559d4fb034f02f3268babc4f47a3",
+      "elapsed_seconds": 27.428,
+      "observation": {
+        "format": "unittest_log",
+        "tests_run": 69,
+        "tests_executed": 69,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/packet-fix-run-01/gate.json"
+    },
+    {
+      "id": "T43",
+      "kind": "TEST",
+      "effect": "LOCAL",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S00/t43-run-01/T43.log",
+      "log_sha256": "sha256:9a82167bfd1071a9f9bfb5eb5b7b4dd2ec3deecb476e2e7dfb67cf4ef43cfc98",
+      "elapsed_seconds": 15.046,
+      "observation": {
+        "format": "unittest_log",
+        "tests_run": 21,
+        "tests_executed": 21,
+        "tests_skipped": 0,
+        "tests_failed": 0
+      },
+      "source_gate": "runs/S00/t43-run-01/gate.json"
+    },
+    {
+      "id": "S00-HOST-PACKAGE",
+      "kind": "BUILD",
+      "effect": "LOCAL",
+      "status": "BLOCKED",
+      "exit_code": null,
+      "log_artifact": "runs/S00/host-run-02/S00-HOST-PACKAGE.log",
+      "log_sha256": "sha256:fa75576481c34e2af3241cddb0005da88ee019e825a4ea8395abfc0678bcc69b",
+      "reason": "Unsafe installed-service side effect boundary discovered in required self-test; runner interrupted and final acceptance prohibited.",
+      "source_gate": null,
+      "safety_incident": "runs/S00/safety-incident.json"
+    }
+  ],
+  "notes": [
+    "Composite preserves original logs/hashes and selects explicitly corrected packet/T43 reruns at identical source and checkpoint-plan hashes.",
+    "Main run host failure was not waived. Later package produced an artifact but crossed an unsafe installed-service boundary and was interrupted, so host gate remains BLOCKED.",
+    "F01-F07 are deterministic production-owner floors only; physical E2E NOT_RUN."
+  ]
+}

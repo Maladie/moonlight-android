@@ -1,0 +1,138 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "task_id",
+    "stage",
+    "run_id",
+    "actual_model",
+    "implementer_run_id",
+    "independent_context",
+    "verdict",
+    "reviewed_fingerprint",
+    "reviewed_diff_artifact",
+    "checks_run",
+    "findings",
+    "unverified_claims",
+    "accepted_task_scope",
+    "pending_integrated_or_device_gates",
+    "next_action",
+    "behavioral_verdict",
+    "architecture_verdict",
+    "reviewed_plan_sha256",
+    "whole_slice_independently_usable"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer"
+    },
+    "task_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "stage": {
+      "enum": [
+        "DESIGN",
+        "CODE",
+        "RELEASE"
+      ]
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "actual_model": {
+      "type": "string",
+      "minLength": 1
+    },
+    "implementer_run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "independent_context": {
+      "type": "boolean"
+    },
+    "verdict": {
+      "enum": [
+        "ACCEPT",
+        "CHANGES_REQUESTED",
+        "BLOCKED"
+      ]
+    },
+    "reviewed_fingerprint": {
+      "type": "string",
+      "minLength": 1
+    },
+    "reviewed_diff_artifact": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "checks_run": {
+      "type": "array"
+    },
+    "findings": {
+      "type": "array"
+    },
+    "unverified_claims": {
+      "type": "array"
+    },
+    "accepted_task_scope": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "pending_integrated_or_device_gates": {
+      "type": "array"
+    },
+    "next_action": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "behavioral_verdict": {
+      "type": "string"
+    },
+    "architecture_verdict": {
+      "type": "string"
+    },
+    "reviewed_plan_sha256": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "whole_slice_independently_usable": {
+      "type": [
+        "boolean",
+        "null"
+      ]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "verdict": {
+            "const": "ACCEPT"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "independent_context": {
+            "const": true
+          },
+          "findings": {
+            "maxItems": 0
+          }
+        }
+      }
+    }
+  ]
+}

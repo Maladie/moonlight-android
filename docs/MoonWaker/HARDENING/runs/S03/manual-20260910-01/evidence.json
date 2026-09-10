@@ -1,0 +1,125 @@
+{
+  "schema_version": 1,
+  "artifact_id": "S03-manual-20260910-01",
+  "task_id": "S03",
+  "status": "CODE_VERIFIED_DEVICE_PENDING",
+  "checkpoint_accepted": false,
+  "source_binding": {
+    "source_fingerprint": "sha256:6b30961fb65c507a009634acc5f6cdb976151387e97908b99a7cf103240e94ca",
+    "apk_sha256": "sha256:667127002ef99067bd6d6a3874cef4240e43a774e61ade64658785e6909814b0"
+  },
+  "sanitization": {
+    "raw_logs_copied": false,
+    "credentials_or_tokens_persisted": false,
+    "profile_display_name_persisted": false,
+    "note": "Archiwa ZIP odczytano wyłącznie jako dane; zapisano tylko ograniczone fakty nieidentyfikujące i obserwacje operatora. Nazwę profilu zastąpiono określeniem profil operatora."
+  },
+  "diagnostic_bundles": [
+    {
+      "scenario": "A",
+      "filename": "MoonWaker-Diagnostics-20260910-075024-629-35dc6709.zip",
+      "sha256": "sha256:38245c2435063f18139897a3140ce84c0b85f6428ef9448fec7996fba1d49965",
+      "manifest": {
+        "created_utc": "2026-09-10T07:50:24.6036281Z",
+        "host_version": "0.7.93",
+        "build": "2026.09.08",
+        "protocol_version": 6
+      }
+    },
+    {
+      "scenario": "B",
+      "filename": "MoonWaker-Diagnostics-20260910-075954-379-828619f9.zip",
+      "sha256": "sha256:ffe37c140c185bdf6556722d50d05e4999b332cb85a0a5c75bf710a069aedb92",
+      "manifest": {
+        "created_utc": "2026-09-10T07:59:54.3464688Z",
+        "host_version": "0.7.93",
+        "build": "2026.09.08",
+        "protocol_version": 6
+      }
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "A",
+      "contract": "cold_sign_in_success",
+      "result": "FAIL",
+      "failure_basis": "Pierwsza próba wymagała ręcznego użycia Ponów.",
+      "recovery_outcome": "OBSERVED_PASS",
+      "operator_observations_pl": [
+        "Wybrano Hollow Knight.",
+        "Pojawiła się przesłona i było słychać Steam Big Picture.",
+        "Interfejs wyświetlił ogólny komunikat Gateway niedostępny.",
+        "Operator wybrał Ponów.",
+        "Po ręcznym Ponów gra uruchomiła się poprawnie."
+      ],
+      "diagnostics_status": "AVAILABLE",
+      "sanitized_host_correlation": [
+        {"event": "session_ensure", "started_utc": "2026-09-10T07:45:55.270Z", "completed_utc": "2026-09-10T07:45:55.273Z", "http_status": 200},
+        {"event": "first_game_start", "started_utc": "2026-09-10T07:45:56.155Z", "completed_utc": "2026-09-10T07:45:58.766Z", "http_status": 200},
+        {"event": "game_starting", "utc": "2026-09-10T07:45:58.765Z", "game_id": "steam:367520"},
+        {"event": "health_check_failed", "utc": "2026-09-10T07:46:07.091Z", "component": "game-provider", "status": "restarting"},
+        {"event": "game_events", "utc": "2026-09-10T07:46:08.780Z", "http_status": 502},
+        {"event": "game_provider_health", "utc": "2026-09-10T07:46:11.328Z", "http_status": 503},
+        {"event": "game_provider_health", "utc": "2026-09-10T07:46:14.909Z", "http_status": 503},
+        {"event": "bridge_connected", "utc": "2026-09-10T07:46:16.039Z", "component": "game-provider"},
+        {"event": "retry_game_stop_started", "utc": "2026-09-10T07:46:25.084Z"},
+        {"event": "retry_game_start_started", "utc": "2026-09-10T07:46:25.806Z"},
+        {"event": "game_running", "utc": "2026-09-10T07:46:26.184Z", "game_id": "steam:367520"},
+        {"event": "game_focus", "started_utc": "2026-09-10T07:46:28.196Z", "completed_utc": "2026-09-10T07:46:28.882Z", "http_status": 200},
+        {"event": "target_window_ready", "utc": "2026-09-10T07:46:29.992Z", "game_id": "steam:367520"}
+      ],
+      "correlation_assessment": "Usługa Gateway była osiągalna. Ogólny komunikat UI zbiegł się z restartem i niedostępnością game-provider; zapis nie ustanawia przyczynowości.",
+      "limitations": [
+        "Sam ZIP hosta nie dowodzi łańcucha Android preflight.",
+        "Sam ZIP hosta nie dowodzi docelowej tożsamości Windows."
+      ]
+    },
+    {
+      "id": "B",
+      "contract": "warmup_same_preflight",
+      "result": "FAIL",
+      "failure_basis": "Warm-up nie osiągnął stabilnego, automatycznie potwierdzonego wyniku; operator zakończył test jako FAIL.",
+      "recovery_outcome": "NOT_CLAIMED",
+      "operator_observations_pl": [
+        "Wejście na wybrany host i profil operatora przez kilka sekund nie wywołało widocznej akcji.",
+        "Ekran migał, a status kilkukrotnie przechodził Przygotowanie → Online → Offline → Online.",
+        "Dopiero ręczne Odśwież pokazało Aktywna sesja — MoonSaker Stream.",
+        "Próba uruchomienia Hollow Knight wyświetliła modal Zakończenie sesji. Czy na pewno chcesz zamknąć uruchomioną aplikację?",
+        "Operator zakończył test jako FAIL."
+      ],
+      "diagnostics_status": "AVAILABLE",
+      "sanitized_host_correlation": [
+        {"event": "pin_verify", "utc": "2026-09-10T07:54:58.688Z", "http_status": 200},
+        {"event": "session_ensure", "started_utc": "2026-09-10T07:55:00.717Z", "completed_utc": "2026-09-10T07:55:00.756Z", "http_status": 202, "interpretation": "pending_nonterminal_not_ready_proof"},
+        {"event": "game_current", "utc": "2026-09-10T07:55:20.041Z", "http_status": 502},
+        {"event": "provider_connection_aborted", "from_utc": "2026-09-10T07:55:20.885Z", "to_utc": "2026-09-10T07:55:23.200Z", "routes": ["/health", "/game/current"]},
+        {"event": "health_check_failed", "utc": "2026-09-10T07:55:21.6136778Z", "component": "game-provider", "status": "restarting"},
+        {"event": "game_current", "utc": "2026-09-10T07:55:25.222Z", "http_status": 502},
+        {"event": "game_current", "utc": "2026-09-10T07:55:30.011Z", "http_status": 502},
+        {"event": "bridge_connected", "utc": "2026-09-10T07:55:30.674Z", "component": "game-provider"},
+        {"event": "stream_display_resolved", "utc": "2026-09-10T07:55:30.993Z", "component": "game-provider"},
+        {"event": "library_refresh_recovered", "utc": "2026-09-10T07:55:34.019Z", "http_status": 200},
+        {"event": "health_check_failed", "utc": "2026-09-10T07:59:01.3098605Z", "component": "game-provider", "status": "restarting"},
+        {"event": "bridge_connected", "utc": "2026-09-10T07:59:04.226Z", "component": "game-provider"},
+        {"event": "library_refresh_recovered", "utc": "2026-09-10T07:59:04.900Z", "http_status": 200}
+      ],
+      "correlation_assessment": "Diagnostyka potwierdza niestabilność i restarty game-provider zgodne z obserwowaną oscylacją statusu. Nie dowodzi przyczyny modala ani zdarzeń Android UI lub streamu.",
+      "limitations": [
+        "HTTP 202 z session ensure jest wynikiem pending/nonterminal i nie dowodzi READY.",
+        "Sam ZIP hosta nie dowodzi łańcucha Android preflight, zdarzeń UI/streamu ani docelowej tożsamości Windows.",
+        "Nie przypisano związku przyczynowego między restartem providera a modalem."
+      ]
+    },
+    {"id": "C", "contract": "remote_sign_in_denied", "result": "NOT_RUN"},
+    {"id": "D", "contract": "wrong_active_windows_identity", "result": "NOT_RUN"},
+    {"id": "E", "contract": "timeout_late_ready", "result": "NOT_RUN"}
+  ],
+  "excluded_events": [
+    "Niezwiązane zdarzenia Discord audio 503 nie są użyte jako dowód.",
+    "Restart game-provider pozostaje poza zakresem S03 i należy do granicy S06."
+  ],
+  "checkpoint": {
+    "status": "NOT_ACCEPTED",
+    "reason": "Scenariusze A i B zakończyły się FAIL, a pozostałe scenariusze nie zostały uruchomione."
+  }
+}

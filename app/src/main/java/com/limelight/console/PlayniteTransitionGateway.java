@@ -17,6 +17,33 @@ import org.json.JSONObject;
  * Gateway response parsing out of the streaming Activity.
  */
 public final class PlayniteTransitionGateway {
+    /** Immutable authorization identity for one Gateway operation. */
+    public static final class ActorContext {
+        public final String actorProfileId;
+        public final String executionProfileId;
+        public final boolean child;
+
+        private ActorContext(String actorProfileId, String executionProfileId,
+                             boolean child) {
+            this.actorProfileId = GatewayConnection.normalizeProfileId(actorProfileId);
+            this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);
+            this.child = child;
+            if (!child && !this.actorProfileId.equals(this.executionProfileId)) {
+                throw new IllegalArgumentException(
+                        "A parent actor must execute as its own profile");
+            }
+        }
+
+        public static ActorContext parent(String profileId) {
+            return new ActorContext(profileId, profileId, false);
+        }
+
+        public static ActorContext child(String actorProfileId,
+                                         String executionProfileId) {
+            return new ActorContext(actorProfileId, executionProfileId, true);
+        }
+    }
+
     public static final class Snapshot {
         public final boolean gatewayReady;
         public final boolean connectorReady;
@@ -105,52 +132,53 @@ public final class PlayniteTransitionGateway {
         }
     }
 
-    private final HostGatewayClient client = new HostGatewayClient();
+    private final HostGatewayClient client;
     private final GatewayConnection connection;
-    private final boolean childSession;
+    private final ActorContext actorContext;
 
-    private PlayniteTransitionGateway(GatewayConnection connection, boolean childSession) {
-        this.connection = connection;
-        this.childSession = childSession;
+    private PlayniteTransitionGateway(GatewayConnection connection,
+                                      ActorContext actorContext) {
+        this(connection, actorContext, new HostGatewayClient());
     }
 
-    public static PlayniteTransitionGateway connect(Context context, String hostId,
-                                                    String activeHost) {
-        return connect(context, hostId, activeHost,
-                GatewayConnection.DEFAULT_PROFILE_ID);
+    PlayniteTransitionGateway(GatewayConnection connection, ActorContext actorContext,
+                              HostGatewayClient client) {
+        if (connection == null || actorContext == null || client == null) {
+            throw new NullPointerException("Gateway context");
+        }
+        if (!connection.profileId().equals(actorContext.actorProfileId)) {
+            throw new IllegalArgumentException("Gateway actor profile mismatch");
+        }
+        this.connection = connection;
+        this.actorContext = actorContext;
+        this.client = client;
     }
 
     public static PlayniteTransitionGateway connect(Context context, String hostId,
                                                     String activeHost,
-                                                    String profileId) {
-        return connect(context, hostId, activeHost, profileId, false);
-    }
-
-    public static PlayniteTransitionGateway connect(Context context, String hostId,
-                                                    String activeHost, String profileId,
-                                                    boolean childSession) {
+                                                    ActorContext actorContext) {
         GatewayConnection connection = new HostGatewayStore(context)
-                .loadForHost(hostId, activeHost, profileId);
+                .loadForHost(hostId, activeHost, actorContext.actorProfileId);
         if (connection == null) {
             MoonWakerDiagnostics.record("WARN", "android.playnite-transition",
                     "gateway.connect_failed", "host_id", hostId,
-                    "profile_id", GatewayConnection.normalizeProfileId(profileId),
+                    "profile_id", actorContext.actorProfileId,
                     "reason", "connection_missing");
             return null;
         }
-        return new PlayniteTransitionGateway(connection, childSession);
+        return new PlayniteTransitionGateway(connection, actorContext);
     }
 
     public Snapshot snapshot() throws IOException {
         // Child actors may read their authorised game's state, but cannot inspect
         // the parent profile's provider health. Do not widen their API permissions.
-        HostGatewayClient.PlayniteHealth health = childSession ? null
+        HostGatewayClient.PlayniteHealth health = actorContext.child ? null
                 : client.getPlayniteHealth(connection);
         HostGatewayClient.PlayniteCurrentGame current =
                 client.getPlayniteCurrentGame(connection);
         HostGatewayClient.PlayniteReadiness readiness =
                 client.getPlayniteReadiness(connection);
-        boolean connectorReady = childSession || health.connectorConnected
+        boolean connectorReady = actorContext.child || health.connectorConnected
                 || (!current.id.isEmpty() && !current.requiresConnector);
         return new Snapshot(true, connectorReady, current.state, current.id,
                 current.processId, readiness.ready, readiness.targetKind,
@@ -190,6 +218,10 @@ public final class PlayniteTransitionGateway {
     /** Returns the actor-bound request context used by this Gateway facade. */
     public GatewayConnection gatewayConnection() {
         return connection;
+    }
+
+    ActorContext actorContext() {
+        return actorContext;
     }
 
     public boolean verifyInstallation(String gameId) throws IOException {

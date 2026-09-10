@@ -1,0 +1,293 @@
+EEEEEEEEEEEEEEEEEE...................................................
+======================================================================
+ERROR: test_abbreviated_hash_rejected (test_branch.BranchTests.test_abbreviated_hash_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmp7je20ak3', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', 'fd23c3616a19bf6c1f9f7148bc3ee57871b98f06']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_base_branch_rejected (test_branch.BranchTests.test_base_branch_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmpac18tz5w', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', '6f24f14e86776786a0d7d5b32c14197326138624']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_committed_resume_does_not_refork (test_branch.BranchTests.test_committed_resume_does_not_refork)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmpqntlbh4x', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', '6f24f14e86776786a0d7d5b32c14197326138624']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_detached_head_rejected (test_branch.BranchTests.test_detached_head_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmp0ao6p8u0', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', '90fc40749775ec980489238a5c6bf32f41431b32']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_divergence_cannot_be_marked_prepared (test_branch.BranchTests.test_divergence_cannot_be_marked_prepared)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmp9qovb3e1', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', '90fc40749775ec980489238a5c6bf32f41431b32']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_evidence_repo_mismatch_rejected (test_branch.BranchTests.test_evidence_repo_mismatch_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmprr67xnce', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', 'aeb057e650d076fc0c44a8276c34e3cf1dd74310']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_initial_head_mismatch_rejected (test_branch.BranchTests.test_initial_head_mismatch_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmprmceq0np', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', 'aeb057e650d076fc0c44a8276c34e3cf1dd74310']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_local_ahead_tip_supported (test_branch.BranchTests.test_local_ahead_tip_supported)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmpjqnqdqi_', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', 'bfc505a6a426fe7f0ea94b5ffba1f1794ef53391']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_missing_local_branch_supported (test_branch.BranchTests.test_missing_local_branch_supported)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmpps0efao_', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', 'bfc505a6a426fe7f0ea94b5ffba1f1794ef53391']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_missing_report_rejected (test_branch.BranchTests.test_missing_report_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmp5cyagifo', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', '218d60a99e7009cff6c515cefc8b3795122c74d0']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_owned_uncommitted_resume_work_preserved (test_branch.BranchTests.test_owned_uncommitted_resume_work_preserved)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmpm9zgczsj', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', '2a69b5e694b73456215e3218cca47fcab9cc9cb2']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_packet_and_repo_roots_must_match (test_branch.BranchTests.test_packet_and_repo_roots_must_match)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmpcbb817pl', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', '2a69b5e694b73456215e3218cca47fcab9cc9cb2']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_prepared_branch_passes_without_mutation (test_branch.BranchTests.test_prepared_branch_passes_without_mutation)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmp3l4ui4me', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', 'b2dabf890e182fb03a74089bfd4bf478841afc63']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_selected_base_cannot_lack_fetched_commits (test_branch.BranchTests.test_selected_base_cannot_lack_fetched_commits)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmpxymqjn_9', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', 'c9f91f4a3eb878ff34acd3d7b442ac28445b80ad']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_unperformed_fetch_rejected (test_branch.BranchTests.test_unperformed_fetch_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmpe8skwwos', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', 'c9f91f4a3eb878ff34acd3d7b442ac28445b80ad']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_unprepared_workspace_rejected (test_branch.BranchTests.test_unprepared_workspace_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmpi8ipvp3g', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', 'ec425c7c98ee38bce16464e928cf7af06b15b0c7']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_unrelated_worktree_history_rejected (test_branch.BranchTests.test_unrelated_worktree_history_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmpkb1egn3r', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', 'd9b18f9ac5a23756189c51ca9895a854a1018b78']' returned non-zero exit status 1.
+
+======================================================================
+ERROR: test_unverified_remote_rejected (test_branch.BranchTests.test_unverified_remote_rejected)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 29, in setUp
+    self.git('switch', '-q', '--no-track', '-c', 'codex/session-hardening', self.base)
+    ~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "D:\Maladie\moonlight-android\docs\MoonWaker\HARDENING\tools\test_branch.py", line 54, in git
+    result = subprocess.run(['git', '-C', str(self.root), *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            check=True)
+  File "C:\Python314\Lib\subprocess.py", line 577, in run
+    raise CalledProcessError(retcode, process.args,
+                             output=stdout, stderr=stderr)
+subprocess.CalledProcessError: Command '['git', '-C', 'C:\\Users\\Basia\\AppData\\Local\\Temp\\tmp3w8ksh4r', 'switch', '-q', '--no-track', '-c', 'codex/session-hardening', 'd9b18f9ac5a23756189c51ca9895a854a1018b78']' returned non-zero exit status 1.
+
+----------------------------------------------------------------------
+Ran 69 tests in 15.712s
+
+FAILED (errors=18)

@@ -32,7 +32,7 @@ public final class BackgroundStreamService extends Service {
 
     private final Handler handler = new Handler(Looper.getMainLooper());
     private final BackgroundStreamCorrelation correlation = new BackgroundStreamCorrelation();
-    private int timeoutMinutes = 5;
+    private int timeoutMinutes = BackgroundStreamPreferences.DEFAULT_RETENTION_MINUTES;
     private Runnable expiry;
 
     public static void park(Context context, String streamSessionId, int timeoutMinutes) {
@@ -84,7 +84,8 @@ public final class BackgroundStreamService extends Service {
                 stopSelf(startId);
                 return START_NOT_STICKY;
             }
-            startParking(pending.streamSessionId, 5);
+            startParking(pending.streamSessionId,
+                    BackgroundStreamPreferences.readMinutes(this));
             return START_NOT_STICKY;
         }
         if (correlation.streamSessionId().isEmpty() && !ACTION_PARK.equals(action)) {
@@ -93,7 +94,8 @@ public final class BackgroundStreamService extends Service {
         }
         if (ACTION_PARK.equals(action)) {
             if (pending == null || !pending.matches(sessionId)) return START_NOT_STICKY;
-            startParking(sessionId, intent.getIntExtra(EXTRA_TIMEOUT_MINUTES, 5));
+            startParking(sessionId, intent.getIntExtra(EXTRA_TIMEOUT_MINUTES,
+                    BackgroundStreamPreferences.readMinutes(this)));
         } else if (ACTION_RESUME.equals(action)) {
             if (!correlation.resume(sessionId)) return START_NOT_STICKY;
             cancelExpiry();

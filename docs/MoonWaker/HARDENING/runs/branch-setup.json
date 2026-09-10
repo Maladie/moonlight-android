@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "status": "PREPARED",
+  "repository": "Maladie/moonlight-android",
+  "remote": "origin",
+  "base_branch": "codex/multi-profile-remote-sign-in",
+  "work_branch": "codex/session-hardening",
+  "observed_at_utc": "2026-09-09T07:20:59.4653253Z",
+  "original_branch": "codex/multi-profile-remote-sign-in",
+  "original_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "remote_identity_verified": true,
+  "fetch_succeeded": true,
+  "fetched_remote_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "local_base_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "local_vs_remote": "EQUAL",
+  "selected_base_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "selection_reason": "The verified local named base and freshly fetched origin tip were equal by full commit ID and mutual ancestry, so the fetched tip was selected.",
+  "branch_creation_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "dirty_paths_before": [
+    "docs/MoonWaker/HARDENING/ (54 untracked packet files, preserved)",
+    "work/ (538 untracked paths belonging to registered or pre-existing work directories, preserved)",
+    "host-services/dist*/ and host-services/windows-login/login-broker/dist*/ (70 untracked build-output paths, preserved)",
+    "root diagnostic PNG/XML artifacts (191 top-level untracked paths, preserved)",
+    ".claude/settings.local.json and .tmp/ (local settings/temp paths, preserved)"
+  ],
+  "preserved_packet_paths": [
+    "docs/MoonWaker/HARDENING/"
+  ],
+  "commands_and_observed_results": [
+    "git rev-parse --show-toplevel -> D:/Maladie/moonlight-android",
+    "git remote -v -> origin https://github.com/Maladie/moonlight-android.git (fetch/push)",
+    "git status --short -> no tracked modifications, staging, conflicts, merge or rebase; 1453 untracked paths preserved",
+    "git fetch --no-tags origin refs/heads/codex/multi-profile-remote-sign-in -> success",
+    "git rev-parse --verify FETCH_HEAD^{commit} -> 00366fd92a1f283bf3aa04171ed3455ce62897ac",
+    "git show-ref --verify refs/heads/codex/multi-profile-remote-sign-in -> 00366fd92a1f283bf3aa04171ed3455ce62897ac",
+    "git merge-base --is-ancestor in both directions -> exit 0 (EQUAL)",
+    "git switch --no-track -c ... -> unavailable because installed Git lacks switch",
+    "git checkout --no-track -b codex/session-hardening 00366fd92a1f283bf3aa04171ed3455ce62897ac -> success, non-forced equivalent",
+    "git branch --show-current -> codex/session-hardening",
+    "git rev-parse HEAD -> 00366fd92a1f283bf3aa04171ed3455ce62897ac"
+  ],
+  "blockers": []
+}

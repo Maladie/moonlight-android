@@ -1,0 +1,211 @@
+{
+  "schema_version": 1,
+  "task_id": "S00",
+  "status": "REVIEW_PENDING",
+  "worker_run_id": "S00-worker-corrections-20260909T0829Z",
+  "source_fingerprint": "sha256:db6880c0f0597149222d926db820b8438b2ca836d046cdb8c86dac8aacc7a387",
+  "checkpoint_plan_sha256": "sha256:443ef6d5eb137a921b4fbf15442da400a803a2208cc2642a3b9c13a28a1273b9",
+  "command_plan": "runs/S00/local-pipeline-v2.json",
+  "command_plan_sha256": "sha256:9f3d3a8c9786d6411373b8e6066909ca82d1329235831bd2d42a6ab9f52ed4ec",
+  "original_gate": "runs/S00/corrected-local-run-01/gate.json",
+  "original_gate_sha256": "sha256:ae33483eb22494e9fde10b9b796e8f1f76919385eef9a97668349f649710258f",
+  "findings": [
+    {
+      "id": "S00-R1",
+      "worker_disposition": "ADDRESSED",
+      "changes": "run_checks.py requires suffix .json before any read/output. Regression mocks Path.read_text to fail if touched and asserts archived BOUND .executed.txt returns 2 without output.",
+      "evidence": [
+        "runs/S00/corrected-local-run-01/S00-PACKET-TOOLS.log",
+        "runs/S00/corrected-local-run-01/S00-RUNNER-CONTRACT.log"
+      ],
+      "historical_bytes_preserved": true
+    },
+    {
+      "id": "S00-R2",
+      "worker_disposition": "ADDRESSED",
+      "changes": "PacketTest.setUp normalizes every synthetic state entry and report link, independent of live STATE. All 70 tests pass at live CHANGES_REQUESTED.",
+      "evidence": [
+        "runs/S00/corrected-local-run-01/S00-PACKET-TOOLS.log"
+      ],
+      "live_STATE_changed_by_worker": false
+    },
+    {
+      "id": "S00-R3",
+      "worker_disposition": "ADDRESSED",
+      "changes": "S00-RUNNER-CONTRACT labels the 22 internal runner self-tests. T43 is separate whole-S00 aggregate REVIEW_PENDING until all mandatory gates and independent acceptance complete. Historical mislabel preserved, not reused.",
+      "evidence": [
+        "runs/S00/checkpoint-plan.json",
+        "runs/S00/gate.json",
+        "runs/S00/implementation.json"
+      ]
+    },
+    {
+      "id": "S00-R4",
+      "worker_disposition": "ADDRESSED_PENDING_FINAL_REVIEW",
+      "changes": "Test-only exact temp-root, captured PID/creation timestamp stopper replaces production stopper copy; foreign-root rejection and installed-service cmdlet canaries. Full package/self-test graph inspected, independently approved before execution, complete fresh package passes.",
+      "evidence": [
+        "runs/S00/host-safety-scope.md",
+        "runs/S00/review.json#pre_execution_safety_reviews",
+        "runs/S00/corrected-local-run-01/S00-HOST-PACKAGE.log"
+      ],
+      "service_before": "Running",
+      "service_after": "Running",
+      "service_control_performed": false
+    },
+    {
+      "id": "S00-R5",
+      "worker_disposition": "ADDRESSED",
+      "changes": "Current incident/evidence records user's original already-Stopped confirmation: no state change observed or attributed. Later external Running state was preserved. Original chronology retained in snapshots and original logs.",
+      "evidence": [
+        "runs/S00/safety-incident.json",
+        "runs/S00/safety-incident.before-corrections.json"
+      ]
+    }
+  ],
+  "packet_tool_hashes": {
+    "tools/run_checks.py": "sha256:069c59fd1a4d48497e0eb5060b5992f5912e23cf922383d3bd1d0c82ca61c8cd",
+    "tools/test_run_checks.py": "sha256:d85f68217932f6bd4a1fc8595cc1ff95fd5290ac989ead79a25d02c3b7fdf2c9",
+    "tools/test_packet.py": "sha256:80b0b66ae603926aef5819877a3130aaae5b42829eef149a634f62baf41d8006",
+    "tools/test_branch.py": "sha256:67df24d75ecd9a8711a7276fa34e75540389b2a4d8a39a7137d78c90a895e2ed"
+  },
+  "test_fixture_sha256": "sha256:cfb165a19f0853ab6e9424fa5319ee1e6af3a7d321b245d19bd45a7c1e267792",
+  "historical_archive_hashes": {
+    "run-plan.executed.txt": "sha256:425e1f19243b98d0219aa6c7d01ced237e4632605728d661e0777ad692b0341b",
+    "host-run-plan.executed.txt": "sha256:3878fb2b7701e4027a2e713b5d14cd7e53223624a8bb2a6f76d801accd2196d4",
+    "host-run-plan-v2.executed.txt": "sha256:4500d62616bf1230577b0654e8bb7b45fc4dcdba1ddd053f3debe26958779b8d"
+  },
+  "final_checks": [
+    {
+      "command": "python docs/MoonWaker/HARDENING/tools/packet.py branch-check --repo .",
+      "exit_code": 0,
+      "result": "PREPARED_WORK_BRANCH_VERIFIED; branch codex/session-hardening; HEAD/base/fetched00366fd92a1f283bf3aa04171ed3455ce62897ac"
+    },
+    {
+      "command": "python docs/MoonWaker/HARDENING/tools/packet.py fingerprint --repo .",
+      "exit_code": 0,
+      "result": "sha256:db6880c0f0597149222d926db820b8438b2ca836d046cdb8c86dac8aacc7a387"
+    },
+    {
+      "command": "python docs/MoonWaker/HARDENING/tools/packet.py validate",
+      "exit_code": 0,
+      "result": "VALID_PACKET_METADATA; 11 tasks, 11 findings, 46 scenarios, 28 invariants"
+    },
+    {
+      "command": "git diff --check",
+      "exit_code": 0,
+      "result": "No whitespace errors; Git warns only about configured LF-to-CRLF conversion."
+    }
+  ],
+  "local_gate_summary": [
+    {
+      "id": "S00-BRANCH-GUARD",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": null
+    },
+    {
+      "id": "S00-PACKET-METADATA",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": null
+    },
+    {
+      "id": "S00-PACKET-TOOLS",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 70
+    },
+    {
+      "id": "S00-F01",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 30
+    },
+    {
+      "id": "S00-F02",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 52
+    },
+    {
+      "id": "S00-F03",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 50
+    },
+    {
+      "id": "S00-F04",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 5
+    },
+    {
+      "id": "S00-F05",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 3
+    },
+    {
+      "id": "S00-F06",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 59
+    },
+    {
+      "id": "S00-F07",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 12
+    },
+    {
+      "id": "S00-ANDROID-UNIT",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 1011
+    },
+    {
+      "id": "S00-ANDROID-DEBUG-BUILD",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": null
+    },
+    {
+      "id": "S00-ANDROID-RELEASE-BUILD",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": null
+    },
+    {
+      "id": "S00-GATEWAY-UNIT",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 191
+    },
+    {
+      "id": "S00-BRIDGE-UNIT",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 248
+    },
+    {
+      "id": "S00-BROKER-SELFTEST",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 15
+    },
+    {
+      "id": "S00-HOST-PACKAGE",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": null
+    },
+    {
+      "id": "S00-RUNNER-CONTRACT",
+      "status": "PASS",
+      "exit_code": 0,
+      "tests_executed": 22
+    }
+  ],
+  "device_status": "F01-F07 NOT_RUN; no mandatory device gate for setup-only S00. Later mandatory device absence must be CODE_VERIFIED_DEVICE_PENDING.",
+  "next_action": "Independent final review required; worker does not self-accept or edit STATE."
+}

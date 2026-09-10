@@ -1,0 +1,153 @@
+{
+  "schema_version": 1,
+  "packet_id": "moonwaker-session-hardening",
+  "baseline_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+  "baseline_fingerprint": "sha256:db6880c0f0597149222d926db820b8438b2ca836d046cdb8c86dac8aacc7a387",
+  "coordinator_model_hint": "Sol",
+  "release_status": "NOT_EVALUATED",
+  "tasks": {
+    "S00": {
+      "status": "CHECKPOINT_ACCEPTED",
+      "assigned_run": "S00-worker-corrections-20260909T0829Z",
+      "input_fingerprint": "sha256:70df35295a70dd9bc033c1adb7d8571cc0b67de7dde09e14d10066f5a964d8a7",
+      "output_fingerprint": "sha256:db6880c0f0597149222d926db820b8438b2ca836d046cdb8c86dac8aacc7a387",
+      "implementation_report": "runs/S00/implementation.json",
+      "review_report": "runs/S00/review.json",
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": "runs/S00/checkpoint-plan.json"
+    },
+    "S01": {
+      "status": "CHECKPOINT_ACCEPTED",
+      "assigned_run": "S01-worker-20260909T0850Z",
+      "input_fingerprint": "sha256:db6880c0f0597149222d926db820b8438b2ca836d046cdb8c86dac8aacc7a387",
+      "output_fingerprint": "sha256:ff1458b66850bbb923c134c88d1e042072d66c0f456029440be35ee2988155fc",
+      "implementation_report": "runs/S01/implementation.json",
+      "review_report": "runs/S01/review.json",
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": "runs/S01/checkpoint-plan.json"
+    },
+    "S02": {
+      "status": "CHECKPOINT_ACCEPTED",
+      "assigned_run": "S02-worker-20260909T0920Z",
+      "input_fingerprint": "sha256:ff1458b66850bbb923c134c88d1e042072d66c0f456029440be35ee2988155fc",
+      "output_fingerprint": "sha256:02e6f8918a8027db3cb7b1270a22b1ed4ac520345c1f368093d85b2f95ca31bd",
+      "implementation_report": "runs/S02/implementation.json",
+      "review_report": "runs/S02/review.json",
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": "runs/S02/checkpoint-plan.json"
+    },
+    "S03": {
+      "status": "CODE_VERIFIED_DEVICE_PENDING",
+      "assigned_run": "S03-worker-20260909T1319Z",
+      "input_fingerprint": "sha256:02e6f8918a8027db3cb7b1270a22b1ed4ac520345c1f368093d85b2f95ca31bd",
+      "output_fingerprint": "sha256:a9190d904a6eb83d319672a81f4d3b7383c7fdb0bcc3371e2ad5aa8abea991c8",
+      "implementation_report": "runs/S03/implementation.json",
+      "review_report": "runs/S03/warmup-regression-fix-13/review.json",
+      "design_review_report": null,
+      "blockers": [
+        "The corrected debug candidate is installed but scenarios A and B have not been rerun against it; the prior candidate produced FAIL results.",
+        "Scenarios C, D and E remain NOT_RUN. Mandatory S03-LAB-WINDOWS-SIGNIN device evidence is incomplete, so dependent task mutation remains blocked."
+      ],
+      "checkpoint_plan": "runs/S03/checkpoint-plan.json"
+    },
+    "S04": {
+      "status": "NOT_STARTED",
+      "assigned_run": null,
+      "input_fingerprint": null,
+      "output_fingerprint": null,
+      "implementation_report": null,
+      "review_report": null,
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": null
+    },
+    "S05": {
+      "status": "NOT_STARTED",
+      "assigned_run": null,
+      "input_fingerprint": null,
+      "output_fingerprint": null,
+      "implementation_report": null,
+      "review_report": null,
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": null
+    },
+    "S06": {
+      "status": "NOT_STARTED",
+      "assigned_run": null,
+      "input_fingerprint": null,
+      "output_fingerprint": null,
+      "implementation_report": null,
+      "review_report": null,
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": null
+    },
+    "S07": {
+      "status": "NOT_STARTED",
+      "assigned_run": null,
+      "input_fingerprint": null,
+      "output_fingerprint": null,
+      "implementation_report": null,
+      "review_report": null,
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": null
+    },
+    "S08": {
+      "status": "NOT_STARTED",
+      "assigned_run": null,
+      "input_fingerprint": null,
+      "output_fingerprint": null,
+      "implementation_report": null,
+      "review_report": null,
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": null
+    },
+    "S09": {
+      "status": "NOT_STARTED",
+      "assigned_run": null,
+      "input_fingerprint": null,
+      "output_fingerprint": null,
+      "implementation_report": null,
+      "review_report": null,
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": null
+    },
+    "S10": {
+      "status": "NOT_STARTED",
+      "assigned_run": null,
+      "input_fingerprint": null,
+      "output_fingerprint": null,
+      "implementation_report": null,
+      "review_report": null,
+      "design_review_report": null,
+      "blockers": [],
+      "checkpoint_plan": null
+    }
+  },
+  "contract_amendments": [
+    {
+      "id": "D01-20260909-30MIN",
+      "decision": "D01",
+      "status": "USER_AUTHORIZED",
+      "value": "For an absent stored preference, default background stream retention to 30 minutes in both debug and release. Preserve every explicit stored value, including zero/off. Do not apply this timeout to app Home or host-picker retention.",
+      "source": "User message: Ustawmy domyślnie 30min"
+    }
+  ],
+  "workspace": {
+    "status": "PREPARED",
+    "remote": "origin",
+    "base_branch": "codex/multi-profile-remote-sign-in",
+    "work_branch": "codex/session-hardening",
+    "base_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+    "fetched_remote_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+    "branch_creation_head": "00366fd92a1f283bf3aa04171ed3455ce62897ac",
+    "branch_setup_report": "runs/branch-setup.json"
+  }
+}

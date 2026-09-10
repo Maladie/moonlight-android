@@ -14,7 +14,9 @@ import java.util.List;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
+import static org.junit.Assert.assertTrue;
 
 public class HostLaunchPreflightTest {
     @Test public void verifiedSwitchTargetSkipsAppListButNotGatewayOrCancellation() {
@@ -258,6 +260,8 @@ public class HostLaunchPreflightTest {
         HostLaunchPreflight.Request request = HostLaunchPreflight.Request.from(
                 PlayIntent.playniteGame("host", "Basia", 42, "Game", false,
                         "game", "game"), HostLaunchPreflight.Action.LAUNCH);
+        fake.profile = new HostLaunchPreflight.Profile(
+                "Basia", "Basia", "Basia", true, true, true, true);
 
         assertEquals(HostLaunchPreflight.Status.READY,
                 fake.run(request, new AtomicBoolean()).status);
@@ -342,7 +346,7 @@ public class HostLaunchPreflightTest {
         Fake fake = new Fake();
         String attempt = "0123456789abcdef0123456789abcdef";
         fake.profile = new HostLaunchPreflight.Profile(
-                "Gry", true, true, true, true);
+                "Gry", "Gry", "Gry", true, true, true, true);
         fake.session = new HostLaunchPreflight.Session(
                 "pending", "none", attempt, 500);
         fake.sessionStatuses.add(new HostLaunchPreflight.Session(
@@ -386,36 +390,50 @@ public class HostLaunchPreflightTest {
         assertEquals(0, fake.refreshes);
     }
 
-    @Test public void timingOutPendingSignInCancelsTheBoundBrokerAttempt() {
+    @Test public void timingOutPendingSignInFailsClosedAndCancelsTheBoundBrokerAttempt() {
         Fake fake = new Fake();
         String attempt = "0123456789abcdef0123456789abcdef";
         fake.session = new HostLaunchPreflight.Session(
                 "pending", "none", attempt, 500);
         fake.waitStepMs = 60_000L;
-        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
         HostLaunchPreflight.Request request = game(42);
 
         HostLaunchPreflight.Result result = fake.run(request, new AtomicBoolean());
 
-        assertEquals(HostLaunchPreflight.Status.READY, result.status);
+        assertFailure(result, HostLaunchPreflight.Stage.INTERACTIVE_SESSION_READY,
+                HostLaunchPreflight.FailureReason.WINDOWS_SIGN_IN_TIMEOUT);
         assertEquals(1, fake.sessionCancelCalls);
         assertEquals(request.requestId, fake.sessionRequestSeen);
         assertEquals(attempt, fake.sessionAttemptSeen);
-        assertEquals(1, fake.refreshes);
+        assertEquals(0, fake.refreshes);
     }
 
-    @Test public void remoteSignInDenialFallsBackToTheWindowsLockScreen() {
+    @Test public void remoteSignInDenialCannotDispatchAStreamTarget() {
         Fake fake = new Fake();
         fake.profile = new HostLaunchPreflight.Profile(
-                "Gry", true, true, true, true);
+                "default", "default", "Gry", true, true, true, true);
         fake.session = new HostLaunchPreflight.Session(
                 "action_required", "remote_sign_in_not_granted", "", 1_000);
-        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
-
         HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
 
-        assertEquals(HostLaunchPreflight.Status.READY, result.status);
-        assertEquals(1, fake.refreshes);
+        assertFailure(result, HostLaunchPreflight.Stage.INTERACTIVE_SESSION_READY,
+                HostLaunchPreflight.FailureReason.REMOTE_SIGN_IN_NOT_GRANTED);
+        assertEquals(0, fake.refreshes);
+    }
+
+    @Test public void missingOrRejectedCredentialsFailOnceWithoutRetrying() {
+        for (String reason : Arrays.asList("credential_missing", "credential_rejected")) {
+            Fake fake = new Fake();
+            fake.session = new HostLaunchPreflight.Session(
+                    "action_required", reason, "", 1_000);
+
+            assertFailure(fake.run(game(42), new AtomicBoolean()),
+                    HostLaunchPreflight.Stage.INTERACTIVE_SESSION_READY,
+                    HostLaunchPreflight.FailureReason.CREDENTIAL_ACTION_REQUIRED);
+            assertEquals(1, fake.sessionEnsureCalls);
+            assertEquals(0, fake.sessionStatusCalls);
+            assertEquals(0, fake.refreshes);
+        }
     }
 
     @Test public void anotherActiveProfileStillBlocksTheLaunch() {
@@ -430,17 +448,105 @@ public class HostLaunchPreflightTest {
         assertEquals(0, fake.refreshes);
     }
 
-    @Test public void missingLoginBrokerFallsBackToTheWindowsLockScreen() {
+    @Test public void missingLoginBrokerCannotDispatchAStreamTarget() {
         Fake fake = new Fake();
         fake.session = new HostLaunchPreflight.Session(
                 "failed", "broker_unavailable", "", 1_000);
-        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
-
         HostLaunchPreflight.Result result = fake.run(game(42), new AtomicBoolean());
 
-        assertEquals(HostLaunchPreflight.Status.READY, result.status);
-        assertEquals(42, result.target.getAppId());
-        assertEquals(1, fake.refreshes);
+        assertFailure(result, HostLaunchPreflight.Stage.INTERACTIVE_SESSION_READY,
+                HostLaunchPreflight.FailureReason.LOGIN_BROKER_UNAVAILABLE);
+        assertEquals(0, fake.refreshes);
+    }
+
+    @Test public void nullSessionResponseCannotMasqueradeAsReady() {
+        Fake fake = new Fake();
+        fake.session = null;
+
+        assertFailure(fake.run(game(42), new AtomicBoolean()),
+                HostLaunchPreflight.Stage.INTERACTIVE_SESSION_READY,
+                HostLaunchPreflight.FailureReason.WINDOWS_SIGN_IN_FAILED);
+        assertEquals(0, fake.refreshes);
+    }
+
+    @Test public void authenticatedProfileMustMatchTheRequestedActorAndExecutionIdentity() {
+        Fake wrongActor = new Fake();
+        wrongActor.profile = new HostLaunchPreflight.Profile(
+                "other", "other", "Other", true, true, true, true);
+        assertFailure(wrongActor.run(game(42), new AtomicBoolean()),
+                HostLaunchPreflight.Stage.PROFILE_AUTHORIZED,
+                HostLaunchPreflight.FailureReason.WINDOWS_IDENTITY_MISMATCH);
+        assertEquals(0, wrongActor.sessionEnsureCalls);
+
+        Fake wrongExecution = new Fake();
+        wrongExecution.profile = new HostLaunchPreflight.Profile(
+                "default", "parent", "Parent", true, true, true, true);
+        wrongExecution.session = new HostLaunchPreflight.Session(
+                "ready", "none", "", 1_000, "", "default", "other-parent");
+        assertFailure(wrongExecution.run(game(42), new AtomicBoolean()),
+                HostLaunchPreflight.Stage.INTERACTIVE_SESSION_READY,
+                HostLaunchPreflight.FailureReason.WINDOWS_IDENTITY_MISMATCH);
+        assertEquals(0, wrongExecution.refreshes);
+    }
+
+    @Test public void staleRequestReadyCannotContinue() {
+        Fake fake = new Fake();
+        fake.session = new HostLaunchPreflight.Session(
+                "ready", "none", "", 1_000,
+                "android-stale", "default", "default");
+
+        assertFailure(fake.run(game(42), new AtomicBoolean()),
+                HostLaunchPreflight.Stage.INTERACTIVE_SESSION_READY,
+                HostLaunchPreflight.FailureReason.WINDOWS_IDENTITY_MISMATCH);
+        assertEquals(0, fake.refreshes);
+    }
+
+    @Test public void cancellationWinsOverLateReadyForTheBoundAttempt() {
+        Fake fake = new Fake();
+        String attempt = "0123456789abcdef0123456789abcdef";
+        fake.session = new HostLaunchPreflight.Session(
+                "pending", "none", attempt, 500);
+        fake.sessionStatuses.add(new HostLaunchPreflight.Session(
+                "ready", "none", attempt, 500));
+        AtomicBoolean cancelled = new AtomicBoolean();
+        fake.sessionStatusAction = () -> cancelled.set(true);
+
+        HostLaunchPreflight.Result result = fake.run(game(42), cancelled);
+
+        assertEquals(HostLaunchPreflight.Status.CANCELLED, result.status);
+        assertEquals(1, fake.sessionCancelCalls);
+        assertEquals(0, fake.refreshes);
+    }
+
+    @Test public void gatewayAndPositiveIdentityProofAlwaysPrecedeStreamerRefresh() {
+        Fake fake = new Fake();
+        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
+
+        assertEquals(HostLaunchPreflight.Status.READY,
+                fake.run(game(42), new AtomicBoolean()).status);
+
+        assertTrue(fake.events.indexOf("network") < fake.events.indexOf("profile"));
+        assertTrue(fake.events.indexOf("profile") < fake.events.indexOf("session"));
+        assertTrue(fake.events.indexOf("session") < fake.events.indexOf("streamer"));
+        assertFalse(fake.events.subList(0, fake.events.indexOf("session"))
+                .contains("streamer"));
+    }
+
+    @Test public void wakingHostWaitsForGatewayWithoutProbingStreamerFirst() {
+        Fake fake = new Fake();
+        fake.profile = null;
+        fake.profileAction = () -> {
+            if (fake.profileChecks == 2) {
+                fake.profile = profile(true, true, true, true);
+            }
+        };
+        fake.apps.add(Collections.singletonList(app("Game", 42, "exact")));
+
+        assertEquals(HostLaunchPreflight.Status.READY,
+                fake.run(game(42), new AtomicBoolean()).status);
+        assertEquals(2, fake.profileChecks);
+        assertEquals(Arrays.asList("network", "profile", "profile", "session", "streamer"),
+                fake.events);
     }
 
     private static Fake ensuringFake() {
@@ -515,6 +621,8 @@ public class HostLaunchPreflightTest {
         Runnable refreshAction;
         Runnable retainedAction;
         Runnable waitAction;
+        Runnable sessionStatusAction;
+        final List<String> events = new ArrayList<>();
         NvApp retainedTarget;
         int retainedChecks;
         HostLaunchPreflight.Action networkActionSeen;
@@ -538,15 +646,17 @@ public class HostLaunchPreflightTest {
                     .run(request, cancelled::get, stages::add);
         }
 
-        @Override public boolean awaitReady(String hostId, HostLaunchPreflight.Action action,
-                                            java.util.function.BooleanSupplier cancelled) {
+        @Override public boolean prepare(String hostId, HostLaunchPreflight.Action action,
+                                         java.util.function.BooleanSupplier cancelled) {
             networkActionSeen = action;
+            events.add("network");
             if (networkAction != null) networkAction.run();
             return !cancelled.getAsBoolean();
         }
 
         @Override public HostLaunchPreflight.Profile profile(String hostId, String profileId) {
             profileChecks++;
+            events.add("profile");
             profileSeen = profileId;
             if (profileAction != null) profileAction.run();
             return profile;
@@ -555,6 +665,7 @@ public class HostLaunchPreflightTest {
         @Override public HostLaunchPreflight.Session ensureSession(
                 String hostId, String profileId, String requestId) {
             sessionEnsureCalls++;
+            events.add("session");
             sessionProfileSeen = profileId;
             sessionRequestSeen = requestId;
             return session;
@@ -563,6 +674,8 @@ public class HostLaunchPreflightTest {
         @Override public HostLaunchPreflight.Session sessionStatus(
                 String hostId, String profileId, String requestId, String attemptId) {
             sessionStatusCalls++;
+            events.add("session-status");
+            if (sessionStatusAction != null) sessionStatusAction.run();
             sessionProfileSeen = profileId;
             sessionRequestSeen = requestId;
             sessionAttemptSeen = attemptId;
@@ -588,6 +701,7 @@ public class HostLaunchPreflightTest {
 
         @Override public List<NvApp> refreshApps(String hostId) {
             refreshes++;
+            events.add("streamer");
             if (refreshAction != null) refreshAction.run();
             return apps.isEmpty() ? Collections.emptyList() : apps.removeFirst();
         }

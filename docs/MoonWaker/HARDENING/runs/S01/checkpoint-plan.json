@@ -1,0 +1,117 @@
+{
+  "schema_version": 1,
+  "task_id": "S01",
+  "input_fingerprint": "sha256:db6880c0f0597149222d926db820b8438b2ca836d046cdb8c86dac8aacc7a387",
+  "approved_by_coordinator_run": "root-coordinator-S01-20260909T0850Z",
+  "outcome": "All affected PlayniteTransitionGateway callers carry one immutable actor/execution context so child quit/gameplay uses only permitted endpoints while parent behavior and authorization boundaries remain intact.",
+  "production_path": [
+    "Game full-quit and game-stop entrypoints -> PlayniteTransitionGateway facade",
+    "Overlay/retained parent-child paths -> canonical Gateway connection/profile headers",
+    "PlayniteTransitionGateway snapshot/stop operations -> actor-appropriate endpoint set"
+  ],
+  "artifact_compatibility_matrix": [
+    {
+      "artifacts": "new Android client + existing host",
+      "required_behavior": "uses existing endpoint/auth schema; child calls permitted gameplay routes only and parent calls retain existing health behavior"
+    },
+    {
+      "artifacts": "existing Android client + existing host",
+      "required_behavior": "unchanged because S01 changes no host protocol or permissions"
+    },
+    {
+      "artifacts": "new Android client + newly built unchanged host",
+      "required_behavior": "same existing protocol; actor/execution context is client-side immutable routing state"
+    }
+  ],
+  "architecture_boundary": "Centralize construction of immutable actor/execution context in the existing Gateway boundary, migrate every affected production caller, and remove ambiguous parent-default overload use without adding a permission resolver or durable owner.",
+  "required_checks": [
+    "S01-BRANCH-GUARD",
+    "S01-PACKET-TOOLS",
+    "S01-RUNNER-CONTRACT",
+    "S01-ACTOR-CONTEXT",
+    "S01-CHILD-ROUTE-AUTH",
+    "S01-ADVERSE-ORDERING",
+    "S01-F01",
+    "S01-F02",
+    "S01-F03",
+    "S01-F04",
+    "S01-F05",
+    "S01-F06",
+    "S01-F07",
+    "S01-ANDROID-UNIT",
+    "S01-GATEWAY-UNIT",
+    "S01-BRIDGE-UNIT",
+    "S01-ANDROID-DEBUG-BUILD",
+    "S01-ANDROID-RELEASE-BUILD",
+    "S01-ANDROID-PACKAGE-WIRING"
+  ],
+  "device_checks_required": false,
+  "required_device_check_ids": [],
+  "protected_flows": [
+    {
+      "flow_id": "F01",
+      "check_ids": ["S01-F01"],
+      "original_defects": ["H07", "H08"]
+    },
+    {
+      "flow_id": "F02",
+      "check_ids": ["S01-F02"],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F03",
+      "check_ids": ["S01-F03"],
+      "original_defects": ["H10"]
+    },
+    {
+      "flow_id": "F04",
+      "check_ids": ["S01-F04", "S01-ACTOR-CONTEXT"],
+      "original_defects": ["H03", "H09"]
+    },
+    {
+      "flow_id": "F05",
+      "check_ids": ["S01-F05"],
+      "original_defects": ["H04", "H05"]
+    },
+    {
+      "flow_id": "F06",
+      "check_ids": ["S01-F06"],
+      "original_defects": ["H06", "H10", "H11"]
+    },
+    {
+      "flow_id": "F07",
+      "check_ids": ["S01-F07", "S01-CHILD-ROUTE-AUTH"],
+      "original_defects": ["H01", "H07", "H08"]
+    }
+  ],
+  "target_regression_check_ids": [
+    "S01-ACTOR-CONTEXT",
+    "S01-CHILD-ROUTE-AUTH",
+    "S01-ADVERSE-ORDERING"
+  ],
+  "cumulative_fixed_path_check_ids": [
+    "S01-PACKET-TOOLS",
+    "S01-RUNNER-CONTRACT",
+    "S01-F01",
+    "S01-F02",
+    "S01-F03",
+    "S01-F04",
+    "S01-F05",
+    "S01-F06",
+    "S01-F07",
+    "S01-ANDROID-UNIT",
+    "S01-GATEWAY-UNIT",
+    "S01-BRIDGE-UNIT"
+  ],
+  "build_and_package_check_ids": [
+    "S01-ANDROID-DEBUG-BUILD",
+    "S01-ANDROID-RELEASE-BUILD",
+    "S01-ANDROID-PACKAGE-WIRING"
+  ],
+  "baseline_exception_evidence": [
+    "H03/H09 full-quit latency and native stop-completion defects remain owned by S04/S05 and must not be worsened by actor-context routing.",
+    "Physical F01-F07 remain outside this policy-and-wiring checkpoint; deterministic production-owner floors still execute for every flow."
+  ],
+  "amendments": [],
+  "device_topic_bindings": []
+}

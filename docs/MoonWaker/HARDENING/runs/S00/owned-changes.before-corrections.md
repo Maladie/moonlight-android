@@ -1,0 +1,15 @@
+# S00 owned changes and current stop point
+
+Status: BLOCKED, pending independent review. Product source remains exactly at input fingerprint `sha256:70df35295a70dd9bc033c1adb7d8571cc0b67de7dde09e14d10066f5a964d8a7` on `codex/session-hardening`, HEAD `00366fd92a1f283bf3aa04171ed3455ce62897ac`. All pre-existing untracked user work was preserved. No commit or push.
+
+Only two supplied packet fixture implementations changed. `tools/test_packet.py::test_only_baseline_initially_dispatchable` now explicitly sets its loaded in-memory S00 status to NOT_STARTED before asserting initial scheduler behavior. `tools/test_branch.py` uses non-forced `git checkout -q --no-track -b` for disposable branch creation and `git checkout -q` for disposable branch selection because Git 2.22 lacks switch. Both changes are confined to synthetic fixtures; the actual branch is never switched by these tests.
+
+New S00 files are run plans, baseline/architecture/compatibility/recovery/lab reports, failed and successful original command logs, composite gate, implementation handoff, safety incident and baseline host build output. STATE/checkpoint plan remain coordinator-owned. `git diff --check` passed; because the supplied packet was untracked, ordinary `git diff` alone does not enumerate its contents.
+
+Observed passing checks: packet69; runner21; full JVM1011 across104 suites; seven JVM floors30/52/50/5/3/59/12; Gateway191; Bridge248; Broker15; debug and minimized release APKs. The full JVM suite mixes direct production behavior with source-text structural contracts; source-reading tests are not runtime or device evidence. Every selected F suite invokes an existing production owner with controlled effects. Full physical flows were not run.
+
+The required host package crossed an unsafe self-test boundary: a copied production stop script can stop the actual installed MoonWakerGateway service regardless of its temporary fixture directory. Gateway is currently Stopped; pre-test state is unknown. All further host tests were stopped, no service recovery was performed, and the consolidated local-pipeline.json is UNBOUND. Historical plans are retained only as execution evidence and MUST NOT be rerun until this test boundary is isolated and reviewed. See safety-incident.json.
+
+The last host command completed installer compilation but its enclosing runner was interrupted before final gate output. Its log and installer hash are preserved; this is not safe passing checkpoint evidence. S00 needs correction and independent review before S01 can begin. No new gameplay behavior has been introduced or deferred.
+
+All JSON plans containing the unsafe host command are now UNBOUND: run-plan.json, host-run-plan.json, host-run-plan-v2.json and local-pipeline.json. Exact historically executed plan bytes are preserved as adjacent .executed.txt evidence; their SHA-256 values match the original command-plan hashes. These text archives are not authorization or runnable instructions. Only the packet-only/T43 plans remain BOUND, and no more host checks were run after the stop instruction.

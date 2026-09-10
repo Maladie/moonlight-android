@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "task_id": "S03",
+  "gate_id": "S03-runner-only-09",
+  "scope": "LAB_RUNNER_ONLY",
+  "status": "PASS",
+  "source_fingerprint": "sha256:9260d5029301eb41ee423b876b6b1344d7127b9f103bf2d652bd9b464e3a073f",
+  "checks": [
+    {
+      "check": "S03-LAB-RUNNER-CONTRACT",
+      "status": "PASS",
+      "exit_code": 0,
+      "observation": {"tests_executed": 18, "failed": 0, "skipped": 0},
+      "log_artifact": "runs/S03/runner-only-09/S03-LAB-RUNNER-CONTRACT.log",
+      "log_sha256": "sha256:afe71b29a376c2b3e0315e924ff32038cdc98256e3ec9554602e389aa57068c8"
+    },
+    {
+      "check": "S03-LAB-PY-COMPILE",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S03/runner-only-09/S03-LAB-PY-COMPILE.log",
+      "log_sha256": "sha256:9727c495b85a81f8a4b630233e3862c73e47d8c8ea5456091c10e36c6076e3b5"
+    },
+    {
+      "check": "S03-LAB-EXAMPLE-DRY-RUN",
+      "status": "PASS",
+      "exit_code": 0,
+      "observation": {"status": "DRY_RUN_NOT_EVIDENCE", "binding_status": "UNBOUND"},
+      "log_artifact": "runs/S03/runner-only-09/S03-LAB-EXAMPLE-DRY-RUN.log",
+      "log_sha256": "sha256:7e968379118a51021e86223c1850f0525c7aaaefab94ce3065018ec16d285a4e"
+    },
+    {
+      "check": "S03-SOURCE-FINGERPRINT",
+      "status": "PASS",
+      "exit_code": 0,
+      "log_artifact": "runs/S03/runner-only-09/S03-SOURCE-FINGERPRINT.log",
+      "log_sha256": "sha256:1e2c085c62c2a6da7a15513c0f21ad32c4334e84589d0b1ef72f773020bc0f0b"
+    }
+  ],
+  "component_binding": {
+    "runner": {
+      "lab_runner_sha256": "sha256:be3749fb083b2030f757275d546e184cab1df181f05089569afc1931aff42500",
+      "test_lab_runner_sha256": "sha256:f9c39231161fb3c5ed76f43a38847759e3788d2a1ebbfee54117fa81a71cb9a6",
+      "readme_sha256": "sha256:367ad79fe3a69fefca41f4c1871e2305ff5da8bfcc65c5e3e83cf9e12d39de90"
+    },
+    "android": {
+      "evidence": "runs/S03/local-run-08/gate.json",
+      "status": "PRESERVED_NOT_RERUN_ANDROID_INPUTS_UNCHANGED",
+      "debug_apk_sha256": "sha256:667127002ef99067bd6d6a3874cef4240e43a774e61ade64658785e6909814b0",
+      "release_apk_sha256": "sha256:a2c30c5b36ee31a6f956a4dd8ec14c57720c6e79baea2542e9f51164941c5e02"
+    }
+  },
+  "prohibited_actions_confirmed": [
+    "No Gradle, APK build, device, install, deployment, service, sign-in or sleep action was run."
+  ]
+}
