@@ -4,6 +4,8 @@ import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
 
 import java.lang.ref.WeakReference;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
  * Single in-process source of truth for a stream retained behind MoonWaker Home.
@@ -33,6 +35,7 @@ public final class RetainedStreamSessionCoordinator {
 
     public interface TerminationCallback {
         void complete(boolean success);
+        default void transportUnsafe() { }
     }
 
     public interface SwitchCallback {
@@ -107,6 +110,14 @@ public final class RetainedStreamSessionCoordinator {
 
     public enum TerminationResult { STARTED, IN_PROGRESS, NO_CONTROLLER }
 
+    public static final class DirectTermination {
+        private final TerminationOperation operation;
+
+        private DirectTermination(TerminationOperation operation) {
+            this.operation = operation;
+        }
+    }
+
     public static final class Snapshot {
         public final State state;
         public final String streamSessionId;
@@ -150,6 +161,28 @@ public final class RetainedStreamSessionCoordinator {
     private static String switchSessionId = "";
     private static String switchTransitionId = "";
     private static long switchAttempt;
+    private static TerminationOperation terminationOperation;
+
+    private static final class TerminationOperation {
+        final String streamSessionId;
+        final boolean terminateGame;
+        final boolean direct;
+        final State previousState;
+        final Controller previousOwner;
+        boolean transportUnsafe;
+        final List<TerminationCallback> completions = new ArrayList<>();
+
+        TerminationOperation(String streamSessionId, boolean terminateGame, boolean direct,
+                             State previousState, Controller previousOwner,
+                             TerminationCallback completion) {
+            this.streamSessionId = streamSessionId;
+            this.terminateGame = terminateGame;
+            this.direct = direct;
+            this.previousState = previousState;
+            this.previousOwner = previousOwner;
+            if (completion != null) completions.add(completion);
+        }
+    }
 
     private RetainedStreamSessionCoordinator() { }
 
@@ -454,6 +487,8 @@ public final class RetainedStreamSessionCoordinator {
                 || (!streamSessionId.isEmpty() && !expected.equals(streamSessionId))) {
             return false;
         }
+        State previousState = state;
+        Controller previousOwner = controller.get();
         controller.clear();
         switchOwner = null;
         switchSessionId = "";
@@ -466,7 +501,24 @@ public final class RetainedStreamSessionCoordinator {
         transitionId = "";
         attempt = 0L;
         setStateLocked(State.TERMINATING);
+        if (terminationOperation == null) {
+            terminationOperation = new TerminationOperation(
+                    expected, true, true, previousState, previousOwner, null);
+        }
         return true;
+    }
+
+    public static synchronized DirectTermination beginDirectTermination(
+            String expectedStreamSessionId, String terminatingHostId,
+            int terminatingAppId, String terminatingGameId) {
+        TerminationOperation previous = terminationOperation;
+        if (!markTerminating(expectedStreamSessionId, terminatingHostId,
+                terminatingAppId, terminatingGameId)
+                || terminationOperation == previous
+                || terminationOperation == null || !terminationOperation.direct) {
+            return null;
+        }
+        return new DirectTermination(terminationOperation);
     }
 
     public static synchronized boolean canResumeInstantly() {
@@ -694,12 +746,19 @@ public final class RetainedStreamSessionCoordinator {
 
     public static synchronized boolean ownsLiveOrParkedSession(
             Controller expectedOwner, String expectedStreamSessionId,
-            String expectedHostId, int expectedAppId, String expectedGameId) {
+            String expectedHostId, int expectedAppId) {
         return (state == State.HOME_LIVE || state == State.PARKED_LIVE)
                 && controller.get() == expectedOwner
                 && switchOwner == null && matches(expectedStreamSessionId)
                 && appId == expectedAppId
-                && hostId.equalsIgnoreCase(normalize(expectedHostId))
+                && hostId.equalsIgnoreCase(normalize(expectedHostId));
+    }
+
+    public static synchronized boolean ownsLiveOrParkedSession(
+            Controller expectedOwner, String expectedStreamSessionId,
+            String expectedHostId, int expectedAppId, String expectedGameId) {
+        return ownsLiveOrParkedSession(expectedOwner, expectedStreamSessionId,
+                expectedHostId, expectedAppId)
                 && playniteGameId.equalsIgnoreCase(normalize(expectedGameId));
     }
 
@@ -766,40 +825,147 @@ public final class RetainedStreamSessionCoordinator {
     private static TerminationResult finish(String expectedStreamSessionId,
                                             TerminationCallback completion,
                                             boolean terminateGame) {
-        Controller owner;
-        String capturedId;
-        State previousState;
+        Controller owner = null;
+        String capturedId = null;
+        State previousState = null;
+        TerminationOperation operation = null;
+        boolean conflictingOperation = false;
         synchronized (RetainedStreamSessionCoordinator.class) {
             if (!matches(expectedStreamSessionId)) return TerminationResult.NO_CONTROLLER;
             if (state == State.PREPARING) return TerminationResult.NO_CONTROLLER;
-            if (state == State.TERMINATING) return TerminationResult.IN_PROGRESS;
-            capturedId = streamSessionId;
-            previousState = state;
-            owner = liveControllerLocked();
-            controller.clear();
-            if (owner == null) {
-                return TerminationResult.NO_CONTROLLER;
+            if (state == State.TERMINATING) {
+                if (terminationOperation != null
+                        && terminationOperation.streamSessionId.equals(streamSessionId)
+                        && terminationOperation.terminateGame == terminateGame
+                        && completion != null) {
+                    terminationOperation.completions.add(completion);
+                } else if (terminationOperation != null
+                        && terminationOperation.terminateGame != terminateGame) {
+                    conflictingOperation = true;
+                }
+                if (!conflictingOperation) return TerminationResult.IN_PROGRESS;
+            } else {
+                capturedId = streamSessionId;
+                previousState = state;
+                owner = liveControllerLocked();
+                controller.clear();
+                if (owner == null) {
+                    return TerminationResult.NO_CONTROLLER;
+                }
+                setStateLocked(State.TERMINATING);
+                operation = new TerminationOperation(
+                        capturedId, terminateGame, false,
+                        previousState, owner, completion);
+                terminationOperation = operation;
             }
-            setStateLocked(State.TERMINATING);
         }
-        TerminationCallback finished = success -> {
-            boolean current;
-            synchronized (RetainedStreamSessionCoordinator.class) {
-                current = matches(capturedId) && state == State.TERMINATING;
-                if (current) {
-                    if (success) {
-                        clearLocked();
-                    } else {
-                        setStateLocked(previousState);
-                        controller = new WeakReference<>(owner);
+        if (conflictingOperation) {
+            if (completion != null) completion.complete(false);
+            return TerminationResult.IN_PROGRESS;
+        }
+        Controller capturedOwner = owner;
+        String sessionId = capturedId;
+        State restoreState = previousState;
+        TerminationOperation capturedOperation = operation;
+        TerminationCallback finished = new TerminationCallback() {
+            @Override public void transportUnsafe() {
+                synchronized (RetainedStreamSessionCoordinator.class) {
+                    if (terminationOperation == capturedOperation) {
+                        capturedOperation.transportUnsafe = true;
                     }
                 }
             }
-            if (current && completion != null) completion.complete(success);
+
+            @Override public void complete(boolean success) {
+                boolean current;
+                List<TerminationCallback> completions;
+                synchronized (RetainedStreamSessionCoordinator.class) {
+                    current = terminationOperation == capturedOperation
+                            && matches(sessionId) && state == State.TERMINATING;
+                    if (current) {
+                        if (success) {
+                            clearLocked();
+                        } else if (capturedOperation.transportUnsafe) {
+                            setStateLocked(State.RECONNECT_REQUIRED);
+                            controller.clear();
+                        } else {
+                            setStateLocked(restoreState);
+                            controller = new WeakReference<>(capturedOwner);
+                        }
+                    }
+                    if (terminationOperation == capturedOperation) {
+                        terminationOperation = null;
+                    }
+                    completions = new ArrayList<>(capturedOperation.completions);
+                    capturedOperation.completions.clear();
+                }
+                boolean result = current && success;
+                for (TerminationCallback waiting : completions) {
+                    try {
+                        waiting.complete(result);
+                    } catch (RuntimeException ignored) {
+                        // Every caller waiting on this operation receives its terminal result.
+                    }
+                }
+            }
         };
-        if (terminateGame) owner.terminateRetainedSession(finished);
-        else owner.disconnectRetainedStream(finished);
+        try {
+            if (terminateGame) capturedOwner.terminateRetainedSession(finished);
+            else capturedOwner.disconnectRetainedStream(finished);
+        } catch (RuntimeException error) {
+            finished.complete(false);
+        }
         return TerminationResult.STARTED;
+    }
+
+    public static boolean completeDirectTermination(
+            DirectTermination token, boolean success) {
+        return completeDirectTermination(token, success, false);
+    }
+
+    public static void completeDirectTransportStop(
+            DirectTermination token, TransportStopCoordinator.Result result) {
+        completeDirectTermination(token,
+                result == TransportStopCoordinator.Result.STOPPED,
+                result != TransportStopCoordinator.Result.STOPPED);
+    }
+
+    public static void abandonDirectTermination(DirectTermination token) {
+        completeDirectTermination(token, false, true);
+    }
+
+    private static boolean completeDirectTermination(
+            DirectTermination token, boolean success, boolean transportUnsafe) {
+        List<TerminationCallback> completions;
+        synchronized (RetainedStreamSessionCoordinator.class) {
+            if (token == null || terminationOperation != token.operation
+                    || !terminationOperation.direct
+                    || state != State.TERMINATING
+                    || !terminationOperation.streamSessionId.equals(streamSessionId)) {
+                return false;
+            }
+            TerminationOperation operation = terminationOperation;
+            terminationOperation = null;
+            completions = new ArrayList<>(operation.completions);
+            operation.completions.clear();
+            if (success || operation.previousState == State.NONE) {
+                clearLocked();
+            } else if (transportUnsafe) {
+                setStateLocked(State.RECONNECT_REQUIRED);
+                controller.clear();
+            } else {
+                setStateLocked(operation.previousState);
+                controller = new WeakReference<>(operation.previousOwner);
+            }
+        }
+        for (TerminationCallback completion : completions) {
+            try {
+                completion.complete(success);
+            } catch (RuntimeException ignored) {
+                // Every compatible direct-operation joiner receives the terminal result.
+            }
+        }
+        return true;
     }
 
     public static synchronized boolean clearIfMatches(String expectedStreamSessionId) {
@@ -822,6 +988,7 @@ public final class RetainedStreamSessionCoordinator {
 
     private static void clearLocked() {
         setStateLocked(State.NONE);
+        terminationOperation = null;
         controller.clear();
         streamSessionId = "";
         hostId = "";

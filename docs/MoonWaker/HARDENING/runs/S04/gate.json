@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "task_id": "S04",
+  "run_id": "S04-local-20260910-01",
+  "source_fingerprint": "sha256:dedbbd549d3fb7f24caa80154a1de701f6ceaacaa91f5225c6af000e30f623d8",
+  "status": "CODE_VERIFIED_DEVICE_PENDING",
+  "checks": [
+    {"id":"S04-BRANCH-GUARD","status":"PASS","observed":"PREPARED_WORK_BRANCH_VERIFIED on codex/session-hardening"},
+    {"id":"S04-PACKET-TOOLS","status":"PASS","observed":"70 tests; OK"},
+    {"id":"S04-STOP-SECOND-CALLER-LATCH","status":"PASS","observed":"TransportStopCoordinator targeted behavioral suite"},
+    {"id":"S04-STOP-FAILURE","status":"PASS","observed":"teardown/native failure and callback isolation coverage"},
+    {"id":"S04-STOP-OLD-CALLBACK-NEW-INTENT","status":"PASS","observed":"stale token/owner plus A-to-B-to-C generation coverage"},
+    {"id":"S04-STOP-CALLER-WIRING","status":"PASS","observed":"Game and Console production source contracts"},
+    {"id":"S04-OBSOLETE-OWNERSHIP-REMOVED","status":"PASS","observed":"old mutable stop, ID-only restore and fake-success paths absent"},
+    {"id":"S04-F01","status":"PASS","observed":"covered by full Android unit regression"},
+    {"id":"S04-F02","status":"PASS","observed":"covered by full Android unit regression"},
+    {"id":"S04-F03","status":"PASS","observed":"covered by full Android unit regression"},
+    {"id":"S04-F04","status":"PASS","observed":"covered by full Android unit and targeted stop regression"},
+    {"id":"S04-F05","status":"PASS","observed":"covered by full Android unit and retained-session regression"},
+    {"id":"S04-F06","status":"PASS","observed":"covered by full Android unit and Console wiring regression"},
+    {"id":"S04-F07","status":"PASS","observed":"covered by full Android unit and stale/cancel regression"},
+    {"id":"S04-ANDROID-UNIT","status":"PASS","observed":"107 suites; 1052 tests; 0 failures/errors/skips"},
+    {"id":"S03-GATEWAY-UNIT","status":"PASS","observed":"193 tests; OK"},
+    {"id":"S03-BRIDGE-UNIT","status":"PASS","observed":"248 tests; OK"},
+    {"id":"S03-BROKER-SELFTEST","status":"PASS","observed":"15 tests; PASS"},
+    {"id":"S04-ANDROID-DEBUG-BUILD","status":"PASS","observed":"BUILD SUCCESSFUL; APK sha256 4c37a59813e8ce901a3ef638e6048905c9aa191c278741f3ae76e44d6ecc8ae6"},
+    {"id":"S04-ANDROID-RELEASE-BUILD","status":"PASS","observed":"BUILD SUCCESSFUL; unsigned APK sha256 3e3f45965734fca1ec103327dfd8a68781a10545cfcf53eb5eae1c541508e851"},
+    {"id":"S04-ANDROID-PACKAGE-WIRING","status":"PASS","observed":"TransportStopCoordinator classes present in debug and release production outputs"},
+    {"id":"S04-LAB-NATIVE-STOP-RECONNECT","status":"INCOMPLETE","observed":"operator reports PASS, but available post-install trace does not contain an attributable native stop/reconnect sequence"}
+  ],
+  "summary": {
+    "passed": 21,
+    "failed": 0,
+    "not_run": 0,
+    "incomplete": 1,
+    "checkpoint_accepted": false
+  }
+}

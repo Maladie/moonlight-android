@@ -14148,7 +14148,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         && retained.hostId.equalsIgnoreCase(intent.hostId)
                         && retained.profileId.equals(intent.profileId)
                         && retained.appId == host.runningGameId;
-                boolean markedReconnect = false;
+                RetainedStreamSessionCoordinator.DirectTermination reconnectTermination = null;
                 if (exactRetained) {
                     Boolean terminated = terminateLiveRetainedForReplacement(
                             retained, cancelled);
@@ -14163,15 +14163,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                     RetainedStreamSessionCoordinator.Snapshot current =
                             RetainedStreamSessionCoordinator.snapshot();
-                    markedReconnect = current.state
+                    if (current.state
                             == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED
-                            && current.streamSessionId.equals(retained.streamSessionId)
-                            && RetainedStreamSessionCoordinator.markTerminating(
-                            retained.streamSessionId, retained.hostId,
-                            retained.appId, retained.playniteGameId);
+                            && current.streamSessionId.equals(retained.streamSessionId)) {
+                        reconnectTermination =
+                                RetainedStreamSessionCoordinator.beginDirectTermination(
+                                retained.streamSessionId, retained.hostId,
+                                retained.appId, retained.playniteGameId);
+                    }
                     LimeLog.info("Destructive close path=reconnect-fallback session="
-                            + retained.streamSessionId + " marked=" + markedReconnect);
-                    if (!markedReconnect) {
+                            + retained.streamSessionId + " marked="
+                            + (reconnectTermination != null));
+                    if (reconnectTermination == null) {
                         throw new IOException("Retained session changed before close");
                     }
                 } else {
@@ -14190,16 +14193,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                 }
                             }));
                 } finally {
-                    if (markedReconnect) {
+                    if (reconnectTermination != null) {
                         if (closed) {
-                            RetainedStreamSessionCoordinator.clearIfMatches(
-                                    retained.streamSessionId);
+                            RetainedStreamSessionCoordinator.completeDirectTermination(
+                                    reconnectTermination, true);
                         } else {
-                            RetainedStreamSessionCoordinator
-                                    .restoreReconnectIfTerminating(
-                                            retained.streamSessionId,
-                                            retained.hostId, retained.appId,
-                                            retained.playniteGameId);
+                            RetainedStreamSessionCoordinator.completeDirectTermination(
+                                    reconnectTermination, false);
                         }
                     }
                 }
@@ -14439,8 +14439,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (started == RetainedStreamSessionCoordinator.TerminationResult.NO_CONTROLLER) {
             return null;
         }
-        if (started != RetainedStreamSessionCoordinator.TerminationResult.STARTED) {
-            throw new IOException("Retained session termination is already in progress");
+        if (started != RetainedStreamSessionCoordinator.TerminationResult.STARTED
+                && started != RetainedStreamSessionCoordinator.TerminationResult.IN_PROGRESS) {
+            throw new IOException("Retained session termination is unavailable");
         }
         long deadline = SystemClock.uptimeMillis() + 60_000L;
         try {

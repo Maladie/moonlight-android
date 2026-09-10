@@ -48,21 +48,23 @@
       "review_report": "runs/S03/warmup-regression-fix-13/review.json",
       "design_review_report": null,
       "blockers": [
-        "The corrected debug candidate is installed but scenarios A and B have not been rerun against it; the prior candidate produced FAIL results.",
-        "Scenarios C, D and E remain NOT_RUN. Mandatory S03-LAB-WINDOWS-SIGNIN device evidence is incomplete, so dependent task mutation remains blocked."
+        "The user reports that all S03 physical Windows/TV tests pass on the corrected installed APK, recorded in runs/S03/manual-retest-fix13-20260910/evidence.json.",
+        "Mandatory S03-LAB-WINDOWS-SIGNIN still lacks an executed source/APK/device-bound deterministic plan and per-scenario machine-verifiable evidence; the operator report alone cannot accept the checkpoint under amendment S03-A01-DETERMINISTIC-LAB-RUNNER."
       ],
       "checkpoint_plan": "runs/S03/checkpoint-plan.json"
     },
     "S04": {
-      "status": "NOT_STARTED",
-      "assigned_run": null,
-      "input_fingerprint": null,
-      "output_fingerprint": null,
-      "implementation_report": null,
-      "review_report": null,
+      "status": "CODE_VERIFIED_DEVICE_PENDING",
+      "assigned_run": "S04-worker-20260910T0820Z",
+      "input_fingerprint": "sha256:c3d825c397e9c7a38296c8a0d0409da5066f419174b6393ff61d89927dfb7800",
+      "output_fingerprint": "sha256:dedbbd549d3fb7f24caa80154a1de701f6ceaacaa91f5225c6af000e30f623d8",
+      "implementation_report": "runs/S04/implementation.json",
+      "review_report": "runs/S04/review.json",
       "design_review_report": null,
-      "blockers": [],
-      "checkpoint_plan": null
+      "blockers": [
+        "The user reports S04-LAB-NATIVE-STOP-RECONNECT passed functionally, but the available post-install TV trace contains no attributable native stop/reconnect sequence. Candidate-bound native ordering evidence remains required for checkpoint acceptance."
+      ],
+      "checkpoint_plan": "runs/S04/checkpoint-plan.json"
     },
     "S05": {
       "status": "NOT_STARTED",
@@ -138,6 +140,13 @@
       "status": "USER_AUTHORIZED",
       "value": "For an absent stored preference, default background stream retention to 30 minutes in both debug and release. Preserve every explicit stored value, including zero/off. Do not apply this timeout to app Home or host-picker retention.",
       "source": "User message: Ustawmy domyślnie 30min"
+    },
+    {
+      "id": "S04-20260910-DEPENDENCY-OVERRIDE",
+      "decision": "PROCEED_WITH_S04_WHILE_S03_DEVICE_PENDING",
+      "status": "USER_AUTHORIZED",
+      "value": "Proceed with S04 implementation on the exact code-reviewed S03 candidate while S03 device scenarios are tested in parallel. This does not accept S03, waive S03 or S04 device evidence, or authorize S05. Any S03 failure overlapping S04 must be reconciled before review or acceptance.",
+      "source": "User message: Rozumiem, ale wyrażam na to bezpośrednią zgodę. Przejdź do S4"
     }
   ],
   "workspace": {

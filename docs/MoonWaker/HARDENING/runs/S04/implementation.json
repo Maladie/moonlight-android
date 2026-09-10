@@ -1,0 +1,61 @@
+{
+  "task_id": "S04",
+  "status": "CODE_VERIFIED_DEVICE_PENDING",
+  "input_fingerprint": "sha256:c3d825c397e9c7a38296c8a0d0409da5066f419174b6393ff61d89927dfb7800",
+  "output_fingerprint": "sha256:dedbbd549d3fb7f24caa80154a1de701f6ceaacaa91f5225c6af000e30f623d8",
+  "implementation": [
+    "Added TransportStopCoordinator as the concrete per-transport stop lifecycle owner.",
+    "Routed Game start/stop through the captured-generation barrier and terminal result.",
+    "Made retained termination typed, joinable, identity-bound and explicit about unsafe transport failure.",
+    "Made Console replacement wait for in-progress termination and removed stale ID-only restore paths.",
+    "Added focused behavioral and production-wiring regression coverage."
+  ],
+  "changed_production_files": [
+    "app/src/main/java/com/limelight/stream/TransportStopCoordinator.java",
+    "app/src/main/java/com/limelight/stream/RetainedStreamSessionCoordinator.java",
+    "app/src/main/java/com/limelight/Game.java",
+    "app/src/main/java/com/limelight/console/ConsoleActivity.java"
+  ],
+  "changed_test_files": [
+    "app/src/test/java/com/limelight/stream/TransportStopCoordinatorTest.java",
+    "app/src/test/java/com/limelight/stream/RetainedStreamSessionCoordinatorTest.java",
+    "app/src/test/java/com/limelight/GameTransportStopContractTest.java",
+    "app/src/test/java/com/limelight/GameTransitionCancelContractTest.java",
+    "app/src/test/java/com/limelight/console/ConsoleActivityEnsureContractTest.java"
+  ],
+  "local_results": {
+    "branch_check": "PASS; codex/session-hardening at db73d8601f13467eb39166a3a9ea59f2fb21a749, recorded base 00366fd92a1f283bf3aa04171ed3455ce62897ac",
+    "targeted_android": "140 executed; 0 failed; 0 skipped",
+    "full_android_unit": "107 suites; 1052 executed; 0 failed; 0 errors; 0 skipped; BUILD SUCCESSFUL in 1m 50s",
+    "packet_tools": "70 tests; OK",
+    "gateway": "193 tests; OK",
+    "playnite_bridge": "248 tests; OK",
+    "login_broker": "15 tests; PASS",
+    "debug_build": "assembleNonRootDebug; BUILD SUCCESSFUL in 1m 31s",
+    "release_build": "assembleNonRootRelease; BUILD SUCCESSFUL in 1m 50s",
+    "diff_check": "PASS"
+  },
+  "artifacts": [
+    {
+      "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+      "bytes": 46768110,
+      "sha256": "4c37a59813e8ce901a3ef638e6048905c9aa191c278741f3ae76e44d6ecc8ae6"
+    },
+    {
+      "path": "app/build/outputs/apk/nonRoot/release/app-nonRoot-release-unsigned.apk",
+      "bytes": 42578534,
+      "sha256": "3e3f45965734fca1ec103327dfd8a68781a10545cfcf53eb5eae1c541508e851"
+    }
+  ],
+  "package_wiring": "TransportStopCoordinator and nested result/state/completion classes are present in both nonRootDebug and nonRootRelease compiled production outputs.",
+  "review_report": "runs/S04/review.json",
+  "architecture_report": "runs/S04/architecture.json",
+  "device_evidence": "runs/S04/operator-device-result-20260910.json",
+  "blockers": [
+    "The operator reports a successful physical S04 stop/reconnect test, but the available post-install trace does not prove native stop completion before replacement start. Sanitized candidate-bound trace evidence remains required."
+  ],
+  "notes": [
+    "The first full-unit attempt selected an empty sandbox Gradle home and failed before configuration while trying to download Gradle 8.7. It was rerun offline with the existing C:/Users/Basia/.gradle cache and passed; this is an environment precondition failure, not a product test failure.",
+    "After code verification, the user separately authorized installation of the exact debug APK on the TV. Installation, launch and on-device digest equality are recorded in runs/S04/device-install.json; the stop/reconnect scenario remains pending."
+  ]
+}

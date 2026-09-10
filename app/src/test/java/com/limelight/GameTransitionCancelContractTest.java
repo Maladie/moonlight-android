@@ -20,7 +20,7 @@ public class GameTransitionCancelContractTest {
         String disconnect = text.substring(text.indexOf("public void disconnectRetainedStream("),
                 text.indexOf("public void terminateRetainedSession("));
 
-        assertTrue(disconnect.contains("stopConnection("));
+        assertTrue(disconnect.contains("stopConnectionResult("));
         assertTrue(disconnect.contains("SessionResumeManager.clearIfMatches("));
         assertFalse(disconnect.contains("terminateWholeSessionVerified("));
         assertFalse(disconnect.contains("stopProviderGame("));
@@ -77,8 +77,8 @@ public class GameTransitionCancelContractTest {
                 "expectedHostId, expectedGameId, actorContext, afterProvider)"));
         assertTrue(helper.contains("verifySunshineSessionStopped("));
         assertTrue(finish.contains("if (success)"));
-        assertTrue(finish.indexOf("completion.complete(true)")
-                < finish.indexOf("stopConnection(() ->"));
+        assertTrue(finish.indexOf("stopConnectionResult(")
+                < finish.indexOf("completion.complete(true)"));
     }
 
     @Test public void normalProviderQuitAttemptsStopBeforeClosingSunshine() throws IOException {
@@ -116,8 +116,8 @@ public class GameTransitionCancelContractTest {
                         "private void verifySunshineSessionStopped("),
                 helper.indexOf("private boolean isCurrentWholeSessionTermination("));
 
-        assertTrue(helper.contains("boolean marked = RetainedStreamSessionCoordinator"
-                + ".markTerminating("));
+        assertTrue(helper.contains("RetainedStreamSessionCoordinator.beginDirectTermination("));
+        assertTrue(helper.contains(": RetainedStreamSessionCoordinator.markTerminating("));
         assertFalse(helper.contains("if (!marked)"));
         assertTrue(verify.indexOf("getComputerDetails(true)")
                 < verify.indexOf("http.quitApp()"));
@@ -273,8 +273,10 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("public void stageFailed"));
 
         assertTrue(start.indexOf("connecting = true") < start.indexOf("conn.start("));
-        assertTrue(stop.contains("if (connecting || connected)"));
-        assertTrue(stop.contains("conn.stop()"));
+        assertTrue(stop.contains("boolean active = connecting || connected"));
+        assertTrue(text.contains("new TransportStopCoordinator(conn::stop"));
+        assertFalse(stop.contains("conn.stop()"));
+        assertTrue(stop.contains("captured.stop("));
     }
 
     @Test public void providerObservationIsArmedBeforeTransportCanReportConnected()
@@ -353,9 +355,12 @@ public class GameTransitionCancelContractTest {
         String freshFailure = finish.substring(finish.indexOf(
                         "if (!restoreRetainedOnFailure)"),
                 finish.indexOf("if (connected && !streamHomeVisible"));
-        assertTrue(freshFailure.contains("RetainedStreamSessionCoordinator.clearIfMatches"));
+        assertTrue(freshFailure.contains(
+                "RetainedStreamSessionCoordinator.abandonDirectTermination"));
         assertTrue(freshFailure.contains("SessionResumeManager.clearIfMatches"));
-        assertTrue(freshFailure.contains("stopConnection()"));
+        assertTrue(freshFailure.contains("stopConnectionResult("));
+        assertTrue(freshFailure.indexOf("stopConnectionResult(")
+                < freshFailure.indexOf("completion.complete(false)"));
         assertFalse(freshFailure.contains("enterHome("));
         assertFalse(freshFailure.contains("openConsoleHome("));
     }

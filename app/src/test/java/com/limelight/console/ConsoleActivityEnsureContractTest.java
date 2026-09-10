@@ -180,8 +180,9 @@ public class ConsoleActivityEnsureContractTest {
 
         assertTrue(effects.indexOf("terminateLiveRetainedForReplacement(")
                 < effects.indexOf("ConsoleActivity.this.closePreviousSession("));
-        assertTrue(effects.contains("RetainedStreamSessionCoordinator.markTerminating("));
-        assertTrue(effects.contains(".restoreReconnectIfTerminating("));
+        assertTrue(effects.contains(
+                "RetainedStreamSessionCoordinator.beginDirectTermination("));
+        assertFalse(effects.contains(".restoreReconnectIfTerminating("));
         assertTrue(helper.contains("RetainedStreamSessionCoordinator.terminate("));
         assertTrue(helper.contains("cancelled.getAsBoolean()"));
     }

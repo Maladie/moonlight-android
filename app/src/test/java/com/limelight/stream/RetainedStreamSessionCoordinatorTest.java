@@ -4,6 +4,7 @@ import org.junit.After;
 import org.junit.Test;
 
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.atomic.AtomicInteger;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -20,6 +21,7 @@ public class RetainedStreamSessionCoordinatorTest {
         boolean parkResult = true;
         boolean disconnected;
         boolean terminated;
+        int terminations;
         boolean completeTermination = true;
         boolean terminationResult = true;
         boolean live = true;
@@ -56,6 +58,7 @@ public class RetainedStreamSessionCoordinatorTest {
         @Override public void disconnectRetainedStream(
                 RetainedStreamSessionCoordinator.TerminationCallback completion) {
             disconnected = true;
+            terminationCompletion = completion;
             if (completeTermination && completion != null) {
                 completion.complete(terminationResult);
             }
@@ -63,6 +66,7 @@ public class RetainedStreamSessionCoordinatorTest {
         @Override public void terminateRetainedSession(
                 RetainedStreamSessionCoordinator.TerminationCallback completion) {
             terminated = true;
+            terminations++;
             terminationCompletion = completion;
             if (completeTermination && completion != null) {
                 completion.complete(terminationResult);
@@ -731,18 +735,94 @@ public class RetainedStreamSessionCoordinatorTest {
     @Test public void repeatedTerminationDoesNotStartASecondRequest() {
         FakeController controller = new FakeController();
         controller.completeTermination = false;
+        AtomicInteger first = new AtomicInteger();
+        AtomicInteger second = new AtomicInteger();
         RetainedStreamSessionCoordinator.enterHome(controller, SESSION_A, "host", 7, "game");
 
         assertEquals(RetainedStreamSessionCoordinator.TerminationResult.STARTED,
-                RetainedStreamSessionCoordinator.terminate(SESSION_A, null));
+                RetainedStreamSessionCoordinator.terminate(SESSION_A,
+                        success -> first.set(success ? 1 : -1)));
         assertEquals(RetainedStreamSessionCoordinator.TerminationResult.IN_PROGRESS,
-                RetainedStreamSessionCoordinator.terminate(SESSION_A, null));
+                RetainedStreamSessionCoordinator.terminate(SESSION_A,
+                        success -> second.set(success ? 1 : -1)));
         assertEquals(RetainedStreamSessionCoordinator.State.TERMINATING,
                 RetainedStreamSessionCoordinator.state());
+        assertEquals(1, controller.terminations);
+        assertEquals(0, first.get());
+        assertEquals(0, second.get());
 
         controller.terminationCompletion.complete(true);
+        assertEquals(1, first.get());
+        assertEquals(1, second.get());
         assertEquals(RetainedStreamSessionCoordinator.State.NONE,
                 RetainedStreamSessionCoordinator.state());
+    }
+
+    @Test public void ownerCompletionClearsTerminatingAndPublishesSuccess() {
+        FakeController controller = new FakeController();
+        controller.completeTermination = false;
+        AtomicReference<RetainedStreamSessionCoordinator.State> observed =
+                new AtomicReference<>();
+        RetainedStreamSessionCoordinator.enterHome(controller, SESSION_A, "host", 7, "game");
+
+        RetainedStreamSessionCoordinator.terminate(SESSION_A,
+                success -> observed.set(RetainedStreamSessionCoordinator.state()));
+        assertEquals(RetainedStreamSessionCoordinator.State.TERMINATING,
+                RetainedStreamSessionCoordinator.state());
+        controller.terminationCompletion.complete(true);
+
+        assertEquals(RetainedStreamSessionCoordinator.State.NONE, observed.get());
+        assertEquals(RetainedStreamSessionCoordinator.State.NONE,
+                RetainedStreamSessionCoordinator.state());
+    }
+
+    @Test public void oneThrowingTerminationJoinerDoesNotBlockTheNext() {
+        FakeController controller = new FakeController();
+        controller.completeTermination = false;
+        AtomicInteger observed = new AtomicInteger();
+        RetainedStreamSessionCoordinator.enterHome(controller, SESSION_A, "host", 7, "game");
+
+        RetainedStreamSessionCoordinator.terminate(SESSION_A, success -> {
+            throw new IllegalStateException("observer failed");
+        });
+        RetainedStreamSessionCoordinator.terminate(SESSION_A,
+                success -> observed.set(success ? 1 : -1));
+        controller.terminationCompletion.complete(true);
+
+        assertEquals(1, observed.get());
+    }
+
+    @Test public void mixedTerminationKindsFailClosedWithoutASecondEffect() {
+        FakeController disconnect = new FakeController();
+        disconnect.completeTermination = false;
+        AtomicReference<Boolean> disconnected = new AtomicReference<>();
+        AtomicReference<Boolean> terminateConflict = new AtomicReference<>();
+        RetainedStreamSessionCoordinator.enterHome(
+                disconnect, SESSION_A, "host", 7, "game");
+
+        assertEquals(RetainedStreamSessionCoordinator.TerminationResult.STARTED,
+                RetainedStreamSessionCoordinator.disconnect(SESSION_A, disconnected::set));
+        assertEquals(RetainedStreamSessionCoordinator.TerminationResult.IN_PROGRESS,
+                RetainedStreamSessionCoordinator.terminate(
+                        SESSION_A, terminateConflict::set));
+        assertEquals(Boolean.FALSE, terminateConflict.get());
+        assertFalse(disconnect.terminated);
+        disconnect.terminationCompletion.complete(true);
+        assertEquals(Boolean.TRUE, disconnected.get());
+
+        FakeController terminate = new FakeController();
+        terminate.completeTermination = false;
+        AtomicReference<Boolean> terminated = new AtomicReference<>();
+        AtomicReference<Boolean> disconnectConflict = new AtomicReference<>();
+        RetainedStreamSessionCoordinator.enterHome(
+                terminate, SESSION_A, "host", 7, "game");
+        RetainedStreamSessionCoordinator.terminate(SESSION_A, terminated::set);
+        RetainedStreamSessionCoordinator.disconnect(
+                SESSION_A, disconnectConflict::set);
+        assertEquals(Boolean.FALSE, disconnectConflict.get());
+        assertFalse(terminate.disconnected);
+        terminate.terminationCompletion.complete(true);
+        assertEquals(Boolean.TRUE, terminated.get());
     }
 
     @Test public void directStreamQuitIsVisibleUntilMatchingQuitCompletes() {
@@ -761,6 +841,169 @@ public class RetainedStreamSessionCoordinatorTest {
         assertTrue(RetainedStreamSessionCoordinator.clearIfMatches(SESSION_A));
         assertEquals(RetainedStreamSessionCoordinator.State.NONE,
                 RetainedStreamSessionCoordinator.state());
+    }
+
+    @Test public void directWholeQuitRegistersAndCompletesCompatibleJoiners() {
+        AtomicReference<Boolean> joined = new AtomicReference<>();
+        RetainedStreamSessionCoordinator.DirectTermination direct =
+                RetainedStreamSessionCoordinator.beginDirectTermination(
+                        SESSION_A, "host", 7, "game");
+        assertTrue(direct != null);
+
+        assertEquals(RetainedStreamSessionCoordinator.TerminationResult.IN_PROGRESS,
+                RetainedStreamSessionCoordinator.terminate(SESSION_A, joined::set));
+        assertNull(joined.get());
+        RetainedStreamSessionCoordinator.completeDirectTermination(direct, true);
+
+        assertEquals(Boolean.TRUE, joined.get());
+        assertEquals(RetainedStreamSessionCoordinator.State.NONE,
+                RetainedStreamSessionCoordinator.state());
+    }
+
+    @Test public void failedDirectWholeQuitRestoresStateBeforeJoinersReturn() {
+        FakeController controller = new FakeController();
+        AtomicReference<Boolean> joined = new AtomicReference<>();
+        RetainedStreamSessionCoordinator.enterHome(
+                controller, SESSION_A, "host", 7, "game");
+        RetainedStreamSessionCoordinator.DirectTermination direct =
+                RetainedStreamSessionCoordinator.beginDirectTermination(
+                        SESSION_A, "host", 7, "game");
+        assertTrue(direct != null);
+        RetainedStreamSessionCoordinator.terminate(SESSION_A, joined::set);
+
+        RetainedStreamSessionCoordinator.completeDirectTermination(direct, false);
+
+        assertEquals(Boolean.FALSE, joined.get());
+        assertEquals(RetainedStreamSessionCoordinator.State.HOME_LIVE,
+                RetainedStreamSessionCoordinator.state());
+        assertTrue(RetainedStreamSessionCoordinator.canResumeInstantly());
+    }
+
+    @Test public void staleDirectTokenCannotClearReusedSessionId() {
+        RetainedStreamSessionCoordinator.DirectTermination old =
+                RetainedStreamSessionCoordinator.beginDirectTermination(
+                        SESSION_A, "host", 7, "old");
+        assertTrue(old != null);
+        assertTrue(RetainedStreamSessionCoordinator.clearIfMatches(SESSION_A));
+        RetainedStreamSessionCoordinator.enterHome(
+                new FakeController(), SESSION_A, "host", 8, "new");
+        RetainedStreamSessionCoordinator.DirectTermination current =
+                RetainedStreamSessionCoordinator.beginDirectTermination(
+                        SESSION_A, "host", 8, "new");
+        assertTrue(current != null);
+
+        RetainedStreamSessionCoordinator.completeDirectTermination(old, true);
+
+        assertEquals(RetainedStreamSessionCoordinator.State.TERMINATING,
+                RetainedStreamSessionCoordinator.state());
+        assertEquals(8, RetainedStreamSessionCoordinator.snapshot().appId);
+        RetainedStreamSessionCoordinator.completeDirectTermination(current, true);
+        assertEquals(RetainedStreamSessionCoordinator.State.NONE,
+                RetainedStreamSessionCoordinator.state());
+    }
+
+    @Test public void staleDirectHostFailureCannotRestoreOverReusedExactIdentity() {
+        FakeController oldOwner = new FakeController();
+        RetainedStreamSessionCoordinator.enterHome(
+                oldOwner, SESSION_A, "host", 7, "game");
+        RetainedStreamSessionCoordinator.DirectTermination old =
+                RetainedStreamSessionCoordinator.beginDirectTermination(
+                        SESSION_A, "host", 7, "game");
+        assertTrue(old != null);
+        assertTrue(RetainedStreamSessionCoordinator.clearIfMatches(SESSION_A));
+
+        FakeController newOwner = new FakeController();
+        AtomicReference<Boolean> joined = new AtomicReference<>();
+        RetainedStreamSessionCoordinator.enterHome(
+                newOwner, SESSION_A, "host", 7, "game");
+        RetainedStreamSessionCoordinator.DirectTermination current =
+                RetainedStreamSessionCoordinator.beginDirectTermination(
+                        SESSION_A, "host", 7, "game");
+        assertTrue(current != null);
+        RetainedStreamSessionCoordinator.terminate(SESSION_A, joined::set);
+
+        RetainedStreamSessionCoordinator.completeDirectTermination(old, false);
+
+        assertNull(joined.get());
+        assertEquals(RetainedStreamSessionCoordinator.State.TERMINATING,
+                RetainedStreamSessionCoordinator.state());
+        assertFalse(RetainedStreamSessionCoordinator.ownsLiveOrParkedSession(
+                oldOwner, SESSION_A, "host", 7));
+        assertFalse(RetainedStreamSessionCoordinator.ownsLiveOrParkedSession(
+                newOwner, SESSION_A, "host", 7));
+        RetainedStreamSessionCoordinator.completeDirectTermination(current, false);
+        assertEquals(Boolean.FALSE, joined.get());
+        assertEquals(RetainedStreamSessionCoordinator.State.HOME_LIVE,
+                RetainedStreamSessionCoordinator.state());
+        assertTrue(RetainedStreamSessionCoordinator.ownsLiveOrParkedSession(
+                newOwner, SESSION_A, "host", 7));
+        RetainedStreamSessionCoordinator.disconnect(SESSION_A, null);
+        assertTrue(newOwner.disconnected);
+        assertFalse(oldOwner.disconnected);
+    }
+
+    @Test public void unsafeDirectTransportTerminalNeverRestoresLiveOwner() {
+        for (TransportStopCoordinator.Result result : new TransportStopCoordinator.Result[] {
+                TransportStopCoordinator.Result.FAILED,
+                TransportStopCoordinator.Result.CANCELLED}) {
+            FakeController controller = new FakeController();
+            AtomicReference<Boolean> joined = new AtomicReference<>();
+            RetainedStreamSessionCoordinator.enterHome(
+                    controller, SESSION_A, "host", 7, "game");
+            RetainedStreamSessionCoordinator.DirectTermination direct =
+                    RetainedStreamSessionCoordinator.beginDirectTermination(
+                            SESSION_A, "host", 7, "game");
+            RetainedStreamSessionCoordinator.terminate(SESSION_A, joined::set);
+
+            RetainedStreamSessionCoordinator.completeDirectTransportStop(direct, result);
+
+            assertEquals(Boolean.FALSE, joined.get());
+            assertEquals(RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
+                    RetainedStreamSessionCoordinator.state());
+            assertFalse(RetainedStreamSessionCoordinator.canResumeInstantly());
+            assertEquals(SESSION_A,
+                    RetainedStreamSessionCoordinator.snapshot().streamSessionId);
+            RetainedStreamSessionCoordinator.clear();
+        }
+    }
+
+    @Test public void unsafeCoordinatorTransportTerminalNeverRestoresLiveOwner() {
+        FakeController controller = new FakeController();
+        controller.completeTermination = false;
+        AtomicReference<Boolean> joined = new AtomicReference<>();
+        RetainedStreamSessionCoordinator.enterHome(
+                controller, SESSION_A, "host", 7, "game");
+        RetainedStreamSessionCoordinator.terminate(SESSION_A, joined::set);
+
+        controller.terminationCompletion.transportUnsafe();
+        controller.terminationCompletion.complete(false);
+
+        assertEquals(Boolean.FALSE, joined.get());
+        assertEquals(RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
+                RetainedStreamSessionCoordinator.state());
+        assertFalse(RetainedStreamSessionCoordinator.canResumeInstantly());
+    }
+
+    @Test public void unsafeCoordinatorDisconnectNeverRestoresLiveOwner() {
+        FakeController controller = new FakeController();
+        controller.completeTermination = false;
+        AtomicReference<Boolean> first = new AtomicReference<>();
+        AtomicReference<Boolean> joined = new AtomicReference<>();
+        RetainedStreamSessionCoordinator.enterHome(
+                controller, SESSION_A, "host", 7, "game");
+
+        assertEquals(RetainedStreamSessionCoordinator.TerminationResult.STARTED,
+                RetainedStreamSessionCoordinator.disconnect(SESSION_A, first::set));
+        assertEquals(RetainedStreamSessionCoordinator.TerminationResult.IN_PROGRESS,
+                RetainedStreamSessionCoordinator.disconnect(SESSION_A, joined::set));
+        controller.terminationCompletion.transportUnsafe();
+        controller.terminationCompletion.complete(false);
+
+        assertEquals(Boolean.FALSE, first.get());
+        assertEquals(Boolean.FALSE, joined.get());
+        assertEquals(RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
+                RetainedStreamSessionCoordinator.state());
+        assertFalse(RetainedStreamSessionCoordinator.canResumeInstantly());
     }
 
     @Test public void directStreamQuitCannotOverwriteAnotherSession() {
@@ -795,14 +1038,16 @@ public class RetainedStreamSessionCoordinatorTest {
     @Test public void staleTerminationCompletionCannotClearNewSession() {
         FakeController old = new FakeController();
         old.completeTermination = false;
+        AtomicReference<Boolean> completed = new AtomicReference<>();
         RetainedStreamSessionCoordinator.enterHome(old, SESSION_A, "host", 7, "game");
         assertEquals(RetainedStreamSessionCoordinator.TerminationResult.STARTED,
-                RetainedStreamSessionCoordinator.terminate(SESSION_A, null));
+                RetainedStreamSessionCoordinator.terminate(SESSION_A, completed::set));
         RetainedStreamSessionCoordinator.enterHome(
                 new FakeController(), "session-b", "host", 8, "other");
 
         old.terminationCompletion.complete(true);
 
+        assertEquals(Boolean.FALSE, completed.get());
         assertEquals("session-b", RetainedStreamSessionCoordinator.snapshot().streamSessionId);
         assertEquals(RetainedStreamSessionCoordinator.State.HOME_LIVE,
                 RetainedStreamSessionCoordinator.state());

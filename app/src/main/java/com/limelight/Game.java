@@ -59,6 +59,7 @@ import com.limelight.stream.BackgroundStreamService;
 import com.limelight.stream.BackgroundStreamPreferences;
 import com.limelight.stream.RetainedStreamSessionCoordinator;
 import com.limelight.stream.StreamingAutopilotCalibration;
+import com.limelight.stream.TransportStopCoordinator;
 import com.limelight.console.ChildSessionCountdown;
 import com.limelight.gateway.ChildSessionClient;
 import com.limelight.gateway.GatewayConnection;
@@ -175,6 +176,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private SharedPreferences tombstonePrefs;
 
     private NvConnection conn;
+    private TransportStopCoordinator transportStop;
     private AndroidAudioRenderer streamAudioRenderer;
     private SwitchableVideoDecoderRenderer switchableVideoRenderer;
     private SpinnerDialog spinner;
@@ -823,6 +825,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 new ComputerDetails.AddressTuple(host, port),
                 httpsPort, uniqueId, config,
                 PlatformBinding.getCryptoProvider(this), serverCert);
+        transportStop = new TransportStopCoordinator(conn::stop,
+                action -> new Thread(action, "Moonlight-StopConnection").start());
         controllerHandler = new ControllerHandler(this, conn, this, prefConfig);
         updateGuidePolicyTransition();
         if (transitionController != null) {
@@ -3251,11 +3255,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(() -> {
             userInitiatedDisconnect = true;
             backgroundStreamParked = false;
-            SessionResumeManager.clearIfMatches(this, streamSessionId);
-            BackgroundStreamService.resumed(this, streamSessionId);
-            stopConnection(() -> {
-                finish();
-                if (completion != null) completion.complete(true);
+            stopConnectionResult(result -> {
+                boolean stopped = result == TransportStopCoordinator.Result.STOPPED;
+                if (stopped) {
+                    SessionResumeManager.clearIfMatches(this, streamSessionId);
+                    BackgroundStreamService.resumed(this, streamSessionId);
+                    finish();
+                } else if (completion != null) {
+                    completion.transportUnsafe();
+                }
+                if (completion != null) completion.complete(stopped);
             });
         });
     }
@@ -3263,8 +3272,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void terminateRetainedSession(
             RetainedStreamSessionCoordinator.TerminationCallback completion) {
-        terminateWholeSessionVerified(completion == null
-                ? null : completion::complete);
+        terminateWholeSessionVerified(completion == null ? null : new ProviderStopCallback() {
+            @Override public void complete(boolean success) {
+                completion.complete(success);
+            }
+
+            @Override public void transportUnsafe() {
+                completion.transportUnsafe();
+            }
+        });
     }
 
     @Override
@@ -3971,6 +3987,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private interface ProviderStopCallback {
         void complete(boolean success);
+        default void transportUnsafe() { }
     }
 
     private boolean hasProviderGameTransition() {
@@ -4038,7 +4055,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return;
             }
             wholeSessionTerminationInFlight = true;
-            boolean marked = RetainedStreamSessionCoordinator.markTerminating(
+            RetainedStreamSessionCoordinator.DirectTermination directTermination =
+                    completion == null
+                            ? RetainedStreamSessionCoordinator.beginDirectTermination(
+                            expectedSessionId, expectedHostId,
+                            expectedAppId, expectedGameId) : null;
+            boolean marked = completion == null
+                    ? directTermination != null
+                    : RetainedStreamSessionCoordinator.markTerminating(
                     expectedSessionId, expectedHostId, expectedAppId, expectedGameId);
             LimeLog.info("Whole-session termination requested host=" + expectedHostId
                     + " app=" + expectedAppId + " game=" + expectedGameId
@@ -4049,7 +4073,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 if (!isCurrentWholeSessionTermination(
                         expectedSessionId, expectedHostId, expectedAppId)) return;
                 if (!providerStopped) {
-                    finishWholeSessionTermination(false, marked, completion,
+                    finishWholeSessionTermination(false, marked, directTermination, completion,
                             "provider_stop_failed", expectedSessionId,
                             expectedHostId, expectedAppId, restoreRetainedOnFailure);
                     return;
@@ -4063,7 +4087,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             targetName == null ? appName : targetName);
                 }
                 verifySunshineSessionStopped(expectedSessionId, expectedHostId,
-                        expectedAppId, marked, completion, restoreRetainedOnFailure);
+                        expectedAppId, marked, directTermination,
+                        completion, restoreRetainedOnFailure);
             };
             Runnable stopProvider = () -> {
                 if (providerAlreadyStopped) afterProvider.complete(true);
@@ -4084,7 +4109,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void verifySunshineSessionStopped(
             String expectedSessionId, String expectedHostId, int expectedAppId,
-            boolean marked, ProviderStopCallback completion,
+            boolean marked,
+            RetainedStreamSessionCoordinator.DirectTermination directTermination,
+            ProviderStopCallback completion,
             boolean restoreRetainedOnFailure) {
         final String host = getIntent().getStringExtra(EXTRA_HOST);
         final int port = getIntent().getIntExtra(EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT);
@@ -4146,7 +4173,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             boolean success = stopped;
             String terminalReason = reason;
             runOnUiThread(() -> finishWholeSessionTermination(
-                    success, marked, completion, terminalReason,
+                    success, marked, directTermination, completion, terminalReason,
                     expectedSessionId, expectedHostId, expectedAppId,
                     restoreRetainedOnFailure));
         }, "MoonWaker-TerminateSunshine").start();
@@ -4206,7 +4233,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void finishWholeSessionTermination(
-            boolean success, boolean marked, ProviderStopCallback completion,
+            boolean success, boolean marked,
+            RetainedStreamSessionCoordinator.DirectTermination directTermination,
+            ProviderStopCallback completion,
             String reason, String expectedSessionId, String expectedHostId,
             int expectedAppId, boolean restoreRetainedOnFailure) {
         if (!isCurrentWholeSessionTermination(
@@ -4217,40 +4246,66 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (success) {
             userInitiatedDisconnect = true;
             backgroundStreamParked = false;
-            SessionResumeManager.clearIfMatches(this, expectedSessionId);
-            BackgroundStreamService.resumed(this, expectedSessionId);
-            if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
-            if (completion != null) completion.complete(true);
-            RetainedStreamSessionCoordinator.clearIfMatches(expectedSessionId);
-            finish();
-            stopConnection(() -> wholeSessionTerminationInFlight = false);
+            stopConnectionResult(result -> {
+                wholeSessionTerminationInFlight = false;
+                boolean stopped = result == TransportStopCoordinator.Result.STOPPED;
+                if (stopped) {
+                    SessionResumeManager.clearIfMatches(this, expectedSessionId);
+                    BackgroundStreamService.resumed(this, expectedSessionId);
+                    if (controllerHandler != null) {
+                        controllerHandler.pendingApplicationQuit = false;
+                    }
+                    if (completion == null) {
+                        RetainedStreamSessionCoordinator.completeDirectTermination(
+                                directTermination, true);
+                    } else {
+                        completion.complete(true);
+                    }
+                    finish();
+                } else if (completion != null) {
+                    completion.transportUnsafe();
+                    completion.complete(false);
+                } else {
+                    RetainedStreamSessionCoordinator.completeDirectTransportStop(
+                            directTermination, result);
+                }
+            });
             return;
         }
 
-        wholeSessionTerminationInFlight = false;
-        if (completion != null) completion.complete(false);
         RetainedStreamSessionCoordinator.Snapshot retained =
                 RetainedStreamSessionCoordinator.snapshot();
+        boolean restoreApplied = completion != null;
         if (restoreRetainedOnFailure && marked
                 && retained.state == RetainedStreamSessionCoordinator.State.TERMINATING
                 && expectedSessionId.equals(retained.streamSessionId)) {
-            RetainedStreamSessionCoordinator.enterHome(this, expectedSessionId,
-                    expectedHostId, currentProfileId(), expectedAppId,
-                    transitionSpec == null ? "" : transitionSpec.playniteGameId);
+            if (completion == null) {
+                restoreApplied = RetainedStreamSessionCoordinator.completeDirectTermination(
+                        directTermination, false);
+            }
         }
         if (transitionController != null && transitionSpec != null) {
             transitionController.streamClosingFailed(transitionSpec.id,
                     getString(R.string.console_terminate_session_failed));
         }
         if (!restoreRetainedOnFailure) {
-            if (marked) RetainedStreamSessionCoordinator.clearIfMatches(expectedSessionId);
             SessionResumeManager.clearIfMatches(this, expectedSessionId);
-            stopConnection();
+            stopConnectionResult(result -> {
+                wholeSessionTerminationInFlight = false;
+                if (completion != null) {
+                    completion.complete(false);
+                } else {
+                    RetainedStreamSessionCoordinator.abandonDirectTermination(
+                            directTermination);
+                }
+            });
             return;
         }
-        if (connected && !streamHomeVisible
-                && expectedSessionId.equals(
-                RetainedStreamSessionCoordinator.snapshot().streamSessionId)) {
+        wholeSessionTerminationInFlight = false;
+        if (completion != null) completion.complete(false);
+        if (connected && !streamHomeVisible && restoreApplied
+                && RetainedStreamSessionCoordinator.ownsLiveOrParkedSession(
+                this, expectedSessionId, expectedHostId, expectedAppId)) {
             openConsoleHome();
         }
     }
@@ -4337,8 +4392,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         userInitiatedDisconnect = true;
         if (transitionController == null || consoleLoadingView == null) {
-            stopConnection();
-            finish();
+            stopConnection(this::finish);
             return;
         }
         transitionController.closingStream(transitionSpec.id);
@@ -4352,33 +4406,41 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void stopConnection(Runnable afterStopped) {
-        if (connecting || connected) {
+        stopConnectionResult(result -> {
+            if (result == TransportStopCoordinator.Result.STOPPED && afterStopped != null) {
+                afterStopped.run();
+            }
+        });
+    }
+
+    private synchronized void stopConnectionResult(
+            TransportStopCoordinator.Completion completion) {
+        TransportStopCoordinator captured = transportStop;
+        if (captured == null
+                || (!connecting && !connected && !captured.hasWorkStarted())) {
+            if (completion != null) {
+                runOnUiThread(() -> TransportStopCoordinator.completeSafely(completion,
+                        TransportStopCoordinator.Result.STOPPED));
+            }
+            return;
+        }
+        boolean active = connecting || connected;
+        captured.stop(active ? () -> {
             connecting = connected = false;
             updatePipAutoEnter();
 
-            controllerHandler.stop();
+            if (controllerHandler != null) controllerHandler.stop();
 
             // Update GameManager state to indicate we're no longer in game
             UiHelper.notifyStreamEnded(this);
-
-            // Stop may take a few hundred ms to do some network I/O to tell
-            // the server we're going away and clean up. Let it run in a separate
-            // thread to keep things smooth for the UI. Inside moonlight-common,
-            // we prevent another thread from starting a connection before and
-            // during the process of stopping this one.
-            new Thread() {
-                public void run() {
-                    conn.stop();
-                    if (afterStopped != null) {
-                        runOnUiThread(afterStopped);
-                    }
-                }
-            }.start();
-
-        }
-        else if (afterStopped != null) {
-            runOnUiThread(afterStopped);
-        }
+        } : null, result -> runOnUiThread(() -> {
+            TransportStopCoordinator.Result fenced = captured.fence(result);
+            if (fenced != TransportStopCoordinator.Result.STOPPED) {
+                LimeLog.warning("Transport stop generation=" + captured.generation()
+                        + " completed " + fenced);
+            }
+            TransportStopCoordinator.completeSafely(completion, fenced);
+        }));
     }
 
     @Override
@@ -5706,9 +5768,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         decoderRenderer.setRenderTarget(holder);
         streamAudioRenderer = new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx);
         if (isOwnedHiddenAutoWarmUp()) streamAudioRenderer.setVolume(0f);
-        connecting = true;
-        logLaunchMilestone("stream-start-requested");
-        conn.start(streamAudioRenderer, switchableVideoRenderer, Game.this);
+        transportStop.start(this::runOnUiThread, () -> {
+            connecting = true;
+            logLaunchMilestone("stream-start-requested");
+            conn.start(streamAudioRenderer, switchableVideoRenderer, Game.this);
+        });
     }
 
     private void logLaunchMilestone(String milestone) {
