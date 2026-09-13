@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "run_id": "s05-unified-child-lifecycle-tv-apk-20260913",
+  "observed_at": "2026-09-13T21:42:30.2525545+02:00",
+  "scope": "APK_ONLY",
+  "status": "APK_DELIVERY_VERIFIED_FUNCTIONAL_ACCEPTANCE_PENDING",
+  "source_fingerprint": "sha256:14cf82e83898adf90fa786917243a12743bbe8d2dce281b4560ed715c38eeab3",
+  "artifact": {
+    "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+    "package": "com.limelight.debug",
+    "version_name": "12.2.23",
+    "version_code": 344,
+    "sha256": "c40f05e0e5d8c669637394a664dda990e1f88eae87f4df7656ed788acaf2e03e"
+  },
+  "device": {
+    "serial": "192.168.1.31:5555",
+    "product": "BRAVIA_VH22_M_EU",
+    "model": "BRAVIA_4K_VH22",
+    "reported_model": "BRAVIA 4K VH22"
+  },
+  "actions": [
+    "Rediscovered the exact ADB target before mutation.",
+    "Verified the local APK SHA-256 before installation.",
+    "Installed with adb install -r -d; ADB returned Success.",
+    "Started com.limelight.debug/com.limelight.console.ConsoleActivity through the Leanback launcher intent.",
+    "Verified the installed base.apk SHA-256 exactly matches the local artifact.",
+    "Verified ConsoleActivity is the resumed activity."
+  ],
+  "host_actions": "NONE",
+  "limitations": [
+    "This proves APK delivery, package identity and launch only.",
+    "No game, retained stream, child-time expiry, recovery or Windows-host scenario was executed.",
+    "The host installer was not installed and no Gateway or host service was restarted."
+  ]
+}

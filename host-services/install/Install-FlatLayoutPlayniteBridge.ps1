@@ -30,7 +30,7 @@ if (-not (Test-Path -LiteralPath $source) -or
 if ($PSCmdlet.ShouldProcess($BridgeDirectory, "Install profile-scoped Game Provider Bridge")) {
     New-Item -ItemType Directory -Path $BridgeDirectory -Force | Out-Null
     foreach ($file in @(
-        "GameProviderBridge.py", "GameOperations.py", "OperationJournal.py",
+        "GameProviderBridge.py", "GameOperations.py", "OperationJournal.py", "ControlEffectFence.py",
         "Confirm-SteamOperation.ps1", "Invoke-GameLauncher.ps1",
         "config.example.json", "Start-PlayniteBridge.ps1",
         "Stop-PlayniteBridge.ps1", "PatchPlayniteConnector.py",

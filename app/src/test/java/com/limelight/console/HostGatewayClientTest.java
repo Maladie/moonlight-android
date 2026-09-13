@@ -259,8 +259,11 @@ public class HostGatewayClientTest {
     @Test public void childCapabilityAndManagementPermissionAreParsedTogether() throws Exception {
         HostGatewayClient.Capabilities capabilities = HostGatewayClient.parseCapabilities(
                 new JSONObject().put("capabilities", new JSONObject()
-                        .put("child_profiles_v1", new JSONObject().put("available", true))));
+                        .put("child_profiles_v1", new JSONObject().put("available", true))
+                        .put("control_operations_v1",
+                                new JSONObject().put("available", true))));
         assertTrue(capabilities.childProfiles);
+        assertTrue(capabilities.controlOperations);
 
         HostGatewayClient.IntegrationProfiles profiles =
                 HostGatewayClient.parseIntegrationProfiles(new JSONObject()
@@ -271,6 +274,13 @@ public class HostGatewayClientTest {
                                         .put("manage_children", true)))));
         assertTrue(profiles.find("parent").manageChildren);
         assertEquals(2, profiles.find("parent").ownChildrenCount);
+    }
+
+    @Test public void missingControlOperationCapabilityFailsClosed() {
+        HostGatewayClient.Capabilities capabilities = HostGatewayClient.parseCapabilities(
+                new JSONObject());
+
+        assertFalse(capabilities.controlOperations);
     }
 
     @Test public void childProfileKeepsActorPolicyMetadataWithoutShowingOpaqueId()

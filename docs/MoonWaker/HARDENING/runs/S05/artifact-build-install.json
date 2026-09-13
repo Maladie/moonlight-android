@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "created_at_utc": "2026-09-11T07:57:23.5824176Z",
+  "status": "CODE_VERIFIED_DEVICE_PENDING",
+  "branch": "codex/session-hardening",
+  "head": "60d024f8dc59a563793e55989044dec6f4f53e87",
+  "candidate_source_fingerprint": "sha256:cb2f9ecd21fef87feb1f80b01ffbeafe7c5f9909c3573189fec488b439ffe556",
+  "reviewed_product_source_fingerprint": "sha256:aa38aa1e1be7f4c2328076f439824d857a6ad9869765e3780069b6cd2952ae88",
+  "review_note": "The cb2f9ecd change is limited to host installer payload inclusion and its packaged-wiring test. Independent review confirmed that it does not change Android, Gateway or Bridge behavior reviewed at aa38aa1e.",
+  "branch_check": "PASS",
+  "builds": {
+    "android_release": {
+      "result": "PASS",
+      "command": ".\\gradlew.bat assembleNonRootRelease --no-daemon --console=plain",
+      "initial_offline_attempt": "FAILED_BEFORE_APK: lint-gradle 31.5.1 was absent from the local cache",
+      "authorized_dependency_retry": "BUILD SUCCESSFUL",
+      "artifact": "app/build/outputs/apk/nonRoot/release/app-nonRoot-release-unsigned.apk",
+      "bytes": 42584770,
+      "sha256": "sha256:d232691ec2a662a763278065daf7d673f544c41fe14fd8590774b8c423a37653"
+    },
+    "android_debug": {
+      "result": "PASS",
+      "command": ".\\deploy-steam-test-tv.ps1 -Serial 192.168.1.31:5555",
+      "artifact": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+      "bytes": 46777127,
+      "sha256": "sha256:7cfff1b4a65d8c8ac0f81878064a354b1116b30c41f80681b239b3d08712bafe"
+    },
+    "release_mapping": {
+      "artifact": "app/build/outputs/mapping/nonRootRelease/mapping.txt",
+      "bytes": 2425308,
+      "sha256": "sha256:f27535356ec1d5de370fc09abe47de6b063a4b54fd17cb7133a9603e008d8208"
+    },
+    "host_installer": {
+      "result": "PASS",
+      "artifact": "host-services/dist-s05-cb2f9ecd/MoonWakerHostInstaller.exe",
+      "bytes": 9482240,
+      "sha256": "sha256:09197416bc6eb9d92df3cfa047f49ee1f52ab6e266be9be54cb9cc040e27b5df",
+      "deployed": false
+    }
+  },
+  "packaged_wiring": {
+    "android_debug_and_release": "PASS: APK analyzer found the S05 ChildSessionLifecycle and control/termination wiring in both variants.",
+    "host": "PASS: Test-MoonWakerHostInstallerUi.ps1 opened the embedded MoonWaker.HostServices.zip, required control_operation_policy.py and child_terminal_operation.py, and imported both in isolated Python.",
+    "host_installer_executed": false
+  },
+  "tv_install": {
+    "authorized": true,
+    "serial": "192.168.1.31:5555",
+    "package": "com.limelight.debug",
+    "component": "com.limelight.debug/com.limelight.console.ConsoleActivity",
+    "result": "Success",
+    "version_code": 344,
+    "version_name": "12.2.23",
+    "installed_sha256": "sha256:7cfff1b4a65d8c8ac0f81878064a354b1116b30c41f80681b239b3d08712bafe",
+    "digest_matches_local_apk": true,
+    "launched": true
+  },
+  "scope": {
+    "host_package_deployed": false,
+    "services_changed": false,
+    "credentials_changed": false,
+    "device_scenario_executed": false,
+    "checkpoint_accepted": false
+  }
+}

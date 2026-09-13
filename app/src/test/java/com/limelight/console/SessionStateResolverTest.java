@@ -329,23 +329,65 @@ public class SessionStateResolverTest {
         assertEquals(99, snapshot.hostGameAppId);
     }
 
-    @Test public void retainedSuspendedAndPendingFactsFromAnotherProfileAreIgnored() {
+    @Test public void retainedSuspendedAndPendingFactsFromAnotherExecutionAreIgnored() {
         Facts facts = suspendedFacts();
         facts.profile = "Basia";
+        facts.executionProfile = "Basia";
         facts.suspendedProfile = "Gry";
+        facts.suspendedExecutionProfile = "Gry";
         facts.retainedState = RetainedStreamSessionCoordinator.State.HOME_LIVE;
         facts.retainedHost = "host";
         facts.retainedProfile = "Gry";
+        facts.retainedExecutionProfile = "Gry";
         facts.retainedApp = 42;
         facts.pending = true;
         facts.pendingHost = "host";
         facts.pendingProfile = "Gry";
+        facts.pendingExecutionProfile = "Gry";
         facts.pendingApp = 42;
 
         SessionSnapshot snapshot = resolver.resolve(facts.build());
 
         assertEquals(SessionSnapshot.State.NONE, snapshot.state);
         assertEquals("Basia", snapshot.profileId);
+    }
+
+    @Test public void parentChildAndChildChildRecoverySharesOneExecutionProfile() {
+        for (String actor : new String[] {"child-a", "parent", "child-b"}) {
+            Facts facts = new Facts();
+            facts.profile = actor;
+            facts.executionProfile = "parent";
+            facts.retainedState = RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED;
+            facts.retainedHost = "host";
+            facts.retainedProfile = "child-a";
+            facts.retainedExecutionProfile = "parent";
+            facts.retainedApp = 42;
+            facts.retainedGame = "game";
+            facts.neutralStreamTarget = true;
+
+            SessionSnapshot retained = resolver.resolve(facts.build());
+            assertEquals(SessionSnapshot.State.RECONNECT_REQUIRED, retained.state);
+            assertEquals(actor, retained.profileId);
+
+            facts.retainedState = RetainedStreamSessionCoordinator.State.NONE;
+            facts.pending = true;
+            facts.pendingHost = "host";
+            facts.pendingProfile = "child-a";
+            facts.pendingExecutionProfile = "parent";
+            facts.pendingApp = 42;
+            SessionSnapshot pending = resolver.resolve(facts.build());
+            assertEquals(SessionSnapshot.State.RECONNECT_REQUIRED, pending.state);
+
+            facts.pending = false;
+            facts.suspendedHost = "host";
+            facts.suspendedProfile = "child-a";
+            facts.suspendedExecutionProfile = "parent";
+            facts.suspendedApp = 42;
+            facts.suspendedGame = "game";
+            facts.suspendedResumedAt = 0L;
+            SessionSnapshot suspended = resolver.resolve(facts.build());
+            assertEquals(SessionSnapshot.State.SUSPENDED, suspended.state);
+        }
     }
 
     @Test public void recentEndedSuppressesRawSuspendedAndPendingMarkers() {
@@ -482,16 +524,19 @@ public class SessionStateResolverTest {
     private static final class Facts {
         String host = "host";
         String profile = "default";
+        String executionProfile = "default";
         int runningApp;
         String resolvedGame = "";
         RetainedStreamSessionCoordinator.State retainedState =
                 RetainedStreamSessionCoordinator.State.NONE;
         String retainedHost = "";
         String retainedProfile = "default";
+        String retainedExecutionProfile = "default";
         int retainedApp;
         String retainedGame = "";
         String suspendedHost = "";
         String suspendedProfile = "default";
+        String suspendedExecutionProfile = "default";
         int suspendedApp;
         String suspendedGame = "";
         long suspendedResumedAt = -1L;
@@ -500,6 +545,7 @@ public class SessionStateResolverTest {
         boolean pending;
         String pendingHost = "";
         String pendingProfile = "default";
+        String pendingExecutionProfile = "default";
         int pendingApp;
         String sleepHost = "";
         boolean sleepRequested;
@@ -524,6 +570,10 @@ public class SessionStateResolverTest {
             observations.suspendedId = suspendedId;
             observations.neutralStreamTarget = neutralStreamTarget;
             observations.retainedOwnerLive = retainedOwnerLive;
+            observations.executionProfileId = executionProfile;
+            observations.retainedExecutionProfileId = retainedExecutionProfile;
+            observations.suspendedExecutionProfileId = suspendedExecutionProfile;
+            observations.pendingResumeExecutionProfileId = pendingExecutionProfile;
             return observations;
         }
     }

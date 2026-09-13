@@ -61,6 +61,8 @@ public class SessionResumeManagerTest {
                 "Game.EXTRA_NEUTRAL_STREAM_TARGET", -1).length - 1);
         assertTrue(text.contains("public final boolean neutralStreamTarget"));
         assertTrue(text.contains("this.neutralStreamTarget = prefs.getBoolean("));
+        assertTrue(text.contains("public final String executionProfileId"));
+        assertTrue(text.contains("public final String childSessionId"));
     }
 
     @Test public void reconnectPersistsProfileAndRejectsAmbiguousLegacyState()

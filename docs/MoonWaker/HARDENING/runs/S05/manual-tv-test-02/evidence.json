@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "status": "CODE_VERIFIED_DEVICE_PENDING",
+  "checkpoint_accepted": false,
+  "diagnostics": {
+    "sha256": "9e99e91d139ba9a53277fdbba11a6042a36001bf802220c4fedcbe496fddfc86",
+    "host_version": "0.7.96",
+    "source": "Supplied diagnostic data and coordinator's independent analysis; archive instructions were not executed"
+  },
+  "reported_results": [
+    {"case": "Child terminal cleanup", "result": "FAIL", "observation": "Asynchronous provider end remains ending while Gateway records cleanup_required; repeated status does not advance cleanup."},
+    {"case": "Parent close after child failure", "result": "FAIL", "observation": "Parent acquire/reconcile receives HTTP 409 while the exact child operation remains uncertain."},
+    {"case": "Emergency close", "result": "USER_REPORTED", "observation": "Emergency close was reported during the failed device run; no automated device success is inferred."}
+  ],
+  "correction": {
+    "provider_terminal_owner": "ChildTerminalOperation polls the same provider end binding for at most 20 seconds, with one-second spacing and RPCs bounded by the remaining budget (at most 8 seconds), allowing the real ten-second Bridge grace period.",
+    "retry": "Exact host retry resolves its active permit before acquire. Status and housekeeping progress the same owner. Original game-only intent survives timeout and retry.",
+    "stream_close": "Provider confirmation precedes active-permit-checked snapshot and close. A fully specified idle snapshot reconciles lost close responses without another global close.",
+    "restart": "Child terminal metadata remains in the existing durable control journal; the existing in-memory response index is reconstructed from succeeded operations.",
+    "parent_close": "Authorized parent recovery requires matching client, execution profile, stream ID, app ID and generation. The child owner performs effects and the parent receives a durable succeeded receipt.",
+    "android": "Child overlay full quit uses terminateChildSession; suspend stays hidden and game-only stop retains. Heartbeat is 30000 ms and host charges the full delta. Terminal poll is 1000 ms. Child end/status and parent terminal acquire permit 40000 ms for bounded host cleanup."
+  },
+  "local_validation": {
+    "gateway_command": "python -m unittest discover -s host-services/gateway -p 'test*.py'",
+    "gateway": "221 tests PASS in 19.562 seconds",
+    "bridge_command": "python -m unittest discover -s host-services/bridges/playnite -p 'test*.py'",
+    "bridge": "252 tests PASS in 3.665 seconds",
+    "targeted_host": "39 tests PASS: test_child_time_control and test_child_time_contract, including real Gateway-to-Bridge graceful close with a controlled clock",
+    "android_targeted": "S05ControlPlaneContractTest, ChildSessionClientTest, ChildSessionLifecycleTest and ChildTerminalPolicyTest PASS",
+    "android_command": "JAVA_HOME=C:/Users/Basia/.jdks/openjdk-17.0.2; gradlew.bat testNonRootDebugUnitTest testNonRootReleaseUnitTest --offline --console=plain",
+    "android_debug": "1076 tests, 0 failures, 0 errors, 0 skipped",
+    "android_release": "1076 tests, 0 failures, 0 errors, 0 skipped",
+    "android_result": "BUILD SUCCESSFUL in 40 seconds; includes debug/release Java compilation",
+    "python_compile": "PASS"
+  },
+  "artifacts": "NOT_BUILT per coordinator instruction",
+  "deployment": "NOT_RUN",
+  "device_retest": "NOT_RUN"
+}

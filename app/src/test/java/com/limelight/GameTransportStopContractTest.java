@@ -39,8 +39,8 @@ public class GameTransportStopContractTest {
         String game = source("app/src/main/java/com/limelight/Game.java");
         String disconnect = between(game, "public void disconnectRetainedStream(",
                 "public void terminateRetainedSession(");
-        String finish = between(game, "private void finishWholeSessionTermination(",
-                "private void restoreParkedStream(");
+        String finish = between(game, "private void terminateWholeSessionVerified(",
+                "private void applyImmediateTerminalPrivacy(");
         String console = source(
                 "app/src/main/java/com/limelight/console/ConsoleActivity.java");
         String retainedClose = between(console,
@@ -52,16 +52,14 @@ public class GameTransportStopContractTest {
         assertTrue(disconnect.indexOf("completion.transportUnsafe()")
                 < disconnect.indexOf("completion.complete(stopped)"));
         assertTrue(finish.indexOf("stopConnectionResult(")
-                < finish.indexOf("completion.complete(true)"));
+                < finish.indexOf("local.complete(stopped)"));
         assertTrue(finish.contains("if (completion == null)"));
         assertTrue(finish.indexOf("if (completion == null)")
                 < finish.indexOf("RetainedStreamSessionCoordinator.completeDirectTermination("));
         assertTrue(finish.indexOf("RetainedStreamSessionCoordinator.completeDirectTermination(")
-                < finish.indexOf("completion.complete(true)"));
-        assertTrue(finish.contains("restoreApplied = RetainedStreamSessionCoordinator"
-                + ".completeDirectTermination("));
-        assertTrue(finish.contains("RetainedStreamSessionCoordinator"
-                + ".ownsLiveOrParkedSession("));
+                < finish.indexOf("completion.complete(success)"));
+        assertTrue(finish.contains("wholeSessionTermination.run("));
+        assertTrue(finish.contains("completion.transportUnsafe()"));
         assertFalse(finish.contains("RetainedStreamSessionCoordinator.snapshot()"
                 + ".streamSessionId"));
         assertTrue(retainedClose.contains("TerminationResult.IN_PROGRESS"));

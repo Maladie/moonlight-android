@@ -15,6 +15,27 @@ def identity(pid=11, path=r"C:\Games\HK\game.exe", started=100):
             "session_id": 1, "visible_window": True}
 
 
+class ProcessIdentityStatusTest(unittest.TestCase):
+    def setUp(self):
+        self.probe = object.__new__(WindowProbe)
+        self.probe.kernel32 = mock.Mock()
+        self.probe.advapi32 = None
+
+    def test_open_process_distinguishes_missing_from_unavailable(self):
+        self.probe.kernel32.OpenProcess.return_value = 0
+        with mock.patch("GameProviderBridge.ctypes.get_last_error", return_value=87):
+            self.assertEqual(("gone", None), self.probe.process_identity_status(44))
+        with mock.patch("GameProviderBridge.ctypes.get_last_error", return_value=5):
+            self.assertEqual(("unknown", None), self.probe.process_identity_status(44))
+
+    def test_query_failure_is_unknown(self):
+        self.probe.kernel32.OpenProcess.return_value = 1
+        self.probe.kernel32.QueryFullProcessImageNameW.return_value = False
+
+        self.assertEqual(("unknown", None), self.probe.process_identity_status(44))
+        self.probe.kernel32.CloseHandle.assert_called_once_with(1)
+
+
 class RunningGamesTest(unittest.TestCase):
     def setUp(self):
         service = GameOperationsService(OperationJournal(None),
@@ -159,6 +180,133 @@ class RunningGamesTest(unittest.TestCase):
         self.assertEqual(44, next(game["process_id"] for game in running
                                   if game["game_id"] == guid))
 
+    def test_emulator_stop_event_waits_for_exact_process_exit(self):
+        guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+        emulator = identity(44, r"C:\Emulators\retroarch.exe", 400)
+        own = identity(os.getpid(), r"C:\Bridge\bridge.exe", 500)
+        self.state.library = {
+            guid: {"id": guid, "provider": "playnite", "playniteGameId": guid,
+                   "installDir": r"C:\Emulators", "exe": ""}}
+        self.state.connected = True
+        self.state.current = {"state": "idle"}
+        live = [True]
+        self.probe.process_identity.side_effect = lambda pid, include_owner=False: (
+            dict(own) if pid == os.getpid() else dict(emulator) if live[0] else None)
+        self.state._process_identity_status_action = lambda pid: (
+            ("alive", dict(emulator)) if live[0] else ("gone", None))
+        self.state.handle_message({"type": "status", "status": {
+            "name": "gameStarted", "id": guid, "processId": 44}})
+
+        self.state.handle_message({"type": "status", "status": {
+            "name": "gameStopped", "id": guid}})
+
+        self.assertEqual("running", self.state.current["state"])
+        self.assertTrue(self.state.current["connectorStopPending"])
+        live[0] = False
+        self.probe.scan_running_processes.return_value = ([], "complete")
+        self.assertEqual("idle", self.state.current_snapshot()["state"])
+
+    def test_emulator_stop_identity_failure_stays_pending(self):
+        guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+        self.state.library = {
+            guid: {"id": guid, "provider": "playnite", "playniteGameId": guid}}
+        self.state.current = {"state": "stopping", "id": guid, "processId": 44,
+                              "processPath": r"C:\Emulators\retroarch.exe",
+                              "processStartedFiletime": 400}
+        self.probe.process_identity.side_effect = OSError("transient")
+
+        self.state.handle_message({"type": "status", "status": {
+            "name": "gameStopped", "id": guid}})
+
+        self.assertEqual("stopping", self.state.current["state"])
+        self.assertTrue(self.state.current["connectorStopPending"])
+
+    def test_identityless_emulator_crash_self_recovers_from_complete_empty_inventory(self):
+        guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+        self.state.library = {
+            guid: {"id": guid, "provider": "playnite", "playniteGameId": guid}}
+        self.state.current = {"state": "running", "id": guid, "processId": 44}
+        self.state._process_identity_status_action = mock.Mock(
+            return_value=("gone", None))
+        self.probe.scan_running_processes.return_value = ([], "complete")
+
+        self.state.handle_message({"type": "status", "status": {
+            "name": "gameStopped", "id": guid}})
+
+        self.assertEqual("idle", self.state.current_snapshot()["state"])
+
+    def test_identityless_delayed_emulator_handoff_stays_pending(self):
+        guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+        self.state.library = {
+            guid: {"id": guid, "provider": "playnite", "playniteGameId": guid}}
+        self.state.current = {"state": "running", "id": guid, "processId": 44}
+        self.state._process_identity_status_action = mock.Mock(
+            return_value=("gone", None))
+        self.probe.scan_running_processes.return_value = ([], "partial")
+
+        self.state.handle_message({"type": "status", "status": {
+            "name": "gameStopped", "id": guid}})
+
+        self.assertEqual("running", self.state.current_snapshot()["state"])
+        self.assertTrue(self.state.current["connectorStopPending"])
+
+    def test_emulator_stop_missing_or_partial_identity_stays_pending(self):
+        guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+        self.state.library = {
+            guid: {"id": guid, "provider": "playnite", "playniteGameId": guid}}
+        for observed in (None, {"process_path": r"C:\Emulators\retroarch.exe"}):
+            self.state.current = {
+                "state": "running", "id": guid, "processId": 44,
+                "processPath": r"C:\Emulators\retroarch.exe",
+                "processStartedFiletime": 400}
+            self.state._process_identity_action = mock.Mock(return_value=observed)
+            self.state._process_identity_status_action = None
+            self.state.handle_message({"type": "status", "status": {
+                "name": "gameStopped", "id": guid}})
+            self.assertEqual("running", self.state.current["state"])
+            self.assertTrue(self.state.current["connectorStopPending"])
+
+    def test_emulator_stop_confirmed_pid_reuse_completes(self):
+        guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+        self.state.library = {
+            guid: {"id": guid, "provider": "playnite", "playniteGameId": guid}}
+        self.state.current = {
+            "state": "running", "id": guid, "processId": 44,
+            "processPath": r"C:\Emulators\retroarch.exe",
+            "processStartedFiletime": 400}
+        replacement = identity(44, r"C:\Other\replacement.exe", 500)
+        self.state._process_identity_status_action = mock.Mock(
+            return_value=("alive", replacement))
+
+        self.state.handle_message({"type": "status", "status": {
+            "name": "gameStopped", "id": guid}})
+
+        self.assertEqual("idle", self.state.current["state"])
+
+    def test_emulator_stop_while_starting_reconciles_after_exact_process_exit(self):
+        guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
+        emulator = identity(44, r"C:\Emulators\retroarch.exe", 400)
+        self.state.library = {
+            guid: {"id": guid, "provider": "playnite", "playniteGameId": guid}}
+        self.state.current = {
+            "state": "starting", "id": guid, "processId": 44,
+            "processPath": emulator["process_path"],
+            "processStartedFiletime": emulator["process_started_filetime"]}
+        live = [True]
+        self.probe.process_identity.side_effect = lambda pid, include_owner=False: (
+            dict(emulator) if live[0] else None)
+        self.state._process_identity_status_action = lambda pid: (
+            ("alive", dict(emulator)) if live[0] else ("gone", None))
+
+        self.state.handle_message({"type": "status", "status": {
+            "name": "gameStopped", "id": guid}})
+        self.assertEqual("starting", self.state.current["state"])
+        self.assertTrue(self.state.current["connectorStopPending"])
+
+        live[0] = False
+        self.probe.scan_running_processes.return_value = ([], "complete")
+        self.assertEqual("idle", self.state.current_snapshot()["state"])
+
     def test_shared_playnite_emulator_rejects_foreign_process_identity(self):
         guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
         emulator = identity(44, r"C:\Emulators\retroarch.exe", 400)
@@ -249,6 +397,136 @@ class RunningGamesTest(unittest.TestCase):
         self.assertEqual("running_game_inventory_unavailable", result["reason"])
         self.assertEqual(before, (self.state.current, self.state.readiness))
         self.probe.force_terminate_verified_process.assert_not_called()
+
+    def test_hard_reset_clears_orphan_stopping_state_without_game_identity(self):
+        self.state.current = {"state": "stopping", "stopRequestedAt": self.state.clock()}
+        self.state.readiness = {"ready": False, "reason": "game_stopping"}
+        self.probe.scan_running_processes.return_value = ([], "complete")
+
+        result = self.state.hard_reset_session()
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual("idle", self.state.current["state"])
+        self.assertEqual("session_hard_reset", self.state.readiness["reason"])
+
+    def test_hard_reset_orphan_recovery_allows_the_next_launch(self):
+        self.state.current = {"state": "stopping", "stopRequestedAt": self.state.clock()}
+        self.state.readiness = {"ready": False, "reason": "game_stopping"}
+        self.probe.scan_running_processes.return_value = ([], "complete")
+        self.state._launch_provider = mock.Mock(return_value={"accepted": True})
+
+        reset = self.state.hard_reset_session()
+        launched = self.state.start_game("steam:1")
+
+        self.assertTrue(reset["accepted"])
+        self.assertTrue(launched["accepted"])
+        self.assertEqual("starting", self.state.current["state"])
+        self.assertEqual("steam:1", self.state.current["id"])
+        self.state._launch_provider.assert_called_once()
+
+    def test_hard_reset_keeps_orphan_state_when_empty_inventory_is_partial(self):
+        self.state.current = {"state": "stopping", "stopRequestedAt": self.state.clock()}
+        self.state.readiness = {"ready": False, "reason": "game_stopping"}
+        self.probe.scan_running_processes.return_value = ([], "partial")
+
+        result = self.state.hard_reset_session()
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual("running_game_identity_unconfirmed", result["reason"])
+        self.assertEqual("stopping", self.state.current["state"])
+
+    def test_hard_reset_clears_connector_stop_when_recorded_pid_is_gone(self):
+        self.state.current = {
+            "state": "stopping", "id": "epic:Cowbird", "processId": 11156,
+            "connectorStopPending": True,
+            "stopRequestedAt": self.state.clock(),
+        }
+        self.state.readiness = {"ready": False, "reason": "game_stop_close_rejected"}
+        self.probe.scan_running_processes.return_value = ([], "partial")
+        self.state._process_identity_status_action = mock.Mock(
+            return_value=("gone", None))
+
+        result = self.state.hard_reset_session()
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual("idle", self.state.current["state"])
+        self.state._process_identity_status_action.assert_called_once_with(11156)
+
+    def test_hard_reset_keeps_identityless_connector_stop_when_pid_is_not_proven_gone(self):
+        self.probe.scan_running_processes.return_value = ([], "partial")
+        for status in ("unknown", "alive"):
+            with self.subTest(status=status):
+                self.state.current = {
+                    "state": "stopping", "id": "epic:Cowbird", "processId": 11156,
+                    "connectorStopPending": True,
+                    "stopRequestedAt": self.state.clock(),
+                }
+                self.state._process_identity_status_action = mock.Mock(
+                    return_value=(status, None))
+
+                result = self.state.hard_reset_session()
+
+                self.assertFalse(result["accepted"])
+                self.assertEqual("running_game_identity_unconfirmed", result["reason"])
+                self.assertEqual("stopping", self.state.current["state"])
+
+    def test_hard_reset_rejects_gone_candidate_with_unrelated_verified_game(self):
+        self.state.current = {
+            "state": "stopping", "id": "epic:Cowbird", "processId": 11156,
+            "connectorStopPending": True,
+        }
+        self.probe.scan_running_processes.return_value = ([self.hk], "partial")
+        self.state._process_identity_status_action = mock.Mock(
+            return_value=("gone", None))
+
+        result = self.state.hard_reset_session()
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual("running_game_identity_unconfirmed", result["reason"])
+        self.probe.force_terminate_verified_process.assert_not_called()
+
+    def test_hard_reset_rejects_gone_running_nonpending_candidate(self):
+        self.state.current = {
+            "state": "running", "id": "epic:Cowbird", "processId": 11156,
+        }
+        self.probe.scan_running_processes.return_value = ([], "partial")
+        self.state._process_identity_status_action = mock.Mock(
+            return_value=("gone", None))
+
+        result = self.state.hard_reset_session()
+
+        self.assertFalse(result["accepted"])
+        self.assertEqual("running_game_identity_unconfirmed", result["reason"])
+        self.assertEqual("running", self.state.current["state"])
+        self.probe.force_terminate_verified_process.assert_not_called()
+
+    def test_connector_stop_with_gone_pid_waits_when_inventory_is_partial(self):
+        self.state.current = {
+            "state": "stopping", "id": "epic:Cowbird", "processId": 11156,
+            "connectorStopPending": True,
+            "stopRequestedAt": self.state.clock() - self.state.stop_timeout - 1,
+        }
+        self.state.readiness = {"ready": False, "reason": "game_stop_close_rejected"}
+        self.state._process_identity_status_action = mock.Mock(
+            return_value=("gone", None))
+        self.probe.scan_running_processes.return_value = ([], "partial")
+
+        snapshot = self.state.current_snapshot()
+
+        self.assertEqual("stopping", snapshot["state"])
+
+    def test_recent_identityless_connector_stop_waits_for_replacement_sample(self):
+        self.state.current = {
+            "state": "stopping", "id": "epic:Cowbird", "processId": 11156,
+            "connectorStopPending": True,
+            "stopRequestedAt": self.state.clock(),
+        }
+        self.state._process_identity_status_action = mock.Mock(
+            return_value=("gone", None))
+
+        snapshot = self.state.current_snapshot()
+
+        self.assertEqual("stopping", snapshot["state"])
 
     def test_hard_reset_fails_closed_when_active_game_has_no_verified_identity(self):
         before = dict(self.state.current), dict(self.state.readiness)

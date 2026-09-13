@@ -107,7 +107,7 @@ public class ConsoleWindowsProfileSwitchTest {
         assertFalse(profileRefresh.contains("switchWindowsSession("));
     }
 
-    @Test public void childActorCannotUseWindowsOrDesktopHostActions() throws Exception {
+    @Test public void childActorKeepsTheSameCommonHostActionsIncludingDesktop() throws Exception {
         String source = source();
         String menu = between(source,
                 "private void showHostSelectionOptions(ComputerDetails host)",
@@ -115,11 +115,17 @@ public class ConsoleWindowsProfileSwitchTest {
         String close = between(source,
                 "@Override public SessionOrchestrator.CloseResult closePreviousSession(",
                 "@Override public void launch(PlayIntent intent");
-        assertTrue(menu.contains("boolean childProfile"));
-        assertTrue(menu.contains("!childProfile"));
+        assertFalse(menu.contains("boolean childProfile"));
+        assertTrue(menu.contains("getString(R.string.console_launch_desktop), online && paired"));
+        assertFalse(menu.contains("warmUp.setEnabled(!childProfile)"));
+        assertFalse(menu.contains("online && paired && !childProfile);\n"
+                + "        unpair.setTextColor"));
+        assertFalse(menu.contains("getString(R.string.pcview_menu_test_network), !childProfile"));
         assertFalse(close.contains("if (isChildIntent(intent))"));
         assertTrue(close.contains("switchRetainedProviderGame"));
-        assertTrue(close.contains("if (!allowDestructiveClose)"));
+        assertTrue(close.contains("boolean destructiveCloseAuthorized"));
+        assertTrue(close.contains("childMustCloseDisallowedGame"));
+        assertTrue(close.contains("if (!destructiveCloseAuthorized)"));
     }
 
     @Test public void everyTerminalPathRefreshesAndStaleResultsCannotTouchUi()

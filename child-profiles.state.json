@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
-  "revision": 48,
-  "last_updated_at": "2026-09-06T10:15:28.278336+02:00",
+  "revision": 49,
+  "last_updated_at": "2026-09-13T00:00:00+02:00",
   "document_status": "active",
   "repository": {
     "path": "D:\\Maladie\\moonlight-android",
@@ -27,8 +27,8 @@
     "implementation_started": true,
     "objective": "Julia jest własnym profilem MoonWaker używającym Windows i biblioteki Basi; Basia ręcznie nadaje jej dostęp do konkretnych gier, a host egzekwuje harmonogram i czas.",
     "acceptance_status": {
-      "automated": "cp01_cp02_cp03_cp04_cp05_cp06_scoped_accepted",
-      "windows_tv": "pending_cp07"
+      "automated": "s05_unified_child_lifecycle_automated_pass",
+      "windows_tv": "pending_candidate_bound_s05_retest"
     },
     "definition_of_done": [
       "Dziecko tworzone/edytowane przez autoryzowanego rodzica, kafel zgodny ze zwykłym profilem.",
@@ -59,7 +59,7 @@
     "child_game_access": "Child record allowed_game_keys in the existing profile registry; Gateway resolves stable canonical provider/game IDs and applies one host policy gate",
     "android_selection_presentation": "Existing HostGatewayStore keyed by actor profile; no durable budget",
     "privacy": "LaunchTransitionController",
-    "supervision": "Existing Bridge background loop and profile supervisor/restart with persisted child-session lease120s; no own balance or independent worker"
+    "supervision": "Gateway housekeeping and the shared control journal enforce the durable child-time attachment; Bridge has no child session, lease or independent enforcer"
   },
   "invariants": [
     "No Windows logoff, no child Windows credentials/SID clone/Bridge instance.",
@@ -70,7 +70,7 @@
     "Child grants are scoped to the owning parent and canonical game key; read/start/resume/alias checks cannot be bypassed by a foreign child ID or stale alias.",
     "Grant/revoke selection is all-or-nothing for one game and the parent's own children; a revoked active game follows the proposed immediate cutoff while preserving already used time.",
     "No duplicate GameOps journal or stream transition state machine; no Moonlight core change.",
-    "Stop effects target only exact session processes; broad hard_reset_session forbidden for quota expiry.",
+    "Terminal child policy uses the common exact fenced game-and-stream stop; no child-only stop or broad process-name kill.",
     "An orphan child after parent deletion is denied at runtime; cascade delete is not required, and child edit/cleanup belongs to CP-04.",
     "Security scope is minimal for a home-network app: reuse existing pairing and parent PIN; do not add enterprise security, generic auth/IPC frameworks or hypothetical threat checklists.",
     "Cannot mark implementation done from design docs or unit tests alone."
@@ -141,15 +141,17 @@
     },
     {
       "id": "CD-11",
-      "status": "proposed",
+      "status": "superseded",
       "decision": "V1 wyklucza pulpit/otwarte launchery, install/uninstall, Discord/VirtualHere i retained paused game dziecka.",
-      "rationale": "Shared Windows must not expose unrestricted parent paths"
+      "rationale": "Historical restriction set superseded by the S05 parent-facade decision; only unshared content, child management, Discord and microphone remain restricted.",
+      "superseded_by": "CD-19"
     },
     {
       "id": "CD-12",
-      "status": "proposed",
+      "status": "superseded",
       "decision": "Jeden aktywny child i jeden execution profile; budżet wspólny dla TV tego hosta, bez cross-host sync.",
-      "rationale": "Avoid double spending and parent game takeover"
+      "rationale": "The one-execution-profile constraint remains, but child ownership of the lifecycle is superseded by actor/time handoff on the shared session.",
+      "superseded_by": "CD-19"
     },
     {
       "id": "CD-13",
@@ -191,6 +193,16 @@
       "status": "required",
       "decision": "Zamrożone POST API dzieci to /api/v1/profiles/children/{authorize,list,create,update,delete,sharing/get,sharing/set}; mutacje używają parent_profile_id, expected_revision, request_id i istniejącego profile-session header, authorize używa pin, create opcjonalnie grant_current_device=false, a remote_sign_in pozostaje jawną akcją HostControl.",
       "rationale": "Root accepted CP-04 integration contract; manual sharing, no ratings, empty new-child library and 300s failure tolerance remain unchanged."
+    },
+    {
+      "id": "CD-19",
+      "status": "required",
+      "decision": "Profil dziecka jest wyłącznie fasadą rodzica: używa wspólnego lifecycle'u gry, streamu, retained switch, recovery, Ponów, zamykania i hard resetu; Gateway utrzymuje tylko child-time attachment, a Bridge nie ma /child/session ani child enforcera. Parent-child-child handoff przenosi aktora i czas bez restartu procesu, a niepewny handoff lub terminalny stop domyka ten sam fenced cleanup.",
+      "rationale": "User decision for S05 on 2026-09-13; install/uninstall, sleep, stream settings, calibration and VirtualHere match the parent, while child management, unshared games, Discord and microphone remain unavailable.",
+      "supersedes": [
+        "CD-11",
+        "CD-12"
+      ]
     }
   ],
   "verified_baseline": [

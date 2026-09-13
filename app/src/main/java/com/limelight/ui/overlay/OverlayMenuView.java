@@ -292,7 +292,7 @@ public class OverlayMenuView extends LinearLayout {
     private OverlayMenuButton bitrateValueButton;
     private boolean bitrateControlEnabled;
     private boolean discordFeatureEnabled = true;
-    private boolean hostActionsAvailable = true;
+    private boolean suspendSessionAvailable = true;
     private boolean discordConfigured;
     private boolean discordLoading;
     private String discordError;
@@ -578,13 +578,13 @@ public class OverlayMenuView extends LinearLayout {
                     getContext().getString(R.string.overlay_menu_end_game),
                     ACTION_END_GAME, spacing);
         }
-        if (hostActionsAvailable) {
+        if (suspendSessionAvailable) {
             addVerticalButton(R.drawable.ic_overlay_power,
                 getContext().getString(R.string.overlay_menu_suspend_session),
                 ACTION_SUSPEND_SESSION, spacing);
-            addVerticalButton(R.drawable.ic_overlay_power,
-                getContext().getString(R.string.overlay_menu_quit_session), ACTION_QUIT, spacing);
         }
+        addVerticalButton(R.drawable.ic_overlay_power,
+                getContext().getString(R.string.overlay_menu_quit_session), ACTION_QUIT, spacing);
         if (canShowDiscordCard()) {
             addVerticalButton(R.drawable.ic_console_discord,
                     getContext().getString(R.string.discord_community_title),
@@ -1145,8 +1145,8 @@ public class OverlayMenuView extends LinearLayout {
         this.actionListener = listener;
     }
 
-    public void setHostActionsAvailable(boolean available) {
-        hostActionsAvailable = available;
+    public void setSuspendSessionAvailable(boolean available) {
+        suspendSessionAvailable = available;
     }
 
     public void setEndGameAvailable(boolean available) {

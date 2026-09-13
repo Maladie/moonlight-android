@@ -188,7 +188,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         actionsRow.addView(cancelView, actionParams());
         retryView = action(context.getString(R.string.transition_retry));
         retryView.setVisibility(GONE);
-        retryView.setOnClickListener(view -> { if (actions != null) actions.onRetry(); });
+        retryView.setOnClickListener(view -> requestRetryOnce());
         actionsRow.addView(retryView, actionParams());
         showAnywayView = action(context.getString(R.string.transition_reveal_now));
         showAnywayView.setId(View.generateViewId());
@@ -210,6 +210,15 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
 
     public void setRetryLabel(int labelResId) {
         retryView.setText(labelResId);
+    }
+
+    private void requestRetryOnce() {
+        if (actions == null || retryView.getVisibility() != VISIBLE
+                || !retryView.isEnabled()) return;
+        retryView.setEnabled(false);
+        retryView.setVisibility(GONE);
+        activityView.setVisibility(VISIBLE);
+        actions.onRetry();
     }
 
     public void showNeutralWarmUpAppearance() {
@@ -328,6 +337,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         actionsRow.setVisibility(VISIBLE);
         cancelView.setEnabled(true);
         cancelView.setText(R.string.transition_cancel);
+        retryView.setEnabled(true);
         retryView.setVisibility(GONE);
         renderSteps();
         announceStep();
@@ -360,6 +370,7 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         actionsRow.setVisibility(VISIBLE);
         cancelView.setEnabled(true);
         cancelView.setText(R.string.transition_cancel);
+        retryView.setEnabled(true);
         retryView.setVisibility(VISIBLE);
         showAnywayView.setVisibility(allowShowAnyway ? VISIBLE : GONE);
         renderSteps();

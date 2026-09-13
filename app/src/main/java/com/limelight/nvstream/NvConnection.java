@@ -21,6 +21,7 @@ import java.security.SecureRandom;
 import java.security.cert.X509Certificate;
 import java.util.Timer;
 import java.util.TimerTask;
+import java.util.UUID;
 import java.util.concurrent.Semaphore;
 
 import javax.crypto.KeyGenerator;
@@ -29,6 +30,9 @@ import javax.crypto.SecretKey;
 import org.xmlpull.v1.XmlPullParserException;
 
 import com.limelight.LimeLog;
+import com.limelight.gateway.ControlOperationClient;
+import com.limelight.gateway.GatewayConnection;
+import com.limelight.gateway.GatewayTransport;
 import com.limelight.nvstream.av.audio.AudioRenderer;
 import com.limelight.nvstream.av.video.VideoDecoderRenderer;
 import com.limelight.nvstream.http.ComputerDetails;
@@ -48,8 +52,40 @@ public class NvConnection {
     private static Semaphore connectionAllowed = new Semaphore(1);
     private final boolean isMonkey;
     private final Context appContext;
+    private final ControlBinding controlBinding;
+    private final String controlBootstrapOperationId = "control-" + UUID.randomUUID();
+    private volatile long controlGeneration;
+
+    public static final class ControlBinding {
+        final ControlOperationClient client;
+        final GatewayConnection connection;
+        final String streamSessionId;
+        final String intent;
+        final long expectedGeneration;
+        final String childSessionId;
+
+        public ControlBinding(ControlOperationClient client, GatewayConnection connection,
+                              String streamSessionId, String intent,
+                              long expectedGeneration, String childSessionId) {
+            if (client == null || connection == null) throw new NullPointerException("control");
+            this.client = client;
+            this.connection = connection;
+            this.streamSessionId = streamSessionId;
+            this.intent = intent;
+            this.expectedGeneration = expectedGeneration;
+            this.childSessionId = childSessionId;
+        }
+    }
 
     public NvConnection(Context appContext, ComputerDetails.AddressTuple host, int httpsPort, String uniqueId, StreamConfiguration config, LimelightCryptoProvider cryptoProvider, X509Certificate serverCert)
+    {
+        this(appContext, host, httpsPort, uniqueId, config, cryptoProvider, serverCert, null);
+    }
+
+    public NvConnection(Context appContext, ComputerDetails.AddressTuple host, int httpsPort,
+                        String uniqueId, StreamConfiguration config,
+                        LimelightCryptoProvider cryptoProvider, X509Certificate serverCert,
+                        ControlBinding controlBinding)
     {
         this.appContext = appContext;
         this.cryptoProvider = cryptoProvider;
@@ -66,6 +102,17 @@ public class NvConnection {
         this.context.riKeyId = generateRiKeyId();
 
         this.isMonkey = ActivityManager.isUserAMonkey();
+        this.controlBinding = controlBinding;
+    }
+
+    public long getControlGeneration() {
+        return controlGeneration;
+    }
+
+    public synchronized boolean reauthorizeControlGeneration(long expected, long generation) {
+        if (expected <= 0L || controlGeneration != expected || generation <= expected) return false;
+        controlGeneration = generation;
+        return true;
     }
     
     private static SecretKey generateRiAesKey() {
@@ -307,6 +354,85 @@ public class NvConnection {
             }
         }
         
+        int currentAppId = h.getCurrentGame(serverInfo);
+        if (controlBinding == null) {
+            return startAppEffect(h, serverInfo, app);
+        }
+        String intent = currentAppId != 0 && currentAppId != app.getAppId()
+                ? "replacement" : currentAppId == app.getAppId()
+                ? ("reconnect".equals(controlBinding.intent) ? "reconnect"
+                : "warm_up".equals(controlBinding.intent) ? "warm_up"
+                : "reauthorize".equals(controlBinding.intent) ? "reauthorize" : "resume")
+                : controlBinding.intent;
+        String operationId = ControlOperationClient.operationId(intent,
+                controlBinding.streamSessionId, app.getAppId(),
+                controlBinding.expectedGeneration, controlBinding.childSessionId);
+        ControlOperationClient.Permit permit;
+        try {
+            permit = controlBinding.client.acquire(controlBinding.connection, operationId,
+                    intent, controlBinding.streamSessionId, app.getAppId(),
+                    controlBinding.expectedGeneration, currentAppId,
+                    controlBinding.childSessionId);
+        } catch (GatewayTransport.GatewayException rejected) {
+            // A received Gateway rejection is authoritative. Reconciliation is
+            // only for an unknown outcome after transport loss.
+            throw rejected;
+        } catch (IOException unavailable) {
+            ControlOperationClient.Result reconciled = controlBinding.client.reconcile(
+                    controlBinding.connection, operationId, controlBinding.streamSessionId,
+                    app.getAppId(), currentAppId);
+            if (!reconciled.succeeded()) throw unavailable;
+            permit = controlBinding.client.acquire(controlBinding.connection,
+                    controlBootstrapOperationId, "reconnect",
+                    controlBinding.streamSessionId, app.getAppId(),
+                    reconciled.generation, currentAppId, controlBinding.childSessionId);
+        }
+        if (permit.succeeded()) {
+            permit = controlBinding.client.acquireBootstrapAfterReplay(
+                    controlBinding.connection, controlBootstrapOperationId,
+                    permit, currentAppId, controlBinding.childSessionId);
+        }
+        boolean succeeded = false;
+        try {
+            succeeded = startAppEffect(h, serverInfo, app);
+            if (!succeeded) {
+                try {
+                    controlBinding.client.complete(
+                            controlBinding.connection, permit, false, true);
+                } catch (IOException ignored) {
+                    // The received effect failure is definitive, but a lost terminal
+                    // response remains recoverable through the same operation ID.
+                }
+                return false;
+            }
+            ControlOperationClient.Result terminal;
+            try {
+                terminal = controlBinding.client.complete(
+                        controlBinding.connection, permit, true);
+            } catch (GatewayTransport.GatewayException rejected) {
+                throw rejected;
+            } catch (IOException lostResponse) {
+                int observed = h.getComputerDetails(true).runningGameId;
+                terminal = controlBinding.client.reconcile(
+                        controlBinding.connection, permit, observed);
+            }
+            if (!terminal.succeeded()) return false;
+            controlGeneration = terminal.generation;
+            return true;
+        } catch (IOException | XmlPullParserException | RuntimeException error) {
+            if (!succeeded) {
+                try {
+                    controlBinding.client.complete(controlBinding.connection, permit, false);
+                } catch (IOException ignored) {
+                    // The host keeps the operation UNCERTAIN until explicit reconciliation.
+                }
+            }
+            throw error;
+        }
+    }
+
+    private boolean startAppEffect(NvHTTP h, String serverInfo, NvApp app)
+            throws XmlPullParserException, IOException {
         // If there's a game running, resume it
         if (h.getCurrentGame(serverInfo) != 0) {
             try {

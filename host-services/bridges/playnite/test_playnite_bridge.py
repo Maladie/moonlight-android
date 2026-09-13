@@ -1135,6 +1135,102 @@ class BridgeStateTest(unittest.TestCase):
                 "focused": True, "hwnd": hwnd,
             })
 
+    def test_control_effect_binding_rejects_missing_conflicting_and_stale_epoch(self):
+        current = {"operation_id": "provider-1", "generation": 8,
+                   "actor_lease_epoch": 12, "actor_profile_id": "kid",
+                   "execution_profile_id": "parent", "stream_session_id": "stream-1"}
+        self.state.authorize_control_effect(current)
+        self.state.authorize_control_effect(dict(current))
+        with self.assertRaises(ValueError):
+            self.state.authorize_control_effect(None)
+        with self.assertRaises(ValueError):
+            self.state.authorize_control_effect({**current, "operation_id": "other"})
+        with self.assertRaises(ValueError):
+            self.state.authorize_control_effect({**current, "operation_id": "other",
+                                                  "effect_sequence": 1,
+                                                  "actor_profile_id": "adult"})
+        with self.assertRaises(ValueError):
+            self.state.authorize_control_effect({**current, "generation": 7,
+                                                  "actor_lease_epoch": 11})
+
+    def test_control_effect_generation_survives_bridge_restart(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            active = Path(temporary) / "active-game.json"
+            state = BridgeState(active_game_path=active)
+            state.authorize_control_effect({
+                "operation_id": "provider-8", "generation": 8,
+                "actor_lease_epoch": 12, "actor_profile_id": "kid",
+                "execution_profile_id": "parent", "stream_session_id": "stream-1"})
+            restored = BridgeState(active_game_path=active)
+            with self.assertRaises(ValueError):
+                restored.authorize_control_effect({
+                    "operation_id": "provider-7", "generation": 7,
+                    "actor_lease_epoch": 11, "actor_profile_id": "kid",
+                    "execution_profile_id": "parent", "stream_session_id": "stream-1"})
+
+    def test_new_actor_cannot_replace_authorization_inside_start_effect(self):
+        entered = threading.Event()
+        release = threading.Event()
+        newer_done = threading.Event()
+        effects = []
+        old = {"operation_id": "provider-old", "generation": 8,
+               "actor_lease_epoch": 12, "effect_sequence": 1,
+               "actor_profile_id": "kid", "execution_profile_id": "parent",
+               "stream_session_id": "stream-1", "child_session_id": ""}
+        newer = {**old, "operation_id": "provider-new", "generation": 9,
+                 "actor_lease_epoch": 13, "effect_sequence": 1,
+                 "actor_profile_id": "adult", "stream_session_id": "stream-2"}
+
+        def old_start():
+            entered.set()
+            self.assertTrue(release.wait(1.0))
+            effects.append("old-start")
+            return {"accepted": True}
+
+        first = threading.Thread(target=lambda: self.state.run_control_effect(
+            old, old_start))
+        second = threading.Thread(target=lambda: (
+            self.state.run_control_effect(
+                newer, lambda: effects.append("new-effect")), newer_done.set()))
+        first.start()
+        self.assertTrue(entered.wait(1.0))
+        second.start()
+        self.assertFalse(newer_done.wait(0.05))
+        self.assertEqual("provider-old", self.state.control_operation[3])
+        release.set()
+        first.join(1.0)
+        second.join(1.0)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(["old-start", "new-effect"], effects)
+        self.assertEqual("provider-new", self.state.control_operation[3])
+
+    def test_hard_reset_barrier_prevents_delayed_old_launch(self):
+        old = {"operation_id": "provider-old", "generation": 8,
+               "actor_lease_epoch": 12, "effect_sequence": 1,
+               "actor_profile_id": "kid", "execution_profile_id": "parent",
+               "stream_session_id": "stream-1", "child_session_id": ""}
+        reset = {**old, "operation_id": "hard-reset:9:13", "generation": 9,
+                 "actor_lease_epoch": 13, "effect_sequence": 0,
+                 "actor_profile_id": "parent",
+                 "stream_session_id": "hard-reset:9"}
+        effects = []
+        self.state.authorize_control_effect(old)
+        self.state.current = {"state": "stopping"}
+        self.state.running_process_probe = mock.Mock()
+        self.state.running_process_probe.scan_running_processes.return_value = (
+            [], "complete")
+
+        result = self.state.run_control_effect(reset, self.state.hard_reset_session)
+        with self.assertRaisesRegex(ValueError, "Stale"):
+            self.state.run_control_effect(
+                old, lambda: effects.append("delayed-old-launch"))
+
+        self.assertTrue(result["accepted"])
+        self.assertEqual("idle", self.state.current["state"])
+        self.assertEqual([], effects)
+
     @staticmethod
     def _active_trace(game_id="steam:289070", provider="steam",
                       provider_game_id="289070", playnite_guid="",
@@ -1173,39 +1269,6 @@ class BridgeStateTest(unittest.TestCase):
         state.set_reconciliation_actions(
             lambda process_id: identity if process_id == trace["process_id"] else None,
             lambda _path: list(identities) if identities is not None else [identity])
-
-    def _child_payload(self, action="bind", session_id="11111111-1111-4111-8111-111111111111",
-                       token="", deadline=None, client_uuid="22222222-2222-4222-8222-222222222222"):
-        return {
-            "action": action, "session_id": session_id,
-            "actor_profile_id": "child-one", "execution_profile_id": "parent",
-            "game_id": "steam:1", "process_token": token,
-            "vibepollo_client_uuid": client_uuid,
-            "deadline_utc": datetime.fromtimestamp(
-                self.now + 120 if deadline is None else deadline,
-                timezone.utc).isoformat().replace("+00:00", "Z"),
-        }
-
-    def _child_probe(self, state, process_id=4242, started=133700000000000000,
-                     process_path=r"C:\Games\Child\game.exe"):
-        probe = mock.Mock()
-        own = {"process_id": os.getpid(), "process_path": r"C:\Bridge\bridge.exe",
-               "process_started_filetime": 1, "user_sid": "own-sid", "session_id": 1}
-        child = {"process_id": process_id, "process_path": process_path,
-                 "process_started_filetime": started, "user_sid": "own-sid",
-                 "session_id": 1, "visible_window": True}
-        def identity(pid, include_owner=False):
-            del include_owner
-            return child if pid == process_id else own if pid == os.getpid() else None
-        probe.process_identity.side_effect = identity
-        probe.scan_running_processes.return_value = ([], "complete")
-        probe.force_terminate_verified_process.return_value = True
-        state.running_process_probe = probe
-        state.library["steam:1"] = {
-            "id": "steam:1", "name": "Child game", "provider": "steam",
-            "providerGameId": "1", "installDir": r"C:\Games\Child",
-        }
-        return probe, child
 
     def _put_native_game(self, game_id=GAME_ID):
         with self.state.lock:
@@ -1687,6 +1750,18 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual("waiting_for_game_window", self.state.readiness["reason"])
         self.assertEqual(4242, self.state.current["processId"])
 
+        self.state.handle_message({
+            "type": "status",
+            "status": {"name": "gameStopped", "id": GAME_ID},
+        })
+        self.assertEqual("running", self.state.current["state"])
+        self.assertTrue(self.state.current["connectorStopPending"])
+
+        self.state.current["processPath"] = r"C:\Games\Baba\baba.exe"
+        self.state.current["processStartedFiletime"] = 1234
+        self.state._process_identity_action = mock.Mock(return_value=None)
+        self.state._process_identity_status_action = mock.Mock(
+            return_value=("gone", None))
         self.state.handle_message({
             "type": "status",
             "status": {"name": "gameStopped", "id": GAME_ID},
@@ -3256,6 +3331,14 @@ class BridgeStateTest(unittest.TestCase):
         first_close = threading.Event()
         self.state.graceful_close = lambda process_id: (
             closed.append(process_id), first_close.set(), True)[-1]
+        identities = {
+            1111: {"process_id": 1111, "process_path": r"E:\Games\RE3\re3.exe",
+                   "process_started_filetime": 100},
+            2222: {"process_id": 2222, "process_path": r"E:\Games\RE3\re3.exe",
+                   "process_started_filetime": 200},
+        }
+        self.state._process_identity_action = lambda process_id: identities.get(process_id)
+        self.state._process_identities_action = lambda _path: [identities[2222]]
         next_provider_starts = []
         result = {}
 
@@ -3289,6 +3372,52 @@ class BridgeStateTest(unittest.TestCase):
         self.assertTrue(result["accepted"])
         self.assertEqual(["epic:Salt"], next_provider_starts)
 
+    def test_window_sample_from_idle_generation_cannot_claim_new_game(self):
+        game_id = "steam:736260"
+        with self.state.lock:
+            self.state.library[game_id] = {
+                "id": game_id, "name": "Baba Is You", "provider": "steam",
+                "providerGameId": "736260", "installDir": r"E:\Games\Baba",
+            }
+            self.state.current = {"state": "idle"}
+            self.state.readiness = {
+                "ready": False, "reason": "game_stopped",
+                "target_kind": "none", "stable_samples": 0,
+            }
+        probe = mock.Mock()
+
+        def stale_idle_sample(*_args):
+            with self.state.lock:
+                self.state.current = {
+                    "state": "starting", "id": game_id,
+                    "launchRequestedAt": 200.0,
+                }
+                self.state.readiness = {
+                    "ready": False, "reason": "game_starting",
+                    "target_kind": "game", "stable_samples": 0,
+                }
+            return {
+                "qualified": True, "reason": "target_window_ready",
+                "process_id": 9104,
+                "process_path":
+                    r"C:\Program Files\WindowsApps\OpenAI.Codex\ChatGPT.exe",
+            }
+
+        probe.sample.side_effect = stale_idle_sample
+        display_resolver = mock.Mock()
+        display_resolver.resolve.return_value = None
+        self.state.installation_probes = mock.Mock(return_value=[])
+        self.state.refresh_running_games = mock.Mock()
+        worker = GameProviderBridge.WindowReadinessWorker(
+            self.state, probe, display_resolver)
+        with mock.patch.object(
+                GameProviderBridge.time, "sleep", side_effect=StopIteration):
+            with self.assertRaises(StopIteration):
+                worker.run()
+
+        self.assertEqual("starting", self.state.current["state"])
+        self.assertNotIn("processId", self.state.current)
+
     def test_stop_during_start_closes_late_process_before_accepting(self):
         with self.state.lock:
             self.state.library["steam:289070"] = {
@@ -3306,6 +3435,16 @@ class BridgeStateTest(unittest.TestCase):
         closed = threading.Event()
         self.state.graceful_close = lambda process_id: (
             self.closed_processes.append(process_id), closed.set(), True)[-1]
+        self.state._process_identity_action = lambda process_id: {
+            "process_id": process_id,
+            "process_path": r"E:\Games\Civ6\CivilizationVI.exe",
+            "process_started_filetime": 5150,
+        }
+        self.state._process_identities_action = lambda _path: [{
+            "process_id": 5150,
+            "process_path": r"E:\Games\Civ6\CivilizationVI.exe",
+            "process_started_filetime": 5150,
+        }]
         result_holder = {}
         stopping = threading.Thread(target=lambda: result_holder.update(
             self.state.stop_game("steam:289070")))
@@ -3330,6 +3469,42 @@ class BridgeStateTest(unittest.TestCase):
         self.assertEqual({"accepted": True, "command": "stop", "force": False},
                          result_holder)
         self.assertEqual([5150], self.closed_processes)
+
+    def test_timed_out_stop_adopts_and_closes_verified_replacement(self):
+        game_id = "steam:952060"
+        old = {"process_id": 1111, "process_path": r"E:\Games\RE3\re3.exe",
+               "process_started_filetime": 100}
+        new = {"process_id": 2222, "process_path": r"E:\Games\RE3\re3.exe",
+               "process_started_filetime": 200}
+        with self.state.lock:
+            self.state.library[game_id] = {
+                "id": game_id, "provider": "steam", "providerGameId": "952060"}
+            self.state.current = {
+                "state": "running", "id": game_id, "processId": old["process_id"],
+                "processPath": old["process_path"],
+                "processStartedFiletime": old["process_started_filetime"]}
+            self.state.readiness = {
+                "ready": True, "reason": "target_window_ready",
+                "target_kind": "game", "stable_samples": 4}
+        identities = {old["process_id"]: old, new["process_id"]: new}
+        self.state.set_reconciliation_actions(
+            lambda pid: identities.get(pid), lambda _path: [new])
+        self.state.stop_timeout = .01
+        self.state.graceful_close = lambda pid: (
+            self.closed_processes.append(pid) or True)
+
+        first = self.state.stop_game(game_id)
+        self.assertEqual("game_stop_timeout", first["reason"])
+        identities.pop(old["process_id"])
+        self.state.apply_window_sample({
+            "qualified": False, "reason": "target_not_fullscreen",
+            "replacement_process": True, "process_id": new["process_id"],
+            "process_path": new["process_path"], "observed_game_id": game_id})
+
+        self.assertEqual([old["process_id"], new["process_id"]],
+                         self.closed_processes)
+        self.assertEqual(new["process_id"], self.state.current["processId"])
+        self.assertNotIn("stopTimedOut", self.state.current)
 
     def test_direct_provider_is_stoppable_while_dispatch_is_blocked(self):
         game_id = "steam:289070"
@@ -3476,8 +3651,8 @@ class BridgeStateTest(unittest.TestCase):
             lambda _pid: changed, lambda _path: [changed, dict(changed)])
         retry = self.state.stop_game(trace["game_id"])
 
-        self.assertFalse(retry["accepted"])
-        self.assertEqual("game_stop_close_rejected", retry["reason"])
+        self.assertTrue(retry["accepted"])
+        self.assertTrue(retry["already_stopped"])
         self.assertEqual([trace["process_id"]], self.closed_processes)
 
     def test_timed_out_stop_with_unavailable_probe_is_not_redispatched(self):
@@ -4097,253 +4272,6 @@ class BridgeStateTest(unittest.TestCase):
         self.assertFalse(self.state.library[GAME_ID]["installed"])
         self.assertTrue(self.state.library[GAME_ID]["legendaryImportRequired"])
         dispatch.assert_called_once()
-
-
-    def test_child_bind_is_pending_before_launch_and_is_persisted(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            self.state.profile_id = "parent"
-            self.state.child_session_path = Path(temporary) / "child-session.json"
-            self._child_probe(self.state)
-
-            result = self.state.child_session_action(self._child_payload())
-
-            self.assertTrue(result["accepted"])
-            self.assertEqual("pending", result["state"])
-            saved = json.loads(self.state.child_session_path.read_text(encoding="utf-8"))
-            self.assertEqual("child-one", saved["actor_profile_id"])
-            self.assertEqual("parent", saved["execution_profile_id"])
-            self.assertEqual("", saved["process_token"])
-
-    def test_child_end_echoes_requested_id_when_already_stopped(self):
-        requested = "55555555-5555-4555-8555-555555555555"
-
-        result = self.state.child_session_action({
-            "action": "end", "session_id": requested})
-
-        self.assertTrue(result["accepted"])
-        self.assertEqual("already_stopped", result["reason"])
-        self.assertEqual(requested, result["session_id"])
-
-    def test_child_cutoff_captures_verified_process_then_graceful_and_scoped_force(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            self.state.profile_id = "parent"
-            self.state.child_session_path = Path(temporary) / "child-session.json"
-            probe, child = self._child_probe(self.state)
-            self.state.child_session_action(self._child_payload())
-            self.now += 5.1
-            self.state.current = {
-                "state": "running", "id": "steam:1",
-                "processId": child["process_id"], "processPath": child["process_path"],
-                "processStartedFiletime": child["process_started_filetime"],
-                "launchRequestedAt": self.now,
-            }
-            probe.scan_running_processes.return_value = ([child], "complete")
-            self.state.child_session["last_identity_probe_at"] = 0
-            self.state.enforce_child_session()
-            token = self.state.child_session["process_token"]
-            self.assertRegex(token, r"^[0-9a-f]{64}$")
-
-            self.state.graceful_close = mock.Mock(return_value=True)
-            self.now = self.now + 120.1
-
-            graceful = self.state.enforce_child_session()
-
-            self.assertEqual("graceful_close_requested", graceful["reason"])
-            self.state.graceful_close.assert_called_once_with(child["process_id"])
-            probe.force_terminate_verified_process.assert_not_called()
-            self.now += GameProviderBridge.CHILD_SESSION_GRACE_SECONDS + 0.1
-
-            forced = self.state.enforce_child_session()
-
-            self.assertTrue(forced["accepted"])
-            self.assertEqual("stopped", forced["state"])
-            probe.force_terminate_verified_process.assert_called_once()
-            self.assertEqual(token,
-                             probe.force_terminate_verified_process.call_args.args[0][
-                                 "process_token"])
-            self.assertEqual("idle", self.state.current["state"])
-            self.assertFalse(self.state.child_session_path.exists())
-
-    def test_stale_child_end_does_not_touch_new_session(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            self.state.profile_id = "parent"
-            self.state.child_session_path = Path(temporary) / "child-session.json"
-            self._child_probe(self.state)
-            first = self._child_payload(
-                session_id="11111111-1111-4111-8111-111111111111")
-            second = self._child_payload(
-                session_id="33333333-3333-4333-8333-333333333333",
-                client_uuid="44444444-4444-4444-8444-444444444444")
-            self.state.child_session_action(first)
-            with self.state.lock:
-                self.state._clear_child_session_locked("test_replace")
-            self.state.child_session_action(second)
-            self.state.graceful_close = mock.Mock(return_value=True)
-
-            result = self.state.child_session_action({
-                "action": "end", "session_id": first["session_id"]})
-
-            self.assertFalse(result["accepted"])
-            self.assertEqual("stale_session", result["reason"])
-            self.assertEqual(first["session_id"].lower(), result["session_id"])
-            self.assertEqual(second["session_id"].lower(),
-                             self.state.child_session["session_id"])
-            self.state.graceful_close.assert_not_called()
-
-    def test_child_timeout_after_parent_switch_clears_without_cutoff_effects(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            self.state.profile_id = "parent"
-            self.state.child_session_path = Path(temporary) / "child-session.json"
-            self._child_probe(self.state)
-            self.state.child_session_action(self._child_payload())
-            self.state.current = {"state": "running", "id": "steam:parent"}
-            self.now += 120.1
-            self.state.graceful_close = mock.Mock(return_value=True)
-            force = self.state.running_process_probe.force_terminate_verified_process
-
-            result = self.state.enforce_child_session()
-
-            self.assertTrue(result["accepted"])
-            self.assertEqual("stale", result["state"])
-            self.assertEqual("child_game_changed", result["reason"])
-            self.assertIsNone(self.state.child_session)
-            self.state.graceful_close.assert_not_called()
-            force.assert_not_called()
-
-    def test_child_restart_checks_persisted_identity_when_current_is_idle(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            child_path = Path(temporary) / "child-session.json"
-            self.state.profile_id = "parent"
-            self.state.child_session_path = child_path
-            probe, child = self._child_probe(self.state)
-            self.state.child_session_action(self._child_payload())
-            self.now += 5.1
-            self.state.current = {
-                "state": "running", "id": "steam:1",
-                "processId": child["process_id"], "processPath": child["process_path"],
-                "processStartedFiletime": child["process_started_filetime"],
-                "launchRequestedAt": self.now,
-            }
-            probe.scan_running_processes.return_value = ([child], "complete")
-            self.state.child_session["last_identity_probe_at"] = 0
-            self.state.enforce_child_session()
-            self.now += 120.1
-
-            restored = BridgeState(
-                child_session_path=child_path,
-                game_operations=self.state.game_operations,
-                clock=lambda: self.now, profile_id="parent")
-            restored.library["steam:1"] = dict(self.state.library["steam:1"])
-            restored.running_process_probe = probe
-            restored.graceful_close = mock.Mock(return_value=True)
-
-            graceful = restored.enforce_child_session()
-
-            self.assertEqual("graceful_close_requested", graceful["reason"])
-            restored.graceful_close.assert_called_once_with(child["process_id"])
-            self.now += GameProviderBridge.CHILD_SESSION_GRACE_SECONDS + 0.1
-            forced = restored.enforce_child_session()
-
-            self.assertEqual("stopped", forced["state"])
-            probe.force_terminate_verified_process.assert_called_once()
-            self.assertIsNone(restored.child_session)
-            self.assertFalse(child_path.exists())
-
-    def test_child_bind_rejects_verified_process_when_current_is_idle(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            self.state.profile_id = "parent"
-            self.state.child_session_path = Path(temporary) / "child-session.json"
-            probe, child = self._child_probe(self.state)
-            probe.scan_running_processes.return_value = ([child], "complete")
-
-            result = self.state.child_session_action(self._child_payload())
-
-            self.assertFalse(result["accepted"])
-            self.assertEqual("game_already_in_use", result["reason"])
-            self.assertIsNone(self.state.child_session)
-            self.assertFalse(self.state.child_session_path.exists())
-
-    def test_child_pid_reuse_keeps_cleanup_required_without_process_effect(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            self.state.profile_id = "parent"
-            self.state.child_session_path = Path(temporary) / "child-session.json"
-            probe, child = self._child_probe(self.state)
-            self.state.child_session_action(self._child_payload())
-            self.now += 5.1
-            self.state.current = {
-                "state": "running", "id": "steam:1",
-                "processId": child["process_id"], "processPath": child["process_path"],
-                "processStartedFiletime": child["process_started_filetime"],
-                "launchRequestedAt": self.now,
-            }
-            probe.scan_running_processes.return_value = ([child], "complete")
-            self.state.child_session["last_identity_probe_at"] = 0
-            self.state.enforce_child_session()
-            probe.process_identity.side_effect = lambda pid, include_owner=False: (
-                {**child, "process_started_filetime": child["process_started_filetime"] + 1}
-                if pid == child["process_id"] else
-                {"process_id": os.getpid(), "process_path": r"C:\Bridge\bridge.exe",
-                 "process_started_filetime": 1, "user_sid": "own-sid", "session_id": 1})
-            self.state.graceful_close = mock.Mock(return_value=True)
-            self.now += 120.1
-
-            result = self.state.enforce_child_session()
-
-            self.assertFalse(result["accepted"])
-            self.assertTrue(result["cleanup_required"])
-            self.state.graceful_close.assert_not_called()
-            probe.force_terminate_verified_process.assert_not_called()
-            self.assertIsNotNone(self.state.child_session)
-
-    def test_child_restart_retains_deadline_and_stops_exact_process(self):
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            child_path = root / "child-session.json"
-            trace_path = root / "active-game.json"
-            self.state.profile_id = "parent"
-            self.state.child_session_path = child_path
-            probe, child = self._child_probe(self.state)
-            self.state.child_session_action(self._child_payload())
-            self.now += 5.1
-            self.state.current = {
-                "state": "running", "id": "steam:1",
-                "processId": child["process_id"], "processPath": child["process_path"],
-                "processStartedFiletime": child["process_started_filetime"],
-                "launchRequestedAt": self.now,
-            }
-            probe.scan_running_processes.return_value = ([child], "complete")
-            self.state.child_session["last_identity_probe_at"] = 0
-            self.state.enforce_child_session()
-            trace = self._active_trace(
-                game_id="steam:1", provider="steam", provider_game_id="1",
-                process_id=child["process_id"], process_path=child["process_path"],
-                started=child["process_started_filetime"])
-            self._write_trace(trace_path, trace)
-            deadline = self.state.child_session["deadline_utc"]
-            self.now += 120.1
-
-            restored = BridgeState(
-                active_game_path=trace_path, child_session_path=child_path,
-                game_operations=self.state.game_operations,
-                clock=lambda: self.now, profile_id="parent")
-            restored.library["steam:1"] = dict(self.state.library["steam:1"])
-            restored.running_process_probe = probe
-            restored.graceful_close = mock.Mock(return_value=True)
-            identity = {key: child[key] for key in (
-                "process_id", "process_path", "process_started_filetime")}
-            restored.set_reconciliation_actions(
-                lambda _pid: identity, lambda _path: [identity])
-
-            self.assertEqual(deadline, restored.child_session["deadline_utc"])
-            result = restored.enforce_child_session()
-
-            self.assertEqual("graceful_close_requested", result["reason"])
-            self.now += GameProviderBridge.CHILD_SESSION_GRACE_SECONDS + 0.1
-            result = restored.enforce_child_session()
-            self.assertEqual("stopped", result["state"])
-            probe.force_terminate_verified_process.assert_called_once()
-            self.assertFalse(child_path.exists())
-            self.assertFalse(trace_path.exists())
 
 
 class ProviderDiagnosticsTest(unittest.TestCase):

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "independent_context": "/root/s05_device_diag_review",
+  "reviewed_fingerprints": [
+    "sha256:aa38aa1e1be7f4c2328076f439824d857a6ad9869765e3780069b6cd2952ae88",
+    "sha256:cb2f9ecd21fef87feb1f80b01ffbeafe7c5f9909c3573189fec488b439ffe556",
+    "sha256:6c54b8b6491a8403cdd24caf9b88a06f37fd3275ac79fc23e9cb2b84fca98f28",
+    "sha256:5e6538c9de60b3109b18691a3876500364fd6458175256160a0b8024f9be25ee",
+    "sha256:1fd30431e52c053a4cfc135922df505e5efe58c131fee322ce4925fa6578e77d",
+    "sha256:32416c6c63b65f53ceb8f6fa6511973ac9ca7afb6627103df05da10300bdd683"
+  ],
+  "source_code_verdict": "PASS",
+  "packaging_change_verdict": "PASS",
+  "checkpoint_verdict": "CODE_VERIFIED_DEVICE_PENDING",
+  "observations": [
+    "The final terminal-vs-game-only race is fenced by exact completed ownership and a locked recheck of stream ID, app ID and generation.",
+    "The deterministic latch test covers the previously missed window after terminal_pending=false was read.",
+    "The installer builder includes both new Gateway modules before their first commit, and the packaged-wiring test validates the actual embedded ZIP and isolated imports.",
+    "No remaining source/code or packaged-wiring blocker was found.",
+    "The corrected child terminal owner keeps one exact permit across provider ending to stopped, preserves retry after timeout/restart and cannot target a newer session.",
+    "Parent recovery delegates effects to the exact child-owned cleanup and receives only a durable receipt; it never receives a global quit permit.",
+    "Child overlay exposes full quit through terminateChildSession while suspend stays hidden; the limit heartbeat is 30 seconds and terminal polling is separately bounded at one second.",
+    "Independent targeted Gateway review ran 58 tests with 58 PASS and git diff --check passed.",
+    "Independent packaging review verified fingerprint 5e6538c9, consistent host 0.7.97 metadata, embedded payload modules/versions and recorded installer/APK sizes and SHA256 values.",
+    "Independent review accepted the restart recovery increment: it retires only the exact uncertain game-only receipt before acquiring a separately fenced child-terminal permit.",
+    "Independent review accepted singleton snapshot normalization as fail-closed for all other shapes while preserving exact UUID/app-ID checks and all authorization and session fences."
+  ],
+  "limitations": [
+    "The reviewer independently reran targeted host tests; the worker's cumulative Gateway 221, Bridge 252 and Android debug/release 1076-per-variant results were reviewed, not independently repeated.",
+    "Corrected debug APK is installed and digest-matched on the TV; diagnostics prove host 0.7.97 was installed for manual-tv-test-03.",
+    "Host 0.7.99 is built but not installed. The checkpoint remains pending the corrected mandatory Windows/TV scenario."
+  ]
+}

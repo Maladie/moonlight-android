@@ -21,6 +21,8 @@ class FakeBroker:
 
     def __init__(self):
         self.profile = self.reply(True, "signed_out", fields={3: "ready", 4: "none"})
+        self.begin_result = self.reply(
+            True, "pending", fields={3: "0123456789abcdef0123456789abcdef"})
         self.child_begin_result = self.reply(
             True, "pending", fields={3: "0123456789abcdef0123456789abcdef"})
         self.legacy_begin_calls = []
@@ -39,7 +41,7 @@ class FakeBroker:
 
     def begin(self, *args):
         self.legacy_begin_calls.append(args)
-        raise AssertionError("child flow fell back to the legacy Broker operation")
+        return self.begin_result
 
     def begin_child(self, client_id, actor_profile_id, profile, request_id):
         self.child_begin_calls.append(
@@ -369,7 +371,7 @@ class ChildProfilesGatewayTest(unittest.TestCase):
                 self.state.require_child_management(
                     self.client, "living-room", session_id, authorization_id)
 
-    def test_child_broker_wire_operations_bind_actor_execution_client_request(self):
+    def test_child_broker_wire_operations_remain_compatible_but_gateway_reuses_parent_path(self):
         client = LoginBrokerClient()
         execution = {
             "id": "living-room",
@@ -408,14 +410,15 @@ class ChildProfilesGatewayTest(unittest.TestCase):
         ], decoded)
 
         self.client["profile_grants"]["kid"] = ["use_profile", "remote_sign_in"]
-        self.broker.child_begin_result = self.broker.reply(
-            False, "unsupported", "unsupported_operation")
+        self.broker.begin_result = self.broker.reply(
+            False, "action_required", "credential_missing")
         status, result = self.state.ensure_session(
-            self.client, "kid", "old-broker-child")
+            self.client, "kid", "shared-parent-login")
         self.assertEqual(409, status)
-        self.assertEqual("unsupported_operation", result["reason"])
-        self.assertEqual(1, len(self.broker.child_begin_calls))
-        self.assertEqual([], self.broker.legacy_begin_calls)
+        self.assertEqual("credential_missing", result["reason"])
+        self.assertEqual([], self.broker.child_begin_calls)
+        self.assertEqual(1, len(self.broker.legacy_begin_calls))
+        self.assertEqual("living-room", self.broker.legacy_begin_calls[0][1]["id"])
 
     @staticmethod
     def decode_wire(wire):

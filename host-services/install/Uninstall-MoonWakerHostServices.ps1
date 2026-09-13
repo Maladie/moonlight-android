@@ -27,6 +27,11 @@ $providerUninstall = Join-Path $root `
     "windows-login\credential-provider\Uninstall-MoonWakerCredentialProvider.ps1"
 $brokerUninstall = Join-Path $root `
     "windows-login\login-broker\Uninstall-MoonWakerLoginBroker.ps1"
+$updaterUninstall = Join-Path $root "updater\Uninstall-MoonWakerHotUpdater.ps1"
+
+if (Test-Path -LiteralPath $updaterUninstall -PathType Leaf) {
+    & $updaterUninstall -PurgeState:$PurgeCredentials
+}
 
 if (Test-Path -LiteralPath $gatewayUninstall -PathType Leaf) {
     & $gatewayUninstall

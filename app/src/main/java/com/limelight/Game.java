@@ -24,6 +24,7 @@ import com.limelight.console.DiscordDmNotificationCoordinator;
 import com.limelight.console.DiscordDmToastView;
 import com.limelight.console.PlayniteTransitionGateway;
 import com.limelight.console.PlayniteIdentityResolutionPolicy;
+import com.limelight.console.HostGatewayStore;
 import com.limelight.discord.DiscordSocialClient;
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.console.transition.LaunchTransitionController;
@@ -58,10 +59,14 @@ import com.limelight.console.StreamHomeActivity;
 import com.limelight.stream.BackgroundStreamService;
 import com.limelight.stream.BackgroundStreamPreferences;
 import com.limelight.stream.RetainedStreamSessionCoordinator;
+import com.limelight.stream.RetainedControlHandoff;
 import com.limelight.stream.StreamingAutopilotCalibration;
 import com.limelight.stream.TransportStopCoordinator;
-import com.limelight.console.ChildSessionCountdown;
+import com.limelight.stream.HostSessionTermination;
+import com.limelight.stream.WholeSessionTermination;
+import com.limelight.console.ChildSessionLifecycle;
 import com.limelight.gateway.ChildSessionClient;
+import com.limelight.gateway.ControlOperationClient;
 import com.limelight.gateway.GatewayConnection;
 import com.limelight.gateway.GatewayTransport;
 import com.limelight.utils.Dialog;
@@ -127,6 +132,7 @@ import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
+import java.lang.ref.WeakReference;
 import java.security.cert.CertificateException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
@@ -165,7 +171,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private static final long AUTOMATIC_REVEAL_DELAY_MS = 1200L;
     private static final long WHOLE_SESSION_QUIT_TIMEOUT_MS = 20_000L;
     private static final long AUTOPILOT_RESULT_ACTION_DELAY_MS = 2_000L;
-    private static final long CHILD_HEARTBEAT_INTERVAL_MS = 20_000L;
+    private static final long CHILD_HEARTBEAT_INTERVAL_MS = 30_000L;
     private static final long CHILD_COUNTDOWN_INTERVAL_MS = 1_000L;
 
     private ControllerHandler controllerHandler;
@@ -202,9 +208,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean providerEndGameInFlight;
     private boolean retainedDashboardReturnInFlight;
     private String providerStartRejectedTransitionId = "";
-    private volatile boolean wholeSessionTerminationInFlight;
+    private String retryTransitionId = "";
+    private final WholeSessionTermination.Owner wholeSessionTermination =
+            new WholeSessionTermination.Owner();
     private final AtomicBoolean freshOwnedFailureCleanupInFlight = new AtomicBoolean();
-    private final AtomicBoolean childHeartbeatInFlight = new AtomicBoolean();
     private final AtomicBoolean childEndSent = new AtomicBoolean();
     private String childSessionId = "";
     private String childActorProfileId = "";
@@ -212,12 +219,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private String childGameId = "";
     private long childDeadlineElapsedMs = Long.MIN_VALUE;
     private long childPolicyRevision;
-    private ChildSessionCountdown childCountdown;
+    private ChildSessionLifecycle childLifecycle;
     private ChildSessionClient childSessionClient;
     private volatile GatewayConnection childGatewayConnection;
     private TextView childCountdownView;
-    private Runnable childHeartbeatRunnable;
-    private Runnable childCountdownRunnable;
     private RetainedSwitch retainedSwitch;
     private boolean displayedFailureDialog = false;
     private boolean connecting = false;
@@ -351,6 +356,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_RUNTIME_FPS = "RuntimeFps";
     public static final String EXTRA_RUNTIME_BITRATE_KBPS = "RuntimeBitrateKbps";
     public static final String EXTRA_STREAM_SESSION_ID = "StreamSessionId";
+    public static final String EXTRA_CONTROL_GENERATION = "MoonWakerControlGeneration";
+    public static final String EXTRA_CONTROL_INTENT = "MoonWakerControlIntent";
     public static final String EXTRA_STREAM_TARGET_NAME = "StreamTargetName";
     public static final String EXTRA_NEUTRAL_STREAM_TARGET = "NeutralStreamTarget";
     public static final String EXTRA_FRESH_SUNSHINE_SESSION_OWNER =
@@ -375,6 +382,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             "ConsoleTransitionStartBeforeStream";
     public static final String EXTRA_AUTO_WARM_UP_ATTEMPT = "AutoWarmUpAttempt";
     private static final String STATE_TRANSITION_REVEALED = "ConsoleTransitionRevealed";
+    private static final String STATE_RETRY_TRANSITION_ID = "ConsoleRetryTransitionId";
     public static final String ACTION_QUIT_APP = "com.limelight.QUIT_STREAMING_APP";
 
     @Override
@@ -384,6 +392,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 getIntent().getStringExtra(EXTRA_STREAM_SESSION_ID));
         if (streamSessionId.isEmpty()) streamSessionId = UUID.randomUUID().toString();
         getIntent().putExtra(EXTRA_STREAM_SESSION_ID, streamSessionId);
+        retryTransitionId = savedInstanceState == null
+                ? getIntent().getStringExtra(STATE_RETRY_TRANSITION_ID)
+                : savedInstanceState.getString(STATE_RETRY_TRANSITION_ID,
+                getIntent().getStringExtra(STATE_RETRY_TRANSITION_ID));
+        if (retryTransitionId == null) retryTransitionId = "";
         readChildSessionExtras();
         sourceSuspendId = normalizeOpaqueId(
                 getIntent().getStringExtra(EXTRA_SOURCE_SUSPEND_ID));
@@ -820,11 +833,33 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         StreamConfiguration config = configBuilder.build();
 
+        NvConnection.ControlBinding controlBinding = null;
+        if (getIntent().getBooleanExtra(EXTRA_CONSOLE_LOADING, false)) {
+            GatewayConnection gateway = new HostGatewayStore(this).loadForHost(
+                    getIntent().getStringExtra(EXTRA_PC_UUID), host, currentProfileId());
+            if (gateway == null) {
+                Toast.makeText(this, "MoonWaker host control is unavailable.",
+                        Toast.LENGTH_LONG).show();
+                finish();
+                return;
+            }
+            long expectedGeneration = Math.max(0L, getIntent().getLongExtra(
+                    EXTRA_CONTROL_GENERATION, 0L));
+            String requestedIntent = getIntent().getStringExtra(EXTRA_CONTROL_INTENT);
+            String intent = requestedIntent != null && requestedIntent.matches(
+                    "launch|resume|reconnect|replacement|warm_up|reauthorize") ? requestedIntent
+                    : autoWarmUpAttempt > 0L ? "warm_up"
+                    : expectedGeneration > 0L ? "reconnect" : "launch";
+            controlBinding = new NvConnection.ControlBinding(
+                    new ControlOperationClient(new GatewayTransport()), gateway,
+                    streamSessionId, intent, expectedGeneration, childSessionId);
+        }
+
         // Initialize the connection
         conn = new NvConnection(getApplicationContext(),
                 new ComputerDetails.AddressTuple(host, port),
                 httpsPort, uniqueId, config,
-                PlatformBinding.getCryptoProvider(this), serverCert);
+                PlatformBinding.getCryptoProvider(this), serverCert, controlBinding);
         transportStop = new TransportStopCoordinator(conn::stop,
                 action -> new Thread(action, "Moonlight-StopConnection").start());
         controllerHandler = new ControllerHandler(this, conn, this, prefConfig);
@@ -992,7 +1027,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void maybeArmStreamingAutopilotCalibration() {
-        if (isChildSession()) return;
         StreamingAutopilotCalibration calibration = autopilotCalibration;
         if (calibration == null || autopilotCalibrationArmed || !streamEverRevealed) return;
         boolean playniteGame = transitionSpec != null
@@ -1642,6 +1676,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onSaveInstanceState(Bundle outState) {
         outState.putBoolean(STATE_TRANSITION_REVEALED, streamEverRevealed);
+        outState.putString(STATE_RETRY_TRANSITION_ID, retryTransitionId);
         super.onSaveInstanceState(outState);
     }
 
@@ -1677,6 +1712,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 RetainedStreamSessionCoordinator.markReconnectRequired(streamSessionId);
             }
             BackgroundStreamService.transportLost(this, streamSessionId);
+            stopConnection();
+        } else if (connecting || connected) {
+            // A parked transport without retained ownership cannot survive this
+            // Activity. Stop it so its successor cannot wait forever.
+            backgroundStreamParked = false;
             stopConnection();
         }
         if (transitionCoordinator != null) {
@@ -3141,6 +3181,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void stageComplete(String stage) {
+        long generation = conn == null ? 0L : conn.getControlGeneration();
+        if (generation <= 0L) return;
+        getIntent().putExtra(EXTRA_CONTROL_GENERATION, generation);
+        RetainedStreamSessionCoordinator.bindControlGeneration(
+                this, streamSessionId, generation);
+        SessionResumeManager.saveActive(this, getIntent(), streamSessionId);
     }
 
     private void stopConnection() {
@@ -3360,6 +3406,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             adoptPreparingObservedGame(operation);
             return;
         }
+        if (!operation.request.preparing
+                && !operation.request.oldGameId.isEmpty()
+                && operation.request.oldGameId.equalsIgnoreCase(
+                operation.request.newGameId)) {
+            beginRetainedActorHandoff(operation, true);
+            return;
+        }
         if (!operation.oldCoordinator.detachForSwitch()) {
             LimeLog.warning("Retained switch rejected transition="
                     + operation.oldSpec.id + " reason=provider_owner_changed");
@@ -3391,8 +3444,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         RetainedStreamSessionCoordinator.SwitchOutcome.CANCELLED, ""));
                 return;
             }
-            if (!exactGame.isEmpty()) gateway.stopGame(exactGame);
-            endChildAllowanceAndWait();
+            if (!exactGame.isEmpty()) {
+                if (current.processToken.isEmpty()) {
+                    throw new IOException("retained_switch_process_unconfirmed");
+                }
+                gateway.stopGame(exactGame, current.processToken);
+            }
+            if (!childSessionId.isEmpty()) releaseChildTimeAttachmentAndWait();
             runOnUiThread(() -> afterRetainedGameStopped(operation));
         } catch (IOException | RuntimeException error) {
             String reason = error.getMessage() == null ? "retained_switch_failed"
@@ -3478,6 +3536,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void beginNewRetainedGameAttempt(RetainedSwitch operation) {
+        beginRetainedActorHandoff(operation, false);
+    }
+
+    private void beginRetainedActorHandoff(RetainedSwitch operation,
+                                            boolean reuseRunningGame) {
         if (operation.request.cancelled.getAsBoolean()) {
             completeRetainedSwitch(operation,
                     RetainedStreamSessionCoordinator.SwitchOutcome.CANCELLED, "");
@@ -3495,82 +3558,212 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             abortStalePreparingSwitch(operation);
             return;
         }
+        final NvConnection transferConnection = conn;
+        final long previousControlGeneration = transferConnection == null
+                ? 0L : transferConnection.getControlGeneration();
+        final Intent transferIntent = new Intent(getIntent());
         new Thread(() -> {
             ChildSessionClient.State allowance = null;
+            PlayniteTransitionGateway targetGateway = null;
+            String pendingChildSessionId = "";
+            boolean timeAttachmentMayHaveChanged = false;
             try {
+                if (!operation.request.targetIsChild && !childSessionId.isEmpty()) {
+                    timeAttachmentMayHaveChanged = true;
+                    releaseChildTimeAttachmentAndWait();
+                }
+                targetGateway = PlayniteTransitionGateway.connect(
+                        this, next.hostId, getIntent().getStringExtra(EXTRA_HOST),
+                        operation.request.targetIsChild
+                                ? PlayniteTransitionGateway.ActorContext.child(
+                                    next.profileId, operation.request.executionProfileId)
+                                : PlayniteTransitionGateway.ActorContext.parent(next.profileId));
+                if (targetGateway == null) throw new IOException("gateway_unavailable");
                 if (operation.request.targetIsChild) {
-                    PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                            this, next.hostId, getIntent().getStringExtra(EXTRA_HOST),
-                            PlayniteTransitionGateway.ActorContext.child(
-                                    next.profileId, operation.request.executionProfileId));
-                    if (gateway == null) throw new IOException("gateway_unavailable");
+                    pendingChildSessionId = java.util.UUID.randomUUID().toString();
                     allowance = new ChildSessionClient(new GatewayTransport()).start(
-                            gateway.gatewayConnection(), next.playniteGameId,
-                            java.util.UUID.randomUUID().toString(), java.util.UUID.randomUUID().toString());
+                            targetGateway.gatewayConnection(), next.playniteGameId,
+                            pendingChildSessionId, java.util.UUID.randomUUID().toString());
+                    timeAttachmentMayHaveChanged = allowance.ok || !childSessionId.isEmpty();
                     if (!allowance.ok || allowance.cleanupRequired
                             || allowance.playableNowSeconds <= 0L
                             || !operation.request.executionProfileId.equals(allowance.executionProfileId)) {
                         throw new IOException(allowance.reason);
                     }
                 }
+                String nextChildId = allowance == null ? "" : allowance.sessionId;
+                long expectedAuthorizationGeneration = allowance != null
+                        && allowance.controlGeneration > 0L
+                        ? allowance.controlGeneration : previousControlGeneration;
+                String authorizationId = ControlOperationClient.operationId("reauthorize",
+                        streamSessionId, operation.request.appId,
+                        expectedAuthorizationGeneration, nextChildId);
+                ControlOperationClient.Permit authorization = new ControlOperationClient(
+                        new GatewayTransport()).acquire(targetGateway.gatewayConnection(), authorizationId,
+                        "reauthorize", streamSessionId, operation.request.appId,
+                        expectedAuthorizationGeneration, operation.request.appId, nextChildId);
+                if (!authorization.succeeded()) throw new IOException("retained_authorization_unconfirmed");
                 ChildSessionClient.State accepted = allowance;
-                runOnUiThread(() -> {
-                    if (!isCurrentRetainedSwitch(operation) || operation.request.cancelled.getAsBoolean()) {
-                        if (accepted != null) releaseUnusedAllowance(next, accepted);
-                        if (isCurrentRetainedSwitch(operation)) completeRetainedSwitch(operation,
-                                RetainedStreamSessionCoordinator.SwitchOutcome.CANCELLED, "");
-                        return;
+                PlayniteTransitionGateway authorizedGateway = targetGateway;
+                runOnUiThread(() -> RetainedControlHandoff.finish(new RetainedControlHandoff.Actions() {
+                    @Override public boolean current() {
+                        return isCurrentRetainedSwitch(operation) && connected && !userInitiatedDisconnect;
                     }
-                    if (!RetainedStreamSessionCoordinator.bindActor(this, streamSessionId,
-                            next.profileId, operation.request.executionProfileId)) {
-                        if (accepted != null) releaseUnusedAllowance(next, accepted);
+                    @Override public boolean commitBinding() {
+                        return RetainedStreamSessionCoordinator.commitReauthorization(
+                                Game.this, operation.request.streamSessionId,
+                                operation.request.executionProfileId, next.profileId,
+                                previousControlGeneration, authorization.generation,
+                                () -> conn == transferConnection && transferConnection != null
+                                        && transferConnection.reauthorizeControlGeneration(
+                                                previousControlGeneration, authorization.generation));
+                    }
+                    @Override public void publishBinding() {
+                        clearChildAllowance();
+                        getIntent().putExtra(EXTRA_CONTROL_GENERATION, authorization.generation);
+                        getIntent().putExtra(EXTRA_PROFILE_ID, next.profileId);
+                        getIntent().putExtra(EXTRA_EXECUTION_PROFILE_ID, operation.request.executionProfileId);
+                        getIntent().putExtra(EXTRA_CHILD_PROFILE, operation.request.targetIsChild);
+                        getIntent().removeExtra(EXTRA_CHILD_EXECUTION_PROFILE_ID);
+                        childExecutionProfileId = "";
+                        childGatewayConnection = null;
+                        if (accepted != null) {
+                            getIntent().putExtra(EXTRA_CHILD_SESSION_ID, accepted.sessionId);
+                            getIntent().putExtra(EXTRA_CHILD_EXECUTION_PROFILE_ID, accepted.executionProfileId);
+                            getIntent().putExtra(EXTRA_CHILD_GAME_ID, accepted.gameId);
+                            getIntent().putExtra(EXTRA_CHILD_DEADLINE_ELAPSED_MS,
+                                    SystemClock.elapsedRealtime() + accepted.playableNowSeconds * 1_000L);
+                            getIntent().putExtra(EXTRA_CHILD_POLICY_REVISION, accepted.policyRevision);
+                        }
+                        readChildSessionExtras();
+                        configureActorPresentation();
+                    }
+                    @Override public boolean cancelled() { return operation.request.cancelled.getAsBoolean(); }
+                    @Override public void retainNeutral() {
+                        settleNeutralRetainedStream(operation);
                         completeRetainedSwitch(operation,
-                                RetainedStreamSessionCoordinator.SwitchOutcome.FAILED,
-                                "retained_switch_session_changed");
-                        return;
+                                RetainedStreamSessionCoordinator.SwitchOutcome.CANCELLED, "");
                     }
-                    clearChildAllowance();
-                    getIntent().putExtra(EXTRA_PROFILE_ID, next.profileId);
-                    getIntent().putExtra(EXTRA_EXECUTION_PROFILE_ID, operation.request.executionProfileId);
-                    getIntent().putExtra(EXTRA_CHILD_PROFILE, operation.request.targetIsChild);
-                    getIntent().removeExtra(EXTRA_CHILD_EXECUTION_PROFILE_ID);
-                    childExecutionProfileId = "";
-                    childGatewayConnection = null;
-                    if (accepted != null) {
-                        getIntent().putExtra(EXTRA_CHILD_SESSION_ID, accepted.sessionId);
-                        getIntent().putExtra(EXTRA_CHILD_EXECUTION_PROFILE_ID, accepted.executionProfileId);
-                        getIntent().putExtra(EXTRA_CHILD_GAME_ID, accepted.gameId);
-                        getIntent().putExtra(EXTRA_CHILD_DEADLINE_ELAPSED_MS,
-                                SystemClock.elapsedRealtime() + accepted.playableNowSeconds * 1_000L);
-                        getIntent().putExtra(EXTRA_CHILD_POLICY_REVISION, accepted.policyRevision);
+                    @Override public void startGame() {
+                        operation.authorizationCompensation = this::compensate;
+                        if (reuseRunningGame) adoptAuthorizedRunningGame(operation, next);
+                        else startRetainedGameAttempt(operation, next);
                     }
-                    readChildSessionExtras();
-                    configureActorPresentation();
-                    startRetainedGameAttempt(operation, next);
-                });
+                    @Override public void compensate() {
+                        compensateRetainedAuthorization(operation, next, accepted,
+                                authorizedGateway.gatewayConnection(), authorization,
+                                previousControlGeneration, transferConnection, transferIntent);
+                    }
+                }));
             } catch (IOException | RuntimeException error) {
-                if (allowance != null && allowance.ok) releaseUnusedAllowance(next, allowance);
+                boolean ambiguousChildStart = operation.request.targetIsChild
+                        && allowance == null && !pendingChildSessionId.isEmpty();
+                if (ambiguousChildStart) timeAttachmentMayHaveChanged = true;
+                if (operation.request.targetIsChild && targetGateway != null
+                        && !pendingChildSessionId.isEmpty()) {
+                    releaseUnusedAllowance(targetGateway.gatewayConnection(), pendingChildSessionId);
+                }
+                boolean failClosed = timeAttachmentMayHaveChanged;
                 runOnUiThread(() -> {
-                    if (isCurrentRetainedSwitch(operation)) completeRetainedSwitch(operation,
+                    if (!isCurrentRetainedSwitch(operation)) return;
+                    completeRetainedSwitch(operation,
                             RetainedStreamSessionCoordinator.SwitchOutcome.FAILED, error.getMessage());
+                    if (failClosed) terminateWholeSessionVerified(null);
                 });
             }
         }, "MoonWaker-SwitchActor").start();
     }
 
-    private void releaseUnusedAllowance(LaunchTransitionSpec spec, ChildSessionClient.State allowance) {
-        new Thread(() -> {
-            try {
-                PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                        this, spec.hostId, getIntent().getStringExtra(EXTRA_HOST),
-                        PlayniteTransitionGateway.ActorContext.child(
-                                spec.profileId, allowance.executionProfileId));
-                if (gateway != null) new ChildSessionClient(new GatewayTransport()).end(
-                        gateway.gatewayConnection(), allowance.sessionId, "cancelled");
-            } catch (IOException | RuntimeException error) {
-                LimeLog.warning("Unused child allowance cleanup unavailable");
+    private void adoptAuthorizedRunningGame(RetainedSwitch operation,
+                                             LaunchTransitionSpec next) {
+        ConsoleStreamTransitionCoordinator replacement = createTransitionCoordinator(next);
+        if (!operation.oldCoordinator.transferProviderOwnershipTo(replacement)) {
+            replacement.close();
+            if (operation.authorizationCompensation != null) {
+                operation.authorizationCompensation.run();
             }
-        }, "MoonWaker-CancelAllowance").start();
+            return;
+        }
+        operation.oldCoordinator.close();
+        applyRetainedTransition(operation, next, replacement);
+        if (!prepareChildSession()) {
+            if (operation.authorizationCompensation != null) {
+                operation.authorizationCompensation.run();
+            }
+            return;
+        }
+        if (!childSessionId.isEmpty()) startChildMonitoring();
+        if (isChildSession() && childCountdownView == null) createChildCountdownView();
+        replacement.start();
+        if (connected) {
+            transitionController.streamConnected(next.id);
+            replacement.onStreamConnected();
+        }
+        signalRetainedSwitchReuse(operation);
+        pollRetainedSwitchCancellation(operation);
+    }
+
+    private void compensateRetainedAuthorization(RetainedSwitch operation, LaunchTransitionSpec next,
+            ChildSessionClient.State allowance, GatewayConnection targetGateway,
+            ControlOperationClient.Permit authorization, long previousGeneration,
+            NvConnection transferConnection, Intent transferIntent) {
+        if (!operation.authorizationCompensated.compareAndSet(false, true)) return;
+        // A failed commit must not leave an old-generation retained lease reusable.
+        long connectionGeneration = transferConnection == null ? 0L : transferConnection.getControlGeneration();
+        boolean discarded = conn == transferConnection
+                && (connectionGeneration == previousGeneration || connectionGeneration == authorization.generation)
+                && RetainedStreamSessionCoordinator.discardReauthorization(
+                        this, operation.request.streamSessionId, previousGeneration, authorization.generation);
+        if (discarded && conn == transferConnection) {
+            stopChildMonitoring();
+            applyImmediateTerminalPrivacy();
+            SessionResumeManager.clearIfMatches(this, operation.request.streamSessionId);
+            stopConnection(() -> {
+                finish();
+                completeRetainedSwitch(operation, RetainedStreamSessionCoordinator.SwitchOutcome.FAILED,
+                        "retained_authorization_local_discarded");
+            });
+        } else {
+            completeRetainedSwitch(operation, RetainedStreamSessionCoordinator.SwitchOutcome.FAILED,
+                    "retained_authorization_stale");
+        }
+        Context application = getApplicationContext();
+        new Thread(() -> {
+            boolean resolved = false;
+            try {
+                if (allowance != null) {
+                    ChildSessionClient.State ended = new ChildSessionClient(new GatewayTransport()).end(
+                            targetGateway, allowance.sessionId, "cancelled");
+                    resolved = ended != null && allowance.sessionId.equals(ended.sessionId)
+                            && allowance.actorProfileId.equals(ended.actorProfileId)
+                            && ChildSessionLifecycle.terminal(ended) && !ended.cleanupRequired;
+                } else {
+                    resolved = HostSessionTermination.run(application, next.hostId,
+                            transferIntent.getStringExtra(EXTRA_HOST),
+                            transferIntent.getIntExtra(EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT),
+                            transferIntent.getIntExtra(EXTRA_HTTPS_PORT, 0),
+                            transferIntent.getStringExtra(EXTRA_UNIQUEID),
+                            transferIntent.getByteArrayExtra(EXTRA_SERVER_CERT),
+                            authorization.streamSessionId, authorization.sunshineAppId, "",
+                            authorization.generation,
+                            PlayniteTransitionGateway.ActorContext.parent(next.profileId), false);
+                }
+            } catch (IOException | RuntimeException error) {
+                LimeLog.warning("Retained authorization compensation failed operation="
+                        + authorization.operationId + " generation=" + authorization.generation
+                        + " reason=" + error.getMessage());
+            }
+            LimeLog.info("Retained authorization compensation operation=" + authorization.operationId
+                    + " generation=" + authorization.generation + " resolved=" + resolved);
+        }, "MoonWaker-CompensateActor").start();
+    }
+
+    private void releaseUnusedAllowance(GatewayConnection gateway, String sessionId) {
+        try {
+            new ChildSessionClient(new GatewayTransport()).end(gateway, sessionId, "cancelled");
+        } catch (IOException | RuntimeException error) {
+            LimeLog.warning("Unused child allowance cleanup unavailable");
+        }
     }
 
     private void startRetainedGameAttempt(RetainedSwitch operation, LaunchTransitionSpec next) {
@@ -3585,6 +3778,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     settleNeutralRetainedStream(operation);
                     completeRetainedSwitch(operation,
                             RetainedStreamSessionCoordinator.SwitchOutcome.CANCELLED, "");
+                } else if (operation.authorizationCompensation != null) {
+                    operation.authorizationCompensation.run();
                 }
                 return;
             }
@@ -3964,6 +4159,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         final PlayniteTransitionGateway.ActorContext actorContext;
         final AtomicBoolean completed = new AtomicBoolean();
         final AtomicBoolean consoleSignalled = new AtomicBoolean();
+        final AtomicBoolean authorizationCompensated = new AtomicBoolean();
+        Runnable authorizationCompensation;
         LaunchTransitionSpec newSpec;
         ConsoleStreamTransitionCoordinator newCoordinator;
         boolean cancelRequested;
@@ -4014,7 +4211,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 if (gateway == null) {
                     LimeLog.warning("Unable to stop provider game: Gateway unavailable");
                 } else {
-                    gateway.stopGame(gameId);
+                    PlayniteTransitionGateway.Snapshot current = gateway.snapshot();
+                    String exactGame = PlayniteIdentityResolutionPolicy.verifiedStopTarget(
+                            gameId, current.gameState, current.gameId);
+                    if (exactGame == null || exactGame.isEmpty()
+                            || current.processToken.isEmpty()) {
+                        throw new IOException("provider_process_not_exact");
+                    }
+                    gateway.stopGame(exactGame, current.processToken);
                     success = true;
                 }
             } catch (IOException | RuntimeException error) {
@@ -4026,17 +4230,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void terminateWholeSessionVerified(ProviderStopCallback completion) {
-        terminateWholeSessionVerified(completion, false, true);
+        terminateWholeSessionVerified(completion, false);
     }
 
     private void terminateWholeSessionVerified(
-            ProviderStopCallback completion, boolean providerAlreadyStopped,
-            boolean restoreRetainedOnFailure) {
+            ProviderStopCallback completion, boolean providerAlreadyStopped) {
         runOnUiThread(() -> {
-            if (wholeSessionTerminationInFlight) {
+            if (!wholeSessionTermination.begin()) {
                 if (completion != null) completion.complete(false);
                 return;
             }
+            stopChildMonitoring();
             final String expectedSessionId = streamSessionId;
             final String expectedHostId = normalizeOpaqueId(
                     getIntent().getStringExtra(EXTRA_PC_UUID));
@@ -4046,268 +4250,101 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     ? "" : transitionSpec.playniteGameId;
             final PlayniteTransitionGateway.ActorContext actorContext =
                     currentGatewayActorContext();
-            if (expectedSessionId.isEmpty() || expectedHostId.isEmpty()
-                    || transitionSpec == null
-                    || !expectedHostId.equalsIgnoreCase(transitionSpec.hostId)
-                    || expectedAppId != transitionSpec.sunshineAppId) {
+            final long expectedControlGeneration = Math.max(0L,
+                    getIntent().getLongExtra(EXTRA_CONTROL_GENERATION, 0L));
+            final boolean hostCorrelated = !expectedSessionId.isEmpty() && !expectedHostId.isEmpty()
+                    && transitionSpec != null
+                    && expectedHostId.equalsIgnoreCase(transitionSpec.hostId)
+                    && expectedAppId == transitionSpec.sunshineAppId
+                    && expectedControlGeneration > 0L;
+            if (!hostCorrelated) {
                 LimeLog.warning("Whole-session termination rejected: missing correlation");
-                if (completion != null) completion.complete(false);
-                return;
             }
-            wholeSessionTerminationInFlight = true;
             RetainedStreamSessionCoordinator.DirectTermination directTermination =
-                    completion == null
+                    completion == null && hostCorrelated
                             ? RetainedStreamSessionCoordinator.beginDirectTermination(
-                            expectedSessionId, expectedHostId,
+                            this, expectedSessionId, expectedHostId,
                             expectedAppId, expectedGameId) : null;
-            boolean marked = completion == null
+            boolean marked = hostCorrelated && (completion == null
                     ? directTermination != null
                     : RetainedStreamSessionCoordinator.markTerminating(
-                    expectedSessionId, expectedHostId, expectedAppId, expectedGameId);
+                    expectedSessionId, expectedHostId, expectedAppId, expectedGameId));
             LimeLog.info("Whole-session termination requested host=" + expectedHostId
                     + " app=" + expectedAppId + " game=" + expectedGameId
                     + " marker=" + marked);
-            ProviderStopCallback afterProvider = providerStopped -> {
-                providerStopInFlight = false;
-                providerStopConfirmed = providerStopped;
-                if (!isCurrentWholeSessionTermination(
-                        expectedSessionId, expectedHostId, expectedAppId)) return;
-                if (!providerStopped) {
-                    finishWholeSessionTermination(false, marked, directTermination, completion,
-                            "provider_stop_failed", expectedSessionId,
-                            expectedHostId, expectedAppId, restoreRetainedOnFailure);
-                    return;
-                }
-                if (!providerAlreadyStopped && !expectedGameId.isEmpty()) {
-                    RetainedStreamSessionCoordinator.clearTerminatingGameIfMatches(
-                            expectedSessionId, expectedHostId, expectedAppId,
-                            expectedGameId);
-                    String targetName = getIntent().getStringExtra(EXTRA_STREAM_TARGET_NAME);
-                    settleNeutralRetainedStream(expectedHostId, expectedAppId,
-                            targetName == null ? appName : targetName);
-                }
-                verifySunshineSessionStopped(expectedSessionId, expectedHostId,
-                        expectedAppId, marked, directTermination,
-                        completion, restoreRetainedOnFailure);
-            };
-            Runnable stopProvider = () -> {
-                if (providerAlreadyStopped) afterProvider.complete(true);
-                else stopVerifiedProviderGame(
-                        expectedHostId, expectedGameId, actorContext, afterProvider);
-            };
-            providerStopInFlight = true;
-            if (!backgroundStreamParked && !streamHomeVisible
-                    && transitionController != null && consoleLoadingView != null) {
-                transitionController.closingStream(transitionSpec.id);
-                consoleLoadingView.showOpaque();
-                consoleLoadingView.doAfterNextFrame(stopProvider);
-            } else {
-                stopProvider.run();
-            }
+            Context application = getApplicationContext();
+            String activeHost = getIntent().getStringExtra(EXTRA_HOST);
+            int port = getIntent().getIntExtra(EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT);
+            int httpsPort = getIntent().getIntExtra(EXTRA_HTTPS_PORT, 0);
+            String uniqueId = getIntent().getStringExtra(EXTRA_UNIQUEID);
+            byte[] certificate = getIntent().getByteArrayExtra(EXTRA_SERVER_CERT);
+            WeakReference<Game> activity = new WeakReference<>(this);
+            wholeSessionTermination.run(
+                    this::applyImmediateTerminalPrivacy,
+                    this::openTerminalConsoleHome,
+                    local -> stopConnectionResult(result -> {
+                        boolean stopped = result == TransportStopCoordinator.Result.STOPPED;
+                        local.complete(stopped);
+                        Game current = activity.get();
+                        if (current != null) current.finish();
+                    }),
+                    host -> {
+                        if (!marked) {
+                            host.complete(false);
+                            return;
+                        }
+                        new Thread(() -> host.complete(HostSessionTermination.run(
+                            application, expectedHostId, activeHost, port, httpsPort,
+                            uniqueId, certificate, expectedSessionId, expectedAppId,
+                            expectedGameId, expectedControlGeneration, actorContext,
+                            providerAlreadyStopped)), "MoonWaker-TerminateHost").start();
+                    },
+                    success -> {
+                        if (completion == null) {
+                            if (directTermination != null && success) {
+                                RetainedStreamSessionCoordinator.completeDirectTermination(
+                                    directTermination, true);
+                            } else if (directTermination != null) {
+                                RetainedStreamSessionCoordinator.abandonDirectTermination(
+                                        directTermination);
+                            } else {
+                                RetainedStreamSessionCoordinator.markTransportUnsafe(
+                                        this, expectedSessionId, expectedHostId, expectedAppId);
+                            }
+                        } else {
+                            if (!success) completion.transportUnsafe();
+                            completion.complete(success);
+                        }
+                    });
         });
     }
 
-    private void verifySunshineSessionStopped(
-            String expectedSessionId, String expectedHostId, int expectedAppId,
-            boolean marked,
-            RetainedStreamSessionCoordinator.DirectTermination directTermination,
-            ProviderStopCallback completion,
-            boolean restoreRetainedOnFailure) {
-        final String host = getIntent().getStringExtra(EXTRA_HOST);
-        final int port = getIntent().getIntExtra(EXTRA_PORT, NvHTTP.DEFAULT_HTTP_PORT);
-        final int httpsPort = getIntent().getIntExtra(EXTRA_HTTPS_PORT, 0);
-        final String uniqueId = getIntent().getStringExtra(EXTRA_UNIQUEID);
-        final byte[] derCertData = getIntent().getByteArrayExtra(EXTRA_SERVER_CERT);
-        new Thread(() -> {
-            boolean stopped = false;
-            String reason = "sunshine_state_unverified";
-            try {
-                X509Certificate serverCert = null;
-                if (derCertData != null) {
-                    serverCert = (X509Certificate) CertificateFactory.getInstance("X.509")
-                            .generateCertificate(new ByteArrayInputStream(derCertData));
-                }
-                NvHTTP http = new NvHTTP(new ComputerDetails.AddressTuple(host, port),
-                        httpsPort, uniqueId, serverCert,
-                        PlatformBinding.getCryptoProvider(this));
-                ComputerDetails fresh = http.getComputerDetails(true);
-                int freshAppId = fresh.runningGameId;
-                LimeLog.info("Whole-session Sunshine check expectedApp=" + expectedAppId
-                        + " freshApp=" + freshAppId);
-                if (freshAppId == 0) {
-                    stopped = true;
-                    reason = "already_stopped";
-                } else if (expectedAppId <= 0 || freshAppId != expectedAppId) {
-                    reason = "sunshine_app_mismatch:" + freshAppId;
-                } else if (!http.quitApp()) {
-                    reason = "sunshine_quit_rejected";
-                } else {
-                    long deadline = SystemClock.uptimeMillis()
-                            + WHOLE_SESSION_QUIT_TIMEOUT_MS;
-                    while (SystemClock.uptimeMillis() < deadline) {
-                        try {
-                            freshAppId = http.getComputerDetails(true).runningGameId;
-                            if (freshAppId == 0) {
-                                stopped = true;
-                                reason = "sunshine_stopped";
-                                break;
-                            }
-                            if (freshAppId != expectedAppId) {
-                                reason = "sunshine_app_changed:" + freshAppId;
-                                break;
-                            }
-                        } catch (IOException readError) {
-                            reason = "sunshine_poll_failed";
-                        }
-                        Thread.sleep(300L);
-                    }
-                }
-            } catch (IOException | CertificateException | RuntimeException error) {
-                reason = "sunshine_stop_failed:" + error.getClass().getSimpleName();
-            } catch (InterruptedException interrupted) {
-                Thread.currentThread().interrupt();
-                reason = "sunshine_stop_interrupted";
-            } catch (Exception error) {
-                reason = "sunshine_stop_failed:" + error.getClass().getSimpleName();
-            }
-            boolean success = stopped;
-            String terminalReason = reason;
-            runOnUiThread(() -> finishWholeSessionTermination(
-                    success, marked, directTermination, completion, terminalReason,
-                    expectedSessionId, expectedHostId, expectedAppId,
-                    restoreRetainedOnFailure));
-        }, "MoonWaker-TerminateSunshine").start();
-    }
-
-    private void stopVerifiedProviderGame(
-            String expectedHostId, String expectedGameId,
-            PlayniteTransitionGateway.ActorContext actorContext,
-            ProviderStopCallback completion) {
-        final String activeHost = getIntent().getStringExtra(EXTRA_HOST);
-        new Thread(() -> {
-            boolean success = false;
-            String reason = "provider_state_unverified";
-            try {
-                PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
-                        Game.this, expectedHostId, activeHost, actorContext);
-                if (gateway == null) {
-                    reason = "gateway_unavailable";
-                } else {
-                    PlayniteTransitionGateway.Snapshot current = gateway.snapshot();
-                    String exactGame = expectedGameId.isEmpty()
-                            ? ("idle".equalsIgnoreCase(current.gameState) ? "" : null)
-                            : PlayniteIdentityResolutionPolicy.verifiedStopTarget(
-                            expectedGameId, current.gameState, current.gameId);
-                    if (exactGame == null) {
-                        reason = "provider_game_mismatch:" + current.gameState
-                                + ':' + current.gameId;
-                    } else {
-                        if (!exactGame.isEmpty()) gateway.stopGame(exactGame);
-                        success = true;
-                        reason = exactGame.isEmpty()
-                                ? "provider_idle" : "provider_stopped:" + exactGame;
-                    }
-                }
-            } catch (IOException | RuntimeException error) {
-                reason = "provider_stop_failed:" + error.getClass().getSimpleName();
-            }
-            boolean stopped = success;
-            String terminalReason = reason;
-            runOnUiThread(() -> {
-                LimeLog.info("Whole-session provider decision host=" + expectedHostId
-                        + " game=" + expectedGameId + " success=" + stopped
-                        + " reason=" + terminalReason);
-                if (completion != null) completion.complete(stopped);
-            });
-        }, "MoonWaker-VerifyProviderStop").start();
-    }
-
-    private boolean isCurrentWholeSessionTermination(
-            String expectedSessionId, String expectedHostId, int expectedAppId) {
-        return wholeSessionTerminationInFlight
-                && expectedSessionId.equals(streamSessionId)
-                && expectedHostId.equalsIgnoreCase(normalizeOpaqueId(
-                getIntent().getStringExtra(EXTRA_PC_UUID)))
-                && expectedAppId == getIntent().getIntExtra(
-                EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID);
-    }
-
-    private void finishWholeSessionTermination(
-            boolean success, boolean marked,
-            RetainedStreamSessionCoordinator.DirectTermination directTermination,
-            ProviderStopCallback completion,
-            String reason, String expectedSessionId, String expectedHostId,
-            int expectedAppId, boolean restoreRetainedOnFailure) {
-        if (!isCurrentWholeSessionTermination(
-                expectedSessionId, expectedHostId, expectedAppId)) return;
-        LimeLog.info("Whole-session termination result host=" + expectedHostId
-                + " app=" + expectedAppId + " success=" + success
-                + " reason=" + reason);
-        if (success) {
-            userInitiatedDisconnect = true;
-            backgroundStreamParked = false;
-            stopConnectionResult(result -> {
-                wholeSessionTerminationInFlight = false;
-                boolean stopped = result == TransportStopCoordinator.Result.STOPPED;
-                if (stopped) {
-                    SessionResumeManager.clearIfMatches(this, expectedSessionId);
-                    BackgroundStreamService.resumed(this, expectedSessionId);
-                    if (controllerHandler != null) {
-                        controllerHandler.pendingApplicationQuit = false;
-                    }
-                    if (completion == null) {
-                        RetainedStreamSessionCoordinator.completeDirectTermination(
-                                directTermination, true);
-                    } else {
-                        completion.complete(true);
-                    }
-                    finish();
-                } else if (completion != null) {
-                    completion.transportUnsafe();
-                    completion.complete(false);
-                } else {
-                    RetainedStreamSessionCoordinator.completeDirectTransportStop(
-                            directTermination, result);
-                }
-            });
-            return;
-        }
-
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
-        boolean restoreApplied = completion != null;
-        if (restoreRetainedOnFailure && marked
-                && retained.state == RetainedStreamSessionCoordinator.State.TERMINATING
-                && expectedSessionId.equals(retained.streamSessionId)) {
-            if (completion == null) {
-                restoreApplied = RetainedStreamSessionCoordinator.completeDirectTermination(
-                        directTermination, false);
-            }
+    private void applyImmediateTerminalPrivacy() {
+        userInitiatedDisconnect = true;
+        backgroundStreamParked = false;
+        stopChildMonitoring();
+        if (overlayMenuView != null) overlayMenuView.closeMenu();
+        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(0f);
+        if (controllerHandler != null) {
+            controllerHandler.setInputSuppressed(true);
+            controllerHandler.disableSensors();
+            controllerHandler.pendingApplicationQuit = false;
         }
         if (transitionController != null && transitionSpec != null) {
-            transitionController.streamClosingFailed(transitionSpec.id,
-                    getString(R.string.console_terminate_session_failed));
+            transitionController.closingStream(transitionSpec.id);
         }
-        if (!restoreRetainedOnFailure) {
-            SessionResumeManager.clearIfMatches(this, expectedSessionId);
-            stopConnectionResult(result -> {
-                wholeSessionTerminationInFlight = false;
-                if (completion != null) {
-                    completion.complete(false);
-                } else {
-                    RetainedStreamSessionCoordinator.abandonDirectTermination(
-                            directTermination);
-                }
-            });
-            return;
-        }
-        wholeSessionTerminationInFlight = false;
-        if (completion != null) completion.complete(false);
-        if (connected && !streamHomeVisible && restoreApplied
-                && RetainedStreamSessionCoordinator.ownsLiveOrParkedSession(
-                this, expectedSessionId, expectedHostId, expectedAppId)) {
-            openConsoleHome();
-        }
+        if (consoleLoadingView != null) consoleLoadingView.showOpaque();
+        SessionResumeManager.clearIfMatches(this, streamSessionId);
+        BackgroundStreamService.resumed(this, streamSessionId);
+    }
+
+    private void openTerminalConsoleHome() {
+        streamHomeVisible = true;
+        Intent home = new Intent(this, ConsoleActivity.class);
+        home.addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP | Intent.FLAG_ACTIVITY_SINGLE_TOP);
+        home.putExtra(ConsoleActivity.EXTRA_SUPPRESS_AUTO_WARM_UP, true);
+        startActivity(home);
+        overridePendingTransition(android.R.anim.fade_in, 0);
     }
 
     private void restoreParkedStream(SurfaceHolder holder) {
@@ -4506,11 +4543,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
 
-        if (wholeSessionTerminationInFlight) {
+        if (wholeSessionTermination.isRunning()) {
             LimeLog.info("Ignoring transport termination while host stop is verified: "
                     + errorCode);
             runOnUiThread(() -> {
-                if (wholeSessionTerminationInFlight) stopConnection();
+                if (wholeSessionTermination.isRunning()) stopConnection();
             });
             return;
         }
@@ -4692,10 +4729,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 SessionResumeManager.saveActive(Game.this, getIntent(), streamSessionId);
                 BackgroundStreamService.resumed(Game.this, streamSessionId);
                 if (!sourceSuspendId.isEmpty()) {
-                    SuspendedSessionStore.markResumedIfMatches(Game.this,
+                    SuspendedSessionStore.markResumedForExecutionIfMatches(Game.this,
                             sourceSuspendId,
                             getIntent().getStringExtra(EXTRA_PC_UUID),
-                            currentProfileId(),
+                            currentGatewayActorContext().executionProfileId,
                             getIntent().getIntExtra(EXTRA_APP_ID, 0),
                             sourceSuspendPlayniteGameId, streamSessionId);
                 }
@@ -4776,6 +4813,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 gateway,
                 (action, delayMs) -> transitionUiHandler.postDelayed(action, delayMs),
                 new ConsoleStreamTransitionCoordinator.Callbacks() {
+                    @Override public boolean controlTransportAuthorized() {
+                        return conn != null && conn.getControlGeneration() > 0L;
+                    }
+
                     @Override public void onHostGuidePolicy(
                             String transitionId, String gameId, boolean allowed) {
                         runOnUiThread(() -> {
@@ -4996,7 +5037,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                 LimeLog.info("Fresh neutral cleanup transition=" + transitionId
                                         + " providerStopped=" + success);
                                 if (success) {
-                                    terminateWholeSessionVerified(null, true, false);
+                                    terminateWholeSessionVerified(null, true);
                                 } else if (transitionController != null) {
                                     transitionController.error(transitionId,
                                             getString(R.string.transition_readiness_unconfirmed));
@@ -5463,8 +5504,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void cancelTransition() {
         if (transitionController == null || transitionCancelInFlight) return;
+        retryTransitionId = "";
+        getIntent().removeExtra(STATE_RETRY_TRANSITION_ID);
         if (returnRetainedObservationToDashboard()) return;
         if (retainedSwitch != null) {
+            // A user Cancel overrides a retry-triggered retained cleanup.
+            retainedSwitch.retryRequested = false;
             requestRetainedSwitchCancellation(retainedSwitch);
             return;
         }
@@ -5581,6 +5626,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void retryTransition() {
         if (transitionSpec == null) return;
+        if (transitionSpec.id.equals(retryTransitionId)) {
+            MoonWakerDiagnostics.record("WARN", "android.launch-transition",
+                    "launch_transition.retry_ignored",
+                    "transition_id", transitionSpec.id,
+                    "reason", "retry_already_started");
+            cancelTransition();
+            return;
+        }
+        String retryId = transitionSpec.id;
+        retryTransitionId = retryId;
+        getIntent().putExtra(STATE_RETRY_TRANSITION_ID, retryId);
         if (retainedSwitch != null && retainedSwitch.newSpec != null) {
             retainedSwitch.retryRequested = true;
             requestRetainedSwitchCancellation(retainedSwitch);
@@ -5606,15 +5662,34 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         retry.putExtra(EXTRA_TRANSITION_CREATED_AT, next.createdAtMillis);
         retry.putExtra(EXTRA_TRANSITION_START_BEFORE_STREAM,
                 next.startProviderBeforeStream);
+        retry.removeExtra(STATE_RETRY_TRANSITION_ID);
         consoleLoadingView.showOpaque();
         consoleLoadingView.doAfterNextFrame(() -> {
+            if (!retryStillCurrent(retryId)) return;
             userInitiatedDisconnect = true;
             stopConnection(() -> {
+                if (!retryStillCurrent(retryId)) return;
+                retryTransitionId = "";
                 finish();
                 startActivity(retry);
                 overridePendingTransition(0, 0);
             });
         });
+    }
+
+    private boolean retryStillCurrent(String expectedId) {
+        return shouldContinueRetry(expectedId,
+                transitionSpec == null ? "" : transitionSpec.id,
+                retryTransitionId, transitionCancelInFlight,
+                isFinishing(), isDestroyed());
+    }
+
+    static boolean shouldContinueRetry(String expectedId, String currentTransitionId,
+                                       String activeRetryId, boolean cancelInFlight,
+                                       boolean finishing, boolean destroyed) {
+        return expectedId != null && expectedId.equals(currentTransitionId)
+                && expectedId.equals(activeRetryId) && !cancelInFlight
+                && !finishing && !destroyed;
     }
 
     private void retryRetainedObservation() {
@@ -5993,7 +6068,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         boolean discordEnabled = !isChildSession();
         overlayMenuView.setDiscordFeatureEnabled(discordEnabled);
-        overlayMenuView.setHostActionsAvailable(!isChildSession());
+        overlayMenuView.setSuspendSessionAvailable(true);
         discordDmToastView = findViewById(R.id.discordDmToastView);
         if (!discordEnabled) {
             if (discordDmToastView != null) discordDmToastView.setVisibility(View.GONE);
@@ -6064,7 +6139,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
             @Override
             public void onQuitSession() {
-                closeStreamWithPrivacy(true);
+                confirmQuitSession();
             }
 
             @Override
@@ -6239,6 +6314,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 currentProfileId(),
                 getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID),
                 sessionGameId);
+        RetainedStreamSessionCoordinator.bindControlGeneration(this, streamSessionId,
+                getIntent().getLongExtra(EXTRA_CONTROL_GENERATION, 0L));
         if (streamAudioRenderer != null) streamAudioRenderer.setVolume(0f);
         if (controllerHandler != null) controllerHandler.disableSensors();
 
@@ -6335,6 +6412,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 this::suspendSessionAndSleep);
     }
 
+    private void confirmQuitSession() {
+        overlayMenuView.closeMenu();
+        ConsoleConfirmDialog.show(this, getString(R.string.overlay_menu_quit_session),
+                getString(R.string.applist_quit_confirmation),
+                getString(android.R.string.cancel),
+                getString(android.R.string.ok),
+                () -> closeStreamWithPrivacy(true));
+    }
+
     private boolean canEndManagedGame() {
         return connected && streamEverRevealed && transitionSpec != null
                 && hasProviderGameTransition() && transitionCoordinator != null
@@ -6355,11 +6441,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void endManagedGameKeepingStream() {
-        endManagedGameKeepingStream(false);
-    }
-
-    private void endManagedGameKeepingStream(boolean allowanceEnded) {
-        if ((!allowanceEnded && !canEndManagedGame()) || providerEndGameInFlight
+        if (!canEndManagedGame() || providerEndGameInFlight
                 || transitionSpec == null || transitionSpec.playniteGameId.isEmpty()) return;
         stopChildMonitoring();
         LaunchTransitionSpec expected = transitionSpec;
@@ -6372,15 +6454,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         Game.this, expected.hostId, getIntent().getStringExtra(EXTRA_HOST),
                         actorContext);
                 if (gateway == null) throw new IOException("gateway_unavailable");
-                if (!childSessionId.isEmpty()) {
-                    endChildAllowanceAndWait();
-                } else {
-                    PlayniteTransitionGateway.Snapshot current = gateway.snapshot();
-                    String exactGame = PlayniteIdentityResolutionPolicy.verifiedStopTarget(
-                            expected.playniteGameId, current.gameState, current.gameId);
-                    if (exactGame == null) throw new IOException("provider_game_not_exact");
-                    if (!exactGame.isEmpty()) gateway.stopGame(exactGame);
+                PlayniteTransitionGateway.Snapshot current = gateway.snapshot();
+                String exactGame = PlayniteIdentityResolutionPolicy.verifiedStopTarget(
+                        expected.playniteGameId, current.gameState, current.gameId);
+                if (exactGame == null) throw new IOException("provider_game_not_exact");
+                if (!exactGame.isEmpty()) {
+                    if (current.processToken.isEmpty()) {
+                        throw new IOException("provider_process_not_exact");
+                    }
+                    gateway.stopGame(exactGame, current.processToken);
                 }
+                if (!childSessionId.isEmpty()) releaseChildTimeAttachmentAndWait();
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()
                             || !providerEndGameInFlight || transitionSpec != expected) return;
@@ -6393,13 +6477,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     if (isFinishing() || isDestroyed()
                             || !providerEndGameInFlight || transitionSpec != expected) return;
                     providerEndGameInFlight = false;
-                    if (allowanceEnded) {
-                        // Keep the existing privacy gate closed until host enforcement completes.
-                        startChildMonitoring();
-                    } else {
-                        if (prepareChildSession() && !childSessionId.isEmpty()) startChildMonitoring();
-                        retryRetainedObservation();
-                    }
+                    if (prepareChildSession() && !childSessionId.isEmpty()) startChildMonitoring();
+                    retryRetainedObservation();
                     new android.app.AlertDialog.Builder(Game.this)
                             .setTitle(R.string.overlay_menu_end_game_failed_title)
                             .setMessage(R.string.overlay_menu_end_game_failed)
@@ -6412,8 +6491,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void clearResumedSuspendedSession() {
         if (sourceSuspendId.isEmpty()) return;
-        SuspendedSessionStore.markSessionEndedIfMatches(this,
-                getIntent().getStringExtra(EXTRA_PC_UUID), currentProfileId(),
+        SuspendedSessionStore.markSessionEndedForExecutionIfMatches(this,
+                getIntent().getStringExtra(EXTRA_PC_UUID), getExecutionProfileId(),
                 sourceSuspendId);
     }
     private void suspendSessionAndSleep() {
@@ -6453,11 +6532,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         playniteGameId)) {
                     throw new IOException("Host rejected the correlated suspend request.");
                 }
+                clearChildAllowance();
                 SuspendedSessionStore.save(Game.this,
                         new SuspendedSessionStore.Session(suspendId, expected.hostId,
                                 expected.profileId,
                                 expected.sunshineAppId, playniteGameId, appName,
-                                artwork, System.currentTimeMillis()));
+                                artwork, System.currentTimeMillis(),
+                                currentGatewayActorContext().executionProfileId));
                 SuspendedSessionStore.requestHostSelection(Game.this, expected.hostId);
                 runOnUiThread(() -> closeStreamWithPrivacy(false));
             } catch (Exception error) {
@@ -6849,7 +6930,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         stopChildMonitoring();
         childSessionId = "";
         childGameId = "";
-        childCountdown = null;
+        childLifecycle = null;
         childEndSent.set(false);
         getIntent().removeExtra(EXTRA_CHILD_SESSION_ID);
         getIntent().removeExtra(EXTRA_CHILD_GAME_ID);
@@ -6877,9 +6958,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             childGatewayConnection = gateway.gatewayConnection();
         }
         childSessionClient = new ChildSessionClient(new GatewayTransport());
-        childCountdown = new ChildSessionCountdown(childSessionId);
+        if (childLifecycle == null) childLifecycle = createChildLifecycle();
         long now = SystemClock.elapsedRealtime();
-        childCountdown.update(childSessionId,
+        childLifecycle.configure(childSessionId,
                 childRemainingSeconds(childDeadlineElapsedMs, now), now);
         return true;
     }
@@ -6898,9 +6979,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed() || transitionSpec != expected
                             || !sessionId.equals(childSessionId) || !childStateMatches(state)) return;
-                    if (state.cleanupRequired || childStateIsTerminal(state)
+                    if (state.cleanupRequired || ChildSessionLifecycle.terminal(state)
                             || (state.ok && state.playableNowSeconds <= 0L)) {
-                        finishChildSession(childReason(state));
+                        childLifecycle.handleTerminalState(state);
                         return;
                     }
                     if (!state.ok) {
@@ -6911,7 +6992,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     long now = SystemClock.elapsedRealtime();
                     childDeadlineElapsedMs = now + state.playableNowSeconds * 1_000L;
                     getIntent().putExtra(EXTRA_CHILD_DEADLINE_ELAPSED_MS, childDeadlineElapsedMs);
-                    childCountdown.update(sessionId, state.playableNowSeconds, now);
+                    childLifecycle.update(sessionId, state.playableNowSeconds, now);
                     startChildMonitoring();
                     ready.run();
                 });
@@ -6946,57 +7027,74 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void startChildMonitoring() {
-        stopChildMonitoring();
-        childCountdownRunnable = new Runnable() {
-            @Override public void run() {
-                if (!isChildSession() || isDestroyed() || childCountdown == null) {
-                    return;
-                }
-                long now = SystemClock.elapsedRealtime();
-                long remaining = childCountdown.remainingSeconds(now);
-                if (childCountdownView != null) {
-                    childCountdownView.setText(getString(R.string.child_session_countdown,
-                            remaining / 60L, remaining % 60L));
-                }
-                if (remaining <= 0L) {
-                    finishChildSession("time_expired");
-                    return;
-                }
-                int warning = childCountdown.crossedWarningMinutes(now);
-                if (warning > 0) {
-                    long remainingMinutes = Math.max(1L, (remaining + 59L) / 60L);
-                    Toast.makeText(Game.this,
-                            getString(R.string.child_session_warning, remainingMinutes),
-                            Toast.LENGTH_LONG).show();
-                }
-                transitionUiHandler.postDelayed(this, CHILD_COUNTDOWN_INTERVAL_MS);
-            }
-        };
-        childHeartbeatRunnable = () -> {
-            if (!isChildSession() || isDestroyed()) return;
-            sendChildHeartbeat();
-            transitionUiHandler.postDelayed(childHeartbeatRunnable,
-                    CHILD_HEARTBEAT_INTERVAL_MS);
-        };
-        transitionUiHandler.post(childCountdownRunnable);
-        transitionUiHandler.post(childHeartbeatRunnable);
+        if (childLifecycle != null) childLifecycle.start();
     }
 
     private void stopChildMonitoring() {
-        if (childCountdownRunnable != null) {
-            transitionUiHandler.removeCallbacks(childCountdownRunnable);
-            childCountdownRunnable = null;
-        }
-        if (childHeartbeatRunnable != null) {
-            transitionUiHandler.removeCallbacks(childHeartbeatRunnable);
-            childHeartbeatRunnable = null;
-        }
+        if (childLifecycle != null) childLifecycle.stop();
     }
 
-    private void sendChildHeartbeat() {
+    private ChildSessionLifecycle createChildLifecycle() {
+        return new ChildSessionLifecycle(new ChildSessionLifecycle.Scheduler() {
+            @Override public void post(Runnable action) {
+                transitionUiHandler.post(action);
+            }
+
+            @Override public void postDelayed(Runnable action, long delayMs) {
+                transitionUiHandler.postDelayed(action, delayMs);
+            }
+
+            @Override public void remove(Runnable action) {
+                transitionUiHandler.removeCallbacks(action);
+            }
+        }, SystemClock::elapsedRealtime, new ChildSessionLifecycle.Listener() {
+            @Override public boolean active() {
+                return isChildSession() && !isDestroyed() && retainedSwitch == null
+                        && !providerEndGameInFlight;
+            }
+
+            @Override public void render(long remaining) {
+                if (childCountdownView != null) childCountdownView.setText(getString(
+                        R.string.child_session_countdown,
+                        remaining / 60L, remaining % 60L));
+            }
+
+            @Override public void warning(long remainingMinutes) {
+                Toast.makeText(Game.this,
+                        getString(R.string.child_session_warning, remainingMinutes),
+                        Toast.LENGTH_LONG).show();
+            }
+
+            @Override public void requestHeartbeat(
+                    ChildSessionLifecycle.HeartbeatCallback callback) {
+                sendChildHeartbeat(callback);
+            }
+
+            @Override public boolean canRetainGameOnly() {
+                return connected && transitionSpec != null
+                        && !transitionSpec.playniteGameId.isEmpty();
+            }
+
+            @Override public void retainGameOnly() {
+                String transitionId = transitionSpec.id;
+                String gameId = transitionSpec.playniteGameId;
+                clearChildAllowance();
+                providerStopConfirmed = true;
+                retainNeutralStreamAfterNaturalGameStop(transitionId, gameId);
+            }
+
+            @Override public void terminate(String reason) {
+                finishChildSession(reason);
+            }
+        }, CHILD_COUNTDOWN_INTERVAL_MS, CHILD_HEARTBEAT_INTERVAL_MS);
+    }
+
+    private void sendChildHeartbeat(ChildSessionLifecycle.HeartbeatCallback callback) {
         if (childSessionId.isEmpty() || isDestroyed() || childSessionClient == null
-                || childGatewayConnection == null
-                || !childHeartbeatInFlight.compareAndSet(false, true)) return;
+                || childGatewayConnection == null) {
+            callback.unavailable();
+            return;
+        }
         final String expectedHostId = childHostId();
         final String expectedActorId = childActorProfileId;
         final String expectedSessionId = childSessionId;
@@ -7013,44 +7111,43 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             expectedSessionId, expectedGameId, expectedTransitionId,
                             childHostId(), childActorProfileId, childSessionId, childGameId,
                             transitionSpec == null ? "" : transitionSpec.id)
-                            || !childStateMatches(state)) return;
-                    if (state.cleanupRequired || childStateIsTerminal(state)) {
-                        finishChildSession(childReason(state));
+                            || !childStateMatches(state)) {
+                        callback.unavailable();
                         return;
                     }
-                    // A failed observation does not revoke the last confirmed allowance.
-                    // Its existing deadline still applies while Gateway is unavailable.
-                    if (!state.ok) return;
-                    long received = SystemClock.elapsedRealtime();
-                    if (!childCountdown.update(expectedSessionId,
-                            state.playableNowSeconds, received)
-                            || childCountdown.isExpired(received)) {
-                        finishChildSession("time_expired");
-                    }
+                    callback.complete(state);
                 });
             } catch (IOException | RuntimeException error) {
                 LimeLog.warning("Child session heartbeat unavailable: " + error.getClass().getSimpleName());
-            } finally {
-                childHeartbeatInFlight.set(false);
+                runOnUiThread(callback::unavailable);
             }
         }, "MoonWaker-ChildSessionHeartbeat").start();
     }
 
-    private void endChildAllowanceAndWait() throws IOException {
+    private void releaseChildTimeAttachmentAndWait() throws IOException {
         final String sessionId = childSessionId;
         final GatewayConnection connection = childGatewayConnection;
         if (sessionId.isEmpty()) return;
         if (connection == null) throw new IOException("child_gateway_unavailable");
-        ChildSessionClient client = new ChildSessionClient(new GatewayTransport());
-        long deadline = SystemClock.elapsedRealtime() + 25_000L;
-        ChildSessionClient.State state = client.end(connection, sessionId, "game_stopped");
-        while (state.cleanupRequired && SystemClock.elapsedRealtime() < deadline) {
-            SystemClock.sleep(250L);
-            state = client.status(connection, sessionId);
-        }
-        if (state.cleanupRequired || !childStateIsTerminal(state)) {
+        ChildSessionClient.State state = endChildSessionAndWait(
+                new ChildSessionClient(new GatewayTransport()), connection,
+                sessionId, "game_stopped");
+        if (state.cleanupRequired || !ChildSessionLifecycle.terminal(state)) {
             throw new IOException("child_session_cleanup_required");
         }
+    }
+
+    private ChildSessionClient.State endChildSessionAndWait(
+            ChildSessionClient client, GatewayConnection connection,
+            String sessionId, String reason) throws IOException {
+        long deadline = SystemClock.elapsedRealtime() + 30_000L;
+        ChildSessionClient.State state = client.end(connection, sessionId, reason);
+        while ((state.cleanupRequired || !ChildSessionLifecycle.terminal(state))
+                && SystemClock.elapsedRealtime() < deadline) {
+            SystemClock.sleep(1_000L);
+            state = client.status(connection, sessionId);
+        }
+        return state;
     }
 
     private void endChildSession(String reason) {
@@ -7079,13 +7176,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         if (childSessionId.isEmpty() || isFinishing() || isDestroyed()) return;
-        if (transitionController != null && transitionSpec != null) {
-            transitionController.closingStream(transitionSpec.id);
-        }
-        if (consoleLoadingView != null) consoleLoadingView.showOpaque();
-        if (controllerHandler != null) controllerHandler.setInputSuppressed(true);
         displayTransientMessage(getString(childReasonMessage(reason)));
-        endManagedGameKeepingStream(true);
+        terminateWholeSessionVerified(null);
     }
 
     private boolean childStateMatches(ChildSessionClient.State state) {
@@ -7094,23 +7186,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (!state.gameId.isEmpty() && !sameChildGameId(childGameId, state.gameId)) return false;
         return state.executionProfileId.isEmpty()
                 || childExecutionProfileId.equals(state.executionProfileId);
-    }
-
-    private static boolean childStateIsTerminal(ChildSessionClient.State state) {
-        if (state == null) return true;
-        String stateName = state.state == null ? "" : state.state;
-        String phase = state.phase == null ? "" : state.phase;
-        return "ended".equalsIgnoreCase(stateName) || "stopped".equalsIgnoreCase(stateName)
-                || "expired".equalsIgnoreCase(stateName) || "blocked".equalsIgnoreCase(stateName)
-                || "ended".equalsIgnoreCase(phase) || "stopped".equalsIgnoreCase(phase)
-                || "expired".equalsIgnoreCase(phase) || "blocked".equalsIgnoreCase(phase);
-    }
-
-    private static String childReason(ChildSessionClient.State state) {
-        if (state == null || state.reason == null || state.reason.trim().isEmpty()) {
-            return "child_session_unavailable";
-        }
-        return state.reason.trim();
     }
 
     private static int childReasonMessage(String reason) {

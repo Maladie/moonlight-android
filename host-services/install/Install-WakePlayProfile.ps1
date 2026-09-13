@@ -1010,7 +1010,7 @@ if (-not (Test-Path -LiteralPath $gameProviderDirectory) -and
     Move-Item -LiteralPath $legacyProviderDirectory -Destination $gameProviderDirectory
 }
 $gameProviderDirectory = Install-BridgeFiles "playnite" @(
-    "GameProviderBridge.py", "GameOperations.py", "OperationJournal.py",
+    "GameProviderBridge.py", "GameOperations.py", "OperationJournal.py", "ControlEffectFence.py",
     "Confirm-SteamOperation.ps1", "Invoke-GameLauncher.ps1",
     "config.example.json", "Start-PlayniteBridge.ps1", "Stop-PlayniteBridge.ps1",
     "PatchPlayniteConnector.py", "Install-WakePlayConnectorPatch.ps1", "README.md") `

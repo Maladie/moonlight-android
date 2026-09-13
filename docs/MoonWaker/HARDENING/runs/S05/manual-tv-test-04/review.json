@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "independent_context": "/root/s05_device_diag_review",
+  "verdict": "ACCEPT",
+  "observations": [
+    "Normalization accepts only list or singleton object; missing, null and scalar values remain fail-closed.",
+    "Idle classification still requires explicit connected=false and running=false for every item.",
+    "Exact close still requires the recorded client UUID or the single recorded running app ID.",
+    "Authorization, permit, generation and session fencing are unchanged."
+  ],
+  "validation": "2/2 targeted tests independently PASS",
+  "blockers": []
+}

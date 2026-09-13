@@ -67,15 +67,21 @@
       "checkpoint_plan": "runs/S04/checkpoint-plan.json"
     },
     "S05": {
-      "status": "NOT_STARTED",
-      "assigned_run": null,
-      "input_fingerprint": null,
-      "output_fingerprint": null,
-      "implementation_report": null,
-      "review_report": null,
+      "status": "CODE_VERIFIED_DEVICE_PENDING",
+      "assigned_run": "s05-unified-child-lifecycle-20260913",
+      "input_fingerprint": "sha256:681db317fa0c88bf4859113db7799d48380e458c912aa62371e9d44a8848e0bd",
+      "output_fingerprint": "sha256:14cf82e83898adf90fa786917243a12743bbe8d2dce281b4560ed715c38eeab3",
+      "implementation_report": "runs/S05/unified-child-lifecycle-20260913/implementation.json",
+      "review_report": "runs/S05/unified-child-lifecycle-20260913/review.json",
       "design_review_report": null,
-      "blockers": [],
-      "checkpoint_plan": null
+      "blockers": [
+        "Independent adversarial review ACCEPTED the unified child-facade correction at fingerprint 14cf82e8; no further reproducible code or architecture blocker was found.",
+        "Automated validation passes at Gateway 82/82 requested and 284/284 full, Playnite Bridge 267/267, and Android NonRoot Debug 1104/1104 on JDK 17.",
+        "Reviewed-source artifacts were built and verified without deployment: NonRoot Debug APK sha256 c40f05e0 and MoonWaker Host installer 0.7.112 sha256 a2ceeb40; evidence is in runs/S05/unified-child-lifecycle-20260913/artifacts.json.",
+        "The exact reviewed APK was installed and launched on BRAVIA_4K_VH22, and its installed-file SHA-256 matches the built artifact; this proves delivery only.",
+        "No Gateway, host service or host installer was installed, deployed or restarted. Mandatory candidate-bound Windows/TV functional acceptance remains pending."
+      ],
+      "checkpoint_plan": "runs/S05/checkpoint-plan.json"
     },
     "S06": {
       "status": "NOT_STARTED",
@@ -147,6 +153,20 @@
       "status": "USER_AUTHORIZED",
       "value": "Proceed with S04 implementation on the exact code-reviewed S03 candidate while S03 device scenarios are tested in parallel. This does not accept S03, waive S03 or S04 device evidence, or authorize S05. Any S03 failure overlapping S04 must be reconciled before review or acceptance.",
       "source": "User message: Rozumiem, ale wyrażam na to bezpośrednią zgodę. Przejdź do S4"
+    },
+    {
+      "id": "S05-20260910-DEPENDENCY-OVERRIDE",
+      "decision": "BEGIN_S05_PRE_EDIT_REVIEW_WITH_S04_NATIVE_TRACE_PENDING",
+      "status": "USER_AUTHORIZED",
+      "value": "Commit the complete S04 code-verified candidate and begin S05 pre-edit review on that exact commit. The user's functional S04 PASS is recorded, but this does not fabricate candidate-bound native ordering evidence or accept S04. No S05 product mutation may begin before the input-bound checkpoint plan incorporates the independent capability review.",
+      "source": "User message: Jest sukces dla S04. Wszystko przebiegło zgodnie z założeniami. Wcommituj i rozpocznij S05."
+    },
+    {
+      "id": "S05-A01-GATEWAY-CONTROL-PLANE",
+      "decision": "GATEWAY_OWNS_ALL_MOONWAKER_CONTROL",
+      "status": "USER_AUTHORIZED",
+      "value": "All MoonWaker launch/resume/reconnect/replacement/warm-up/full-quit operations require one exclusive Gateway generation and actor-lease permit. Android's existing riKey/sessionUrl0 Sunshine bootstrap may execute directly only inside that exact permit; media remains direct. Concurrent legacy clients are unsupported; unmanaged, uncertain or uncorrelated sessions fail closed and are never globally cleaned up automatically.",
+      "source": "User messages: Nie musimy gwarantować starszych klientów... Pasuje, rozpocznij"
     }
   ],
   "workspace": {

@@ -21,6 +21,7 @@ public final class SessionResumeManager {
     private static final String KEY_PENDING = "pending";
     private static final String KEY_AUTO_RESUME = "autoResume";
     private static final String KEY_STREAM_SESSION_ID = "streamSessionId";
+    private static final String KEY_CONTROL_GENERATION = "controlGeneration";
     private static final String KEY_CREATED_AT = "createdAt";
     private static final String KEY_UPDATED_AT = "updatedAt";
     private static final String KEY_HOST = "host";
@@ -58,12 +59,16 @@ public final class SessionResumeManager {
         public final String streamSessionId;
         public final String hostUuid;
         public final String profileId;
+        public final String executionProfileId;
         public final int appId;
         public final String playniteGameId;
         public final boolean neutralStreamTarget;
         public final boolean autoResume;
         public final long createdAt;
         public final long updatedAt;
+        public final long controlGeneration;
+        public final boolean childProfile;
+        public final String childSessionId;
         public final boolean legacy;
         private final Values values;
 
@@ -75,12 +80,20 @@ public final class SessionResumeManager {
             this.streamSessionId = streamSessionId;
             this.hostUuid = hostUuid;
             this.profileId = GatewayConnection.normalizeProfileId(profileId);
+            this.executionProfileId = GatewayConnection.normalizeProfileId(
+                    prefs.getString(Game.EXTRA_EXECUTION_PROFILE_ID, this.profileId));
             this.appId = appId;
             this.playniteGameId = normalize(playniteGameId);
             this.neutralStreamTarget = prefs.getBoolean(KEY_NEUTRAL_STREAM_TARGET, false);
             this.autoResume = autoResume;
             this.createdAt = createdAt;
             this.updatedAt = updatedAt;
+            this.controlGeneration = Math.max(0L,
+                    prefs.getLong(KEY_CONTROL_GENERATION, 0L));
+            this.childProfile = prefs.getBoolean(Game.EXTRA_CHILD_PROFILE,
+                    prefs.getString(Game.EXTRA_CHILD_SESSION_ID, null) != null);
+            this.childSessionId = normalize(
+                    prefs.getString(Game.EXTRA_CHILD_SESSION_ID, null));
             this.legacy = legacy;
             this.values = new Values(prefs.getAll());
         }
@@ -145,6 +158,9 @@ public final class SessionResumeManager {
         editor.putBoolean(KEY_PENDING, true);
         editor.putBoolean(KEY_AUTO_RESUME, autoResume);
         editor.putString(KEY_STREAM_SESSION_ID, sessionId);
+        editor.putLong(KEY_CONTROL_GENERATION,
+                gameIntent.getLongExtra(Game.EXTRA_CONTROL_GENERATION, 0L));
+        putString(editor, Game.EXTRA_CONTROL_INTENT, "reconnect");
         editor.putLong(KEY_CREATED_AT, createdAt);
         editor.putLong(KEY_UPDATED_AT, now);
         editor.putString(KEY_HOST, gameIntent.getStringExtra(Game.EXTRA_HOST));
@@ -246,6 +262,10 @@ public final class SessionResumeManager {
         Values prefs = current.values;
         Intent intent = new Intent(context, Game.class);
         intent.putExtra(Game.EXTRA_STREAM_SESSION_ID, current.streamSessionId);
+        intent.putExtra(Game.EXTRA_CONTROL_GENERATION,
+                prefs.getLong(KEY_CONTROL_GENERATION, 0L));
+        intent.putExtra(Game.EXTRA_CONTROL_INTENT,
+                prefs.getString(Game.EXTRA_CONTROL_INTENT, "reconnect"));
         intent.putExtra(Game.EXTRA_HOST, prefs.getString(KEY_HOST, null));
         intent.putExtra(Game.EXTRA_PORT, prefs.getInt(KEY_PORT, 0));
         intent.putExtra(Game.EXTRA_HTTPS_PORT, prefs.getInt(KEY_HTTPS_PORT, 0));

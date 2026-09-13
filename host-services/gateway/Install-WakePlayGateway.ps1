@@ -14,6 +14,9 @@ $versionSource = Join-Path (Split-Path -Parent $sourceDirectory) "version.json"
 $serviceName = "MoonWakerGateway"
 $files = @(
     "wakeplay_gateway.py",
+    "control_operation_policy.py",
+    "child_terminal_operation.py",
+    "provider_control_operation.py",
     "MoonWakerGatewayService.exe",
     "MoonWakerMicrophoneWorker.exe",
     "MoonWakerDiscordAudioWorker.exe",

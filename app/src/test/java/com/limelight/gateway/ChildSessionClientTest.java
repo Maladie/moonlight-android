@@ -31,6 +31,7 @@ public class ChildSessionClientTest {
         assertEquals("steam:123", poster.body.getString("game_id"));
         assertEquals(SESSION, poster.body.getString("session_id"));
         assertEquals("request-1", poster.body.getString("request_id"));
+        assertEquals(40_000, poster.timeout);
         assertEquals("running", result.state);
         assertEquals("running", result.phase);
         assertEquals(3600L, result.playableNowSeconds);
@@ -61,6 +62,7 @@ public class ChildSessionClientTest {
         ChildSessionClient client = client(poster);
 
         client.status(CONNECTION, SESSION);
+        assertEquals(40_000, poster.timeout);
         assertEquals("/api/v1/child/session/status", poster.path);
         assertEquals(SESSION, poster.body.getString("session_id"));
         assertEquals(1, poster.body.length());
@@ -68,9 +70,11 @@ public class ChildSessionClientTest {
         client.resume(CONNECTION, SESSION);
         assertEquals("/api/v1/child/session/resume", poster.path);
         client.heartbeat(CONNECTION, SESSION);
+        assertEquals(25_000, poster.timeout);
         assertEquals("/api/v1/child/session/heartbeat", poster.path);
 
         client.end(CONNECTION, SESSION, "client_closed");
+        assertEquals(40_000, poster.timeout);
         assertEquals("/api/v1/child/session/end", poster.path);
         assertEquals("client_closed", poster.body.getString("reason"));
         assertEquals(2, poster.body.length());
@@ -262,12 +266,14 @@ public class ChildSessionClientTest {
         private JSONObject response;
         private IOException failure;
         private String path;
+        private int timeout;
         private JSONObject body;
 
         @Override
         public JSONObject postJson(GatewayConnection connection, String path, JSONObject body,
                                    int readTimeoutMs) throws IOException {
             this.path = path;
+            this.timeout = readTimeoutMs;
             try {
                 this.body = new JSONObject(body.toString());
             } catch (JSONException error) {

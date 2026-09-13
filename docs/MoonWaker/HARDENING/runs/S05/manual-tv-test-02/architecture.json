@@ -1,0 +1,33 @@
+{
+  "task_id": "S05",
+  "status": "INDEPENDENT_REVIEW_ACCEPTED",
+  "responsibilities": [
+    {
+      "responsibility": "Asynchronous child provider termination under one exact permit",
+      "old_owner": "GatewayState._child_time_stop_execution one-shot result interpretation",
+      "new_owner": "ChildTerminalOperation.await_provider_stop",
+      "state_moved": ["Bounded polling deadline and cadence reside beside the existing single-flight owner"],
+      "effects_moved": ["Repeated exact provider end calls until stopped or bounded failure"],
+      "callers_migrated": ["GatewayState finish path used by end, status recovery, housekeeping and parent recovery"],
+      "obsolete_paths_removed": ["One-shot terminal interpretation", "Acquire-wait before recognizing own exact retry"],
+      "production_wiring_evidence": "Real Bridge integration plus deterministic grace, timeout, restart, parent and stale-generation tests",
+      "packaging_evidence": "Existing child_terminal_operation.py deployment path retained; artifact build not requested yet",
+      "lifetime_notes": "No durable polling state. Existing control journal owns generations, epochs and receipts; existing child usage owns accounting."
+    },
+    {
+      "responsibility": "Child full quit and independent suspend availability",
+      "old_owner": "Overlay hostActionsAvailable grouped suspend/quit; shared Game close helper always chose adult termination",
+      "new_owner": "Existing ChildSessionLifecycle termination path; Game forwards child quit intent",
+      "state_moved": ["Presentation flag narrowed to suspendSessionAvailable"],
+      "effects_moved": ["Shared child close callers route through terminateChildSession"],
+      "callers_migrated": ["Overlay quit and shared closeStreamWithPrivacy(true) callers"],
+      "obsolete_paths_removed": ["setHostActionsAvailable and grouped child quit suppression"],
+      "production_wiring_evidence": "S05ControlPlaneContractTest and debug/release cumulative suites",
+      "packaging_evidence": "Debug/release compiled; APK packaging not requested yet",
+      "lifetime_notes": "No new Activity-retaining owner or state machine."
+    }
+  ],
+  "remaining_monolith_responsibilities": ["Existing HTTP routing and child accounting retain their owners; parent recovery delegates effects to the existing terminal owner"],
+  "duplicate_authoritative_owners": [],
+  "review_evidence": "Independent /root/s05_device_diag_review ACCEPT: exact permit/retry/restart and parent recovery fences verified; 58/58 targeted Gateway tests and git diff --check PASS."
+}

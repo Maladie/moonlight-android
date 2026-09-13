@@ -1,0 +1,13 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "independent_context": "/root/s05_device_diag_review",
+  "verdict": "ACCEPT",
+  "observations": [
+    "Recovery recognizes only the exact active child-game-stop operation with provider_transition intent, matching client, actor, execution profile and child session in permitted or uncertain state.",
+    "It completes the provider stop under the persisted permit before acquiring a separate child-terminal permit.",
+    "Final stream close remains fenced by the active permit and current stream child session, preventing effects against a newer or foreign session.",
+    "The restart regression test proves both durable receipts and retirement of active operation, stream and child session."
+  ],
+  "blockers": []
+}

@@ -6,6 +6,7 @@ import org.json.JSONObject;
 
 import com.limelight.gateway.GatewayConnection;
 import com.limelight.gateway.GatewayTransport;
+import com.limelight.gateway.ControlOperationClient;
 
 import java.io.IOException;
 import java.net.URLEncoder;
@@ -45,23 +46,31 @@ class HostGatewayClient {
         final boolean virtualHere;
         final boolean playnite;
         final boolean childProfiles;
+        final boolean controlOperations;
 
         Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere) {
-            this(vibepolloFix, discord, virtualHere, false, false);
+            this(vibepolloFix, discord, virtualHere, false, false, false);
         }
 
         Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere,
                      boolean playnite) {
-            this(vibepolloFix, discord, virtualHere, playnite, false);
+            this(vibepolloFix, discord, virtualHere, playnite, false, false);
         }
 
         Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere,
                      boolean playnite, boolean childProfiles) {
+            this(vibepolloFix, discord, virtualHere, playnite, childProfiles, false);
+        }
+
+        Capabilities(boolean vibepolloFix, boolean discord, boolean virtualHere,
+                     boolean playnite, boolean childProfiles,
+                     boolean controlOperations) {
             this.vibepolloFix = vibepolloFix;
             this.discord = discord;
             this.virtualHere = virtualHere;
             this.playnite = playnite;
             this.childProfiles = childProfiles;
+            this.controlOperations = controlOperations;
         }
     }
 
@@ -1187,7 +1196,8 @@ class HostGatewayClient {
                 available(capabilities, "discord"),
                 available(capabilities, "virtualhere"),
                 available(capabilities, "playnite"),
-                available(capabilities, "child_profiles_v1"));
+                available(capabilities, "child_profiles_v1"),
+                available(capabilities, "control_operations_v1"));
     }
 
     IntegrationProfiles getIntegrationProfiles(GatewayConnection connection) throws IOException {
@@ -1962,14 +1972,34 @@ class HostGatewayClient {
         return "";
     }
 
-    void stopGame(GatewayConnection connection, String gameId) throws IOException {
-        stopGame(connection, gameId, null);
+    void stopGameWithinControl(GatewayConnection connection, String gameId,
+                               ControlOperationClient.Permit permit) throws IOException {
+        if (permit == null) throw new NullPointerException("permit");
+        if (!permit.processToken.matches("[0-9a-f]{64}")) {
+            throw new IOException("Control permit has no exact process identity");
+        }
+        JSONObject body = gameStopBody(gameId, permit.processToken);
+        try {
+            body.put("control_operation", new JSONObject()
+                    .put("operation_id", permit.operationId)
+                    .put("generation", permit.generation)
+                    .put("actor_lease_epoch", permit.actorLeaseEpoch));
+        } catch (JSONException impossible) {
+            throw new IOException(impossible);
+        }
+        JSONObject response = request(connection,
+                "/api/v1/game/stop-verified", "POST", body, 30_000);
+        stoppedCurrent(response, gameId, true);
     }
 
-    void hardResetSession(GatewayConnection connection) throws IOException {
+    void hardResetSession(GatewayConnection connection, String childSessionId)
+            throws IOException {
         JSONObject body = new JSONObject();
         try {
             body.put("force", true);
+            if (childSessionId != null && !childSessionId.trim().isEmpty()) {
+                body.put("session_id", childSessionId.trim());
+            }
         } catch (JSONException impossible) {
             throw new IOException(impossible);
         }
@@ -1984,18 +2014,13 @@ class HostGatewayClient {
 
     boolean stopGame(GatewayConnection connection, String gameId, String processToken)
             throws IOException {
-        JSONObject body = gameStopBody(gameId, processToken);
-        JSONObject response;
-        try {
-            response = request(connection,
-                    processToken == null ? "/api/v1/game/stop"
-                            : "/api/v1/game/stop-verified", "POST", body, 30_000);
-        } catch (GatewayException error) {
-            if (error.statusCode != 404 || processToken != null) throw error;
-            response = request(connection,
-                    "/api/v1/game/stop", "POST", body, 30_000);
+        if (processToken == null || !processToken.matches("[0-9a-f]{64}")) {
+            throw new IOException("An exact process token is required for provider stop");
         }
-        return stoppedCurrent(response, gameId, processToken != null);
+        JSONObject body = gameStopBody(gameId, processToken);
+        JSONObject response = request(connection,
+                "/api/v1/game/stop-verified", "POST", body, 30_000);
+        return stoppedCurrent(response, gameId, true);
     }
 
     static JSONObject gameStopBody(String gameId, String processToken) throws IOException {

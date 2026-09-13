@@ -36,30 +36,47 @@ public class ConsoleActivityEnsureContractTest {
                 + "                }"));
     }
 
-    @Test public void dashboardTerminationStopsProviderBeforeSunshine() throws IOException {
+    @Test public void dashboardTerminationUsesRetainedOwnerOrExactControlPlane() throws IOException {
         String source = consoleActivitySource();
-        String method = source.substring(source.indexOf("private void requestTerminateSession("),
-                source.indexOf("private String knownProviderGameId("));
+        String method = source.substring(source.indexOf(
+                        "private void requestTerminateSession(ComputerDetails host, String"),
+                source.indexOf("private boolean isPairingContextCurrent("));
 
-        assertTrue(method.indexOf("stopActiveProviderGame(host, providerGameId")
-                < method.indexOf("quitSunshineIfRunning(host)"));
-        assertFalse(method.contains("requestProviderStopAsync"));
-        assertTrue(method.contains("stopped = quitSunshineIfRunning(host)"));
+        assertTrue(method.indexOf("RetainedStreamSessionCoordinator.terminate(")
+                < method.indexOf("executor.execute("));
+        assertTrue(method.contains("terminateKnownControlPlane(host, profileKey.profileId"));
+        assertFalse(method.contains("quitApp("));
+        assertFalse(method.contains("stopActiveProviderGame("));
     }
 
-    @Test public void retainedFallbackStopsProviderBeforeSunshine() throws IOException {
+    @Test public void hardResetBypassesOrdinaryTerminationAndClearsLocalOwnerFirst()
+            throws IOException {
+        String source = consoleActivitySource();
+        String method = source.substring(source.indexOf(
+                        "private void requestHardTerminateSession("),
+                source.indexOf("private void finishHardTerminate("));
+
+        assertTrue(method.indexOf("clearHardResetSessionState(host, profileKey)")
+                < method.indexOf("executor.execute("));
+        assertTrue(method.contains("ChildLaunchBinding childBinding = selectedProfileIsChild"));
+        assertTrue(method.contains("boolean success = hardResetHost(gateway, childSessionId)"));
+        assertTrue(method.contains("hostGatewayClient.hardResetSession(gateway, childSessionId)"));
+        assertFalse(method.contains("terminateKnownControlPlane("));
+        assertFalse(method.contains("RetainedStreamSessionCoordinator.terminate("));
+    }
+
+    @Test public void retainedFallbackKeepsAllHostEffectsInsideControlPermit() throws IOException {
         String source = consoleActivitySource();
         String method = source.substring(source.indexOf(
                         "private void terminateRetainedSessionAndExit()"),
                 source.indexOf("private String currentRetainedStreamSessionId()"));
 
-        assertTrue(method.indexOf("stopActiveProviderGame(host, providerGameId")
-                < method.indexOf("quitSunshineIfRunning(host)"));
-        assertTrue(method.contains("failureMessage.set("
-                + "R.string.console_provider_stop_waiting_for_process)"));
-        assertTrue(method.contains("stopped = quitSunshineIfRunning(host)"));
+        assertTrue(method.contains("RetainedStreamSessionCoordinator.terminate("));
+        assertTrue(method.contains("terminateKnownControlPlane(host, terminationProfileId"));
+        assertTrue(method.contains("providerGameId)"));
         assertTrue(method.contains("complete.complete(success)"));
-        assertFalse(method.contains("complete.run()"));
+        assertFalse(method.contains("stopActiveProviderGame("));
+        assertFalse(method.contains("quitApp("));
     }
 
     @Test public void freshZeroReconcilesOnlyExactLostRetainedSession() throws IOException {
@@ -82,32 +99,29 @@ public class ConsoleActivityEnsureContractTest {
         assertFalse(method.contains("!pending.autoResume"));
     }
 
-    @Test public void retainedFallbackRefreshesSunshineBeforeQuit() throws IOException {
+    @Test public void retainedFallbackRequiresPersistedControlGeneration() throws IOException {
         String source = consoleActivitySource();
         String method = source.substring(source.indexOf(
-                        "private boolean quitSunshineIfRunning("),
+                        "private boolean terminateKnownControlPlane("),
                 source.indexOf("private String knownProviderGameId("));
 
-        assertTrue(method.indexOf("getComputerDetails(true)")
-                < method.indexOf("connection.quitApp()"));
-        assertTrue(method.contains("expectedRunningAppId = host.runningGameId"));
-        assertTrue(method.contains("expectedRunningAppId, fresh.runningGameId"));
-        assertTrue(method.contains("SunshineStopAction.COMPLETE"));
-        assertTrue(method.contains("SunshineStopAction.QUIT"));
+        assertTrue(method.contains("retained.controlGeneration > 0L"));
+        assertTrue(method.contains("pending.controlGeneration > 0L"));
+        assertTrue(method.contains("generation <= 0L"));
+        assertTrue(method.contains("HostSessionTermination.run("));
+        assertFalse(method.contains("quitApp("));
     }
 
-    @Test public void replacingSessionStopsKnownProviderFirst() throws IOException {
+    @Test public void replacementHasNoUnfencedLegacyCloseHelper() throws IOException {
         String source = consoleActivitySource();
-        String method = source.substring(source.indexOf("private boolean closePreviousSession("),
-                source.indexOf("private void showLoading(String hostName"));
+        String method = source.substring(source.indexOf(
+                        "private void beginInstallationSupportStream("),
+                source.indexOf("private void launchPreparedStream(", source.indexOf(
+                        "private void beginInstallationSupportStream(")));
 
-        assertTrue(method.indexOf("stopActiveProviderGame")
-                < method.indexOf("connection.quitApp()"));
-        assertTrue(method.contains("expectedRunningAppId = host.runningGameId"));
-        assertTrue(method.contains("getComputerDetails(true)"));
-        assertTrue(method.contains("SunshineStopAction.COMPLETE"));
-        assertTrue(method.contains("SunshineStopAction.QUIT"));
-        assertTrue(method.contains("requireProviderVerification"));
+        assertTrue(method.contains("terminateKnownControlPlane(ready, transitionProfileId"));
+        assertFalse(source.contains("private boolean closePreviousSession("));
+        assertFalse(method.contains("quitApp("));
     }
 
     @Test public void terminationRefreshCannotSubmitAfterActivityDestroy() throws IOException {
@@ -139,7 +153,7 @@ public class ConsoleActivityEnsureContractTest {
                 source.indexOf("private void restoreCachedPlaynitePoster("));
         String hardReset = source.substring(
                 source.indexOf("private void clearHardResetSessionState("),
-                source.indexOf("private boolean quitSunshineIfRunning("));
+                source.indexOf("private String knownProviderGameId("));
 
         assertTrue(confirmation.contains(
                 "HostProfileKey confirmedKey = selectedProfileKey(host.uuid)"));
@@ -178,11 +192,12 @@ public class ConsoleActivityEnsureContractTest {
                         "private Boolean terminateLiveRetainedForReplacement("),
                 source.indexOf("private void beginInstallationSupportStream("));
 
-        assertTrue(effects.indexOf("terminateLiveRetainedForReplacement(")
-                < effects.indexOf("ConsoleActivity.this.closePreviousSession("));
+        assertTrue(effects.contains("terminateLiveRetainedForReplacement("));
+        assertTrue(effects.contains("terminateKnownControlPlane(host, intent.profileId"));
         assertTrue(effects.contains(
                 "RetainedStreamSessionCoordinator.beginDirectTermination("));
         assertFalse(effects.contains(".restoreReconnectIfTerminating("));
+        assertFalse(effects.contains("closePreviousSession(ready"));
         assertTrue(helper.contains("RetainedStreamSessionCoordinator.terminate("));
         assertTrue(helper.contains("cancelled.getAsBoolean()"));
     }
@@ -239,7 +254,9 @@ public class ConsoleActivityEnsureContractTest {
                 source.indexOf("private boolean handleRetainedStreamLaunch("));
         String retainedSwitch = source.substring(source.indexOf(
                         "private SessionOrchestrator.CloseResult switchRetainedProviderGame("),
-                source.indexOf("private boolean closePreviousSession("));
+                source.indexOf("private void showLoading(String hostName",
+                        source.indexOf("private SessionOrchestrator.CloseResult "
+                                + "switchRetainedProviderGame(")));
         String completedInstall = source.substring(source.indexOf(
                         "private void completePlayniteInstallation("),
                 source.indexOf("private void ensureVibepolloAfterInstall("));

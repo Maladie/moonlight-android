@@ -54,6 +54,7 @@ $profileAgentSource = Join-Path $hostServicesRoot "profile-agent"
 $controlSource = Join-Path $hostServicesRoot "control"
 $toolsSource = Join-Path $hostServicesRoot "tools"
 $windowsLoginSource = Join-Path $hostServicesRoot "windows-login"
+$updaterSource = Join-Path $hostServicesRoot "updater"
 $packagedProfileStop = Join-Path $profileAgentSource "Stop-MoonWakerProfileBridge.ps1"
 $packagedProviderUninstall = Join-Path $windowsLoginSource `
     "credential-provider\Uninstall-MoonWakerCredentialProvider.ps1"
@@ -61,7 +62,7 @@ if (-not (Test-Path -LiteralPath $versionSource -PathType Leaf)) {
     throw "Run this installer from the complete versioned host-services package. Missing: $versionSource"
 }
 foreach ($required in @($gatewaySource, $bridgeSource, $profileAgentSource,
-        $controlSource, $toolsSource, $windowsLoginSource)) {
+        $controlSource, $toolsSource, $windowsLoginSource, $updaterSource)) {
     if (-not (Test-Path -LiteralPath $required -PathType Container)) {
         throw "Run this installer from the complete versioned host-services package. Missing: $required"
     }
@@ -97,6 +98,42 @@ function Assert-MoonWakerProcessesStopped {
     }
 }
 
+function Stop-HotUpdaterQuiescent {
+    $service = Get-Service -Name "MoonWakerHotUpdater" -ErrorAction SilentlyContinue
+    if ($service -and $service.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped) {
+        Stop-Service -Name "MoonWakerHotUpdater" -Force
+        $service.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Stopped,
+            [TimeSpan]::FromSeconds(30))
+    }
+    $deadline = [DateTime]::UtcNow.AddSeconds(20)
+    do {
+        $remaining = @(Get-CimInstance Win32_Process -Property Name,CommandLine -ErrorAction Stop |
+            Where-Object {
+                $_.Name -eq "MoonWakerHotUpdaterService.exe" -or
+                ([string]$_.CommandLine -like "*Apply-MoonWakerHotUpdate.ps1*" -and
+                 [string]$_.CommandLine -like "*$InstallDirectory*")
+            })
+        if ($remaining.Count -eq 0) { return }
+        Start-Sleep -Milliseconds 250
+    } while ([DateTime]::UtcNow -lt $deadline)
+    throw "MoonWaker Hot Updater did not become quiescent; runtime files were not changed."
+}
+
+function Test-HotUpdaterStartEligible([string]$ReadyMarker, [object]$Service,
+        [string]$StartMode) {
+    return $null -ne $Service -and
+        (Test-Path -LiteralPath $ReadyMarker -PathType Leaf) -and
+        $StartMode -ne "Disabled"
+}
+
+Stop-HotUpdaterQuiescent
+$pendingHotUpdate = Join-Path $env:ProgramData "MoonWaker\HotUpdater\transaction.json"
+if (Test-Path -LiteralPath $pendingHotUpdate -PathType Leaf) {
+    & (Join-Path $updaterSource "Apply-MoonWakerHotUpdate.ps1") `
+        -HostRoot $InstallDirectory -RecoverOnly -LeaveStopped
+    Stop-HotUpdaterQuiescent
+}
+
 $profilesToRestart = @()
 foreach ($profilesRoot in @(
         (Join-Path $InstallDirectory "profiles"),
@@ -116,7 +153,7 @@ foreach ($profilesRoot in @(
     }
 }
 
-foreach ($serviceName in @("MoonWakerGateway", "MoonWakerLoginBroker")) {
+foreach ($serviceName in @("MoonWakerGateway", "MoonWakerLoginBroker", "MoonWakerHotUpdater")) {
     $service = Get-Service -Name $serviceName -ErrorAction SilentlyContinue
     if ($null -ne $service -and
         $service.Status -ne [ServiceProcess.ServiceControllerStatus]::Stopped) {
@@ -216,6 +253,9 @@ if (-not (Test-Path -LiteralPath $registryLockPath -PathType Leaf)) {
     [IO.File]::WriteAllBytes($registryLockPath, [byte[]]@(0))
 }
 
+& (Join-Path $updaterSource "Install-MoonWakerHotUpdater.ps1") `
+    -InstallDirectory $InstallDirectory -SkipStart
+
 # Remove obsolete per-user tasks from older installers. New profile tasks are
 # created explicitly by Host Control for the selected account.
 if (-not $SkipScheduledTask) {
@@ -249,6 +289,25 @@ foreach ($profileId in $profilesToRestart) {
         -ErrorAction SilentlyContinue
     if ($null -ne $task) {
         try { Start-ScheduledTask -InputObject $task -ErrorAction Stop } catch {}
+    }
+}
+& (Join-Path $updaterSource "Apply-MoonWakerHotUpdate.ps1") `
+    -HostRoot $InstallDirectory -RecoverOnly -LeaveStopped -FullInstallCommit
+if (-not $SkipStart) {
+    $hotUpdater = Get-Service -Name "MoonWakerHotUpdater" -ErrorAction SilentlyContinue
+    $hotUpdaterConfig = if ($hotUpdater) {
+        Get-CimInstance Win32_Service -Filter "Name='MoonWakerHotUpdater'"
+    } else { $null }
+    $hotUpdaterStartMode = if ($hotUpdaterConfig) {
+        [string]$hotUpdaterConfig.StartMode
+    } else { "" }
+    $hotUpdaterReady = Join-Path $env:ProgramData "MoonWaker\HotUpdater\installer-ready"
+    if (Test-HotUpdaterStartEligible $hotUpdaterReady $hotUpdater $hotUpdaterStartMode) {
+        Start-Service -Name "MoonWakerHotUpdater"
+        $hotUpdater.WaitForStatus([ServiceProcess.ServiceControllerStatus]::Running,
+            [TimeSpan]::FromSeconds(10))
+    } elseif ($hotUpdater) {
+        Write-Warning "MoonWaker Hot Updater remains stopped because bootstrap trust validation did not succeed."
     }
 }
 Write-Host "MoonWaker host components installed in $InstallDirectory" -ForegroundColor Green

@@ -4,6 +4,7 @@ import android.content.Context;
 
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
+import com.limelight.gateway.ControlOperationClient;
 
 import java.io.IOException;
 import java.util.ArrayList;
@@ -50,6 +51,7 @@ public final class PlayniteTransitionGateway {
         public final String gameState;
         public final String gameId;
         public final int processId;
+        public final String processToken;
         public final boolean windowReady;
         public final String targetKind;
         public final int stableSamples;
@@ -60,17 +62,26 @@ public final class PlayniteTransitionGateway {
                  String gameId, int processId, boolean windowReady, String targetKind,
                  int stableSamples, String reason) {
             this(gatewayReady, connectorReady, gameState, gameId, processId, windowReady,
-                    targetKind, stableSamples, reason, false);
+                    targetKind, stableSamples, reason, false, "");
         }
 
         Snapshot(boolean gatewayReady, boolean connectorReady, String gameState,
                  String gameId, int processId, boolean windowReady, String targetKind,
                  int stableSamples, String reason, boolean hostGuideAllowed) {
+            this(gatewayReady, connectorReady, gameState, gameId, processId, windowReady,
+                    targetKind, stableSamples, reason, hostGuideAllowed, "");
+        }
+
+        Snapshot(boolean gatewayReady, boolean connectorReady, String gameState,
+                 String gameId, int processId, boolean windowReady, String targetKind,
+                 int stableSamples, String reason, boolean hostGuideAllowed,
+                 String processToken) {
             this.gatewayReady = gatewayReady;
             this.connectorReady = connectorReady;
             this.gameState = gameState;
             this.gameId = gameId;
             this.processId = processId;
+            this.processToken = processToken == null ? "" : processToken;
             this.windowReady = windowReady;
             this.targetKind = targetKind;
             this.stableSamples = stableSamples;
@@ -180,17 +191,27 @@ public final class PlayniteTransitionGateway {
                 client.getPlayniteReadiness(connection);
         boolean connectorReady = actorContext.child || health.connectorConnected
                 || (!current.id.isEmpty() && !current.requiresConnector);
+        HostGatewayClient.RunningGame exact = current.runningGames == null
+                ? null : current.runningGames.find(current.id);
+        String processToken = exact != null && exact.processId == current.processId
+                ? exact.processToken : "";
         return new Snapshot(true, connectorReady, current.state, current.id,
                 current.processId, readiness.ready, readiness.targetKind,
-                readiness.stableSamples, readiness.reason, current.hostGuideAllowed);
+                readiness.stableSamples, readiness.reason, current.hostGuideAllowed,
+                processToken);
     }
 
     public void startGame(String gameId) throws IOException {
         client.startGame(connection, gameId);
     }
 
-    public void stopGame(String gameId) throws IOException {
-        client.stopGame(connection, gameId);
+    public void stopGame(String gameId, String processToken) throws IOException {
+        client.stopGame(connection, gameId, processToken);
+    }
+
+    public void stopGameWithinControl(String gameId,
+                                      ControlOperationClient.Permit permit) throws IOException {
+        client.stopGameWithinControl(connection, gameId, permit);
     }
 
     public Events awaitEvents(long after, String transitionId) throws IOException {

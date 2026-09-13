@@ -1,0 +1,76 @@
+{
+  "task_id": "S05",
+  "run_id": "s05-comprehensive-recovery-artifacts-0.7.100-20260912",
+  "status": "CODE_VERIFIED_DEVICE_PENDING",
+  "branch": "codex/session-hardening",
+  "head": "60d024f8dc59a563793e55989044dec6f4f53e87",
+  "reviewed_source_fingerprint": "sha256:f8c055081100a9105cf239003bb7a33e1634c05bbc087756ac74a14e13b44d02",
+  "delivery_fingerprint": "sha256:a17be1fb4b68c5f8ae44b5ce4a8d1e1926ad4d1999886fbfba6d48575ccf5483",
+  "version": {
+    "host": "0.7.100",
+    "build": "2026.09.12",
+    "protocol_version": 6,
+    "aligned_components": {
+      "MoonWakerHostInstaller.exe": "0.7.100.0 / 0.7.100+2026.09.12",
+      "MoonWakerHostControl.exe": "0.7.100.0 / 0.7.100+2026.09.12",
+      "MoonWakerHostConfigurator.exe": "0.7.100.0 / 0.7.100+2026.09.12"
+    }
+  },
+  "artifacts": [
+    {
+      "kind": "android_non_root_debug_apk",
+      "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+      "bytes": 46780114,
+      "sha256": "5a589f1eca51b16587f753e2554163381c6f5edaa3e11d2c905a08ccc41453b0",
+      "installable": true
+    },
+    {
+      "kind": "android_non_root_release_unsigned_apk",
+      "path": "app/build/outputs/apk/nonRoot/release/app-nonRoot-release-unsigned.apk",
+      "bytes": 42586446,
+      "sha256": "cbd3970e8a81e6deb7de0f205819d8afd66b57852e7dc6bff7e520396e0bdc19",
+      "installable": false
+    },
+    {
+      "kind": "host_installer",
+      "path": "host-services/dist-s05-comprehensive-recovery-0.7.100/MoonWakerHostInstaller.exe",
+      "bytes": 9490944,
+      "sha256": "7bf1c005c26566b298ce86fa20d1c5f27ad20a5c50ffbd49a865848ee275bd5c",
+      "payload_files": 134
+    }
+  ],
+  "builds": [
+    {
+      "command": ".\\gradlew.bat assembleNonRootDebug assembleNonRootRelease --offline --no-daemon --console=plain",
+      "result": "PASS: BUILD SUCCESSFUL in 1m 28s; 99 actionable tasks, 27 executed and 72 up-to-date"
+    },
+    {
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Build-HostServices.ps1 -OutputDirectory .\\host-services\\dist-s05-comprehensive-recovery-0.7.100",
+      "result": "PASS after network-enabled retry: Gateway 234/234, Bridge 255/255, Gateway Service PASS, Login Broker 15/15, Host Control checks PASS, Credential Provider static/protocol/build PASS. The resulting pre-alignment artifact was rejected because assembly metadata still read 0.7.97."
+    },
+    {
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Build-HostServices.ps1 -OutputDirectory .\\host-services\\dist-s05-comprehensive-recovery-0.7.100 -SkipTests",
+      "result": "PASS after metadata-only version alignment; reused the immediately preceding full host test evidence"
+    },
+    {
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\host-services\\installer\\Test-MoonWakerHostInstallerUi.ps1 -InstallerPath .\\host-services\\dist-s05-comprehensive-recovery-0.7.100\\MoonWakerHostInstaller.exe",
+      "result": "PASS: embedded payload and required control modules verified"
+    }
+  ],
+  "checks": {
+    "branch_check": "PREPARED_WORK_BRANCH_VERIFIED",
+    "diff_check": "PASS",
+    "installation": {
+      "android_tv": "PASS",
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\deploy-steam-test-tv.ps1 -Serial 192.168.1.31:5555 -Apk .\\app\\build\\outputs\\apk\\nonRoot\\debug\\app-nonRoot-debug.apk",
+      "device": "BRAVIA_4K_VH22",
+      "serial": "192.168.1.31:5555",
+      "package": "com.limelight.debug",
+      "version_name": "12.2.23",
+      "version_code": 344,
+      "result": "adb install -r -d Success; Leanback ConsoleActivity started"
+    },
+    "host_installation": "NOT_RUN",
+    "device_evidence": "PENDING"
+  }
+}

@@ -32,16 +32,41 @@ public class ConsoleChildProfileUiContractTest {
         String menu = between(activity, "private void showHostSelectionOptions(",
                 "static HostGatewayClient.IntegrationProfile activeAuthorizedProfile(");
         assertTrue(menu.contains("actions.add(wake)"));
-        assertTrue(menu.contains("if (childProfile) {\n            actions.add(terminate);\n            actions.add(sleep);"));
+        assertTrue(menu.contains("actions.add(desktop)"));
+        assertFalse(menu.contains("!childProfile"));
+        assertTrue(menu.contains("actions.add(warmUp)"));
+        assertTrue(menu.contains("actions.add(terminate)"));
+        assertTrue(menu.contains("actions.add(hardTerminate)"));
+        assertTrue(menu.contains("actions.add(unpair)"));
+        assertTrue(menu.contains("actions.add(test)"));
+        assertTrue(menu.contains("actions.add(sleep)"));
+        assertFalse(menu.contains("warmUp.setEnabled(!childProfile)"));
+        assertFalse(menu.contains("getString(R.string.pcview_menu_test_network), !childProfile"));
+        assertTrue(menu.contains("online && paired && gatewayAvailable"));
+        assertFalse(menu.contains("online && paired && gatewayAvailable && !childProfile"));
         assertFalse(menu.contains("canSleep && !childProfile"));
+        String desktop = between(activity, "private void launchDesktopSession(",
+                "private void renderApps(");
+        assertFalse(desktop.contains("selectedProfileIsChild"));
+        assertTrue(desktop.contains("playSunshineApp(current, desktop, \"\")"));
+        String sunshine = between(activity, "private void playSunshineApp(",
+                "private void playPlayniteGame(");
+        assertFalse(sunshine.contains("selectedProfileIsChild"));
+        assertTrue(sunshine.contains("sessionOrchestrator.play("));
+        String game = source("src/main/java/com/limelight/Game.java");
+        String presentation = between(game, "private void configureActorPresentation()",
+                "private void setupOverlayMenu()");
+        assertTrue(presentation.contains("setSuspendSessionAvailable(true)"));
+        assertFalse(presentation.contains("setSuspendSessionAvailable(!isChildSession())"));
         String start = between(activity, "private ChildLaunchBinding startChildSession(",
                 "private void validateChildState(");
-        assertTrue(start.contains("endChildBindingAndAwait(pending, cancelled)"));
+        assertFalse(start.contains("endChildBindingAndAwait"));
+        assertTrue(start.contains("childLaunchBindings.remove(pending.key(), pending)"));
         assertFalse(start.contains("new ChildLaunchFailure(\"child_session_ending\")"));
         String close = between(activity, "private void requestCloseHostStream(",
                 "private void finishCloseHostStream(");
-        assertTrue(close.contains("if (selectedProfileIsChild(host.uuid))"));
-        assertTrue(close.contains("requestTerminateSession(host)"));
+        assertFalse(close.contains("selectedProfileIsChild"));
+        assertTrue(close.contains("retained.executionProfileId.equals(executionProfileId("));
     }
 
     @Test public void childStartsOnlyAfterOrchestratorHasResolvedPreviousSession() throws Exception {
@@ -56,16 +81,55 @@ public class ConsoleChildProfileUiContractTest {
         assertTrue(launch.contains("endChildBinding(childBinding(intent), \"cancelled\")"));
     }
 
-    @Test public void childConsoleCloseUsesBoundSessionAndBadgeAcceptsCurrentGame() throws Exception {
+    @Test public void childConsoleCloseUsesCommonTerminationAndBadgeAcceptsCurrentGame() throws Exception {
         String activity = source("src/main/java/com/limelight/console/ConsoleActivity.java");
         int start = activity.indexOf("private void requestTerminateSession(ComputerDetails host, String expectedProviderGameId)");
-        int child = activity.indexOf("if (childProfile)", start);
-        int end = activity.indexOf("endChildBindingAndAwait(childSession", child);
-        int adult = activity.indexOf("} else {", child);
-        int stop = activity.indexOf("stopActiveProviderGame(host, providerGameId", child);
-        assertTrue(start >= 0 && child > start && end > child && adult > end && stop > adult);
+        int retained = activity.indexOf("RetainedStreamSessionCoordinator.terminate(", start);
+        int stop = activity.indexOf("terminateKnownControlPlane(host, profileKey.profileId",
+                retained);
+        assertTrue(start >= 0 && retained > start && stop > retained);
+        String close = activity.substring(start,
+                activity.indexOf("private void finishTerminateSession(", start));
+        assertFalse(close.contains("endChildBinding"));
+        assertFalse(close.contains("childProfile"));
         assertTrue(activity.contains("boolean runningSession = isFreshExactRunningManagedGame(host, item)\n"
                 + "                || isFreshExactBridgeRunning(selectedHostUuid, host.uuid,"));
+    }
+
+    @Test public void disallowedRunningGameTriggersAutomaticCommonFullCloseBeforeChildLaunch()
+            throws Exception {
+        String activity = source("src/main/java/com/limelight/console/ConsoleActivity.java");
+        String close = between(activity,
+                "@Override public SessionOrchestrator.CloseResult closePreviousSession(",
+                "@Override public void launch(PlayIntent intent, NvApp app,");
+        assertTrue(close.contains("boolean childMustCloseDisallowedGame = isChildIntent(intent)"));
+        assertTrue(close.contains("providerGameMetadata(intent.hostId, intent.profileId,"));
+        assertTrue(close.contains("retained.playniteGameId) == null;"));
+        assertTrue(close.contains("boolean destructiveCloseAuthorized = allowDestructiveClose"));
+        assertTrue(close.contains("|| childMustCloseDisallowedGame;"));
+        assertTrue(close.contains("terminateLiveRetainedForReplacement("));
+        assertTrue(close.contains("terminateKnownControlPlane("));
+        assertTrue(close.contains("&& !childMustCloseDisallowedGame)"));
+    }
+
+    @Test public void childKeepsInstallAndUninstallButNeverGetsMicrophone() throws Exception {
+        String activity = source("src/main/java/com/limelight/console/ConsoleActivity.java");
+        String install = between(activity, "private void startPlayniteInstallation(",
+                "private void confirmPlayniteUninstall(");
+        String uninstall = between(activity, "private void uninstallPlayniteGame(",
+                "private void continuePlayniteInstallation(");
+        assertFalse(install.contains("selectedProfileIsChild"));
+        assertFalse(install.contains("isChild"));
+        assertFalse(uninstall.contains("selectedProfileIsChild"));
+        assertFalse(uninstall.contains("isChild"));
+        String microphone = between(activity,
+                "private boolean microphoneAllowedForSelectedProfile()",
+                "private boolean discordPanelVisible()");
+        assertTrue(microphone.contains("return discordAllowedForSelectedProfile();"));
+        String indicator = between(activity, "private void refreshUsbMicrophoneIndicator()",
+                "static int microphoneStateTextResource(");
+        assertTrue(indicator.contains("if (!microphoneAllowedForSelectedProfile())"));
+        assertTrue(indicator.contains("button.setVisibility(View.GONE)"));
     }
 
     @Test public void streamHandoffPreservesOnlyTransferredChildOnPause() throws Exception {

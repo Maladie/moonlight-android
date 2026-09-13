@@ -8,15 +8,18 @@ final class SessionStateResolver {
     static final class Observations {
         final String hostId;
         final String profileId;
+        String executionProfileId;
         final int runningGameAppId;
         final String resolvedPlayniteGameId;
         final RetainedStreamSessionCoordinator.State retainedState;
         final String retainedHostId;
         final String retainedProfileId;
+        String retainedExecutionProfileId;
         final int retainedAppId;
         final String retainedPlayniteGameId;
         final String suspendedHostId;
         final String suspendedProfileId;
+        String suspendedExecutionProfileId;
         final int suspendedAppId;
         final String suspendedPlayniteGameId;
         String suspendedId;
@@ -26,6 +29,7 @@ final class SessionStateResolver {
         final boolean pendingResume;
         final String pendingResumeHostId;
         final String pendingResumeProfileId;
+        String pendingResumeExecutionProfileId;
         final int pendingResumeAppId;
         final String hostSleepHostId;
         final boolean hostSleepRequested;
@@ -72,6 +76,9 @@ final class SessionStateResolver {
                     hostSleep != null && hostSleep.sleepObservedAt > 0L);
             this.hostOnline = hostOnline;
             this.suspendedId = suspended == null ? "" : suspended.suspendId;
+            this.retainedExecutionProfileId = retained.executionProfileId;
+            this.suspendedExecutionProfileId = suspended == null
+                    ? GatewayConnection.DEFAULT_PROFILE_ID : suspended.executionProfileId;
         }
 
         Observations(String hostId, int runningGameAppId, String resolvedPlayniteGameId,
@@ -110,17 +117,20 @@ final class SessionStateResolver {
                      boolean hostSleepObserved) {
             this.hostId = SessionSnapshot.normalize(hostId);
             this.profileId = GatewayConnection.normalizeProfileId(profileId);
+            this.executionProfileId = this.profileId;
             this.runningGameAppId = runningGameAppId;
             this.resolvedPlayniteGameId = SessionSnapshot.normalize(
                     resolvedPlayniteGameId);
             this.retainedState = retainedState;
             this.retainedHostId = SessionSnapshot.normalize(retainedHostId);
             this.retainedProfileId = GatewayConnection.normalizeProfileId(retainedProfileId);
+            this.retainedExecutionProfileId = this.retainedProfileId;
             this.retainedAppId = retainedAppId;
             this.retainedPlayniteGameId = SessionSnapshot.normalize(
                     retainedPlayniteGameId);
             this.suspendedHostId = SessionSnapshot.normalize(suspendedHostId);
             this.suspendedProfileId = GatewayConnection.normalizeProfileId(suspendedProfileId);
+            this.suspendedExecutionProfileId = this.suspendedProfileId;
             this.suspendedAppId = suspendedAppId;
             this.suspendedPlayniteGameId = SessionSnapshot.normalize(
                     suspendedPlayniteGameId);
@@ -131,6 +141,7 @@ final class SessionStateResolver {
             this.pendingResumeHostId = SessionSnapshot.normalize(pendingResumeHostId);
             this.pendingResumeProfileId = GatewayConnection.normalizeProfileId(
                     pendingResumeProfileId);
+            this.pendingResumeExecutionProfileId = this.pendingResumeProfileId;
             this.pendingResumeAppId = pendingResumeAppId;
             this.hostSleepHostId = SessionSnapshot.normalize(hostSleepHostId);
             this.hostSleepRequested = hostSleepRequested;
@@ -148,9 +159,9 @@ final class SessionStateResolver {
         boolean bridgeIdle = "idle".equals(bridgeState);
         boolean bridgeUncertain = !bridgeState.isEmpty()
                 && !bridgeRunning && !bridgeIdle;
-        boolean retainedProfileMatches = facts.hostId.equals(facts.retainedHostId)
-                && facts.profileId.equals(facts.retainedProfileId);
-        boolean retainedMatches = retainedProfileMatches
+        boolean retainedExecutionMatches = facts.hostId.equals(facts.retainedHostId)
+                && facts.executionProfileId.equals(facts.retainedExecutionProfileId);
+        boolean retainedMatches = retainedExecutionMatches
                 && (facts.runningGameAppId == 0
                 || facts.retainedAppId == 0
                 || facts.runningGameAppId == facts.retainedAppId)
@@ -163,10 +174,10 @@ final class SessionStateResolver {
         boolean retainedReconnect = retainedMatches && facts.retainedState
                 == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED;
         boolean suspendedMatches = facts.hostId.equals(facts.suspendedHostId)
-                && facts.profileId.equals(facts.suspendedProfileId);
+                && facts.executionProfileId.equals(facts.suspendedExecutionProfileId);
         boolean pendingMatches = facts.pendingResume
                 && facts.hostId.equals(facts.pendingResumeHostId)
-                && facts.profileId.equals(facts.pendingResumeProfileId);
+                && facts.executionProfileId.equals(facts.pendingResumeExecutionProfileId);
         boolean sleepMatches = facts.hostId.equals(facts.hostSleepHostId);
         boolean explicitSuspension = suspendedMatches && facts.suspendedResumedAt == 0L;
         boolean suspensionSleepObserved = explicitSuspension
@@ -174,7 +185,7 @@ final class SessionStateResolver {
         boolean sleepRequested = sleepMatches && facts.hostSleepRequested;
         boolean sleepObserved = sleepRequested && facts.hostSleepObserved;
 
-        if (retainedProfileMatches && facts.retainedState
+        if (retainedExecutionMatches && facts.retainedState
                 == RetainedStreamSessionCoordinator.State.TERMINATING) {
             return snapshot(facts, SessionSnapshot.State.TERMINATING,
                     facts.retainedAppId, facts.retainedPlayniteGameId, false,
@@ -182,7 +193,7 @@ final class SessionStateResolver {
                     sleepRequested, sleepObserved);
         }
 
-        if (retainedProfileMatches && facts.retainedState
+        if (retainedExecutionMatches && facts.retainedState
                 == RetainedStreamSessionCoordinator.State.PREPARING) {
             return snapshot(facts, SessionSnapshot.State.PREPARING,
                     facts.retainedAppId, facts.retainedPlayniteGameId, false,

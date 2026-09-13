@@ -4,8 +4,10 @@ import json
 import os
 import re
 import tempfile
+import threading
 import time
 import unittest
+from control_snapshot_fixture import control_evidence
 import urllib.parse
 from datetime import datetime, timezone
 from email.message import Message
@@ -21,7 +23,8 @@ from wakeplay_gateway import (
 
 class GatewayStateTest(unittest.TestCase):
     def setUp(self):
-        self.config_path = Path(__file__).parent / ".gateway-test-runtime.json"
+        self.test_directory = tempfile.TemporaryDirectory()
+        self.config_path = Path(self.test_directory.name) / "gateway-test-runtime.json"
         self.config_path.write_text(json.dumps({
             "certificate": "cert.pem",
             "private_key": "key.pem",
@@ -29,12 +32,7 @@ class GatewayStateTest(unittest.TestCase):
         }), encoding="utf-8")
 
     def tearDown(self):
-        self.config_path.unlink(missing_ok=True)
-        self.config_path.with_name("pairing-code.json").unlink(missing_ok=True)
-        self.config_path.with_name("runtime-status.json").unlink(missing_ok=True)
-        self.config_path.with_name("gateway-runtime.json").unlink(missing_ok=True)
-        self.config_path.with_name("client-activity.json").unlink(missing_ok=True)
-        self.config_path.with_suffix(self.config_path.suffix + ".lock").unlink(missing_ok=True)
+        self.test_directory.cleanup()
 
     @staticmethod
     def request_handler(state, path, token, profile_id=None):
@@ -297,6 +295,14 @@ class GatewayStateTest(unittest.TestCase):
         files = re.search(r"\$files\s*=\s*@\((.*?)\)", installer, re.DOTALL)
         self.assertIsNotNone(files)
         self.assertIn('"MoonWakerDiscordAudioWorker.exe"', files.group(1))
+
+    def test_gateway_installer_packages_control_policy(self):
+        installer = (Path(__file__).parent / "Install-WakePlayGateway.ps1").read_text(
+            encoding="utf-8-sig")
+        files = re.search(r"\$files\s*=\s*@\((.*?)\)", installer, re.DOTALL)
+        self.assertIsNotNone(files)
+        self.assertIn('"control_operation_policy.py"', files.group(1))
+        self.assertIn('"child_terminal_operation.py"', files.group(1))
 
     def test_pair_stores_only_token_hash(self):
         state = GatewayState(self.config_path, "123456")
@@ -737,7 +743,7 @@ class GatewayStateTest(unittest.TestCase):
             state.microphone_status())
         worker = self.config_path.with_name("worker.exe")
         worker.write_bytes(b"test")
-        self.addCleanup(worker.unlink)
+        self.addCleanup(lambda: worker.unlink(missing_ok=True))
         state.config["microphone_worker"] = worker.name
         with mock.patch.object(wakeplay_gateway.subprocess, "run") as run:
             run.return_value.returncode = 0
@@ -768,7 +774,7 @@ class GatewayStateTest(unittest.TestCase):
         state = GatewayState(self.config_path, None)
         worker = self.config_path.with_name("discord-audio-worker.exe")
         worker.write_bytes(b"test")
-        self.addCleanup(worker.unlink)
+        self.addCleanup(lambda: worker.unlink(missing_ok=True))
         state.config["discord_audio_worker"] = worker.name
         state.proxy = mock.Mock(return_value=(True, {
             "ready": True, "reason": "ready", "pid": 1234,
@@ -1356,6 +1362,36 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(1, len(calls))
 
+    def test_parallel_idempotent_retries_join_the_inflight_operation(self):
+        state = GatewayState(self.config_path, None)
+        entered = threading.Event()
+        release = threading.Event()
+        calls = []
+        results = []
+
+        def operation():
+            calls.append(True)
+            entered.set()
+            release.wait(2.0)
+            return 200, {"ok": True}
+
+        first = threading.Thread(target=lambda: results.append(
+            state.idempotent("request-parallel", operation)))
+        second = threading.Thread(target=lambda: results.append(
+            state.idempotent("request-parallel", operation)))
+        first.start()
+        self.assertTrue(entered.wait(1.0))
+        second.start()
+        time.sleep(0.05)
+        self.assertEqual(1, len(calls))
+        release.set()
+        first.join(2.0)
+        second.join(2.0)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual([(200, {"ok": True})] * 2, results)
+
     def test_vibepollo_app_creation_forwards_only_validated_fields(self):
         state = GatewayState(self.config_path, None)
         calls = []
@@ -1734,7 +1770,7 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual(
             ("game_provider", "/library/refresh", {}, 5.0), requests[0])
 
-    def test_playnite_stop_is_graceful_by_contract(self):
+    def test_legacy_playnite_stop_is_not_publicly_routed(self):
         state = GatewayState(self.config_path, None)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
@@ -1742,31 +1778,287 @@ class GatewayStateTest(unittest.TestCase):
 
         status, result = state.playnite_action("game/stop", {})
 
-        self.assertEqual(200, status)
-        self.assertTrue(result["ok"])
-        self.assertEqual(("/game/stop", {"force": False}, 25.0), requests[0])
+        self.assertEqual(404, status)
+        self.assertEqual("Unknown Playnite action.", result["error"])
+        self.assertEqual([], requests)
 
     def test_session_hard_reset_is_explicit_and_closes_provider_before_stream(self):
         state = GatewayState(self.config_path, None)
         requests = []
-        state.proxy_json = lambda name, path, body, timeout=8.0: (
-            requests.append((name, path, body, timeout)) is None,
+        state.proxy_json = lambda name, path, body, timeout=8.0, **kwargs: (
+            requests.append((name, path, body, timeout, kwargs)) is None,
             {"accepted": True, "stopped_count": 2})
-        state.proxy = lambda name, path, timeout=2.5: (
-            requests.append((name, path, timeout)) is None, {"ok": True})
+        def streamer(name, path, timeout=2.5, **_kwargs):
+            requests.append((name, path, timeout))
+            return (True, {**control_evidence(), "clients": [], "apps": []}) \
+                if path == "/snapshot?force=1" else (True, {"ok": True})
+        state.proxy = streamer
+
+        clock = [0.0]
+        with mock.patch("provider_control_operation.time.monotonic",
+                        side_effect=lambda: clock[0]), \
+                mock.patch("provider_control_operation.time.sleep",
+                           side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
+            status, result = state.hard_reset_session({"force": True})
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["accepted"])
+        self.assertEqual(2, result["stopped_game_count"])
+        provider_request = requests[0]
+        self.assertEqual(("game_provider", "/session/hard-reset"),
+                         provider_request[:2])
+        self.assertTrue(provider_request[2]["force"])
+        binding = provider_request[2]["control_operation"]
+        self.assertEqual(1, binding["generation"])
+        self.assertEqual(1, binding["actor_lease_epoch"])
+        self.assertEqual("default", binding["execution_profile_id"])
+        self.assertEqual({"profile_id": "default"}, provider_request[4])
+        self.assertEqual(("vibepollo", "/action/close-app", 8.0), requests[1])
+        with self.assertRaises(ValueError):
+            state.hard_reset_session({})
+
+    def test_session_hard_reset_invalidates_uncertain_barrier_even_if_effect_is_unconfirmed(self):
+        state = GatewayState(self.config_path, None)
+        state.control_state.update({
+            "generation": 7,
+            "actor_lease_epoch": 11,
+            "active": {
+                "operation_id": "control-stuck",
+                "state": "uncertain",
+                "reason": "effect_result_uncertain",
+            },
+            "stream": {"stream_session_id": "stream-stuck"},
+            "idle_stream": {"stream_session_id": "stream-old"},
+        })
+        state.proxy_json = lambda *_args, **_kwargs: (False, {"error": "offline"})
+        state.proxy = lambda *_args, **_kwargs: (False, {"error": "offline"})
 
         status, result = state.hard_reset_session({"force": True})
 
         self.assertEqual(200, status)
         self.assertTrue(result["accepted"])
-        self.assertEqual(2, result["stopped_game_count"])
-        self.assertEqual(("game_provider", "/session/hard-reset",
-                          {"force": True}, 12.0), requests[0])
-        self.assertEqual(("vibepollo", "/action/close-app", 8.0), requests[1])
-        with self.assertRaises(ValueError):
-            state.hard_reset_session({})
+        self.assertTrue(result["recovered"])
+        self.assertFalse(result["cleanup_confirmed"])
+        self.assertEqual("hard_reset_cleanup_unconfirmed", result["reason"])
+        self.assertFalse(result["provider_reset_requested"])
+        self.assertFalse(result["session_close_requested"])
+        self.assertIsNone(state.control_state["active"])
+        self.assertIsNone(state.control_state["stream"])
+        self.assertIsNone(state.control_state["idle_stream"])
+        self.assertEqual(8, state.control_state["generation"])
+        self.assertEqual(12, state.control_state["actor_lease_epoch"])
+        self.assertEqual("superseded_by_hard_reset",
+                         state.control_state["completed"]["control-stuck"]["reason"])
 
-    def test_provider_neutral_stop_preserves_exact_game_identity(self):
+    def test_session_hard_reset_rejects_close_ack_while_stream_remains_active(self):
+        state = GatewayState(self.config_path, None)
+        state.proxy_json = lambda *_args, **_kwargs: (
+            True, {"accepted": True, "stopped_count": 1})
+
+        def streamer(_name, path, **_kwargs):
+            if path == "/action/close-app":
+                return True, {"ok": True}
+            return True, {
+                **control_evidence(1, True),
+                "clients": [{"uuid": "client-a", "connected": True}],
+                "apps": [{"id": 1, "active": True}],
+            }
+
+        state.proxy = streamer
+        clock = [0.0]
+        with mock.patch("provider_control_operation.time.monotonic",
+                        side_effect=lambda: clock[0]), \
+                mock.patch("provider_control_operation.time.sleep",
+                           side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
+            status, result = state.hard_reset_session({"force": True})
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["recovered"])
+        self.assertFalse(result["cleanup_confirmed"])
+        self.assertTrue(result["provider_reset_requested"])
+        self.assertFalse(result["session_close_requested"])
+        self.assertEqual("hard_reset_cleanup_unconfirmed", result["reason"])
+
+    def test_session_hard_reset_waits_for_physical_idle_after_close_ack(self):
+        state = GatewayState(self.config_path, None)
+        state.proxy_json = lambda *_args, **_kwargs: (
+            True, {"accepted": True, "stopped_count": 1})
+        snapshots = [
+            {
+                **control_evidence(1, True),
+                "clients": [{"uuid": "client-a", "connected": True}],
+                "apps": [{"id": 1, "active": True}],
+            },
+            {**control_evidence(), "clients": [], "apps": []},
+        ]
+
+        def streamer(_name, path, **_kwargs):
+            if path == "/action/close-app":
+                return True, {"ok": True}
+            return True, snapshots.pop(0)
+
+        state.proxy = streamer
+        clock = [0.0]
+        with mock.patch("provider_control_operation.time.monotonic",
+                        side_effect=lambda: clock[0]), \
+                mock.patch("provider_control_operation.time.sleep",
+                           side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
+            status, result = state.hard_reset_session({"force": True})
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["provider_reset_requested"])
+        self.assertTrue(result["session_close_requested"])
+
+    def test_session_hard_reset_targets_stream_owner_not_request_profile(self):
+        state = GatewayState(self.config_path, None)
+        state.request_context.execution_profile_id = "parent-y"
+        state.control_state["stream"] = {
+            "execution_profile_id": "parent-x",
+            "stream_session_id": "stream-x",
+        }
+        calls = []
+        state.proxy_json = lambda name, path, body, **kwargs: (
+            calls.append((name, path, body, kwargs)) is None,
+            {"accepted": True, "stopped_count": 0})
+        state.proxy = lambda name, path, **kwargs: (
+            calls.append((name, path, kwargs)) is None,
+            {**control_evidence(), "clients": [], "apps": []}
+            if path == "/snapshot?force=1" else {"ok": True})
+
+        status, result = state.hard_reset_session({"force": True})
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["accepted"])
+        self.assertEqual("parent-x", calls[0][3]["profile_id"])
+        self.assertEqual("parent-x",
+                         calls[0][2]["control_operation"]["execution_profile_id"])
+        self.assertTrue(all(call[-1]["profile_id"] == "parent-x"
+                            for call in calls[1:]))
+
+    def test_session_hard_reset_targets_child_owned_active_without_stream(self):
+        state = GatewayState(self.config_path, None)
+        state.control_state["active"] = {
+            "operation_id": "child-start",
+            "state": "uncertain",
+            "actor_profile_id": "julia",
+            "execution_profile_id": "parent-x",
+        }
+        profiles = []
+        state.proxy_json = lambda _name, _path, _body, **kwargs: (
+            profiles.append(kwargs["profile_id"]) is None,
+            {"accepted": True, "stopped_count": 0})
+        state.proxy = lambda _name, path, **kwargs: (
+            profiles.append(kwargs["profile_id"]) is None,
+            {**control_evidence(), "clients": [], "apps": []}
+            if path == "/snapshot?force=1" else {"ok": True})
+
+        status, result = state.hard_reset_session({"force": True})
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["accepted"])
+        self.assertEqual(["parent-x", "parent-x", "parent-x"], profiles)
+
+    def test_session_hard_reset_rejects_conflicting_owner_profiles_before_clear(self):
+        state = GatewayState(self.config_path, None)
+        stream = {"execution_profile_id": "parent-x",
+                  "stream_session_id": "stream-x"}
+        active = {"operation_id": "other", "state": "uncertain",
+                  "execution_profile_id": "parent-y"}
+        state.control_state.update({"stream": stream, "active": active})
+        state.proxy_json = mock.Mock()
+        state.proxy = mock.Mock()
+
+        status, result = state.hard_reset_session({"force": True})
+
+        self.assertEqual(409, status)
+        self.assertFalse(result["accepted"])
+        self.assertEqual("hard_reset_owner_conflict", result["reason"])
+        self.assertIs(state.control_state["stream"], stream)
+        self.assertIs(state.control_state["active"], active)
+        state.proxy_json.assert_not_called()
+        state.proxy.assert_not_called()
+
+    def test_child_hard_reset_accepts_same_tv_and_execution_owner_only(self):
+        state = GatewayState(self.config_path, None)
+        state.control_state["stream"] = {
+            "client_id": "tv-1",
+            "actor_profile_id": "kid",
+            "execution_profile_id": "parent-x",
+            "stream_session_id": "stream-x",
+        }
+        state.proxy_json = lambda *_args, **_kwargs: (
+            True, {"accepted": True, "stopped_count": 0})
+        state.proxy = lambda _name, path, **_kwargs: (
+            True, {**control_evidence(), "clients": [], "apps": []}
+            if path == "/snapshot?force=1" else {"ok": True})
+
+        status, result = state.hard_reset_session(
+            {"force": True}, "tv-1", "parent-x")
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["accepted"])
+
+    def test_child_hard_reset_rejects_other_tv_or_execution_before_clear(self):
+        for client_id, execution_id in (("tv-2", "parent-x"),
+                                        ("tv-1", "parent-y")):
+            with self.subTest(client_id=client_id, execution_id=execution_id):
+                state = GatewayState(self.config_path, None)
+                stream = {
+                    "client_id": "tv-1",
+                    "actor_profile_id": "kid",
+                    "execution_profile_id": "parent-x",
+                    "stream_session_id": "stream-x",
+                }
+                state.control_state["stream"] = stream
+                state.proxy_json = mock.Mock()
+                state.proxy = mock.Mock()
+
+                status, result = state.hard_reset_session(
+                    {"force": True}, client_id, execution_id)
+
+                self.assertEqual(409, status)
+                self.assertEqual("hard_reset_requester_conflict", result["reason"])
+                self.assertIs(stream, state.control_state["stream"])
+                state.proxy_json.assert_not_called()
+                state.proxy.assert_not_called()
+
+    def test_session_hard_reset_fences_state_before_calling_upstreams(self):
+        state = GatewayState(self.config_path, None)
+        state.control_state.update({
+            "generation": 3,
+            "actor_lease_epoch": 5,
+            "active": {"operation_id": "stuck", "state": "uncertain"},
+            "stream": {"stream_session_id": "stream-stuck"},
+        })
+        observed = []
+
+        def provider(*_args, **_kwargs):
+            active = state.control_state["active"]
+            observed.append((dict(active) if isinstance(active, dict) else active,
+                             state.control_state["stream"],
+                             state.control_state["generation"],
+                             state.control_state["actor_lease_epoch"]))
+            return True, {"accepted": True, "stopped_count": 1}
+
+        state.proxy_json = provider
+        state.proxy = lambda _name, path, **_kwargs: (
+            (True, {**control_evidence(), "clients": [], "apps": []})
+            if path == "/snapshot?force=1" else (True, {"ok": True}))
+
+        status, result = state.hard_reset_session({"force": True})
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["accepted"])
+        self.assertEqual(1, len(observed))
+        active, stream, generation, epoch = observed[0]
+        self.assertEqual("hard_reset", active["intent"])
+        self.assertEqual("permitted", active["state"])
+        self.assertIsNone(stream)
+        self.assertEqual((4, 6), (generation, epoch))
+
+    def test_provider_neutral_stop_requires_verified_route(self):
         state = GatewayState(self.config_path, None)
         requests = []
         state.proxy_json = lambda name, path, body, timeout=8.0: (
@@ -1776,13 +2068,11 @@ class GatewayStateTest(unittest.TestCase):
             "game_id": "epic:CelesteApp",
         })
 
-        self.assertEqual(200, status)
-        self.assertTrue(result["ok"])
-        self.assertEqual(("/game/stop", {
-            "force": False, "game_id": "epic:CelesteApp",
-        }), requests[0])
+        self.assertEqual(404, status)
+        self.assertEqual("Unknown Playnite action.", result["error"])
+        self.assertEqual([], requests)
 
-    def test_rejected_stop_is_normalized_to_outer_failure(self):
+    def test_legacy_stop_cannot_reach_provider_rejection_path(self):
         state = GatewayState(self.config_path, None)
         state.proxy_json = lambda _name, _path, _body, timeout=8.0: (True, {
             "accepted": False, "reason": "another_game_running"})
@@ -1791,9 +2081,8 @@ class GatewayStateTest(unittest.TestCase):
             "game_id": "steam:289070",
         })
 
-        self.assertEqual(200, status)
-        self.assertFalse(result["ok"])
-        self.assertEqual("another_game_running", result["error"])
+        self.assertEqual(404, status)
+        self.assertEqual("Unknown Playnite action.", result["error"])
 
     def test_verified_stop_has_named_route_required_token_and_no_legacy_fallback(self):
         state = GatewayState(self.config_path, None)
@@ -2034,6 +2323,7 @@ class LoginBrokerGatewayTest(unittest.TestCase):
             self.child_cancel_result = self.cancel_result
             self.child_switch_result = self.switch_result
             self.begin_calls = []
+            self.state_calls = []
             self.cancel_calls = []
             self.switch_calls = []
             self.child_begin_calls = []
@@ -2057,6 +2347,8 @@ class LoginBrokerGatewayTest(unittest.TestCase):
             return self.begin_result
 
         def attempt_state(self, _client_id, _profile_id, _request_id, _attempt_id):
+            self.state_calls.append(
+                (_client_id, _profile_id, _request_id, _attempt_id))
             return self.attempt
 
         def cancel(self, _client_id, _profile_id, _request_id, _attempt_id):
@@ -2195,8 +2487,9 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         self.assertEqual("kid", result["actor_profile_id"])
         self.assertEqual("living-room", result["execution_profile_id"])
         self.assertEqual(
-            [("android-tv", "kid", "living-room", "child-request")],
-            self.broker.child_begin_calls)
+            [("android-tv", "living-room", "child-request")],
+            self.broker.begin_calls)
+        self.assertEqual([], self.broker.child_begin_calls)
 
         self.state.request_context.profile_id = "kid"
         self.state.request_context.actor_profile_id = "kid"
@@ -2217,6 +2510,39 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         child["parent_profile_id"] = "missing-parent"
         with self.assertRaises(PermissionError):
             self.state.authorize_child_profile(self.client, "kid")
+
+    def test_child_login_lifecycle_reuses_parent_broker_operations(self):
+        self.add_child()
+        self.client["profile_grants"]["kid"] = ["use_profile", "remote_sign_in"]
+        attempt_id = "0123456789abcdef0123456789abcdef"
+
+        status, result = self.state.child_attempt_status(
+            self.client, "kid", "child-status", attempt_id)
+        self.assertEqual(202, status)
+        self.assertEqual("kid", result["actor_profile_id"])
+        self.assertEqual("living-room", result["execution_profile_id"])
+        self.assertEqual(
+            [("android-tv", "living-room", "child-status", attempt_id)],
+            self.broker.state_calls)
+        self.assertEqual([], self.broker.child_state_calls)
+
+        status, result = self.state.cancel_child_attempt(
+            self.client, "kid", "child-cancel", attempt_id)
+        self.assertEqual(200, status)
+        self.assertEqual("kid", result["actor_profile_id"])
+        self.assertEqual("living-room", result["execution_profile_id"])
+        self.assertEqual([("child-cancel", attempt_id)], self.broker.cancel_calls)
+        self.assertEqual([], self.broker.child_cancel_calls)
+
+        status, result = self.state.switch_child_session(
+            self.client, "kid", "child-switch")
+        self.assertEqual(202, status)
+        self.assertEqual("kid", result["actor_profile_id"])
+        self.assertEqual("living-room", result["execution_profile_id"])
+        self.assertEqual(
+            [("android-tv", "living-room", "child-switch")],
+            self.broker.switch_calls)
+        self.assertEqual([], self.broker.child_switch_calls)
 
     def test_active_parent_allows_child_use_without_remote_sign_in(self):
         self.add_child()
@@ -2514,6 +2840,7 @@ class ChildTimeHousekeepingTest(unittest.TestCase):
                                "process_token": "a" * 64}],
         }
         self.bridge_actions = []
+        self.streamer_active = True
 
         def proxy(name, path, timeout=2.5, profile_id=None):
             del timeout, profile_id
@@ -2521,18 +2848,23 @@ class ChildTimeHousekeepingTest(unittest.TestCase):
                 return True, {**self.current,
                               "running_games": [dict(item) for item in
                                                  self.current["running_games"]]}
+            if name == "vibepollo" and path == "/snapshot?force=1":
+                return True, {**control_evidence(int(self.streamer_active),
+                                                 self.streamer_active), "clients": [{
+                    "uuid": "01234567-89ab-cdef-0123-456789abcdef",
+                    "connected": self.streamer_active,
+                }], "apps": [{"app_id": 7, "running": self.streamer_active}]}
+            if name == "vibepollo" and path == "/action/close-app":
+                self.streamer_active = False
+                return True, {"ok": True}
             return True, {}
 
         def proxy_json(name, path, body, timeout=8.0, profile_id=None):
             del timeout, profile_id
-            if name == "game_provider" and path == "/child/session":
-                self.bridge_actions.append(body["action"])
-                if body["action"] == "end":
-                    self.current = {"id": "", "state": "idle", "running_games": []}
-                    return True, {"accepted": True, "state": "stopped",
-                                  "session_id": body["session_id"]}
-                return True, {"accepted": True, "state": body["action"],
-                              "session_id": body["session_id"]}
+            if name == "game_provider" and path == "/game/stop-verified":
+                self.bridge_actions.append(path)
+                self.current = {"id": "", "state": "idle", "running_games": []}
+                return True, {"accepted": True, "state": "stopped"}
             return True, {}
 
         self.state.proxy = proxy
@@ -2556,6 +2888,21 @@ class ChildTimeHousekeepingTest(unittest.TestCase):
         }
         self.state.child_time_usage["active_session"] = dict(
             self.state.child_time_session)
+        self.state.authorize_child_profile(self.client, "kid")
+        status, permit = self.state.control_operation_acquire(self.client, {
+            "operation_id": "housekeeping-transport", "intent": "launch",
+            "stream_session_id": "housekeeping-stream", "sunshine_app_id": 7,
+            "expected_generation": 0, "observed_sunshine_app_id": 0,
+            "child_session_id": self.state.child_time_session["session_id"],
+        }, "housekeeping-transport")
+        self.assertEqual(200, status)
+        status, _result = self.state.control_operation_complete(self.client, {
+            "operation_id": permit["operation_id"],
+            "generation": permit["generation"],
+            "actor_lease_epoch": permit["actor_lease_epoch"],
+            "succeeded": True,
+        }, permit["operation_id"])
+        self.assertEqual(200, status)
 
     def tearDown(self):
         self.state.child_time_housekeeping_stop_now()
@@ -2571,20 +2918,20 @@ class ChildTimeHousekeepingTest(unittest.TestCase):
 
         self.assertIsNotNone(result)
         self.assertIsNone(self.state.child_time_session)
-        self.assertEqual(["end"], self.bridge_actions)
+        self.assertEqual(["/game/stop-verified"], self.bridge_actions)
         self.assertEqual(0.0, session["last_heartbeat_monotonic"])
         self.assertIn("01234567-89ab-cdef-0123-456789abcdef",
                       self.state.child_time_completed)
         self.assertIsNone(self.state.child_time_usage["active_session"])
 
-    def test_housekeeping_renews_game_without_refreshing_absent_client(self):
+    def test_housekeeping_keeps_common_game_without_refreshing_absent_client(self):
         self.clock[0] = wakeplay_gateway.CHILD_TIME_CLIENT_GRACE_SECONDS + 1
         session = self.state.child_time_session
 
         result = self.state.child_time_housekeeping_tick()
 
         self.assertEqual(200, result[0])
-        self.assertEqual(["renew"], self.bridge_actions)
+        self.assertEqual([], self.bridge_actions)
         self.assertIs(session, self.state.child_time_session)
         self.assertEqual(0.0, session["last_heartbeat_monotonic"])
 

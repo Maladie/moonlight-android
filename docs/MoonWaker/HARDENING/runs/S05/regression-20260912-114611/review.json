@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "task": "S05",
+  "review_type": "pre-edit independent contract review",
+  "result": "accepted_for_correction",
+  "reviewer": "s05_regression_contract_review",
+  "constraints": [
+    "keep the durable Gateway barrier fail-closed",
+    "do not clear child or control state manually",
+    "retain exact client UUID, app ID, generation and actor epoch checks",
+    "reconcile only an unknown transport outcome, never a received semantic rejection"
+  ],
+  "accepted_scope": [
+    "bound forced Vibepollo control snapshots to the five authoritative sources",
+    "prevent optional UI telemetry from poisoning forced control evidence",
+    "preserve explicit Gateway errors on Android acquire and complete"
+  ]
+}

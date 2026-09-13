@@ -25,6 +25,39 @@ function Save-Preview([Windows.Forms.Form]$Form, [string]$Path) {
     } finally { $bitmap.Dispose() }
 }
 
+function Test-PackagedControlModules([IO.Compression.ZipArchive]$payload) {
+    $moduleDirectory = Join-Path ([IO.Path]::GetTempPath()) (
+        "moonwaker-installer-modules-" + [Guid]::NewGuid().ToString("N"))
+    try {
+        New-Item -ItemType Directory -Path $moduleDirectory | Out-Null
+        foreach ($modulePath in @("gateway/control_operation_policy.py", "gateway/child_terminal_operation.py",
+                "gateway/provider_control_operation.py", "bridges/playnite/ControlEffectFence.py")) {
+            $moduleName = Split-Path -Leaf $modulePath
+            $entry = $payload.GetEntry("host-services/$modulePath")
+            if ($null -eq $entry) { throw "Control module missing: host-services/$modulePath" }
+            $input = $entry.Open()
+            $output = [IO.File]::Create((Join-Path $moduleDirectory $moduleName))
+            try { $input.CopyTo($output) }
+            finally { $output.Dispose(); $input.Dispose() }
+        }
+        $python = (Get-Command python -ErrorAction Stop).Source
+        & $python -I -c "import sys; sys.path.insert(0, sys.argv[1]); import control_operation_policy, child_terminal_operation, provider_control_operation, ControlEffectFence" $moduleDirectory
+        if ($LASTEXITCODE -ne 0) {
+            throw "Gateway control-operation modules are not importable from the installer payload."
+        }
+    } finally {
+        if (Test-Path -LiteralPath $moduleDirectory) {
+            $resolvedModuleDirectory = [IO.Path]::GetFullPath($moduleDirectory)
+            if ($resolvedModuleDirectory.StartsWith([IO.Path]::GetTempPath(),
+                    [StringComparison]::OrdinalIgnoreCase) -and
+                    (Split-Path -Leaf $resolvedModuleDirectory) -like
+                    "moonwaker-installer-modules-*") {
+                Remove-Item -LiteralPath $resolvedModuleDirectory -Recurse -Force
+            }
+        }
+    }
+}
+
 $resolvedInstaller = (Resolve-Path -LiteralPath $InstallerPath).Path
 $assembly = [Reflection.Assembly]::LoadFile($resolvedInstaller)
 $payloadStream = $assembly.GetManifestResourceStream("MoonWaker.HostServices.zip")
@@ -47,6 +80,10 @@ try {
             "host-services/install/Uninstall-MoonWakerHostServices.ps1",
             "host-services/gateway/Stop-MoonWakerGateway.ps1",
             "host-services/gateway/Stop-MoonWakerGatewayWorkers.ps1",
+            "host-services/gateway/control_operation_policy.py",
+            "host-services/gateway/child_terminal_operation.py",
+            "host-services/gateway/provider_control_operation.py",
+            "host-services/bridges/playnite/ControlEffectFence.py",
             "host-services/gateway/MoonWakerGatewayService.exe",
             "host-services/windows-login/login-broker/MoonWakerLoginBroker.exe",
             "host-services/windows-login/credential-provider/MoonWakerCredentialProvider.dll",
@@ -56,6 +93,7 @@ try {
                 throw "Trusted machine installer payload is missing: $requiredMachineEntry"
             }
         }
+        Test-PackagedControlModules $payload
     } finally { $payload.Dispose() }
 } finally { $payloadStream.Dispose() }
 $formType = $assembly.GetType("MoonWaker.HostInstaller.InstallerForm", $true)

@@ -27,6 +27,8 @@ import static org.junit.Assert.assertTrue;
 public class ConsoleStreamTransitionCoordinatorTest {
     private static final String HOST = "host-1";
     private static final String GAME = "11111111-2222-3333-4444-555555555555";
+    private static final String PROCESS_TOKEN =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     @Before
     public void resetProviderOwnership() {
@@ -600,6 +602,29 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertEquals("gog:Some_Game", gateway.startedGameId);
     }
 
+    @Test public void earlyProviderEffectWaitsForTransportControlPermit() {
+        LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
+                "transition-fenced", HOST, LaunchTransitionType.GAME, 42,
+                "gog:Some_Game", 1_000L, true);
+        LaunchTransitionController controller = new LaunchTransitionController(null);
+        controller.begin(providerSpec);
+        controller.overlayRendered(providerSpec.id);
+        FakeGateway gateway = new FakeGateway();
+        FakeCallbacks callbacks = new FakeCallbacks();
+        callbacks.controlAuthorized = false;
+        ConsoleStreamTransitionCoordinator coordinator =
+                new ConsoleStreamTransitionCoordinator(providerSpec, controller, gateway,
+                        new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
+                        (action, delay) -> { }, callbacks);
+
+        coordinator.start();
+        assertEquals(0, gateway.startGameCalls);
+        callbacks.controlAuthorized = true;
+        coordinator.onStreamConnected();
+        Thread.interrupted();
+        assertEquals(1, gateway.startGameCalls);
+    }
+
     @Test
     public void providerLaunchWaitsForControllerTransportWithoutOpeningPrivacyGate() {
         for (String gameId : Arrays.asList("epic:Cowbird", "playnite:" + GAME, GAME)) {
@@ -645,7 +670,8 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
-    public void cancelledProviderStartIsCompensatedAfterItReturns() throws Exception {
+    public void cancelledProviderStartWithoutObservedIdentityCannotStopUnknownProcess()
+            throws Exception {
         LaunchTransitionSpec providerSpec = new LaunchTransitionSpec(
                 "transition-provider", HOST, LaunchTransitionType.GAME, 42,
                 "steam:289070", 1_000L, true);
@@ -654,8 +680,16 @@ public class ConsoleStreamTransitionCoordinatorTest {
         controller.overlayRendered(providerSpec.id);
         CountDownLatch startEntered = new CountDownLatch(1);
         CountDownLatch releaseStart = new CountDownLatch(1);
-        CountDownLatch stopCalled = new CountDownLatch(1);
+        CountDownLatch cleanupCalled = new CountDownLatch(1);
         FakeGateway gateway = new FakeGateway() {
+            @Override public PlayniteTransitionGateway.Snapshot snapshot()
+                    throws IOException {
+                if (releaseStart.getCount() != 0) throw new IOException("start pending");
+                return new PlayniteTransitionGateway.Snapshot(
+                        true, true, "running", "steam:289070", 42,
+                        true, "game", 1, "", false, PROCESS_TOKEN);
+            }
+
             @Override public void startGame(String gameId) throws IOException {
                 super.startGame(gameId);
                 startEntered.countDown();
@@ -666,14 +700,16 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 }
             }
 
-            @Override public void stopGame(String gameId) {
-                super.stopGame(gameId);
-                stopCalled.countDown();
-            }
         };
         ExecutorService executor = Executors.newSingleThreadExecutor();
         ExecutorService providerExecutor = Executors.newSingleThreadExecutor();
-        FakeCallbacks callbacks = new FakeCallbacks();
+        FakeCallbacks callbacks = new FakeCallbacks() {
+            @Override public void onProviderGameCleanupComplete(
+                    String transitionId, String gameId, boolean success) {
+                super.onProviderGameCleanupComplete(transitionId, gameId, success);
+                cleanupCalled.countDown();
+            }
+        };
         ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
                 providerSpec, controller, gateway, executor, providerExecutor,
                 new FakeClock(), 0L, new InterruptingSleeper(),
@@ -682,13 +718,13 @@ public class ConsoleStreamTransitionCoordinatorTest {
         coordinator.start();
         assertTrue(startEntered.await(2, TimeUnit.SECONDS));
         coordinator.cancel();
-        assertFalse(stopCalled.await(100, TimeUnit.MILLISECONDS));
+        assertFalse(cleanupCalled.await(100, TimeUnit.MILLISECONDS));
         releaseStart.countDown();
 
-        assertTrue(stopCalled.await(2, TimeUnit.SECONDS));
+        assertTrue(cleanupCalled.await(2, TimeUnit.SECONDS));
         assertEquals(1, gateway.startGameCalls);
-        assertEquals(1, gateway.stopGameCalls);
-        assertEquals("steam:289070", gateway.stoppedGameId);
+        assertEquals(0, gateway.stopGameCalls);
+        assertFalse(callbacks.lastCleanupSuccess);
         assertEquals(0, callbacks.providerStartAcceptedCalls);
         coordinator.close();
         providerExecutor.shutdownNow();
@@ -907,6 +943,103 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void cleanupCannotStopNewProcessOfSameGameAfterOwnedTokenChanges() {
+        String replacementToken =
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        LaunchTransitionSpec spec = providerSpec("same-game-replacement", "steam:289070");
+        FakeGateway gateway = new FakeGateway();
+        gateway.snapshots.add(new PlayniteTransitionGateway.Snapshot(
+                true, true, "running", "steam:289070", 42,
+                true, "game", 1, "", false, PROCESS_TOKEN));
+        gateway.snapshots.add(new IOException("stop observation"));
+        gateway.snapshots.add(new PlayniteTransitionGateway.Snapshot(
+                true, true, "running", "steam:289070", 43,
+                true, "game", 1, "", false, replacementToken));
+        FakeCallbacks callbacks = new FakeCallbacks();
+        ConsoleStreamTransitionCoordinator coordinator =
+                new ConsoleStreamTransitionCoordinator(
+                        spec, providerController(spec), gateway, new InlineExecutor(),
+                        new FakeClock(), new InterruptingSleeper(),
+                        (action, delay) -> { }, callbacks);
+
+        coordinator.start();
+        Thread.interrupted();
+        coordinator.onStreamFailed();
+
+        assertEquals(0, gateway.stopGameCalls);
+        assertEquals(1, callbacks.cleanupCalls);
+        assertFalse(callbacks.lastCleanupSuccess);
+    }
+
+    @Test
+    public void ownershipTransferCannotRaceClaimedCleanupOfSameProcess() throws Exception {
+        CountDownLatch observationFinished = new CountDownLatch(1);
+        CountDownLatch cleanupSnapshotEntered = new CountDownLatch(1);
+        CountDownLatch releaseCleanupSnapshot = new CountDownLatch(1);
+        CountDownLatch stopCalled = new CountDownLatch(1);
+        FakeGateway gateway = new FakeGateway() {
+            int calls;
+
+            @Override public synchronized PlayniteTransitionGateway.Snapshot snapshot()
+                    throws IOException {
+                calls++;
+                if (calls == 1) {
+                    return new PlayniteTransitionGateway.Snapshot(
+                            true, true, "running", "steam:289070", 42,
+                            true, "game", 1, "", false, PROCESS_TOKEN);
+                }
+                if (calls == 2) {
+                    observationFinished.countDown();
+                    throw new IOException("stop observation");
+                }
+                cleanupSnapshotEntered.countDown();
+                try {
+                    releaseCleanupSnapshot.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IOException("cleanup interrupted", interrupted);
+                }
+                return new PlayniteTransitionGateway.Snapshot(
+                        true, true, "running", "steam:289070", 42,
+                        true, "game", 1, "", false, PROCESS_TOKEN);
+            }
+
+            @Override public void stopGame(String gameId, String processToken) {
+                super.stopGame(gameId, processToken);
+                stopCalled.countDown();
+            }
+        };
+        LaunchTransitionSpec ownerSpec = providerSpec("owner", "steam:289070");
+        LaunchTransitionSpec replacementSpec = new LaunchTransitionSpec(
+                "replacement", HOST, LaunchTransitionType.GAME_CONNECTION, 42,
+                "steam:289070", 1_000L);
+        ExecutorService provider = Executors.newSingleThreadExecutor();
+        ConsoleStreamTransitionCoordinator owner = new ConsoleStreamTransitionCoordinator(
+                ownerSpec, providerController(ownerSpec), gateway, new InlineExecutor(), provider,
+                new FakeClock(), 0L, new InterruptingSleeper(),
+                (action, delay) -> { }, new FakeCallbacks());
+        ConsoleStreamTransitionCoordinator replacement =
+                new ConsoleStreamTransitionCoordinator(
+                        replacementSpec, providerController(replacementSpec), gateway,
+                        new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
+                        (action, delay) -> { }, new FakeCallbacks());
+
+        owner.start();
+        assertTrue(observationFinished.await(2, TimeUnit.SECONDS));
+        owner.onStreamFailed();
+        assertTrue(cleanupSnapshotEntered.await(2, TimeUnit.SECONDS));
+        assertFalse(owner.transferProviderOwnershipTo(replacement));
+        releaseCleanupSnapshot.countDown();
+
+        assertTrue(stopCalled.await(2, TimeUnit.SECONDS));
+        assertEquals(1, gateway.stopGameCalls);
+        owner.close();
+        replacement.close();
+        provider.shutdownNow();
+        assertTrue(provider.awaitTermination(2, TimeUnit.SECONDS));
+    }
+
+    @Test
     public void staleAttemptCleanupRunsBeforeNewAttemptStart() {
         List<String> actions = new ArrayList<>();
         FakeGateway gateway = stoppingObservationGateway();
@@ -946,7 +1079,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         assertEquals(LaunchTransitionState.ERROR, controller.snapshot().state);
         assertFalse(controller.snapshot().revealAuthorized);
-        assertEquals(1, gateway.stopGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
         assertEquals(0, gateway.snapshotIndex);
     }
 
@@ -1409,7 +1542,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
     private static FakeGateway stoppingObservationGateway() {
         FakeGateway gateway = new FakeGateway();
-        gateway.snapshots.add(new IOException("stop observation"));
+        gateway.observeStartedProcessThenStop = true;
         return gateway;
     }
 
@@ -1540,6 +1673,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
         int stopGameCalls;
         String startedGameId = "";
         String stoppedGameId = "";
+        String stoppedProcessToken = "";
         List<String> actions;
         Runnable snapshotAction;
         FakeClock clock;
@@ -1547,8 +1681,18 @@ public class ConsoleStreamTransitionCoordinatorTest {
         IOException verifyError;
         IOException startError;
         boolean focusGameError;
+        boolean observeStartedProcessThenStop;
 
         @Override public PlayniteTransitionGateway.Snapshot snapshot() throws IOException {
+            if (observeStartedProcessThenStop) {
+                int index = snapshotIndex++;
+                if (index % 3 != 1) {
+                    return new PlayniteTransitionGateway.Snapshot(
+                            true, true, "running", startedGameId, 42,
+                            true, "game", 1, "", false, PROCESS_TOKEN);
+                }
+                throw new IOException("stop observation");
+            }
             if (snapshotAction != null) snapshotAction.run();
             if (snapshotIndex < snapshotActions.size()) snapshotActions.get(snapshotIndex).run();
             if (snapshotIndex >= snapshots.size()) throw new IOException("done");
@@ -1594,14 +1738,15 @@ public class ConsoleStreamTransitionCoordinatorTest {
             if (startError != null) throw startError;
         }
 
-        @Override public void stopGame(String gameId) {
+        @Override public void stopGame(String gameId, String processToken) {
             stopGameCalls++;
             stoppedGameId = gameId;
+            stoppedProcessToken = processToken;
             if (actions != null) actions.add("stop:" + gameId);
         }
     }
 
-    private static final class FakeCallbacks
+    private static class FakeCallbacks
             implements ConsoleStreamTransitionCoordinator.Callbacks {
         final List<String> guideDecisions = new ArrayList<>();
         Runnable onGuidePolicy;
@@ -1621,6 +1766,11 @@ public class ConsoleStreamTransitionCoordinatorTest {
         int providerStartFailedCalls;
         int cleanupCalls;
         boolean lastCleanupSuccess;
+        boolean controlAuthorized = true;
+
+        @Override public boolean controlTransportAuthorized() {
+            return controlAuthorized;
+        }
 
         @Override public String gatewayUnavailableMessage() { return "gateway unavailable"; }
         @Override public String hostSessionLockedMessage() { return "host locked"; }

@@ -10,6 +10,7 @@ import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
+import static org.junit.Assert.fail;
 
 public class RetainedStreamSessionCoordinatorTest {
     private static final String SESSION_A = "session-a";
@@ -79,6 +80,51 @@ public class RetainedStreamSessionCoordinatorTest {
             switchRequest = request;
             switchCompletion = completion;
         }
+    }
+
+    @Test public void reauthorizationCommitsConnectionActorAndGenerationAtomically() {
+        FakeController owner = new FakeController(); owner.origin = "parent";
+        RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A, "host", "child", 7, "");
+        RetainedStreamSessionCoordinator.bindControlGeneration(owner, SESSION_A, 4);
+        AtomicInteger connectionGeneration = new AtomicInteger(4);
+        assertFalse(RetainedStreamSessionCoordinator.commitReauthorization(owner, SESSION_A,
+                "parent", "parent", 4, 5, () -> false));
+        assertEquals("child", RetainedStreamSessionCoordinator.snapshot().profileId);
+        assertEquals(4, RetainedStreamSessionCoordinator.snapshot().controlGeneration);
+        assertTrue(RetainedStreamSessionCoordinator.commitReauthorization(owner, SESSION_A,
+                "parent", "parent", 4, 5, () -> connectionGeneration.compareAndSet(4, 5)));
+        assertEquals("parent", RetainedStreamSessionCoordinator.snapshot().profileId);
+        assertEquals(5, RetainedStreamSessionCoordinator.snapshot().controlGeneration);
+        assertEquals(5, connectionGeneration.get());
+        assertFalse(RetainedStreamSessionCoordinator.commitReauthorization(owner, SESSION_A,
+                "parent", "child", 4, 6, () -> { fail("Stale commit reached connection"); return true; }));
+        assertFalse(RetainedStreamSessionCoordinator.discardReauthorization(owner, SESSION_A, 3, 4));
+        assertEquals(5, RetainedStreamSessionCoordinator.snapshot().controlGeneration);
+        assertTrue(RetainedStreamSessionCoordinator.discardReauthorization(owner, SESSION_A, 4, 5));
+        assertEquals(RetainedStreamSessionCoordinator.State.NONE, RetainedStreamSessionCoordinator.snapshot().state);
+    }
+
+    @Test public void ongoingTerminationCannotBeReauthorizedOrDiscardedByHandoff() {
+        FakeController owner = new FakeController(); owner.origin = "parent";
+        RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A, "host", "parent", 7, "");
+        RetainedStreamSessionCoordinator.bindControlGeneration(owner, SESSION_A, 4);
+        assertTrue(RetainedStreamSessionCoordinator.markTerminating(SESSION_A, "host", 7, ""));
+        assertFalse(RetainedStreamSessionCoordinator.commitReauthorization(owner, SESSION_A,
+                "parent", "child", 4, 5, () -> { fail("Termination reached commit"); return true; }));
+        assertFalse(RetainedStreamSessionCoordinator.discardReauthorization(owner, SESSION_A, 4, 5));
+        assertEquals(RetainedStreamSessionCoordinator.State.TERMINATING,
+                RetainedStreamSessionCoordinator.snapshot().state);
+    }
+
+    @Test public void replacedRetainedOwnerRejectsOldCommitAndCompensation() {
+        FakeController oldOwner = new FakeController(); oldOwner.origin = "parent";
+        FakeController parent = new FakeController(); parent.origin = "parent";
+        RetainedStreamSessionCoordinator.enterHome(parent, SESSION_A, "host", "parent", 7, "");
+        RetainedStreamSessionCoordinator.bindControlGeneration(parent, SESSION_A, 6);
+        assertFalse(RetainedStreamSessionCoordinator.commitReauthorization(oldOwner, SESSION_A,
+                "parent", "child", 4, 5, () -> { fail("Old owner reached connection"); return true; }));
+        assertFalse(RetainedStreamSessionCoordinator.discardReauthorization(oldOwner, SESSION_A, 4, 5));
+        assertEquals(6, RetainedStreamSessionCoordinator.snapshot().controlGeneration);
     }
 
     @Test public void familySwitchRetainsTransportButRebindsActorAndRejectsOtherOrigins() {
@@ -377,6 +423,9 @@ public class RetainedStreamSessionCoordinatorTest {
         assertTrue(RetainedStreamSessionCoordinator.hardResetIfHostMatches("HOST"));
         assertEquals(RetainedStreamSessionCoordinator.State.NONE,
                 RetainedStreamSessionCoordinator.state());
+        assertEquals(1, controller.preparingCancels);
+        assertEquals(SESSION_A, controller.preparingCancel.streamSessionId);
+        assertFalse(controller.disconnected);
     }
 
     @Test public void lostOwnerFallsBackToReconnect() {
@@ -838,6 +887,10 @@ public class RetainedStreamSessionCoordinatorTest {
         assertFalse(RetainedStreamSessionCoordinator.clearIfMatches("other-session"));
         assertEquals(RetainedStreamSessionCoordinator.State.TERMINATING,
                 RetainedStreamSessionCoordinator.state());
+        assertFalse(RetainedStreamSessionCoordinator.clearAfterAuthoritativeEndIfMatches(
+                SESSION_A));
+        assertEquals(RetainedStreamSessionCoordinator.State.TERMINATING,
+                RetainedStreamSessionCoordinator.state());
         assertTrue(RetainedStreamSessionCoordinator.clearIfMatches(SESSION_A));
         assertEquals(RetainedStreamSessionCoordinator.State.NONE,
                 RetainedStreamSessionCoordinator.state());
@@ -1291,5 +1344,37 @@ public class RetainedStreamSessionCoordinatorTest {
         assertEquals("session-b", retained.streamSessionId);
         assertEquals(8, retained.appId);
         assertEquals("other", retained.playniteGameId);
+    }
+
+    @Test public void controlGenerationBindsOnlyToTheExactLiveOwnerAndClears() {
+        FakeController owner = new FakeController();
+        RetainedStreamSessionCoordinator.enterHome(
+                owner, SESSION_A, "host", 7, "game");
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                owner, SESSION_A, 11L));
+        assertEquals(11L, RetainedStreamSessionCoordinator.snapshot().controlGeneration);
+
+        RetainedStreamSessionCoordinator.enterHome(
+                new FakeController(), "session-b", "host", 7, "game");
+        assertFalse(RetainedStreamSessionCoordinator.bindControlGeneration(
+                owner, SESSION_A, 12L));
+        assertEquals(0L, RetainedStreamSessionCoordinator.snapshot().controlGeneration);
+    }
+
+    @Test public void exactPreparingOwnerCanBeginTerminalChildCleanup() {
+        FakeController owner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition", 1L));
+
+        RetainedStreamSessionCoordinator.DirectTermination token =
+                RetainedStreamSessionCoordinator.beginDirectTermination(
+                        owner, SESSION_A, "host", 7, "game");
+
+        assertTrue(token != null);
+        assertEquals(RetainedStreamSessionCoordinator.State.TERMINATING,
+                RetainedStreamSessionCoordinator.state());
+        RetainedStreamSessionCoordinator.completeDirectTermination(token, true);
+        assertEquals(RetainedStreamSessionCoordinator.State.NONE,
+                RetainedStreamSessionCoordinator.state());
     }
 }

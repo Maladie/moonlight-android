@@ -1,6 +1,7 @@
 import json
 import tempfile
 import unittest
+from control_snapshot_fixture import control_evidence
 from datetime import datetime, timezone
 from email.message import Message
 from pathlib import Path
@@ -52,6 +53,10 @@ class ChildSessionsHttpTest(unittest.TestCase):
                 "profile_grants": {
                     "parent": ["use_profile"], "kid": ["use_profile"]},
                 "vibepollo_client_uuids": {"parent": VIBE_UUID},
+            }, {
+                "id": "tv-2", "token_sha256": sha256_text("other-token"),
+                "profile_grants": {"kid": ["use_profile"]},
+                "vibepollo_client_uuids": {"parent": VIBE_UUID},
             }],
         }), encoding="utf-8")
         self.state = GatewayState(self.config_path, None)
@@ -60,6 +65,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.clock = [0.0, datetime(2026, 1, 3, 12, 0, tzinfo=timezone.utc)]
         self.state.child_time_clock = lambda: tuple(self.clock)
         self.current = {"id": "", "state": "idle", "running_games": []}
+        self.streamer_active = False
         self.bridge_calls = []
 
         def proxy(name, path, timeout=2.5, profile_id=None):
@@ -70,6 +76,15 @@ class ChildSessionsHttpTest(unittest.TestCase):
                                                  self.current.get("running_games", [])]}
             if path == "/health":
                 return True, {"connector_connected": True}
+            if name == "vibepollo" and path == "/snapshot?force=1":
+                return True, {**control_evidence(int(self.streamer_active), self.streamer_active),
+                              "clients": [{"uuid": VIBE_UUID,
+                                           "connected": self.streamer_active}],
+                              "apps": [{"app_id": 7,
+                                        "running": self.streamer_active}]}
+            if name == "vibepollo" and path == "/action/close-app":
+                self.streamer_active = False
+                return True, {"ok": True}
             return True, {}
 
         def proxy_json(name, path, body, timeout=8.0, profile_id=None):
@@ -84,16 +99,8 @@ class ChildSessionsHttpTest(unittest.TestCase):
             if path == "/library/list":
                 return True, {"games": [{"id": "steam:123", "name": "Allowed"}],
                               "next_cursor": "", "revision": "catalog-1"}
-            if path == "/child/session":
-                action = body["action"]
-                if action == "end":
-                    self.current = {"id": "", "state": "idle", "running_games": []}
-                    return True, {"accepted": True, "state": "stopped",
-                                  "session_id": body["session_id"],
-                                  "cleanup_required": False}
-                return True, {"accepted": True, "state": action,
-                              "session_id": body["session_id"]}
             if path == "/game/start":
+                self.streamer_active = True
                 self.current = {
                     "id": "steam:123", "state": "running",
                     "running_games": [{"game_id": "steam:123",
@@ -101,6 +108,12 @@ class ChildSessionsHttpTest(unittest.TestCase):
                                         "process_token": PROCESS_TOKEN}],
                 }
                 return True, {"accepted": True, "state": "starting"}
+            if path == "/game/stop-verified":
+                self.current = {"id": "", "state": "idle", "running_games": []}
+                return True, {"accepted": True, "state": "stopped"}
+            if path == "/session/hard-reset":
+                self.current = {"id": "", "state": "idle", "running_games": []}
+                return True, {"accepted": True, "stopped_count": 1}
             return True, {}
 
         self.state.proxy = proxy
@@ -114,18 +127,19 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.temporary.cleanup()
 
     def handler(self, path, body=None, profile="parent", capability=False,
-                profile_session=True):
+                profile_session=True, request_id="http-request",
+                token="child-token"):
         handler = object.__new__(GatewayHandler)
         handler.path = path
         handler.headers = Message()
-        handler.headers["Authorization"] = "Bearer child-token"
+        handler.headers["Authorization"] = "Bearer " + token
         handler.headers["X-WakePlay-Profile"] = profile
         if capability:
             handler.headers["X-MoonWaker-Capabilities"] = \
                 wakeplay_gateway.CHILD_PROFILES_CAPABILITY
         if profile_session:
             handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = SESSION_ID
-        handler.headers["X-Request-Id"] = "http-request"
+        handler.headers["X-Request-Id"] = request_id
         handler.server = SimpleNamespace(state=self.state)
         handler.client_address = ("192.0.2.1", 12345)
         responses = []
@@ -144,6 +158,31 @@ class ChildSessionsHttpTest(unittest.TestCase):
         handler.do_GET()
         self.assertEqual(1, len(responses))
         return responses[0]
+
+    def establish_child_transport_and_start_game(self):
+        session = self.state.child_time_session
+        self.state.authorize_child_profile(self.client, "kid")
+        operation_id = "child-http-transport"
+        status, permit = self.state.control_operation_acquire(self.client, {
+            "operation_id": operation_id, "intent": "launch",
+            "stream_session_id": SESSION_ID, "sunshine_app_id": 7,
+            "expected_generation": 0, "observed_sunshine_app_id": 0,
+            "child_session_id": SESSION_ID,
+        }, operation_id)
+        self.assertEqual(200, status)
+        self.state.control_operation_complete(self.client, {
+            "operation_id": operation_id, "generation": permit["generation"],
+            "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": True,
+        }, operation_id)
+        handler, responses = self.handler("/api/v1/game/start",
+                                          {"game_id": "steam:123"},
+                                          profile="kid", capability=True)
+        handler.headers.replace_header("X-Request-Id", "game-start-setup")
+        handler.do_POST()
+        self.assertEqual(200, responses[0][0])
+        status, _ = self.state.child_time_session_heartbeat(
+            self.client, "kid", SESSION_ID)
+        self.assertEqual(200, status)
 
     def test_old_client_does_not_see_child_and_capability_is_fail_closed(self):
         status, result = self.get("/api/v1/profiles", profile="parent")
@@ -164,7 +203,66 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.assertEqual("parent", child["execution_profile_id"])
         self.assertFalse(child["permissions"]["manage_children"])
         self.assertNotIn("discord_bridge_online", child)
-        self.assertNotIn("virtualhere_available", child)
+        self.assertIn("virtualhere_available", child)
+
+    def test_child_capabilities_negotiate_control_without_parent_health_or_effects(self):
+        with mock.patch.object(self.state, "proxy") as proxy, \
+                mock.patch.object(self.state, "proxy_json") as proxy_json:
+            for _ in range(3):
+                status, result = self.get("/api/v1/capabilities", profile="kid",
+                                          capability=True)
+                self.assertEqual(200, status)
+                self.assertEqual({"gateway", "capabilities"}, set(result))
+                self.assertEqual({"online": True, "api_version": 1}, result["gateway"])
+                self.assertEqual({"child_profiles_v1", "control_operations_v1"},
+                                 set(result["capabilities"]))
+                self.assertTrue(result["capabilities"]["child_profiles_v1"]["available"])
+                self.assertTrue(result["capabilities"]["control_operations_v1"]["available"])
+            proxy.assert_not_called()
+            proxy_json.assert_not_called()
+            self.assertIsNone(self.state.child_time_session)
+            self.assertFalse(self.state.control_state.get("stream"))
+            status, result = self.get("/api/v1/game-provider/health", profile="kid",
+                                      capability=True)
+            self.assertEqual(403, status)
+            self.assertEqual("child_action_not_allowed", result["error"])
+            proxy.assert_not_called()
+            proxy_json.assert_not_called()
+
+    def test_child_uses_the_common_bounded_network_calibration_download(self):
+        handler, responses = self.handler(
+            "/api/v1/diagnostics/network/download?size=1024",
+            profile="kid", capability=True)
+        calls = []
+        handler.network_download = lambda size, profile, client_id: calls.append(
+            (size, profile, client_id))
+
+        handler.do_GET()
+
+        self.assertEqual([], responses)
+        self.assertEqual([("1024", "host", "tv-1")], calls)
+
+    def test_child_capabilities_preserve_negotiation_and_authorization_gates(self):
+        status, result = self.get("/api/v1/capabilities", profile="kid")
+        self.assertEqual(403, status)
+        self.assertEqual("child_profiles_capability_required", result["error"])
+
+        self.state.child_profiles_api_enabled = False
+        status, result = self.get("/api/v1/capabilities", profile="kid", capability=True)
+        self.assertEqual(403, status)
+        self.assertEqual("child_profiles_not_enforced", result["error"])
+        self.state.child_profiles_api_enabled = True
+
+        self.client["profile_grants"]["kid"] = []
+        status, _ = self.get("/api/v1/capabilities", profile="kid", capability=True)
+        self.assertEqual(403, status)
+
+        handler, responses = self.handler("/api/v1/capabilities", profile="kid",
+                                           capability=True)
+        handler.headers.replace_header("Authorization", "Bearer invalid-token")
+        handler.do_GET()
+        self.assertEqual(401, responses[0][0])
+        self.assertEqual([], self.bridge_calls)
 
     def test_child_library_uses_child_projection_before_bridge_paging(self):
         status, result = self.get("/api/v1/library?limit=50", profile="kid",
@@ -193,11 +291,52 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.assertIn("Invalid child session request", result["error"])
 
     def test_legacy_child_start_needs_an_active_time_session(self):
+        status, result = self.get("/api/v1/capabilities", profile="kid", capability=True)
+        self.assertEqual(200, status)
+        self.assertTrue(result["capabilities"]["control_operations_v1"]["available"])
+        status, result = self.post("/api/v1/control/operation/acquire", {
+            "operation_id": "http-request", "intent": "launch",
+            "stream_session_id": SESSION_ID, "sunshine_app_id": 7,
+            "expected_generation": 0, "observed_sunshine_app_id": 0,
+            "child_session_id": SESSION_ID,
+        }, profile="kid", capability=True)
+        self.assertEqual(409, status)
+        self.assertEqual("child_session_unmanaged", result["reason"])
         status, result = self.post(
             "/api/v1/game/start", {"game_id": "steam:123"},
             profile="kid", capability=True)
         self.assertEqual(403, status)
         self.assertEqual("child_session_required", result["error"])
+        self.assertIsNone(self.state.child_time_session)
+        self.assertFalse(self.state.control_state.get("stream"))
+        self.assertEqual([], self.bridge_calls)
+
+    def test_definitive_control_failure_is_accepted_over_http_and_next_play_can_acquire(self):
+        status, permit = self.post("/api/v1/control/operation/acquire", {
+            "operation_id": "http-request", "intent": "launch",
+            "stream_session_id": "stream-http-1", "sunshine_app_id": 7,
+            "expected_generation": 0, "observed_sunshine_app_id": 0,
+            "child_session_id": "",
+        })
+        self.assertEqual(200, status)
+
+        status, failed = self.post("/api/v1/control/operation/complete", {
+            "operation_id": "http-request", "generation": permit["generation"],
+            "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": False,
+            "effect_result": {"outcome": "definitive_failure"},
+        })
+        self.assertEqual(200, status)
+        self.assertEqual("failed", failed["state"])
+        self.assertEqual("effect_rejected", failed["reason"])
+
+        status, next_play = self.post("/api/v1/control/operation/acquire", {
+            "operation_id": "http-next-play", "intent": "launch",
+            "stream_session_id": "stream-http-2", "sunshine_app_id": 7,
+            "expected_generation": 0, "observed_sunshine_app_id": 0,
+            "child_session_id": "",
+        }, request_id="http-next-play")
+        self.assertEqual(200, status)
+        self.assertEqual("permitted", next_play["state"])
 
     def test_child_library_refresh_uses_child_authorization(self):
         status, result = self.post(
@@ -213,8 +352,9 @@ class ChildSessionsHttpTest(unittest.TestCase):
             "/api/v1/child/session/start",
             {"game_id": "steam:123", "session_id": SESSION_ID,
              "request_id": "start-1"}, profile="kid", capability=True)
-        self.assertEqual(200, status)
-        self.assertEqual("running", result["phase"])
+        self.assertEqual(202, status)
+        self.assertEqual("launch_pending", result["phase"])
+        self.establish_child_transport_and_start_game()
 
         registry = json.loads(self.config_path.read_text(encoding="utf-8"))
         registry["profiles"]["kid"]["enabled"] = False
@@ -232,7 +372,9 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.post("/api/v1/child/session/start",
                   {"game_id": "steam:123", "session_id": SESSION_ID, "request_id": "start-actions"},
                   profile="kid", capability=True)
-        for action, body in [("focus", {}), ("stop", {"game_id": "steam:123"})]:
+        self.establish_child_transport_and_start_game()
+        for action, body in [("focus", {}), ("stop-verified", {
+                "game_id": "steam:123", "expected_process_token": PROCESS_TOKEN})]:
             handler, responses = self.handler("/api/v1/game/" + action, body,
                                               profile="kid", capability=True)
             handler.headers.replace_header("X-Request-Id", "game-" + action)
@@ -241,9 +383,12 @@ class ChildSessionsHttpTest(unittest.TestCase):
             self.assertTrue(responses[0][1]["ok"])
         actions = [path for _, path, _ in self.bridge_calls]
         self.assertIn("/game/focus", actions)
-        self.assertIn("/game/stop", actions)
+        self.assertIn("/game/stop-verified", actions)
         self.assertNotIn("/action/disconnect", actions)
         status, _ = self.post("/api/v1/game/stop", {"game_id": "steam:999"},
+                              profile="kid", capability=True)
+        self.assertEqual(403, status)
+        status, _ = self.post("/api/v1/game/stop", {"game_id": "steam:123"},
                               profile="kid", capability=True)
         self.assertEqual(403, status)
 
@@ -296,19 +441,32 @@ class ChildSessionsHttpTest(unittest.TestCase):
         # against the host-resolved parent execution identity.
         self.client["profile_grants"] = {"kid": ["use_profile"]}
         status, result = self.get(
+            "/api/v1/capabilities", profile="kid", capability=True)
+        self.assertEqual(200, status)
+        self.assertTrue(result["capabilities"]["control_operations_v1"]["available"])
+        status, result = self.get(
             "/api/v1/profiles", profile="kid", capability=True)
         self.assertEqual(200, status)
+        self.assertEqual(["kid"], [item["id"] for item in result["profiles"]])
         self.assertEqual("kid", next(
             item["id"] for item in result["profiles"] if item["id"] == "kid"))
+
+        status, result = self.post(
+            "/api/v1/child/session/eligibility", {"game_id": "steam:123"},
+            profile="kid", capability=True)
+        self.assertEqual(200, status)
+        self.assertTrue(result["ok"])
+        self.assertEqual("none", result["reason"])
 
         status, result = self.post(
             "/api/v1/child/session/start",
             {"game_id": "steam:123", "session_id": SESSION_ID,
              "request_id": "child-only-start"},
             profile="kid", capability=True)
-        self.assertEqual(200, status)
+        self.assertEqual(202, status)
         self.assertEqual("parent", result["execution_profile_id"])
-        self.assertEqual("running", result["phase"])
+        self.assertEqual("launch_pending", result["phase"])
+        self.establish_child_transport_and_start_game()
 
         registry = json.loads(self.config_path.read_text(encoding="utf-8"))
         del registry["profiles"]["kid"]
@@ -324,6 +482,134 @@ class ChildSessionsHttpTest(unittest.TestCase):
             profile="kid", capability=True)
         self.assertEqual(200, status)
         self.assertEqual("ended", result["phase"])
+
+    def test_revoked_child_exact_hard_reset_fences_pending_launch_and_unblocks_next_play(self):
+        self.post("/api/v1/child/session/start", {
+            "game_id": "steam:123", "session_id": SESSION_ID,
+            "request_id": "pending-hard-reset-start"}, profile="kid", capability=True)
+        self.state.authorize_child_profile(self.client, "kid")
+        operation_id = "pending-child-launch"
+        status, permit = self.state.control_operation_acquire(self.client, {
+            "operation_id": operation_id, "intent": "launch",
+            "stream_session_id": "pending-child-stream", "sunshine_app_id": 7,
+            "expected_generation": 0, "observed_sunshine_app_id": 0,
+            "child_session_id": SESSION_ID,
+        }, operation_id)
+        self.assertEqual(200, status)
+
+        registry = json.loads(self.config_path.read_text(encoding="utf-8"))
+        registry["profiles"]["kid"]["enabled"] = False
+        self.config_path.write_text(json.dumps(registry), encoding="utf-8")
+        status, result = self.post(
+            "/api/v1/session/hard-reset",
+            {"force": True, "session_id": SESSION_ID}, profile="kid",
+            capability=True, request_id="pending-child-hard-reset")
+
+        self.assertEqual(200, status, result)
+        self.assertTrue(result["accepted"])
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertIsNone(self.state.child_time_session)
+        self.state.request_context.profile_id = "kid"
+        self.state.request_context.actor_profile_id = "kid"
+        self.state.request_context.execution_profile_id = "parent"
+        status, delayed = self.state.control_operation_complete(self.client, {
+            "operation_id": operation_id, "generation": permit["generation"],
+            "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": True,
+        }, operation_id)
+        self.assertEqual(200, status)
+        self.assertEqual("failed", delayed["state"])
+        self.assertEqual("superseded_by_hard_reset", delayed["reason"])
+
+        self.state.authorize_profile(self.client, "parent")
+        status, next_play = self.state.control_operation_acquire(self.client, {
+            "operation_id": "next-parent-launch", "intent": "launch",
+            "stream_session_id": "next-parent-stream", "sunshine_app_id": 7,
+            "expected_generation": 0, "observed_sunshine_app_id": 0,
+            "child_session_id": "",
+        }, "next-parent-launch", 0)
+        self.assertEqual(200, status, next_play)
+
+    def test_delayed_exact_child_reset_is_noop_after_a_newer_session_started(self):
+        self.post("/api/v1/child/session/start", {
+            "game_id": "steam:123", "session_id": SESSION_ID,
+            "request_id": "old-child-start"}, profile="kid", capability=True)
+        old = self.state.child_time_session
+        self.state.child_time_completed[SESSION_ID] = {
+            "reason": "user_terminated", "game_id": "steam:123",
+            "actor_profile_id": "kid", "execution_profile_id": "parent",
+            "client_id": "tv-1",
+        }
+        newer_id = "11234567-89ab-cdef-0123-456789abcdef"
+        newer = {**old, "session_id": newer_id}
+        self.state.child_time_session = newer
+        self.state.child_time_usage["active_session"] = newer
+        registry = json.loads(self.config_path.read_text(encoding="utf-8"))
+        del registry["profiles"]["kid"]
+        self.config_path.write_text(json.dumps(registry), encoding="utf-8")
+        effects_before = len([call for call in self.bridge_calls
+                              if call[1] == "/session/hard-reset"])
+
+        status, result = self.post(
+            "/api/v1/session/hard-reset",
+            {"force": True, "session_id": SESSION_ID}, profile="kid",
+            capability=True, request_id="delayed-old-child-reset")
+
+        self.assertEqual(200, status, result)
+        self.assertEqual("child_session_already_ended", result["reason"])
+        self.assertIs(newer, self.state.child_time_session)
+        effects_after = len([call for call in self.bridge_calls
+                             if call[1] == "/session/hard-reset"])
+        self.assertEqual(effects_before, effects_after)
+
+    def test_completed_child_session_id_cannot_be_reused(self):
+        self.state.child_time_completed[SESSION_ID] = {
+            "reason": "user_terminated", "game_id": "steam:123",
+            "actor_profile_id": "kid", "execution_profile_id": "parent",
+            "client_id": "tv-1",
+        }
+
+        status, result = self.post(
+            "/api/v1/child/session/start", {
+                "game_id": "steam:123", "session_id": SESSION_ID,
+                "request_id": "reused-child-session-start"},
+            profile="kid", capability=True)
+
+        self.assertEqual(409, status)
+        self.assertEqual("session_id_reused", result["reason"])
+        self.assertIsNone(self.state.child_time_session)
+
+    def test_partial_hard_reset_persists_consumed_child_session_id_across_restart(self):
+        self.post("/api/v1/child/session/start", {
+            "game_id": "steam:123", "session_id": SESSION_ID,
+            "request_id": "child-before-failed-reset"},
+            profile="kid", capability=True)
+        self.state.proxy_json = lambda *_args, **_kwargs: (
+            False, {"error": "provider unavailable"})
+
+        status, result = self.post(
+            "/api/v1/session/hard-reset", {"force": True}, profile="kid",
+            capability=True, request_id="failed-child-hard-reset")
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["accepted"])
+        self.assertTrue(result["recovered"])
+        self.assertFalse(result["cleanup_confirmed"])
+        restarted = GatewayState(self.config_path, None)
+        restarted.child_profiles_api_enabled = True
+        restarted.child_time_clock = lambda: tuple(self.clock)
+        restarted.proxy = self.state.proxy
+        restarted.proxy_json = lambda name, path, body, **_kwargs: (
+            (True, {"game_id": "steam:123", "canonical_game_id": "steam:123",
+                    "revision": "catalog-1"}) if path == "/library/resolve" else
+            (True, {}))
+        client = restarted.client_for_token("child-token")
+
+        status, reused = restarted.child_time_session_start(
+            client, "kid", "steam:123", SESSION_ID, "reuse-after-restart")
+
+        self.assertEqual(409, status)
+        self.assertEqual("session_id_reused", reused["reason"])
+        self.assertIsNone(restarted.child_time_session)
 
     def test_completed_status_confirms_cleanup_and_preserves_actor_binding(self):
         self.post("/api/v1/child/session/start",
@@ -357,14 +643,186 @@ class ChildSessionsHttpTest(unittest.TestCase):
             self.assertEqual(403, status)
             sleep.assert_called_once()
 
-    def test_child_destructive_routes_are_rejected(self):
-        for path in ("/api/v1/game/install", "/api/v1/game/uninstall",
-                     "/api/v1/session/hard-reset", "/api/v1/discord/home",
-                     "/api/v1/virtualhere/action"):
+    def test_child_suspend_uses_parent_execution_and_releases_only_time_attachment(self):
+        self.post("/api/v1/child/session/start", {
+            "game_id": "steam:123", "session_id": SESSION_ID,
+            "request_id": "start-suspend",
+        }, profile="kid", capability=True)
+        self.establish_child_transport_and_start_game()
+        stream = dict(self.state.control_state["stream"])
+        accepted = {
+            "ok": True, "accepted": True, "suspend_id": "child-suspend",
+            "session": {"sunshine_app_id": 7,
+                        "playnite_game_id": "steam:123", "title": "Allowed"},
+        }
+        with mock.patch.object(self.state, "suspend_session",
+                               return_value=(202, accepted)) as suspend:
+            status, result = self.post("/api/v1/system/suspend-session", {
+                "suspend_id": "child-suspend", "sunshine_app_id": 7,
+                "playnite_game_id": "steam:123", "title": "Allowed",
+            }, profile="kid", capability=True, request_id="child-suspend")
+        self.assertEqual(202, status, result)
+        self.assertTrue(result["child_time_released"])
+        self.assertEqual(SESSION_ID, result["child_session_id"])
+        suspend.assert_called_once()
+        self.assertIsNone(self.state.child_time_session)
+        self.assertEqual(stream, self.state.control_state["stream"])
+        self.assertEqual("running", self.current["state"])
+
+    def test_child_install_uninstall_and_virtualhere_match_parent_capabilities(self):
+        for action in ("install", "uninstall"):
+            status, result = self.post(
+                "/api/v1/game/" + action, {"game_id": "steam:123"},
+                profile="kid", capability=True, request_id="child-" + action)
+            self.assertEqual(200, status, result)
+            self.assertTrue(result["ok"])
+        self.assertEqual(["/game/install", "/game/uninstall"], [
+            path for name, path, _body in self.bridge_calls
+            if name == "game_provider" and path in {"/game/install", "/game/uninstall"}
+        ])
+        with mock.patch.object(self.state, "virtualhere_action",
+                               return_value=(200, {"ok": True})) as action:
+            status, result = self.post(
+                "/api/v1/virtualhere/restart", {}, profile="kid",
+                capability=True, request_id="child-virtualhere")
+        self.assertEqual(200, status, result)
+        action.assert_called_once_with("restart", {})
+        with mock.patch.object(self.state, "virtualhere_state",
+                               return_value=(200, {"ok": True})) as state:
+            status, result = self.get(
+                "/api/v1/virtualhere/state", profile="kid", capability=True)
+        self.assertEqual(200, status, result)
+        state.assert_called_once_with(False)
+
+    def test_child_discord_and_unrelated_destructive_routes_are_rejected(self):
+        for path in ("/api/v1/discord/home", "/api/v1/vibepollo/action/restart"):
             with self.subTest(path=path):
                 status, result = self.post(path, {}, profile="kid", capability=True)
                 self.assertEqual(403, status)
                 self.assertEqual("child_action_not_allowed", result["error"])
+
+    def test_child_hard_reset_uses_the_global_escape_hatch_without_owning_session(self):
+        expected = {"ok": True, "accepted": True}
+        with mock.patch.object(self.state, "hard_reset_session",
+                               return_value=(200, expected)) as reset:
+            status, result = self.post(
+                "/api/v1/session/hard-reset", {"force": True}, profile="kid",
+                capability=True, request_id="child-global-hard-reset")
+
+        self.assertEqual(200, status)
+        self.assertEqual(expected, result)
+        reset.assert_called_once_with({"force": True}, "tv-1", "parent")
+
+    def test_revoked_child_can_hard_reset_only_its_exact_session(self):
+        self.post("/api/v1/child/session/start", {
+            "game_id": "steam:123", "session_id": SESSION_ID,
+            "request_id": "revoked-hard-reset-start"}, profile="kid", capability=True)
+        registry = json.loads(self.config_path.read_text(encoding="utf-8"))
+        del registry["profiles"]["kid"]
+        self.config_path.write_text(json.dumps(registry), encoding="utf-8")
+
+        status, result = self.post(
+            "/api/v1/session/hard-reset",
+            {"force": True, "session_id": SESSION_ID}, profile="kid",
+            capability=True, request_id="revoked-child-hard-reset")
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["accepted"])
+
+    def test_disabled_child_can_hard_reset_its_exact_persisted_session(self):
+        self.post("/api/v1/child/session/start", {
+            "game_id": "steam:123", "session_id": SESSION_ID,
+            "request_id": "disabled-hard-reset-start"}, profile="kid", capability=True)
+        registry = json.loads(self.config_path.read_text(encoding="utf-8"))
+        registry["profiles"]["kid"]["enabled"] = False
+        self.config_path.write_text(json.dumps(registry), encoding="utf-8")
+
+        status, result = self.post(
+            "/api/v1/session/hard-reset",
+            {"force": True, "session_id": SESSION_ID}, profile="kid",
+            capability=True, request_id="disabled-child-hard-reset")
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["accepted"])
+
+    def test_child_without_current_grant_can_hard_reset_its_exact_session(self):
+        self.post("/api/v1/child/session/start", {
+            "game_id": "steam:123", "session_id": SESSION_ID,
+            "request_id": "ungranted-hard-reset-start"}, profile="kid", capability=True)
+        registry = json.loads(self.config_path.read_text(encoding="utf-8"))
+        registry["clients"][0]["profile_grants"]["kid"] = []
+        self.config_path.write_text(json.dumps(registry), encoding="utf-8")
+
+        status, result = self.post(
+            "/api/v1/session/hard-reset",
+            {"force": True, "session_id": SESSION_ID}, profile="kid",
+            capability=True, request_id="ungranted-child-hard-reset")
+
+        self.assertEqual(200, status)
+        self.assertTrue(result["accepted"])
+
+    def test_child_global_hard_reset_is_scoped_to_the_requesting_tv(self):
+        self.post("/api/v1/child/session/start", {
+            "game_id": "steam:123", "session_id": SESSION_ID,
+            "request_id": "wrong-owner-reset-start"}, profile="kid", capability=True)
+        def reset(_body, client_id, execution_id):
+            if client_id != "tv-1" or execution_id != "parent":
+                return 409, {"ok": False, "accepted": False,
+                             "reason": "hard_reset_requester_conflict"}
+            return 200, {"ok": True, "accepted": True}
+
+        with mock.patch.object(self.state, "hard_reset_session", side_effect=reset):
+            status, result = self.post(
+                "/api/v1/session/hard-reset",
+                {"force": True}, profile="kid", capability=True,
+                request_id="other-tv-reset", token="other-token")
+            self.assertEqual(409, status, result)
+            self.assertEqual("hard_reset_requester_conflict", result["reason"])
+
+            other = self.state.client_for_token("other-token")
+            other["profile_grants"]["kid"] = []
+            status, _result = self.post(
+                "/api/v1/session/hard-reset", {"force": True}, profile="kid",
+                capability=True, request_id="ungranted-reset", token="other-token")
+            self.assertEqual(400, status)
+        self.assertIsNotNone(self.state.child_time_session)
+
+    def test_child_global_hard_reset_is_idempotent_per_request(self):
+        expected = {"ok": True, "accepted": True}
+        with mock.patch.object(self.state, "hard_reset_session",
+                               return_value=(200, expected)) as reset:
+            for _index in range(2):
+                status, result = self.post(
+                    "/api/v1/session/hard-reset", {"force": True}, profile="kid",
+                    capability=True, request_id="same-hard-reset-request")
+                self.assertEqual(200, status)
+                self.assertEqual(expected, result)
+        reset.assert_called_once_with({"force": True}, "tv-1", "parent")
+
+    def test_parent_hard_reset_idempotency_is_scoped_per_tv(self):
+        self.state.client_for_token("other-token")["profile_grants"]["parent"] = [
+            "use_profile"]
+        expected = {"ok": True, "accepted": True}
+        with mock.patch.object(self.state, "hard_reset_session",
+                               return_value=(200, expected)) as reset:
+            for token in ("child-token", "other-token"):
+                status, result = self.post(
+                    "/api/v1/session/hard-reset", {"force": True},
+                    profile="parent", request_id="same-parent-reset", token=token)
+                self.assertEqual(200, status)
+                self.assertEqual(expected, result)
+        self.assertEqual(2, reset.call_count)
+
+    def test_parent_hard_reset_reaches_recovery_escape_hatch(self):
+        expected = {"ok": True, "accepted": True}
+        with mock.patch.object(self.state, "hard_reset_session",
+                               return_value=(200, expected)) as reset:
+            status, result = self.post(
+                "/api/v1/session/hard-reset", {"force": True}, profile="parent")
+
+        self.assertEqual(200, status)
+        self.assertEqual(expected, result)
+        reset.assert_called_once_with({"force": True})
 
 
 if __name__ == "__main__":

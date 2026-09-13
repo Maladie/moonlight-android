@@ -126,6 +126,9 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
                 "id": "android-tv",
                 "token_sha256": sha256_text("child-library-token"),
                 "profile_grants": {"kid": ["use_profile"]},
+                "vibepollo_client_uuids": {
+                    "living-room": "11111111-2222-4333-8444-555555555555",
+                },
             }],
         }), encoding="utf-8")
         self.gateway = GatewayState(self.config_path, None)
@@ -135,6 +138,39 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
         self.gateway.proxy_json = self.bridge.proxy_json
         self.gateway.proxy_bytes = self.bridge.proxy_bytes
         self.child = self.gateway.config["profiles"]["kid"]
+
+    def bind_control_stream(self):
+        self.gateway.request_context.profile_id = "kid"
+        self.gateway.request_context.actor_profile_id = "kid"
+        self.gateway.request_context.execution_profile_id = "living-room"
+        child_session_id = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee"
+        self.gateway.child_time_session = {
+            "session_id": child_session_id,
+            "client_id": "android-tv",
+            "actor_profile_id": "kid",
+            "execution_profile_id": "living-room",
+            "game_id": canonical(RAW_ALLOWED),
+            "vibepollo_client_uuid": "11111111-2222-4333-8444-555555555555",
+            "last_playable_seconds": 60,
+        }
+        operation_id = "child-library-transport"
+        status, permit = self.gateway.control_operation_acquire(self.client, {
+            "operation_id": operation_id,
+            "intent": "launch",
+            "stream_session_id": "child-library-stream",
+            "sunshine_app_id": 7,
+            "expected_generation": 0,
+            "observed_sunshine_app_id": 0,
+            "child_session_id": child_session_id,
+        }, operation_id)
+        self.assertEqual(200, status)
+        status, _result = self.gateway.control_operation_complete(self.client, {
+            "operation_id": operation_id,
+            "generation": permit["generation"],
+            "actor_lease_epoch": permit["actor_lease_epoch"],
+            "succeeded": True,
+        }, operation_id)
+        self.assertEqual(200, status)
 
     def tearDown(self):
         self.temporary.cleanup()
@@ -240,7 +276,7 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
             self.bridge.calls[0][3]["allowed_game_ids"])
         self.assertNotIn("Zeta foreign", json.dumps(result))
 
-    def test_current_and_events_preserve_payload_shape_and_filter_foreign_games(self):
+    def test_current_exposes_common_lifecycle_while_events_still_filter_foreign_games(self):
         self.bridge.set_library([
             self.record(RAW_ALLOWED, "Alpha allowed"),
             self.record(RAW_FOREIGN, "Zeta foreign"),
@@ -272,9 +308,9 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
             "current", self.client, "kid")
         self.assertEqual(200, status)
         self.assertEqual(RAW_ALLOWED, current["current"]["id"])
-        self.assertEqual([RAW_ALLOWED], [
+        self.assertEqual([RAW_ALLOWED, RAW_FOREIGN], [
             game["game_id"] for game in current["current"]["running_games"]])
-        self.assertNotIn(RAW_FOREIGN, json.dumps(current))
+        self.assertIn(RAW_FOREIGN, json.dumps(current))
 
         status, events_result = self.gateway.playnite_events(
             0, "events-1", self.client, "kid")
@@ -317,6 +353,8 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
 
         self.bridge.state.start_game = mock.Mock(return_value={
             "accepted": True, "command": "launch"})
+        self.bind_control_stream()
+        self.gateway.request_context.request_id = "child-library-start"
         status, result = self.gateway.playnite_action(
             "game/start", {"game_id": RAW_ALLOWED.upper()},
             self.client, "kid")
@@ -325,7 +363,19 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
         self.bridge.state.start_game.assert_called_once_with(canonical(RAW_ALLOWED))
         start_request = [call for call in self.bridge.calls
                          if call[0] == "json" and call[2] == "/game/start"][-1]
-        self.assertEqual({"game_id": canonical(RAW_ALLOWED)}, start_request[3])
+        self.assertEqual(canonical(RAW_ALLOWED), start_request[3]["game_id"])
+        self.assertEqual(1, start_request[3]["control_operation"]["generation"])
+        self.assertEqual("child-library-stream",
+                         start_request[3]["control_operation"]["stream_session_id"])
+        self.assertEqual("aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee",
+                         start_request[3]["control_operation"]["child_session_id"])
+
+        status, replay = self.gateway.playnite_action(
+            "game/start", {"game_id": RAW_ALLOWED.upper()}, self.client, "kid")
+        self.assertEqual(result, replay)
+        self.assertEqual(1, len([call for call in self.bridge.calls
+                                 if call[0] == "json" and
+                                 call[2] == "/game/start"]))
 
         with self.assertRaises(PermissionError):
             self.gateway.playnite_action(

@@ -1,0 +1,58 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "status": "CODE_VERIFIED_DEVICE_PENDING",
+  "checkpoint_accepted": false,
+  "installed_host_version": "0.7.107",
+  "reported_results": [
+    {
+      "result": "PASS",
+      "observation": "All tested parent-profile launch, stop, close and switch cases passed."
+    },
+    {
+      "result": "PASS",
+      "observation": "Baba Is You launched from the child profile."
+    },
+    {
+      "result": "FAIL",
+      "observation": "After child session close, launching Hollow Knight prompted to close the current session, but normal and child hard close both failed; parent hard close was required."
+    }
+  ],
+  "product_decision": [
+    "A child uses the same session lifecycle as a parent and may close, hard-reset or reuse the current MoonWaker session on the same trusted TV and execution profile regardless of the actor that opened it.",
+    "Child restrictions apply only to starting or resuming an unshared game and to play outside the allowed schedule or budget.",
+    "Close and reuse remain fenced by TV client, execution profile, transport generation and observed streamer app; delayed effects cannot target another TV, another Windows profile or a newer session."
+  ],
+  "root_causes": [
+    "Child normal termination used a separate child-terminal owner path while parent termination used the shared host session termination path.",
+    "Child hard reset was restricted to its own exact child session instead of the shared recovery escape hatch.",
+    "Replacement and hard-reset recovery required additional same-TV/execution and crash/concurrency fencing to avoid trading the deadlock for a late destructive effect."
+  ],
+  "correction": [
+    "Cross-actor full quit and replacement are allowed only on the same TV and execution profile with exact generation and streamer-app correlation.",
+    "Enabled children use the scoped global hard-reset escape hatch; disabled, deleted or grant-revoked children may recover only their exact persisted session.",
+    "Hard reset stays visible as the active barrier until physical effects finish, rejects a concurrent second reset, terminally releases on success or failure, and resumes the same durable operation after a Gateway restart.",
+    "Completed child session UUIDs are durably single-use so a delayed exact reset cannot match a newer child session."
+  ],
+  "local_validation": {
+    "gateway": "269/269 PASS",
+    "independent_adversarial_review": "NO BLOCKERS",
+    "diff_check": "PASS with line-ending warnings only",
+    "design_records": [
+      "CHILD_PROFILES_DESIGN.md",
+      "docs/agents/SESSION_CONTRACTS.md"
+    ]
+  },
+  "build_artifact": {
+    "host_version": "0.7.108",
+    "type": "MoonWaker hot update",
+    "path": "host-services/dist-hot/MoonWaker-0.7.108-child-session-recovery.mwhu",
+    "bytes": 65607,
+    "sha256": "DE72505A5CC3A2F5FB7804436A3CBEB615CE14EC038311F701DC1F3E41349F1C",
+    "payload": [
+      "gateway/wakeplay_gateway.py"
+    ],
+    "installed": false
+  },
+  "device_retest": "REQUIRED_ON_HOST_0.7.108: parent session to child close/reuse, child session close then another child game, child hard close of parent-owned and child-owned sessions, immediate Play during reset, and recovery after a failed close"
+}

@@ -1,6 +1,8 @@
 import json
 import tempfile
+import threading
 import unittest
+from control_snapshot_fixture import control_evidence
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -65,10 +67,12 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertIsNotNone(self.client)
         self.clock = FakeClock(datetime(2026, 1, 3, 8, 0, tzinfo=timezone.utc))
         self.state.child_time_clock = self.clock
+        self.state.child_terminal_operation.clock = lambda: self.clock.monotonic
+        self.state.child_terminal_operation.wait = self.clock.advance
         self.current = {"id": "", "state": "idle", "running_games": []}
         self.proxy_calls = []
         self.bridge_calls = []
-        self.graceful_end = False
+        self.streamer_active = False
 
         def proxy(name, path, timeout=2.5, profile_id=None):
             del timeout
@@ -79,6 +83,15 @@ class ChildTimeControlTest(unittest.TestCase):
                     "running_games": [dict(item) for item in
                                       self.current.get("running_games", [])],
                 }
+            if name == "vibepollo" and path == "/snapshot?force=1":
+                return True, {**control_evidence(int(self.streamer_active), self.streamer_active),
+                              "clients": [{"uuid": VIBE_UUID,
+                                           "connected": self.streamer_active}],
+                              "apps": [{"app_id": 7,
+                                        "running": self.streamer_active}]}
+            if name == "vibepollo" and path == "/action/close-app":
+                self.streamer_active = False
+                return True, {"ok": True}
             return True, {}
 
         def proxy_json(name, path, body, timeout=8.0, profile_id=None):
@@ -89,19 +102,8 @@ class ChildTimeControlTest(unittest.TestCase):
             if path == "/library/resolve":
                 return True, {"game_id": "steam:123",
                               "canonical_game_id": "steam:123", "revision": "rev-1"}
-            if path == "/child/session":
-                if body["action"] == "end" and not self.graceful_end:
-                    self.current = {"id": "", "state": "idle", "running_games": []}
-                result = {"accepted": True,
-                          "state": ("ending" if self.graceful_end else "stopped")
-                          if body["action"] == "end"
-                          else body["action"], "game_id": body["game_id"]}
-                if body["action"] == "end" and self.graceful_end:
-                    result["cleanup_required"] = True
-                if body["action"] != "end":
-                    result["session_id"] = body["session_id"]
-                return True, result
             if path == "/game/start":
+                self.streamer_active = True
                 self.current = {
                     "id": "steam:123", "state": "running",
                     "processId": 42,
@@ -132,12 +134,48 @@ class ChildTimeControlTest(unittest.TestCase):
                               call[2]["action"] == "bind"])
         status, body = self.state.child_time_session_start(
             self.client, "kid", "steam:123", self.session_id())
+        self.assertEqual(202, status)
+        session = self.state.child_time_session
+        operation_id = "child-transport-" + body["session_id"]
+        status, permit = self.state._child_time_control_call(session, lambda:
+            self.state.control_operation_acquire(self.client, {
+                "operation_id": operation_id, "intent": "launch",
+                "stream_session_id": "stream-" + body["session_id"],
+                "sunshine_app_id": 7,
+                "expected_generation": 0, "observed_sunshine_app_id": 0,
+                "child_session_id": body["session_id"],
+            }, operation_id))
+        self.assertEqual(200, status)
+        self.state._child_time_control_call(session, lambda:
+            self.state.control_operation_complete(self.client, {
+                "operation_id": operation_id, "generation": permit["generation"],
+                "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": True,
+            }, operation_id))
+        self.state.request_context.request_id = "provider-" + body["session_id"]
+        status, _ = self.state._child_time_control_call(session, lambda:
+            self.state.child_playnite_action(
+                self.client, "kid", "game/start", {"game_id": "steam:123"}))
+        self.assertEqual(200, status)
+        status, body = self.state.child_time_session_heartbeat(
+            self.client, "kid", body["session_id"])
         self.assertEqual(200, status)
         self.assertEqual("running", body["phase"])
-        self.assertEqual(previous_binds + 2, len([call for call in self.bridge_calls
-                                                 if call[1] == "/child/session" and
-                                                 call[2]["action"] == "bind"]))
+        self.assertEqual(previous_binds, len([call for call in self.bridge_calls
+                                             if call[1] == "/child/session" and
+                                             call[2]["action"] == "bind"]))
         return body["session_id"]
+
+    def test_replacement_releases_only_time_attachment(self):
+        session_id = self.start_running()
+        generation = self.state.control_state["stream"]["generation"]
+        status, result = self.state.child_time_session_end(
+            self.client, "kid", session_id, "replacement")
+        self.assertEqual(200, status, result)
+        end = [call[2] for call in self.bridge_calls
+               if call[1] == "/child/session" and call[2]["action"] == "end"]
+        self.assertEqual([], end)
+        self.assertIsNone(self.state.child_time_session)
+        self.assertEqual(generation, self.state.control_state["stream"]["generation"])
 
     def test_housekeeping_during_game_start_does_not_expire_pending_session(self):
         proxy_json = self.state.proxy_json
@@ -203,6 +241,492 @@ class ChildTimeControlTest(unittest.TestCase):
                 self.assertIsNone(self.state.child_time_session)
                 self.assertEqual("daily_limit_reached" if limit == "budget"
                                  else "outside_schedule", body["reason"])
+
+    def test_android_absent_expiry_closes_exact_managed_stream_under_same_lease(self):
+        session_id = self.start_running()
+        self.child()["schedule"]["weekdays"]["sat"]["daily_limit_seconds"] = 1
+        self.clock.advance(2)
+        status, body = self.state.child_time_housekeeping_tick()
+
+        self.assertEqual(200, status)
+        self.assertEqual("ended", body["state"])
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+
+    def assert_replacement_closes_stream_without_stopping_replacement(self, game_id):
+        self.start_running()
+        replacement_token = "b" * 64
+        stops_before = len([call for call in self.bridge_calls
+                            if call[1] == "/game/stop-verified"])
+        self.current = {
+            "id": game_id, "state": "running", "running_scan_status": "complete",
+            "running_games": [{"game_id": game_id, "process_id": 84,
+                               "process_token": replacement_token}],
+        }
+
+        status, body = self.state.child_time_housekeeping_tick()
+
+        self.assertEqual(200, status, body)
+        self.assertEqual("ended", body["state"])
+        self.assertEqual("child_session_expired", body["reason"])
+        self.assertIsNone(self.state.child_time_session)
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertFalse(self.streamer_active)
+        self.assertEqual(stops_before, len([call for call in self.bridge_calls
+                                           if call[1] == "/game/stop-verified"]))
+        self.assertEqual(replacement_token,
+                         self.current["running_games"][0]["process_token"])
+
+    def test_housekeeping_same_game_replacement_closes_only_shared_stream(self):
+        self.assert_replacement_closes_stream_without_stopping_replacement("steam:123")
+
+    def test_housekeeping_different_game_replacement_closes_only_shared_stream(self):
+        self.assert_replacement_closes_stream_without_stopping_replacement("steam:999")
+
+    def test_terminal_cleanup_uses_exact_streamer_app_after_android_disconnect(self):
+        session_id = self.start_running()
+        original_proxy = self.state.proxy
+        streamer_active = True
+
+        def proxy(name, path, **kwargs):
+            nonlocal streamer_active
+            self.proxy_calls.append((name, path, kwargs.get("profile_id")))
+            if name == "vibepollo" and path == "/snapshot?force=1":
+                return True, {**control_evidence(0, streamer_active), "clients": [],
+                              "apps": [{"app_id": 7, "running": streamer_active}]}
+            if name == "vibepollo" and path == "/action/close-app":
+                streamer_active = False
+                return True, {"ok": True}
+            return original_proxy(name, path, **kwargs)
+
+        self.state.proxy = proxy
+        status, body = self.state.child_time_session_end(
+            self.client, "kid", session_id, "client_closed")
+
+        self.assertEqual(200, status)
+        self.assertFalse(body["cleanup_required"])
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+
+    def test_game_stopped_ends_allowance_but_retains_managed_stream(self):
+        session_id = self.start_running()
+        generation = self.state.control_state["stream"]["generation"]
+        self.proxy_calls.clear()
+
+        status, body = self.state.child_time_session_end(
+            self.client, "kid", session_id, "game_stopped")
+
+        self.assertEqual(200, status)
+        self.assertEqual("game_stopped", body["reason"])
+        self.assertIsNotNone(self.state.control_state["stream"])
+        self.assertEqual(generation, self.state.control_state["stream"]["generation"])
+        self.assertNotIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+
+    def test_uncertain_child_cleanup_is_retried_by_host_without_android(self):
+        session_id = self.start_running()
+        original_proxy = self.state.proxy
+        ambiguous = True
+
+        def proxy(name, path, **kwargs):
+            if ambiguous and name == "vibepollo" and path == "/snapshot?force=1":
+                clients = [{"uuid": VIBE_UUID, "connected": True}]
+                clients.append({"uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                                "connected": True})
+                return True, {**control_evidence(len(clients), True), "clients": clients, "apps": [{"app_id": 7, "running": True}]}
+            return original_proxy(name, path, **kwargs)
+
+        self.state.proxy = proxy
+        status, first = self.state.child_time_session_end(
+            self.client, "kid", session_id, "time_expired")
+        self.assertEqual(409, status)
+        self.assertTrue(first["cleanup_required"])
+        uncertain = dict(self.state.control_state["active"])
+        self.assertEqual("uncertain", uncertain["state"])
+
+        ambiguous = False
+        status, second = self.state.child_time_housekeeping_tick()
+        self.assertEqual(200, status)
+        self.assertFalse(second["cleanup_required"])
+        self.assertIsNone(self.state.child_time_session)
+        completed = self.state.control_state["completed"][uncertain["operation_id"]]
+        self.assertEqual(uncertain["generation"], completed["generation"])
+        self.assertEqual(uncertain["actor_lease_epoch"], completed["actor_lease_epoch"])
+        self.assertEqual("time_expired", completed["child_terminal_result"]["reason"])
+        self.assertIsNone(self.state.control_state["stream"])
+
+    def test_async_provider_grace_keeps_exact_permit_until_stream_close(self):
+        session_id = self.start_running()
+        status, result = self.state.child_time_session_end(
+            self.client, "kid", session_id, "client_closed")
+        self.assertEqual(200, status)
+        self.assertFalse(result["cleanup_required"])
+        self.assertEqual(1, len([call for call in self.bridge_calls
+                                if call[1] == "/game/stop-verified"]))
+        self.assertFalse(any(call[1] == "/child/session"
+                             for call in self.bridge_calls))
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertIsNone(self.state.control_state["stream"])
+        self.start_running()  # New explicit Play is usable immediately.
+
+    def test_game_stop_release_never_calls_child_provider_lifecycle(self):
+        session_id = self.start_running()
+        status, result = self.state.child_time_session_end(
+            self.client, "kid", session_id, "game_stopped")
+        self.assertEqual(200, status)
+        self.assertEqual("game_stopped", result["reason"])
+        self.assertIsNone(self.state.child_time_session)
+        self.assertFalse(any(call[1] == "/child/session" and
+                             call[2].get("action") == "end"
+                             for call in self.bridge_calls))
+        self.assertIsNotNone(self.state.control_state["stream"])
+        self.assertNotIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+
+    def test_game_stop_release_has_no_dependency_on_removed_bridge_route(self):
+        session_id = self.start_running()
+        original = self.state.proxy_json
+        self.state.proxy_json = lambda name, path, body, **kwargs: (
+            (False, {"error": "offline"}) if path == "/child/session"
+            else original(name, path, body, **kwargs))
+        status, result = self.state.child_time_session_end(
+            self.client, "kid", session_id, "game_stopped")
+        self.assertEqual(200, status, result)
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertIsNotNone(self.state.control_state["stream"])
+
+    def test_released_time_attachment_stays_released_after_restart(self):
+        session_id = self.start_running()
+        status, result = self.state.child_time_session_end(
+            self.client, "kid", session_id, "game_stopped")
+        self.assertEqual(200, status, result)
+
+        restarted = GatewayState(self.config_path, None)
+        self.assertIsNone(restarted.child_time_session)
+        self.assertIsNone(restarted.control_state["active"])
+        self.assertIsNotNone(restarted.control_state["stream"])
+
+    def test_lost_close_response_restart_reconciles_idle_without_second_close(self):
+        session_id = self.start_running()
+        original_proxy = self.state.proxy
+
+        def lost_close(name, path, **kwargs):
+            if path == "/action/close-app":
+                raise TimeoutError("response lost")
+            return original_proxy(name, path, **kwargs)
+
+        self.state.proxy = lost_close
+        status, _ = self.state.child_time_session_end(
+            self.client, "kid", session_id, "client_closed")
+        self.assertEqual(409, status)
+        permit = dict(self.state.control_state["active"])
+        restarted = GatewayState(self.config_path, None)
+        restarted.child_time_clock = self.clock
+        restarted.proxy_json = self.state.proxy_json
+        calls = []
+
+        def idle(name, path, **kwargs):
+            calls.append(path)
+            self.assertNotEqual("/action/close-app", path)
+            return True, {**control_evidence(), "clients": [], "apps": []}
+
+        restarted.proxy = idle
+        status, result = restarted.child_time_session_status(self.client, "kid", session_id)
+        self.assertEqual(200, status)
+        self.assertFalse(result["cleanup_required"])
+        self.assertIsNone(restarted.control_state["active"])
+        self.assertIsNone(restarted.control_state["stream"])
+        self.assertEqual("succeeded", restarted.control_state["completed"][
+            permit["operation_id"]]["state"])
+        # A second restart loses only the response cache, not the terminal fact.
+        after_completion = GatewayState(self.config_path, None)
+        status, replay = after_completion.child_time_session_status(
+            self.client, "kid", session_id)
+        self.assertEqual(200, status)
+        self.assertEqual("ended", replay["phase"])
+        self.assertEqual("steam:123", replay["game_id"])
+        self.assertFalse(replay["cleanup_required"])
+        after_completion.child_time_clock = self.clock
+        after_completion.proxy = original_proxy
+        after_completion.proxy_json = self.state.proxy_json
+        next_session_id = "11234567-89ab-cdef-0123-456789abcdef"
+        status, _ = after_completion.child_time_session_start(
+            self.client, "kid", "steam:123", next_session_id, "new-request")
+        self.assertEqual(202, status)
+        new_generation = GatewayState(self.config_path, None)
+        self.assertIsNotNone(new_generation.child_time_session)
+        self.assertEqual(next_session_id,
+                         new_generation.child_time_session["session_id"])
+        self.assertEqual("new-request", new_generation.child_time_session["request_id"])
+
+    def test_parent_close_recovers_exact_child_cleanup_and_replays_receipt(self):
+        session_id = self.start_running()
+        stream = dict(self.state.control_state["stream"])
+        original = self.state.proxy_json
+        self.state.proxy_json = lambda *args, **kwargs: (_ for _ in ()).throw(
+            TimeoutError("provider unavailable"))
+        status, _ = self.state.child_time_session_end(
+            self.client, "kid", session_id, "client_closed")
+        self.assertEqual(409, status)
+        self.state.proxy_json = original
+        self.client["profile_grants"]["parent"] = ["use_profile"]
+        self.state.authorize_profile(self.client, "parent")
+        request = {"operation_id": "parent-close", "intent": "full_quit",
+                   "stream_session_id": stream["stream_session_id"], "sunshine_app_id": 7,
+                   "expected_generation": stream["generation"],
+                   "observed_sunshine_app_id": 7, "child_session_id": ""}
+        status, result = self.state.control_operation_acquire(
+            self.client, request, "parent-close", 0)
+        self.assertEqual(200, status)
+        self.assertEqual("succeeded", result["state"])
+        self.assertEqual("parent", result["actor_profile_id"])
+        calls = len(self.proxy_calls)
+        self.assertEqual((status, result), self.state.control_operation_acquire(
+            self.client, request, "parent-close", 0))
+        self.assertEqual(calls, len(self.proxy_calls))
+        self.assertIsNone(self.state.child_time_session)
+        self.assertIsNone(self.state.control_state["active"])
+
+    def test_parent_recovery_and_old_child_cleanup_cannot_touch_a_new_stream(self):
+        session_id = self.start_running()
+        child = self.state.child_time_session
+        stream = dict(self.state.control_state["stream"])
+        self.client["profile_grants"]["parent"] = ["use_profile"]
+        self.state.authorize_profile(self.client, "parent")
+        request = {"operation_id": "parent-close-stale", "intent": "full_quit",
+                   "stream_session_id": "foreign-stream", "sunshine_app_id": 7,
+                   "expected_generation": stream["generation"],
+                   "observed_sunshine_app_id": 7, "child_session_id": ""}
+        calls = len(self.bridge_calls)
+        status, _ = self.state.control_operation_acquire(
+            self.client, request, request["operation_id"], 0)
+        self.assertEqual(409, status)
+        self.assertEqual(calls, len(self.bridge_calls))
+        self.state.child_time_session_end(self.client, "kid", session_id, "client_closed")
+        self.state.authorize_profile(self.client, "parent")
+        start = {**request, "operation_id": "new-parent", "intent": "launch",
+                 "expected_generation": 0, "observed_sunshine_app_id": 0}
+        status, permit = self.state.control_operation_acquire(
+            self.client, start, "new-parent", 0)
+        self.assertEqual(200, status)
+        self.state.control_operation_complete(self.client, {
+            "operation_id": "new-parent", "generation": permit["generation"],
+            "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": True},
+            "new-parent")
+        calls = (len(self.bridge_calls), len(self.proxy_calls))
+        status, _ = self.state._child_time_finish(
+            self.client, child, "client_closed", self.clock.wall)
+        self.assertEqual(409, status)
+        self.assertEqual(calls, (len(self.bridge_calls), len(self.proxy_calls)))
+        self.assertEqual("parent", self.state.control_state["stream"]["actor_profile_id"])
+
+    def test_thirty_second_heartbeat_charges_the_entire_monotonic_delta(self):
+        session_id = self.start_running()
+        self.clock.advance(30)
+        status, body = self.state.child_time_session_heartbeat(self.client, "kid", session_id)
+        self.assertEqual(200, status)
+        self.assertEqual(30, body["used_seconds"])
+        self.clock.advance(30)
+        status, body = self.state.child_time_session_heartbeat(self.client, "kid", session_id)
+        self.assertEqual(200, status)
+        self.assertEqual(60, body["used_seconds"])
+
+    def test_overlapping_end_and_housekeeping_join_one_common_cleanup(self):
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        stream = dict(self.state.control_state["stream"])
+        original_proxy_json = self.state.proxy_json
+        entered = threading.Event()
+        release = threading.Event()
+        end_calls = []
+        results = []
+
+        def proxy_json(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                end_calls.append(dict(body))
+                entered.set()
+                self.assertTrue(release.wait(1.0))
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = proxy_json
+        self.child()["schedule"]["weekdays"]["sat"]["daily_limit_seconds"] = 1
+        self.clock.advance(2)
+        first = threading.Thread(target=lambda: results.append(
+            self.state.child_time_session_end(
+                self.client, "kid", session_id, "time_expired")))
+        second = threading.Thread(target=lambda: results.append(
+            self.state.child_time_housekeeping_tick()))
+        first.start()
+        self.assertTrue(entered.wait(1.0))
+        second.start()
+
+        status, blocked = self.state._child_time_control_call(session, lambda:
+            self.state.control_operation_acquire(self.client, {
+                "operation_id": "next-play", "intent": "reconnect",
+                "stream_session_id": stream["stream_session_id"],
+                "sunshine_app_id": stream["sunshine_app_id"],
+                "expected_generation": stream["generation"],
+                "observed_sunshine_app_id": stream["sunshine_app_id"],
+                "child_session_id": session_id,
+            }, "next-play", 0))
+        self.assertEqual(409, status)
+        self.assertEqual("uncertain", blocked["state"])
+        self.assertEqual(1, len(end_calls))
+        self.assertFalse(results)
+        release.set()
+        first.join(1.0)
+        second.join(1.0)
+
+        self.assertFalse(first.is_alive())
+        self.assertFalse(second.is_alive())
+        self.assertEqual(2, len(results))
+        self.assertEqual(results[0], results[1])
+        self.assertEqual(1, len(end_calls))
+
+    def test_new_start_replaces_same_execution_time_attachment_immediately(self):
+        previous_id = self.start_running()
+        new_session_id = self.session_id()
+        status, body = self.state.child_time_session_start(
+            self.client, "kid", "steam:123", new_session_id)
+        self.assertEqual(202, status, body)
+        self.assertEqual(new_session_id,
+                         self.state.child_time_session["session_id"])
+        self.assertEqual("actor_replaced",
+                         self.state.child_time_completed[previous_id]["reason"])
+        self.assertFalse(any(call[1] == "/child/session" and
+                             call[2].get("action") == "end"
+                             for call in self.bridge_calls))
+
+    def test_new_start_policy_failure_keeps_previous_actor_metered(self):
+        previous_id = self.start_running()
+        previous_stream = dict(self.state.control_state["stream"])
+        policy_snapshot = self.state._child_time_policy_snapshot
+        snapshots = 0
+
+        def policy_changes_after_precheck(*args, **kwargs):
+            nonlocal snapshots
+            snapshots += 1
+            result = policy_snapshot(*args, **kwargs)
+            if snapshots == 2:
+                return {**result, "playable_now_seconds": 0,
+                        "reason": "outside_schedule"}
+            return result
+
+        self.state._child_time_policy_snapshot = policy_changes_after_precheck
+        status, body = self.state.child_time_session_start(
+            self.client, "kid", "steam:123", self.session_id())
+        self.assertEqual(409, status, body)
+        self.assertEqual("outside_schedule", body["reason"])
+        self.assertEqual(previous_id, self.state.child_time_session["session_id"])
+        self.assertEqual(previous_stream, self.state.control_state["stream"])
+        self.assertNotIn(previous_id, self.state.child_time_completed)
+
+    def test_terminal_handoff_is_not_observed_as_idle(self):
+        operation = self.state.child_terminal_operation
+        session = {}
+        game_entered = threading.Event()
+        release_game = threading.Event()
+        terminal_entered = threading.Event()
+        release_terminal = threading.Event()
+        wait_results = []
+
+        def game_effect():
+            game_entered.set()
+            self.assertTrue(release_game.wait(1.0))
+            return "game"
+
+        def terminal_effect():
+            terminal_entered.set()
+            self.assertTrue(release_terminal.wait(1.0))
+            return "terminal"
+
+        game = threading.Thread(target=lambda: operation.run(
+            session, False, game_effect))
+        terminal = threading.Thread(target=lambda: operation.run(
+            session, True, terminal_effect))
+        waiter = threading.Thread(target=lambda: wait_results.append(
+            operation.wait_until_idle(session, 1.0)))
+
+        game.start()
+        self.assertTrue(game_entered.wait(1.0))
+        terminal.start()
+        with operation._condition:
+            self.assertTrue(operation._condition.wait_for(
+                lambda: operation._terminal_handoff is session, 1.0))
+        waiter.start()
+        release_game.set()
+        self.assertTrue(terminal_entered.wait(1.0))
+        self.assertEqual([], wait_results)
+        release_terminal.set()
+        game.join(1.0)
+        terminal.join(1.0)
+        waiter.join(1.0)
+
+        self.assertFalse(game.is_alive())
+        self.assertFalse(terminal.is_alive())
+        self.assertFalse(waiter.is_alive())
+        self.assertEqual([True], wait_results)
+
+    def test_replayed_launch_pending_start_remains_accepted(self):
+        session_id = self.session_id()
+        status, first = self.state.child_time_session_start(
+            self.client, "kid", "steam:123", session_id, "request-1")
+        status2, replay = self.state.child_time_session_start(
+            self.client, "kid", "steam:123", session_id, "request-1")
+
+        self.assertEqual(202, status, first)
+        self.assertEqual(202, status2, replay)
+        self.assertTrue(replay["ok"])
+        self.assertEqual("none", replay["reason"])
+        self.assertEqual("launch_pending", replay["state"])
+        self.assertEqual(session_id, replay["session_id"])
+
+    def test_new_start_does_not_wait_on_legacy_terminal_operation(self):
+        previous_id = self.start_running()
+        self.state.child_terminal_operation.wait_until_idle = lambda _session, _timeout: False
+
+        status, body = self.state.child_time_session_start(
+            self.client, "kid", "steam:123", self.session_id())
+
+        self.assertEqual(202, status, body)
+        self.assertEqual("actor_replaced",
+                         self.state.child_time_completed[previous_id]["reason"])
+
+    def test_late_release_from_previous_actor_cannot_touch_new_attachment(self):
+        previous_id = self.start_running()
+        previous = self.state.child_time_session
+        status, replacement = self.state.child_time_session_start(
+            self.client, "kid", "steam:123", self.session_id())
+        self.assertEqual(202, status, replacement)
+        current_id = self.state.child_time_session["session_id"]
+
+        status, result = self.state._child_time_release_lease(
+            self.client, previous, "game_stopped", self.clock.wall)
+
+        self.assertEqual(409, status, result)
+        self.assertEqual(current_id, self.state.child_time_session["session_id"])
+        self.assertEqual("actor_replaced",
+                         self.state.child_time_completed[previous_id]["reason"])
+
+    def test_ambiguous_stream_observation_blocks_global_child_cleanup(self):
+        session_id = self.start_running()
+        original_proxy = self.state.proxy
+
+        def proxy(name, path, **kwargs):
+            if name == "vibepollo" and path == "/snapshot?force=1":
+                return True, {"clients": [
+                    {"uuid": VIBE_UUID, "connected": True},
+                    {"uuid": "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+                     "connected": True},
+                ]}
+            return original_proxy(name, path, **kwargs)
+
+        self.state.proxy = proxy
+        self.child()["schedule"]["weekdays"]["sat"]["daily_limit_seconds"] = 1
+        self.clock.advance(2)
+        _status, body = self.state.child_time_housekeeping_tick()
+
+        self.assertTrue(body["cleanup_required"])
+        self.assertIsNotNone(self.state.control_state["stream"])
+        self.assertNotIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
 
     def test_daily_budget_uses_monotonic_time_and_pauses_do_not_tick(self):
         session_id = self.start_running()
@@ -318,7 +842,23 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual("policy_unavailable", body["reason"])
         self.assertEqual(100, self.state.child_time_usage["days"]["kid"]["2026-01-03"])
 
-    def test_parent_running_game_blocks_start_even_for_same_child_game(self):
+    def test_parent_running_shared_game_can_receive_child_time_attachment(self):
+        self.client["profile_grants"]["parent"] = ["use_profile"]
+        self.state.authorize_profile(self.client, "parent")
+        operation_id = "parent-managed-stream"
+        status, permit = self.state.control_operation_acquire(self.client, {
+            "operation_id": operation_id, "intent": "launch",
+            "stream_session_id": "parent-stream", "sunshine_app_id": 7,
+            "expected_generation": 0, "observed_sunshine_app_id": 0,
+            "child_session_id": "",
+        }, operation_id)
+        self.assertEqual(200, status, permit)
+        status, completed = self.state.control_operation_complete(self.client, {
+            "operation_id": operation_id, "generation": permit["generation"],
+            "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": True,
+        }, operation_id)
+        self.assertEqual(200, status, completed)
+        self.streamer_active = True
         self.current = {
             "id": "steam:123", "state": "running",
             "running_games": [{"game_id": "steam:123", "process_id": 42,
@@ -326,9 +866,11 @@ class ChildTimeControlTest(unittest.TestCase):
         }
         status, body = self.state.child_time_session_start(
             self.client, "kid", "steam:123", self.session_id())
-        self.assertEqual(409, status)
-        self.assertEqual("session_in_use", body["reason"])
-        self.assertIsNone(self.state.child_time_session)
+        self.assertEqual(202, status, body)
+        self.assertEqual("running", body["state"])
+        self.assertEqual("steam:123", self.state.child_time_session["game_id"])
+        self.assertEqual(TOKEN, self.state.child_time_session["process_token"])
+        self.assertEqual(TOKEN, self.state.control_state["stream"]["process_token"])
 
     def test_unshared_start_is_rejected_before_pending_or_bridge_bind(self):
         self.child()["allowed_game_keys"] = []
@@ -374,40 +916,26 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual(second, self.state.child_time_session["session_id"])
         self.state.child_time_session_end(self.client, "kid", second)
 
-    def test_bridge_lifecycle_is_bind_renew_end_and_client_does_not_see_dto(self):
+    def test_time_accounting_has_no_parallel_child_provider_lifecycle(self):
         session_id = self.start_running()
-        first_bind = next(call for call in self.bridge_calls
-                          if call[1] == "/child/session" and
-                          call[2]["action"] == "bind")
-        bridge_deadline = datetime.fromisoformat(
-            first_bind[2]["deadline_utc"].replace("Z", "+00:00"))
-        self.assertLessEqual((bridge_deadline - self.clock.wall).total_seconds(), 120)
         self.clock.advance(20)
         status, body = self.state.child_time_session_heartbeat(
             self.client, "kid", session_id)
         self.assertEqual(200, status)
         self.assertNotIn("bridge", body)
-        self.assertEqual(
-            ["bind", "bind", "renew"],
-            [call[2]["action"] for call in self.bridge_calls
-             if call[1] == "/child/session"])
-        self.state.child_time_session_end(self.client, "kid", session_id)
-        self.assertEqual("end", [call[2]["action"] for call in self.bridge_calls
-                                  if call[1] == "/child/session"][-1])
+        self.assertFalse(any(call[1] == "/child/session"
+                             for call in self.bridge_calls))
 
-    def test_bridge_end_acceptance_waits_for_confirmed_stop(self):
+    def test_terminal_time_expiry_uses_common_verified_game_stop(self):
         session_id = self.start_running()
-        self.graceful_end = True
-        status, body = self.state.child_time_session_end(
-            self.client, "kid", session_id)
-        self.assertEqual(409, status)
-        self.assertEqual("cleanup_required", body["reason"])
-        self.assertEqual(session_id, self.state.child_time_session["session_id"])
-        self.graceful_end = False
         status, body = self.state.child_time_session_end(
             self.client, "kid", session_id)
         self.assertEqual(200, status)
         self.assertEqual("ended", body["state"])
+        self.assertTrue(any(call[1] == "/game/stop-verified"
+                            for call in self.bridge_calls))
+        self.assertFalse(any(call[1] == "/child/session"
+                             for call in self.bridge_calls))
 
     def test_revoke_ends_only_matching_child_game_and_preserves_usage(self):
         session_id = self.start_running()

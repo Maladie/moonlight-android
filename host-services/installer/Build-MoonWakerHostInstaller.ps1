@@ -16,6 +16,28 @@ if (-not (Test-Path -LiteralPath $compiler)) {
     throw ".NET Framework C# compiler was not found."
 }
 
+$versionManifest = Get-Content -LiteralPath (Join-Path $hostServicesRoot "version.json") `
+    -Raw | ConvertFrom-Json
+$expectedAssemblyVersion = "$($versionManifest.version).0"
+$expectedProductVersion = "$($versionManifest.version)+$($versionManifest.build)"
+foreach ($relativeSource in @(
+        "installer\MoonWakerHostInstaller.cs",
+        "control\MoonWakerHostConfigurator.cs",
+        "control\MoonWakerHostControl.cs")) {
+    $versionSource = Get-Content -LiteralPath (Join-Path $hostServicesRoot $relativeSource) -Raw
+    if ($versionSource -notmatch [regex]::Escape(
+            "AssemblyVersion(`"$expectedAssemblyVersion`")") -or
+            $versionSource -notmatch [regex]::Escape(
+            "AssemblyFileVersion(`"$expectedAssemblyVersion`")") -or
+            $versionSource -notmatch [regex]::Escape(
+            "AssemblyInformationalVersion(`"$expectedProductVersion`")")) {
+        throw "Assembly version metadata does not match version.json: $relativeSource"
+    }
+}
+
+& (Join-Path $hostServicesRoot "updater\Test-MoonWakerHotUpdater.ps1")
+if ($LASTEXITCODE -ne 0) { throw "MoonWaker Hot Updater validation failed." }
+
 $resolvedOutput = [IO.Path]::GetFullPath($OutputDirectory)
 New-Item -ItemType Directory -Path $resolvedOutput -Force | Out-Null
 $temporaryRoot = Join-Path ([IO.Path]::GetTempPath()) (
@@ -32,6 +54,7 @@ try {
         "host-services/gateway" `
         "host-services/install" `
         "host-services/profile-agent" `
+        "host-services/updater" `
         "host-services/windows-login" `
         "host-services/version.json"
     if ($LASTEXITCODE -ne 0 -or -not $tracked) {
@@ -48,12 +71,22 @@ try {
         "host-services/control/MoonWakerHostConfigurator.manifest",
         "host-services/control/Test-MoonWakerHostConfigurator.ps1",
         "host-services/gateway/Build-MoonWakerGatewayService.ps1",
+        "host-services/gateway/control_operation_policy.py",
+        "host-services/gateway/child_terminal_operation.py",
+        "host-services/gateway/provider_control_operation.py",
+        "host-services/bridges/playnite/ControlEffectFence.py",
         "host-services/gateway/MoonWakerGatewayService.cs",
         "host-services/gateway/MoonWakerGatewayService.manifest",
         "host-services/gateway/MoonWakerGatewayServiceTests.cs",
         "host-services/gateway/Test-MoonWakerGatewayService.ps1",
         "host-services/gateway/Uninstall-MoonWakerGatewayService.ps1",
-        "host-services/install/Uninstall-MoonWakerHostServices.ps1"
+        "host-services/install/Uninstall-MoonWakerHostServices.ps1",
+        "host-services/updater/MoonWakerHotUpdaterService.cs",
+        "host-services/updater/Build-MoonWakerHotUpdater.ps1",
+        "host-services/updater/Apply-MoonWakerHotUpdate.ps1",
+        "host-services/updater/Install-MoonWakerHotUpdater.ps1",
+        "host-services/updater/Invoke-MoonWakerHotUpdate.ps1",
+        "host-services/updater/Uninstall-MoonWakerHotUpdater.ps1"
     ) | Sort-Object -Unique
     $windowsLogin = Get-ChildItem -LiteralPath (Join-Path $hostServicesRoot "windows-login") `
         -File -Recurse | Where-Object {
@@ -160,6 +193,15 @@ try {
     & $compiler @arguments
     if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $output)) {
         throw "MoonWaker Host Installer compilation failed."
+    }
+    $builtVersion = (Get-Item -LiteralPath $output).VersionInfo
+    if ($builtVersion.FileVersion -ne $expectedAssemblyVersion -or
+            $builtVersion.ProductVersion -ne $expectedProductVersion) {
+        throw "Built installer version metadata does not match version.json."
+    }
+    if ([Reflection.AssemblyName]::GetAssemblyName($output).Version.ToString() -ne
+            $expectedAssemblyVersion) {
+        throw "Built installer assembly identity does not match version.json."
     }
     Get-Item -LiteralPath $output
 }

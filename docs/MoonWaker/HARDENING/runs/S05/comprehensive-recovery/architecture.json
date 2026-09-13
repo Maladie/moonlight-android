@@ -1,0 +1,46 @@
+{
+  "task_id": "S05",
+  "status": "REVIEW_PENDING",
+  "output_fingerprint": "sha256:f8c055081100a9105cf239003bb7a33e1634c05bbc087756ac74a14e13b44d02",
+  "responsibilities": [
+    {
+      "responsibility": "Durable provider-side effect admission and retirement",
+      "old_owner": "BridgeState control_operation fields, load/save/authorize methods and state RLock",
+      "new_owner": "ControlEffectFence; BridgeState retains a read-only compatibility property and delegates run/authorize",
+      "state_moved": ["Current exact binding, retired flag and last RPC result; existing control-operation.json path"],
+      "effects_moved": ["Durable save before admission and after effect", "Independent serial lock across Condition.wait", "Exact retirement barrier without a game/stream effect"],
+      "callers_migrated": ["All provider mutation HTTP routes through run_control_effect", "Background child cleanup admission", "New loopback-only retirement route"],
+      "obsolete_paths_removed": ["BridgeState mutable control fields", "Old BridgeState load/save/authorize implementation"],
+      "production_wiring_evidence": "Real Gateway/Bridge A/B/C tests plus test_control_effect_fence",
+      "packaging_evidence": "Install-FlatLayoutPlayniteBridge.ps1, Install-WakePlayProfile.ps1 and Build-MoonWakerHostInstaller.ps1 include ControlEffectFence.py; artifact inspection pending coordinator build",
+      "lifetime_notes": "One fence per existing BridgeState; same durable file, no second lifecycle. Process observation remains BridgeState's existing responsibility."
+    },
+    {
+      "responsibility": "Shared parent/child provider RPC execution and safe streamer close observation",
+      "old_owner": "Duplicated GatewayState parent action and child controlled closures, one-shot streamer close",
+      "new_owner": "ProviderControlOperation and StreamerControlOperation in provider_control_operation.py; existing Gateway control ledger owns all generations/epochs/receipts",
+      "state_moved": ["No second authoritative ledger; collaborators access existing binding/complete callbacks"],
+      "effects_moved": ["Exact provider body construction and result classification", "Exact provider retirement RPC", "Force snapshot and post-error streamer observation under existing permit"],
+      "callers_migrated": ["GatewayState.playnite_action", "GatewayState.child_playnite_action", "Existing child terminal and host recovery paths"],
+      "obsolete_paths_removed": ["Duplicated regular parent/child provider acquire/RPC/complete sequences", "Failed acknowledgement immediately poisoning otherwise definitive provider result"],
+      "production_wiring_evidence": "231 cumulative Gateway tests including real Bridge transitions, definitive rejection, lost RPC and no-blind-close idle recovery",
+      "packaging_evidence": "Install-WakePlayGateway.ps1 and explicit untracked installer payload include provider_control_operation.py; build intentionally deferred",
+      "lifetime_notes": "Existing Gateway control journal and ChildTerminalOperation remain sole control/child terminal owners. No parallel child session architecture."
+    },
+    {
+      "responsibility": "Retained actor/allowance ownership and metadata-free explicit termination",
+      "old_owner": "Game retained switch configured new allowance without control transfer; ConsoleActivity only read local retained/resume bindings",
+      "new_owner": "Existing SessionOrchestrator/retained flow plus Gateway reauthorize intent; RetainedControlHandoff owns post-ack sequencing; existing retained coordinator atomically commits NvConnection and actor/generation; existing HostSessionTermination/child terminal handle exact compensation",
+      "state_moved": ["Gateway remains sole durable generation/epoch owner", "Ephemeral acknowledged transfer uses captured connection/intent and once-only compensation, not a parallel session lifecycle"],
+      "effects_moved": ["No transport restart for successful retained game switch or cancellation after coherent commit", "Post-ack current/commit/publication failures and stale frame callbacks compensate the exact new binding and suppress obsolete local reuse", "Owned status read supplies exact host termination when local metadata is absent"],
+      "callers_migrated": ["Game.beginNewRetainedGameAttempt for parent and child", "ConsoleActivity.terminateKnownControlPlane and its existing explicit quit/reset/replacement callers"],
+      "obsolete_paths_removed": ["Child-only retained allowance transfer without Gateway binding", "Early missing-local-binding failure before server-owned status query", "Split actor and generation publication", "Post-ack cancellation returning before local convergence or exact parent compensation"],
+      "production_wiring_evidence": "1088 debug and 1088 release unit tests; deterministic handoff stages, atomic owner/CAS/TERMINATING tests, serializer/status and production wiring contracts; 234 Gateway tests including A/B/C and late compensation",
+      "packaging_evidence": "Android source/unit compilation PASS; no APK assembled",
+      "lifetime_notes": "No new Activity-retaining state machine; SessionOrchestrator, LaunchTransitionController, RetainedStreamSessionCoordinator and SessionResumeManager retain existing roles."
+    }
+  ],
+  "remaining_monolith_responsibilities": ["Existing Gateway HTTP routing/accounting/control ledger remain integrated", "Existing Bridge game/process reconciliation remains authoritative", "Unrelated upstream decoder/input and preexisting dirty changes are untouched"],
+  "duplicate_authoritative_owners": [],
+  "review_evidence": "R1/R2/R3 corrections recorded in review-corrections.json; pending independent coordinator review on f8c05508."
+}

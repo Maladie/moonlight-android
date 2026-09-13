@@ -140,6 +140,33 @@ public class ConsoleStreamLoadingViewContractTest {
         assertFalse(method.contains("renderSteps();\n        retryView.requestFocus();"));
     }
 
+    @Test public void retryIsConsumedBeforeStartingAnotherDecoderGeneration()
+            throws IOException {
+        String text = source();
+        String constructor = text.substring(text.indexOf("retryView = action("),
+                text.indexOf("configureForPlaynite(false)"));
+        String retry = text.substring(text.indexOf("private void requestRetryOnce()"),
+                text.indexOf("public void showNeutralWarmUpAppearance()"));
+        String showError = text.substring(text.indexOf("public void showError(String title,"),
+                text.indexOf("public void showLauncherInteraction"));
+
+        assertTrue(constructor.contains("retryView.setOnClickListener(view -> requestRetryOnce())"));
+        assertTrue(retry.contains("!retryView.isEnabled()"));
+        assertTrue(retry.contains("retryView.setEnabled(false)"));
+        assertTrue(retry.indexOf("retryView.setEnabled(false)")
+                < retry.indexOf("actions.onRetry()"));
+        assertTrue(showError.contains("retryView.setEnabled(true)"));
+
+        String game = gameSource();
+        String gameRetry = game.substring(game.indexOf("private void retryTransition()"),
+                game.indexOf("private void retryRetainedObservation()"));
+        assertTrue(gameRetry.contains("transitionSpec.id.equals(retryTransitionId)"));
+        assertTrue(gameRetry.indexOf("transitionSpec.id.equals(retryTransitionId)")
+                < gameRetry.indexOf("stopConnection("));
+        assertTrue(gameRetry.contains("retryTransitionId = retryId"));
+        assertTrue(gameRetry.contains("if (!retryStillCurrent(retryId)) return;"));
+    }
+
     @Test public void staleFadeCompletionIsRejectedAfterRecovery() throws IOException {
         String text = source();
         String reveal = text.substring(text.indexOf("public void revealStream(Runnable"),

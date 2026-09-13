@@ -15,6 +15,7 @@ import java.util.UUID;
  */
 public final class ChildSessionClient {
     private static final int REQUEST_TIMEOUT_MS = 25_000;
+    private static final int START_TIMEOUT_MS = 40_000;
     private static final String DEFAULT_END_REASON = "client_closed";
 
     private static final String ELIGIBILITY_PATH = "/api/v1/child/session/eligibility";
@@ -71,12 +72,20 @@ public final class ChildSessionClient {
 
     public State end(GatewayConnection connection, String sessionId, String reason)
             throws IOException {
+        return end(connection, sessionId, reason, "");
+    }
+
+    public State end(GatewayConnection connection, String sessionId, String reason,
+                     String nextActorProfileId) throws IOException {
         String session = requireSessionId(sessionId);
         JSONObject body = new JSONObject();
         put(body, "session_id", session);
         String endReason = reason == null || reason.trim().isEmpty()
                 ? DEFAULT_END_REASON : GatewayTransport.requireRequestId(reason);
         put(body, "reason", endReason);
+        if (nextActorProfileId != null && !nextActorProfileId.trim().isEmpty()) {
+            put(body, "next_actor_profile_id", nextActorProfileId.trim());
+        }
         return request(connection, END_PATH, body, session, false);
     }
 
@@ -91,7 +100,12 @@ public final class ChildSessionClient {
             throws IOException {
         requireConnection(connection);
         try {
-            JSONObject response = poster.postJson(connection, path, body, REQUEST_TIMEOUT_MS);
+            // Host terminal cleanup includes the provider's 10 s graceful-close
+            // period, bounded polling and exact stream closure (at most 31 s).
+            int timeout = START_PATH.equals(path) ? START_TIMEOUT_MS
+                    : END_PATH.equals(path) || STATUS_PATH.equals(path)
+                    ? 40_000 : REQUEST_TIMEOUT_MS;
+            JSONObject response = poster.postJson(connection, path, body, timeout);
             boolean denied = isDeniedState(response);
             return parseState(response, connection.profileId(), expectedSession,
                     !denied, denied && allowSessionlessDeny);
@@ -240,6 +254,7 @@ public final class ChildSessionClient {
         public final String serverTime;
         public final long policyRevision;
         public final long usageRevision;
+        public final long controlGeneration;
         public final boolean cleanupRequired;
 
         private State(JSONObject body, String responseSession) {
@@ -259,6 +274,7 @@ public final class ChildSessionClient {
             serverTime = text(body, "server_time");
             policyRevision = nonNegativeLong(body, "policy_revision");
             usageRevision = nonNegativeLong(body, "usage_revision");
+            controlGeneration = nonNegativeLong(body, "control_generation");
             cleanupRequired = body.optBoolean("cleanup_required", false);
         }
 

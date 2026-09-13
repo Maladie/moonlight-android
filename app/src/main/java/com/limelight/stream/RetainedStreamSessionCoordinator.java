@@ -128,6 +128,7 @@ public final class RetainedStreamSessionCoordinator {
         public final String playniteGameId;
         public final String transitionId;
         public final long attempt;
+        public final long controlGeneration;
 
         private Snapshot(State state, String streamSessionId, String hostId, String profileId,
                          int appId,
@@ -141,6 +142,7 @@ public final class RetainedStreamSessionCoordinator {
             this.playniteGameId = playniteGameId;
             this.transitionId = transitionId;
             this.attempt = attempt;
+            this.controlGeneration = RetainedStreamSessionCoordinator.controlGeneration;
         }
     }
 
@@ -154,6 +156,7 @@ public final class RetainedStreamSessionCoordinator {
     private static String playniteGameId = "";
     private static String transitionId = "";
     private static long attempt;
+    private static long controlGeneration;
     private static boolean preparingHomeFrameClaimed;
     private static String acceptedHomeTransitionId = "";
     private static long acceptedHomeAttempt;
@@ -201,6 +204,7 @@ public final class RetainedStreamSessionCoordinator {
         if (state == State.PREPARING) return;
         String sessionId = normalize(retainedStreamSessionId);
         if (sessionId.isEmpty()) throw new IllegalArgumentException("Stream session ID is required");
+        if (!sessionId.equals(streamSessionId)) controlGeneration = 0L;
         if (!sessionId.equals(streamSessionId) || controller.get() != owner) {
             switchOwner = null;
             switchSessionId = "";
@@ -252,6 +256,7 @@ public final class RetainedStreamSessionCoordinator {
                 && appId == preparingAppId
                 && playniteGameId.equalsIgnoreCase(normalize(preparingPlayniteGameId));
         if (state != State.NONE && !exactReconnect) return false;
+        if (!sessionId.equals(streamSessionId)) controlGeneration = 0L;
         controller = new WeakReference<>(owner);
         streamSessionId = sessionId;
         hostId = host;
@@ -376,6 +381,38 @@ public final class RetainedStreamSessionCoordinator {
     public static synchronized Snapshot snapshot() {
         return new Snapshot(state, streamSessionId, hostId, profileId, appId, playniteGameId,
                 transitionId, attempt);
+    }
+
+    public static synchronized boolean bindControlGeneration(
+            Controller expectedOwner, String expectedStreamSessionId, long generation) {
+        if (generation <= 0L || controller.get() != expectedOwner
+                || !matches(expectedStreamSessionId)) return false;
+        controlGeneration = generation;
+        return true;
+    }
+
+    /** Atomically publishes the same host-authorized actor/generation to both local owners. */
+    public static synchronized boolean commitReauthorization(
+            Controller owner, String sessionId, String origin, String actor,
+            long expectedGeneration, long generation,
+            java.util.function.BooleanSupplier commitConnection) {
+        if (controller.get() != owner || !matches(sessionId)
+                || (state != State.PREPARING && state != State.HOME_LIVE && state != State.PARKED_LIVE)
+                || !executionProfileId.equals(GatewayConnection.normalizeProfileId(origin))
+                || expectedGeneration <= 0L || controlGeneration != expectedGeneration
+                || generation <= expectedGeneration || !commitConnection.getAsBoolean()) return false;
+        profileId = GatewayConnection.normalizeProfileId(actor);
+        controlGeneration = generation;
+        return true;
+    }
+
+    /** A failed local handoff must not advertise the obsolete generation as reusable. */
+    public static synchronized boolean discardReauthorization(
+            Controller owner, String sessionId, long previousGeneration, long generation) {
+        if (state == State.TERMINATING || controller.get() != owner || !matches(sessionId)
+                || (controlGeneration != previousGeneration && controlGeneration != generation)) return false;
+        clearLocked();
+        return true;
     }
 
     private static boolean matchesPreparingSnapshot(Snapshot expected) {
@@ -518,6 +555,35 @@ public final class RetainedStreamSessionCoordinator {
                 || terminationOperation == null || !terminationOperation.direct) {
             return null;
         }
+        return new DirectTermination(terminationOperation);
+    }
+
+    public static synchronized DirectTermination beginDirectTermination(
+            Controller expectedOwner, String expectedStreamSessionId,
+            String terminatingHostId, int terminatingAppId, String terminatingGameId) {
+        if (state != State.PREPARING) {
+            return beginDirectTermination(expectedStreamSessionId, terminatingHostId,
+                    terminatingAppId, terminatingGameId);
+        }
+        String expected = normalize(expectedStreamSessionId);
+        if (expectedOwner == null || controller.get() != expectedOwner
+                || !streamSessionId.equals(expected)
+                || !hostId.equalsIgnoreCase(normalize(terminatingHostId))
+                || appId != terminatingAppId
+                || !playniteGameId.equalsIgnoreCase(normalize(terminatingGameId))) {
+            return null;
+        }
+        Controller previousOwner = controller.get();
+        controller.clear();
+        switchOwner = null;
+        switchSessionId = "";
+        switchTransitionId = "";
+        switchAttempt = 0L;
+        transitionId = "";
+        attempt = 0L;
+        setStateLocked(State.TERMINATING);
+        terminationOperation = new TerminationOperation(
+                expected, true, true, State.PREPARING, previousOwner, null);
         return new DirectTermination(terminationOperation);
     }
 
@@ -771,6 +837,22 @@ public final class RetainedStreamSessionCoordinator {
         return true;
     }
 
+    public static synchronized boolean markTransportUnsafe(
+            Controller expectedOwner, String expectedStreamSessionId,
+            String expectedHostId, int expectedAppId) {
+        if (expectedOwner == null || controller.get() != expectedOwner
+                || !matches(expectedStreamSessionId)
+                || appId != expectedAppId
+                || !hostId.equalsIgnoreCase(normalize(expectedHostId))) return false;
+        setStateLocked(State.RECONNECT_REQUIRED);
+        controller.clear();
+        switchOwner = null;
+        switchSessionId = "";
+        switchTransitionId = "";
+        switchAttempt = 0L;
+        return true;
+    }
+
     public static synchronized boolean clearTerminatingGameIfMatches(
             String expectedStreamSessionId, String expectedHostId, int expectedAppId,
             String expectedGameId) {
@@ -975,10 +1057,32 @@ public final class RetainedStreamSessionCoordinator {
         return true;
     }
 
-    public static synchronized boolean hardResetIfHostMatches(String expectedHostId) {
-        String expected = normalize(expectedHostId);
-        if (expected.isEmpty() || !expected.equalsIgnoreCase(hostId)) return false;
+    public static synchronized boolean clearAfterAuthoritativeEndIfMatches(
+            String expectedStreamSessionId) {
+        if (state == State.PREPARING || state == State.TERMINATING) return false;
+        if (!matches(expectedStreamSessionId)) return false;
         clearLocked();
+        return true;
+    }
+
+    public static boolean hardResetIfHostMatches(String expectedHostId) {
+        Controller owner;
+        Snapshot preparing;
+        synchronized (RetainedStreamSessionCoordinator.class) {
+            String expected = normalize(expectedHostId);
+            if (expected.isEmpty() || !expected.equalsIgnoreCase(hostId)) return false;
+            preparing = state == State.PREPARING ? snapshot() : null;
+            owner = preparing != null ? controller.get() : liveControllerLocked();
+            clearLocked();
+        }
+        if (owner != null) {
+            try {
+                if (preparing != null) owner.cancelPreparingTransport(preparing);
+                else owner.disconnectRetainedStream(success -> { });
+            } catch (RuntimeException ignored) {
+                // The authoritative local reset is already complete.
+            }
+        }
         return true;
     }
 
@@ -998,6 +1102,7 @@ public final class RetainedStreamSessionCoordinator {
         playniteGameId = "";
         transitionId = "";
         attempt = 0L;
+        controlGeneration = 0L;
         preparingHomeFrameClaimed = false;
         acceptedHomeTransitionId = "";
         acceptedHomeAttempt = 0L;

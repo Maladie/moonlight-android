@@ -1,0 +1,92 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "run_id": "s05-unified-child-lifecycle-artifacts-20260913",
+  "status": "ARTIFACTS_VERIFIED_DEVICE_PENDING",
+  "branch": "codex/session-hardening",
+  "head": "60d024f8dc59a563793e55989044dec6f4f53e87",
+  "reviewed_source_fingerprint": "sha256:14cf82e83898adf90fa786917243a12743bbe8d2dce281b4560ed715c38eeab3",
+  "version": {
+    "host": "0.7.112",
+    "build": "2026.09.13",
+    "protocol_version": 6,
+    "android_version_name": "12.2.23",
+    "android_version_code": 344
+  },
+  "artifacts": [
+    {
+      "kind": "android_non_root_debug_apk",
+      "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+      "bytes": 46785507,
+      "sha256": "c40f05e0e5d8c669637394a664dda990e1f88eae87f4df7656ed788acaf2e03e",
+      "package": "com.limelight.debug",
+      "min_sdk": 21,
+      "target_sdk": 34,
+      "signature": {
+        "v1": true,
+        "v2": true,
+        "signer": "C=US, O=Android, CN=Android Debug",
+        "certificate_sha256": "d0ec296180f9340b733406f3249e9145398e04a9fb144e6714b460d8a22fb92d"
+      },
+      "native_payload": "PASS: libmoonlight-core.so and libdiscord_partner_sdk.so are present for arm64-v8a, armeabi-v7a, x86 and x86_64"
+    },
+    {
+      "kind": "host_installer",
+      "path": "host-services/dist/s05-unified-child-0.7.112/MoonWakerHostInstaller.exe",
+      "bytes": 9529856,
+      "sha256": "a2ceeb409c478bc57aad053d5c62e68ad3854f31706b0b6d996bc309f92328e6",
+      "file_version": "0.7.112.0",
+      "product_version": "0.7.112+2026.09.13",
+      "assembly_version": "0.7.112.0",
+      "embedded_resources": [
+        "MoonWaker.HostServices.zip",
+        "MoonWaker.Version.json"
+      ],
+      "payload_entries": 136,
+      "payload_expanded_bytes": 12700530,
+      "versioned_product_components": {
+        "MoonWakerHostInstaller.exe": "0.7.112.0 / 0.7.112+2026.09.13",
+        "MoonWakerHostControl.exe": "0.7.112.0 / 0.7.112+2026.09.13",
+        "MoonWakerHostConfigurator.exe": "0.7.112.0 / 0.7.112+2026.09.13"
+      },
+      "embedded_version_manifest": "PASS: 0.7.112 / 2026.09.13 / protocol 6",
+      "pinned_legendary": "PASS: 8463909 bytes / sha256 01ea22ea51749f46a0019657f64fc0d34429fb7cbf9b590c0848c0e0bd9c1f07",
+      "critical_source_payload_match": {
+        "gateway/wakeplay_gateway.py": "7a088aae5b49a56191d20b5b964f0903b18b5c8c83cbe067d3b05ce222878ce0",
+        "gateway/control_operation_policy.py": "5b9fcb62880c210b8253e7b6e61edc0755caab767beef3d84a481380256ed126",
+        "gateway/child_terminal_operation.py": "96efb4963c4698dadc42d41b6bd471a2d18eb1a2125ead4c644c3d41b6139754",
+        "gateway/provider_control_operation.py": "ab6adf457d12fde6e60f9b6e9d3deab2e851ff298acbf790aeb12c3c3172e5df",
+        "bridges/playnite/GameProviderBridge.py": "7f7c4e14a0027babb1df8555d0fa1a7cb6d9abe5d8fc138b7f11d8f4e3c39f4d",
+        "bridges/playnite/ControlEffectFence.py": "92e9e02041131b636242878574f8c5844d7ea35c6e45e6be41b4a7c4b26814e4"
+      }
+    }
+  ],
+  "builds": [
+    {
+      "command": ".\\gradlew.bat verifyNonRootDebugDiscordSocialSdkPackaging --offline --no-daemon --console=plain",
+      "environment": "JDK 17",
+      "result": "PASS: BUILD SUCCESSFUL in 49s; 46 actionable tasks, 12 executed and 34 up-to-date"
+    },
+    {
+      "command": "host-services\\installer\\Build-MoonWakerHostInstaller.ps1 -OutputDirectory host-services\\dist\\s05-unified-child-0.7.112",
+      "result": "PASS after a network-enabled retry for the pinned Legendary download; hot-updater, credential-provider protocol/static/build and installer compilation checks passed"
+    },
+    {
+      "command": "host-services\\installer\\Test-MoonWakerHostInstallerUi.ps1 -InstallerPath host-services\\dist\\s05-unified-child-0.7.112\\MoonWakerHostInstaller.exe",
+      "result": "PASS: UI contract, trusted machine payload and isolated recovery-module imports verified"
+    },
+    {
+      "command": "host-services\\installer\\Test-PackagedControlModules.ps1",
+      "result": "PASS: complete payload imports and every tested missing recovery module is rejected"
+    }
+  ],
+  "checks": {
+    "source_fingerprint_after_build": "sha256:14cf82e83898adf90fa786917243a12743bbe8d2dce281b4560ed715c38eeab3",
+    "source_changed_by_build": false,
+    "deployment": "APK_ONLY_PASS: BRAVIA_4K_VH22 192.168.1.31:5555; installed base.apk SHA-256 matches the built artifact",
+    "host_installation": "NOT_RUN",
+    "android_installation": "PASS: com.limelight.debug 12.2.23 (344), ConsoleActivity resumed",
+    "android_installation_report": "runs/S05/unified-child-lifecycle-20260913/tv-apk-deployment.json",
+    "physical_windows_tv_acceptance": "PENDING"
+  }
+}

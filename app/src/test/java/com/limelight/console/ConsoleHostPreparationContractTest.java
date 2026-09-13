@@ -77,10 +77,13 @@ public class ConsoleHostPreparationContractTest {
         String reconnect = section(console,
                 "@Override public void reconnectSavedSession(PlayIntent intent)",
                 "@Override public void reject(");
-        assertTrue(reconnect.contains("pending.neutralStreamTarget"));
-        assertTrue(reconnect.contains("RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED"));
-        assertTrue(reconnect.contains("retained.streamSessionId.equals(pending.streamSessionId)"));
-        assertTrue(reconnect.contains(
+        assertTrue(reconnect.contains("reconnectSavedSessionForActor(intent)"));
+        String resume = section(console, "private boolean startResumeActivity(",
+                "private void failClosedActorHandoff(");
+        assertTrue(resume.contains("pending.neutralStreamTarget"));
+        assertTrue(resume.contains("RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED"));
+        assertTrue(resume.contains("retained.streamSessionId.equals(pending.streamSessionId)"));
+        assertTrue(resume.contains(
                 "applyWarmUpIntent(resume, transition, intent, warmUpClientAttempt)"));
 
         String game = source("src/main/java/com/limelight/Game.java");

@@ -15,6 +15,20 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class GameTransitionCancelContractTest {
+    @Test public void overlayQuitRequiresExplicitConfirmation() throws IOException {
+        String text = source();
+        String listener = text.substring(text.indexOf("public void onQuitSession()"),
+                text.indexOf("public void onEndGame()", text.indexOf("public void onQuitSession()")));
+        String confirmation = text.substring(text.indexOf("private void confirmQuitSession()"),
+                text.indexOf("private boolean canEndManagedGame()"));
+
+        assertTrue(listener.contains("confirmQuitSession()"));
+        assertFalse(listener.contains("closeStreamWithPrivacy(true)"));
+        assertTrue(confirmation.contains("ConsoleConfirmDialog.show("));
+        assertTrue(confirmation.contains("applist_quit_confirmation"));
+        assertTrue(confirmation.contains("() -> closeStreamWithPrivacy(true)"));
+    }
+
     @Test public void retainedStreamDisconnectDoesNotStopTheProviderGame() throws IOException {
         String text = source();
         String disconnect = text.substring(text.indexOf("public void disconnectRetainedStream("),
@@ -59,89 +73,89 @@ public class GameTransitionCancelContractTest {
         assertTrue(method.contains("stopConnection(finishOnce)"));
     }
 
-    @Test public void retainedSessionStopsProviderGameBeforeTransport() throws IOException {
+    @Test public void cancelStopsOnlyTheExactObservedProviderProcess() throws IOException {
+        String text = source();
+        String stop = text.substring(text.indexOf("private void stopProviderGame("),
+                text.indexOf("private void terminateWholeSessionVerified("));
+
+        assertTrue(stop.contains("gateway.snapshot()"));
+        assertTrue(stop.contains("PlayniteIdentityResolutionPolicy.verifiedStopTarget("));
+        assertTrue(stop.contains("current.processToken.isEmpty()"));
+        assertTrue(stop.contains("gateway.stopGame(exactGame, current.processToken)"));
+        assertFalse(stop.contains("gateway.stopGame(gameId)"));
+    }
+
+    @Test public void retainedSessionStartsLocalStopWithoutWaitingForHostCleanup() throws IOException {
         String text = source();
         String terminate = text.substring(text.indexOf(
                         "public void terminateRetainedSession("),
-                text.indexOf("private interface ProviderStopCallback"));
+                text.indexOf("public void switchGame(", text.indexOf(
+                        "public void terminateRetainedSession(")));
         String helper = text.substring(text.indexOf(
                         "private void terminateWholeSessionVerified("),
-                text.indexOf("private void verifySunshineSessionStopped("));
-        String finish = text.substring(text.indexOf(
-                        "private void finishWholeSessionTermination("),
-                text.indexOf("private void restoreParkedStream("));
+                text.indexOf("private void applyImmediateTerminalPrivacy("));
 
         assertTrue(terminate.contains("terminateWholeSessionVerified("));
-        assertTrue(helper.contains("else stopVerifiedProviderGame("));
-        assertTrue(helper.contains(
-                "expectedHostId, expectedGameId, actorContext, afterProvider)"));
-        assertTrue(helper.contains("verifySunshineSessionStopped("));
-        assertTrue(finish.contains("if (success)"));
-        assertTrue(finish.indexOf("stopConnectionResult(")
-                < finish.indexOf("completion.complete(true)"));
+        assertFalse(terminate.contains("terminateChildSession("));
+        assertTrue(helper.contains("wholeSessionTermination.run("));
+        assertTrue(helper.contains("stopConnectionResult("));
+        assertTrue(helper.contains("HostSessionTermination.run("));
+        assertFalse(helper.contains("quitApp("));
     }
 
-    @Test public void normalProviderQuitAttemptsStopBeforeClosingSunshine() throws IOException {
+    @Test public void normalProviderQuitRunsOnlyInActivityFreePermitOwner() throws IOException {
         String text = source();
         String close = text.substring(text.indexOf("private void closeStreamWithPrivacy("),
                 text.indexOf("private void stopConnection(Runnable afterStopped)"));
         String helper = text.substring(text.indexOf(
                         "private void terminateWholeSessionVerified("),
-                text.indexOf("private void verifySunshineSessionStopped("));
+                text.indexOf("private void applyImmediateTerminalPrivacy("));
+        Path path = Paths.get("src/main/java/com/limelight/stream/HostSessionTermination.java");
+        if (!Files.exists(path)) path = Paths.get(
+                "app/src/main/java/com/limelight/stream/HostSessionTermination.java");
+        String host = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
 
         assertTrue(close.contains("if (quitApplication)"));
         assertTrue(close.contains("terminateWholeSessionVerified(null)"));
         assertFalse(close.contains("pendingApplicationQuit"));
         assertFalse(close.contains("doQuit()"));
-        assertTrue(helper.indexOf("consoleLoadingView.showOpaque()")
-                < helper.indexOf("consoleLoadingView.doAfterNextFrame(stopProvider)"));
+        assertTrue(helper.contains("HostSessionTermination.run("));
         assertFalse(helper.contains("closeStreamWithPrivacy(true)"));
-        String provider = text.substring(text.indexOf(
-                        "private void stopVerifiedProviderGame("),
-                text.indexOf("private boolean isCurrentWholeSessionTermination("));
-        assertTrue(provider.indexOf("gateway.snapshot()")
-                < provider.indexOf("gateway.stopGame(exactGame)"));
-        assertTrue(provider.contains("PlayniteIdentityResolutionPolicy.verifiedStopTarget("));
-        assertTrue(provider.contains("expectedGameId.isEmpty()"));
-        assertTrue(provider.contains("\"idle\".equalsIgnoreCase(current.gameState)"));
+        assertTrue(host.indexOf("control.acquire(") < host.indexOf("provider.snapshot()"));
+        assertTrue(host.indexOf("provider.snapshot()") < host.indexOf("provider.stopGameWithinControl("));
+        assertTrue(host.indexOf("provider.stopGameWithinControl(") < host.indexOf("http.quitApp()"));
+        assertTrue(host.contains("provider_game_mismatch"));
     }
 
-    @Test public void directQuitPublishesClosingStateUntilSunshineResponds()
+    @Test public void directQuitPublishesClosingStateAndDelegatesHostEffects()
             throws IOException {
         String text = source();
         String helper = text.substring(text.indexOf(
                         "private void terminateWholeSessionVerified("),
-                text.indexOf("private void restoreParkedStream("));
-        String verify = helper.substring(helper.indexOf(
-                        "private void verifySunshineSessionStopped("),
-                helper.indexOf("private boolean isCurrentWholeSessionTermination("));
+                text.indexOf("private void applyImmediateTerminalPrivacy("));
 
         assertTrue(helper.contains("RetainedStreamSessionCoordinator.beginDirectTermination("));
         assertTrue(helper.contains(": RetainedStreamSessionCoordinator.markTerminating("));
-        assertFalse(helper.contains("if (!marked)"));
-        assertTrue(verify.indexOf("getComputerDetails(true)")
-                < verify.indexOf("http.quitApp()"));
-        assertTrue(verify.contains("freshAppId != expectedAppId"));
-        assertTrue(verify.indexOf("http.quitApp()")
-                < verify.lastIndexOf("getComputerDetails(true)"));
-        assertFalse(verify.contains("ServerHelper.doQuit"));
+        assertTrue(helper.contains("this::applyImmediateTerminalPrivacy"));
+        assertTrue(helper.contains("this::openTerminalConsoleHome"));
+        assertTrue(helper.contains("HostSessionTermination.run("));
+        assertFalse(helper.contains("quitApp("));
         String terminated = text.substring(text.indexOf(
                         "public void connectionTerminated("),
                 text.indexOf("public void connectionStatusUpdate("));
-        assertTrue(text.contains("private volatile boolean wholeSessionTerminationInFlight"));
-        assertTrue(terminated.indexOf("if (wholeSessionTerminationInFlight)")
+        assertFalse(text.contains("wholeSessionTerminationInFlight"));
+        assertTrue(text.contains("WholeSessionTermination.Owner wholeSessionTermination"));
+        assertTrue(terminated.indexOf("if (wholeSessionTermination.isRunning())")
                 < terminated.indexOf("cleanupUnrevealedProviderLaunch("));
         String verifiedGuard = terminated.substring(terminated.indexOf(
-                "if (wholeSessionTerminationInFlight)"), terminated.indexOf(
+                "if (wholeSessionTermination.isRunning())"), terminated.indexOf(
                 "cleanupUnrevealedProviderLaunch("));
         assertTrue(verifiedGuard.contains("stopConnection()"));
         assertFalse(verifiedGuard.contains("finish()"));
         assertFalse(verifiedGuard.contains("cleanupUnrevealedProviderLaunch"));
         assertFalse(verifiedGuard.contains(
                 "ML_ERROR_GRACEFUL_TERMINATION"));
-        String failure = helper.substring(helper.indexOf(
-                "private void finishWholeSessionTermination("));
-        assertTrue(failure.contains("if (connected && !streamHomeVisible"));
+        assertTrue(helper.contains("if (!success) completion.transportUnsafe()"));
     }
 
     @Test public void observedProviderExitSettlesNeutralWithoutQuittingSunshine() throws IOException {
@@ -184,7 +198,7 @@ public class GameTransitionCancelContractTest {
             throws IOException {
         String text = source();
         String attempt = text.substring(text.indexOf(
-                        "private void beginNewRetainedGameAttempt("),
+                        "private void startRetainedGameAttempt("),
                 text.indexOf("private void pollRetainedSwitchCancellation("));
         String arm = text.substring(text.indexOf(
                         "private void armNextVideoFrameForTransition("),
@@ -337,32 +351,23 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("@Override public void onInstallationVerified()"));
         String terminate = text.substring(text.indexOf(
                         "private void terminateWholeSessionVerified("),
-                text.indexOf("private void verifySunshineSessionStopped("));
+                text.indexOf("private void applyImmediateTerminalPrivacy("));
 
         assertTrue(failed.contains("if (cleanupUnrevealedProviderLaunch("));
         assertTrue(terminated.contains("if (cleanupUnrevealedProviderLaunch("));
         assertTrue(cleanup.contains("freshOwnedFailureCleanupInFlight.compareAndSet(false, true)"));
         assertTrue(callback.indexOf("isFreshOwnedFailureCleanup(")
                 < callback.indexOf("RetainedSwitch operation"));
-        assertTrue(callback.contains("terminateWholeSessionVerified(null, true, false)"));
-        assertTrue(terminate.contains("if (providerAlreadyStopped) afterProvider.complete(true)"));
-        assertTrue(terminate.contains("else stopVerifiedProviderGame("));
+        assertTrue(callback.contains("terminateWholeSessionVerified(null, true)"));
+        assertTrue(terminate.contains("providerAlreadyStopped"));
+        assertTrue(terminate.contains("HostSessionTermination.run("));
         assertTrue(terminate.contains(
-                "terminateWholeSessionVerified(completion, false, true)"));
-        String finish = text.substring(text.indexOf(
-                        "private void finishWholeSessionTermination("),
-                text.indexOf("private void restoreParkedStream("));
-        String freshFailure = finish.substring(finish.indexOf(
-                        "if (!restoreRetainedOnFailure)"),
-                finish.indexOf("if (connected && !streamHomeVisible"));
-        assertTrue(freshFailure.contains(
+                "terminateWholeSessionVerified(completion, false)"));
+        assertTrue(terminate.contains(
                 "RetainedStreamSessionCoordinator.abandonDirectTermination"));
-        assertTrue(freshFailure.contains("SessionResumeManager.clearIfMatches"));
-        assertTrue(freshFailure.contains("stopConnectionResult("));
-        assertTrue(freshFailure.indexOf("stopConnectionResult(")
-                < freshFailure.indexOf("completion.complete(false)"));
-        assertFalse(freshFailure.contains("enterHome("));
-        assertFalse(freshFailure.contains("openConsoleHome("));
+        assertTrue(terminate.contains("stopConnectionResult("));
+        assertFalse(terminate.contains("enterHome("));
+        assertFalse(terminate.contains("openConsoleHome("));
     }
 
     @Test public void intentionalReconnectDoesNotStopProviderGameOrStartItAgain()
@@ -383,6 +388,8 @@ public class GameTransitionCancelContractTest {
     @Test public void retainedSwitchReusesTransportAndRequiresFreshFrame() throws IOException {
         String text = source();
         String begin = text.substring(text.indexOf("private void beginNewRetainedGameAttempt("),
+                text.indexOf("private void compensateRetainedAuthorization("))
+                + text.substring(text.indexOf("private void startRetainedGameAttempt("),
                 text.indexOf("private void pollRetainedSwitchCancellation("));
         String setup = text.substring(text.indexOf("private void applyRetainedTransition("),
                 text.indexOf("private boolean advancePreparingSwitch("));
@@ -427,7 +434,8 @@ public class GameTransitionCancelContractTest {
         assertTrue(gate.indexOf("showOpaque()") < gate.indexOf("doAfterNextFrame"));
         assertTrue(gate.indexOf("doAfterNextFrame") < gate.indexOf("detachForSwitch()"));
         assertTrue(provider.indexOf("gateway.snapshot()")
-                < provider.indexOf("gateway.stopGame(exactGame)"));
+                < provider.indexOf("if (!childSessionId.isEmpty())"));
+        assertTrue(provider.contains("releaseChildTimeAttachmentAndWait();"));
         assertTrue(provider.contains("if (!exactGame.isEmpty())"));
         assertTrue(stopped.contains("operation.oldSpec.id.equals(transitionId)"));
         assertTrue(stopped.contains("operation.cancelRequested"));
@@ -524,7 +532,8 @@ public class GameTransitionCancelContractTest {
         assertTrue(stop.indexOf("consoleLoadingView.showOpaque()")
                 < stop.indexOf("gateway.snapshot()"));
         assertTrue(stop.contains("PlayniteIdentityResolutionPolicy.verifiedStopTarget("));
-        assertTrue(stop.indexOf("gateway.stopGame(exactGame)")
+        assertTrue(stop.contains("current.processToken.isEmpty()"));
+        assertTrue(stop.indexOf("gateway.stopGame(exactGame, current.processToken)")
                 < stop.indexOf("retainNeutralStreamAfterNaturalGameStop("));
         assertTrue(stop.contains("providerEndGameInFlight = true"));
         assertTrue(stop.split("isFinishing\\(\\) \\|\\| isDestroyed\\(\\)", -1).length - 1 >= 2);
@@ -616,7 +625,9 @@ public class GameTransitionCancelContractTest {
 
         assertTrue(provider.contains("operation.request.oldGameId.isEmpty()"));
         assertTrue(provider.contains("\"idle\".equalsIgnoreCase(current.gameState)"));
-        assertTrue(provider.contains("if (!exactGame.isEmpty()) gateway.stopGame(exactGame)"));
+        assertTrue(provider.contains("if (!exactGame.isEmpty())"));
+        assertTrue(provider.contains("current.processToken.isEmpty()"));
+        assertTrue(provider.contains("gateway.stopGame(exactGame, current.processToken);"));
     }
 
     @Test public void failedCompensatingStopRearmsNewGameObservationOnSameTransport()
@@ -693,6 +704,40 @@ public class GameTransitionCancelContractTest {
         assertTrue(helper.contains("this, operation.request, expectedGameId, newGameId"));
         assertFalse(helper.contains("newGameId.equalsIgnoreCase(retained.playniteGameId)"));
         assertTrue(callbacks.split("updateRetainedGame\\(", -1).length - 1 >= 3);
+    }
+
+    @Test public void sameAllowedRunningGameUsesActorAdoptionWithoutProviderRestart()
+            throws IOException {
+        String text = source();
+        String decision = text.substring(text.indexOf("private void beginRetainedProviderSwitch("),
+                text.indexOf("private void performRetainedProviderSwitch("));
+        assertTrue(decision.contains("operation.request.oldGameId.equalsIgnoreCase("));
+        assertTrue(decision.contains("beginRetainedActorHandoff(operation, true)"));
+        String adoption = text.substring(text.indexOf("private void adoptAuthorizedRunningGame("),
+                text.indexOf("private void compensateRetainedAuthorization("));
+        assertTrue(adoption.contains("transferProviderOwnershipTo(replacement)"));
+        assertTrue(adoption.contains("signalRetainedSwitchReuse(operation)"));
+        assertFalse(adoption.contains("gateway.startGame("));
+        assertFalse(adoption.contains("conn.start("));
+    }
+
+    @Test public void failedActorTimeHandoffClosesTheCommonSessionFailClosed()
+            throws IOException {
+        String text = source();
+        String handoff = text.substring(text.indexOf("private void beginRetainedActorHandoff("),
+                text.indexOf("private void adoptAuthorizedRunningGame("));
+        assertTrue(handoff.contains("boolean timeAttachmentMayHaveChanged = false"));
+        assertTrue(handoff.contains("timeAttachmentMayHaveChanged = true;\n"
+                + "                    releaseChildTimeAttachmentAndWait();"));
+        assertTrue(handoff.contains("timeAttachmentMayHaveChanged = allowance.ok"
+                + " || !childSessionId.isEmpty();"));
+        assertTrue(handoff.contains("releaseUnusedAllowance("));
+        assertTrue(handoff.contains("boolean failClosed = timeAttachmentMayHaveChanged"));
+        int failed = handoff.indexOf("completeRetainedSwitch(operation,",
+                handoff.indexOf("boolean failClosed"));
+        int terminate = handoff.indexOf("if (failClosed) terminateWholeSessionVerified(null)",
+                failed);
+        assertTrue(failed >= 0 && terminate > failed);
     }
 
     private static String source() throws IOException {
@@ -809,5 +854,47 @@ public class GameTransitionCancelContractTest {
                 status.indexOf("case LAUNCHER_INTERACTION_REQUIRED:", stabilizing));
         assertTrue(branch.contains("snapshot.detail.isEmpty()"));
         assertTrue(branch.contains(": snapshot.detail"));
+    }
+
+    @Test public void retryCompletionCannotOutrunCancelOrAnotherGeneration() {
+        assertTrue(Game.shouldContinueRetry(
+                "retry-1", "retry-1", "retry-1", false, false, false));
+        assertFalse(Game.shouldContinueRetry(
+                "retry-1", "retry-1", "retry-1", true, false, false));
+        assertFalse(Game.shouldContinueRetry(
+                "retry-1", "retry-2", "retry-1", false, false, false));
+        assertFalse(Game.shouldContinueRetry(
+                "retry-1", "retry-1", "", false, false, false));
+        assertFalse(Game.shouldContinueRetry(
+                "retry-1", "retry-1", "retry-1", false, true, false));
+    }
+
+    @Test public void retryFenceSurvivesRecreationAndUnownedTransportIsStopped()
+            throws IOException {
+        String game = source();
+        String create = game.substring(game.indexOf("protected void onCreate("),
+                game.indexOf("private MediaCodecDecoderRenderer createDecoderRenderer"));
+        String save = game.substring(game.indexOf("protected void onSaveInstanceState("),
+                game.indexOf("if (transitionCoordinator != null)"));
+        String retry = game.substring(game.indexOf("private void retryTransition()"),
+                game.indexOf("private void retryRetainedObservation()"));
+        String destroy = game.substring(game.indexOf("protected void onDestroy()"),
+                game.indexOf("if (transitionCoordinator != null)",
+                        game.indexOf("protected void onDestroy()")));
+
+        assertTrue(create.contains("savedInstanceState.getString(STATE_RETRY_TRANSITION_ID"));
+        assertTrue(save.contains("outState.putString(STATE_RETRY_TRANSITION_ID"));
+        assertTrue(retry.contains("if (!retryStillCurrent(retryId)) return;"));
+        assertTrue(retry.contains("cancelTransition();"));
+        String cancel = game.substring(game.indexOf("private void cancelTransition()"),
+                game.indexOf("private boolean returnRetainedObservationToDashboard()"));
+        assertTrue(cancel.indexOf("retryTransitionId = \"\"")
+                < cancel.indexOf("returnRetainedObservationToDashboard()"));
+        assertTrue(cancel.contains("retainedSwitch.retryRequested = false;"));
+        assertTrue(cancel.indexOf("retainedSwitch.retryRequested = false;")
+                < cancel.indexOf("requestRetainedSwitchCancellation(retainedSwitch)"));
+        assertTrue(destroy.contains("} else if (connecting || connected) {"));
+        assertTrue(destroy.contains("backgroundStreamParked = false;"));
+        assertTrue(destroy.contains("stopConnection();"));
     }
 }

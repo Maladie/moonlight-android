@@ -1,9 +1,9 @@
 import json
 import os
 import tempfile
-import time
 import unittest
-from datetime import datetime, timezone
+from control_snapshot_fixture import control_evidence
+from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
 from unittest import mock
@@ -254,7 +254,7 @@ class ChildTimeContractTest(unittest.TestCase):
         self.assertEqual("outside_schedule", body["reason"])
         self.assertEqual(0, body["playable_now_seconds"])
 
-    def test_bridge_deadline_is_capped_when_daily_budget_exceeds_lease(self):
+    def test_normal_start_never_binds_a_provider_child_session(self):
         self.state.config["profiles"]["kid"]["schedule"]["weekdays"]["mon"] = \
             schedule_entry(True, 18 * 60, 23 * 60, 4_500)
         self.set_wall(2026, 9, 7, 18, 0)
@@ -264,15 +264,28 @@ class ChildTimeContractTest(unittest.TestCase):
 
         self.assertEqual(HTTPStatus.ACCEPTED, status)
         self.assertEqual("launch_pending", body["phase"])
-        bind = next(call for call in self.proxy_json_calls
-                    if call[1] == "/child/session" and call[2]["action"] == "bind")
-        deadline = datetime.fromisoformat(
-            bind[2]["deadline_utc"].replace("Z", "+00:00"))
-        self.assertGreaterEqual((deadline - self.wall).total_seconds(), 0)
-        self.assertLessEqual(
-            (deadline - self.wall).total_seconds(),
-            120)
-        self.assertEqual("parent", bind[4])
+        self.state.authorize_child_profile(self.client, "kid")
+        status, permit = self.state.control_operation_acquire(self.client, {
+            "operation_id": "deadline-transport", "intent": "launch",
+            "stream_session_id": "deadline-stream", "sunshine_app_id": 7,
+            "expected_generation": 0, "observed_sunshine_app_id": 0,
+            "child_session_id": SESSION_ID,
+        }, "deadline-transport")
+        self.assertEqual(HTTPStatus.OK, status)
+        status, _completed = self.state.control_operation_complete(self.client, {
+            "operation_id": permit["operation_id"],
+            "generation": permit["generation"],
+            "actor_lease_epoch": permit["actor_lease_epoch"],
+            "succeeded": True,
+        }, permit["operation_id"])
+        self.assertEqual(HTTPStatus.OK, status)
+        self.state.request_context.request_id = "deadline-provider"
+        status, _started = self.state.child_playnite_action(
+            self.client, "kid", "game/start", {"game_id": GAME_ID})
+        self.assertEqual(HTTPStatus.OK, status)
+        self.assertFalse(any(call[1] == "/child/session"
+                             for call in self.proxy_json_calls))
+        self.assertEqual("launch_pending", self.state.child_time_session["phase"])
 
         self.state.child_time_session = None
 
@@ -291,7 +304,7 @@ class ChildTimeContractTest(unittest.TestCase):
 
 
 class ChildTimeBridgeIntegrationTest(unittest.TestCase):
-    """Exercise the real Bridge HTTP handler through the Gateway proxy seams."""
+    """Exercise child time accounting over the common provider lifecycle."""
 
     def setUp(self):
         self.temporary = tempfile.TemporaryDirectory()
@@ -345,7 +358,20 @@ class ChildTimeBridgeIntegrationTest(unittest.TestCase):
             "exe": "game.exe",
         }], revision="rev-1")
         self.bridge.state.clock = lambda: self.wall.timestamp()
-        self.gateway.proxy = self.bridge.proxy
+        self.streamer_active = True
+        def proxy(name, path, timeout=2.5, profile_id=None):
+            if name == "vibepollo" and path == "/snapshot?force=1":
+                return True, {**control_evidence(int(self.streamer_active),
+                                                 self.streamer_active), "clients": [{
+                    "uuid": "22222222-2222-4222-8222-222222222222",
+                    "connected": self.streamer_active}],
+                    "apps": [{"app_id": 7, "running": self.streamer_active}]}
+            if name == "vibepollo" and path == "/action/close-app":
+                self.streamer_active = False
+                return True, {"ok": True}
+            return self.bridge.proxy(name, path, timeout, profile_id)
+
+        self.gateway.proxy = proxy
         self.gateway.proxy_json = self.bridge.proxy_json
         self.gateway.proxy_bytes = self.bridge.proxy_bytes
         self.launch = mock.patch.object(
@@ -357,7 +383,7 @@ class ChildTimeBridgeIntegrationTest(unittest.TestCase):
         self.launch.stop()
         self.temporary.cleanup()
 
-    def test_child_time_session_round_trip_uses_real_bridge_contract(self):
+    def test_child_time_session_never_uses_a_bridge_child_lifecycle(self):
         status, pending = self.gateway.child_time_session_start(
             self.client, "kid", GAME_ID, SESSION_ID, "child-time-start")
 
@@ -367,19 +393,33 @@ class ChildTimeBridgeIntegrationTest(unittest.TestCase):
             call for call in self.bridge.calls
             if call[0] == "json" and call[2] == "/child/session"
         ]
-        self.assertEqual(1, len(bridge_session_calls))
-        bind = bridge_session_calls[0][3]
-        self.assertEqual("bind", bind["action"])
-        self.assertEqual(SESSION_ID, bind["session_id"])
-        self.assertEqual("kid", bind["actor_profile_id"])
-        self.assertEqual("living-room", bind["execution_profile_id"])
-        self.assertEqual(GAME_ID, bind["game_id"])
-        self.assertEqual(
-            "22222222-2222-4222-8222-222222222222",
-            bind["vibepollo_client_uuid"])
-        self.assertEqual("", bind["process_token"])
+        self.assertEqual(0, len(bridge_session_calls))
+        session = self.gateway.child_time_session
+        self.gateway.authorize_child_profile(self.client, "kid")
+        status, permit = self.gateway.control_operation_acquire(self.client, {
+            "operation_id": "child-integration-transport", "intent": "launch",
+            "stream_session_id": SESSION_ID, "sunshine_app_id": 7,
+            "expected_generation": 0, "observed_sunshine_app_id": 0,
+            "child_session_id": SESSION_ID,
+        }, "child-integration-transport")
+        self.assertEqual(HTTPStatus.OK, status)
+        self.gateway.control_operation_complete(self.client, {
+            "operation_id": permit["operation_id"], "generation": permit["generation"],
+            "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": True,
+        }, permit["operation_id"])
+        self.gateway.request_context.request_id = "child-integration-provider"
+        status, started = self.gateway._child_time_control_call(session, lambda:
+            self.gateway.child_playnite_action(
+                self.client, "kid", "game/start", {"game_id": GAME_ID}))
+        self.assertEqual(HTTPStatus.OK, status)
+        self.assertTrue(started["ok"])
+        bridge_session_calls = [
+            call for call in self.bridge.calls
+            if call[0] == "json" and call[2] == "/child/session"
+        ]
+        self.assertEqual(0, len(bridge_session_calls))
         paths = [call[2] for call in self.bridge.calls if call[0] == "json"]
-        self.assertLess(paths.index("/child/session"), paths.index("/game/start"))
+        self.assertIn("/game/start", paths)
 
         process_id = 4242
         process_started = 133700000000000000
@@ -428,11 +468,7 @@ class ChildTimeBridgeIntegrationTest(unittest.TestCase):
             call for call in self.bridge.calls
             if call[0] == "json" and call[2] == "/child/session"
         ]
-        self.assertEqual(["bind", "bind"], [
-            call[3]["action"] for call in bridge_session_calls])
-        running_bind = bridge_session_calls[-1][3]
-        self.assertEqual(process_token, running_bind["process_token"])
-        self.assertEqual(SESSION_ID, running_bind["session_id"])
+        self.assertEqual(0, len(bridge_session_calls))
 
         self.monotonic = 120.0
         self.wall = datetime(2026, 9, 7, 19, 50, 20, tzinfo=timezone.utc)
@@ -445,57 +481,27 @@ class ChildTimeBridgeIntegrationTest(unittest.TestCase):
             call for call in self.bridge.calls
             if call[0] == "json" and call[2] == "/child/session"
         ]
-        self.assertEqual(["bind", "bind", "renew"], [
-            call[3]["action"] for call in bridge_session_calls])
-        renew = bridge_session_calls[-1][3]
-        self.assertEqual(SESSION_ID, renew["session_id"])
-        self.assertEqual("kid", renew["actor_profile_id"])
-        self.assertEqual("living-room", renew["execution_profile_id"])
-        self.assertEqual(GAME_ID, renew["game_id"])
-        self.assertEqual(process_token, renew["process_token"])
-
-
-        graceful = []
-
-        def close_verified_process(pid):
-            graceful.append(pid)
-            return True
-
-        self.bridge.state.graceful_close = close_verified_process
+        self.assertEqual(0, len(bridge_session_calls))
         self.monotonic = 125.0
         self.wall = datetime(2026, 9, 7, 19, 50, 25, tzinfo=timezone.utc)
+        def advance_terminal_poll(seconds):
+            self.monotonic += seconds
+            self.wall += timedelta(seconds=seconds)
+
+        self.gateway.child_terminal_operation.clock = lambda: self.monotonic
+        self.gateway.child_terminal_operation.wait = advance_terminal_poll
         initial_status, ended = self.gateway.child_time_session_end(
             self.client, "kid", SESSION_ID)
 
         self.assertEqual(SESSION_ID, ended["session_id"])
-        self.assertEqual(HTTPStatus.CONFLICT, initial_status)
-        self.assertEqual("cleanup_required", ended["state"])
-        self.assertTrue(ended["cleanup_required"])
-        self.assertEqual(1, len([
-            call for call in self.bridge.calls
-            if call[0] == "json" and call[2] == "/child/session"
-            and call[3]["action"] == "end"
-        ]))
-        self.assertEqual([process_id], graceful)
-
-        # Graceful close is asynchronous.  Let the Bridge observe that the
-        # exact process disappeared after its grace period, then run its real
-        # cleanup path before retrying the Gateway end request.
-        self.monotonic = 136.0
-        self.wall = datetime(2026, 9, 7, 19, 50, 36, tzinfo=timezone.utc)
-        self.bridge.state.current = {"state": "idle"}
-        self.bridge.state._running_games = []
-        self.bridge.state._running_scan_status = "complete"
-        self.bridge.state._running_scan_revision = self.bridge.state.library_revision
-        self.bridge.state._running_scan_at = time.monotonic()
-        probe.process_identity.side_effect = lambda pid, include_owner=False: (
-            dict(own_identity) if pid == os.getpid() else None)
-        probe.scan_running_processes.return_value = ([], "complete")
-        stopped = self.bridge.state.enforce_child_session()
-        self.assertTrue(stopped["accepted"])
-        self.assertEqual("stopped", stopped["state"])
-        self.assertFalse(stopped["cleanup_required"])
-        self.assertIsNone(self.bridge.state.child_session)
+        self.assertEqual(HTTPStatus.OK, initial_status)
+        self.assertEqual("ended", ended["state"])
+        self.assertFalse(ended["cleanup_required"])
+        self.assertTrue(any(call[0] == "json" and call[2] == "/game/stop-verified"
+                            for call in self.bridge.calls))
+        self.assertFalse(any(call[0] == "json" and call[2] == "/child/session"
+                             for call in self.bridge.calls))
+        self.assertEqual("idle", self.bridge.state.current["state"])
 
         status, finished = self.gateway.child_time_session_end(
             self.client, "kid", SESSION_ID)
@@ -514,14 +520,8 @@ class ChildTimeBridgeIntegrationTest(unittest.TestCase):
         self.gateway.child_time_session_end(self.client, "kid", SESSION_ID)
         self.assertEqual(next_id, self.gateway.child_time_session["session_id"])
 
-        end_calls = [
-            call for call in self.bridge.calls
-            if call[0] == "json" and call[2] == "/child/session"
-            and call[3]["action"] == "end"
-        ]
-        self.assertEqual(2, len(end_calls))
-        self.assertTrue(all(call[3]["session_id"] == SESSION_ID
-                             for call in end_calls))
+        self.assertFalse(any(call[0] == "json" and call[2] == "/child/session"
+                             for call in self.bridge.calls))
 
 
 if __name__ == "__main__":

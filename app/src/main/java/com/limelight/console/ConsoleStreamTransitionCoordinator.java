@@ -37,7 +37,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         boolean verifyInstallation(String gameId) throws IOException;
         void ensureInstalledGameTarget(String gameId, String gameName) throws IOException;
         default void startGame(String gameId) throws IOException { }
-        default void stopGame(String gameId) throws IOException { }
+        default void stopGame(String gameId, String processToken) throws IOException { }
     }
 
     interface MonotonicClock {
@@ -79,6 +79,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                                                ProviderStartFailure failure) { }
         default void onProviderGameCleanupComplete(
                 String transitionId, String gameId, boolean success) { }
+        default boolean controlTransportAuthorized() { return true; }
 
         void onInstallationVerified();
         void onInstallationStillNeedsConfirmation();
@@ -285,8 +286,11 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             String key = providerOwnerKey();
             ProviderOwner owner = PROVIDER_OWNERS.get(key);
             if (owner != null && !owner.matches(transitionSpec)) return false;
+            if (owner != null && owner.cleanupClaimed) return false;
             if (owner == null && startsProviderGame()) return false;
-            PROVIDER_OWNERS.put(key, new ProviderOwner(replacement.transitionSpec));
+            PROVIDER_OWNERS.put(key, owner == null
+                    ? new ProviderOwner(replacement.transitionSpec)
+                    : owner.transferTo(replacement.transitionSpec));
         }
         stop();
         return true;
@@ -352,7 +356,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                     || providerCleanupRequested || !isCurrent(actionEpoch)) return;
             // Providers that enumerate pads only at game startup wait until the
             // stream has announced controllers. The provider declares exceptions.
-            if (!streamConnected && !transitionSpec.startProviderBeforeStream) return;
+            if (!streamConnected && (!transitionSpec.startProviderBeforeStream
+                    || !callbacks.controlTransportAuthorized())) return;
             providerStartRequested = true;
         }
         try {
@@ -459,18 +464,27 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     }
 
     private void compensateProviderStart() {
-        if (!mayStopCurrentAttempt()) {
+        String ownedProcessToken = claimCurrentAttemptProcessToken();
+        if (ownedProcessToken.isEmpty()) {
             logTimeline("provider-stop-skipped-newer-owner");
             completeProviderCleanup(false);
             return;
         }
         logTimeline("provider-stop-requested");
         try {
-            gateway.stopGame(transitionSpec.playniteGameId);
+            PlayniteTransitionGateway.Snapshot current = gateway.snapshot();
+            String exactGame = PlayniteIdentityResolutionPolicy.verifiedStopTarget(
+                    transitionSpec.playniteGameId, current.gameState, current.gameId);
+            if (exactGame == null || exactGame.isEmpty()
+                    || !ownedProcessToken.equals(current.processToken)) {
+                throw new IOException("provider_process_not_exact");
+            }
+            gateway.stopGame(exactGame, ownedProcessToken);
             clearCurrentAttemptOwner();
             logTimeline("provider-stop-complete");
             completeProviderCleanup(true);
         } catch (IOException | RuntimeException error) {
+            releaseCurrentAttemptCleanupClaim();
             LimeLog.warning("Launch timeline transition=" + transitionSpec.id
                     + " provider-stop-failed: " + error.getMessage());
             completeProviderCleanup(false);
@@ -523,6 +537,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             try {
                 PlayniteTransitionGateway.Snapshot snapshot = gateway.snapshot();
                 if (!isCurrent(runEpoch)) return;
+                captureCurrentAttemptProcess(snapshot);
                 String readinessReason = snapshot.reason == null ? "" : snapshot.reason;
                 if (snapshot.windowReady && !context.targetWindowReadyLogged) {
                     context.targetWindowReadyLogged = true;
@@ -862,16 +877,43 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         synchronized (PROVIDER_OWNERS_LOCK) {
             synchronized (this) {
                 if (!isCurrent(actionEpoch) || providerCleanupRequested) return false;
+                ProviderOwner current = PROVIDER_OWNERS.get(providerOwnerKey());
+                if (current != null && current.cleanupClaimed) return false;
                 PROVIDER_OWNERS.put(providerOwnerKey(), new ProviderOwner(transitionSpec));
                 return true;
             }
         }
     }
 
-    private boolean mayStopCurrentAttempt() {
+    private void captureCurrentAttemptProcess(PlayniteTransitionGateway.Snapshot snapshot) {
+        String exactGame = PlayniteIdentityResolutionPolicy.verifiedStopTarget(
+                transitionSpec.playniteGameId, snapshot.gameState, snapshot.gameId);
+        if (exactGame == null || exactGame.isEmpty() || snapshot.processId <= 0
+                || !snapshot.processToken.matches("[0-9a-f]{64}")) return;
         synchronized (PROVIDER_OWNERS_LOCK) {
             ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
-            return owner == null || owner.matches(transitionSpec);
+            if (owner != null && owner.matches(transitionSpec)) {
+                owner.bindProcessToken(snapshot.processToken);
+            }
+        }
+    }
+
+    private String claimCurrentAttemptProcessToken() {
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+            if (owner == null || !owner.matches(transitionSpec)
+                    || owner.cleanupClaimed || owner.processToken.isEmpty()) return "";
+            owner.cleanupClaimed = true;
+            return owner.processToken;
+        }
+    }
+
+    private void releaseCurrentAttemptCleanupClaim() {
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+            if (owner != null && owner.matches(transitionSpec)) {
+                owner.cleanupClaimed = false;
+            }
         }
     }
 
@@ -936,8 +978,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 gateway.startGame(gameId);
             }
 
-            @Override public void stopGame(String gameId) throws IOException {
-                gateway.stopGame(gameId);
+            @Override public void stopGame(String gameId, String processToken)
+                    throws IOException {
+                gateway.stopGame(gameId, processToken);
             }
         };
     }
@@ -1012,17 +1055,32 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         final String transitionId;
         final String gameId;
         final String profileId;
+        String processToken;
+        boolean cleanupClaimed;
 
         ProviderOwner(LaunchTransitionSpec spec) {
+            this(spec, "");
+        }
+
+        ProviderOwner(LaunchTransitionSpec spec, String processToken) {
             transitionId = spec.id;
             gameId = normalizeOwnerPart(spec.playniteGameId);
             profileId = spec.profileId;
+            this.processToken = processToken == null ? "" : processToken;
         }
 
         boolean matches(LaunchTransitionSpec spec) {
             return transitionId.equals(spec.id)
                     && gameId.equals(normalizeOwnerPart(spec.playniteGameId))
                     && profileId.equals(spec.profileId);
+        }
+
+        void bindProcessToken(String observedProcessToken) {
+            if (processToken.isEmpty()) processToken = observedProcessToken;
+        }
+
+        ProviderOwner transferTo(LaunchTransitionSpec replacement) {
+            return new ProviderOwner(replacement, processToken);
         }
     }
 }

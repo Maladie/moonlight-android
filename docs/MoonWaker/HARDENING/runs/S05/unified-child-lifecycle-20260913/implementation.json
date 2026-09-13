@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "run_id": "s05-unified-child-lifecycle-20260913",
+  "status": "AUTOMATED_TESTED_REVIEW_ACCEPTED_ARTIFACTS_BUILT_DEVICE_PENDING",
+  "input_head": "60d024f8dc59a563793e55989044dec6f4f53e87",
+  "output_fingerprint": "sha256:14cf82e83898adf90fa786917243a12743bbe8d2dce281b4560ed715c38eeab3",
+  "outcome": "Child profiles are a policy and presentation facade over the parent's execution session. They use the common launch, retained switch, retry, recovery, close and hard-reset paths. Gateway child sessions attach time to that shared session; Playnite Bridge has no child provider lifecycle. Terminal child policy continues the same fenced common cleanup until game and stream completion are definitive.",
+  "changes": [
+    "Heartbeat and housekeeping retry cleanup_required before current-game expiry classification, preserving the original terminal operation, generation, actor lease epoch and exact identities.",
+    "Ambiguous actor/time handoff after an attachment mutation fails closed through common whole-session termination.",
+    "Allowed running games are adopted without provider restart; retained switches and parent-child-child handoffs preserve one execution session.",
+    "Parent-child and child-child handoffs commit the stream actor, control generation, actor epoch and child-time attachment atomically; policy failure keeps the previous actor metered.",
+    "Child suspend is fenced to the exact session, stream generation and actor epoch through effect scheduling and time release, preventing a stale actor from suspending a newer handoff.",
+    "All touched game-stop paths, including retained switch, End Game and transition cancellation, require the observed exact process token; terminal retry retires only the old process identity.",
+    "Provider-start compensation binds the first exact observed process token to its provider owner, carries it through owner transfer and rejects a later same-game process with a different token.",
+    "The child API rejects legacy game/stop and exposes only the common exact game/stop-verified action for provider termination.",
+    "Housekeeping closes the exact shared stream when a running child attachment observes a replacement process; a complete scan retires old token A without stopping replacement B.",
+    "A disallowed active game is never a child tile and selecting an allowed game performs common full close without confirmation before launch.",
+    "Removed Playnite Bridge child bind, renew, end, lease persistence, endpoint and enforcer; normal lifecycle never calls provider /child/session.",
+    "Child install, uninstall, sleep, stream settings, calibration and VirtualHere use common parent mechanisms; Discord, microphone and child-management remain unavailable."
+  ],
+  "validation": {
+    "gateway_requested": "82/82 PASS: python -m unittest test_child_time_control test_child_sessions_http test_session_recovery",
+    "gateway_discover": "284/284 PASS: python -m unittest discover -p test_*.py",
+    "playnite_bridge": "267/267 PASS: python -m unittest discover -p test_*.py",
+    "android_non_root_debug": "1104/1104 PASS on JDK 17: testNonRootDebugUnitTest",
+    "python_compile": "PASS",
+    "json_parse": "PASS",
+    "packet_validate": "PASS",
+    "branch_check": "PREPARED_WORK_BRANCH_VERIFIED",
+    "scoped_diff_check": "PASS",
+    "android_non_root_debug_build": "PASS on JDK 17: verifyNonRootDebugDiscordSocialSdkPackaging",
+    "host_installer_build": "PASS: MoonWaker Host 0.7.112",
+    "artifact_verification": "PASS: APK identity/signature/native payload and installer versions/embedded payload/critical source hashes"
+  },
+  "limitations": [
+    "The reviewed debug APK was installed and launched on BRAVIA_4K_VH22 with an exact installed-file digest match; no Gateway, host service or host installer was deployed or restarted.",
+    "APK delivery and launch do not prove game, retained-stream, recovery or child-time behavior.",
+    "Automated tests do not prove physical Windows/TV behavior; mandatory candidate-bound device acceptance remains pending.",
+    "The shared worktree contains substantial pre-existing unrelated changes and artifacts; none were reverted or committed."
+  ],
+  "review_report": "runs/S05/unified-child-lifecycle-20260913/review.json",
+  "artifacts_report": "runs/S05/unified-child-lifecycle-20260913/artifacts.json",
+  "tv_apk_deployment_report": "runs/S05/unified-child-lifecycle-20260913/tv-apk-deployment.json"
+}

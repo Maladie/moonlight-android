@@ -23,6 +23,8 @@ import static org.junit.Assert.fail;
 public class PlayniteTransitionGatewayTest {
     private static final String FINGERPRINT =
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+    private static final String PROCESS_TOKEN =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     @Test public void childSnapshotAndStopUseOnlyPermittedActorRoutes() throws Exception {
         RecordingClient client = new RecordingClient();
@@ -33,12 +35,12 @@ public class PlayniteTransitionGatewayTest {
                 new PlayniteTransitionGateway(connection, actor, client);
 
         PlayniteTransitionGateway.Snapshot snapshot = gateway.snapshot();
-        gateway.stopGame("steam:123");
+        gateway.stopGame("steam:123", PROCESS_TOKEN);
 
         assertTrue(snapshot.gatewayReady);
         assertTrue(snapshot.connectorReady);
         assertEquals(Arrays.asList("GET /api/v1/game/current",
-                "GET /api/v1/window/readiness", "POST /api/v1/game/stop"),
+                "GET /api/v1/window/readiness", "POST /api/v1/game/stop-verified"),
                 client.requests);
         assertFalse(client.requests.contains("GET /api/v1/game-provider/health"));
         assertEquals("kid", gateway.gatewayConnection().profileId());
@@ -57,12 +59,12 @@ public class PlayniteTransitionGatewayTest {
                 PlayniteTransitionGateway.ActorContext.parent("parent"), client);
 
         PlayniteTransitionGateway.Snapshot snapshot = gateway.snapshot();
-        gateway.stopGame("steam:123");
+        gateway.stopGame("steam:123", PROCESS_TOKEN);
 
         assertTrue(snapshot.connectorReady);
         assertEquals(Arrays.asList("GET /api/v1/game-provider/health",
                 "GET /api/v1/game/current", "GET /api/v1/window/readiness",
-                "POST /api/v1/game/stop"), client.requests);
+                "POST /api/v1/game/stop-verified"), client.requests);
         assertEquals(Arrays.asList("parent", "parent", "parent", "parent"),
                 client.profiles);
     }
@@ -79,7 +81,7 @@ public class PlayniteTransitionGatewayTest {
 
         child.snapshot();
         parent.snapshot();
-        child.stopGame("steam:123");
+        child.stopGame("steam:123", PROCESS_TOKEN);
 
         assertEquals(Arrays.asList("kid", "kid", "parent", "parent", "parent", "kid"),
                 trace.profiles);
@@ -113,7 +115,7 @@ public class PlayniteTransitionGatewayTest {
         assertFalse(connect.contains("DEFAULT_PROFILE_ID"));
 
         String game = read(root.resolve("Game.java"));
-        assertEquals(9, occurrences(game, "PlayniteTransitionGateway.connect("));
+        assertEquals(7, occurrences(game, "PlayniteTransitionGateway.connect("));
         assertTrue(game.contains("currentGatewayActorContext()"));
         assertTrue(game.contains("operation.actorContext"));
         assertTrue(game.contains("ActorContext.child(\n"
@@ -215,6 +217,12 @@ public class PlayniteTransitionGatewayTest {
                             .put("state", "running")
                             .put("id", "steam:123")
                             .put("process_id", 42)
+                            .put("running_scan_status", "complete")
+                            .put("running_scan_revision", "revision")
+                            .put("running_games", new org.json.JSONArray()
+                                    .put(new JSONObject().put("game_id", "steam:123")
+                                            .put("process_id", 42)
+                                            .put("process_token", PROCESS_TOKEN)))
                             .put("requires_connector", true));
                 }
                 if ("/api/v1/window/readiness".equals(path)) {
@@ -223,9 +231,14 @@ public class PlayniteTransitionGatewayTest {
                             .put("target_kind", "game")
                             .put("stable_samples", 2));
                 }
-                if ("/api/v1/game/stop".equals(path)) {
+                if ("/api/v1/game/stop-verified".equals(path)) {
                     assertEquals("steam:123", body.optString("game_id"));
-                    return new JSONObject().put("ok", true);
+                    assertEquals(PROCESS_TOKEN,
+                            body.optString("expected_process_token"));
+                    return new JSONObject().put("ok", true)
+                            .put("accepted", true)
+                            .put("stopped_current", true)
+                            .put("stopped_game_id", "steam:123");
                 }
                 throw new IOException("Unexpected route " + path);
             } catch (JSONException impossible) {

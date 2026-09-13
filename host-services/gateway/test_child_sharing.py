@@ -162,7 +162,7 @@ class ChildSharingGatewayTest(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("child_policy_revision_stale", result["error"])
 
-    def test_unshared_projection_is_denied_and_state_event_data_is_filtered(self):
+    def test_unshared_artwork_is_denied_but_common_current_state_stays_visible(self):
         self.state.proxy_bytes = mock.Mock(return_value=(200, b"image", "image/png"))
         self.state.child_playnite_artwork(
             self.client, "kid", "steam:123", "cover")
@@ -180,8 +180,8 @@ class ChildSharingGatewayTest(unittest.TestCase):
         status, current = self.state.child_playnite_state(
             self.client, "kid", "current")
         self.assertEqual(200, status)
-        self.assertEqual("idle", current["current"]["state"])
-        self.assertNotIn("steam:999", json.dumps(current))
+        self.assertEqual("running", current["current"]["state"])
+        self.assertEqual("steam:999", current["current"]["id"])
         self.state.proxy.assert_called_once()
 
         self.state.proxy.reset_mock()
@@ -209,6 +209,11 @@ class ChildSharingGatewayTest(unittest.TestCase):
         self.assertEqual({}, events[2]["payload"])
 
     def test_child_start_keeps_provider_rejection(self):
+        self.state.child_time_session = {
+            "session_id": "01234567-89ab-cdef-0123-456789abcdef",
+            "client_id": "tv", "actor_profile_id": "kid",
+            "execution_profile_id": "parent", "game_id": "steam:123",
+        }
         status, result = self.state.child_playnite_action(
             self.client, "kid", "game/start", {"game_id": "steam:123"})
         self.assertEqual(200, status)

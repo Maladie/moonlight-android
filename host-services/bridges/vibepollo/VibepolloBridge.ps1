@@ -116,7 +116,8 @@ function Invoke-VibepolloApi {
         [ValidateSet("GET", "POST", "PATCH", "DELETE")][string]$Method = "GET",
         $Body = $null,
         [switch]$Binary,
-        [switch]$RawText
+        [switch]$RawText,
+        [int]$TimeoutMs = $script:ApiProcessTimeoutMs
     )
     $transportRequest = [ordered]@{
         base_url = $script:BaseUrl; path = $Path; method = $Method
@@ -141,7 +142,7 @@ function Invoke-VibepolloApi {
         # VibepolloTransport has a three-second urllib deadline. Keep the
         # outer process alive long enough for that deadline plus startup/output
         # overhead, while retaining a bounded listener operation.
-        if (-not $process.WaitForExit($script:ApiProcessTimeoutMs)) {
+        if (-not $process.WaitForExit($TimeoutMs)) {
             try { $process.Kill() } catch {}
             throw "TLS transport timed out"
         }
@@ -168,17 +169,24 @@ function Invoke-VibepolloApi {
 }
 
 function Get-CachedApi {
-    param([string]$Key, [string]$Path, [double]$TtlSeconds, [switch]$Force, [switch]$RawText)
+    param([string]$Key, [string]$Path, [double]$TtlSeconds, [switch]$Force,
+        [switch]$CacheOnly, [switch]$RawText,
+        [int]$TimeoutMs = $script:ApiProcessTimeoutMs)
     $now = Get-Date
-    if ($now -lt $script:ApiUnavailableUntil) {
+    if ($CacheOnly) {
         return $(if ($script:Cache.ContainsKey($Key)) { $script:Cache[$Key] } else { $null })
+    }
+    if ($now -lt $script:ApiUnavailableUntil) {
+        if (-not $Force) {
+            return $(if ($script:Cache.ContainsKey($Key)) { $script:Cache[$Key] } else { $null })
+        }
     }
     if ($script:DeniedKeys.ContainsKey($Key)) { return $null }
     $fresh = $script:Cache.ContainsKey($Key) -and $script:CacheTime.ContainsKey($Key) -and
         (($now - $script:CacheTime[$Key]).TotalSeconds -lt $TtlSeconds)
     if (-not $Force -and $fresh) { return $script:Cache[$Key] }
     try {
-        $value = Invoke-VibepolloApi -Path $Path -RawText:$RawText
+        $value = Invoke-VibepolloApi -Path $Path -RawText:$RawText -TimeoutMs $TimeoutMs
         $script:Cache[$Key] = $value
         $script:CacheTime[$Key] = $now
         return $value
@@ -256,8 +264,12 @@ function Normalize-Apps {
     $apps = Convert-Collection (Get-PropertyValue $Response @("apps") @())
     return @($apps | ForEach-Object {
         $uuid = [string](Get-PropertyValue $_ @("uuid", "id") "")
+        $appId = 0L
+        [void][long]::TryParse(
+            [string](Get-PropertyValue $_ @("id") "0"), [ref]$appId)
         [pscustomobject]@{
             uuid = $uuid
+            app_id = $appId
             name = [string](Get-PropertyValue $_ @("name") "Unnamed application")
             running = ($uuid -ne "" -and $uuid -eq $current)
             playnite = [bool](Get-PropertyValue $_ @("playnite-id") $false)
@@ -344,24 +356,102 @@ function Get-DerivedSessionMetrics {
 
 function Build-Snapshot {
     param([switch]$Force)
-    $metadata = Get-CachedApi "metadata" "/api/metadata" 60 -Force:$Force
-    $sessionStatus = Get-CachedApi "session" "/api/session/status" 2 -Force:$Force
-    $hostStats = Get-CachedApi "hoststats" "/api/host/stats" 2 -Force:$Force
-    $hostInfo = Get-CachedApi "hostinfo" "/api/host/info" 300 -Force:$Force
-    $rtsp = Get-CachedApi "rtsp" "/api/rtsp/sessions" 2 -Force:$Force
-    $webrtc = Get-CachedApi "webrtc" "/api/webrtc/sessions" 3 -Force:$Force
-    $active = Get-CachedApi "activehistory" "/api/history/sessions/active" 2 -Force:$Force
-    $appsRaw = Get-CachedApi "apps" "/api/apps" 12 -Force:$Force
-    $clientsRaw = Get-CachedApi "clients" "/api/clients/list" 12 -Force:$Force
-    $rtss = Get-CachedApi "rtss" "/api/rtss/status" 15 -Force:$Force
-    $lossless = Get-CachedApi "lossless" "/api/lossless_scaling/status" 15 -Force:$Force
+    # A forced snapshot is control evidence. Keep it bounded to the five
+    # authoritative sources below; optional UI telemetry may only reuse cache.
+    # Query every control source even when one endpoint stalls. Previously one
+    # source could spend the entire shared allowance and skip all later evidence,
+    # making normal closure permanently uncertain. The aggregate remains below
+    # the supervisor's two-second health boundary.
+    $controlDeadlineMs = 1500
+    $controlRequestTimeoutMs = 250
+    $controlTimer = [Diagnostics.Stopwatch]::StartNew()
+    $metadata = Get-CachedApi "metadata" "/api/metadata" 60 -CacheOnly:$Force
+    $remainingMs = $controlDeadlineMs - [int]$controlTimer.ElapsedMilliseconds
+    $sessionStatus = if (-not $Force) {
+        Get-CachedApi "session" "/api/session/status" 2
+    } elseif ($remainingMs -gt 0) {
+        Get-CachedApi "session" "/api/session/status" 2 -Force `
+            -TimeoutMs ([Math]::Min($controlRequestTimeoutMs, $remainingMs))
+    } else { $null }
+    $hostStats = Get-CachedApi "hoststats" "/api/host/stats" 2 -CacheOnly:$Force
+    $hostInfo = Get-CachedApi "hostinfo" "/api/host/info" 300 -CacheOnly:$Force
+    $remainingMs = $controlDeadlineMs - [int]$controlTimer.ElapsedMilliseconds
+    $rtsp = if (-not $Force) {
+        Get-CachedApi "rtsp" "/api/rtsp/sessions" 2
+    } elseif ($remainingMs -gt 0) {
+        Get-CachedApi "rtsp" "/api/rtsp/sessions" 2 -Force `
+            -TimeoutMs ([Math]::Min($controlRequestTimeoutMs, $remainingMs))
+    } else { $null }
+    $remainingMs = $controlDeadlineMs - [int]$controlTimer.ElapsedMilliseconds
+    $webrtc = if (-not $Force) {
+        Get-CachedApi "webrtc" "/api/webrtc/sessions" 3
+    } elseif ($remainingMs -gt 0) {
+        Get-CachedApi "webrtc" "/api/webrtc/sessions" 3 -Force `
+            -TimeoutMs ([Math]::Min($controlRequestTimeoutMs, $remainingMs))
+    } else { $null }
+    $active = Get-CachedApi "activehistory" "/api/history/sessions/active" 2 -CacheOnly:$Force
+    $remainingMs = $controlDeadlineMs - [int]$controlTimer.ElapsedMilliseconds
+    $appsRaw = if (-not $Force) {
+        Get-CachedApi "apps" "/api/apps" 12
+    } elseif ($remainingMs -gt 0) {
+        Get-CachedApi "apps" "/api/apps" 12 -Force `
+            -TimeoutMs ([Math]::Min($controlRequestTimeoutMs, $remainingMs))
+    } else { $null }
+    $remainingMs = $controlDeadlineMs - [int]$controlTimer.ElapsedMilliseconds
+    $clientsRaw = if (-not $Force) {
+        Get-CachedApi "clients" "/api/clients/list" 12
+    } elseif ($remainingMs -gt 0) {
+        Get-CachedApi "clients" "/api/clients/list" 12 -Force `
+            -TimeoutMs ([Math]::Min($controlRequestTimeoutMs, $remainingMs))
+    } else { $null }
+    $rtss = Get-CachedApi "rtss" "/api/rtss/status" 15 -CacheOnly:$Force
+    $lossless = Get-CachedApi "lossless" "/api/lossless_scaling/status" 15 -CacheOnly:$Force
     # Vibepollo serves /api/logs as UTF-8 text, not as a JSON document.
-    $logs = Get-CachedApi "logs" "/api/logs" 15 -Force:$Force -RawText
+    $logs = Get-CachedApi "logs" "/api/logs" 15 -CacheOnly:$Force -RawText
 
-    $rtspSessions = Convert-Collection (Get-PropertyValue $rtsp @("sessions") @())
-    $webSessions = Convert-Collection (Get-PropertyValue $webrtc @("sessions") @())
-    $activeSessions = Convert-Collection (Get-PropertyValue $active @("sessions") @())
-    $statusActiveCount = [int](Get-PropertyValue $sessionStatus @("activeSessions", "active_sessions", "sessionCount") 0)
+    # UI telemetry may use defaults, but a control decision must distinguish an
+    # actual fresh empty response from an unavailable source normalized to [].
+    $clientCollection = if ($null -ne $clientsRaw -and
+            $null -ne $clientsRaw.PSObject.Properties['named_certs']) {
+        $clientsRaw.PSObject.Properties['named_certs']
+    } elseif ($null -ne $clientsRaw) { $clientsRaw.PSObject.Properties['clients'] } else { $null }
+    $rtspSessions = @(Convert-Collection (Get-PropertyValue $rtsp @("sessions") @()))
+    $webSessions = @(Convert-Collection (Get-PropertyValue $webrtc @("sessions") @()))
+    $activeSessions = @(Convert-Collection (Get-PropertyValue $active @("sessions") @()))
+    $apps = @(Normalize-Apps $appsRaw)
+    $clients = @(Normalize-Clients $clientsRaw $rtsp)
+    $sessionCountValue = Get-PropertyValue $sessionStatus `
+        @("activeSessions", "active_sessions", "sessionCount") $null
+    $sessionStatusValid = $null -ne $sessionStatus -and
+        $sessionStatus.appRunning -is [bool] -and $null -ne $sessionCountValue
+    $currentApp = [string](Get-PropertyValue $appsRaw @("current_app") "")
+    $runningApps = @($apps | Where-Object { $_.running -eq $true })
+    # Older Vibepollo releases do not expose /api/session/status. RTSP, WebRTC,
+    # apps and clients provide equivalent control evidence when every source is
+    # fresh and current_app maps to exactly one normalized app (or is empty).
+    $derivedSessionValid = $null -ne $rtsp -and $null -ne $rtsp.sessions -and
+        $null -ne $webrtc -and $null -ne $webrtc.sessions -and
+        $null -ne $appsRaw -and $null -ne $appsRaw.apps -and
+        $null -ne $appsRaw.current_app -and
+        $null -ne $clientCollection -and $null -ne $clientCollection.Value -and
+        (($currentApp -eq '' -and $runningApps.Count -eq 0) -or
+         ($currentApp -ne '' -and $runningApps.Count -eq 1))
+    $controlUnavailable = @(
+        if ($null -eq $rtsp -or $null -eq $rtsp.sessions) { 'rtsp' }
+        if ($null -eq $webrtc -or $null -eq $webrtc.sessions) { 'webrtc' }
+        if ($null -eq $appsRaw -or $null -eq $appsRaw.apps -or
+            $null -eq $appsRaw.current_app -or
+            ($currentApp -eq '' -and $runningApps.Count -ne 0) -or
+            ($currentApp -ne '' -and $runningApps.Count -ne 1)) { 'apps' }
+        if ($null -eq $clientCollection -or $null -eq $clientCollection.Value) { 'clients' }
+        if (-not $sessionStatusValid -and -not $derivedSessionValid) { 'session' }
+    )
+    $statusActiveCount = if ($sessionStatusValid) { [int]$sessionCountValue } else {
+        $rtspSessions.Count + $webSessions.Count
+    }
+    $sessionAppRunning = if ($sessionStatusValid) {
+        [bool]$sessionStatus.appRunning
+    } else { $currentApp -ne '' }
     $stream = if ($rtspSessions.Count -gt 0) { $rtspSessions[0] } elseif ($webSessions.Count -gt 0) { $webSessions[0] } else { $null }
     if ($null -eq $stream -and $statusActiveCount -gt 0) {
         # Some Vibepollo builds report the active Moonlight connection through
@@ -397,20 +487,20 @@ function Build-Snapshot {
             }
         }
     }
-    $wgc = Get-WgcDiagnostics
+    $wgc = if ($Force) { [pscustomobject]@{ available = $false } } else { Get-WgcDiagnostics }
     if ($null -ne $history -and [bool](Get-PropertyValue $stream @("telemetry_limited") $false) -and $wgc.available) {
         if ($null -eq $history.PSObject.Properties["target_fps"] -and $null -ne $wgc.target_fps) {
             $history | Add-Member -NotePropertyName target_fps -NotePropertyValue $wgc.target_fps
         }
     }
     $quality = Get-QualityVerdict $stream $history $wgc
-    $apps = Normalize-Apps $appsRaw
-    $clients = Normalize-Clients $clientsRaw $rtsp
     $appName = [string](Get-PropertyValue $sessionStatus @("appName") "")
     if (-not $appName -and $history) { $appName = [string](Get-PropertyValue $history @("app_name") "") }
 
     return [pscustomobject]@{
         generated_at = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
+        control_fresh = ([bool]$Force -and $controlUnavailable.Count -eq 0)
+        control_unavailable_sources = $controlUnavailable
         bridge = [pscustomobject]@{
             online = $true; uptime_seconds = [math]::Round(((Get-Date) - $script:StartedAt).TotalSeconds)
             api_error = $script:LastApiError; base_url = $script:BaseUrl
@@ -428,7 +518,8 @@ function Build-Snapshot {
         session = [pscustomobject]@{
             active = ($null -ne $stream)
             count = [math]::Max(($rtspSessions.Count + $webSessions.Count), $statusActiveCount)
-            app_running = [bool](Get-PropertyValue $sessionStatus @("appRunning") $false)
+            app_running = $sessionAppRunning
+            source = $(if ($sessionStatusValid) { "session_status" } else { "derived" })
             app_name = $appName
             paused = [bool](Get-PropertyValue $sessionStatus @("paused") $false)
             stream = $stream
@@ -675,11 +766,15 @@ function Get-Snapshot {
     # MoonWaker and Unified Remote may ask for snapshots at the same time.
     # Reusing the most recent complete result prevents a slow optional
     # Vibepollo endpoint from creating an unbounded single-threaded backlog.
+    if ($Force) {
+        # Control reads must neither consume nor replace the UI snapshot cache.
+        return Build-Snapshot -Force
+    }
     if ($null -ne $script:SnapshotCache -and
         (($now - $script:SnapshotCacheTime).TotalSeconds -lt 2)) {
         return $script:SnapshotCache
     }
-    $script:SnapshotCache = Build-Snapshot -Force:$Force
+    $script:SnapshotCache = Build-Snapshot
     $script:SnapshotCacheTime = Get-Date
     return $script:SnapshotCache
 }
@@ -887,7 +982,8 @@ function ConvertTo-RemoteJsonSafe {
     if ($Value -is [Collections.IEnumerable] -and -not ($Value -is [string])) {
         $items = @()
         foreach ($entry in $Value) { $items += ,(ConvertTo-RemoteJsonSafe $entry) }
-        return $items
+        # Prevent PowerShell's pipeline from turning [] into {} and [x] into x.
+        return ,$items
     }
     if ($Value -is [psobject]) {
         $result = [ordered]@{}
@@ -1323,7 +1419,10 @@ function Invoke-Action {
             # required in the query string.
             return Invoke-VibepolloApi "/api/apps/launch?rikeyid=0" POST @{ uuid = $uuid }
         }
-        "close-app" { return Invoke-VibepolloApi "/api/apps/close" POST @{} }
+        "close-app" {
+            $result = Invoke-VibepolloApi "/api/apps/close" POST @{}
+            return [pscustomobject]@{ ok = $true; streamer = $result }
+        }
         "disconnect" {
             $uuid = [uri]::UnescapeDataString([string]$Query["uuid"])
             if (-not $uuid) { throw "Missing client UUID" }

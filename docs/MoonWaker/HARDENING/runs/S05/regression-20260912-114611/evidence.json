@@ -1,0 +1,74 @@
+{
+  "schema": 1,
+  "task": "S05",
+  "status": "CODE_VERIFIED_DEVICE_PENDING",
+  "post_edit_review": "ACCEPTED",
+  "diagnostic_bundle": {
+    "source": "C:/Users/Basia/Desktop/MoonWaker-Diagnostics-20260912-114611-869-06da1a77.zip",
+    "sha256": "B44D1F35C30FDC6C7E4A7D60A241E98464F59D2A822972051D66FCD915A0A106",
+    "host_version": "0.7.100"
+  },
+  "failure": {
+    "common_cause": "child-terminal control operation remained active after the provider effect was retired; the provider cleanup replayed while forced streamer observation could not finish",
+    "julia": "child session start returned HTTP 409 session_in_use",
+    "basia": "control acquire returned HTTP 409, then Android incorrectly reconciled the received rejection and surfaced stale_operation",
+    "correlation": [
+      "gateway/service/gateway-diagnostics.jsonl:3344-3345",
+      "gateway/service/gateway-diagnostics.jsonl:3363-3413",
+      "profiles/p-1b2bc7e67341444686afa8b35bfc55bc/supervisor/profile-bridge.jsonl:2815"
+    ]
+  },
+  "correction": [
+    "Vibepollo forced snapshots fetch only session, RTSP, WebRTC, apps and clients within one shared 1500 ms deadline",
+    "optional telemetry is cache-only during control reads and forced reads do not replace the UI snapshot cache",
+    "Android preserves explicit GatewayException responses and reconciles only IOException transport-loss outcomes",
+    "host artifact version advanced to 0.7.101"
+  ],
+  "validation": [
+    {
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File host-services/bridges/vibepollo/Test-VibepolloControlSnapshot.ps1",
+      "result": "PASS"
+    },
+    {
+      "command": "py -3 -m unittest discover -p test_*.py",
+      "cwd": "host-services/gateway",
+      "tests": 234,
+      "failures": 0
+    },
+    {
+      "command": "py -3 -m unittest discover -p test_*.py",
+      "cwd": "host-services/bridges/playnite",
+      "tests": 255,
+      "failures": 0
+    },
+    {
+      "command": "gradlew.bat testNonRootDebugUnitTest testNonRootReleaseUnitTest --offline --console=plain",
+      "debug_tests": 1089,
+      "release_tests": 1089,
+      "failures": 0,
+      "errors": 0
+    },
+    {
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File host-services/installer/Test-PackagedControlModules.ps1",
+      "result": "PASS"
+    },
+    {
+      "command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File host-services/installer/Test-MoonWakerHostInstallerUi.ps1 -InstallerPath host-services/dist-s05-regression-0.7.101/MoonWakerHostInstaller.exe",
+      "result": "PASS"
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "host-services/dist-s05-regression-0.7.101/MoonWakerHostInstaller.exe",
+      "sha256": "FF8D3ADD147D21CFF5C73FF673CE433C298FF94A0BBBE129365B42E55C764844",
+      "version": "0.7.101.0"
+    },
+    {
+      "path": "app/build/outputs/apk/nonRoot/release/app-nonRoot-release.apk",
+      "sha256": "A7CE1488B02B33E649A593FC5F17A47656DE99C1532DC5056D013A07ABE965FA",
+      "version": "12.2.23 (344)",
+      "signed": true
+    }
+  ],
+  "remaining_gate": "Install both artifacts and repeat the Julia then Basia physical-TV sequence; no install or device action was performed in this run."
+}

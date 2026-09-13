@@ -80,7 +80,8 @@ public final class GatewayTransport {
         if (!"/api/v1/system/suspend-session".equals(path)
                 && !"/api/v1/system/session/ensure".equals(path)
                 && !"/api/v1/system/session/switch".equals(path)
-                && !"/api/v1/system/session/cancel".equals(path)) {
+                && !"/api/v1/system/session/cancel".equals(path)
+                && !path.startsWith("/api/v1/control/operation/")) {
             throw new IllegalArgumentException(
                     "Caller request IDs are only supported for session mutations");
         }
@@ -276,7 +277,8 @@ public final class GatewayTransport {
         }
         if (status < HttpURLConnection.HTTP_OK || status >= 300) {
             throw new GatewayException(
-                    response.optString("error", "Host gateway request failed."), status,
+                    response.optString("error", response.optString("reason",
+                            "Host gateway request failed.")), status,
                     Math.max(0, response.optInt("retry_after_seconds", 0)), response);
         }
         return response;
