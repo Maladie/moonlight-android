@@ -715,10 +715,38 @@ public class GameTransitionCancelContractTest {
         assertTrue(decision.contains("beginRetainedActorHandoff(operation, true)"));
         String adoption = text.substring(text.indexOf("private void adoptAuthorizedRunningGame("),
                 text.indexOf("private void compensateRetainedAuthorization("));
-        assertTrue(adoption.contains("transferProviderOwnershipTo(replacement)"));
+        assertTrue(adoption.contains("transferProviderOwnershipTo(replacement, authorization)"));
+        assertTrue(text.contains("commitProviderTransferReauthorization("));
         assertTrue(adoption.contains("signalRetainedSwitchReuse(operation)"));
         assertFalse(adoption.contains("gateway.startGame("));
         assertFalse(adoption.contains("conn.start("));
+    }
+
+    @Test public void sameGameTakeoverResolvesFallbackBeforeMutationAndRestoresObservation()
+            throws IOException {
+        String text = source();
+        String handoff = text.substring(text.indexOf("private void beginRetainedActorHandoff("),
+                text.indexOf("private void adoptAuthorizedRunningGame("));
+        assertTrue(handoff.contains("resolveRetainedProviderIdentity(operation)"));
+        assertTrue(handoff.contains("operation.actorContext"));
+        assertTrue(handoff.contains(
+                "if (!reuseRunningGame && transitionCoordinator != null)"));
+        int resolve = handoff.indexOf("resolveRetainedProviderIdentity(operation)");
+        int release = handoff.indexOf("releaseChildTimeAttachmentAndWait()");
+        assertTrue(resolve >= 0 && release > resolve);
+        assertTrue(handoff.indexOf("ownsSwitchBeforeMutation(") < release);
+        String recovery = text.substring(text.indexOf("private void recoverRetainedSwitch("),
+                text.indexOf("private void afterRetainedGameStopped("));
+        assertTrue(recovery.contains("transferProviderOwnershipTo(recoveryCoordinator)"));
+        assertTrue(recovery.indexOf("transferProviderOwnershipTo(recoveryCoordinator)")
+                < recovery.indexOf("transitionController.begin(recovery)"));
+        int ownershipFailure = recovery.indexOf("if (!ownershipRecovered");
+        assertTrue(ownershipFailure >= 0);
+        assertTrue(recovery.indexOf("completeRetainedSwitch(operation,", ownershipFailure)
+                < recovery.indexOf("terminateWholeSessionVerified(null)", ownershipFailure));
+        assertTrue(recovery.indexOf("completeRetainedSwitch(operation,")
+                < recovery.indexOf("startChildMonitoring()"));
+        assertFalse(recovery.contains("revealStream"));
     }
 
     @Test public void failedActorTimeHandoffClosesTheCommonSessionFailClosed()
@@ -732,12 +760,26 @@ public class GameTransitionCancelContractTest {
         assertTrue(handoff.contains("timeAttachmentMayHaveChanged = allowance.ok"
                 + " || !childSessionId.isEmpty();"));
         assertTrue(handoff.contains("releaseUnusedAllowance("));
+        assertTrue(handoff.contains("pendingChildSessionId, allowance"));
         assertTrue(handoff.contains("boolean failClosed = timeAttachmentMayHaveChanged"));
         int failed = handoff.indexOf("completeRetainedSwitch(operation,",
                 handoff.indexOf("boolean failClosed"));
         int terminate = handoff.indexOf("if (failClosed) terminateWholeSessionVerified(null)",
                 failed);
         assertTrue(failed >= 0 && terminate > failed);
+    }
+
+    @Test public void rejectedChildStartIsNeverEndedAsIfItCreatedAnAttachment()
+            throws IOException {
+        String text = source();
+        String handoff = text.substring(text.indexOf("private void beginRetainedActorHandoff("),
+                text.indexOf("private void adoptAuthorizedRunningGame("));
+        String release = text.substring(text.indexOf("private void releaseUnusedAllowance("),
+                text.indexOf("private void startRetainedGameAttempt("));
+
+        assertTrue(handoff.contains("pendingChildSessionId, allowance"));
+        assertTrue(release.contains("client.releaseUnusedAllowance(gateway, sessionId, startResult)"));
+        assertFalse(release.contains("client.end("));
     }
 
     private static String source() throws IOException {

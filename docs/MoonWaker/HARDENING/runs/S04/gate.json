@@ -3,7 +3,7 @@
   "task_id": "S04",
   "run_id": "S04-local-20260910-01",
   "source_fingerprint": "sha256:dedbbd549d3fb7f24caa80154a1de701f6ceaacaa91f5225c6af000e30f623d8",
-  "status": "CODE_VERIFIED_DEVICE_PENDING",
+  "status": "DEVICE_VERIFIED_DEPENDENCY_PENDING",
   "checks": [
     {"id":"S04-BRANCH-GUARD","status":"PASS","observed":"PREPARED_WORK_BRANCH_VERIFIED on codex/session-hardening"},
     {"id":"S04-PACKET-TOOLS","status":"PASS","observed":"70 tests; OK"},
@@ -26,13 +26,14 @@
     {"id":"S04-ANDROID-DEBUG-BUILD","status":"PASS","observed":"BUILD SUCCESSFUL; APK sha256 4c37a59813e8ce901a3ef638e6048905c9aa191c278741f3ae76e44d6ecc8ae6"},
     {"id":"S04-ANDROID-RELEASE-BUILD","status":"PASS","observed":"BUILD SUCCESSFUL; unsigned APK sha256 3e3f45965734fca1ec103327dfd8a68781a10545cfcf53eb5eae1c541508e851"},
     {"id":"S04-ANDROID-PACKAGE-WIRING","status":"PASS","observed":"TransportStopCoordinator classes present in debug and release production outputs"},
-    {"id":"S04-LAB-NATIVE-STOP-RECONNECT","status":"INCOMPLETE","observed":"operator reports PASS, but available post-install trace does not contain an attributable native stop/reconnect sequence"}
+    {"id":"S04-LAB-NATIVE-STOP-RECONNECT","status":"PASS","observed":"operator confirms PASS; final cumulative candidate diagnostics show HOME_LIVE -> TERMINATING -> NONE before the subsequent child start and control authorization","evidence":"runs/S04/final-acceptance-20260914.json"}
   ],
   "summary": {
-    "passed": 21,
+    "passed": 22,
     "failed": 0,
     "not_run": 0,
-    "incomplete": 1,
-    "checkpoint_accepted": false
+    "incomplete": 0,
+    "checkpoint_accepted": false,
+    "formal_blocker": "S03 predecessor remains unaccepted."
   }
 }

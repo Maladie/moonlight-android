@@ -144,7 +144,7 @@ class ChildTimeContractTest(unittest.TestCase):
         self.assertEqual(GAME_ID, body["game_id"])
         self.assertEqual(0, body["playable_now_seconds"])
 
-    def test_eligibility_allows_common_replacement_but_start_still_requires_cleanup(self):
+    def test_eligibility_and_start_continue_common_cleanup_before_replacement(self):
         self.state.child_time_session = {
             "actor_profile_id": "kid",
             "client_id": self.state.broker_client_id(self.client),
@@ -181,8 +181,9 @@ class ChildTimeContractTest(unittest.TestCase):
         self.assertEqual(600, cleanup["playable_now_seconds"])
         status, start = self.state.child_time_session_start(
             self.client, "kid", GAME_ID, SESSION_ID)
-        self.assertEqual(HTTPStatus.CONFLICT, status)
-        self.assertEqual("session_in_use", start["reason"])
+        self.assertEqual(HTTPStatus.ACCEPTED, status)
+        self.assertTrue(start["ok"])
+        self.assertEqual(SESSION_ID, start["session_id"])
 
     def test_child_profile_projection_exposes_window_and_pairing_gate(self):
         self.state.profile_login_state = lambda _parent: {

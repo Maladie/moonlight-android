@@ -1,0 +1,44 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "run_id": "s05-runtime-switch-delivery-20260914",
+  "source_fingerprint": "sha256:d831297638e49f5b9a17739254cf907a5d39375d099022074d34f05000ee7b03",
+  "workspace_fingerprint_after_artifact": "sha256:5474098e46a5e38ba30743037fbcc6984d3d188ee21965e1c111c8d8ba148c04",
+  "android": {
+    "production_source_changed": false,
+    "apk_built": false,
+    "apk_installed": false,
+    "reason": "The correction changes only Gateway state reconciliation; the already installed Android candidate requires no replacement."
+  },
+  "gateway": {
+    "delivery": "MoonWakerHotUpdater.v1",
+    "package": "host-services/dist-hot/MoonWaker-0.7.116-s05-retained-switch.mwhu",
+    "package_version": "0.7.116",
+    "package_build": "2026.09.14-s05-retained-switch",
+    "bytes": 69888,
+    "sha256": "1a3f007bf9dc6f79052781173b7124329fd84fa785497ad9b99fbdadf6b9d396",
+    "payload": [
+      {
+        "path": "gateway/wakeplay_gateway.py",
+        "bytes": 428093,
+        "sha256": "733a5f768bbacd9d381e81236fcf1b7b87e3ba5cb47c3c462e9f3c2bfd7289be",
+        "package_matches_repository": true,
+        "installed_hash_matches_repository": true
+      }
+    ],
+    "updater_result": "MoonWaker hot update 0.7.116+2026.09.14-s05-retained-switch applied and healthy.",
+    "service_state": "Running",
+    "service_pid": 12472,
+    "gateway_pid": 24188,
+    "listen_port": 8785,
+    "hello_api_version": 1,
+    "hello_source_sha256": "733a5f768bbacd9d381e81236fcf1b7b87e3ba5cb47c3c462e9f3c2bfd7289be",
+    "base_host_version": "0.7.113",
+    "base_version_note": "A hot update intentionally does not replace version.json."
+  },
+  "acceptance": {
+    "delivery_verified": true,
+    "child_retained_a_to_b_physical_retest": "PENDING",
+    "functional_windows_tv_acceptance": "PENDING"
+  }
+}

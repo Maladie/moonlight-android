@@ -4,6 +4,7 @@ import com.limelight.console.transition.LaunchTransitionController;
 import com.limelight.console.transition.LaunchTransitionSpec;
 import com.limelight.console.transition.LaunchTransitionState;
 import com.limelight.console.transition.LaunchTransitionType;
+import com.limelight.stream.RetainedStreamSessionCoordinator;
 
 import org.junit.Before;
 import org.junit.Test;
@@ -31,8 +32,9 @@ public class ConsoleStreamTransitionCoordinatorTest {
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     @Before
-    public void resetProviderOwnership() {
+    public void resetProviderOwnership() throws Exception {
         ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+        resetRetainedStream();
     }
 
     @Test
@@ -1306,6 +1308,146 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void authorizedFamilyActorTransfersKeepExactProviderProcessAndStream()
+            throws Exception {
+        for (String[] actors : new String[][] {
+                {"parent", "child-a"}, {"child-a", "parent"}, {"child-a", "child-b"}}) {
+            ConsoleStreamTransitionCoordinator.resetProviderOwnershipForTests();
+            resetRetainedStream();
+            FakeGateway gateway = stoppingObservationGateway();
+            LaunchTransitionSpec oldSpec = providerSpec("old-" + actors[0], actors[0], GAME);
+            LaunchTransitionSpec nextSpec = new LaunchTransitionSpec(
+                    "next-" + actors[1], HOST, actors[1], LaunchTransitionType.GAME_CONNECTION,
+                    42, GAME, 2L, false);
+            ConsoleStreamTransitionCoordinator oldCoordinator = new ConsoleStreamTransitionCoordinator(
+                    oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
+                    new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                    new FakeCallbacks());
+            ConsoleStreamTransitionCoordinator replacement =
+                    new ConsoleStreamTransitionCoordinator(
+                            nextSpec, providerController(nextSpec), gateway, new InlineExecutor(),
+                            new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                            new FakeCallbacks());
+            oldCoordinator.start();
+            Thread.interrupted();
+            ConsoleStreamTransitionCoordinator.ProviderProcessIdentity process =
+                    oldCoordinator.providerProcessIdentityForTransfer();
+            assertTrue(process != null);
+            FakeRetainedController retained = new FakeRetainedController("parent");
+            RetainedStreamSessionCoordinator.enterHome(
+                    retained, "stream-1", HOST, actors[0], 42, GAME);
+            assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                    retained, "stream-1", 4));
+            RetainedStreamSessionCoordinator.ProviderTransferAuthorization authorization =
+                    RetainedStreamSessionCoordinator.commitProviderTransferReauthorization(
+                            retained, "stream-1", "parent", actors[1], oldSpec.id, nextSpec.id,
+                            HOST, 42, GAME, process.processToken, process.processId,
+                            4, 5, 9, () -> true);
+
+            assertTrue(authorization != null);
+            assertTrue(oldCoordinator.transferProviderOwnershipTo(replacement, authorization));
+            assertFalse(oldCoordinator.transferProviderOwnershipTo(replacement, authorization));
+            RetainedStreamSessionCoordinator.Snapshot snapshot =
+                    RetainedStreamSessionCoordinator.snapshot();
+            assertEquals("stream-1", snapshot.streamSessionId);
+            assertEquals("parent", snapshot.executionProfileId);
+            assertEquals(42, snapshot.appId);
+            assertEquals(GAME, snapshot.playniteGameId);
+            assertEquals(actors[1], snapshot.profileId);
+            assertEquals(5, snapshot.controlGeneration);
+            assertEquals(PROCESS_TOKEN, process.processToken);
+            assertEquals(42, process.processId);
+            assertEquals(1, gateway.startGameCalls);
+            assertEquals(0, gateway.stopGameCalls);
+            assertEquals(0, retained.disconnectCalls);
+            assertEquals(0, retained.terminateCalls);
+            assertTrue(replacement.detachForSwitch());
+        }
+    }
+
+    @Test
+    public void authenticatedSnapshotCanBindOnlyExactUnclaimedProviderIdentity()
+            throws Exception {
+        LaunchTransitionSpec observation = new LaunchTransitionSpec(
+                "snapshot-fallback", HOST, "child-a", LaunchTransitionType.GAME_CONNECTION,
+                42, GAME, 1L, false);
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                observation, providerController(observation), new FakeGateway(),
+                new InlineExecutor(), new FakeClock(), new InterruptingSleeper(),
+                (action, delay) -> { }, new FakeCallbacks());
+        assertTrue(coordinator.adoptDetachedProviderOwnership());
+        assertTrue(coordinator.providerProcessIdentityForTransfer() == null);
+
+        PlayniteTransitionGateway.Snapshot wrongGame = new PlayniteTransitionGateway.Snapshot(
+                true, true, "running", "steam:other", 42,
+                true, "game", 1, "", false, PROCESS_TOKEN);
+        PlayniteTransitionGateway.Snapshot malformedToken = new PlayniteTransitionGateway.Snapshot(
+                true, true, "running", GAME, 42,
+                true, "game", 1, "", false, "not-a-process-token");
+        PlayniteTransitionGateway.Snapshot missingPid = new PlayniteTransitionGateway.Snapshot(
+                true, true, "running", GAME, 0,
+                true, "game", 1, "", false, PROCESS_TOKEN);
+        assertTrue(resolveSnapshotIdentity(coordinator, wrongGame) == null);
+        assertTrue(resolveSnapshotIdentity(coordinator, malformedToken) == null);
+        assertTrue(resolveSnapshotIdentity(coordinator, missingPid) == null);
+
+        PlayniteTransitionGateway.Snapshot exact = new PlayniteTransitionGateway.Snapshot(
+                true, true, "running", GAME, 42,
+                true, "game", 1, "", false, PROCESS_TOKEN);
+        ConsoleStreamTransitionCoordinator.ProviderProcessIdentity identity =
+                resolveSnapshotIdentity(coordinator, exact);
+        assertTrue(identity != null);
+        assertEquals(PROCESS_TOKEN, identity.processToken);
+        assertEquals(42, identity.processId);
+        assertEquals(PROCESS_TOKEN, coordinator.providerProcessIdentityForTransfer().processToken);
+        assertEquals(42, coordinator.providerProcessIdentityForTransfer().processId);
+    }
+
+    private static ConsoleStreamTransitionCoordinator.ProviderProcessIdentity
+            resolveSnapshotIdentity(ConsoleStreamTransitionCoordinator coordinator,
+                                    PlayniteTransitionGateway.Snapshot snapshot)
+            throws Exception {
+        java.lang.reflect.Method resolve = ConsoleStreamTransitionCoordinator.class
+                .getDeclaredMethod("providerProcessIdentityForTransfer",
+                        PlayniteTransitionGateway.Snapshot.class);
+        resolve.setAccessible(true);
+        return (ConsoleStreamTransitionCoordinator.ProviderProcessIdentity)
+                resolve.invoke(coordinator, snapshot);
+    }
+
+    @Test
+    public void authorizedActorTransferRejectsWrongExactProcessIdentity() {
+        FakeGateway gateway = stoppingObservationGateway();
+        LaunchTransitionSpec oldSpec = providerSpec("old", "parent", GAME);
+        LaunchTransitionSpec nextSpec = providerSpec("next", "child", GAME);
+        ConsoleStreamTransitionCoordinator oldCoordinator = new ConsoleStreamTransitionCoordinator(
+                oldSpec, providerController(oldSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        ConsoleStreamTransitionCoordinator replacement = new ConsoleStreamTransitionCoordinator(
+                nextSpec, providerController(nextSpec), gateway, new InlineExecutor(),
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+        oldCoordinator.start();
+        Thread.interrupted();
+        FakeRetainedController retained = new FakeRetainedController("parent");
+        RetainedStreamSessionCoordinator.enterHome(retained, "stream-1", HOST,
+                "parent", 42, GAME);
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(retained, "stream-1", 4));
+        RetainedStreamSessionCoordinator.ProviderTransferAuthorization authorization =
+                RetainedStreamSessionCoordinator.commitProviderTransferReauthorization(
+                        retained, "stream-1", "parent", "child", oldSpec.id, nextSpec.id,
+                        HOST, 42, GAME,
+                        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                        42, 4, 5, 9, () -> true);
+
+        assertTrue(authorization != null);
+        assertFalse(oldCoordinator.transferProviderOwnershipTo(replacement, authorization));
+        assertEquals(1, gateway.startGameCalls);
+        assertEquals(0, gateway.stopGameCalls);
+    }
+
+    @Test
     public void sameActorObservationTransfersExactOwnerWithoutProviderAction() {
         FakeGateway gateway = stoppingObservationGateway();
         LaunchTransitionSpec oldSpec = new LaunchTransitionSpec(
@@ -1655,6 +1797,40 @@ public class ConsoleStreamTransitionCoordinatorTest {
             coordinator.onStreamConnected();
             Thread.interrupted();
         }
+    }
+
+    private static final class FakeRetainedController
+            implements RetainedStreamSessionCoordinator.Controller {
+        private final String executionProfileId;
+        private int disconnectCalls;
+        private int terminateCalls;
+
+        FakeRetainedController(String executionProfileId) {
+            this.executionProfileId = executionProfileId;
+        }
+
+        @Override public boolean isRetainedTransportLive() { return true; }
+        @Override public String getExecutionProfileId() { return executionProfileId; }
+        @Override public boolean parkRetainedTransport() { return true; }
+        @Override public void disconnectRetainedStream(
+                RetainedStreamSessionCoordinator.TerminationCallback completion) {
+            disconnectCalls++;
+            completion.complete(true);
+        }
+        @Override public void terminateRetainedSession(
+                RetainedStreamSessionCoordinator.TerminationCallback completion) {
+            terminateCalls++;
+            completion.complete(true);
+        }
+        @Override public void switchGame(RetainedStreamSessionCoordinator.SwitchRequest request,
+                                         RetainedStreamSessionCoordinator.SwitchCallback completion) { }
+    }
+
+    private static void resetRetainedStream() throws Exception {
+        java.lang.reflect.Method clear =
+                RetainedStreamSessionCoordinator.class.getDeclaredMethod("clear");
+        clear.setAccessible(true);
+        clear.invoke(null);
     }
 
     private static class FakeGateway implements ConsoleStreamTransitionCoordinator.Gateway {

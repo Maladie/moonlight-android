@@ -322,6 +322,122 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual(generation, self.state.control_state["stream"]["generation"])
         self.assertNotIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
 
+    def test_verified_stop_allows_immediate_different_game_on_retained_stream(self):
+        session_id = self.start_running()
+        before = dict(self.state.control_state["stream"])
+        original_proxy_json = self.state.proxy_json
+
+        def proxy_json(name, path, body, **kwargs):
+            if path == "/library/resolve":
+                game_id = str(body.get("game_id") or "")
+                return True, {"game_id": game_id,
+                              "canonical_game_id": game_id, "revision": "rev-2"}
+            if path == "/game/stop-verified":
+                self.current = {"id": "", "state": "idle", "running_games": []}
+                return True, {"accepted": True, "command": "stop", "force": False,
+                              "stopped_game_id": "steam:123",
+                              "stopped_current": True}
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = proxy_json
+        self.state.request_context.request_id = "verified-switch-stop"
+        status, stopped = self.state.child_playnite_action(
+            self.client, "kid", "game/stop-verified", {
+                "game_id": "steam:123", "expected_process_token": TOKEN})
+
+        self.assertEqual(200, status, stopped)
+        retained = self.state.control_state["stream"]
+        self.assertEqual(before["stream_session_id"], retained["stream_session_id"])
+        self.assertEqual(before["sunshine_app_id"], retained["sunshine_app_id"])
+        self.assertEqual(before["generation"], retained["generation"])
+        self.assertEqual(before["actor_lease_epoch"], retained["actor_lease_epoch"])
+        self.assertEqual("", retained["provider_game_id"])
+        self.assertEqual("", retained["process_token"])
+        self.assertEqual(0, retained["process_id"])
+
+        status, ended = self.state.child_time_session_end(
+            self.client, "kid", session_id, "game_stopped")
+        self.assertEqual(200, status, ended)
+        self.child()["allowed_game_keys"].append("parent/steam:456")
+        next_id = self.session_id()
+        status, started = self.state.child_time_session_start(
+            self.client, "kid", "steam:456", next_id, "retained-switch-start")
+
+        self.assertEqual(202, status, started)
+        self.assertEqual(next_id, self.state.child_time_session["session_id"])
+        self.assertEqual(before["stream_session_id"],
+                         self.state.control_state["stream"]["stream_session_id"])
+        self.assertNotIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
+
+    def test_restart_repairs_persisted_exact_verified_stop_receipt(self):
+        self.start_running()
+        before = dict(self.state.control_state["stream"])
+        original_proxy_json = self.state.proxy_json
+
+        def proxy_json(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                self.current = {"id": "", "state": "idle", "running_games": []}
+                return True, {"accepted": True, "command": "stop", "force": False,
+                              "stopped_game_id": "steam:123",
+                              "stopped_current": True}
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = proxy_json
+        self.state.request_context.request_id = "persisted-switch-stop"
+        status, stopped = self.state.child_playnite_action(
+            self.client, "kid", "game/stop-verified", {
+                "game_id": "steam:123", "expected_process_token": TOKEN})
+        self.assertEqual(200, status, stopped)
+
+        # Recreate the already-deployed pre-fix state: the exact successful
+        # receipt persisted, but its stopped process identity remained attached.
+        with self.state.lock:
+            self.state.control_state["stream"].update({
+                "provider_game_id": before["provider_game_id"],
+                "process_token": before["process_token"],
+                "process_id": before["process_id"],
+            })
+            self.state.child_time_session = None
+            self.state.child_time_usage["active_session"] = None
+            self.state._control_save_locked()
+
+        restarted = GatewayState(self.config_path, None)
+        retained = restarted.control_state["stream"]
+        self.assertEqual(before["stream_session_id"], retained["stream_session_id"])
+        self.assertEqual(before["generation"], retained["generation"])
+        self.assertEqual(before["actor_lease_epoch"], retained["actor_lease_epoch"])
+        self.assertEqual("", retained["provider_game_id"])
+        self.assertEqual("", retained["process_token"])
+        self.assertEqual(0, retained["process_id"])
+
+    def test_verified_stop_receipt_cannot_retire_replacement_process(self):
+        self.start_running()
+        stream = self.state.control_state["stream"]
+        receipt = {
+            **{key: stream.get(key) for key in (
+                "client_id", "actor_profile_id", "execution_profile_id",
+                "stream_session_id", "sunshine_app_id", "generation",
+                "actor_lease_epoch", "child_session_id")},
+            "state": "succeeded", "intent": "provider_transition",
+            "direction": "transition",
+            "effect_request_sha256": wakeplay_gateway.ControlOperationPolicy.effect_hash(
+                "/game/stop-verified", {
+                    "game_id": "steam:123", "expected_process_token": TOKEN}),
+            "effect_result": {
+                "accepted": True, "command": "stop", "stopped_current": True,
+                "stopped_game_id": "steam:123",
+            },
+        }
+        replacement_token = "b" * 64
+        stream.update(process_token=replacement_token, process_id=84)
+
+        with self.state.lock:
+            retired = self.state._control_reconcile_verified_provider_stop_locked(receipt)
+
+        self.assertFalse(retired)
+        self.assertEqual(replacement_token, stream["process_token"])
+        self.assertEqual(84, stream["process_id"])
+
     def test_uncertain_child_cleanup_is_retried_by_host_without_android(self):
         session_id = self.start_running()
         original_proxy = self.state.proxy
@@ -457,16 +573,314 @@ class ChildTimeControlTest(unittest.TestCase):
                          new_generation.child_time_session["session_id"])
         self.assertEqual("new-request", new_generation.child_time_session["request_id"])
 
+    def test_lost_child_terminal_response_restarts_same_exact_operation_once(self):
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        first_calls = []
+        original_proxy_json = self.state.proxy_json
+
+        def lost_response(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                first_calls.append(dict(body))
+                raise TimeoutError("response lost")
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = lost_response
+        status, first = self.state._child_time_finish(
+            self.client, session, "client_closed", self.clock.wall)
+        self.assertEqual(409, status, first)
+        active = dict(self.state.control_state["active"])
+        self.assertEqual("uncertain", active["state"])
+        self.assertEqual("child-terminal:" + session_id, active["operation_id"])
+
+        restarted = GatewayState(self.config_path, None)
+        restarted.child_time_clock = self.clock
+        restarted.child_terminal_operation.clock = lambda: self.clock.monotonic
+        restarted.child_terminal_operation.wait = self.clock.advance
+        restarted.proxy = self.state.proxy
+        restart_calls = []
+
+        def retry_response(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                restart_calls.append(dict(body))
+                self.current = {"id": "", "state": "idle", "running_games": []}
+                return True, {"accepted": True}
+            return original_proxy_json(name, path, body, **kwargs)
+
+        restarted.proxy_json = retry_response
+        status, result = restarted.child_time_session_status(
+            self.client, "kid", session_id)
+        self.assertEqual(200, status, result)
+        self.assertFalse(result["cleanup_required"])
+        self.assertEqual([active["operation_id"]], [
+            restarted.control_state["completed"][active["operation_id"]]["operation_id"]])
+        self.assertEqual(1, len(first_calls))
+        self.assertEqual(1, len(restart_calls))
+        self.assertEqual(active["operation_id"], restart_calls[0][
+            "control_operation"]["operation_id"])
+        self.assertEqual(TOKEN, restart_calls[0]["expected_process_token"])
+        self.assertIsNone(restarted.control_state["active"])
+        self.assertIsNone(restarted.control_state["stream"])
+
+    def test_exact_persisted_child_terminal_orphan_recovers_before_next_start(self):
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        original_proxy_json = self.state.proxy_json
+
+        def lost_response(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                raise TimeoutError("response lost")
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = lost_response
+        status, first = self.state._child_time_finish(
+            self.client, session, "client_closed", self.clock.wall)
+        self.assertEqual(409, status, first)
+        operation_id = "child-terminal:" + session_id
+        with self.state.lock:
+            self.assertEqual(operation_id,
+                             self.state.control_state["active"]["operation_id"])
+            self.state.child_time_session = None
+            self.state.child_time_usage["active_session"] = None
+            self.state._control_save_locked()
+
+        restarted = GatewayState(self.config_path, None)
+        restarted.child_time_clock = self.clock
+        restarted.child_terminal_operation.clock = lambda: self.clock.monotonic
+        restarted.child_terminal_operation.wait = self.clock.advance
+        restarted.proxy = self.state.proxy
+        retry_calls = []
+
+        def retry_response(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                retry_calls.append(dict(body))
+                self.current = {"id": "", "state": "idle", "running_games": []}
+                return True, {"accepted": True}
+            return original_proxy_json(name, path, body, **kwargs)
+
+        restarted.proxy_json = retry_response
+        next_id = self.session_id()
+        status, started = restarted.child_time_session_start(
+            self.client, "kid", "steam:123", next_id, "after-exact-orphan")
+        self.assertEqual(202, status, started)
+        self.assertEqual(next_id, started["session_id"])
+        self.assertEqual(1, len(retry_calls))
+        self.assertEqual(operation_id, retry_calls[0]["control_operation"][
+            "operation_id"])
+        self.assertEqual(TOKEN, retry_calls[0]["expected_process_token"])
+        self.assertEqual("succeeded", restarted.control_state["completed"][
+            operation_id]["state"])
+        self.assertIsNone(restarted.control_state["active"])
+        self.assertIsNotNone(restarted.child_time_session)
+        self.assertEqual(next_id, restarted.child_time_session["session_id"])
+
+    def test_persisted_orphan_missing_effect_hash_is_not_recovered(self):
+        self._assert_persisted_orphan_rejected(
+            lambda active: active.pop("effect_request_sha256", None))
+
+    def test_persisted_user_terminated_orphan_replays_forced_stop(self):
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        original_proxy_json = self.state.proxy_json
+
+        def lost_response(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                self.assertTrue(body["force"])
+                raise TimeoutError("response lost")
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = lost_response
+        status, first = self.state._child_time_finish(
+            self.client, session, "user_terminated", self.clock.wall, force=True)
+        self.assertEqual(409, status, first)
+        operation_id = "child-terminal:" + session_id
+        with self.state.lock:
+            self.assertEqual(operation_id,
+                             self.state.control_state["active"]["operation_id"])
+            self.state.child_time_session = None
+            self.state.child_time_usage["active_session"] = None
+            self.state._control_save_locked()
+
+        restarted = GatewayState(self.config_path, None)
+        restarted.child_time_clock = self.clock
+        restarted.child_terminal_operation.clock = lambda: self.clock.monotonic
+        restarted.child_terminal_operation.wait = self.clock.advance
+        restarted.proxy = self.state.proxy
+        retry_calls = []
+
+        def retry_response(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                retry_calls.append(dict(body))
+                self.assertTrue(body["force"])
+                self.current = {"id": "", "state": "idle", "running_games": []}
+                return True, {"accepted": True}
+            return original_proxy_json(name, path, body, **kwargs)
+
+        restarted.proxy_json = retry_response
+        next_id = self.session_id()
+        status, started = restarted.child_time_session_start(
+            self.client, "kid", "steam:123", next_id, "after-forced-orphan")
+        self.assertEqual(202, status, started)
+        self.assertEqual(1, len(retry_calls))
+        self.assertTrue(retry_calls[0]["force"])
+        self.assertEqual(operation_id, retry_calls[0]["control_operation"][
+            "operation_id"])
+        self.assertEqual("succeeded", restarted.control_state["completed"][
+            operation_id]["state"])
+        self.assertEqual(next_id, restarted.child_time_session["session_id"])
+
+    def test_parent_full_quit_recovers_exact_persisted_child_terminal_orphan(self):
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        original_proxy_json = self.state.proxy_json
+
+        def lost_response(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                raise TimeoutError("response lost")
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = lost_response
+        status, _body = self.state._child_time_finish(
+            self.client, session, "client_closed", self.clock.wall)
+        self.assertEqual(409, status)
+        with self.state.lock:
+            stream = dict(self.state.control_state["stream"])
+            self.state.child_time_session = None
+            self.state.child_time_usage["active_session"] = None
+            self.state._control_save_locked()
+
+        restarted = GatewayState(self.config_path, None)
+        restarted.child_time_clock = self.clock
+        restarted.child_terminal_operation.clock = lambda: self.clock.monotonic
+        restarted.child_terminal_operation.wait = self.clock.advance
+        restarted.proxy = self.state.proxy
+
+        def retry_response(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                self.current = {"id": "", "state": "idle", "running_games": []}
+                return True, {"accepted": True}
+            return original_proxy_json(name, path, body, **kwargs)
+
+        restarted.proxy_json = retry_response
+        self.client["profile_grants"]["parent"] = ["use_profile"]
+        restarted.authorize_profile(self.client, "parent")
+        request = {
+            "operation_id": "orphan-parent-close", "intent": "full_quit",
+            "stream_session_id": stream["stream_session_id"],
+            "sunshine_app_id": stream["sunshine_app_id"],
+            "expected_generation": stream["generation"],
+            "observed_sunshine_app_id": stream["sunshine_app_id"],
+            "child_session_id": "",
+        }
+        status, result = restarted.control_operation_acquire(
+            self.client, request, request["operation_id"])
+        self.assertEqual(200, status, result)
+        self.assertEqual("succeeded", result["state"])
+        self.assertEqual("succeeded", restarted.control_state["completed"][
+            "child-terminal:" + session_id]["state"])
+        self.assertIsNone(restarted.control_state["active"])
+        self.assertIsNone(restarted.control_state["stream"])
+
+    def _persist_terminal_orphan_for_negative(self):
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        original_proxy_json = self.state.proxy_json
+
+        def lost_response(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                raise TimeoutError("response lost")
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = lost_response
+        status, _body = self.state._child_time_finish(
+            self.client, session, "client_closed", self.clock.wall)
+        self.assertEqual(409, status)
+        with self.state.lock:
+            active = self.state.control_state["active"]
+            self.state.child_time_session = None
+            self.state.child_time_usage["active_session"] = None
+            self.state._control_save_locked()
+        return session_id, active, original_proxy_json
+
+    def _assert_persisted_orphan_rejected(self, mutate=None, replacement=False):
+        session_id, active, original_proxy_json = self._persist_terminal_orphan_for_negative()
+        if mutate is not None:
+            with self.state.lock:
+                mutate(active)
+                self.state._control_save_locked()
+        if replacement:
+            self.current = {
+                "id": "steam:123", "state": "running",
+                "running_games": [{"game_id": "steam:123", "process_id": 84,
+                                    "process_token": "b" * 64}],
+            }
+        restarted = GatewayState(self.config_path, None)
+        restarted.child_time_clock = self.clock
+        restarted.child_terminal_operation.clock = lambda: self.clock.monotonic
+        restarted.child_terminal_operation.wait = self.clock.advance
+        restarted.proxy = self.state.proxy
+        calls = []
+
+        def reject_effect(name, path, body, **kwargs):
+            calls.append((name, path, dict(body)))
+            return original_proxy_json(name, path, body, **kwargs)
+
+        restarted.proxy_json = reject_effect
+        status, result = restarted.child_time_session_start(
+            self.client, "kid", "steam:123", self.session_id(),
+            "orphan-negative")
+        self.assertEqual(409, status, result)
+        self.assertEqual("child_cleanup_required", result["reason"])
+        self.assertFalse(any(path == "/game/stop-verified" for _, path, _ in calls))
+        self.assertIsNone(restarted.child_time_session)
+        self.assertIsNotNone(restarted.control_state["active"])
+
+    def test_persisted_orphan_stale_operation_is_not_recovered(self):
+        self._assert_persisted_orphan_rejected(
+            lambda active: active.update(operation_id="child-terminal:00000000-0000-0000-0000-000000000000"))
+
+    def test_persisted_orphan_wrong_token_is_not_recovered(self):
+        self._assert_persisted_orphan_rejected(
+            lambda active: active.update(process_token="b" * 64))
+
+    def test_persisted_orphan_new_generation_is_not_recovered(self):
+        self._assert_persisted_orphan_rejected(
+            lambda active: active.update(generation=int(active["generation"]) + 1))
+
+    def test_persisted_orphan_new_actor_epoch_is_not_recovered(self):
+        self._assert_persisted_orphan_rejected(
+            lambda active: active.update(actor_lease_epoch=int(
+                active["actor_lease_epoch"]) + 1))
+
+    def test_persisted_orphan_replacement_identity_is_not_recovered(self):
+        self._assert_persisted_orphan_rejected(replacement=True)
+
+    def test_persisted_orphan_incomplete_evidence_is_not_recovered(self):
+        self._assert_persisted_orphan_rejected(
+            lambda active: active.pop("child_terminal_result"))
+
+    def test_persisted_orphan_wrong_effect_hash_is_not_recovered(self):
+        self._assert_persisted_orphan_rejected(
+            lambda active: active.update(effect_request_sha256="0" * 64))
+
+    def test_persisted_orphan_missing_terminal_reason_is_not_recovered(self):
+        self._assert_persisted_orphan_rejected(
+            lambda active: active["child_terminal_result"].pop("reason"))
+
     def test_parent_close_recovers_exact_child_cleanup_and_replays_receipt(self):
         session_id = self.start_running()
         stream = dict(self.state.control_state["stream"])
         original = self.state.proxy_json
-        self.state.proxy_json = lambda *args, **kwargs: (_ for _ in ()).throw(
-            TimeoutError("provider unavailable"))
-        status, _ = self.state.child_time_session_end(
-            self.client, "kid", session_id, "client_closed")
-        self.assertEqual(409, status)
-        self.state.proxy_json = original
+        attempts = 0
+
+        def transient(*args, **kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise TimeoutError("provider unavailable")
+            return original(*args, **kwargs)
+
+        self.state.proxy_json = transient
         self.client["profile_grants"]["parent"] = ["use_profile"]
         self.state.authorize_profile(self.client, "parent")
         request = {"operation_id": "parent-close", "intent": "full_quit",
@@ -478,12 +892,68 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertEqual("succeeded", result["state"])
         self.assertEqual("parent", result["actor_profile_id"])
+        terminal = self.state.control_state["completed"][
+            "child-terminal:" + session_id]
+        self.assertEqual(result["generation"], terminal["generation"])
+        self.assertEqual(result["actor_lease_epoch"],
+                         terminal["actor_lease_epoch"])
+        self.assertGreater(terminal["generation"], stream["generation"])
+        self.assertGreater(terminal["actor_lease_epoch"],
+                           stream["actor_lease_epoch"])
+        self.assertEqual(stream["process_token"], terminal["process_token"])
+        self.assertEqual(stream["process_id"], terminal["process_id"])
         calls = len(self.proxy_calls)
         self.assertEqual((status, result), self.state.control_operation_acquire(
             self.client, request, "parent-close", 0))
         self.assertEqual(calls, len(self.proxy_calls))
         self.assertIsNone(self.state.child_time_session)
         self.assertIsNone(self.state.control_state["active"])
+
+    def test_parent_close_aliases_exact_child_terminal_that_just_completed(self):
+        session_id = self.start_running()
+        stream = dict(self.state.control_state["stream"])
+        status, child_result = self.state.child_time_session_end(
+            self.client, "kid", session_id, "time_expired")
+        self.assertEqual(200, status, child_result)
+        self.client["profile_grants"]["parent"] = ["use_profile"]
+        self.state.authorize_profile(self.client, "parent")
+        request = {"operation_id": "late-parent-close", "intent": "full_quit",
+                   "stream_session_id": stream["stream_session_id"],
+                   "sunshine_app_id": stream["sunshine_app_id"],
+                   "expected_generation": stream["generation"],
+                   "observed_sunshine_app_id": stream["sunshine_app_id"],
+                   "child_session_id": ""}
+
+        status, result = self.state.control_operation_acquire(
+            self.client, request, request["operation_id"], 0)
+
+        self.assertEqual(200, status, result)
+        self.assertEqual("succeeded", result["state"])
+        self.assertEqual(self.state.control_state["completed"][
+            "child-terminal:" + session_id]["generation"], result["generation"])
+        self.assertIsNone(self.state.control_state["stream"])
+
+    def test_parent_close_does_not_alias_child_terminal_from_foreign_actor_epoch(self):
+        session_id = self.start_running()
+        stream = dict(self.state.control_state["stream"])
+        status, child_result = self.state.child_time_session_end(
+            self.client, "kid", session_id, "time_expired")
+        self.assertEqual(200, status, child_result)
+        self.state.control_state["actor_lease_epoch"] += 1
+        self.client["profile_grants"]["parent"] = ["use_profile"]
+        self.state.authorize_profile(self.client, "parent")
+        request = {"operation_id": "foreign-epoch-parent-close", "intent": "full_quit",
+                   "stream_session_id": stream["stream_session_id"],
+                   "sunshine_app_id": stream["sunshine_app_id"],
+                   "expected_generation": stream["generation"],
+                   "observed_sunshine_app_id": stream["sunshine_app_id"],
+                   "child_session_id": ""}
+
+        status, result = self.state.control_operation_acquire(
+            self.client, request, request["operation_id"], 0)
+
+        self.assertEqual(409, status, result)
+        self.assertNotIn(request["operation_id"], self.state.control_state["completed"])
 
     def test_parent_recovery_and_old_child_cleanup_cannot_touch_a_new_stream(self):
         session_id = self.start_running()
@@ -580,6 +1050,67 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual(2, len(results))
         self.assertEqual(results[0], results[1])
         self.assertEqual(1, len(end_calls))
+
+    def test_full_close_joins_inflight_child_terminal_and_returns_its_receipt(self):
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        stream = dict(self.state.control_state["stream"])
+        original_proxy_json = self.state.proxy_json
+        entered = threading.Event()
+        release = threading.Event()
+        stop_calls = []
+        child_results = []
+        parent_results = []
+
+        def proxy_json(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                stop_calls.append(dict(body))
+                entered.set()
+                self.assertTrue(release.wait(1.0))
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = proxy_json
+        child = threading.Thread(target=lambda: child_results.append(
+            self.state.child_time_session_end(
+                self.client, "kid", session_id, "time_expired")))
+        child.start()
+        self.assertTrue(entered.wait(1.0))
+        self.client["profile_grants"]["parent"] = ["use_profile"]
+        self.state.authorize_profile(self.client, "parent")
+        request = {"operation_id": "joined-parent-close", "intent": "full_quit",
+                   "stream_session_id": stream["stream_session_id"],
+                   "sunshine_app_id": stream["sunshine_app_id"],
+                   "expected_generation": stream["generation"],
+                   "observed_sunshine_app_id": stream["sunshine_app_id"],
+                   "child_session_id": ""}
+        def parent_close():
+            self.state.authorize_profile(self.client, "parent")
+            parent_results.append(self.state.control_operation_acquire(
+                self.client, request, request["operation_id"], 0))
+
+        parent = threading.Thread(target=parent_close)
+        parent.start()
+        self.assertEqual([], parent_results)
+        self.assertIs(session, self.state.child_time_session)
+        release.set()
+        child.join(1.0)
+        parent.join(1.0)
+
+        self.assertFalse(child.is_alive())
+        self.assertFalse(parent.is_alive())
+        self.assertEqual(200, child_results[0][0])
+        self.assertEqual(200, parent_results[0][0])
+        self.assertEqual("succeeded", parent_results[0][1]["state"])
+        self.assertEqual(1, len(stop_calls))
+        self.assertEqual(1, len([call for call in self.proxy_calls
+                                if call[0] == "vibepollo"
+                                and call[1] == "/action/close-app"]))
+        self.assertIsNone(self.state.child_time_session)
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertFalse(self.state.child_terminal_operation.in_progress(session))
+        status, started = self.state.child_time_session_start(
+            self.client, "kid", "steam:123", self.session_id(), "after-joined-close")
+        self.assertEqual(202, status, started)
 
     def test_new_start_replaces_same_execution_time_attachment_immediately(self):
         previous_id = self.start_running()
@@ -679,16 +1210,351 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual("launch_pending", replay["state"])
         self.assertEqual(session_id, replay["session_id"])
 
-    def test_new_start_does_not_wait_on_legacy_terminal_operation(self):
+    def test_new_start_joins_terminal_cleanup_before_creating_attachment(self):
         previous_id = self.start_running()
-        self.state.child_terminal_operation.wait_until_idle = lambda _session, _timeout: False
+        previous = self.state.child_time_session
+        next_id = self.session_id()
+        original_proxy_json = self.state.proxy_json
+        entered = threading.Event()
+        release = threading.Event()
+        terminal_results = []
+        start_results = []
 
+        def proxy_json(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                entered.set()
+                self.assertTrue(release.wait(1.0))
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = proxy_json
+        terminal = threading.Thread(target=lambda: terminal_results.append(
+            self.state.child_time_session_end(
+                self.client, "kid", previous_id, "client_closed")))
+        terminal.start()
+        self.assertTrue(entered.wait(1.0))
+        start = threading.Thread(target=lambda: start_results.append(
+            self.state.child_time_session_start(
+                self.client, "kid", "steam:123", next_id, "next-request")))
+        start.start()
+        self.assertEqual([], start_results)
+        self.assertIs(previous, self.state.child_time_session)
+        release.set()
+        terminal.join(1.0)
+        start.join(1.0)
+
+        self.assertFalse(terminal.is_alive())
+        self.assertFalse(start.is_alive())
+        self.assertEqual(200, terminal_results[0][0])
+        self.assertEqual(202, start_results[0][0])
+        self.assertEqual(next_id, self.state.child_time_session["session_id"])
+        self.assertNotIn(previous_id, [self.state.child_time_session["session_id"]])
+        self.assertFalse(any(call[1] == "/child/session" and
+                             call[2].get("action") in {"bind", "renew", "end"}
+                             for call in self.bridge_calls))
+
+    def test_terminal_reservation_blocks_new_attachment_before_provider_snapshot(self):
+        previous_id = self.start_running()
+        previous = self.state.child_time_session
+        next_id = self.session_id()
+        original_current = self.state._child_time_current_game
+        entered = threading.Event()
+        release = threading.Event()
+        terminal_results = []
+        start_results = []
+
+        def blocked_current(execution_profile_id):
+            entered.set()
+            self.assertTrue(release.wait(1.0))
+            self.state._child_time_current_game = original_current
+            return original_current(execution_profile_id)
+
+        self.state._child_time_current_game = blocked_current
+        terminal = threading.Thread(target=lambda: terminal_results.append(
+            self.state.child_time_session_end(
+                self.client, "kid", previous_id, "client_closed")))
+        terminal.start()
+        self.assertTrue(entered.wait(1.0))
+        start = threading.Thread(target=lambda: start_results.append(
+            self.state.child_time_session_start(
+                self.client, "kid", "steam:123", next_id, "reserved-next")))
+        start.start()
+
+        self.assertEqual([], start_results)
+        self.assertIs(previous, self.state.child_time_session)
+        release.set()
+        terminal.join(1.0)
+        start.join(1.0)
+
+        self.assertFalse(terminal.is_alive())
+        self.assertFalse(start.is_alive())
+        self.assertEqual(200, terminal_results[0][0])
+        self.assertEqual(202, start_results[0][0])
+        self.assertEqual(next_id, self.state.child_time_session["session_id"])
+
+    def test_terminal_reservation_wins_the_late_start_publication_race(self):
+        previous_id = self.start_running()
+        previous = self.state.child_time_session
+        next_id = self.session_id()
+        original_current = self.state._child_time_current_game
+        original_proxy_json = self.state.proxy_json
+        start_before_publish = threading.Event()
+        release_start = threading.Event()
+        terminal_effect = threading.Event()
+        release_terminal = threading.Event()
+        start_results = []
+        terminal_results = []
+
+        def current(execution_profile_id):
+            if threading.current_thread().name == "late-start":
+                start_before_publish.set()
+                self.assertTrue(release_start.wait(1.0))
+            return original_current(execution_profile_id)
+
+        def proxy_json(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                terminal_effect.set()
+                self.assertTrue(release_terminal.wait(1.0))
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state._child_time_current_game = current
+        self.state.proxy_json = proxy_json
+        start = threading.Thread(name="late-start", target=lambda: start_results.append(
+            self.state.child_time_session_start(
+                self.client, "kid", "steam:123", next_id, "late-publication")))
+        start.start()
+        self.assertTrue(start_before_publish.wait(1.0))
+        terminal = threading.Thread(target=lambda: terminal_results.append(
+            self.state.child_time_session_end(
+                self.client, "kid", previous_id, "client_closed")))
+        terminal.start()
+        self.assertTrue(terminal_effect.wait(1.0))
+        release_start.set()
+        start.join(1.0)
+
+        self.assertFalse(start.is_alive())
+        self.assertEqual(409, start_results[0][0])
+        self.assertEqual("child_cleanup_in_progress", start_results[0][1]["reason"])
+        self.assertIs(previous, self.state.child_time_session)
+        release_terminal.set()
+        terminal.join(1.0)
+        self.assertFalse(terminal.is_alive())
+        self.assertEqual(200, terminal_results[0][0])
+
+        status, retried = self.state.child_time_session_start(
+            self.client, "kid", "steam:123", next_id, "late-publication")
+        self.assertEqual(202, status, retried)
+        self.assertEqual(next_id, self.state.child_time_session["session_id"])
+
+    def test_terminal_reservation_rejects_late_process_binding(self):
+        session_id = self.session_id()
         status, body = self.state.child_time_session_start(
-            self.client, "kid", "steam:123", self.session_id())
-
+            self.client, "kid", "steam:123", session_id, "pending-bind")
         self.assertEqual(202, status, body)
-        self.assertEqual("actor_replaced",
-                         self.state.child_time_completed[previous_id]["reason"])
+        session = self.state.child_time_session
+        operation_id = "pending-bind-stream"
+        status, permit = self.state._child_time_control_call(session, lambda:
+            self.state.control_operation_acquire(self.client, {
+                "operation_id": operation_id, "intent": "launch",
+                "stream_session_id": "stream-" + session_id,
+                "sunshine_app_id": 7, "expected_generation": 0,
+                "observed_sunshine_app_id": 0, "child_session_id": session_id,
+            }, operation_id))
+        self.assertEqual(200, status, permit)
+        self.state._child_time_control_call(session, lambda:
+            self.state.control_operation_complete(self.client, {
+                "operation_id": operation_id, "generation": permit["generation"],
+                "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": True,
+            }, operation_id))
+        session.update(process_token=TOKEN, process_id=42)
+
+        with self.state.lock:
+            self.assertTrue(self.state.child_terminal_operation.reserve_terminal(session))
+            self.assertFalse(self.state._control_bind_process_identity_locked(session))
+            stream = self.state.control_state["stream"]
+            self.assertFalse(stream.get("process_token"))
+            self.assertEqual(0, int(stream.get("process_id") or 0))
+
+    def test_terminal_close_reservation_blocks_all_nonterminal_releases(self):
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        with self.state.lock:
+            self.assertTrue(self.state.child_terminal_operation.reserve_terminal(session))
+
+        for reason in ("cancelled", "game_stopped", "replacement", "actor_replaced"):
+            with self.subTest(reason=reason):
+                status, result = self.state.child_time_session_end(
+                    self.client, "kid", session_id, reason)
+                self.assertEqual(409, status, result)
+                self.assertEqual("child_cleanup_in_progress", result["reason"])
+                self.assertIs(session, self.state.child_time_session)
+        self.assertFalse(any(call[1] == "/child/session" and
+                             call[2].get("action") == "end"
+                             for call in self.bridge_calls))
+
+    def test_tokenless_launch_pending_full_close_adopts_exact_permit_identity(self):
+        session_id = self.session_id()
+        status, pending = self.state.child_time_session_start(
+            self.client, "kid", "steam:123", session_id, "tokenless-full-close")
+        self.assertEqual(202, status, pending)
+        session = self.state.child_time_session
+
+        operation_id = "tokenless-transport-" + session_id
+        self.state.authorize_child_profile(self.client, "kid")
+        status, permit = self.state.control_operation_acquire(self.client, {
+            "operation_id": operation_id, "intent": "launch",
+            "stream_session_id": "stream-" + session_id,
+            "sunshine_app_id": 7, "expected_generation": 0,
+            "observed_sunshine_app_id": 0, "child_session_id": session_id,
+        }, operation_id)
+        self.assertEqual(200, status, permit)
+        status, _completed = self.state.control_operation_complete(self.client, {
+            "operation_id": operation_id, "generation": permit["generation"],
+            "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": True,
+        }, operation_id)
+        self.assertEqual(200, status)
+        self.assertEqual("launch_pending", session["phase"])
+        self.assertEqual("", self.state._child_time_process_token(session))
+        self.assertEqual("", self.state._child_time_process_token(
+            self.state.control_state["stream"]))
+
+        self.streamer_active = True
+        self.current = {
+            "id": "steam:123", "state": "running",
+            "running_games": [{"game_id": "steam:123", "process_id": 42,
+                                "process_token": TOKEN}],
+        }
+
+        status, ended = self.state.child_time_session_end(
+            self.client, "kid", session_id, "client_closed")
+        self.assertEqual(200, status, ended)
+        self.assertFalse(ended["cleanup_required"])
+        self.assertEqual(TOKEN, next(call[2]["expected_process_token"]
+                                     for call in self.bridge_calls
+                                     if call[1] == "/game/stop-verified"))
+        self.assertIsNone(self.state.child_time_session)
+        self.assertIsNone(self.state.control_state["active"])
+        self.assertIsNone(self.state.control_state["stream"])
+
+        next_id = self.session_id()
+        status, next_start = self.state.child_time_session_start(
+            self.client, "kid", "steam:123", next_id, "after-tokenless-full-close")
+        self.assertEqual(202, status, next_start)
+        self.assertEqual(next_id, next_start["session_id"])
+
+    def test_tokenless_adoption_survives_uncertain_retry_with_same_identity(self):
+        session_id = self.session_id()
+        status, pending = self.state.child_time_session_start(
+            self.client, "kid", "steam:123", session_id, "tokenless-retry")
+        self.assertEqual(202, status, pending)
+        session = self.state.child_time_session
+        operation_id = "tokenless-retry-transport-" + session_id
+        self.state.authorize_child_profile(self.client, "kid")
+        status, permit = self.state.control_operation_acquire(self.client, {
+            "operation_id": operation_id, "intent": "launch",
+            "stream_session_id": "stream-" + session_id,
+            "sunshine_app_id": 7, "expected_generation": 0,
+            "observed_sunshine_app_id": 0, "child_session_id": session_id,
+        }, operation_id)
+        self.assertEqual(200, status, permit)
+        self.state.control_operation_complete(self.client, {
+            "operation_id": operation_id, "generation": permit["generation"],
+            "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": True,
+        }, operation_id)
+        self.streamer_active = True
+        self.current = {
+            "id": "steam:123", "state": "running",
+            "running_games": [{"game_id": "steam:123", "process_id": 42,
+                                "process_token": TOKEN}],
+        }
+        original_proxy_json = self.state.proxy_json
+        first_calls = []
+
+        def lost_response(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                first_calls.append(dict(body))
+                raise TimeoutError("response lost")
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = lost_response
+        status, first = self.state._child_time_finish(
+            self.client, session, "client_closed", self.clock.wall)
+        self.assertEqual(409, status, first)
+        active = self.state.control_state["active"]
+        self.assertEqual(TOKEN, session["process_token"])
+        self.assertEqual(42, session["process_id"])
+        self.assertEqual(TOKEN, active["process_token"])
+        self.assertEqual(42, active["process_id"])
+
+        retry_calls = []
+
+        def retry_response(name, path, body, **kwargs):
+            if path == "/game/stop-verified":
+                retry_calls.append(dict(body))
+                self.current = {"id": "", "state": "idle", "running_games": []}
+                return True, {"accepted": True}
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = retry_response
+        status, result = self.state._child_time_finish(
+            self.client, session, "client_closed", self.clock.wall)
+        self.assertEqual(200, status, result)
+        self.assertEqual(1, len(first_calls))
+        self.assertEqual(1, len(retry_calls))
+        self.assertEqual("child-terminal:" + session_id,
+                         retry_calls[0]["control_operation"]["operation_id"])
+        self.assertEqual(TOKEN, retry_calls[0]["expected_process_token"])
+
+    def test_launch_pending_idle_cleanup_reuses_exact_uncertain_permit_then_starts(self):
+        session_id = self.session_id()
+        status, body = self.state.child_time_session_start(
+            self.client, "kid", "steam:123", session_id, "launch-pending")
+        self.assertEqual(202, status, body)
+        session = self.state.child_time_session
+        operation_id = "child-transport-" + session_id
+        status, permit = self.state._child_time_control_call(session, lambda:
+            self.state.control_operation_acquire(self.client, {
+                "operation_id": operation_id, "intent": "launch",
+                "stream_session_id": "stream-" + session_id,
+                "sunshine_app_id": 7, "expected_generation": 0,
+                "observed_sunshine_app_id": 0, "child_session_id": session_id,
+            }, operation_id))
+        self.assertEqual(200, status, permit)
+        self.state._child_time_control_call(session, lambda:
+            self.state.control_operation_complete(self.client, {
+                "operation_id": operation_id, "generation": permit["generation"],
+                "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": True,
+            }, operation_id))
+        self.streamer_active = True
+        original_close = wakeplay_gateway.StreamerControlOperation.close
+        attempts = []
+
+        def transient_close(proxy, profile_id, stream):
+            del proxy, profile_id, stream
+            attempts.append(True)
+            return (False, "streamer_close_unconfirmed") if len(attempts) == 1 \
+                else (True, "streamer_idle_after_close")
+
+        wakeplay_gateway.StreamerControlOperation.close = staticmethod(transient_close)
+        try:
+            status, first = self.state.child_time_session_end(
+                self.client, "kid", session_id, "client_closed")
+            self.assertEqual(409, status, first)
+            active = self.state.control_state["active"]
+            self.assertTrue(active["provider_idle_confirmed"])
+            self.assertEqual("", active["provider_game_id"])
+            self.assertEqual("", active["process_token"])
+            self.assertEqual(0, active["process_id"])
+
+            next_id = self.session_id()
+            status, started = self.state.child_time_session_start(
+                self.client, "kid", "steam:123", next_id, "after-idle-cleanup")
+        finally:
+            wakeplay_gateway.StreamerControlOperation.close = original_close
+
+        self.assertEqual(202, status, started)
+        self.assertEqual(2, len(attempts))
+        self.assertEqual(next_id, self.state.child_time_session["session_id"])
+        self.assertIsNone(self.state.control_state["active"])
 
     def test_late_release_from_previous_actor_cannot_touch_new_attachment(self):
         previous_id = self.start_running()

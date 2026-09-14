@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "input_fingerprint": "sha256:5474098e46a5e38ba30743037fbcc6984d3d188ee21965e1c111c8d8ba148c04",
+  "approved_by_coordinator_run": "root-runtime-full-close-correction-20260914",
+  "outcome": "After a child switches games on one retained stream and then closes the whole stream, the exact child/control/stream state is durably completed and the next policy-eligible child game start is accepted.",
+  "production_path": [
+    "Android retained A-to-B switch finishes and restarts the existing common ChildSessionLifecycle after the retained-switch marker is cleared",
+    "Gateway child session attaches the exact active provider process identity",
+    "Android child full quit reserves one child-terminal control operation",
+    "Gateway stops the exact provider process and closes the exact owned stream under generation, actor-epoch, client, execution-profile, stream, app and child-session fences",
+    "Gateway clears the completed child session and control operation",
+    "A subsequent policy-eligible child session start receives 202"
+  ],
+  "artifact_compatibility_matrix": [
+    "corrected Android + corrected host: fixed",
+    "deployed Android + corrected host: host safely repairs the tokenless launch-pending terminal path and current exact orphan where evidence is complete",
+    "corrected Android + old host: normal delayed full quit is fixed by identity attachment, but an immediate or host-only quit can remain fail-closed",
+    "deployed Android + old host: reported regression remains"
+  ],
+  "architecture_boundary": "Reuse ChildSessionLifecycle, ChildTerminalOperation and the existing control journal. Do not introduce a child-specific stream lifecycle or state store. Never infer idle or clear stream/control ownership from incomplete evidence.",
+  "required_checks": [
+    "failing-before Android regression proving retained-switch completion clears the marker before restarting child monitoring",
+    "failing-before Gateway regression for tokenless launch_pending plus exact current provider identity plus child full quit followed by a fresh 202 start",
+    "Gateway retry regression after a lost stop response with the same exact permit and process token",
+    "negative Gateway regressions for stale/wrong token, newer generation and newer actor epoch",
+    "requested Gateway suites",
+    "directly related Gateway child/control/recovery suites",
+    "full Gateway unittest discovery and Python compile checks",
+    "targeted Android child/retained-switch tests and full NonRoot unit suite",
+    "affected Android debug/release compilation and scoped diff checks"
+  ],
+  "device_checks_required": true,
+  "required_device_check_ids": [
+    "S05-LAB-CHILD-FULL-CLOSE-AFTER-RETAINED-SWITCH-PROFILE-1",
+    "S05-LAB-CHILD-FULL-CLOSE-AFTER-RETAINED-SWITCH-PROFILE-2",
+    "S05-LAB-CHILD-NEXT-START-AFTER-FULL-CLOSE"
+  ],
+  "protected_flows": [
+    {"flow_id":"F01","check_ids":["gateway-full","android-full"],"original_defects":[]},
+    {"flow_id":"F02","check_ids":["verified-stop-retains-stream","child-full-close"],"original_defects":[]},
+    {"flow_id":"F03","check_ids":["child-retained-a-to-b","child-next-start"],"original_defects":[]},
+    {"flow_id":"F04","check_ids":["gateway-session-recovery"],"original_defects":[]},
+    {"flow_id":"F05","check_ids":["gateway-control-operations","terminal-retry"],"original_defects":[]},
+    {"flow_id":"F06","check_ids":["gateway-full","android-full"],"original_defects":[]},
+    {"flow_id":"F07","check_ids":["child-full-close","stale-owner-negative"],"original_defects":[]}
+  ],
+  "target_regression_check_ids": [
+    "child-monitoring-after-retained-switch",
+    "tokenless-launch-pending-full-quit",
+    "child-next-start"
+  ],
+  "cumulative_fixed_path_check_ids": [
+    "gateway-required",
+    "gateway-control-operations",
+    "gateway-session-recovery",
+    "child-retained-a-to-b"
+  ],
+  "build_and_package_check_ids": [
+    "android-nonroot-debug-compile",
+    "android-nonroot-release-compile"
+  ],
+  "baseline_exception_evidence": [
+    "Installed state 2026-09-14: active_session is null; child-terminal control generation/actor epoch 166 is uncertain with effect_result_uncertain; retained stream remains generation/actor epoch 165 for the same child session and provider process.",
+    "Installed diagnostics: child-terminal was permitted but never completed; subsequent child session starts for two child profiles repeatedly returned 409 while eligibility remained 200.",
+    "Source trace: retained-switch completion clears retainedSwitch without restarting the existing child monitor after the earlier guarded tick exited; Gateway terminal stop reads process identity only from the tokenless launch_pending child session."
+  ],
+  "amendments": [],
+  "device_topic_bindings": [
+    {"check_id":"S05-LAB-CHILD-FULL-CLOSE-AFTER-RETAINED-SWITCH-PROFILE-1","topic":"On child profile 1 switch A to B on one stream, close the whole stream, then verify the host has no owned game or stream and no pending child control."},
+    {"check_id":"S05-LAB-CHILD-FULL-CLOSE-AFTER-RETAINED-SWITCH-PROFILE-2","topic":"Repeat the exact A-to-B then full-close flow on child profile 2."},
+    {"check_id":"S05-LAB-CHILD-NEXT-START-AFTER-FULL-CLOSE","topic":"After each full close, start another allowed child game and verify it launches without hard reset while policy time remains."}
+  ]
+}

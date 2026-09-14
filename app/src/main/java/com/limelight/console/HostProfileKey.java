@@ -35,4 +35,10 @@ public final class HostProfileKey {
     public String cacheKey() {
         return normalizedHostId + "__" + profileId;
     }
+
+    static boolean isCurrentProjection(HostProfileKey expected,
+                                       HostProfileKey projection,
+                                       HostProfileKey selected) {
+        return expected != null && expected.equals(projection) && expected.equals(selected);
+    }
 }

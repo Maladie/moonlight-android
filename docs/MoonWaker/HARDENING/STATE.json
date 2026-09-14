@@ -48,8 +48,8 @@
       "review_report": "runs/S03/warmup-regression-fix-13/review.json",
       "design_review_report": null,
       "blockers": [
-        "The user reports that all S03 physical Windows/TV tests pass on the corrected installed APK, recorded in runs/S03/manual-retest-fix13-20260910/evidence.json.",
-        "Mandatory S03-LAB-WINDOWS-SIGNIN still lacks an executed source/APK/device-bound deterministic plan and per-scenario machine-verifiable evidence; the operator report alone cannot accept the checkpoint under amendment S03-A01-DETERMINISTIC-LAB-RUNNER."
+        "The user reconfirms that all S03 physical Windows/TV scenarios pass on the cumulative installed candidate, recorded in runs/S03/final-operator-confirmation-20260914.json.",
+        "Mandatory S03-LAB-WINDOWS-SIGNIN still lacks an executed source/APK/device-bound deterministic plan and per-scenario machine-verifiable evidence; operator confirmation alone cannot accept the checkpoint under amendments S03-A01-DETERMINISTIC-LAB-RUNNER and S03-A02-DETERMINISTIC-LAB-SCENARIOS."
       ],
       "checkpoint_plan": "runs/S03/checkpoint-plan.json"
     },
@@ -62,26 +62,24 @@
       "review_report": "runs/S04/review.json",
       "design_review_report": null,
       "blockers": [
-        "The user reports S04-LAB-NATIVE-STOP-RECONNECT passed functionally, but the available post-install TV trace contains no attributable native stop/reconnect sequence. Candidate-bound native ordering evidence remains required for checkpoint acceptance."
+        "S04-LAB-NATIVE-STOP-RECONNECT now passes with operator confirmation and candidate-bound terminal-to-reconnect diagnostics in runs/S04/final-acceptance-20260914.json.",
+        "Formal S04 checkpoint acceptance is blocked by the still-unaccepted S03 predecessor."
       ],
       "checkpoint_plan": "runs/S04/checkpoint-plan.json"
     },
     "S05": {
       "status": "CODE_VERIFIED_DEVICE_PENDING",
-      "assigned_run": "s05-unified-child-lifecycle-20260913",
-      "input_fingerprint": "sha256:681db317fa0c88bf4859113db7799d48380e458c912aa62371e9d44a8848e0bd",
-      "output_fingerprint": "sha256:14cf82e83898adf90fa786917243a12743bbe8d2dce281b4560ed715c38eeab3",
-      "implementation_report": "runs/S05/unified-child-lifecycle-20260913/implementation.json",
-      "review_report": "runs/S05/unified-child-lifecycle-20260913/review.json",
+      "assigned_run": "profile-takeover-overlay-correction-20260914",
+      "input_fingerprint": "sha256:12f04b802510ad9e014166509d2e640254c3a2d5680f6fbe74c0074fb2d9105d",
+      "output_fingerprint": "sha256:c1a7ee8942db045b33aed21f5b16abf69c95e812aa4ec119355c8c288de2e784",
+      "implementation_report": "runs/S05/profile-takeover-overlay-correction-20260914/implementation.json",
+      "review_report": "runs/S05/profile-takeover-overlay-correction-20260914/review.json",
       "design_review_report": null,
       "blockers": [
-        "Independent adversarial review ACCEPTED the unified child-facade correction at fingerprint 14cf82e8; no further reproducible code or architecture blocker was found.",
-        "Automated validation passes at Gateway 82/82 requested and 284/284 full, Playnite Bridge 267/267, and Android NonRoot Debug 1104/1104 on JDK 17.",
-        "Reviewed-source artifacts were built and verified without deployment: NonRoot Debug APK sha256 c40f05e0 and MoonWaker Host installer 0.7.112 sha256 a2ceeb40; evidence is in runs/S05/unified-child-lifecycle-20260913/artifacts.json.",
-        "The exact reviewed APK was installed and launched on BRAVIA_4K_VH22, and its installed-file SHA-256 matches the built artifact; this proves delivery only.",
-        "No Gateway, host service or host installer was installed, deployed or restarted. Mandatory candidate-bound Windows/TV functional acceptance remains pending."
+        "All S05 physical Windows/TV scenarios pass; evidence is recorded in runs/S05/profile-takeover-overlay-correction-20260914/acceptance.json.",
+        "Formal S05 checkpoint acceptance is blocked by the packet DAG until S03 and then S04 are formally accepted."
       ],
-      "checkpoint_plan": "runs/S05/checkpoint-plan.json"
+      "checkpoint_plan": "runs/S05/profile-takeover-overlay-correction-20260914/checkpoint-plan.json"
     },
     "S06": {
       "status": "NOT_STARTED",

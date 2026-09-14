@@ -1,0 +1,60 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "run_id": "profile-takeover-overlay-acceptance-20260914",
+  "status": "PASS",
+  "operator": "USER",
+  "operator_report": {
+    "result": "PASS",
+    "source": "User message: Wszystko działa. Potwierdzam wszystkie testy S04 i S05"
+  },
+  "candidate": {
+    "package": "com.limelight.debug",
+    "version_code": 344,
+    "version_name": "12.2.23",
+    "installed_apk_sha256": "sha256:d619a5e72c1cd512d4c02ea881dda936feb42d061544411ed40a7e91367846be",
+    "source_fingerprint": "sha256:c1a7ee8942db045b33aed21f5b16abf69c95e812aa4ec119355c8c288de2e784",
+    "gateway_candidate": "0.7.117+2026.09.14-s05-full-close"
+  },
+  "checks": [
+    {
+      "id": "S05-LAB-CHILD-RETAINED-A-TO-B",
+      "status": "PASS",
+      "evidence": "Child session end, replacement child session start, new control acquire and orchestration.close_completed REUSED were observed on the retained stream."
+    },
+    {
+      "id": "S05-LAB-CHILD-FULL-CLOSE-PROFILE-1-AND-2",
+      "status": "PASS",
+      "evidence": "Operator confirms both child profiles; diagnostics show HOME_LIVE to TERMINATING to NONE."
+    },
+    {
+      "id": "S05-LAB-CHILD-NEXT-START-AFTER-FULL-CLOSE",
+      "status": "PASS",
+      "evidence": "After terminal NONE, child session start and control acquire both completed and the next game reached rendered GAME_READY/GAME_RUNNING."
+    },
+    {
+      "id": "S05-LAB-PARENT-TAKEOVER-CHILD-SAME-GAME",
+      "status": "PASS",
+      "evidence": "Child session end, parent control acquire and orchestration.close_completed REUSED were observed without transport restart."
+    },
+    {
+      "id": "S05-LAB-CHILD-RESUME-AFTER-FAILED-TAKEOVER",
+      "status": "PASS",
+      "evidence": "A failed takeover entered recovery; a following exact takeover completed REUSED, rendered a correlated video frame and reached GAME_RUNNING without a stuck opaque overlay."
+    },
+    {
+      "id": "S05-LAB-PARENT-CHILD-ROUNDTRIP-CONTROL",
+      "status": "PASS",
+      "evidence": "Fresh child and parent control acquire operations completed across both directions; operator confirms controller behavior."
+    }
+  ],
+  "sanitized_runtime_window_utc": {
+    "from": "2026-09-14T13:01:20Z",
+    "to": "2026-09-14T13:07:21Z",
+    "source": "installed APK diagnostics plus read-only logcat",
+    "raw_private_trace_persisted": false
+  },
+  "device_checks_accepted": true,
+  "checkpoint_accepted": false,
+  "formal_blocker": "S04 cannot be formally accepted while predecessor S03 remains unaccepted; the packet DAG therefore also blocks formal S05 acceptance."
+}

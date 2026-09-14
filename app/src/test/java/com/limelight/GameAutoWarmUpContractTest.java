@@ -324,6 +324,22 @@ public class GameAutoWarmUpContractTest {
         assertTrue(completed.contains("operation.request.attempt"));
     }
 
+    @Test public void childMonitoringResumesOnlyAfterRetainedSwitchMarkerIsCleared()
+            throws IOException {
+        String game = source();
+        String finish = between(game, "private void finishRetainedSwitch(",
+                "private static final class RetainedSwitch");
+        int marker = finish.indexOf("retainedSwitch = null");
+        int monitor = finish.indexOf("startChildMonitoring()");
+        assertTrue(marker >= 0);
+        assertTrue(monitor > marker);
+
+        String recovery = between(game, "private void recoverRetainedSwitch(",
+                "private void afterRetainedGameStopped(");
+        assertTrue(recovery.indexOf("completeRetainedSwitch(")
+                < recovery.indexOf("startChildMonitoring()"));
+    }
+
     @Test public void rejectedRetainedStartNeverClaimsRunningGame() throws IOException {
         String game = source();
         String failed = between(game, "@Override public void onProviderGameStartFailed(",

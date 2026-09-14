@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "task_id": "S04",
+  "check_id": "S04-LAB-NATIVE-STOP-RECONNECT",
+  "status": "PASS",
+  "operator": "USER",
+  "operator_report": {
+    "result": "PASS",
+    "source": "User message: Wszystko działa. Potwierdzam wszystkie testy S04 i S05"
+  },
+  "candidate": {
+    "package": "com.limelight.debug",
+    "version_code": 344,
+    "version_name": "12.2.23",
+    "installed_apk_sha256": "sha256:d619a5e72c1cd512d4c02ea881dda936feb42d061544411ed40a7e91367846be",
+    "cumulative_source_fingerprint": "sha256:c1a7ee8942db045b33aed21f5b16abf69c95e812aa4ec119355c8c288de2e784",
+    "s04_reviewed_fingerprint": "sha256:dedbbd549d3fb7f24caa80154a1de701f6ceaacaa91f5225c6af000e30f623d8"
+  },
+  "sanitized_runtime_sequence": [
+    {
+      "timestamp_utc": "2026-09-14T13:02:22.287Z",
+      "evidence": "retained stream changed from HOME_LIVE to TERMINATING"
+    },
+    {
+      "timestamp_utc": "2026-09-14T13:02:27.672Z",
+      "evidence": "MoonWakerSession reported the authoritative session ended"
+    },
+    {
+      "timestamp_utc": "2026-09-14T13:02:39.013Z",
+      "evidence": "retained stream changed from TERMINATING to NONE"
+    },
+    {
+      "timestamp_utc": "2026-09-14T13:02:39.178Z",
+      "evidence": "a subsequent child game orchestration started only after terminal NONE"
+    },
+    {
+      "timestamp_utc": "2026-09-14T13:02:40.052Z",
+      "evidence": "the subsequent child session start completed"
+    },
+    {
+      "timestamp_utc": "2026-09-14T13:02:40.825Z",
+      "evidence": "the subsequent control operation acquire completed"
+    }
+  ],
+  "assessment": "The operator confirms the native stop/reconnect scenario. Candidate-bound runtime diagnostics independently show terminal retained-session completion before the replacement launch and authorization sequence.",
+  "device_check_accepted": true,
+  "checkpoint_accepted": false,
+  "formal_blocker": "S03 remains unaccepted; the packet DAG forbids formal S04 checkpoint acceptance before its predecessor."
+}

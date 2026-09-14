@@ -5,6 +5,8 @@ import org.json.JSONException;
 import org.junit.Test;
 
 import java.io.IOException;
+import java.util.ArrayList;
+import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -111,6 +113,37 @@ public class ChildSessionClientTest {
         assertEquals("client_closed", poster.body.getString("reason"));
         assertEquals("cleanup_required", result.reason);
         assertTrue(result.cleanupRequired);
+    }
+
+    @Test
+    public void rejectedStartNeverSendsEndForAnUncreatedSession() throws Exception {
+        RecordingPoster poster = new RecordingPoster();
+        poster.failure = new GatewayTransport.GatewayException("blocked", 409, 0,
+                state(false, "blocked", "blocked", "profile-1", SESSION)
+                        .put("reason", "child_cleanup_in_progress"));
+        ChildSessionClient client = client(poster);
+        ChildSessionClient.State rejected = client.start(
+                CONNECTION, "steam:123", SESSION, "rejected-start");
+        poster.failure = null;
+        poster.response = state(true, "ended", "ended", "profile-1", SESSION);
+
+        client.releaseUnusedAllowance(CONNECTION, SESSION, rejected);
+
+        assertEquals(1, poster.paths.size());
+        assertEquals("/api/v1/child/session/start", poster.paths.get(0));
+    }
+
+    @Test
+    public void ambiguousStartIsEndedOnlyAfterStatusConfirmsExactAttachment() throws Exception {
+        RecordingPoster poster = new RecordingPoster();
+        poster.response = state(true, "running", "running", "profile-1", SESSION);
+        ChildSessionClient client = client(poster);
+
+        client.releaseUnusedAllowance(CONNECTION, SESSION, null);
+
+        assertEquals(2, poster.paths.size());
+        assertEquals("/api/v1/child/session/status", poster.paths.get(0));
+        assertEquals("/api/v1/child/session/end", poster.paths.get(1));
     }
 
     @Test
@@ -268,11 +301,13 @@ public class ChildSessionClientTest {
         private String path;
         private int timeout;
         private JSONObject body;
+        private final List<String> paths = new ArrayList<>();
 
         @Override
         public JSONObject postJson(GatewayConnection connection, String path, JSONObject body,
                                    int readTimeoutMs) throws IOException {
             this.path = path;
+            this.paths.add(path);
             this.timeout = readTimeoutMs;
             try {
                 this.body = new JSONObject(body.toString());

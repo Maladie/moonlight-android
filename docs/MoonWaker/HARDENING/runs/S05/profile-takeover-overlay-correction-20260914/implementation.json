@@ -1,0 +1,113 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "run_id": "profile-takeover-overlay-correction-20260914",
+  "role": "worker",
+  "actual_model": "gpt-5",
+  "status": "CODE_VERIFIED_DEVICE_PENDING",
+  "source": {
+    "repository": "Maladie/moonlight-android",
+    "branch": "codex/session-hardening",
+    "head_before": "e049e9f8394094f3409b45f6bb300234cb7b3382",
+    "head_after": "e049e9f8394094f3409b45f6bb300234cb7b3382",
+    "input_fingerprint": "sha256:12f04b802510ad9e014166509d2e640254c3a2d5680f6fbe74c0074fb2d9105d",
+    "output_fingerprint": "sha256:c1a7ee8942db045b33aed21f5b16abf69c95e812aa4ec119355c8c288de2e784",
+    "dirty_baseline_preserved": true
+  },
+  "dependency_reports": [
+    "runs/S05/profile-takeover-overlay-correction-20260914/pre-edit-review.json",
+    "runs/S05/profile-takeover-overlay-correction-20260914/review.json"
+  ],
+  "finding_dispositions": [
+    {
+      "finding": "Same-game child-to-parent takeover failed when the observer had no cached process identity.",
+      "disposition": "Fixed by fetching an authenticated snapshot with the immutable old actor context and binding only exact game/token/PID evidence through ProviderOwner."
+    },
+    {
+      "finding": "A pre-mutation rejection left the retained stream alive under an opaque Ready overlay.",
+      "disposition": "Fixed by preserving the old observer, recovering ownership before publishing presentation and rearming the existing LaunchTransitionController path."
+    },
+    {
+      "finding": "Owner conflict during recovery could recreate the opaque unobserved state.",
+      "disposition": "Fixed after independent review by invoking verified whole-session termination before any recovery transition is published."
+    },
+    {
+      "finding": "The first patch lacked an atomic retained-owner pre-mutation fence.",
+      "disposition": "Fixed after independent review with ownsSwitchBeforeMutation in RetainedStreamSessionCoordinator."
+    }
+  ],
+  "changed_files": [
+    "app/src/main/java/com/limelight/Game.java",
+    "app/src/main/java/com/limelight/console/ConsoleStreamTransitionCoordinator.java",
+    "app/src/main/java/com/limelight/stream/RetainedStreamSessionCoordinator.java",
+    "app/src/test/java/com/limelight/GameTransitionCancelContractTest.java",
+    "app/src/test/java/com/limelight/console/ConsoleStreamTransitionCoordinatorTest.java",
+    "app/src/test/java/com/limelight/console/PlayniteTransitionGatewayTest.java",
+    "app/src/test/java/com/limelight/stream/RetainedStreamSessionCoordinatorTest.java"
+  ],
+  "compatibility_notes": [
+    "Uses the existing LaunchTransitionController, ConsoleStreamTransitionCoordinator, RetainedControlHandoff and RetainedStreamSessionCoordinator owners.",
+    "No parallel child lifecycle, state store or direct Bridge access was added.",
+    "Gateway behavior and installed Gateway package were unchanged by this correction.",
+    "No commit or push was performed; unrelated dirty checkout changes were preserved."
+  ],
+  "built_artifacts": [
+    {
+      "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+      "sha256": "d619a5e72c1cd512d4c02ea881dda936feb42d061544411ed40a7e91367846be",
+      "signature_v1_verified": true,
+      "signature_v2_verified": true,
+      "deployed": true
+    },
+    {
+      "path": "app/build/outputs/apk/nonRoot/release/app-nonRoot-release-unsigned.apk",
+      "sha256": "d9c9f2a4f1f34cb98d4e28cd3911819f6d694dfd04efcfb120cb90ed3130c429",
+      "deployed": false
+    }
+  ],
+  "task_checks": [
+    {
+      "id": "fail-before-static",
+      "status": "FAIL_BEFORE_CONFIRMED_STATIC",
+      "observed": "Before the production edit, the new contracts referenced absent identity fallback, retained-owner predicate and safe recovery ordering. No pre-edit Gradle run is claimed."
+    },
+    {
+      "id": "targeted-regressions",
+      "status": "PASS",
+      "command": ".\\gradlew.bat testNonRootDebugUnitTest --tests com.limelight.GameTransitionCancelContractTest --tests com.limelight.console.ConsoleStreamTransitionCoordinatorTest --tests com.limelight.stream.RetainedStreamSessionCoordinatorTest --offline --no-daemon --console=plain",
+      "exit_code": 0
+    },
+    {
+      "id": "android-full-suite",
+      "status": "PASS",
+      "command": ".\\gradlew.bat testNonRootDebugUnitTest --offline --no-daemon --console=plain",
+      "exit_code": 0,
+      "observed": "1117 tests, 0 failures, 0 errors, 0 skipped."
+    },
+    {
+      "id": "android-build",
+      "status": "PASS",
+      "command": ".\\gradlew.bat assembleNonRootDebug assembleNonRootRelease --offline --no-daemon --console=plain",
+      "exit_code": 0,
+      "observed": "BUILD SUCCESSFUL in 1m 41s; 99 tasks."
+    },
+    {
+      "id": "scoped-diff-check",
+      "status": "PASS",
+      "command": "git diff --check -- <seven run-owned Android files>",
+      "exit_code": 0,
+      "observed": "No whitespace errors; only existing LF/CRLF normalization warnings."
+    },
+    {
+      "id": "independent-review",
+      "status": "PASS_AFTER_CORRECTION",
+      "observed": "First review rejected two blockers; both were corrected and second review returned ACCEPT with no findings."
+    }
+  ],
+  "blockers": [
+    "All S05 device checks pass, but formal checkpoint acceptance is blocked by the packet DAG until S03 and then S04 are formally accepted."
+  ],
+  "device_gates_pending": [],
+  "device_acceptance": "runs/S05/profile-takeover-overlay-correction-20260914/acceptance.json",
+  "next_action": "Resolve the predecessor S03 acceptance gate, then promote S04 and S05 without repeating their passing device scenarios unless the candidate changes."
+}

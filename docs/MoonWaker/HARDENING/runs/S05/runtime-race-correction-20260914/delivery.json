@@ -1,0 +1,52 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "run_id": "s05-runtime-race-delivery-20260914",
+  "source_fingerprint": "sha256:01240b077d6186b623c67a5afcf400eb0665ac9a01dac13c382b62581cc6ad97",
+  "workspace_fingerprint_after_artifacts": "sha256:63435284b9fc9879c9c410ebbdf2636fda1f0530b165b12f683b6bd3ef2b68aa",
+  "fingerprint_note": "The post-delivery workspace fingerprint additionally includes the non-ignored .mwhu artifact; the reviewed source fingerprint remains the candidate identity.",
+  "android": {
+    "configuration": "NonRoot Debug",
+    "artifact": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+    "bytes": 46789690,
+    "sha256": "e35f7032acdb9546a116f98eeb5dea2eb4dbf4928ad6e78d475972721b808897",
+    "package": "com.limelight.debug",
+    "version_name": "12.2.23",
+    "version_code": 344,
+    "signature": "PASS: APK Signature Scheme v1 and v2; Android Debug certificate SHA-256 d0ec296180f9340b733406f3249e9145398e04a9fb144e6714b460d8a22fb92d",
+    "target": "192.168.1.31:5555 / Sony BRAVIA 4K VH22",
+    "install": "PASS: adb install -r",
+    "launch": "PASS: com.limelight.debug/com.limelight.console.ConsoleActivity, process 6697",
+    "installed_base_apk_sha256": "e35f7032acdb9546a116f98eeb5dea2eb4dbf4928ad6e78d475972721b808897",
+    "installed_hash_matches": true
+  },
+  "gateway": {
+    "delivery": "MoonWakerHotUpdater.v1",
+    "package": "host-services/dist-hot/MoonWaker-0.7.114-s05-session-hardening.mwhu",
+    "package_version": "0.7.114",
+    "package_build": "2026.09.14",
+    "bytes": 70748,
+    "sha256": "8b68009be3583b2aeab6c2c4c99b538d3fa42866f682bb81350f73718e3be47e",
+    "payload": [
+      {
+        "path": "gateway/wakeplay_gateway.py",
+        "sha256": "93361594639837280b92dea9288851be3eadc55c21da86973621c25e95741f0c",
+        "installed_hash_matches": true
+      },
+      {
+        "path": "gateway/child_terminal_operation.py",
+        "sha256": "c2fc996c9de62c3a8797439667b91747e68bad49473cc6b55338c32b95d069cd",
+        "installed_hash_matches": true
+      }
+    ],
+    "updater_result": "MoonWaker hot update 0.7.114+2026.09.14 applied and healthy.",
+    "service_state": "Running",
+    "hello_source_sha256": "93361594639837280b92dea9288851be3eadc55c21da86973621c25e95741f0c",
+    "base_host_version": "0.7.113",
+    "base_version_note": "Hot updates replace interpreted runtime files and intentionally do not replace version.json."
+  },
+  "acceptance": {
+    "delivery_verified": true,
+    "functional_windows_tv_acceptance": "PENDING"
+  }
+}

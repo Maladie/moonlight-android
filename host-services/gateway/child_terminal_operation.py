@@ -5,12 +5,33 @@ import time
 
 
 class ChildTerminalOperation:
-    def __init__(self, clock=time.monotonic, wait=time.sleep):
-        self._condition = threading.Condition()
+    def __init__(self, lock=None, clock=time.monotonic, wait=time.sleep):
+        self._condition = threading.Condition(lock)
         self._active = None
         self._terminal_handoff = None
         self.clock = clock
         self.wait = wait
+
+    def reserve_terminal(self, session):
+        """Linearize terminal ownership before any slow provider observation."""
+        with self._condition:
+            active = self._active
+            if active is None:
+                if self._terminal_handoff is not None \
+                        and self._terminal_handoff is not session:
+                    return False
+                self._terminal_handoff = session
+                self._condition.notify_all()
+                return True
+            if active["session"] is not session:
+                return False
+            if active["terminal"]:
+                return True
+            if not active["terminal"]:
+                active["terminal_pending"] = True
+            self._terminal_handoff = session
+            self._condition.notify_all()
+            return True
 
     def await_provider_stop(self, request):
         """Retain the caller's exact permit across the Bridge's 10 s grace."""
@@ -88,3 +109,9 @@ class ChildTerminalOperation:
             return self._active is not None \
                 and self._active["session"] is session \
                 and self._active["terminal_pending"]
+
+    def in_progress(self, session):
+        """Report only the exact in-memory session generation being finalized."""
+        with self._condition:
+            return ((self._active is not None and self._active["session"] is session)
+                    or self._terminal_handoff is session)

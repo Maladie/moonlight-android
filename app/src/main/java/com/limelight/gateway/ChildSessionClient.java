@@ -89,6 +89,23 @@ public final class ChildSessionClient {
         return request(connection, END_PATH, body, session, false);
     }
 
+    /** Resolve an ambiguous start first; never end a session the host rejected. */
+    public void releaseUnusedAllowance(GatewayConnection connection, String sessionId,
+                                       State startResult) throws IOException {
+        String session = requireSessionId(sessionId);
+        State attached = startResult == null ? status(connection, session) : startResult;
+        if (attached == null || !attached.ok || !session.equals(attached.sessionId)
+                || !isAttached(attached)) return;
+        end(connection, session, "cancelled");
+    }
+
+    private static boolean isAttached(State state) {
+        return "running".equalsIgnoreCase(state.state)
+                || "launch_pending".equalsIgnoreCase(state.state)
+                || "running".equalsIgnoreCase(state.phase)
+                || "launch_pending".equalsIgnoreCase(state.phase);
+    }
+
     private State sessionRequest(GatewayConnection connection, String path, String sessionId)
             throws IOException {
         String session = requireSessionId(sessionId);

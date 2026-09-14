@@ -104,6 +104,33 @@ public class RetainedStreamSessionCoordinatorTest {
         assertEquals(RetainedStreamSessionCoordinator.State.NONE, RetainedStreamSessionCoordinator.snapshot().state);
     }
 
+    @Test public void providerTransferProofRequiresEveryRetainedFenceAndIsOneShot() {
+        FakeController owner = new FakeController(); owner.origin = "parent";
+        RetainedStreamSessionCoordinator.enterHome(
+                owner, SESSION_A, "host", "child-a", 7, "game-a");
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(owner, SESSION_A, 4));
+        assertNull(RetainedStreamSessionCoordinator.commitProviderTransferReauthorization(
+                owner, SESSION_A, "parent", "child-b", "old", "next", "wrong-host",
+                7, "game-a", token('a'), 71, 4, 5, 9, () -> true));
+        assertEquals("child-a", RetainedStreamSessionCoordinator.snapshot().profileId);
+        assertNull(RetainedStreamSessionCoordinator.commitProviderTransferReauthorization(
+                owner, SESSION_A, "parent", "child-b", "old", "next", "host",
+                8, "game-a", token('a'), 71, 4, 5, 9, () -> true));
+        assertNull(RetainedStreamSessionCoordinator.commitProviderTransferReauthorization(
+                owner, SESSION_A, "parent", "child-b", "old", "next", "host",
+                7, "game-b", token('a'), 71, 4, 5, 9, () -> true));
+        RetainedStreamSessionCoordinator.ProviderTransferAuthorization proof =
+                RetainedStreamSessionCoordinator.commitProviderTransferReauthorization(
+                        owner, SESSION_A, "parent", "child-b", "old", "next", "host",
+                        7, "game-a", token('a'), 71, 4, 5, 9, () -> true);
+        assertTrue(proof != null);
+        assertEquals(9, proof.actorLeaseEpoch);
+        assertEquals(71, proof.processId);
+        assertEquals(token('a'), proof.processToken);
+        assertTrue(RetainedStreamSessionCoordinator.consumeProviderTransferAuthorization(proof));
+        assertFalse(RetainedStreamSessionCoordinator.consumeProviderTransferAuthorization(proof));
+    }
+
     @Test public void ongoingTerminationCannotBeReauthorizedOrDiscardedByHandoff() {
         FakeController owner = new FakeController(); owner.origin = "parent";
         RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A, "host", "parent", 7, "");
@@ -658,6 +685,37 @@ public class RetainedStreamSessionCoordinatorTest {
                 SESSION_A, "transition-a", 3L, owner));
         assertFalse(RetainedStreamSessionCoordinator.isPreparingSwitchOwned(
                 SESSION_A, "host", 7, "transition-a", 3L));
+    }
+
+    @Test public void preMutationSwitchFenceRequiresExactOwnerActorAndGeneration() {
+        FakeController owner = new FakeController();
+        owner.origin = "parent";
+        RetainedStreamSessionCoordinator.enterHome(
+                owner, SESSION_A, "host", "child", 7, "game");
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                owner, SESSION_A, 4L));
+        assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                RetainedStreamSessionCoordinator.switchGame(
+                        "host", "parent", "parent", false, 7,
+                        "game", "Game", "MoonWaker Stream", "",
+                        () -> false, null));
+        RetainedStreamSessionCoordinator.SwitchRequest request = owner.switchRequest;
+
+        assertTrue(RetainedStreamSessionCoordinator.ownsSwitchBeforeMutation(
+                owner, request, 4L));
+        assertFalse(RetainedStreamSessionCoordinator.ownsSwitchBeforeMutation(
+                new FakeController(), request, 4L));
+        assertFalse(RetainedStreamSessionCoordinator.ownsSwitchBeforeMutation(
+                owner, request, 5L));
+
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                owner, SESSION_A, 5L));
+        assertFalse(RetainedStreamSessionCoordinator.ownsSwitchBeforeMutation(
+                owner, request, 4L));
+        RetainedStreamSessionCoordinator.enterHome(
+                new FakeController(), "session-b", "host", "child", 7, "game");
+        assertFalse(RetainedStreamSessionCoordinator.ownsSwitchBeforeMutation(
+                owner, request, 5L));
     }
 
     @Test public void stalePreparingSwitchCallbackCannotChangeANewerAttempt() {
@@ -1376,5 +1434,9 @@ public class RetainedStreamSessionCoordinatorTest {
         RetainedStreamSessionCoordinator.completeDirectTermination(token, true);
         assertEquals(RetainedStreamSessionCoordinator.State.NONE,
                 RetainedStreamSessionCoordinator.state());
+    }
+
+    private static String token(char value) {
+        return String.valueOf(value).repeat(64);
     }
 }

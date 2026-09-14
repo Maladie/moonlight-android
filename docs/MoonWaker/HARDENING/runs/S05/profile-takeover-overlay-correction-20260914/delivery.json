@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "run_id": "profile-takeover-overlay-correction-delivery-20260914",
+  "source_fingerprint": "sha256:c1a7ee8942db045b33aed21f5b16abf69c95e812aa4ec119355c8c288de2e784",
+  "gateway": {
+    "source_changed_by_this_correction": false,
+    "updated": false,
+    "installed_candidate": "0.7.117+2026.09.14-s05-full-close",
+    "note": "The diagnosed and reviewed correction is Android-only; the already installed Gateway candidate was left unchanged."
+  },
+  "android": {
+    "production_source_changed": true,
+    "artifact": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+    "sha256": "d619a5e72c1cd512d4c02ea881dda936feb42d061544411ed40a7e91367846be",
+    "signature_v1_verified": true,
+    "signature_v2_verified": true,
+    "device_manufacturer": "Sony",
+    "device_model": "BRAVIA 4K VH22",
+    "device_serial": "192.168.1.31:5555",
+    "install_result": "Success",
+    "launch_result": "com.limelight.debug running with pid 24605",
+    "version_name": "12.2.23",
+    "version_code": 344,
+    "last_update_time_local": "2026-09-14 14:58:06",
+    "installed_base_apk_hash_matches_artifact": true
+  },
+  "acceptance": {
+    "delivery_verified": true,
+    "functional_windows_tv_acceptance": "PASS",
+    "evidence": "runs/S05/profile-takeover-overlay-correction-20260914/acceptance.json",
+    "pending_checks": []
+  }
+}

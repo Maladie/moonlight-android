@@ -13,6 +13,42 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ConsoleActivityEnsureContractTest {
+    @Test public void playniteProjectionAndArtworkAreFencedByExactHostProfileKey()
+            throws IOException {
+        String source = consoleActivitySource();
+        String change = source.substring(source.indexOf("private boolean changeSelectedProfile("),
+                source.indexOf("private void refreshHostProfiles("));
+        String load = source.substring(source.indexOf("private void loadPlayniteForHost("),
+                source.indexOf("private void settleInitialLocalPresentation("));
+        String render = source.substring(source.indexOf("private void renderPlayniteLibrary("),
+                source.indexOf("private void requestPendingInitialGameFocus("));
+        String fetch = source.substring(source.indexOf("private ArtworkResult fetchPlayniteArtwork("),
+                source.indexOf("private void applyPrefetchedPlayniteArtwork("));
+        String poster = source.substring(source.indexOf("private void loadPlaynitePoster("),
+                source.indexOf("private void schedulePlayniteArtworkPrefetch("));
+
+        assertTrue(source.contains("volatile HostProfileKey currentPlayniteProfileKey"));
+        assertTrue(change.contains("currentPlayniteProfileKey = null"));
+        assertTrue(change.contains("allPlayniteItems = Collections.emptyList()"));
+        assertTrue(load.contains("requestKey.equals(currentPlayniteProfileKey)"));
+        assertTrue(load.contains("currentPlayniteProfileKey = requestKey"));
+        assertTrue(render.contains("currentPlayniteProjectionMatches(requestedKey)"));
+        assertTrue(render.indexOf("currentPlayniteProjectionMatches(requestedKey)")
+                < render.indexOf("for (PlayniteLibraryGame game : currentPlayniteGames)"));
+        assertTrue(poster.contains("currentPlayniteProjectionMatches(profileKey)"));
+        assertTrue(poster.contains("profileKey.profileId"));
+        assertTrue(fetch.indexOf("currentPlayniteProjectionMatches(key)")
+                < fetch.indexOf("playniteArtworkCache.fetch("));
+        assertTrue(fetch.indexOf("key.profileId.equals(connection.profileId())")
+                < fetch.indexOf("playniteArtworkCache.fetch("));
+        assertTrue(source.contains("currentPlayniteProjectionMatches(profileKey)\n"
+                + "                            && expectedTag.equals(expected)"));
+        assertTrue(source.contains("currentPlayniteProjectionMatches(key)) {\n"
+                + "            PlayniteLibraryGame current"));
+        assertTrue(source.contains("cachedPlayniteArtwork(profileKey, hostUuid, item, spec)"));
+        assertTrue(source.contains("connection, profileKey, hostUuid, item, spec"));
+    }
+
     @Test public void screenSaverUsesSharedBoundedArtworkSizing() throws IOException {
         String source = consoleActivitySource();
         String method = source.substring(source.indexOf("private ImageView screenSaverImage()"),
@@ -653,7 +689,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(restore.contains("applyPlayniteDiff("));
         assertFalse(restore.contains("PlayniteTargetResolver.resolve("));
         assertTrue(console.contains("final HostProfileKey profileKey;"));
-        assertTrue(console.contains("selectedProfileKey(host.uuid), currentPlayniteGames"));
+        assertTrue(console.contains("requestedKey, currentPlayniteGames"));
         assertTrue(console.contains("suppressInitialCarouselMotion = true"));
         assertTrue(console.contains("suppressInitialCarouselMotion = false"));
         assertTrue(console.contains("if (suppressInitialCarouselMotion) return;"));

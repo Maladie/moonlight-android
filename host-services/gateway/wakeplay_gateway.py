@@ -796,7 +796,9 @@ class GatewayState:
         self.child_time_housekeeping_stop = threading.Event()
         self.child_time_housekeeping_thread: threading.Thread | None = None
         self.child_time_housekeeping_lock = threading.Lock()
-        self.child_terminal_operation = ChildTerminalOperation()
+        # Share the state lock so terminal reservation and publication of a new
+        # time attachment have one linearization point.
+        self.child_terminal_operation = ChildTerminalOperation(self.lock)
         self.child_time_usage = self._load_child_time_usage()
         self.control_condition = threading.Condition(self.lock)
         self.control_state = self.child_time_usage["control"]
@@ -844,6 +846,9 @@ class GatewayState:
                         "client_id", "actor_profile_id", "execution_profile_id", "game_id")):
                 self.child_time_session = None
                 self.child_time_usage["active_session"] = None
+        if self.control_state.get("active") is None \
+                and self._control_reconcile_verified_provider_stop_locked():
+            self._control_save_locked()
         self.runtime_status_path = self.config_path.with_name("runtime-status.json")
         self.gateway_runtime_path = self.config_path.with_name("gateway-runtime.json")
         self.started_at = int(time.time())
@@ -4213,8 +4218,66 @@ class GatewayState:
         self.child_time_usage["control"] = self.control_state
         self._save_child_time_usage_locked()
 
+    def _control_reconcile_verified_provider_stop_locked(
+            self, operation: dict[str, Any] | None = None) -> bool:
+        """Retire only the process identity proven stopped by this exact stream permit."""
+        stream = self.control_state.get("stream")
+        if not isinstance(stream, dict) or not self._child_time_process_token(stream):
+            return False
+        if operation is None:
+            if self.control_state.get("active") is not None:
+                return False
+            candidates = reversed(list(self.control_state.setdefault(
+                "completed", {}).values()))
+        else:
+            candidates = (operation,)
+        game_id = str(stream.get("provider_game_id") or "").strip()
+        process_token = self._child_time_process_token(stream)
+        expected_hashes = {
+            ControlOperationPolicy.effect_hash("/game/stop-verified", payload)
+            for payload in (
+                {"game_id": game_id, "expected_process_token": process_token},
+                {"force": False, "game_id": game_id,
+                 "expected_process_token": process_token},
+            )
+        }
+        exact_keys = (
+            "client_id", "actor_profile_id", "execution_profile_id",
+            "stream_session_id", "sunshine_app_id", "generation",
+            "actor_lease_epoch", "child_session_id",
+        )
+        for candidate in candidates:
+            result = candidate.get("effect_result") \
+                if isinstance(candidate, dict) else None
+            if not isinstance(result, dict) or candidate.get("state") != "succeeded" \
+                    or candidate.get("intent") != "provider_transition" \
+                    or candidate.get("direction") != "transition" \
+                    or result.get("accepted") is not True \
+                    or result.get("command") != "stop" \
+                    or result.get("stopped_current") is not True \
+                    or self._child_time_normalize_game_id(
+                        result.get("stopped_game_id")) != \
+                    self._child_time_normalize_game_id(game_id) \
+                    or candidate.get("effect_request_sha256") not in expected_hashes \
+                    or any(candidate.get(key) != stream.get(key)
+                           for key in exact_keys):
+                continue
+            stream.update({
+                "provider_game_id": "", "process_token": "", "process_id": 0,
+            })
+            DIAGNOSTICS.record(
+                "control-provider-process-retired",
+                generation=stream.get("generation"),
+                actor_lease_epoch=stream.get("actor_lease_epoch"),
+                stream_session_id=stream.get("stream_session_id"))
+            return True
+        return False
+
     def _control_bind_process_identity_locked(self, session: dict[str, Any]) -> bool:
         """Atomically bind the retained actor/time attachment and exact process."""
+        if self.child_time_session is session \
+                and self.child_terminal_operation.in_progress(session):
+            return False
         token = self._child_time_process_token(session)
         game_id = self._child_time_normalize_game_id(session.get("game_id"))
         stream = self.control_state.get("stream")
@@ -4261,6 +4324,8 @@ class GatewayState:
                                reason: str) -> dict[str, Any]:
         operation["state"] = state
         operation["reason"] = reason
+        if state == "succeeded":
+            self._control_reconcile_verified_provider_stop_locked(operation)
         completed = self.control_state.setdefault("completed", {})
         completed[str(operation["operation_id"])] = dict(operation)
         while len(completed) > 64:
@@ -4463,6 +4528,7 @@ class GatewayState:
                         "process_id") or 0) if provider_active else
                         int(stream.get("process_id") or 0)
                         if retired_child_process else 0),
+                    "provider_idle_confirmed": provider_idle,
                 })
             elif intent == "reauthorize":
                 exact = isinstance(stream, dict) and expected_generation == stream.get("generation") \
@@ -4603,9 +4669,33 @@ class GatewayState:
         while child time is attached to it."""
         if proposed["intent"] not in {"full_quit", "hard_reset"}:
             return None
+        orphan = self._child_time_recover_persisted_terminal_orphan()
+        if orphan is not None and orphan[0] != HTTPStatus.OK:
+            return orphan
         with self.control_condition:
             if proposed["operation_id"] in self.control_state.get("completed", {}):
                 return None
+            terminal = next((item for item in
+                             self.control_state.get("completed", {}).values()
+                             if isinstance(item, dict)
+                             and str(item.get("operation_id") or "").startswith(
+                                 "child-terminal:")
+                             and item.get("state") == "succeeded"
+                             and item.get("client_id") == proposed.get("client_id")
+                             and item.get("execution_profile_id") ==
+                                 proposed.get("execution_profile_id")
+                             and item.get("stream_session_id") ==
+                                 proposed.get("stream_session_id")
+                             and item.get("sunshine_app_id") ==
+                                 proposed.get("sunshine_app_id")
+                             and item.get("expected_generation") == expected_generation
+                             and item.get("generation") ==
+                                  self.control_state.get("generation")
+                             and item.get("actor_lease_epoch") ==
+                                  self.control_state.get("actor_lease_epoch")), None)
+            if terminal is not None and self.control_state.get("stream") is None \
+                    and self.control_state.get("active") is None:
+                return self._control_alias_child_terminal_locked(proposed, terminal)
             stream = self.control_state.get("stream")
             session = self.child_time_session
             exact = isinstance(stream, dict) and isinstance(session, dict) \
@@ -4621,8 +4711,12 @@ class GatewayState:
             if not exact:
                 return None
             child_operation_id = "child-terminal:" + str(session["session_id"])
+            if not self.child_terminal_operation.reserve_terminal(session):
+                return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                             "reason": "child_cleanup_required"}
         _monotonic, wall = self._child_time_now()
-        status, result = self._child_time_finish(client, session, "parent_terminated", wall)
+        status, result = self._child_time_finish_retry(
+            client, session, "parent_terminated", wall)
         if status != HTTPStatus.OK or result.get("cleanup_required"):
             return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                          "reason": "child_cleanup_required"}
@@ -4633,15 +4727,19 @@ class GatewayState:
                     self.control_state.get("stream") is not None or \
                     not isinstance(terminal, dict) or \
                     terminal.get("state") != "succeeded" or \
-                    terminal.get("generation") != self.control_state.get("generation"):
+                    terminal.get("generation") != self.control_state.get("generation") or \
+                    terminal.get("actor_lease_epoch") != \
+                        self.control_state.get("actor_lease_epoch"):
                 return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                              "reason": "stale_operation"}
-            receipt = {**proposed, "generation": terminal["generation"],
-                       "actor_lease_epoch": terminal["actor_lease_epoch"],
-                       "state": "succeeded", "reason": "none"}
-            completed[proposed["operation_id"]] = receipt
-            self._control_save_locked()
-            return HTTPStatus.OK, self._control_result(receipt)
+            return self._control_alias_child_terminal_locked(proposed, terminal)
+
+    def _control_alias_child_terminal_locked(self, proposed: dict[str, Any],
+                                             terminal: dict[str, Any]):
+        receipt = {**proposed, "generation": terminal["generation"],
+                   "actor_lease_epoch": terminal["actor_lease_epoch"],
+                   "state": "succeeded", "reason": "none"}
+        return HTTPStatus.OK, self._control_finish_locked(receipt, "succeeded", "none")
 
     def control_operation_complete(self, client: dict[str, Any], body: dict[str, Any],
                                    request_id: str) -> tuple[int, dict[str, Any]]:
@@ -4860,6 +4958,286 @@ class GatewayState:
             self._child_time_process_token(item) == token
             for item in current.get("running_games", []))
 
+    def _child_time_adopt_terminal_identity(self, session: dict[str, Any],
+                                            permit: dict[str, Any],
+                                            current: dict[str, Any]) -> bool:
+        """Persist only the exact process identity granted by this terminal permit."""
+        if current.get("kind") != "active" or \
+                self._child_time_normalize_game_id(current.get("game_id")) != \
+                self._child_time_normalize_game_id(session.get("game_id")):
+            return False
+        token = self._child_time_process_token(permit)
+        identity = current.get("identity")
+        current_token = self._child_time_process_token(identity)
+        try:
+            process_id = int(permit.get("process_id") or 0)
+            current_process_id = int((identity or {}).get("process_id") or 0)
+        except (TypeError, ValueError):
+            return False
+        if not token or process_id <= 0 or token != current_token \
+                or process_id != current_process_id:
+            return False
+        with self.control_condition:
+            active = self.control_state.get("active")
+            stream = self.control_state.get("stream")
+            exact = isinstance(active, dict) and isinstance(stream, dict) \
+                and active.get("operation_id") == \
+                    "child-terminal:" + str(session.get("session_id") or "") \
+                and active.get("state") in {"permitted", "uncertain"} \
+                and active.get("intent") == "child_terminal" \
+                and active.get("direction") == "stop" \
+                and active.get("expected_generation") == stream.get("generation") \
+                and active.get("generation") == self.control_state.get("generation") \
+                and active.get("actor_lease_epoch") == \
+                    self.control_state.get("actor_lease_epoch") \
+                and active.get("provider_game_id") \
+                and self._child_time_normalize_game_id(
+                    active.get("provider_game_id")) == \
+                    self._child_time_normalize_game_id(session.get("game_id")) \
+                and self._child_time_process_token(active) == token \
+                and int(active.get("process_id") or 0) == process_id \
+                and all(active.get(key) == session.get(key) for key in (
+                    "client_id", "actor_profile_id", "execution_profile_id")) \
+                and active.get("child_session_id") == session.get("session_id") \
+                and active.get("stream_session_id") == stream.get("stream_session_id") \
+                and active.get("sunshine_app_id") == stream.get("sunshine_app_id") \
+                and active.get("observed_sunshine_app_id") in (
+                    0, stream.get("sunshine_app_id")) \
+                and active.get("vibepollo_client_uuid") == \
+                    stream.get("vibepollo_client_uuid") \
+                and all(stream.get(key) == session.get(session_key) for key, session_key in (
+                    ("client_id", "client_id"), ("actor_profile_id", "actor_profile_id"),
+                    ("execution_profile_id", "execution_profile_id"),
+                    ("child_session_id", "session_id"))) \
+                and stream.get("stream_session_id") == session.get("stream_session_id",
+                                                                     stream.get("stream_session_id"))
+            if not exact:
+                return False
+            stream_game = self._child_time_normalize_game_id(
+                stream.get("provider_game_id"))
+            stream_token = self._child_time_process_token(stream)
+            try:
+                stream_process_id = int(stream.get("process_id") or 0)
+            except (TypeError, ValueError):
+                return False
+            if stream_game and stream_game != self._child_time_normalize_game_id(
+                    session.get("game_id")):
+                return False
+            if stream_token and stream_token != token:
+                return False
+            if stream_process_id and stream_process_id != process_id:
+                return False
+            session_token = self._child_time_process_token(session)
+            try:
+                session_process_id = int(session.get("process_id") or 0)
+            except (TypeError, ValueError):
+                return False
+            if session_token and (session_token != token or
+                                  session_process_id != process_id):
+                return False
+            session["process_token"] = token
+            session["process_id"] = process_id
+            self._child_time_bump_revision_locked()
+            self._child_time_checkpoint_locked(force=True)
+            return True
+
+    def _child_time_recover_persisted_terminal_orphan(self):
+        """Join the durable child terminal operation, never mint a replacement permit."""
+        with self.control_condition:
+            if isinstance(self.child_time_session, dict):
+                return None
+            active = self.control_state.get("active")
+            stream = self.control_state.get("stream")
+            child_result = active.get("child_terminal_result") \
+                if isinstance(active, dict) else None
+            if not isinstance(active, dict) or active.get("intent") != "child_terminal" \
+                    or active.get("direction") != "stop":
+                return None
+            if active.get("state") != "uncertain" or \
+                    not isinstance(stream, dict) or not isinstance(child_result, dict):
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_required",
+                    "operation_id": str(active.get("operation_id") or ""),
+                }
+            child_session_id = str(active.get("child_session_id") or "")
+            active_game = self._child_time_normalize_game_id(
+                active.get("provider_game_id"))
+            stream_game = self._child_time_normalize_game_id(
+                stream.get("provider_game_id"))
+            result_game = self._child_time_normalize_game_id(
+                child_result.get("game_id"))
+            token = self._child_time_process_token(active)
+            try:
+                process_id = int(active.get("process_id") or 0)
+                stream_process_id = int(stream.get("process_id") or 0)
+                active_app_id = int(active.get("sunshine_app_id") or 0)
+                stream_app_id = int(stream.get("sunshine_app_id") or 0)
+            except (TypeError, ValueError):
+                process_id = stream_process_id = active_app_id = stream_app_id = 0
+            exact = bool(child_session_id) and \
+                CHILD_TIME_SESSION_ID_PATTERN.fullmatch(child_session_id) is not None \
+                and bool(str(active.get("stream_session_id") or "")) \
+                and active_app_id > 0 and stream_app_id > 0 \
+                and active.get("operation_id") == "child-terminal:" + child_session_id \
+                and active.get("expected_generation") == stream.get("generation") \
+                and active.get("generation") == self.control_state.get("generation") \
+                and active.get("actor_lease_epoch") == \
+                    self.control_state.get("actor_lease_epoch") \
+                and active.get("generation") == int(stream.get("generation") or 0) + 1 \
+                and active.get("actor_lease_epoch") == \
+                    int(stream.get("actor_lease_epoch") or 0) + 1 \
+                and active.get("stream_session_id") == stream.get("stream_session_id") \
+                and active.get("sunshine_app_id") == stream.get("sunshine_app_id") \
+                and active.get("observed_sunshine_app_id") in (
+                    0, stream.get("sunshine_app_id")) \
+                and active.get("child_session_id") == stream.get("child_session_id") \
+                and all(active.get(key) == stream.get(key) for key in (
+                    "client_id", "actor_profile_id", "execution_profile_id",
+                    "vibepollo_client_uuid")) \
+                and active_game and active_game == result_game \
+                and (not stream_game or stream_game == active_game) \
+                and token and process_id > 0 \
+                and (not self._child_time_process_token(stream) or
+                     self._child_time_process_token(stream) == token) \
+                and (not stream_process_id or stream_process_id == process_id) \
+                and all(child_result.get(key) == active.get(key) for key in (
+                    "client_id", "actor_profile_id", "execution_profile_id"))
+            if exact and any(key in child_result and
+                             child_result.get(key) != active.get(key) for key in (
+                                 "child_session_id", "stream_session_id",
+                                 "sunshine_app_id", "generation",
+                                 "actor_lease_epoch")):
+                exact = False
+            if exact and "process_token" in child_result and \
+                    self._child_time_process_token(child_result) != token:
+                exact = False
+            if exact and "process_id" in child_result:
+                try:
+                    result_process_id = int(child_result.get("process_id") or 0)
+                except (TypeError, ValueError):
+                    result_process_id = 0
+                if result_process_id != process_id:
+                    exact = False
+            if not exact:
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_required",
+                    "operation_id": str(active.get("operation_id") or ""),
+                    "generation": int(active.get("generation") or 0),
+                    "actor_lease_epoch": int(active.get("actor_lease_epoch") or 0),
+                }
+            client_id = str(active.get("client_id") or "")
+            client = next((item for item in self.config.get("clients", [])
+                           if isinstance(item, dict) and
+                           str(item.get("id") or "") == client_id), None)
+            actor_id = str(active.get("actor_profile_id") or "")
+            parent_id = str(active.get("execution_profile_id") or "")
+            actor = self.config.get("profiles", {}).get(actor_id)
+            parent = self.config.get("profiles", {}).get(parent_id)
+            grants = client.get("profile_grants", {}).get(actor_id, []) \
+                if isinstance(client, dict) and isinstance(
+                    client.get("profile_grants"), dict) else []
+            try:
+                bound_uuid = self._child_time_client_uuid(client, parent_id) \
+                    if isinstance(client, dict) else ""
+            except PermissionError:
+                bound_uuid = ""
+            exact = isinstance(client, dict) and isinstance(actor, dict) \
+                and isinstance(parent, dict) and actor.get("kind") == CHILD_PROFILE_KIND \
+                and actor.get("enabled") is True and parent.get("kind") == STANDARD_PROFILE_KIND \
+                and parent.get("enabled") is True and "use_profile" in grants \
+                and bound_uuid == str(active.get("vibepollo_client_uuid") or "")
+            if not exact:
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_required",
+                    "operation_id": str(active.get("operation_id") or ""),
+                }
+            try:
+                current = self._child_time_current_game(parent_id)
+            except (OSError, TimeoutError, TypeError, ValueError):
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_required",
+                    "operation_id": str(active.get("operation_id") or ""),
+                }
+            current_exact = current.get("kind") == "idle" or (
+                current.get("kind") == "active" and
+                self._child_time_normalize_game_id(current.get("game_id")) == active_game and
+                self._child_time_process_token(current.get("identity")) == token and
+                int((current.get("identity") or {}).get("process_id") or 0) == process_id)
+            if not current_exact:
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_required",
+                    "operation_id": str(active.get("operation_id") or ""),
+                }
+            raw_reason = child_result.get("reason")
+            if not isinstance(raw_reason, str) or not raw_reason.strip():
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_required",
+                    "operation_id": str(active.get("operation_id") or ""),
+                }
+            reason = raw_reason.strip()
+            if reason.casefold() == "game_stopped":
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_required",
+                    "operation_id": str(active.get("operation_id") or ""),
+                }
+            expected_effect_hash = ControlOperationPolicy.effect_hash(
+                "/game/stop-verified", {
+                    "game_id": str(child_result.get("game_id") or ""),
+                    "expected_process_token": token,
+                    "force": reason.casefold() in {"replacement", "user_terminated"},
+                })
+            recorded_effect_hash = active.get("effect_request_sha256")
+            if not isinstance(recorded_effect_hash, str) or not recorded_effect_hash \
+                    or recorded_effect_hash != expected_effect_hash:
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_required",
+                    "operation_id": str(active.get("operation_id") or ""),
+                }
+            _monotonic, wall = self._child_time_now(actor)
+            session = {
+                "session_id": child_session_id,
+                "request_id": str(active.get("operation_id") or child_session_id),
+                "actor_profile_id": actor_id, "execution_profile_id": parent_id,
+                "client_id": client_id, "game_id": str(child_result.get("game_id") or ""),
+                "vibepollo_client_uuid": str(active.get("vibepollo_client_uuid") or ""),
+                "phase": "cleanup_required", "started_monotonic": _monotonic,
+                "last_monotonic": _monotonic, "last_heartbeat_monotonic": _monotonic,
+                "last_wall_epoch": wall.timestamp(),
+                "last_heartbeat_wall_epoch": wall.timestamp(),
+                "last_playable_seconds": 0.0, "process_token": token,
+                "process_id": process_id,
+                "policy_revision": int(actor.get("policy_revision", 0) or 0),
+                "control_generation": int(stream.get("generation") or 0),
+                "terminal_reason": reason, "end_reason": "cleanup_required",
+            }
+            if not self.child_terminal_operation.reserve_terminal(session):
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_in_progress",
+                    "operation_id": str(active.get("operation_id") or ""),
+                }
+            self.child_time_session = session
+            self._child_time_bump_revision_locked()
+            self._child_time_checkpoint_locked(force=True)
+        force = reason.casefold() in {"replacement", "user_terminated"}
+        status, result = self._child_time_finish_retry(
+            client, session, reason, wall, force=force)
+        if status == HTTPStatus.OK and not result.get("cleanup_required"):
+            return status, result
+        return HTTPStatus.CONFLICT, {
+            "ok": False, "state": "blocked", "phase": "cleanup_required",
+            "cleanup_required": True, "reason": "child_cleanup_required",
+            "operation_id": "child-terminal:" + child_session_id,
+        }
+
     def _child_time_stop_execution(self, client: dict[str, Any],
                                    session: dict[str, Any], wall: datetime,
                                    permit: Any, force: bool = False) \
@@ -4870,6 +5248,9 @@ class GatewayState:
         if current.get("kind") == "idle":
             return True, "none"
         token = self._child_time_process_token(session)
+        if not token and isinstance(permit, dict):
+            self._child_time_adopt_terminal_identity(session, permit, current)
+            token = self._child_time_process_token(session)
         exact = (current.get("kind") == "active" and
                  self._child_time_normalize_game_id(current.get("game_id")) ==
                  self._child_time_normalize_game_id(session.get("game_id")))
@@ -4884,6 +5265,23 @@ class GatewayState:
             "force": bool(force),
             "control_operation": self._control_bridge_binding(permit),
         }
+        effect_hash = ControlOperationPolicy.effect_hash(
+            "/game/stop-verified", {
+                "game_id": payload["game_id"],
+                "expected_process_token": token,
+                "force": bool(force),
+            })
+        with self.control_condition:
+            active = self.control_state.get("active")
+            identity = tuple(str(session.get(key) or "") for key in (
+                "client_id", "actor_profile_id", "execution_profile_id"))
+            if not ControlOperationPolicy.supplied_matches(active, permit, identity):
+                return False, "cleanup_required"
+            previous_hash = str(active.get("effect_request_sha256") or "")
+            if previous_hash and previous_hash != effect_hash:
+                return False, "cleanup_required"
+            active["effect_request_sha256"] = effect_hash
+            self._control_save_locked()
         try:
             ok, result = self.proxy_json(
                 "game_provider", "/game/stop-verified", payload,
@@ -4938,10 +5336,33 @@ class GatewayState:
         # waits for client-owned permits and cannot advance this cleanup itself.
         with self.control_condition:
             active = self.control_state.get("active")
+            idle_identity = isinstance(active, dict) \
+                and active.get("provider_idle_confirmed") is True \
+                and not self._child_time_normalize_game_id(active.get("provider_game_id")) \
+                and not self._child_time_process_token(active) \
+                and int(active.get("process_id") or 0) == 0 \
+                and not self._child_time_process_token(session) \
+                and int(session.get("process_id") or 0) == 0 \
+                and not self._child_time_process_token(stream) \
+                and int(stream.get("process_id") or 0) == 0
+            running_identity = isinstance(active, dict) \
+                and self._child_time_normalize_game_id(active.get("provider_game_id")) == \
+                    self._child_time_normalize_game_id(session.get("game_id")) \
+                and self._child_time_process_token(active) == \
+                    self._child_time_process_token(session) \
+                and int(active.get("process_id") or 0) == \
+                    int(session.get("process_id") or 0)
             if isinstance(active, dict) and active.get("operation_id") == operation_id \
                     and all(active.get(key) == session.get(key) for key in (
                         "client_id", "actor_profile_id", "execution_profile_id")) \
                     and active.get("child_session_id") == session.get("session_id") \
+                    and active.get("stream_session_id") == stream.get("stream_session_id") \
+                    and active.get("sunshine_app_id") == stream.get("sunshine_app_id") \
+                    and active.get("expected_generation") == stream.get("generation") \
+                    and active.get("generation") == self.control_state.get("generation") \
+                    and active.get("actor_lease_epoch") == \
+                        self.control_state.get("actor_lease_epoch") \
+                    and (idle_identity or running_identity) \
                     and active.get("state") in {"permitted", "uncertain"}:
                 return dict(active), "none"
         status, permit = self._child_time_control_call(session, lambda:
@@ -4965,11 +5386,23 @@ class GatewayState:
         with self.control_condition:
             self._control_recover_provider_locked()
             active = self.control_state.get("active")
+            stream = self.control_state.get("stream")
             exact = isinstance(active, dict) and active.get("operation_id") == operation_id \
                 and active.get("intent") == "provider_transition" \
                 and active.get("child_session_id") == session.get("session_id") \
                 and all(active.get(key) == session.get(key) for key in (
                     "client_id", "actor_profile_id", "execution_profile_id")) \
+                and isinstance(stream, dict) \
+                and active.get("stream_session_id") == stream.get("stream_session_id") \
+                and active.get("sunshine_app_id") == stream.get("sunshine_app_id") \
+                and active.get("expected_generation") == stream.get("generation") \
+                and active.get("generation") == self.control_state.get("generation") \
+                and active.get("actor_lease_epoch") == \
+                    self.control_state.get("actor_lease_epoch") \
+                and self._child_time_process_token(active) == \
+                    self._child_time_process_token(session) \
+                and int(active.get("process_id") or 0) == \
+                    int(session.get("process_id") or 0) \
                 and active.get("state") in {"permitted", "uncertain"}
             permit = dict(active) if exact else None
         if permit is None:
@@ -5016,10 +5449,28 @@ class GatewayState:
     def _child_time_finish(self, client: dict[str, Any], session: dict[str, Any],
                            reason: str, wall: datetime,
                            force: bool = False) -> tuple[int, dict[str, Any]]:
+        terminal = str(reason or "").casefold() != "game_stopped"
+        if terminal:
+            with self.lock:
+                if not self.child_terminal_operation.reserve_terminal(session):
+                    return HTTPStatus.CONFLICT, {
+                        "ok": False, "cleanup_required": True,
+                        "reason": "stale_session"}
         return self.child_terminal_operation.run(
-            session, str(reason or "").casefold() != "game_stopped",
+            session, terminal,
             lambda: self._child_time_finish_once(
                 client, session, reason, wall, force))
+
+    def _child_time_finish_retry(self, client: dict[str, Any], session: dict[str, Any],
+                                 reason: str, wall: datetime,
+                                 force: bool = False) -> tuple[int, dict[str, Any]]:
+        """Join once, then continue the same durable fenced cleanup once if needed."""
+        result = self._child_time_finish(client, session, reason, wall, force)
+        if result[0] == HTTPStatus.OK and not result[1].get("cleanup_required"):
+            return result
+        if not result[1].get("cleanup_required") or self.child_time_session is not session:
+            return result
+        return self._child_time_finish(client, session, reason, wall, force)
 
     def _child_time_release_lease(self, client: dict[str, Any],
                                   session: dict[str, Any], reason: str,
@@ -5038,6 +5489,16 @@ class GatewayState:
                 return HTTPStatus.CONFLICT, {
                     "ok": False, "cleanup_required": False,
                     "reason": "stale_session"}
+            if self.child_terminal_operation.in_progress(session):
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "cleanup_required": True,
+                    "reason": "child_cleanup_in_progress",
+                    "actor_profile_id": actor_id,
+                    "execution_profile_id": parent_id,
+                    "client_id": str(session.get("client_id") or ""),
+                    "game_id": str(session.get("game_id") or ""),
+                    "session_id": str(session.get("session_id") or ""),
+                }
             next_actor = str(next_actor_profile_id or "")
             if next_actor:
                 target = self.config.get("profiles", {}).get(next_actor)
@@ -5236,6 +5697,9 @@ class GatewayState:
         self.refresh_registry_if_changed()
         session_id = self._child_time_id(session_id, "child session ID")
         request_id = self._child_time_request_id(request_id or session_id)
+        orphan = self._child_time_recover_persisted_terminal_orphan()
+        if orphan is not None and orphan[0] != HTTPStatus.OK:
+            return orphan
         actor_id, parent_id, parent, actor = self._child_policy_context(
             client, actor_profile_id)
         canonical, _key, _catalog = self._resolve_child_catalog_game(parent_id, game_id)
@@ -5266,8 +5730,47 @@ class GatewayState:
             body["game_id"] = canonical
             body["session_id"] = session_id
             return HTTPStatus.CONFLICT, body
+        previous = self.child_time_session
+        if isinstance(previous, dict) and self.child_terminal_operation.in_progress(previous):
+            if not self.child_terminal_operation.wait_until_idle(previous, 38.0):
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_in_progress",
+                    "actor_profile_id": actor_id, "execution_profile_id": parent_id,
+                    "client_id": client_id, "game_id": canonical,
+                    "session_id": session_id,
+                }
+            if self.child_time_session is not previous:
+                return self.child_time_session_start(
+                    client, actor_profile_id, game_id, session_id, request_id)
+        if isinstance(previous, dict) and str(previous.get(
+                "phase") or "").casefold() in {"ending", "cleanup_required"}:
+            terminal_reason = str(previous.get("terminal_reason")
+                                  or previous.get("end_reason")
+                                  or "child_session_expired")
+            _previous_monotonic, previous_wall = self._child_time_now()
+            terminal_status, terminal = self._child_time_finish_retry(
+                client, previous, terminal_reason, previous_wall)
+            if terminal_status != HTTPStatus.OK or terminal.get("cleanup_required"):
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_required",
+                    "actor_profile_id": actor_id, "execution_profile_id": parent_id,
+                    "client_id": client_id, "game_id": canonical,
+                    "session_id": session_id,
+                }
+            return self.child_time_session_start(
+                client, actor_profile_id, game_id, session_id, request_id)
         with self.lock:
             active = self.child_time_session
+            if isinstance(active, dict) and self.child_terminal_operation.in_progress(active):
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_in_progress",
+                    "actor_profile_id": actor_id, "execution_profile_id": parent_id,
+                    "client_id": client_id, "game_id": canonical,
+                    "session_id": session_id,
+                }
             if isinstance(active, dict) and self._child_time_session_matches(
                     active, actor_id, client_id, canonical, session_id):
                 phase = str(active.get("phase") or "launch_pending")
@@ -5370,6 +5873,15 @@ class GatewayState:
             "policy_revision": int(actor.get("policy_revision", 0) or 0),
         }
         with self.lock:
+            if same_owner and self.child_time_session is active \
+                    and self.child_terminal_operation.in_progress(active):
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "cleanup_required",
+                    "cleanup_required": True, "reason": "child_cleanup_in_progress",
+                    "actor_profile_id": actor_id, "execution_profile_id": parent_id,
+                    "client_id": client_id, "game_id": canonical,
+                    "session_id": session_id,
+                }
             if same_owner:
                 if self.child_time_session is not active:
                     return HTTPStatus.CONFLICT, {
@@ -5710,6 +6222,20 @@ class GatewayState:
                 "control_generation": int(completed.get("control_generation") or 0),
                 "cleanup_required": False,
             }
+        terminal_reason = str(reason or "client_closed")
+        if terminal_reason.casefold() not in {
+                "game_stopped", "replacement", "cancelled", "actor_replaced"}:
+            with self.lock:
+                if not self.child_terminal_operation.reserve_terminal(session):
+                    return HTTPStatus.CONFLICT, {
+                        "ok": False, "state": "blocked", "phase": "cleanup_required",
+                        "cleanup_required": True, "reason": "child_cleanup_required",
+                        "actor_profile_id": str(session.get("actor_profile_id") or ""),
+                        "execution_profile_id": str(session.get(
+                            "execution_profile_id") or ""),
+                        "client_id": client_id, "game_id": str(session.get("game_id") or ""),
+                        "session_id": session_id,
+                    }
         actor_id = str(session.get("actor_profile_id") or "")
         parent_id = str(session.get("execution_profile_id") or "")
         actor = self.config.get("profiles", {}).get(actor_id)
@@ -5735,7 +6261,6 @@ class GatewayState:
                             session, _monotonic, wall,
                             float(session.get("last_playable_seconds", 0.0)))
                         self._child_time_checkpoint_locked(force=True)
-        terminal_reason = str(reason or "client_closed")
         if terminal_reason.casefold() in {
                 "game_stopped", "replacement", "cancelled", "actor_replaced"}:
             return self._child_time_release_lease(
@@ -5808,9 +6333,14 @@ class GatewayState:
             with self.lock:
                 self._control_recover_provider_locked()
                 session = self.child_time_session
-                if not isinstance(session, dict):
+            if not isinstance(session, dict):
+                orphan = self._child_time_recover_persisted_terminal_orphan()
+                if orphan is not None:
+                    return orphan
+                with self.lock:
                     self._control_reconcile_idle_locked()
-                    return None
+                return None
+            with self.lock:
                 session_id = str(session.get("session_id") or "")
                 actor_id = str(session.get("actor_profile_id") or "")
                 client_id = str(session.get("client_id") or "")

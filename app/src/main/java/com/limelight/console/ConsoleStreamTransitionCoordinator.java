@@ -6,6 +6,7 @@ import com.limelight.console.transition.LaunchTransitionSnapshot;
 import com.limelight.console.transition.LaunchTransitionSpec;
 import com.limelight.console.transition.LaunchTransitionState;
 import com.limelight.console.transition.LaunchTransitionType;
+import com.limelight.stream.RetainedStreamSessionCoordinator;
 
 import java.io.IOException;
 import java.util.HashMap;
@@ -291,6 +292,69 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             PROVIDER_OWNERS.put(key, owner == null
                     ? new ProviderOwner(replacement.transitionSpec)
                     : owner.transferTo(replacement.transitionSpec));
+        }
+        stop();
+        return true;
+    }
+
+    public static final class ProviderProcessIdentity {
+        public final String processToken;
+        public final int processId;
+
+        private ProviderProcessIdentity(String processToken, int processId) {
+            this.processToken = processToken;
+            this.processId = processId;
+        }
+    }
+
+    /** Returns the exact, unclaimed process owned by this provider observation. */
+    public ProviderProcessIdentity providerProcessIdentityForTransfer() {
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+            if (owner == null || !owner.matches(transitionSpec) || owner.cleanupClaimed
+                    || owner.processToken.isEmpty() || owner.processId <= 0) return null;
+            return new ProviderProcessIdentity(owner.processToken, owner.processId);
+        }
+    }
+
+    /** Binds an authenticated snapshot only when it identifies this exact owner. */
+    public ProviderProcessIdentity providerProcessIdentityForTransfer(
+            PlayniteTransitionGateway.Snapshot snapshot) {
+        if (snapshot == null) return null;
+        captureCurrentAttemptProcess(snapshot);
+        return providerProcessIdentityForTransfer();
+    }
+
+    /** Transfers a cross-actor owner only with one exact post-reauthorization proof. */
+    public boolean transferProviderOwnershipTo(
+            ConsoleStreamTransitionCoordinator replacement,
+            RetainedStreamSessionCoordinator.ProviderTransferAuthorization authorization) {
+        if (replacement == null || authorization == null
+                || transitionSpec.playniteGameId.isEmpty()
+                || !providerOwnerKey().equals(replacement.providerOwnerKey())
+                || !transitionSpec.id.equals(authorization.previousTransitionId)
+                || !replacement.transitionSpec.id.equals(authorization.replacementTransitionId)
+                || !normalizeOwnerPart(transitionSpec.hostId).equals(
+                normalizeOwnerPart(authorization.hostId))
+                || transitionSpec.sunshineAppId != authorization.appId
+                || replacement.transitionSpec.sunshineAppId != authorization.appId
+                || !normalizeOwnerPart(transitionSpec.playniteGameId).equals(
+                normalizeOwnerPart(authorization.playniteGameId))
+                || !normalizeOwnerPart(replacement.transitionSpec.playniteGameId).equals(
+                normalizeOwnerPart(authorization.playniteGameId))
+                || !transitionSpec.profileId.equals(authorization.previousProfileId)
+                || !replacement.transitionSpec.profileId.equals(authorization.profileId)) {
+            return false;
+        }
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            String key = providerOwnerKey();
+            ProviderOwner owner = PROVIDER_OWNERS.get(key);
+            if (owner == null || !owner.matches(transitionSpec) || owner.cleanupClaimed
+                    || !owner.processToken.equals(authorization.processToken)
+                    || owner.processId != authorization.processId
+                    || !RetainedStreamSessionCoordinator.consumeProviderTransferAuthorization(
+                    authorization)) return false;
+            PROVIDER_OWNERS.put(key, owner.transferTo(replacement.transitionSpec));
         }
         stop();
         return true;
@@ -893,7 +957,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         synchronized (PROVIDER_OWNERS_LOCK) {
             ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
             if (owner != null && owner.matches(transitionSpec)) {
-                owner.bindProcessToken(snapshot.processToken);
+                owner.bindProcessIdentity(snapshot.processToken, snapshot.processId);
             }
         }
     }
@@ -1056,17 +1120,19 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         final String gameId;
         final String profileId;
         String processToken;
+        int processId;
         boolean cleanupClaimed;
 
         ProviderOwner(LaunchTransitionSpec spec) {
-            this(spec, "");
+            this(spec, "", 0);
         }
 
-        ProviderOwner(LaunchTransitionSpec spec, String processToken) {
+        ProviderOwner(LaunchTransitionSpec spec, String processToken, int processId) {
             transitionId = spec.id;
             gameId = normalizeOwnerPart(spec.playniteGameId);
             profileId = spec.profileId;
             this.processToken = processToken == null ? "" : processToken;
+            this.processId = Math.max(0, processId);
         }
 
         boolean matches(LaunchTransitionSpec spec) {
@@ -1075,12 +1141,15 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                     && profileId.equals(spec.profileId);
         }
 
-        void bindProcessToken(String observedProcessToken) {
-            if (processToken.isEmpty()) processToken = observedProcessToken;
+        void bindProcessIdentity(String observedProcessToken, int observedProcessId) {
+            if (processToken.isEmpty()) {
+                processToken = observedProcessToken;
+                processId = Math.max(0, observedProcessId);
+            }
         }
 
         ProviderOwner transferTo(LaunchTransitionSpec replacement) {
-            return new ProviderOwner(replacement, processToken);
+            return new ProviderOwner(replacement, processToken, processId);
         }
     }
 }

@@ -146,6 +146,49 @@ public final class RetainedStreamSessionCoordinator {
         }
     }
 
+    /** One-shot proof that the host and retained transport accepted an exact actor handoff. */
+    public static final class ProviderTransferAuthorization {
+        public final String previousTransitionId;
+        public final String replacementTransitionId;
+        public final String streamSessionId;
+        public final String hostId;
+        public final String previousProfileId;
+        public final String profileId;
+        public final String executionProfileId;
+        public final int appId;
+        public final String playniteGameId;
+        public final String processToken;
+        public final int processId;
+        public final long previousGeneration;
+        public final long generation;
+        public final long actorLeaseEpoch;
+        private final Controller owner;
+        private boolean consumed;
+
+        private ProviderTransferAuthorization(
+                Controller owner, String previousTransitionId, String replacementTransitionId,
+                String streamSessionId, String hostId, String previousProfileId,
+                String profileId, String executionProfileId, int appId,
+                String playniteGameId, String processToken, int processId,
+                long previousGeneration, long generation, long actorLeaseEpoch) {
+            this.owner = owner;
+            this.previousTransitionId = normalize(previousTransitionId);
+            this.replacementTransitionId = normalize(replacementTransitionId);
+            this.streamSessionId = normalize(streamSessionId);
+            this.hostId = normalize(hostId);
+            this.previousProfileId = GatewayConnection.normalizeProfileId(previousProfileId);
+            this.profileId = GatewayConnection.normalizeProfileId(profileId);
+            this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);
+            this.appId = appId;
+            this.playniteGameId = normalize(playniteGameId);
+            this.processToken = normalize(processToken);
+            this.processId = processId;
+            this.previousGeneration = previousGeneration;
+            this.generation = generation;
+            this.actorLeaseEpoch = actorLeaseEpoch;
+        }
+    }
+
     private static State state = State.NONE;
     private static WeakReference<Controller> controller = new WeakReference<>(null);
     private static String streamSessionId = "";
@@ -403,6 +446,52 @@ public final class RetainedStreamSessionCoordinator {
                 || generation <= expectedGeneration || !commitConnection.getAsBoolean()) return false;
         profileId = GatewayConnection.normalizeProfileId(actor);
         controlGeneration = generation;
+        return true;
+    }
+
+    /** Commits reauthorization and returns exact, one-shot provider ownership proof. */
+    public static synchronized ProviderTransferAuthorization commitProviderTransferReauthorization(
+            Controller owner, String sessionId, String origin, String actor,
+            String previousTransitionId, String replacementTransitionId,
+            String expectedHostId, int expectedAppId, String expectedGameId,
+            String expectedProcessToken, int expectedProcessId,
+            long expectedGeneration, long generation, long actorLeaseEpoch,
+            java.util.function.BooleanSupplier commitConnection) {
+        String previousActor = profileId;
+        String process = normalize(expectedProcessToken);
+        if (process.isEmpty() || expectedProcessId <= 0 || actorLeaseEpoch <= 0L
+                || normalize(previousTransitionId).isEmpty()
+                || normalize(replacementTransitionId).isEmpty()
+                || !hostId.equalsIgnoreCase(normalize(expectedHostId))
+                || appId != expectedAppId
+                || !playniteGameId.equalsIgnoreCase(normalize(expectedGameId))
+                || !commitReauthorization(owner, sessionId, origin, actor,
+                expectedGeneration, generation, commitConnection)) return null;
+        return new ProviderTransferAuthorization(owner, previousTransitionId,
+                replacementTransitionId, streamSessionId, hostId, previousActor, profileId,
+                executionProfileId, appId, playniteGameId, process, expectedProcessId,
+                expectedGeneration, generation, actorLeaseEpoch);
+    }
+
+    /** Consumes provider proof only while every retained binding is still exact. */
+    public static synchronized boolean consumeProviderTransferAuthorization(
+            ProviderTransferAuthorization authorization) {
+        if (authorization == null || authorization.consumed
+                || controller.get() != authorization.owner
+                || !matches(authorization.streamSessionId)
+                || (state != State.PREPARING && state != State.HOME_LIVE
+                && state != State.PARKED_LIVE)
+                || !hostId.equalsIgnoreCase(authorization.hostId)
+                || !profileId.equals(authorization.profileId)
+                || !executionProfileId.equals(authorization.executionProfileId)
+                || appId != authorization.appId
+                || !playniteGameId.equalsIgnoreCase(authorization.playniteGameId)
+                || controlGeneration != authorization.generation
+                || authorization.previousGeneration <= 0L
+                || authorization.generation <= authorization.previousGeneration
+                || authorization.actorLeaseEpoch <= 0L
+                || authorization.processId <= 0) return false;
+        authorization.consumed = true;
         return true;
     }
 
@@ -794,6 +883,28 @@ public final class RetainedStreamSessionCoordinator {
                 && !playniteGameId.equalsIgnoreCase(normalize(newGameId)))) return false;
         playniteGameId = normalize(newGameId);
         return true;
+    }
+
+    /** Confirms every retained binding immediately before an external switch mutation. */
+    public static synchronized boolean ownsSwitchBeforeMutation(
+            Controller expectedOwner, SwitchRequest request,
+            long expectedControlGeneration) {
+        return request != null && !request.preparing
+                && expectedControlGeneration > 0L
+                && (state == State.HOME_LIVE || state == State.PARKED_LIVE)
+                && controller.get() == expectedOwner && switchOwner == expectedOwner
+                && streamSessionId.equals(request.streamSessionId)
+                && switchSessionId.equals(request.streamSessionId)
+                && hostId.equalsIgnoreCase(request.hostId)
+                && profileId.equals(request.profileId)
+                && executionProfileId.equals(request.executionProfileId)
+                && appId == request.appId
+                && playniteGameId.equalsIgnoreCase(request.oldGameId)
+                && transitionId.equals(request.transitionId)
+                && attempt == request.attempt
+                && switchTransitionId.equals(request.transitionId)
+                && switchAttempt == request.attempt
+                && controlGeneration == expectedControlGeneration;
     }
 
     public static synchronized boolean updateGameIfMatches(

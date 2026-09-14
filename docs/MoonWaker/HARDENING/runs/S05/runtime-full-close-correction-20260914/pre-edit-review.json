@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "stage": "PRE_EDIT_CONTRACT_REVIEW",
+  "input_head": "e049e9f8394094f3409b45f6bb300234cb7b3382",
+  "input_fingerprint": "sha256:5474098e46a5e38ba30743037fbcc6984d3d188ee21965e1c111c8d8ba148c04",
+  "independent_context": "/root/s05_preedit_review",
+  "verdict": "ACCEPT_WITH_REQUIREMENTS",
+  "product_edits_performed": false,
+  "diagnosis": "Two defects compound. After retained A-to-B, Game starts child monitoring while retainedSwitch is still set, the guarded lifecycle tick exits without rescheduling, and finishRetainedSwitch clears the marker without restarting the common monitor, so the new child session can remain launch_pending and tokenless. Independently, non-terminal child_time_session_end reasons can call _child_time_release_lease after full_quit reserved ChildTerminalOperation; the release can erase active_session while the exact terminal close is still unresolved, leaving an orphaned uncertain control barrier that later starts cannot join through the missing session.",
+  "installed_state_alignment": "The installed projection is consistent with the diagnosis: active_session is null, the child-terminal operation at generation and actor epoch 166 is uncertain with effect_result_uncertain, while the retained stream remains at generation and actor epoch 165 for the same child session and provider process. Eligibility remains 200 but subsequent starts return 409 for both tested children.",
+  "required_corrections": [
+    "Clear retainedSwitch before restarting the existing ChildSessionLifecycle for an accepted child binding, including the recovery completion path.",
+    "Allow a child-terminal reservation to adopt only the fresh exact provider identity carried by its own permit when the matching launch_pending child session is tokenless.",
+    "Persist the adopted exact identity so a retry after an uncertain or lost response uses the same fenced identity.",
+    "Route or join non-terminal release through the existing ChildTerminalOperation so cancelled, game_stopped, replacement and actor_replaced cannot delete the matching child session after terminal reservation.",
+    "Repair the already persisted exact orphan using the same operation ID and durable child-terminal result only when complete stream, control, generation, actor-epoch, client, execution-profile, app, child-session, game, process and effect-hash evidence agrees; otherwise remain fail-closed."
+  ],
+  "mandatory_regressions": [
+    "Android ordering contract: retainedSwitch is cleared before monitoring restarts.",
+    "Gateway tokenless launch_pending plus exact current process plus child full_quit completes stop and stream close, clears child/control state, and permits a fresh 202 start.",
+    "Retry after a lost stop response reuses the same exact permit and identity without double cleanup.",
+    "Wrong or stale token, newer generation, newer actor epoch, replacement process and incomplete orphan evidence are never touched."
+  ],
+  "unsafe_substitutes_rejected": [
+    "A parallel child stream lifecycle or state store",
+    "Fail-open clearing of stream or control ownership",
+    "Process-name or PID-only kill",
+    "Game-only end in place of whole-stream quit",
+    "Weakening client, execution-profile, stream, app, child-session, generation or actor-epoch fences",
+    "Mapping the generic UI message without repairing the terminal state machine"
+  ],
+  "deterministic_fail_before": {
+    "working_directory": "host-services/gateway",
+    "result": "release 200; close 409 child_cleanup_required; active_session null with child_terminal generation 2 and stream generation 1; next start 409 retained_process_unconfirmed",
+    "interpretation": "A non-terminal release erased the attachment after terminal reservation, reproducing the exact durable shape observed on the installed host."
+  }
+}

@@ -52,8 +52,9 @@
   "architecture_report": "runs/S04/architecture.json",
   "device_evidence": "runs/S04/operator-device-result-20260910.json",
   "blockers": [
-    "The operator reports a successful physical S04 stop/reconnect test, but the available post-install trace does not prove native stop completion before replacement start. Sanitized candidate-bound trace evidence remains required."
+    "The S04 device gate now passes, but formal checkpoint acceptance is blocked by the still-unaccepted S03 predecessor."
   ],
+  "final_device_evidence": "runs/S04/final-acceptance-20260914.json",
   "notes": [
     "The first full-unit attempt selected an empty sandbox Gradle home and failed before configuration while trying to download Gradle 8.7. It was rerun offline with the existing C:/Users/Basia/.gradle cache and passed; this is an environment precondition failure, not a product test failure.",
     "After code verification, the user separately authorized installation of the exact debug APK on the TV. Installation, launch and on-device digest equality are recorded in runs/S04/device-install.json; the stop/reconnect scenario remains pending."

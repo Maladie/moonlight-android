@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "task_id": "S05",
+  "run_id": "s05-runtime-switch-review-20260914",
+  "implementer_run_id": "s05-runtime-switch-correction-20260914",
+  "independent_context": true,
+  "reviewed_fingerprint": "sha256:d831297638e49f5b9a17739254cf907a5d39375d099022074d34f05000ee7b03",
+  "stage": "CODE",
+  "verdict": "ACCEPT",
+  "focus": [
+    "generation and actor lease epoch fencing",
+    "wrong process or stream takeover",
+    "child-only lifecycle reintroduction",
+    "persistent uncertain barriers",
+    "double cleanup or compensation",
+    "tests passing despite provider or stream restart"
+  ],
+  "confirmation": [
+    "The receipt must match the exact client, actor, execution profile, stream, app, generation, actor epoch and child session plus the stop effect hash for the exact game and process token.",
+    "A receipt for the stopped process cannot clear a replacement process token.",
+    "The repair clears only provider_game_id, process_token and process_id and preserves retained stream ownership and all stream fences.",
+    "Startup repair does not run while an active or recovered uncertain control operation exists.",
+    "No child-specific provider or stream lifecycle was introduced and no provider-stop or streamer-close effect is added by the reconciliation.",
+    "The reviewer independently repeated the three new regression tests; all passed."
+  ],
+  "findings": [],
+  "limitations": [
+    "Physical Windows/TV validation and delivery of the corrected Gateway were outside the review and remain pending."
+  ]
+}

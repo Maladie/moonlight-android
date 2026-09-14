@@ -162,6 +162,11 @@ public class S05ControlPlaneContractTest {
                 "private void releaseUnusedAllowance(");
         assertTrue(transfer.contains("RetainedControlHandoff.finish("));
         assertTrue(transfer.contains("RetainedStreamSessionCoordinator.commitReauthorization("));
+        assertTrue(transfer.contains(
+                "RetainedStreamSessionCoordinator.commitProviderTransferReauthorization("));
+        assertTrue(transfer.contains("providerIdentity.processToken"));
+        assertTrue(transfer.contains("providerIdentity.processId"));
+        assertTrue(transfer.contains("authorization.actorLeaseEpoch"));
         assertFalse(transfer.contains("RetainedStreamSessionCoordinator.bindActor("));
         assertTrue(transfer.contains("authorizationCompensated.compareAndSet(false, true)"));
         assertTrue(transfer.contains("authorization.streamSessionId, authorization.sunshineAppId"));

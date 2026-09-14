@@ -612,6 +612,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private long screenSaverMotionBlockUntil;
     private List<PlayniteDashboardItem> screenSaverItems = Collections.emptyList();
     private String screenSaverHostUuid = "";
+    private HostProfileKey screenSaverProfileKey;
     private int screenSaverItemIndex;
     private final Runnable screenSaverTimeout = this::showScreenSaver;
     private final Runnable screenSaverSlide = this::showNextScreenSaverArtwork;
@@ -807,6 +808,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String pendingPlayniteSelectionGameId;
     private boolean pendingPlayniteSelectionExpanded;
     private List<PlayniteLibraryGame> currentPlayniteGames = Collections.emptyList();
+    private volatile HostProfileKey currentPlayniteProfileKey;
     private List<PlayniteDashboardItem> renderedPlayniteItems = Collections.emptyList();
     private List<PlayniteDashboardItem> allPlayniteItems = Collections.emptyList();
     private List<PlayniteDashboardItem> unfilteredPlayniteItems = Collections.emptyList();
@@ -3764,6 +3766,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         cancelPlayniteArtworkPrefetch();
         artworkGeneration.incrementAndGet();
         currentPlayniteGames = Collections.emptyList();
+        currentPlayniteProfileKey = null;
         currentPlayniteHostUuid = null;
         renderedPlayniteItems = Collections.emptyList();
         allPlayniteItems = Collections.emptyList();
@@ -4707,6 +4710,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return new HostProfileKey(hostId, selectedProfileId(hostId));
     }
 
+    private boolean currentPlayniteProjectionMatches(HostProfileKey expected) {
+        return HostProfileKey.isCurrentProjection(expected, currentPlayniteProfileKey,
+                expected == null ? null : selectedProfileKey(expected.hostId));
+    }
+
     private String profileStateKey(String hostId) {
         return selectedProfileKey(hostId).cacheKey();
     }
@@ -4887,12 +4895,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         profileGeneration.incrementAndGet();
         cancelPlayniteRequest();
         cancelPlayniteArtworkPrefetch();
+        appListRenderGeneration.incrementAndGet();
+        resetInitialCarouselArtworkWarmup();
         gameOperationsController.close();
         gameOperationsController = new GameOperationsController(
                 hostGatewayClient, executor, mainHandler::post);
         currentPlayniteGames = Collections.emptyList();
+        currentPlayniteProfileKey = null;
         currentSunshineApps = Collections.emptyList();
         currentPlayniteHostUuid = null;
+        renderedPlayniteItems = Collections.emptyList();
+        allPlayniteItems = Collections.emptyList();
+        unfilteredPlayniteItems = Collections.emptyList();
+        playniteSessionProjection = null;
+        initialLibraryPresentation = null;
+        clearArtwork();
         renderedAppsSignature = null;
         return true;
     }
@@ -8526,12 +8543,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void renderAppsAsync(ComputerDetails host, boolean focusApps) {
         String uuid = host.uuid;
+        HostProfileKey requestKey = selectedProfileKey(uuid);
         int generation = appListRenderGeneration.incrementAndGet();
         executor.execute(() -> {
             List<NvApp> apps = loadApps(host);
             mainHandler.post(() -> runLibraryUpdateWhenNavigationIdle(() -> {
                 if (generation != appListRenderGeneration.get()) return;
                 if (!uuid.equals(selectedHostUuid)) return;
+                if (!requestKey.equals(selectedProfileKey(uuid))) return;
                 ComputerDetails latestHost = currentHost(uuid);
                 if (latestHost == null) return;
                 currentSunshineApps = Collections.unmodifiableList(new ArrayList<>(apps));
@@ -8540,7 +8559,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     settleInitialLocalPresentation(latestHost);
                     return;
                 }
-                boolean playniteAvailable = !currentPlayniteGames.isEmpty() ||
+                boolean playniteAvailable = currentPlayniteProjectionMatches(requestKey)
+                        && !currentPlayniteGames.isEmpty() ||
                         hostGatewayStore.loadForHost(latestHost.uuid,
                                 latestHost.activeAddress != null ? latestHost.activeAddress.address : null) != null;
                 if (playniteAvailable) {
@@ -8593,6 +8613,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (cached == null || host == null
                 || !selectedProfileKey(host.uuid).equals(cached.profileKey)) return false;
         currentPlayniteHostUuid = host.uuid;
+        currentPlayniteProfileKey = cached.profileKey;
         currentPlayniteGames = cached.games;
         currentSunshineApps = cached.sunshineApps;
         playniteLibraryCached = true;
@@ -8608,13 +8629,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void loadPlayniteForHost(ComputerDetails host) {
         if (host == null || profileGateHostUuid != null) return;
         HostProfileKey requestKey = selectedProfileKey(host.uuid);
-        if (host.uuid.equals(currentPlayniteHostUuid) && !currentPlayniteGames.isEmpty()) {
+        if (requestKey.equals(currentPlayniteProfileKey)
+                && host.uuid.equals(currentPlayniteHostUuid)
+                && !currentPlayniteGames.isEmpty()) {
             requestPlayniteRefresh(host, false);
             return;
         }
         cancelPlayniteRequest();
         int token = playniteGeneration.incrementAndGet();
         currentPlayniteHostUuid = host.uuid;
+        currentPlayniteProfileKey = requestKey;
         currentPlayniteGames = Collections.emptyList();
         renderedPlayniteItems = Collections.emptyList();
         allPlayniteItems = Collections.emptyList();
@@ -8632,6 +8656,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         !host.uuid.equals(selectedHostUuid)
                         || !requestKey.equals(selectedProfileKey(host.uuid))) return;
                 if (cached != null) {
+                    currentPlayniteProfileKey = requestKey;
                     currentPlayniteGames = cached.games;
                     playniteLibraryCached = true;
                     playniteLibraryCachedAt = cached.savedAt;
@@ -8724,6 +8749,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (latestHost == null) return;
                 if (result.entry != null) {
                     boolean libraryChanged = !result.entry.games.equals(currentPlayniteGames);
+                    currentPlayniteProfileKey = requestKey;
                     currentPlayniteGames = result.entry.games;
                     playniteLibraryCachedAt = result.entry.savedAt;
                     playniteLibraryCached = false;
@@ -9438,6 +9464,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void renderPlayniteLibrary(ComputerDetails host, List<NvApp> apps) {
         if (host == null || !host.uuid.equals(selectedHostUuid)) return;
+        HostProfileKey requestedKey = selectedProfileKey(host.uuid);
+        if (!currentPlayniteProjectionMatches(requestedKey)) {
+            currentPlayniteGames = Collections.emptyList();
+            currentPlayniteProfileKey = null;
+            currentPlayniteHostUuid = null;
+            renderedPlayniteItems = Collections.emptyList();
+            allPlayniteItems = Collections.emptyList();
+            unfilteredPlayniteItems = Collections.emptyList();
+            renderApps(host, apps);
+            return;
+        }
         scheduleChildEligibilityBoundary(host);
         String previousResumeGameId = resumePlayniteGameId;
         String previousSuspendedGameId = suspendedPlayniteGameId;
@@ -9530,7 +9567,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         updateHostSelector();
         updatePlayniteLibraryStatus(host);
         initialLibraryPresentation = new InitialLibraryPresentation(
-                selectedProfileKey(host.uuid), currentPlayniteGames, currentSunshineApps, allPlayniteItems,
+                requestedKey, currentPlayniteGames, currentSunshineApps, allPlayniteItems,
                 unfilteredPlayniteItems, renderedPlayniteItems,
                 playniteSessionProjection, resumePlayniteGameId,
                 suspendedPlayniteGameId, renderedCarouselSessionSignature,
@@ -11853,7 +11890,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void loadPlaynitePoster(ComputerDetails host, PlayniteDashboardItem item,
                                     ImageView poster, boolean allowNetwork) {
         ComputerDetails latestHost = currentHost(host.uuid);
-        if (latestHost == null) return;
+        HostProfileKey profileKey = currentPlayniteProfileKey;
+        if (latestHost == null || !currentPlayniteProjectionMatches(profileKey)
+                || !profileKey.hostId.equalsIgnoreCase(latestHost.uuid)) return;
         PlayniteArtworkSpec spec = playniteCardArtworkSpec(item.game);
         if (!spec.available()) return;
         ArtworkResult cached = cachedPlayniteArtwork(latestHost.uuid, item, spec);
@@ -11875,7 +11914,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String address = latestHost.activeAddress != null
                 ? latestHost.activeAddress.address : null;
         GatewayConnection connection =
-                hostGatewayStore.loadForHost(latestHost.uuid, address);
+                hostGatewayStore.loadForHost(latestHost.uuid, address, profileKey.profileId);
         if (connection == null) return;
         executor.execute(() -> {
             try {
@@ -11883,7 +11922,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         item, spec);
                 mainHandler.post(() -> {
                     Object expected = poster.getTag(R.id.playnite_artwork_key);
-                    if (expectedTag.equals(expected)) {
+                    if (currentPlayniteProjectionMatches(profileKey)
+                            && expectedTag.equals(expected)) {
                         loadPlayniteBitmap(result.file, poster, expectedTag, result.kind);
                         if (poster.hasFocus() || cardParentHasFocus(poster)) {
                             if (CONSOLE_UI_V2) {
@@ -11913,9 +11953,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void schedulePlayniteArtworkPrefetch(ComputerDetails host,
                                                   List<PlayniteDashboardItem> items,
                                                   Set<String> backdropIds) {
-        if (!active || host == null || items.isEmpty()) return;
+        HostProfileKey profileKey = currentPlayniteProfileKey;
+        if (!active || host == null || items.isEmpty()
+                || !currentPlayniteProjectionMatches(profileKey)
+                || !profileKey.hostId.equalsIgnoreCase(host.uuid)) return;
         StringBuilder signature = new StringBuilder(
-                selectedProfileKey(host.uuid).cacheKey());
+                profileKey.cacheKey());
         for (PlayniteDashboardItem item : items) {
             signature.append('|').append(item.stableId()).append(':')
                     .append(playniteCardArtworkSpec(item.game).cacheIdentity());
@@ -11937,7 +11980,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ? latestHost.activeAddress.address : null;
         GatewayConnection connection =
                 hostGatewayStore.loadForHost(latestHost.uuid, address,
-                        selectedProfileId(latestHost.uuid));
+                        profileKey.profileId);
         if (connection == null) return;
         int token = playniteArtworkGeneration.incrementAndGet();
         List<PlayniteDashboardItem> snapshot = new ArrayList<>(items);
@@ -11947,7 +11990,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             Future<?> task = playniteArtworkExecutor.submit(() -> {
                 for (int index = offset; index < snapshot.size(); index += workers) {
                     if (Thread.currentThread().isInterrupted()
-                            || token != playniteArtworkGeneration.get()) return;
+                            || token != playniteArtworkGeneration.get()
+                            || !currentPlayniteProjectionMatches(profileKey)) return;
                     prefetchPlayniteArtwork(connection, latestHost, snapshot.get(index),
                             backdropIds.contains(snapshot.get(index).stableId()), token);
                 }
@@ -11961,6 +12005,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                          ComputerDetails host,
                                          PlayniteDashboardItem item,
                                          boolean includeBackdrops, int token) {
+        HostProfileKey profileKey = new HostProfileKey(host.uuid, connection.profileId());
+        if (!currentPlayniteProjectionMatches(profileKey)) return;
         PlayniteArtworkSpec spec = playniteCardArtworkSpec(item.game);
         if (!spec.available()) return;
         try {
@@ -11975,7 +12021,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             cachePlayniteBitmap(result.file);
             ArtworkResult ready = result;
             mainHandler.post(() -> applyPrefetchedPlayniteArtwork(
-                    token, host.uuid, item, ready));
+                    token, profileKey, item, ready));
             if (!CONSOLE_UI_V2 || !includeBackdrops) return;
             PlayniteArtworkSpec backdropSpec = PlayniteArtworkSpec.forBackdrop(item.game);
             if (backdropSpec.available()
@@ -11993,6 +12039,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 mainHandler.post(() -> {
                     View card = directChildWithTag(appRow, "playnite:" + item.stableId());
                     if (token == playniteArtworkGeneration.get()
+                            && currentPlayniteProjectionMatches(profileKey)
                             && card != null && card.hasFocus()) {
                         showArtwork(readyBackdrop.file, null);
                     }
@@ -12031,7 +12078,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private ArtworkResult cachedPlayniteArtwork(String hostUuid, PlayniteDashboardItem item,
                                                  PlayniteArtworkSpec spec) {
-        HostProfileKey key = selectedProfileKey(hostUuid);
+        HostProfileKey key = currentPlayniteProfileKey;
+        if (!currentPlayniteProjectionMatches(key)) return null;
+        return cachedPlayniteArtwork(key, hostUuid, item, spec);
+    }
+
+    private ArtworkResult cachedPlayniteArtwork(HostProfileKey key, String hostUuid,
+                                                 PlayniteDashboardItem item,
+                                                 PlayniteArtworkSpec spec) {
+        if (key == null || !key.hostId.equalsIgnoreCase(hostUuid)
+                || !key.equals(selectedProfileKey(hostUuid))) return null;
         File primary = playniteArtworkCache.get(key, item.stableId(),
                 spec.kind, spec.version);
         if (primary != null && primary.isFile() && primary.length() > 0) {
@@ -12083,23 +12139,45 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private ArtworkResult fetchPlayniteArtwork(GatewayConnection connection,
                                                 String hostUuid,
+                                                 PlayniteDashboardItem item,
+                                                 PlayniteArtworkSpec spec) throws IOException {
+        HostProfileKey key = currentPlayniteProfileKey;
+        if (!currentPlayniteProjectionMatches(key)) {
+            throw new IOException("stale_library_projection");
+        }
+        return fetchPlayniteArtwork(connection, key, hostUuid, item, spec);
+    }
+
+    private ArtworkResult fetchPlayniteArtwork(GatewayConnection connection,
+                                                HostProfileKey key,
+                                                String hostUuid,
                                                 PlayniteDashboardItem item,
                                                 PlayniteArtworkSpec spec) throws IOException {
+        if (key == null || !key.hostId.equalsIgnoreCase(hostUuid)
+                || !key.equals(selectedProfileKey(hostUuid))
+                || connection == null || !key.profileId.equals(connection.profileId())) {
+            throw new IOException("stale_library_projection");
+        }
         try {
             return new ArtworkResult(playniteArtworkCache.fetch(hostGatewayClient, connection,
                     hostUuid, item.stableId(), spec.kind, spec.version), spec.kind);
         } catch (IOException primaryFailure) {
             if (!spec.hasFallback()) throw primaryFailure;
+            if (!key.equals(selectedProfileKey(hostUuid))) {
+                throw new IOException("stale_library_projection", primaryFailure);
+            }
             return new ArtworkResult(playniteArtworkCache.fetch(hostGatewayClient, connection,
                     hostUuid, item.stableId(), spec.fallbackKind, spec.fallbackVersion),
                     spec.fallbackKind);
         }
     }
 
-    private void applyPrefetchedPlayniteArtwork(int token, String hostUuid,
+    private void applyPrefetchedPlayniteArtwork(int token, HostProfileKey profileKey,
                                                  PlayniteDashboardItem item,
                                                  ArtworkResult result) {
-        if (token != playniteArtworkGeneration.get() || !hostUuid.equals(selectedHostUuid)) return;
+        String hostUuid = profileKey.hostId;
+        if (token != playniteArtworkGeneration.get() || !hostUuid.equals(selectedHostUuid)
+                || !currentPlayniteProjectionMatches(profileKey)) return;
         View card = directChildWithTag(appRow, "playnite:" + item.stableId());
         if (card == null && expandedGrid != null) {
             card = directChildWithTag(expandedGrid, "playnite:" + item.stableId());
@@ -12127,7 +12205,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private String playniteArtworkTag(PlayniteDashboardItem item) {
-        return selectedProfileId(selectedHostUuid) + ":" + item.stableId() + ":"
+        HostProfileKey key = currentPlayniteProfileKey;
+        String profile = currentPlayniteProjectionMatches(key) ? key.profileId : "stale";
+        return profile + ":" + item.stableId() + ":"
                 + playniteCardArtworkSpec(
                 item.game).cacheIdentity();
     }
@@ -12140,7 +12220,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void showPlayniteBackdrop(ComputerDetails host, PlayniteDashboardItem item,
                                       ImageView poster, boolean allowNetwork) {
-        if (host == null) return;
+        HostProfileKey profileKey = currentPlayniteProfileKey;
+        if (host == null || !currentPlayniteProjectionMatches(profileKey)
+                || !profileKey.hostId.equalsIgnoreCase(host.uuid)) return;
         PlayniteArtworkSpec spec = PlayniteArtworkSpec.forBackdrop(item.game);
         if (!spec.available()) return;
         ArtworkResult cached = cachedPlayniteArtwork(host.uuid, item, spec);
@@ -12151,7 +12233,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (!allowNetwork) return;
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         GatewayConnection connection =
-                hostGatewayStore.loadForHost(host.uuid, address);
+                hostGatewayStore.loadForHost(host.uuid, address, profileKey.profileId);
         if (connection == null) return;
         String expectedTag = playniteArtworkTag(item);
         executor.execute(() -> {
@@ -12159,7 +12241,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ArtworkResult result = fetchPlayniteArtwork(
                         connection, host.uuid, item, spec);
                 mainHandler.post(() -> {
-                    if (!expectedTag.equals(poster.getTag(R.id.playnite_artwork_key))
+                    if (!currentPlayniteProjectionMatches(profileKey)
+                            || !expectedTag.equals(poster.getTag(R.id.playnite_artwork_key))
                             || !(poster.hasFocus() || cardParentHasFocus(poster))) return;
                     showArtwork(result.file, poster.getDrawable());
                 });
@@ -13219,7 +13302,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                                       String gameId) {
         HostProfileKey key = new HostProfileKey(hostUuid, profileId);
         if (normalizeId(hostUuid).equalsIgnoreCase(normalizeId(currentPlayniteHostUuid))
-                && key.equals(selectedProfileKey(hostUuid))) {
+                && currentPlayniteProjectionMatches(key)) {
             PlayniteLibraryGame current = findProviderGame(currentPlayniteGames, gameId);
             if (current != null) return current;
         }
@@ -15848,12 +15931,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             resetScreenSaverTimer();
             return;
         }
-        List<PlayniteDashboardItem> eligible = screenSaverItems(allPlayniteItems);
+        HostProfileKey profileKey = selectedProfileKey(hostUuid);
+        List<PlayniteDashboardItem> eligible = currentPlayniteProjectionMatches(profileKey)
+                ? screenSaverItems(allPlayniteItems) : Collections.emptyList();
         if (eligible.isEmpty() && hostSelectionVisible) {
             String cachedHostUuid = hostUuid;
+            HostProfileKey cachedProfileKey = profileKey;
             int loadGeneration = screenSaverLoadGeneration;
             executor.execute(() -> {
-                PlayniteLibraryCache.Entry cached = playniteLibraryRepository.cached(cachedHostUuid);
+                PlayniteLibraryCache.Entry cached = playniteLibraryRepository.cached(
+                        cachedProfileKey);
                 List<PlayniteDashboardItem> cachedItems = new ArrayList<>();
                 if (cached != null) {
                     for (PlayniteLibraryGame game : cached.games) {
@@ -15862,14 +15949,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                 }
                 mainHandler.post(() -> {
-                    if (loadGeneration == screenSaverLoadGeneration) {
-                        startScreenSaver(cachedHostUuid, screenSaverItems(cachedItems));
+                    if (loadGeneration == screenSaverLoadGeneration
+                            && cachedProfileKey.equals(selectedProfileKey(cachedHostUuid))) {
+                        startScreenSaver(cachedProfileKey, screenSaverItems(cachedItems));
                     }
                 });
             });
             return;
         }
-        startScreenSaver(hostUuid, eligible);
+        startScreenSaver(profileKey, eligible);
     }
 
     private List<PlayniteDashboardItem> screenSaverItems(
@@ -15884,14 +15972,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return eligible;
     }
 
-    private void startScreenSaver(String hostUuid, List<PlayniteDashboardItem> eligible) {
-        if (!active || screenSaverVisible) return;
+    private void startScreenSaver(HostProfileKey profileKey,
+                                  List<PlayniteDashboardItem> eligible) {
+        if (!active || screenSaverVisible || profileKey == null
+                || !profileKey.equals(selectedProfileKey(profileKey.hostId))) return;
         if (eligible.isEmpty()) {
             resetScreenSaverTimer();
             return;
         }
         Collections.shuffle(eligible);
-        screenSaverHostUuid = hostUuid;
+        screenSaverHostUuid = profileKey.hostId;
+        screenSaverProfileKey = profileKey;
         screenSaverItems = eligible;
         screenSaverItemIndex = 0;
         screenSaverGeneration++;
@@ -15905,17 +15996,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         PlayniteDashboardItem item = screenSaverItems.get(
                 screenSaverItemIndex++ % screenSaverItems.size());
         String hostUuid = screenSaverHostUuid;
+        HostProfileKey profileKey = screenSaverProfileKey;
+        if (profileKey == null || !profileKey.equals(selectedProfileKey(hostUuid))) return;
         ComputerDetails host = hosts.get(hostUuid);
         executor.execute(() -> {
             PlayniteArtworkSpec spec = PlayniteArtworkSpec.forScreenSaver(item.game);
-            ArtworkResult result = cachedPlayniteArtwork(hostUuid, item, spec);
+            ArtworkResult result = cachedPlayniteArtwork(profileKey, hostUuid, item, spec);
             if (result == null && host != null) {
                 String address = host.activeAddress != null ? host.activeAddress.address : null;
                 GatewayConnection connection =
-                        hostGatewayStore.loadForHost(hostUuid, address);
+                        hostGatewayStore.loadForHost(hostUuid, address, profileKey.profileId);
                 if (connection != null) {
                     try {
-                        result = fetchPlayniteArtwork(connection, hostUuid, item, spec);
+                        result = fetchPlayniteArtwork(
+                                connection, profileKey, hostUuid, item, spec);
                     } catch (IOException ignored) { }
                 }
             }
@@ -15926,12 +16020,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
             Bitmap selectedBitmap = bitmap;
             mainHandler.post(() -> applyScreenSaverArtwork(
-                    generation, item.game.name, selectedBitmap));
+                    generation, profileKey, item.game.name, selectedBitmap));
         });
     }
 
-    private void applyScreenSaverArtwork(int generation, String title, Bitmap bitmap) {
-        if (!active || generation != screenSaverGeneration) return;
+    private void applyScreenSaverArtwork(int generation, HostProfileKey profileKey,
+                                         String title, Bitmap bitmap) {
+        if (!active || generation != screenSaverGeneration
+                || !profileKey.equals(screenSaverProfileKey)
+                || !profileKey.equals(selectedProfileKey(profileKey.hostId))) return;
         if (bitmap == null) {
             if (screenSaverItemIndex < screenSaverItems.size()) {
                 showNextScreenSaverArtwork();
@@ -15969,6 +16066,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         mainHandler.removeCallbacks(screenSaverSlide);
         screenSaverGeneration++;
         screenSaverItems = Collections.emptyList();
+        screenSaverProfileKey = null;
         if (screenSaverLayer != null) screenSaverLayer.setVisibility(View.GONE);
         if (screenSaverArtwork != null) screenSaverArtwork.setImageDrawable(null);
         if (screenSaverArtworkNext != null) screenSaverArtworkNext.setImageDrawable(null);
