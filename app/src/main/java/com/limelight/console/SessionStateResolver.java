@@ -145,6 +145,7 @@ final class SessionStateResolver {
         private long producerRevision;
         private HostGatewayClient.SessionObservation observation;
         private long observationAcceptedAtMs;
+        private long lastResolvedAtMs = -1L;
         private String episodeKey = "";
         private long episodeDeadlineMs;
         private SessionSnapshot published;
@@ -201,6 +202,10 @@ final class SessionStateResolver {
                 }
             }
             published = publish(project(retained, LocalFacts.NONE, nowMs, ""), nowMs);
+            if (published.observationState == SessionSnapshot.ObservationState.READY
+                    || published.observationState == SessionSnapshot.ObservationState.IDLE) {
+                lastResolvedAtMs = nowMs;
+            }
             return true;
         }
 
@@ -320,7 +325,10 @@ final class SessionStateResolver {
                     && evidence.gameEvidence == HostGatewayClient.Evidence.ABSENT
                     && "idle".equals(evidence.gameState)
                     && (!matchingTransport || knownLive);
-            boolean expired = episodeDeadlineMs > 0L && nowMs >= episodeDeadlineMs;
+            // A resolved (READY/IDLE) projection that merely goes stale between polls gets a
+            // fresh bounded window; an unresolved episode never extends its own deadline.
+            boolean expired = episodeDeadlineMs > 0L && nowMs >= Math.max(episodeDeadlineMs,
+                    lastResolvedAtMs >= 0L ? lastResolvedAtMs + OBSERVATION_LIVENESS_MS : 0L);
             SessionSnapshot.ObservationState disposition = ready
                     ? SessionSnapshot.ObservationState.READY
                     : idle ? SessionSnapshot.ObservationState.IDLE

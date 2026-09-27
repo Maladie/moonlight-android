@@ -265,6 +265,39 @@ public class SessionStateProjectionTest {
         assertEquals(afterAccept + 1, owner.diagnosticEventsForTests());
     }
 
+    @Test public void readyProjectionThatGoesStaleBetweenPollsGetsABoundedPendingWindow() {
+        Controller controller = new Controller();
+        RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",
+                "child", 42, "game");
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                controller, "session", 1L));
+        long first = owner.nextRequestOrdinal();
+        assertTrue(owner.accept(ready("boot-ready", first),
+                RetainedStreamSessionCoordinator.snapshot(), 0L));
+        long second = owner.nextRequestOrdinal();
+        // Same episode, provider freshness 5 s (the lab provider value), polled every ~6 s.
+        HostGatewayClient.SessionObservation again = new HostGatewayClient.SessionObservation(
+                "boot-ready", 2L, 1_000L, 5_000L, "running", 1_000L, "child", "parent",
+                second, "", "operation", "session", 1L, 1L, "running",
+                HostGatewayClient.Evidence.VERIFIED, "running",
+                HostGatewayClient.Evidence.VERIFIED, "game",
+                HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
+                HostGatewayClient.Evidence.VERIFIED, true, "game", 3, "target_window_ready",
+                false, true, false);
+        assertTrue(owner.accept(again, RetainedStreamSessionCoordinator.snapshot(), 20_000L));
+        assertEquals(SessionSnapshot.ObservationState.READY,
+                owner.current(RetainedStreamSessionCoordinator.snapshot(), 20_000L)
+                        .observationState);
+
+        SessionSnapshot stale = owner.current(RetainedStreamSessionCoordinator.snapshot(), 26_000L);
+        assertEquals(SessionSnapshot.ObservationState.PENDING, stale.observationState);
+        assertEquals(SessionSnapshot.State.ACTIVE, stale.state);
+
+        assertEquals(SessionSnapshot.ObservationState.RECOVERY_REQUIRED,
+                owner.current(RetainedStreamSessionCoordinator.snapshot(), 35_000L)
+                        .observationState);
+    }
+
     @Test public void freshStreamCanBecomeReadyBeforeItIsRetained() {
         long ordinal = owner.nextRequestOrdinal();
         assertTrue(owner.accept(ready("boot-fresh", ordinal),
