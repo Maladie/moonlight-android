@@ -48,7 +48,7 @@ public final class MoonWakerDiagnostics {
             "game_evidence", "process_evidence", "process_id", "process_token_fp",
             "window_evidence", "producer_boot_id", "producer_revision", "request_ordinal",
             "control_generation", "actor_lease_epoch", "transport_generation",
-            "episode_remaining_ms"));
+            "episode_remaining_ms", "sample_marker", "published_age_ms"));
 
     private static Writer writer;
     private static File directory;
@@ -82,7 +82,8 @@ public final class MoonWakerDiagnostics {
         Thread.setDefaultUncaughtExceptionHandler(installedCrashHandler);
     }
 
-    public static void record(String level, String component, String event, Object... fields) {
+    /** Returns whether the record was queued; a false result has already been counted as dropped. */
+    public static boolean record(String level, String component, String event, Object... fields) {
         try {
             Writer current;
             String currentRunId;
@@ -92,14 +93,22 @@ public final class MoonWakerDiagnostics {
             }
             if (current == null) {
                 DROPPED.incrementAndGet();
-                return;
+                return false;
             }
             String line = normalRecord(level, component, event, currentRunId, fields).toString()
                     + "\n";
-            if (!current.offer(line)) DROPPED.incrementAndGet();
+            if (current.offer(line)) return true;
+            DROPPED.incrementAndGet();
+            return false;
         } catch (Throwable ignored) {
             DROPPED.incrementAndGet();
+            return false;
         }
+    }
+
+    /** Records lost since process start (queue full, writer absent or write failure). */
+    public static long droppedCount() {
+        return DROPPED.get();
     }
 
     public static boolean exportTo(OutputStream output) {

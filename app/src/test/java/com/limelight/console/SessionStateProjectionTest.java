@@ -186,7 +186,73 @@ public class SessionStateProjectionTest {
         assertFalse(java.util.Arrays.asList(pairs).contains(TOKEN));
     }
 
+    private final java.util.List<Object[]> recorded = new java.util.ArrayList<>();
+
+    private void recordInto(boolean... results) {
+        java.util.concurrent.atomic.AtomicInteger calls = new java.util.concurrent.atomic.AtomicInteger();
+        SessionStateResolver.diagnosticSink = (level, component, event, fields) -> {
+            int call = calls.getAndIncrement();
+            boolean queued = call < results.length ? results[call] : true;
+            if (queued) {
+                Object[] entry = new Object[fields.length + 1];
+                entry[0] = event;
+                System.arraycopy(fields, 0, entry, 1, fields.length);
+                recorded.add(entry);
+            }
+            return queued;
+        };
+    }
+
+    private static Object field(Object[] entry, String key) {
+        for (int index = 1; index + 1 < entry.length; index += 2) {
+            if (key.equals(entry[index])) return entry[index + 1];
+        }
+        return null;
+    }
+
+    @Test public void recordThatCannotBeQueuedIsRetriedOnTheNextPublication() {
+        recordInto(false);
+        long ordinal = owner.nextRequestOrdinal();
+        assertTrue(owner.accept(ready("boot-fresh", ordinal),
+                RetainedStreamSessionCoordinator.snapshot(), 0L));
+        assertEquals(0L, owner.diagnosticEventsForTests());
+
+        owner.current(RetainedStreamSessionCoordinator.snapshot(), 100L);
+        assertEquals(1L, owner.diagnosticEventsForTests());
+        assertEquals("projection.published", recorded.get(0)[0]);
+        owner.current(RetainedStreamSessionCoordinator.snapshot(), 200L);
+        assertEquals(1L, owner.diagnosticEventsForTests());
+    }
+
+    @Test public void boundarySamplesRecordUnchangedAndUnpublishedProjections() {
+        recordInto();
+        long ordinal = owner.nextRequestOrdinal();
+        assertTrue(owner.accept(ready("boot-fresh", ordinal),
+                RetainedStreamSessionCoordinator.snapshot(), 1_000L));
+        SessionStateResolver.owner("other-host", "parent", "parent");
+        recorded.clear();
+
+        assertEquals(2, SessionStateResolver.sampleAll("phase-17:start", 1_500L));
+        assertEquals(2, SessionStateResolver.sampleAll("phase-17:end", 2_000L));
+        assertEquals(4, recorded.size());
+        Object[] first = recorded.get(0);
+        assertEquals("projection.sampled", first[0]);
+        assertEquals("phase-17:start", field(first, "sample_marker"));
+        assertEquals("READY", field(first, "observation_state"));
+        assertEquals(500L, field(first, "published_age_ms"));
+        assertNotNull(field(first, "dropped"));
+        assertEquals("phase-17:end", field(recorded.get(2), "sample_marker"));
+        assertEquals(1_000L, field(recorded.get(2), "published_age_ms"));
+        assertEquals("UNPUBLISHED", field(recorded.get(1), "observation_state"));
+        assertEquals(-1L, field(recorded.get(1), "published_age_ms"));
+
+        assertEquals(-1, SessionStateResolver.sampleAll("bad marker", 3_000L));
+        assertEquals(-1, SessionStateResolver.sampleAll(null, 3_000L));
+        assertEquals(4, recorded.size());
+    }
+
     @Test public void projectionDiagnosticIsEmittedOncePerDistinctPublication() {
+        recordInto();
         long ordinal = owner.nextRequestOrdinal();
         assertTrue(owner.accept(ready("boot-fresh", ordinal),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));

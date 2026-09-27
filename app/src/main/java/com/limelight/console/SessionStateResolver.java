@@ -31,7 +31,33 @@ final class SessionStateResolver {
         return owner;
     }
 
-    static synchronized void resetProjectionOwnersForTests() { OWNERS.clear(); }
+    static synchronized void resetProjectionOwnersForTests() {
+        OWNERS.clear();
+        diagnosticSink = MoonWakerDiagnostics::record;
+    }
+
+    /** Diagnostic writer; returns whether the record was queued. Replaced only in tests. */
+    interface DiagnosticSink {
+        boolean record(String level, String component, String event, Object... fields);
+    }
+
+    static DiagnosticSink diagnosticSink = MoonWakerDiagnostics::record;
+    private static final java.util.regex.Pattern SAMPLE_MARKER =
+            java.util.regex.Pattern.compile("[A-Za-z0-9._:-]{1,64}");
+
+    /**
+     * Records the currently published projection of every owner under an explicit boundary
+     * marker, including unchanged state, so an external observer can sample phase boundaries.
+     * Returns the number of owners whose sample was queued, or -1 for an invalid marker.
+     */
+    static synchronized int sampleAll(String marker, long nowMs) {
+        if (marker == null || !SAMPLE_MARKER.matcher(marker).matches()) return -1;
+        int queued = 0;
+        for (ProjectionOwner owner : OWNERS.values()) {
+            if (owner.sample(marker, nowMs)) queued++;
+        }
+        return queued;
+    }
 
     /**
      * Allowlisted correlators of one published projection. The process token is reported
@@ -123,6 +149,8 @@ final class SessionStateResolver {
         private long episodeDeadlineMs;
         private SessionSnapshot published;
         private HostGatewayClient.Evidence projectedGameEvidence;
+        private HostGatewayClient.Evidence publishedGameEvidence;
+        private long publishedAtMs;
         private String diagnosticSignature = "";
         private long diagnosticEvents;
 
@@ -210,23 +238,50 @@ final class SessionStateResolver {
 
         synchronized long diagnosticEventsForTests() { return diagnosticEvents; }
 
-        /** Records each distinct published projection once; decisions are unaffected. */
+        /**
+         * Records each distinct published projection; a record that could not be queued is
+         * retried on the next publication. Decisions are unaffected.
+         */
         private SessionSnapshot publish(SessionSnapshot snapshot, long nowMs) {
-            long remaining = episodeDeadlineMs > 0L ? Math.max(0L, episodeDeadlineMs - nowMs) : -1L;
-            Object[] fields = projectionDiagnostic(snapshot, projectedGameEvidence, remaining);
+            publishedGameEvidence = projectedGameEvidence;
+            publishedAtMs = nowMs;
+            Object[] fields = projectionDiagnostic(snapshot, publishedGameEvidence,
+                    remainingEpisodeMs(nowMs));
             StringBuilder signature = new StringBuilder();
             for (int index = 0; index + 1 < fields.length; index += 2) {
                 if (!"episode_remaining_ms".equals(fields[index])) {
                     signature.append(fields[index + 1]).append('|');
                 }
             }
-            if (!signature.toString().equals(diagnosticSignature)) {
+            if (!signature.toString().equals(diagnosticSignature)
+                    && diagnosticSink.record("INFO", "android.session", "projection.published",
+                    fields)) {
                 diagnosticSignature = signature.toString();
                 diagnosticEvents++;
-                MoonWakerDiagnostics.record("INFO", "android.session", "projection.published",
-                        fields);
             }
             return snapshot;
+        }
+
+        private long remainingEpisodeMs(long nowMs) {
+            return episodeDeadlineMs > 0L ? Math.max(0L, episodeDeadlineMs - nowMs) : -1L;
+        }
+
+        /** Boundary sample of the published projection (or its absence), even if unchanged. */
+        synchronized boolean sample(String marker, long nowMs) {
+            Object[] projection = published == null
+                    ? new Object[] {"host_id", hostId, "profile_id", actorProfileId,
+                            "execution_profile_id", executionProfileId,
+                            "observation_state", "UNPUBLISHED"}
+                    : projectionDiagnostic(published, publishedGameEvidence,
+                            remainingEpisodeMs(nowMs));
+            Object[] fields = java.util.Arrays.copyOf(projection, projection.length + 6);
+            fields[projection.length] = "sample_marker";
+            fields[projection.length + 1] = marker;
+            fields[projection.length + 2] = "published_age_ms";
+            fields[projection.length + 3] = published == null ? -1L : Math.max(0L, nowMs - publishedAtMs);
+            fields[projection.length + 4] = "dropped";
+            fields[projection.length + 5] = MoonWakerDiagnostics.droppedCount();
+            return diagnosticSink.record("INFO", "android.session", "projection.sampled", fields);
         }
 
         private SessionSnapshot project(RetainedStreamSessionCoordinator.Snapshot retained,

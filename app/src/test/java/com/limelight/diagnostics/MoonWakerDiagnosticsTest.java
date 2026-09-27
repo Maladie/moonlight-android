@@ -59,6 +59,22 @@ public class MoonWakerDiagnosticsTest {
         assertFalse(read(new File(directory, "events.jsonl")).contains("secret"));
     }
 
+    @Test public void recordReportsQueuedStatusAndExportsLossCount() throws Exception {
+        long before = MoonWakerDiagnostics.droppedCount();
+        assertFalse(MoonWakerDiagnostics.record("INFO", "android.session", "projection.sampled"));
+        assertEquals(before + 1, MoonWakerDiagnostics.droppedCount());
+
+        MoonWakerDiagnostics.initialize(directory);
+        assertTrue(MoonWakerDiagnostics.record("INFO", "android.session", "projection.sampled",
+                "sample_marker", "phase-1:start", "published_age_ms", 5L, "dropped", 1L));
+        assertTrue(MoonWakerDiagnostics.flushForTests());
+        JSONObject record = new JSONObject(Files.readAllLines(
+                new File(directory, "events.jsonl").toPath(), StandardCharsets.UTF_8).get(0));
+        assertEquals("phase-1:start", record.getString("sample_marker"));
+        assertEquals(5L, record.getLong("published_age_ms"));
+        assertEquals(1L, record.getLong("dropped"));
+    }
+
     @Test public void projectionCorrelatorsAreAllowlistedAndOthersDropped() throws Exception {
         MoonWakerDiagnostics.initialize(directory);
         MoonWakerDiagnostics.record("INFO", "android.session", "projection.published",
