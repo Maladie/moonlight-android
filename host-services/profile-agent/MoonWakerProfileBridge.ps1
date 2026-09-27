@@ -188,17 +188,16 @@ function Start-Component([string]$Name) {
         $owner = Get-NetTCPConnection -State Listen -LocalAddress "127.0.0.1" -LocalPort $port `
             -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -First 1
         if ($owner) {
-            if (Test-ComponentHealth $Name $true) {
+            if (Test-ComponentStatus $Name $true ([int]$owner)) {
                 Write-AgentDiagnosticEvent "component.adopted" @{ profile_id = $ProfileId; child_component = $Name; pid = [int]$owner; status = "running" }
                 return Get-Process -Id $owner -ErrorAction SilentlyContinue
             }
             if ($Name -eq "game-provider") {
-                $health = Get-ComponentHealth $Name
-                $legacyBridgeIdentity = $health -and [int]$health.pid -eq [int]$owner -and
-                    $null -ne $health.connector_connected -and
-                    -not [string]::IsNullOrWhiteSpace([string]$health.version)
-                if ($health -and ([string]$health.component -in @("game-provider", "playnite") -or
-                    $legacyBridgeIdentity)) {
+                $status = Get-ComponentStatus $Name
+                if ($status -and
+                    [string]$status.producer.component -eq "game-provider" -and
+                    [string]$status.producer.profile_id -eq $ProfileId -and
+                    [int]$status.producer.process_id -eq [int]$owner) {
                     Write-AgentDiagnosticEvent "stale_component.stopped" @{ profile_id = $ProfileId; child_component = $Name; pid = [int]$owner; status = "stale" }
                     Stop-Process -Id $owner -Force -ErrorAction Stop
                     Start-Sleep -Milliseconds 250
@@ -231,7 +230,7 @@ function Start-Component([string]$Name) {
         $script.Replace('"', '\"'), $config.Replace('"', '\"')) $directory
 }
 
-function Get-ComponentHealth([string]$Name) {
+function Get-ComponentStatus([string]$Name) {
     $directory = Join-Path $ProfileRoot $Name
     $configName = if ($Name -eq "discord") { "discord_bridge_config.json" } else { "config.json" }
     $portProperty = if ($Name -eq "discord") { "port" } else { "listen_port" }
@@ -243,22 +242,25 @@ function Get-ComponentHealth([string]$Name) {
             $pending = $client.ConnectAsync("127.0.0.1", $port)
             if (-not $pending.Wait(750) -or -not $client.Connected) { return $null }
         } finally { $client.Dispose() }
-        $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2
+        $path = if ($Name -eq "game-provider") { "/observation" } else { "/health" }
+        $response = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:$port$path" -TimeoutSec 2
         if ($response.StatusCode -lt 200 -or $response.StatusCode -ge 300) { return $null }
         return $response.Content | ConvertFrom-Json
     } catch { return $null }
 }
 
-function Test-ComponentHealth([string]$Name, [bool]$RequireIdentity = $false) {
-    $health = Get-ComponentHealth $Name
-    if (-not $health) { return $false }
+function Test-ComponentStatus([string]$Name, [bool]$RequireIdentity = $false,
+                              [int]$ExpectedProcessId = 0) {
+    $status = Get-ComponentStatus $Name
+    if (-not $status) { return $false }
     if ($Name -ne "game-provider" -or -not $RequireIdentity) { return $true }
     try {
         $expected = Get-Content -LiteralPath (Join-Path $ProfileRoot "moonwaker-version.json") -Raw |
             ConvertFrom-Json
-        return [string]$health.component -eq "game-provider" -and
-            [string]$health.profile_id -eq $ProfileId -and
-            [string]$health.version -eq [string]$expected.version
+        return [string]$status.producer.component -eq "game-provider" -and
+            [string]$status.producer.profile_id -eq $ProfileId -and
+            [int]$status.producer.process_id -eq $ExpectedProcessId -and
+            [string]$status.producer.version -eq [string]$expected.version
     } catch { return $false }
 }
 
@@ -367,7 +369,7 @@ try {
                 # recover a genuinely failed Bridge.
                 if ($name -eq "discord") { continue }
                 if ($null -eq $process -or $process.HasExited) { continue }
-                $healthy = Test-ComponentHealth $name ($name -eq "game-provider")
+                $healthy = Test-ComponentStatus $name ($name -eq "game-provider") $process.Id
                 if (Should-Restart-Component $name $healthy $healthFailures) {
                     $healthFailures[$name] = 0
                     Restart-Component $name $process

@@ -161,17 +161,18 @@ public class PlayniteSessionPresentationTest {
         org.junit.Assert.assertNotEquals(active.signature(), suspended.signature());
     }
 
-    @Test public void idleNeutralObservationDoesNotInvalidateEveryGameCard() {
-        assertFalse(ConsoleActivity.runningGamePresentationChanged(
-                null, null, null, "idle", true));
-        assertFalse(ConsoleActivity.runningGamePresentationChanged(
-                "", "", "unknown", "idle", false));
-        assertTrue(ConsoleActivity.runningGamePresentationChanged(
-                null, "game", "idle", "running", false));
-        assertTrue(ConsoleActivity.runningGamePresentationChanged(
-                "game", null, "running", "idle", false));
-        assertTrue(ConsoleActivity.runningGamePresentationChanged(
-                "game", "game", "running", "running", true));
+    @Test public void presentationSignatureComesFromOneSessionProjection() {
+        PlayniteDashboardItem game = item("game", 42);
+        PlayniteSessionPresentation.Projection active =
+                PlayniteSessionPresentation.project(
+                        snapshot(SessionSnapshot.State.ACTIVE, 42, "game"),
+                        Collections.singletonList(game), "");
+        PlayniteSessionPresentation.Projection idle =
+                PlayniteSessionPresentation.project(
+                        snapshot(SessionSnapshot.State.NONE, 0, ""),
+                        Collections.singletonList(game), "");
+        assertTrue(active.signature().contains("game"));
+        assertFalse(idle.signature().contains("game"));
     }
 
     private static SessionSnapshot snapshot(SessionSnapshot.State state, int appId,
@@ -181,9 +182,11 @@ public class PlayniteSessionPresentationTest {
 
     private static SessionSnapshot snapshot(SessionSnapshot.State state, int appId,
                                             String gameId, boolean neutralStreamTarget) {
-        return new SessionSnapshot("host", state, appId, gameId,
+        return new SessionSnapshot("host", "default", "default", state, appId, gameId,
                 state == SessionSnapshot.State.ACTIVE, false, false, false, false,
-                "", neutralStreamTarget);
+                "", neutralStreamTarget, SessionSnapshot.ObservationState.PENDING, false,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test");
     }
 
     private static PlayniteDashboardItem item(String gameId, int appId) {

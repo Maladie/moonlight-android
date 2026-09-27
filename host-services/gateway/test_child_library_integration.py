@@ -276,7 +276,7 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
             self.bridge.calls[0][3]["allowed_game_ids"])
         self.assertNotIn("Zeta foreign", json.dumps(result))
 
-    def test_current_exposes_common_lifecycle_while_events_still_filter_foreign_games(self):
+    def test_observation_exposes_common_lifecycle_while_events_still_filter_foreign_games(self):
         self.bridge.set_library([
             self.record(RAW_ALLOWED, "Alpha allowed"),
             self.record(RAW_FOREIGN, "Zeta foreign"),
@@ -304,12 +304,14 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
                  "payload": {"revision": "rev-1", "count": 2}},
             ])
 
-        status, current = self.gateway.playnite_state(
-            "current", self.client, "kid")
+        self.gateway.request_context.profile_id = "kid"
+        self.gateway.request_context.actor_profile_id = "kid"
+        self.gateway.request_context.execution_profile_id = "living-room"
+        status, current = self.gateway.playnite_observation(1, "")
         self.assertEqual(200, status)
-        self.assertEqual(RAW_ALLOWED, current["current"]["id"])
+        self.assertEqual(RAW_ALLOWED, current["game"]["id"])
         self.assertEqual([RAW_ALLOWED, RAW_FOREIGN], [
-            game["game_id"] for game in current["current"]["running_games"]])
+            game["game_id"] for game in current["process"]["running_games"]])
         self.assertIn(RAW_FOREIGN, json.dumps(current))
 
         status, events_result = self.gateway.playnite_events(

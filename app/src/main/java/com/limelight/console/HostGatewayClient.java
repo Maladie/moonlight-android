@@ -21,6 +21,7 @@ class HostGatewayClient {
     static final int REQUIRED_GAMEPLAY_PERMISSIONS = 0x07001F00;
     private static final int READ_TIMEOUT_MS = 5_000;
     private static final int MANAGEMENT_TIMEOUT_MS = 15_000;
+    private static final long MAX_OBSERVATION_WALL_SKEW_MS = 365L * 24L * 60L * 60L * 1_000L;
     private static final int NETWORK_PROBE_BYTES = 8 * 1024 * 1024;
     private static final long NETWORK_TARGET_NANOS = 8_000_000_000L;
     private final GatewayTransport transport = new GatewayTransport();
@@ -523,125 +524,85 @@ class HostGatewayClient {
         }
     }
 
-    static final class PlayniteReadiness {
-        final boolean ready;
-        final String reason;
-        final String targetKind;
-        final int stableSamples;
-        final int processId;
-        final String display;
+    enum Evidence { VERIFIED, ABSENT, PENDING, UNAVAILABLE }
 
-        PlayniteReadiness(boolean ready, String reason, String targetKind,
-                          int stableSamples, int processId, String display) {
-            this.ready = ready;
-            this.reason = reason;
-            this.targetKind = targetKind;
-            this.stableSamples = stableSamples;
-            this.processId = processId;
-            this.display = display;
-        }
-    }
-
-    static final class PlayniteHealth {
-        final boolean connectorConnected;
-        final int connectorGeneration;
-
-        PlayniteHealth(boolean connectorConnected, int connectorGeneration) {
-            this.connectorConnected = connectorConnected;
-            this.connectorGeneration = Math.max(0, connectorGeneration);
-        }
-    }
-
-    static final class PlayniteCurrentGame {
-        final String state;
-        final String id;
-        final String title;
-        final int processId;
-        final RunningGames runningGames;
-        final boolean hostGuideAllowed;
-        final boolean requiresConnector;
-
-        PlayniteCurrentGame(String state, String id, String title, int processId) {
-            this(state, id, title, processId, null);
-        }
-
-        PlayniteCurrentGame(String state, String id, String title, int processId,
-                            RunningGames runningGames) {
-            this(state, id, title, processId, runningGames, false);
-        }
-
-        PlayniteCurrentGame(String state, String id, String title, int processId,
-                            RunningGames runningGames, boolean hostGuideAllowed) {
-            this(state, id, title, processId, runningGames, hostGuideAllowed, true);
-        }
-
-        PlayniteCurrentGame(String state, String id, String title, int processId,
-                            RunningGames runningGames, boolean hostGuideAllowed,
-                            boolean requiresConnector) {
-            this.state = state;
-            this.id = id;
-            this.title = title;
-            this.processId = processId;
-            this.runningGames = runningGames;
-            this.hostGuideAllowed = hostGuideAllowed;
-            this.requiresConnector = requiresConnector;
-        }
-    }
-
-    static final class RunningGame {
+    static final class SessionObservation {
+        final String producerBootId;
+        final long producerRevision;
+        final long observedAtUnixMs;
+        final long freshForMs;
+        final String stateEpisode;
+        final long stateSinceUnixMs;
+        final String actorProfileId;
+        final String executionProfileId;
+        final long requestOrdinal;
+        final String callerTransitionId;
+        final String operationId;
+        final String streamSessionId;
+        final long controlGeneration;
+        final long actorLeaseEpoch;
+        final String providerState;
+        final Evidence connectorEvidence;
+        final String gameState;
+        final Evidence gameEvidence;
         final String gameId;
+        final Evidence processEvidence;
         final int processId;
         final String processToken;
+        final Evidence windowEvidence;
+        final boolean windowReady;
+        final String targetKind;
+        final int stableSamples;
+        final String reason;
+        final boolean hostGuideAllowed;
+        final boolean requiresConnector;
+        final boolean startBeforeStream;
 
-        RunningGame(String gameId, int processId, String processToken) {
+        SessionObservation(String producerBootId, long producerRevision,
+                           long observedAtUnixMs, long freshForMs,
+                           String stateEpisode, long stateSinceUnixMs,
+                           String actorProfileId, String executionProfileId,
+                           long requestOrdinal, String callerTransitionId,
+                           String operationId, String streamSessionId,
+                           long controlGeneration, long actorLeaseEpoch,
+                           String providerState, Evidence connectorEvidence,
+                           String gameState, Evidence gameEvidence, String gameId,
+                           Evidence processEvidence, int processId, String processToken,
+                           Evidence windowEvidence, boolean windowReady,
+                           String targetKind, int stableSamples, String reason,
+                           boolean hostGuideAllowed, boolean requiresConnector,
+                           boolean startBeforeStream) {
+            this.producerBootId = producerBootId;
+            this.producerRevision = producerRevision;
+            this.observedAtUnixMs = observedAtUnixMs;
+            this.freshForMs = freshForMs;
+            this.stateEpisode = stateEpisode;
+            this.stateSinceUnixMs = stateSinceUnixMs;
+            this.actorProfileId = actorProfileId;
+            this.executionProfileId = executionProfileId;
+            this.requestOrdinal = requestOrdinal;
+            this.callerTransitionId = callerTransitionId;
+            this.operationId = operationId;
+            this.streamSessionId = streamSessionId;
+            this.controlGeneration = controlGeneration;
+            this.actorLeaseEpoch = actorLeaseEpoch;
+            this.providerState = providerState;
+            this.connectorEvidence = connectorEvidence;
+            this.gameState = gameState;
+            this.gameEvidence = gameEvidence;
             this.gameId = gameId;
+            this.processEvidence = processEvidence;
             this.processId = processId;
             this.processToken = processToken;
+            this.windowEvidence = windowEvidence;
+            this.windowReady = windowReady;
+            this.targetKind = targetKind;
+            this.stableSamples = stableSamples;
+            this.reason = reason;
+            this.hostGuideAllowed = hostGuideAllowed;
+            this.requiresConnector = requiresConnector;
+            this.startBeforeStream = startBeforeStream;
         }
-    }
-
-    static final class RunningGames {
-        final List<RunningGame> games;
-        final String status;
-        final String revision;
-
-        RunningGames(List<RunningGame> games, String status, String revision) {
-            this.games = Collections.unmodifiableList(games);
-            this.status = status;
-            this.revision = revision;
-        }
-
-        RunningGame find(String gameId) {
-            if (!("complete".equals(status) || "partial".equals(status))
-                    || revision.isEmpty()) return null;
-            RunningGame match = null;
-            for (RunningGame game : games) {
-                if (!SessionSnapshot.normalize(game.gameId).equals(
-                        SessionSnapshot.normalize(gameId))) continue;
-                if (match != null) return null; // Ambiguous identity must not authorize a stop.
-                match = game;
-            }
-            return match;
-        }
-    }
-
-    static RunningGames parseRunningGames(JSONObject current) {
-        if (!current.has("running_games")) return null; // Older host: current-only contract.
-        List<RunningGame> games = new ArrayList<>();
-        JSONArray entries = current.optJSONArray("running_games");
-        if (entries != null) for (int i = 0; i < entries.length(); i++) {
-            JSONObject entry = entries.optJSONObject(i);
-            if (entry == null) continue;
-            String id = entry.optString("game_id", "").trim();
-            String token = entry.optString("process_token", "");
-            int pid = entry.optInt("process_id", 0);
-            if (isPlayniteId(id) && pid > 0 && token.matches("[0-9a-f]{64}")) {
-                games.add(new RunningGame(id, pid, token));
-            }
-        }
-        return new RunningGames(games, entries == null ? "unavailable"
-                : current.optString("running_scan_status", "unavailable"),
-                current.optString("running_scan_revision", ""));
     }
 
     static final class PlayniteEvent {
@@ -1882,40 +1843,162 @@ class HostGatewayClient {
         }
     }
 
-    PlayniteCurrentGame getPlayniteCurrentGame(GatewayConnection connection) throws IOException {
-        JSONObject response = request(connection, "/api/v1/game/current",
-                "GET", null, READ_TIMEOUT_MS);
-        return parseCurrentGame(response);
+    SessionObservation getSessionObservation(GatewayConnection connection,
+                                             String executionProfileId,
+                                             long requestOrdinal,
+                                             String transitionId) throws IOException {
+        if (requestOrdinal <= 0L) throw new IllegalArgumentException("request ordinal");
+        String transition = transitionId == null ? "" : transitionId.trim();
+        String path = "/api/v1/session/observation?request_ordinal=" + requestOrdinal
+                + "&transition_id=" + URLEncoder.encode(
+                transition, StandardCharsets.UTF_8.name());
+        return parseSessionObservation(request(connection, path, "GET", null,
+                        READ_TIMEOUT_MS), connection.profileId(), executionProfileId,
+                requestOrdinal, transition, System.currentTimeMillis());
+    }
+
+    static SessionObservation parseSessionObservation(
+            JSONObject response, String expectedActor, String expectedExecution,
+            long expectedOrdinal, String expectedTransition, long receivedWallMs)
+            throws IOException {
+        if (response == null || !response.optBoolean("ok", false)) {
+            throw new IOException(response == null ? "observation_unavailable"
+                    : response.optString("reason", "observation_unavailable"));
+        }
+        if (requiredLong(response, "schema_version") != 1L) {
+            throw new IOException("unsupported_observation_schema");
+        }
+        JSONObject producer = requiredObject(response, "producer");
+        JSONObject scope = requiredObject(response, "scope");
+        JSONObject correlation = requiredObject(response, "correlation");
+        JSONObject provider = requiredObject(response, "provider");
+        JSONObject game = requiredObject(response, "game");
+        JSONObject process = requiredObject(response, "process");
+        JSONObject window = requiredObject(response, "window");
+        JSONObject capabilities = requiredObject(response, "capabilities");
+        String boot = requiredString(producer, "boot_id").trim();
+        long revision = requiredLong(producer, "revision");
+        long observedAt = requiredLong(response, "observed_at_unix_ms");
+        long freshFor = requiredLong(response, "fresh_for_ms");
+        long stateSince = requiredLong(response, "state_since_unix_ms");
+        String episode = requiredString(response, "state_episode").trim();
+        long wallSkew = receivedWallMs > 0L
+                ? observedAt >= receivedWallMs
+                ? observedAt - receivedWallMs : receivedWallMs - observedAt
+                : Long.MAX_VALUE;
+        if (!boot.matches("[A-Za-z0-9._:-]{1,128}") || revision <= 0L
+                || !episode.matches("[A-Za-z0-9._:-]{1,192}")
+                || observedAt <= 0L || stateSince <= 0L || stateSince > observedAt
+                || freshFor <= 0L || freshFor > 15_000L
+                || receivedWallMs <= 0L || wallSkew > MAX_OBSERVATION_WALL_SKEW_MS) {
+            throw new IOException("stale_or_malformed_observation");
+        }
+        String actor = requiredString(scope, "actor_profile_id");
+        String execution = requiredString(scope, "execution_profile_id");
+        long ordinal = requiredLong(correlation, "request_ordinal");
+        String transition = requiredString(correlation, "caller_transition_id");
+        String operation = requiredString(correlation, "operation_id");
+        String streamSession = requiredString(correlation, "stream_session_id");
+        long controlGeneration = requiredLong(correlation, "control_generation");
+        long actorLeaseEpoch = requiredLong(correlation, "actor_lease_epoch");
+        if (!GatewayConnection.normalizeProfileId(expectedActor).equals(actor)
+                || !GatewayConnection.normalizeProfileId(expectedExecution).equals(execution)
+                || ordinal != expectedOrdinal
+                || !(expectedTransition == null ? "" : expectedTransition.trim())
+                .equals(transition)) {
+            throw new IOException("observation_correlation_mismatch");
+        }
+        Evidence connectorEvidence = evidence(provider, "connector_evidence");
+        Evidence gameEvidence = evidence(game, "evidence");
+        Evidence processEvidence = evidence(process, "evidence");
+        Evidence windowEvidence = evidence(window, "evidence");
+        String gameId = requiredString(game, "id").trim();
+        int processId = requiredInt(process, "process_id");
+        String processToken = requiredString(process, "process_token");
+        boolean ready = requiredBoolean(window, "ready");
+        if ((gameEvidence == Evidence.VERIFIED) != isPlayniteId(gameId)
+                || (gameEvidence == Evidence.ABSENT && !gameId.isEmpty())
+                || (processEvidence == Evidence.VERIFIED
+                && (gameEvidence != Evidence.VERIFIED || processId <= 0
+                || !processToken.matches("[0-9a-f]{64}")))
+                || (processEvidence != Evidence.VERIFIED
+                && (processId != 0 || !processToken.isEmpty()))
+                || (ready && (windowEvidence != Evidence.VERIFIED
+                || processEvidence != Evidence.VERIFIED))) {
+            throw new IOException("inconsistent_observation_evidence");
+        }
+        return new SessionObservation(boot, revision, observedAt, freshFor,
+                episode, stateSince, actor, execution, ordinal, transition,
+                operation, streamSession, controlGeneration, actorLeaseEpoch,
+                requiredState(provider, "state"),
+                connectorEvidence,
+                requiredState(game, "state"),
+                gameEvidence, gameId, processEvidence, processId, processToken,
+                windowEvidence, ready,
+                requiredString(window, "target_kind"),
+                requiredInt(window, "stable_samples"),
+                requiredState(window, "reason"),
+                requiredBoolean(capabilities, "host_guide_allowed"),
+                requiredBoolean(capabilities, "requires_connector"),
+                requiredBoolean(capabilities, "start_before_stream"));
+    }
+
+    private static JSONObject requiredObject(JSONObject parent, String name)
+            throws IOException {
+        JSONObject value = parent.optJSONObject(name);
+        if (value == null) throw new IOException("missing_observation_" + name);
+        return value;
+    }
+
+    private static String requiredString(JSONObject parent, String name) throws IOException {
+        Object value = parent.opt(name);
+        if (!(value instanceof String)) throw new IOException("missing_observation_" + name);
+        return (String) value;
+    }
+
+    private static long requiredLong(JSONObject parent, String name) throws IOException {
+        Object value = parent.opt(name);
+        if (!(value instanceof Number)) throw new IOException("missing_observation_" + name);
+        long result = ((Number) value).longValue();
+        if (((Number) value).doubleValue() != (double) result) {
+            throw new IOException("invalid_observation_" + name);
+        }
+        return result;
+    }
+
+    private static int requiredInt(JSONObject parent, String name) throws IOException {
+        long value = requiredLong(parent, name);
+        if (value < Integer.MIN_VALUE || value > Integer.MAX_VALUE) {
+            throw new IOException("invalid_observation_" + name);
+        }
+        return (int) value;
+    }
+
+    private static String requiredState(JSONObject parent, String name) throws IOException {
+        String value = requiredString(parent, name).trim().toLowerCase(Locale.ROOT);
+        if (!value.matches("[a-z_]{1,40}")) {
+            throw new IOException("invalid_observation_" + name);
+        }
+        return value;
+    }
+
+    private static boolean requiredBoolean(JSONObject parent, String name) throws IOException {
+        Object value = parent.opt(name);
+        if (!(value instanceof Boolean)) throw new IOException("missing_observation_" + name);
+        return (Boolean) value;
+    }
+
+    private static Evidence evidence(JSONObject parent, String name) throws IOException {
+        try {
+            return Evidence.valueOf(parent.optString(name, ""));
+        } catch (IllegalArgumentException error) {
+            throw new IOException("invalid_observation_evidence", error);
+        }
     }
 
     private static String normalizedState(String value, String fallback) {
         String normalized = value == null ? "" : value.trim().toLowerCase(Locale.ROOT);
         return normalized.matches("[a-z_]{1,40}") ? normalized : fallback;
-    }
-
-    static PlayniteCurrentGame parseCurrentGame(JSONObject response) {
-        JSONObject current = response.optJSONObject("current");
-        if (current == null) current = new JSONObject();
-        return new PlayniteCurrentGame(current.optString("state", "idle"),
-                current.optString("id", ""), current.optString("title", ""),
-                current.optInt("processId", current.optInt("process_id", 0)),
-                parseRunningGames(current), current.optBoolean("host_guide_allowed", false),
-                current.optBoolean("requires_connector", true));
-    }
-
-    PlayniteHealth getPlayniteHealth(GatewayConnection connection) throws IOException {
-        JSONObject response = request(connection, "/api/v1/game-provider/health",
-                "GET", null, READ_TIMEOUT_MS);
-        JSONObject bridge = response.optJSONObject("bridge");
-        if (bridge == null) bridge = new JSONObject();
-        return new PlayniteHealth(bridge.optBoolean("connector_connected", false),
-                bridge.optInt("connector_generation", 0));
-    }
-
-    PlayniteReadiness getPlayniteReadiness(GatewayConnection connection) throws IOException {
-        JSONObject response = request(connection,
-                "/api/v1/window/readiness", "GET", null, READ_TIMEOUT_MS);
-        return parsePlayniteReadiness(response.optJSONObject("readiness"));
     }
 
     void showPlayniteFullscreen(GatewayConnection connection) throws IOException {
@@ -2267,16 +2350,6 @@ class HostGatewayClient {
                 safe.optInt("total", games.size()),
                 firstText(safe, "revision", "library_revision", "hash"),
                 firstText(safe, "api_version", "apiVersion", "version"));
-    }
-
-    static PlayniteReadiness parsePlayniteReadiness(JSONObject value) {
-        JSONObject safe = value == null ? new JSONObject() : value;
-        return new PlayniteReadiness(safe.optBoolean("ready", false),
-                safe.optString("reason", "window_probe_pending"),
-                safe.optString("target_kind", "playnite"),
-                safe.optInt("stable_samples", 0),
-                safe.optInt("process_id", safe.optInt("processId", 0)),
-                safe.optString("display", ""));
     }
 
     private static String firstText(JSONObject value, String... keys) {

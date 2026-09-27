@@ -1541,6 +1541,8 @@ def append_operation_audit(path: Path, event: str, payload: dict[str, Any]) -> N
 
 
 class BridgeState:
+    OBSERVATION_FRESH_FOR_MS = 5_000
+
     def __init__(self, expected_display: str = "", cache_path: Path | None = None,
                  version_path: Path | None = None,
                  operations_path: Path | None = None,
@@ -1556,6 +1558,11 @@ class BridgeState:
         self.request_context = threading.local()
         self.stop_timeout = max(0.01, float(stop_timeout))
         self.events_changed = threading.Condition(self.lock)
+        self.observation_boot_id = uuid.uuid4().hex
+        self.observation_revision = 0
+        self._observation_episode = 0
+        self._observation_episode_key: tuple[Any, ...] | None = None
+        self._observation_state_since_ms = int(self.clock() * 1000)
         self.connected = False
         self._transport_observed = False
         self.last_error = "Playnite connector is not connected."
@@ -4189,6 +4196,101 @@ class BridgeState:
                     "running_scan_status": self._running_scan_status if fresh else "unavailable",
                     "running_scan_revision": self._running_scan_revision if fresh else self.library_revision}
 
+    def observation_snapshot(self) -> dict[str, Any]:
+        """Capture game, process and window evidence at one lock linearization point."""
+        with self.lock:
+            current = self.current_snapshot()
+            observed_at_ms = int(self.clock() * 1000)
+            state = str(current.get("state") or "unknown").strip().casefold()
+            game_id = str(current.get("id") or "").strip()
+            reason = str(current.get("reason") or self.readiness.get("reason") or "none")
+            connector_evidence = "VERIFIED" if self.connected else "UNAVAILABLE"
+            if game_id:
+                game_evidence = "VERIFIED"
+            elif state == "idle":
+                game_evidence = "ABSENT"
+            elif state in {"starting", "stopping", "reconciling", "ambiguous"}:
+                game_evidence = "PENDING"
+            else:
+                game_evidence = "UNAVAILABLE"
+
+            process_id = int(current.get("processId") or current.get("process_id") or 0)
+            exact = next((entry for entry in current.get("running_games", [])
+                          if str(entry.get("game_id") or "") == game_id
+                          and int(entry.get("process_id") or 0) == process_id
+                          and re.fullmatch(r"[0-9a-f]{64}",
+                                           str(entry.get("process_token") or ""))), None)
+            if exact is not None and game_evidence == "VERIFIED":
+                process_evidence = "VERIFIED"
+                process_token = str(exact["process_token"])
+            elif game_evidence == "ABSENT" and current.get("running_scan_status") == "complete":
+                process_evidence, process_id, process_token = "ABSENT", 0, ""
+            elif current.get("running_scan_status") in {"complete", "partial"}:
+                process_evidence, process_id, process_token = "PENDING", 0, ""
+            else:
+                process_evidence, process_id, process_token = "UNAVAILABLE", 0, ""
+
+            ready = bool(self.readiness.get("ready", False))
+            if ready and process_evidence == "VERIFIED":
+                window_evidence = "VERIFIED"
+            elif game_evidence == "ABSENT":
+                window_evidence = "ABSENT"
+                ready = False
+            elif process_evidence in {"PENDING", "VERIFIED"}:
+                window_evidence = "PENDING"
+                ready = False
+            else:
+                window_evidence = "UNAVAILABLE"
+                ready = False
+
+            episode_key = (connector_evidence, state, game_evidence, game_id,
+                           process_evidence, window_evidence, reason)
+            if episode_key != self._observation_episode_key:
+                self._observation_episode_key = episode_key
+                self._observation_episode += 1
+                self._observation_state_since_ms = observed_at_ms
+            self.observation_revision += 1
+            return {
+                "schema_version": 1,
+                "producer": {
+                    "component": "game-provider",
+                    "profile_id": self.profile_id,
+                    "process_id": os.getpid(),
+                    "version": str(self.version_info.get("version") or ""),
+                    "build": str(self.version_info.get("build") or ""),
+                    "boot_id": self.observation_boot_id,
+                    "revision": self.observation_revision,
+                },
+                "observed_at_unix_ms": observed_at_ms,
+                "fresh_for_ms": self.OBSERVATION_FRESH_FOR_MS,
+                "state_episode": "%s:%d" % (
+                    self.observation_boot_id, self._observation_episode),
+                "state_since_unix_ms": self._observation_state_since_ms,
+                "provider": {"state": state,
+                             "connector_evidence": connector_evidence,
+                             "reason": reason},
+                "game": {"evidence": game_evidence, "id": game_id,
+                         "state": state},
+                "process": {"evidence": process_evidence,
+                            "process_id": process_id,
+                            "process_token": process_token,
+                            "running_games": [dict(game) for game in current.get(
+                                "running_games", [])],
+                            "running_scan_status": str(current.get(
+                                "running_scan_status") or "unavailable")},
+                "window": {"evidence": window_evidence, "ready": ready,
+                           "target_kind": str(self.readiness.get(
+                               "target_kind") or "playnite"),
+                           "stable_samples": int(self.readiness.get(
+                               "stable_samples") or 0),
+                           "reason": str(self.readiness.get("reason") or reason)},
+                "capabilities": {
+                    "host_guide_allowed": bool(current.get("host_guide_allowed", False)),
+                    "requires_connector": bool(current.get("requires_connector", False)),
+                    "start_before_stream": bool(current.get("start_before_stream", False)),
+                },
+            }
+
     def _stop_verified_running_game(self, game_id: Any, token: Any) -> dict[str, Any]:
         if not isinstance(token, str) or not re.fullmatch(r"[0-9a-f]{64}", token) or not game_id:
             raise ValueError("Invalid expected process token or game ID.")
@@ -5271,24 +5373,7 @@ class GameProviderHandler(BaseHTTPRequestHandler):
         try:
             target = urllib.parse.urlsplit(self.path)
             query = urllib.parse.parse_qs(target.query)
-            if target.path == "/health":
-                with self.state.lock:
-                    self.send_json(HTTPStatus.OK, {
-                        "ok": True,
-                        "component": "game-provider",
-                        "compatibility_component": "playnite",
-                        "profile_id": self.state.profile_id,
-                        "playnite_enabled": bool(getattr(
-                            self.state, "playnite_enabled", False)),
-                        "connector_connected": self.state.connected,
-                        "library_count": len(self.state.library),
-                        "providers": dict(self.state.provider_health),
-                        "error": self.state.last_error,
-                        "pid": os.getpid(),
-                        "started_at": self.state.started_at,
-                        **self.state.version_info,
-                    })
-            elif target.path == "/library/list":
+            if target.path == "/library/list":
                 cursor = query.get("cursor", ["0"])[0] or "0"
                 limit = int(query.get("limit", ["50"])[0])
                 self.send_json(HTTPStatus.OK, self.state.library_page(cursor, limit))
@@ -5297,11 +5382,8 @@ class GameProviderHandler(BaseHTTPRequestHandler):
                     query.get("game_id", [""])[0],
                     query.get("kind", ["cover"])[0])
                 self.send_binary(HTTPStatus.OK, body, content_type)
-            elif target.path == "/game/current":
-                self.send_json(HTTPStatus.OK, self.state.current_snapshot())
-            elif target.path == "/window/readiness":
-                with self.state.lock:
-                    self.send_json(HTTPStatus.OK, dict(self.state.readiness))
+            elif target.path == "/observation":
+                self.send_json(HTTPStatus.OK, self.state.observation_snapshot())
             elif target.path == "/events":
                 after = int(query.get("after", ["0"])[0])
                 events = self.state.events_after(after, 20.0)

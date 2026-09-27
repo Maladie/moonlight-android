@@ -8,7 +8,8 @@ final class PlayniteSessionPresentation {
     enum State {
         READY,
         RESUME_ACTIVE,
-        RESUME_SUSPENDED
+        RESUME_SUSPENDED,
+        RECOVERY_REQUIRED
     }
 
     static final class Projection {
@@ -31,6 +32,10 @@ final class PlayniteSessionPresentation {
             if (selectedGameId.isEmpty()
                     || !selectedGameId.equals(SessionSnapshot.normalize(gameId))) {
                 return State.READY;
+            }
+            if (snapshot.observationState
+                    == SessionSnapshot.ObservationState.RECOVERY_REQUIRED) {
+                return State.RECOVERY_REQUIRED;
             }
             if (snapshot.isSuspended()) {
                 return State.RESUME_SUSPENDED;

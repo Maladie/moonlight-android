@@ -319,7 +319,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             new ConcurrentHashMap<>();
     private final Set<String> hostProfileRefreshInFlight = ConcurrentHashMap.newKeySet();
     private volatile WindowsProfileSwitchAttempt windowsProfileSwitchAttempt;
-    private final SessionStateResolver sessionStateResolver = new SessionStateResolver();
     private final Map<String, ComputerDetails> hosts = new LinkedHashMap<>();
     private final Set<String> newlyDiscoveredHosts = new LinkedHashSet<>();
 
@@ -817,59 +816,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private PlayniteSessionPresentation.Projection playniteSessionProjection;
     private String renderedCarouselSessionSignature = "";
     private String renderedExpandedSessionSignature = "";
-    private final Map<String, String> activePlayniteGameIds = new LinkedHashMap<>();
-    private final Map<String, String> activePlayniteGameStates = new LinkedHashMap<>();
-    private final Map<String, Integer> activePlayniteGameAppIds = new LinkedHashMap<>();
-    private final Map<String, Long> activePlayniteGameResolvedAt = new LinkedHashMap<>();
-    private final Map<String, Long> activePlayniteGameRequestedAt = new LinkedHashMap<>();
-    private final Map<String, RunningGameObservation> runningGameObservations =
+    private final Map<String, SessionSnapshot> publishedSessionSnapshots =
             new LinkedHashMap<>();
-
-    static final class RunningGameObservation {
-        final HostGatewayClient.RunningGames inventory;
-        final GatewayConnection connection;
-        final long observedAt;
-
-        RunningGameObservation(HostGatewayClient.RunningGames inventory,
-                               GatewayConnection connection, long observedAt) {
-            this.inventory = inventory;
-            this.connection = connection;
-            this.observedAt = observedAt;
-        }
-
-        HostGatewayClient.RunningGame find(String gameId, long now) {
-            return inventory != null && observedAt > 0L
-                    && now >= observedAt && now - observedAt < 10_000L
-                    ? inventory.find(gameId) : null;
-        }
-
-        String signature(long now) {
-            if (inventory == null) return "";
-            StringBuilder result = new StringBuilder("|running:");
-            for (HostGatewayClient.RunningGame game : inventory.games) {
-                if (find(game.gameId, now) != null) result.append(game.gameId)
-                        .append(':').append(game.processToken).append(';');
-            }
-            return result.toString();
-        }
-
-        RunningGameObservation without(HostGatewayClient.RunningGame stopped) {
-            if (inventory == null) return this;
-            List<HostGatewayClient.RunningGame> remaining = new ArrayList<>();
-            for (HostGatewayClient.RunningGame game : inventory.games) {
-                if (!game.gameId.equals(stopped.gameId)
-                        || !game.processToken.equals(stopped.processToken)) remaining.add(game);
-            }
-            return new RunningGameObservation(new HostGatewayClient.RunningGames(remaining,
-                    inventory.status, inventory.revision), connection, observedAt);
-        }
-    }
-    private final Map<String, Integer> activePlayniteGameRequestGenerations =
+    private final Map<String, Long> sessionProjectionRequestedAt = new LinkedHashMap<>();
+    private final Map<String, Integer> sessionProjectionRequestGenerations =
             new LinkedHashMap<>();
-    private int activePlayniteGameRequestGeneration;
+    private int sessionProjectionRequestGeneration;
     private final Map<String, Integer> lastFreshRunningAppIds = new LinkedHashMap<>();
     private final Map<String, String> lastFreshStreamSessionIds = new LinkedHashMap<>();
-    private final Set<String> activePlayniteGameResolutionInFlight =
+    private final Set<String> sessionProjectionRefreshInFlight =
             Collections.synchronizedSet(new HashSet<>());
     private String lastCarouselGameId = "";
     private String libraryTransitionGameId = "";
@@ -934,9 +889,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (previous == null && initialHostsLoaded) newlyDiscoveredHosts.add(copy.uuid);
             hosts.put(copy.uuid, copy);
             if (fresh && active && copy.uuid.equals(selectedHostUuid)) {
-                resolveActivePlayniteGame(copy,
+                refreshSessionProjection(copy,
                         resolveSessionSnapshot(copy).state != SessionSnapshot.State.TERMINATING);
-                refreshRunningGamePresentation(copy);
             }
             queueConsoleUpdates(ConsoleUpdateChannels.diff(
                     previous, copy, selectedHostUuid));
@@ -1026,7 +980,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 previousRunningAppId, host.runningGameId)) return;
         String endedStreamSessionId = AuthoritativeSessionTransition.endedSessionId(
                 previousRunningAppId, host.runningGameId, previousStreamSessionId);
-        invalidateActivePlayniteGameRequest(host.uuid);
+        invalidateSessionProjectionRequest(host.uuid);
         if (host.uuid.equalsIgnoreCase(selectedHostUuid)) {
             refreshSelectedApplications();
             refreshSelectedPlayniteLibrary();
@@ -4869,7 +4823,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         refreshDiscordIndicator();
         refreshUsbMicrophoneIndicator();
         loadPlayniteForHost(host);
-        resolveActivePlayniteGame(host, host.runningGameId != 0);
+        refreshSessionProjection(host, host.runningGameId != 0);
     }
 
     private boolean changeSelectedProfile(ComputerDetails host, String profileId) {
@@ -5074,12 +5028,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                             ConsoleActionCatalog.isPaired(host),
                             snapshot.state);
             if (resolutionAction == PlayniteIdentityResolutionPolicy.Action.REQUEST) {
-                resolveActivePlayniteGame(host, true);
+                refreshSessionProjection(host, true);
             } else if (resolutionAction == PlayniteIdentityResolutionPolicy.Action.CLEAR) {
-                resolveActivePlayniteGame(host, false);
+                refreshSessionProjection(host, false);
             } else if (ConsoleActionCatalog.isOnline(host)
                     && ConsoleActionCatalog.isPaired(host)) {
-                resolveActivePlayniteGame(host, activeSession);
+                refreshSessionProjection(host, activeSession);
             }
         }
         boolean restoreFocus = quickResumeButton.hasFocus() && !visible;
@@ -5102,193 +5056,91 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         wireHomeFocusNavigation();
     }
 
-    private void resolveActivePlayniteGame(ComputerDetails host, boolean activeSession) {
+    private void refreshSessionProjection(ComputerDetails host, boolean activeSession) {
         if (host == null) return;
-        resolveActivePlayniteGame(host, selectedProfileKey(host.uuid), activeSession, null);
+        refreshSessionProjection(host, selectedProfileKey(host.uuid), activeSession, null);
     }
 
-    private void resolveActivePlayniteGame(ComputerDetails host, boolean activeSession,
+    private void refreshSessionProjection(ComputerDetails host, boolean activeSession,
                                            Consumer<Boolean> completion) {
         if (host == null) return;
-        resolveActivePlayniteGame(host, selectedProfileKey(host.uuid), activeSession,
+        refreshSessionProjection(host, selectedProfileKey(host.uuid), activeSession,
                 completion);
     }
 
-    private void resolveActivePlayniteGame(ComputerDetails host, HostProfileKey requestKey,
+    private void refreshSessionProjection(ComputerDetails host, HostProfileKey requestKey,
                                            boolean activeSession,
                                            Consumer<Boolean> completion) {
         if (host == null) return;
         String stateKey = requestKey.cacheKey();
-        if (!activeSession) {
-            boolean changed = activePlayniteGameIds.remove(stateKey) != null;
-            changed |= activePlayniteGameStates.remove(stateKey) != null;
-            activePlayniteGameAppIds.remove(stateKey);
-            activePlayniteGameResolvedAt.remove(stateKey);
-            boolean visibleResumeMarker = host.uuid.equals(selectedHostUuid)
-                    && !resumePlayniteGameId.isEmpty();
-            if ((changed || visibleResumeMarker) && host.uuid.equals(selectedHostUuid)) {
-                android.util.Log.i("MoonWakerSession",
-                        "Clearing resume marker because Sunshine reports no active session"
-                                + " host=" + host.uuid + " game=" + resumePlayniteGameId);
-                renderPlayniteLibrary(host, currentSunshineApps);
-            }
-        }
         if (!ConsoleActionCatalog.isOnline(host) || !ConsoleActionCatalog.isPaired(host)) {
-            RunningGameObservation observation = runningGameObservations.get(stateKey);
-            if (observation != null) runningGameObservations.put(stateKey,
-                    new RunningGameObservation(observation.inventory, observation.connection, 0L));
-            invalidateActivePlayniteGameRequest(host.uuid);
+            invalidateSessionProjectionRequest(host.uuid);
             return;
         }
         long now = SystemClock.uptimeMillis();
-        if (completion != null) invalidateActivePlayniteGameRequest(host.uuid);
-        if ((completion == null && !activeGameRefreshDue(now,
-                activePlayniteGameRequestedAt.getOrDefault(stateKey, 0L)))
-                || !activePlayniteGameResolutionInFlight.add(stateKey)) return;
-        activePlayniteGameRequestedAt.put(stateKey, now);
+        if (completion != null) invalidateSessionProjectionRequest(host.uuid);
+        if ((completion == null && !sessionProjectionRefreshDue(now,
+                sessionProjectionRequestedAt.getOrDefault(stateKey, 0L)))
+                || !sessionProjectionRefreshInFlight.add(stateKey)) return;
+        sessionProjectionRequestedAt.put(stateKey, now);
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         GatewayConnection connection =
                 hostGatewayStore.loadForHost(host.uuid, address, requestKey.profileId);
         if (connection == null) {
-            activePlayniteGameResolutionInFlight.remove(stateKey);
+            sessionProjectionRefreshInFlight.remove(stateKey);
             if (completion != null) completion.accept(false);
             return;
         }
-        int expectedRunningGameId = host.runningGameId;
-        int requestGeneration = ++activePlayniteGameRequestGeneration;
-        activePlayniteGameRequestGenerations.put(stateKey, requestGeneration);
+        int requestGeneration = ++sessionProjectionRequestGeneration;
+        sessionProjectionRequestGenerations.put(stateKey, requestGeneration);
         String expectedHostId = host.uuid;
         executor.execute(() -> {
-            String gameId = "";
-            String gameState = "";
-            boolean succeeded = false;
-            HostGatewayClient.RunningGames inventory = null;
+            SessionSnapshot resolved = null;
             try {
-                HostGatewayClient.PlayniteCurrentGame current =
-                        hostGatewayClient.getPlayniteCurrentGame(connection);
-                gameState = SessionSnapshot.normalize(current.state);
-                inventory = current.runningGames;
-                if ("running".equalsIgnoreCase(current.state)
-                        && HostGatewayClient.isPlayniteId(current.id)) {
-                    gameId = current.id;
-                }
-                succeeded = true;
-            } catch (IOException ignored) {
-                // Keep the last verified Bridge fact; a transport failure is not idle.
+                PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(
+                        expectedHostId, connection,
+                        gatewayActorContext(expectedHostId, requestKey.profileId),
+                        hostGatewayClient, SystemClock::uptimeMillis);
+                resolved = gateway.snapshot().sessionSnapshot;
+            } catch (IOException | RuntimeException ignored) {
+                // The projection owner preserves safe local transport and bounded liveness.
             }
-            String resolvedGameId = gameId;
-            String resolvedGameState = gameState;
-            boolean requestSucceeded = succeeded;
-            HostGatewayClient.RunningGames resolvedInventory = inventory;
+            SessionSnapshot projected = resolved;
             mainHandler.post(() -> {
-                Integer currentGeneration = activePlayniteGameRequestGenerations.get(
+                Integer currentGeneration = sessionProjectionRequestGenerations.get(
                         stateKey);
                 if (currentGeneration != null && currentGeneration == requestGeneration) {
-                    activePlayniteGameResolutionInFlight.remove(stateKey);
+                    sessionProjectionRefreshInFlight.remove(stateKey);
                 }
                 ComputerDetails latestHost = currentHost(expectedHostId);
                 GatewayConnection latestConnection = latestHost == null ? null
                         : hostGatewayStore.loadForHost(expectedHostId,
                         latestHost.activeAddress == null ? null : latestHost.activeAddress.address,
                         requestKey.profileId);
-                boolean acceptsInventory = currentGeneration != null
-                        && currentGeneration == requestGeneration
-                        && latestHost != null && expectedHostId.equals(latestHost.uuid)
+                boolean sameRenderScope = latestHost != null
+                        && expectedHostId.equals(latestHost.uuid)
                         && requestKey.equals(selectedProfileKey(expectedHostId))
                         && sameGatewayProfile(connection, latestConnection);
-                if (requestSucceeded && acceptsInventory) {
-                    runningGameObservations.put(stateKey, new RunningGameObservation(
-                            resolvedInventory, connection, SystemClock.uptimeMillis()));
-                }
-                if (acceptsInventory) refreshRunningGamePresentation(latestHost);
-                if (!activeSession) {
-                    if (completion != null) completion.accept(requestSucceeded && acceptsInventory);
-                    return;
-                }
-                int latestAppId = latestHost == null ? -1 : latestHost.runningGameId;
-                if (!PlayniteIdentityResolutionPolicy.acceptsResponse(
-                        expectedHostId, requestGeneration, expectedRunningGameId,
-                        latestHost == null ? "" : latestHost.uuid,
-                        currentGeneration == null ? -1 : currentGeneration,
-                        latestAppId, ConsoleActionCatalog.isOnline(latestHost),
-                        ConsoleActionCatalog.isPaired(latestHost))) {
-                    android.util.Log.i("MoonWakerSession",
-                            "Discarding stale Playnite session response host=" + expectedHostId
-                                    + " expectedApp=" + expectedRunningGameId
-                                    + " resolvedGame=" + resolvedGameId);
-                    if (completion != null) completion.accept(false);
-                    return;
-                }
-                if (!requestSucceeded) {
-                    if (completion != null) completion.accept(false);
-                    return;
-                }
-                long acceptedAt = SystemClock.uptimeMillis();
-                boolean freshnessRecovered = !PlayniteIdentityResolutionPolicy
-                        .isFreshObservation(expectedRunningGameId,
-                                activePlayniteGameAppIds.getOrDefault(
-                                        stateKey, Integer.MIN_VALUE),
-                                activePlayniteGameResolvedAt.getOrDefault(
-                                        stateKey, 0L),
-                                acceptedAt, ACTIVE_GAME_OBSERVATION_TTL_MS);
-                activePlayniteGameResolvedAt.put(stateKey, acceptedAt);
-                activePlayniteGameAppIds.put(stateKey, expectedRunningGameId);
-                String previous = activePlayniteGameIds.get(stateKey);
-                String previousState = activePlayniteGameStates.get(stateKey);
-                String acceptedState = "running".equals(resolvedGameState)
-                        && resolvedGameId.isEmpty() ? "unknown" : resolvedGameState;
-                if (acceptedState.isEmpty()) acceptedState = "unknown";
-                activePlayniteGameStates.put(stateKey, acceptedState);
-                android.util.Log.i("MoonWakerSession",
-                        "Resolved active Playnite session host=" + expectedHostId
-                                + " app=" + expectedRunningGameId
-                                + " state=" + acceptedState + " game=" + resolvedGameId);
-                if ("idle".equals(acceptedState)) activePlayniteGameIds.remove(stateKey);
-                else if (!resolvedGameId.isEmpty()) {
-                    activePlayniteGameIds.put(stateKey, resolvedGameId);
-                }
-                String acceptedGameId = activePlayniteGameIds.get(stateKey);
-                if (active && expectedHostId.equals(selectedHostUuid)
-                        && runningGamePresentationChanged(previous, acceptedGameId,
-                        previousState, acceptedState, freshnessRecovered)) {
+                SessionSnapshot previous = publishedSessionSnapshots.get(stateKey);
+                if (projected != null) publishedSessionSnapshots.put(stateKey, projected);
+                if (sameRenderScope && active && expectedHostId.equals(selectedHostUuid)
+                        && projected != null && !projected.equals(previous)) {
                     renderPlayniteLibrary(currentHost(expectedHostId), currentSunshineApps);
                 }
-                if (completion != null) completion.accept(true);
+                if (completion != null) completion.accept(projected != null && sameRenderScope);
             });
         });
     }
 
-    static boolean runningGamePresentationChanged(String previousGameId,
-                                                  String currentGameId,
-                                                  String previousState,
-                                                  String currentState,
-                                                  boolean freshnessRecovered) {
-        if (normalizeId(previousGameId).isEmpty()
-                && normalizeId(currentGameId).isEmpty()) return false;
-        return freshnessRecovered
-                || !Objects.equals(previousGameId, currentGameId)
-                || !Objects.equals(previousState, currentState);
-    }
-
-    private void invalidateActivePlayniteGameRequest(String hostId) {
+    private void invalidateSessionProjectionRequest(String hostId) {
         String key = selectedProfileKey(hostId).cacheKey();
-        activePlayniteGameRequestGenerations.put(key,
-                ++activePlayniteGameRequestGeneration);
-        activePlayniteGameResolutionInFlight.remove(key);
+        sessionProjectionRequestGenerations.put(key,
+                ++sessionProjectionRequestGeneration);
+        sessionProjectionRefreshInFlight.remove(key);
     }
 
-    static boolean activeGameRefreshDue(long now, long requestedAt) {
+    static boolean sessionProjectionRefreshDue(long now, long requestedAt) {
         return requestedAt == 0L || now < requestedAt || now - requestedAt >= 5_000L;
-    }
-
-    private void refreshRunningGamePresentation(ComputerDetails host) {
-        if (!active || host == null || !host.uuid.equals(selectedHostUuid)
-                || currentPlayniteGames.isEmpty() || playniteSessionProjection == null) return;
-        String signature = playniteSessionProjection.signature() + runningGameSignature(host);
-        if (!signature.equals(renderedCarouselSessionSignature)
-                || (expandedLibraryMode && !signature.equals(renderedExpandedSessionSignature))) {
-            renderPlayniteLibrary(host, currentSunshineApps);
-        }
     }
 
     static boolean sameGatewayProfile(GatewayConnection first, GatewayConnection second) {
@@ -5314,8 +5166,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private SessionSnapshot resolveSessionSnapshot(ComputerDetails host, String profileId) {
         if (host == null) {
-            return new SessionSnapshot("", SessionSnapshot.State.NONE, 0, "",
-                    false, false, false, false, false);
+            return SessionSnapshot.pending("", GatewayConnection.DEFAULT_PROFILE_ID,
+                    GatewayConnection.DEFAULT_PROFILE_ID);
         }
         HostProfileKey profileKey = new HostProfileKey(host.uuid, profileId);
         String stateKey = profileKey.cacheKey();
@@ -5324,6 +5176,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String executionProfileId = executionProfileId(host.uuid, profileKey.profileId);
         SuspendedSessionStore.Session suspended = suspendedSession(
                 host.uuid, profileKey.profileId);
+        SessionStateResolver.ProjectionOwner projectionOwner = SessionStateResolver.owner(
+                host.uuid, profileKey.profileId, executionProfileId);
         HostSleepStateStore.State sleep = HostSleepStateStore.load(this, host.uuid);
         SessionResumeManager.PendingSession pending =
                 SessionResumeManager.pendingSession(this);
@@ -5332,60 +5186,34 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && executionProfileId.equals(pending.executionProfileId)
                 && host.runningGameId != 0
                 && host.runningGameId == pending.appId;
-        boolean freshBridgeApp = PlayniteIdentityResolutionPolicy.isFreshObservation(
-                host.runningGameId, activePlayniteGameAppIds.getOrDefault(
-                        stateKey, Integer.MIN_VALUE),
-                activePlayniteGameResolvedAt.getOrDefault(stateKey, 0L),
-                SystemClock.uptimeMillis(), ACTIVE_GAME_OBSERVATION_TTL_MS);
-        String bridgeGameState = freshBridgeApp
-                ? activePlayniteGameStates.getOrDefault(stateKey, "unknown")
-                : "unknown";
-        String resolvedPlayniteGameId = activePlayniteGameIds.getOrDefault(stateKey, "");
-        if (resolvedPlayniteGameId.isEmpty() && pendingMatchesRunningSession
-                && !activePlayniteGameResolvedAt.containsKey(stateKey)) {
-            resolvedPlayniteGameId = pending.playniteGameId;
-        }
         boolean pendingReconnect = pending != null
                 && (pending.autoResume || pendingMatchesRunningSession)
                 && PlayniteIdentityResolutionPolicy.allowsPendingReconnect(
-                        bridgeGameState, pending.playniteGameId);
-        SessionStateResolver.Observations observations =
-                new SessionStateResolver.Observations(
-                        host.uuid, profileKey.profileId, host.runningGameId,
-                        resolvedPlayniteGameId, retained,
-                        suspended, SuspendedSessionStore.recentlyEndedForExecution(
-                        this, host.uuid, executionProfileId),
-                        pendingReconnect, pending == null ? "" : pending.hostUuid,
-                        pending == null ? GatewayConnection.DEFAULT_PROFILE_ID
-                                : pending.profileId,
-                        pending == null ? 0 : pending.appId, host.uuid, sleep,
-                        host.state == ComputerDetails.State.ONLINE);
-        observations.bridgeGameState = bridgeGameState;
-        observations.executionProfileId = executionProfileId;
-        observations.retainedExecutionProfileId = retained.executionProfileId;
-        observations.suspendedExecutionProfileId = suspended == null
-                ? GatewayConnection.DEFAULT_PROFILE_ID : suspended.executionProfileId;
-        observations.pendingResumeExecutionProfileId = pending == null
-                ? GatewayConnection.DEFAULT_PROFILE_ID : pending.executionProfileId;
-        observations.retainedOwnerLive =
-                RetainedStreamSessionCoordinator.canResumeInstantly(retained);
+                        "unknown", pending.playniteGameId);
         int sessionAppId = retained.hostId.equalsIgnoreCase(host.uuid)
                 && retained.executionProfileId.equals(executionProfileId)
                 && retained.appId != 0 ? retained.appId
-                : host.runningGameId != 0 ? host.runningGameId
                 : pending != null && pending.hostUuid.equalsIgnoreCase(host.uuid)
                 && pending.executionProfileId.equals(executionProfileId)
                 ? pending.appId : 0;
-        observations.neutralStreamTarget = pending != null
+        boolean neutralStreamTarget = pending != null
                 && pending.neutralStreamTarget
                 && pending.hostUuid.equalsIgnoreCase(host.uuid)
                 && pending.executionProfileId.equals(executionProfileId)
                 && pending.appId == sessionAppId;
-        if (!observations.neutralStreamTarget && sessionAppId != 0) {
-            observations.neutralStreamTarget = PlayniteTargetResolver.isNeutralStream(
+        if (!neutralStreamTarget && sessionAppId != 0) {
+            neutralStreamTarget = PlayniteTargetResolver.isNeutralStream(
                     PlayniteTargetResolver.findById(loadApps(host, true), sessionAppId));
         }
-        return sessionStateResolver.resolve(observations);
+        SessionStateResolver.LocalFacts local = new SessionStateResolver.LocalFacts(
+                suspended, SuspendedSessionStore.recentlyEndedForExecution(
+                this, host.uuid, executionProfileId), pendingReconnect, pending,
+                sleep != null, sleep != null && sleep.sleepObservedAt > 0L,
+                neutralStreamTarget);
+        SessionSnapshot canonical = projectionOwner.current(
+                retained, local, SystemClock.uptimeMillis());
+        publishedSessionSnapshots.put(stateKey, canonical);
+        return canonical;
     }
 
     private SuspendedSessionStore.Session suspendedSession(
@@ -7960,7 +7788,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String expectedSuspendId = suspended == null ? "" : suspended.suspendId;
         String requestedProviderGameId = normalizeId(expectedProviderGameId);
         final String providerGameId = requestedProviderGameId.isEmpty()
-                ? knownProviderGameId(host, suspended) : requestedProviderGameId;
+                ? knownProviderGameId(host) : requestedProviderGameId;
         ConsoleUiFeedback.makeText(this, R.string.console_terminate_session_request,
                 Toast.LENGTH_SHORT).show();
         RetainedStreamSessionCoordinator.Snapshot retained =
@@ -7997,12 +7825,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         expectedSuspendId);
             }
             String stateKey = profileKey.cacheKey();
-            activePlayniteGameIds.remove(stateKey);
-            activePlayniteGameStates.remove(stateKey);
-            activePlayniteGameAppIds.remove(stateKey);
-            activePlayniteGameResolvedAt.remove(stateKey);
+            publishedSessionSnapshots.remove(stateKey);
             if (profileKey.equals(selectedProfileKey(host.uuid))) {
-                invalidateActivePlayniteGameRequest(host.uuid);
+                invalidateSessionProjectionRequest(host.uuid);
             }
         }
         refreshSessionState(host.uuid);
@@ -8185,14 +8010,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             retainedStreamAppId = StreamConfiguration.INVALID_APP_ID;
             retainedStreamPlayniteGameId = "";
         }
-        activePlayniteGameIds.remove(stateKey);
-        activePlayniteGameStates.remove(stateKey);
-        activePlayniteGameAppIds.remove(stateKey);
-        activePlayniteGameResolvedAt.remove(stateKey);
+        publishedSessionSnapshots.remove(stateKey);
         lastFreshRunningAppIds.remove(host.uuid);
         lastFreshStreamSessionIds.remove(host.uuid);
         if (profileKey.equals(selectedProfileKey(host.uuid))) {
-            invalidateActivePlayniteGameRequest(host.uuid);
+            invalidateSessionProjectionRequest(host.uuid);
         }
         if (host.uuid.equalsIgnoreCase(selectedHostUuid)) {
             resumePlayniteGameId = "";
@@ -8282,41 +8104,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ? pending.controlGeneration : 0L;
     }
 
-    private String knownProviderGameId(ComputerDetails host,
-                                       SuspendedSessionStore.Session suspended) {
-        if (suspended != null && HostGatewayClient.isPlayniteId(suspended.playniteGameId)) {
-            return suspended.playniteGameId;
-        }
-        String active = host == null ? ""
-                : activePlayniteGameIds.get(profileStateKey(host.uuid));
-        if (HostGatewayClient.isPlayniteId(active)) return active;
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
-        SessionResumeManager.PendingSession pending =
-                SessionResumeManager.pendingSession(this);
-        String selectedActor = host == null ? GatewayConnection.DEFAULT_PROFILE_ID
-                : selectedProfileId(host.uuid);
-        String selectedExecution = host == null ? GatewayConnection.DEFAULT_PROFILE_ID
-                : executionProfileId(host.uuid, selectedActor);
-        if (host != null && host.uuid.equalsIgnoreCase(retained.hostId)
-                && retained.executionProfileId.equals(selectedExecution)
-                && HostGatewayClient.isPlayniteId(retained.playniteGameId)) {
-            return retained.playniteGameId;
-        }
-        if (host != null && pending != null
-                && host.uuid.equalsIgnoreCase(pending.hostUuid)
-                && pending.executionProfileId.equals(selectedExecution)
-                && host.runningGameId == pending.appId
-                && HostGatewayClient.isPlayniteId(pending.playniteGameId)) {
-            return pending.playniteGameId;
-        }
-        if (host != null && host.uuid.equalsIgnoreCase(retainedStreamHostId)
-                && executionProfileId(host.uuid, retainedStreamProfileId)
-                .equals(selectedExecution)
-                && HostGatewayClient.isPlayniteId(retainedStreamPlayniteGameId)) {
-            return retainedStreamPlayniteGameId;
-        }
-        return "";
+    private String knownProviderGameId(ComputerDetails host) {
+        String gameId = host == null ? "" : resolveSessionSnapshot(host).playniteGameId;
+        return HostGatewayClient.isPlayniteId(gameId) ? gameId : "";
     }
 
     private void stopActiveProviderGame(ComputerDetails host, String knownGameId,
@@ -8332,28 +8122,26 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
             return;
         }
-        HostGatewayClient.PlayniteCurrentGame current;
+        PlayniteTransitionGateway.Snapshot current;
         try {
-            current = hostGatewayClient.getPlayniteCurrentGame(gateway);
+            current = new PlayniteTransitionGateway(host.uuid, gateway,
+                    gatewayActorContext(host.uuid, profileId), hostGatewayClient,
+                    SystemClock::uptimeMillis).snapshot();
         } catch (IOException unavailable) {
             if (!requireProviderVerification && expectedGameId.isEmpty()) return;
             throw unavailable;
         }
         String gameId = PlayniteIdentityResolutionPolicy.verifiedStopTarget(
-                expectedGameId, current.state, current.id);
+                expectedGameId, current.gameState, current.gameId);
         if (gameId == null) {
             if (!requireProviderVerification && expectedGameId.isEmpty()) return;
             throw new IOException("Provider game state is uncertain or does not match");
         }
         if (!gameId.isEmpty()) {
-            HostGatewayClient.RunningGame exact = current.runningGames == null
-                    ? null : current.runningGames.find(current.id);
-            String processToken = exact != null && exact.processId == current.processId
-                    ? exact.processToken : "";
-            if (processToken.isEmpty()) {
+            if (!current.hasVerifiedProcessFor(gameId)) {
                 throw new IOException("Provider process identity is uncertain");
             }
-            hostGatewayClient.stopGame(gateway, gameId, processToken);
+            hostGatewayClient.stopGame(gateway, gameId, current.processToken);
         }
     }
 
@@ -9540,8 +9328,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ? putSelectedSessionFirst(unfilteredItems) : unfilteredItems;
         List<PlayniteDashboardItem> dashboardItems = carouselPlayniteItems(
                 host, carouselSource, maxCarouselGameCount());
-        String sessionSignature = playniteSessionProjection.signature()
-                + runningGameSignature(host);
+        String sessionSignature = playniteSessionProjection.signature();
         boolean libraryTileFocused = getCurrentFocus() != null
                 && "playnite:__library__".equals(getCurrentFocus().getTag());
         installedFilterButton.setVisibility(View.GONE);
@@ -10123,7 +9910,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (!expandedLibraryMode || expandedGrid == null || host == null) return;
         String sessionSignature = playniteSessionProjection == null
                 ? "" : playniteSessionProjection.signature();
-        sessionSignature += runningGameSignature(host);
         boolean sessionPresentationChanged =
                 !renderedExpandedSessionSignature.equals(sessionSignature);
         List<PlayniteDashboardItem> expandedItems = expandedLibraryItems(host);
@@ -11159,54 +10945,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private boolean isFreshExactRunningManagedGame(ComputerDetails host,
                                                     PlayniteDashboardItem item) {
         if (host == null || item == null) return false;
-        String stateKey = profileStateKey(host.uuid);
-        RunningGameObservation observation = runningGameObservations.get(stateKey);
-        if (observation != null && observation.inventory != null) {
-            return freshRunningGame(host, item.stableId()) != null;
-        }
-        return isFreshExactBridgeRunning(selectedHostUuid, host.uuid,
-                host.runningGameId, item.stableId(),
-                activePlayniteGameStates.get(stateKey),
-                activePlayniteGameIds.get(stateKey),
-                activePlayniteGameAppIds.getOrDefault(stateKey, Integer.MIN_VALUE),
-                activePlayniteGameResolvedAt.getOrDefault(stateKey, 0L),
-                SystemClock.uptimeMillis(), ACTIVE_GAME_OBSERVATION_TTL_MS);
-    }
-
-    private HostGatewayClient.RunningGame freshRunningGame(ComputerDetails host, String gameId) {
-        if (host == null || !host.uuid.equalsIgnoreCase(selectedHostUuid)) return null;
-        RunningGameObservation observation = runningGameObservations.get(
-                profileStateKey(host.uuid));
-        GatewayConnection connection = hostGatewayStore.loadForHost(host.uuid,
-                host.activeAddress == null ? null : host.activeAddress.address,
-                selectedProfileId(host.uuid));
-        return observation != null && sameGatewayProfile(observation.connection, connection)
-                ? observation.find(gameId, SystemClock.uptimeMillis()) : null;
-    }
-
-    private String runningGameSignature(ComputerDetails host) {
-        RunningGameObservation observation = host == null ? null
-                : runningGameObservations.get(profileStateKey(host.uuid));
-        if (observation == null || observation.inventory == null) return "";
-        GatewayConnection connection = hostGatewayStore.loadForHost(host.uuid,
-                host.activeAddress == null ? null : host.activeAddress.address,
-                selectedProfileId(host.uuid));
-        if (!host.uuid.equalsIgnoreCase(selectedHostUuid)
-                || !sameGatewayProfile(observation.connection, connection)) return "|running:";
-        return observation.signature(SystemClock.uptimeMillis());
-    }
-
-    static boolean isFreshExactBridgeRunning(
-            String selectedHostId, String hostId, int expectedAppId, String expectedGameId,
-            String cachedState, String cachedGameId, int cachedAppId,
-            long resolvedAt, long now, long ttlMs) {
-        return hostId != null && hostId.equalsIgnoreCase(selectedHostId)
-                && "running".equalsIgnoreCase(cachedState)
-                && SessionSnapshot.normalize(expectedGameId).equals(
-                SessionSnapshot.normalize(cachedGameId))
-                && !SessionSnapshot.normalize(expectedGameId).isEmpty()
-                && PlayniteIdentityResolutionPolicy.isFreshObservation(
-                expectedAppId, cachedAppId, resolvedAt, now, ttlMs);
+        SessionSnapshot snapshot = resolveSessionSnapshot(host);
+        return host.uuid.equalsIgnoreCase(selectedHostUuid)
+                && "VERIFIED".equals(snapshot.processEvidence)
+                && snapshot.processId > 0
+                && !snapshot.processToken.isEmpty()
+                && snapshot.playniteGameId.equals(
+                SessionSnapshot.normalize(item.stableId()));
     }
 
     private void bindPlayniteCard(View card, ComputerDetails host,
@@ -11227,14 +10972,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         PlayniteSessionPresentation.State sessionState = playniteSessionState(item);
         boolean resumeSession = sessionState
                 == PlayniteSessionPresentation.State.RESUME_ACTIVE;
-        boolean runningSession = isFreshExactRunningManagedGame(host, item)
-                || isFreshExactBridgeRunning(selectedHostUuid, host.uuid,
-                        host.runningGameId, item.stableId(),
-                        activePlayniteGameStates.get(profileStateKey(host.uuid)),
-                        activePlayniteGameIds.get(profileStateKey(host.uuid)),
-                        activePlayniteGameAppIds.getOrDefault(profileStateKey(host.uuid), Integer.MIN_VALUE),
-                        activePlayniteGameResolvedAt.getOrDefault(profileStateKey(host.uuid), 0L),
-                        SystemClock.uptimeMillis(), ACTIVE_GAME_OBSERVATION_TTL_MS);
+        boolean runningSession = isFreshExactRunningManagedGame(host, item);
         boolean suspendedSession = sessionState
                 == PlayniteSessionPresentation.State.RESUME_SUSPENDED;
         stylePlayniteSessionCard(card, card.hasFocus(), resumeSession || suspendedSession);
@@ -12538,17 +12276,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                         PlayniteDashboardItem item) {
         HostProfileKey confirmedKey = selectedProfileKey(host.uuid);
         if (!isFreshExactRunningManagedGame(host, item)) return;
-        HostGatewayClient.RunningGame confirmedGame = freshRunningGame(host, item.stableId());
-        RunningGameObservation confirmedObservation = runningGameObservations.get(
-                confirmedKey.cacheKey());
         TextView cancel = panelAction(getString(R.string.console_cancel));
         TextView endGame = panelAction(getString(R.string.overlay_menu_end_game_confirm));
         endGame.setTextColor(0xFFFF9B92);
         cancel.setOnClickListener(view -> handlePanelBack());
         endGame.setOnClickListener(view -> {
             hideSidePanel();
-            requestEndPlayniteGame(host, item, confirmedGame, confirmedObservation,
-                    confirmedKey);
+            requestEndPlayniteGame(host, item, confirmedKey);
         });
         showSidePanel(getString(R.string.playnite_game_options), item.game.name,
                 getString(R.string.playnite_end_game_confirmation), cancel, endGame);
@@ -12556,8 +12290,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void requestEndPlayniteGame(ComputerDetails host,
                                         PlayniteDashboardItem item,
-                                        HostGatewayClient.RunningGame confirmedGame,
-                                        RunningGameObservation confirmedObservation,
                                         HostProfileKey confirmedKey) {
         if (host == null || confirmedKey == null
                 || !confirmedKey.equals(selectedProfileKey(host.uuid))
@@ -12566,95 +12298,33 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     Toast.LENGTH_LONG).show();
             return;
         }
-        String stateKey = confirmedKey.cacheKey();
         String expectedGameId = SessionSnapshot.normalize(item.stableId());
-        HostGatewayClient.RunningGame latestGame = freshRunningGame(host, expectedGameId);
-        boolean verified = confirmedGame != null;
-        if (expectedGameId.isEmpty() || !isFreshExactRunningManagedGame(host, item)
-                || (verified && (latestGame == null
-                || !confirmedGame.processToken.equals(latestGame.processToken)))) {
+        if (expectedGameId.isEmpty() || !isFreshExactRunningManagedGame(host, item)) {
             ConsoleUiFeedback.makeText(this, R.string.overlay_menu_end_game_failed,
                     Toast.LENGTH_LONG).show();
             return;
         }
-        RunningGameObservation latestObservation = runningGameObservations.get(stateKey);
-        // Never downgrade an inventory confirmation to the older current-only operation.
-        if (!verified && latestObservation != null && latestObservation.inventory != null) return;
-        int expectedAppId = host.runningGameId;
-        long expectedResolvedAt = activePlayniteGameResolvedAt.getOrDefault(stateKey, 0L);
         executor.execute(() -> {
-            boolean success = false;
-            boolean stoppedCurrent = false;
+            boolean success;
             try {
                 if (!confirmedKey.equals(selectedProfileKey(host.uuid))) {
                     throw new IOException("game_stop_profile_changed");
                 }
-                if (verified) {
-                    GatewayConnection connection = hostGatewayStore.loadForHost(host.uuid,
-                            host.activeAddress == null ? null : host.activeAddress.address,
-                            confirmedKey.profileId);
-                    if (confirmedObservation == null
-                            || !sameGatewayProfile(confirmedObservation.connection, connection)) {
-                        throw new IOException("game_stop_profile_changed");
-                    }
-                    HostGatewayClient.PlayniteCurrentGame fresh =
-                            hostGatewayClient.getPlayniteCurrentGame(connection);
-                    HostGatewayClient.RunningGame exact = fresh.runningGames == null ? null
-                            : fresh.runningGames.find(confirmedGame.gameId);
-                    if (exact == null || !confirmedGame.processToken.equals(exact.processToken)) {
-                        throw new IOException("game_stop_process_changed");
-                    }
-                    GatewayConnection beforeStop = hostGatewayStore.loadForHost(host.uuid,
-                            host.activeAddress == null ? null : host.activeAddress.address,
-                            confirmedKey.profileId);
-                    if (!confirmedKey.equals(selectedProfileKey(host.uuid))
-                            || !host.uuid.equalsIgnoreCase(selectedHostUuid)
-                            || !sameGatewayProfile(connection, beforeStop)) {
-                        throw new IOException("game_stop_host_changed");
-                    }
-                    stoppedCurrent = hostGatewayClient.stopGame(connection,
-                            exact.gameId, exact.processToken);
-                } else {
-                    if (!confirmedKey.equals(selectedProfileKey(host.uuid))) {
-                        throw new IOException("game_stop_profile_changed");
-                    }
-                    stopActiveProviderGame(host, item.stableId(), true, confirmedKey.profileId);
-                    stoppedCurrent = true;
-                }
+                stopActiveProviderGame(host, expectedGameId, true, confirmedKey.profileId);
                 success = true;
-            } catch (IOException | RuntimeException ignored) { }
+            } catch (IOException | RuntimeException ignored) {
+                success = false;
+            }
             boolean stopped = success;
-            boolean stoppedSessionGame = stoppedCurrent;
             mainHandler.post(() -> {
                 if (!confirmedKey.equals(selectedProfileKey(host.uuid))
                         || !host.uuid.equalsIgnoreCase(selectedHostUuid)) return;
-                RunningGameObservation local = runningGameObservations.get(stateKey);
-                GatewayConnection currentConnection = hostGatewayStore.loadForHost(host.uuid,
-                        host.activeAddress == null ? null : host.activeAddress.address,
-                        confirmedKey.profileId);
-                HostGatewayClient.RunningGame localGame = local == null || local.inventory == null
-                        ? null : local.inventory.find(expectedGameId);
-                boolean sameStopScope = !verified || (confirmedObservation != null
-                        && sameGatewayProfile(confirmedObservation.connection, currentConnection)
-                        && local != null
-                        && sameGatewayProfile(confirmedObservation.connection, local.connection)
-                        && localGame != null
-                        && confirmedGame.processToken.equals(localGame.processToken));
-                if (stopped && sameStopScope) {
-                    if (stoppedSessionGame) markExactPlayniteGameIdle(host.uuid, expectedAppId,
-                            expectedGameId, expectedResolvedAt);
-                    // Preserve other verified games and their original freshness deadline.
-                    RunningGameObservation observation = runningGameObservations.get(stateKey);
-                    if (observation != null && confirmedGame != null) {
-                        runningGameObservations.put(stateKey, observation.without(confirmedGame));
-                    }
-                    invalidateActivePlayniteGameRequest(host.uuid);
+                if (stopped) {
+                    invalidateSessionProjectionRequest(host.uuid);
                     renderPlayniteLibrary(currentHost(host.uuid), currentSunshineApps);
-                    if (stoppedSessionGame) refreshSessionState(host.uuid);
+                    refreshSessionState(host.uuid);
                 }
-                if (sameStopScope) {
-                    resolveActivePlayniteGame(host, host.runningGameId != 0, ignored -> { });
-                }
+                refreshSessionProjection(host, host.runningGameId != 0, ignored -> { });
                 ConsoleUiFeedback.makeText(this, stopped
                                 ? R.string.playnite_end_game_success
                                 : R.string.overlay_menu_end_game_failed,
@@ -12693,48 +12363,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void resetInitialCarouselArtworkWarmup() {
         initialCarouselArtworkGeneration++;
         initialCarouselArtworkLoads.clear();
-    }
-
-    private void markExactPlayniteGameIdle(String hostId, int expectedAppId,
-                                           String expectedGameId, long expectedResolvedAt) {
-        ComputerDetails current = currentHost(hostId);
-        String stateKey = profileStateKey(hostId);
-        if (current == null || current.runningGameId != expectedAppId
-                || !shouldApplyExactStopResult(true, expectedAppId, expectedGameId,
-                expectedResolvedAt,
-                activePlayniteGameAppIds.getOrDefault(stateKey, Integer.MIN_VALUE),
-                activePlayniteGameStates.get(stateKey), activePlayniteGameIds.get(stateKey),
-                activePlayniteGameResolvedAt.getOrDefault(stateKey, 0L))) return;
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
-        boolean retainedScope = (retained.state
-                == RetainedStreamSessionCoordinator.State.HOME_LIVE
-                || retained.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE)
-                && retained.hostId.equalsIgnoreCase(hostId)
-                && retained.executionProfileId.equals(executionProfileId(
-                hostId, selectedProfileId(hostId)))
-                && retained.appId == expectedAppId;
-        if (retainedScope && !RetainedStreamSessionCoordinator.updateGameIfMatches(
-                retained.streamSessionId, hostId, expectedAppId, expectedGameId, "")) return;
-        activePlayniteGameIds.remove(stateKey);
-        activePlayniteGameStates.put(stateKey, "idle");
-        activePlayniteGameAppIds.put(stateKey, expectedAppId);
-        activePlayniteGameResolvedAt.put(stateKey, SystemClock.uptimeMillis());
-        invalidateActivePlayniteGameRequest(hostId);
-        if (hostId.equalsIgnoreCase(selectedHostUuid)) {
-            renderPlayniteLibrary(current, currentSunshineApps);
-        }
-    }
-
-    static boolean shouldApplyExactStopResult(
-            boolean success, int expectedAppId, String expectedGameId,
-            long expectedResolvedAt, int cachedAppId, String cachedState,
-            String cachedGameId, long cachedResolvedAt) {
-        return success && expectedAppId == cachedAppId
-                && expectedResolvedAt == cachedResolvedAt
-                && "running".equalsIgnoreCase(cachedState)
-                && SessionSnapshot.normalize(expectedGameId).equals(
-                SessionSnapshot.normalize(cachedGameId));
     }
 
     private void showPlayniteGameDetails(PlayniteDashboardItem item) {
@@ -14007,13 +13635,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 host.uuid, address, profileId);
         if (gateway == null) return new WarmUpBridgeProbe(false, "");
         try {
-            HostGatewayClient.PlayniteCurrentGame current =
-                    hostGatewayClient.getPlayniteCurrentGame(gateway);
-            String state = normalizeId(current.state);
-            String id = normalizeId(current.id);
-            return new WarmUpBridgeProbe(true,
-                    "running".equals(state) && HostGatewayClient.isPlayniteId(id)
-                            ? id : "");
+            PlayniteTransitionGateway.Snapshot current = new PlayniteTransitionGateway(
+                    host.uuid, gateway, gatewayActorContext(host.uuid, profileId),
+                    hostGatewayClient, SystemClock::uptimeMillis).snapshot();
+            return new WarmUpBridgeProbe(current.gatewayReady,
+                    current.hasVerifiedProcessFor(current.gameId)
+                            ? current.gameId : "");
         } catch (IOException | RuntimeException unavailable) {
             return new WarmUpBridgeProbe(false, "");
         }
@@ -14053,15 +13680,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
             @Override public SessionSnapshot resolve(HostProfileKey profileKey) {
                 if (profileKey == null) {
-                    return new SessionSnapshot("", SessionSnapshot.State.NONE, 0, "",
-                            false, false, false, false, false);
+                    return SessionSnapshot.pending("", GatewayConnection.DEFAULT_PROFILE_ID,
+                            GatewayConnection.DEFAULT_PROFILE_ID);
                 }
                 String hostId = profileKey.hostId;
                 ComputerDetails host = currentHost(hostId);
                 if (ConsoleActionCatalog.isOnline(host)
                         && ConsoleActionCatalog.isPaired(host)
                         && profileKey.equals(selectedProfileKey(hostId))) {
-                    resolveActivePlayniteGame(host, profileKey, true, null);
+                    refreshSessionProjection(host, profileKey, true, null);
                 }
                 return resolveSessionSnapshot(host, profileKey.profileId);
             }
@@ -14127,22 +13754,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                 && RetainedStreamSessionCoordinator.canSwitchOrigin(
                                 intent.hostId, executionProfileId(intent.hostId, intent.profileId), retained.appId);
                     }
-                    String stateKey = intent.profileKey.cacheKey();
-                    long observedAt = activePlayniteGameResolvedAt.getOrDefault(
-                            stateKey, 0L);
-                    boolean fresh = PlayniteIdentityResolutionPolicy.isFreshObservation(
-                            retained.appId, activePlayniteGameAppIds.getOrDefault(
-                                    stateKey, Integer.MIN_VALUE), observedAt,
-                            SystemClock.uptimeMillis(), ACTIVE_GAME_OBSERVATION_TTL_MS);
-                    String state = activePlayniteGameStates.getOrDefault(
-                            stateKey, "unknown");
-                    String gameId = normalizeId(activePlayniteGameIds.get(stateKey));
+                    SessionSnapshot projection = resolveSessionSnapshot(
+                            host, intent.profileId);
+                    String gameId = projection.playniteGameId;
                     boolean identityMatches = retained.playniteGameId.isEmpty()
-                            ? "idle".equals(state)
-                            : "running".equals(state)
-                            && HostGatewayClient.isPlayniteId(gameId)
+                            ? projection.observationState
+                            == SessionSnapshot.ObservationState.IDLE
+                            : "VERIFIED".equals(projection.processEvidence)
                             && gameId.equalsIgnoreCase(retained.playniteGameId);
-                    return fresh && identityMatches
+                    return identityMatches
                             && PlayniteTargetResolver.isNeutralStream(retainedTarget)
                             && RetainedStreamSessionCoordinator.canSwitchOrigin(
                             intent.hostId, executionProfileId(intent.hostId, intent.profileId), retained.appId);
@@ -14197,7 +13817,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     completion.accept(false);
                     return;
                 }
-                resolveActivePlayniteGame(host, intent.profileKey, true, accepted -> {
+                refreshSessionProjection(host, intent.profileKey, true, accepted -> {
                     if (!cancelled.getAsBoolean()) completion.accept(accepted);
                 });
             }
@@ -14300,8 +13920,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                             && current.streamSessionId.equals(retained.streamSessionId)) {
                         reconnectTermination =
                                 RetainedStreamSessionCoordinator.beginDirectTermination(
-                                retained.streamSessionId, retained.hostId,
-                                retained.appId, retained.playniteGameId);
+                                        retained);
                     }
                     LimeLog.info("Destructive close path=reconnect-fallback session="
                             + retained.streamSessionId + " marked="
@@ -14323,8 +13942,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                             }
                         });
                         closed = terminateKnownControlPlane(host, intent.profileId,
-                                knownProviderGameId(host, suspendedSession(
-                                        host.uuid, intent.profileId)));
+                                knownProviderGameId(host));
                     }
                 } finally {
                     if (reconnectTermination != null) {
@@ -14646,7 +14264,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     && ready.runningGameId != app.getAppId()) {
                 try {
                     if (!terminateKnownControlPlane(ready, transitionProfileId,
-                            knownProviderGameId(ready, suspendedLaunch))) {
+                            knownProviderGameId(ready))) {
                         throw new IOException("Previous managed session was not closed");
                     }
                 } catch (IOException error) {

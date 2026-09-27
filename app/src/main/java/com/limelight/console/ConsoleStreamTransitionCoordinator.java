@@ -601,7 +601,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             try {
                 PlayniteTransitionGateway.Snapshot snapshot = gateway.snapshot();
                 if (!isCurrent(runEpoch)) return;
-                captureCurrentAttemptProcess(snapshot);
+                if (snapshot.gatewayReady) captureCurrentAttemptProcess(snapshot);
                 String readinessReason = snapshot.reason == null ? "" : snapshot.reason;
                 if (snapshot.windowReady && !context.targetWindowReadyLogged) {
                     context.targetWindowReadyLogged = true;
@@ -627,7 +627,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 }
                 if (!isCurrent(runEpoch)) return;
 
-                if (!context.fullscreenRequested
+                if (snapshot.gatewayReady && !context.fullscreenRequested
                         && transitionSpec.type == LaunchTransitionType.PLAYNITE
                         && !snapshot.windowReady
                         && !"host_session_locked".equals(readinessReason)) {
@@ -637,7 +637,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 }
 
                 long now = clock.now();
-                if ("game".equalsIgnoreCase(snapshot.targetKind)
+                if (snapshot.gatewayReady && "game".equalsIgnoreCase(snapshot.targetKind)
                         && !snapshot.windowReady
                         && "target_not_foreground".equals(readinessReason)
                         && context.gameFocusAttempts < 3
@@ -652,20 +652,23 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                     if (!isCurrent(runEpoch)) return;
                 }
 
-                if ("running".equalsIgnoreCase(snapshot.gameState) && snapshot.processId > 0) {
-                    context.gameWasRunning = true;
-                }
-                if (context.gameWasRunning
-                        && !context.gameStopNotified
-                        && "idle".equalsIgnoreCase(snapshot.gameState)) {
-                    transitionController.gameStopping(transitionSpec.id,
-                            transitionSpec.hostId, transitionSpec.playniteGameId);
-                    if (!isCurrent(runEpoch)) return;
-                    context.gameWasRunning = false;
-                    context.gameStopNotified = true;
-                    clearCurrentAttemptOwner();
-                    callbacks.onProviderGameStopped(
-                            transitionSpec.id, transitionSpec.playniteGameId);
+                if (snapshot.gatewayReady) {
+                    if ("running".equalsIgnoreCase(snapshot.gameState)
+                            && snapshot.processId > 0) {
+                        context.gameWasRunning = true;
+                    }
+                    if (context.gameWasRunning
+                            && !context.gameStopNotified
+                            && "idle".equalsIgnoreCase(snapshot.gameState)) {
+                        transitionController.gameStopping(transitionSpec.id,
+                                transitionSpec.hostId, transitionSpec.playniteGameId);
+                        if (!isCurrent(runEpoch)) return;
+                        context.gameWasRunning = false;
+                        context.gameStopNotified = true;
+                        clearCurrentAttemptOwner();
+                        callbacks.onProviderGameStopped(
+                                transitionSpec.id, transitionSpec.playniteGameId);
+                    }
                 }
 
                 PlayniteTransitionGateway.Events events =
@@ -718,14 +721,16 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         transitionController.gatewayConnected(transitionSpec.id, transitionSpec.hostId);
         LaunchTransitionType kind = "game".equalsIgnoreCase(snapshot.targetKind)
                 ? LaunchTransitionType.GAME : LaunchTransitionType.PLAYNITE;
-        String gameId = snapshot.gameId == null || snapshot.gameId.isEmpty()
-                ? transitionSpec.playniteGameId : snapshot.gameId;
+        String gameId = SessionSnapshot.normalize(snapshot.gameId);
         if ("host_session_locked".equals(snapshot.reason)) {
             transitionController.hostSessionLocked(transitionSpec.id, transitionSpec.hostId,
                     kind, gameId, callbacks.hostSessionLockedMessage());
             return;
         }
         if (!snapshot.connectorReady) return;
+        boolean exactVerifiedGame = kind != LaunchTransitionType.GAME
+                || snapshot.hasVerifiedGameFor(transitionSpec.playniteGameId);
+        if (!exactVerifiedGame) return;
         if (kind == LaunchTransitionType.GAME
                 && "launcher_interaction_required".equals(snapshot.reason)) {
             transitionController.launcherInteractionRequired(
@@ -744,7 +749,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 == LaunchTransitionState.GAME_RUNNING;
         boolean gameReportedRunning = kind == LaunchTransitionType.GAME
                 && "running".equalsIgnoreCase(snapshot.gameState);
-        if (snapshot.processId > 0 || gameReportedRunning) {
+        if (snapshot.hasVerifiedProcessFor(gameId) || gameReportedRunning
+                && snapshot.processId > 0) {
             transitionController.targetProcessRunning(
                     transitionSpec.id, transitionSpec.hostId, kind, gameId,
                     snapshot.windowReady ? "" : readinessPendingMessage(snapshot.reason));
@@ -797,38 +803,6 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             if (!isCurrent(runEpoch)) return;
             callbacks.onInstallationAttentionRequired(
                     transitionSpec.hostId, event.gameId, installationName(event));
-        } else if ("game-starting".equals(name)) {
-            transitionController.targetStarting(transitionSpec.id, transitionSpec.hostId,
-                    LaunchTransitionType.GAME, event.gameId);
-        } else if ("game-running".equals(name)) {
-            context.gameWasRunning = true;
-            transitionController.targetProcessRunning(transitionSpec.id, transitionSpec.hostId,
-                    LaunchTransitionType.GAME, event.gameId);
-        } else if ("game-stopping".equals(name)) {
-            if (context.gameWasRunning) {
-                transitionController.gameStopping(
-                        transitionSpec.id, transitionSpec.hostId, event.gameId);
-            }
-        } else if ("game-stopped".equals(name)) {
-            if (context.gameWasRunning) {
-                transitionController.gameStopping(
-                        transitionSpec.id, transitionSpec.hostId, event.gameId);
-                context.gameWasRunning = false;
-            }
-            if (transitionSpec.playniteGameId.equals(event.gameId)
-                    && !context.gameStopNotified && isCurrent(runEpoch)) {
-                context.gameStopNotified = true;
-                clearCurrentAttemptOwner();
-                callbacks.onProviderGameStopped(
-                        transitionSpec.id, transitionSpec.playniteGameId);
-            }
-        } else if ("privacy-gate-closed".equals(name)) {
-            transitionController.targetWindowLost(transitionSpec.id, transitionSpec.hostId,
-                    LaunchTransitionType.GAME, transitionSpec.playniteGameId,
-                    callbacks.windowStabilizingMessage());
-        } else if ("bridge-disconnected".equals(name)) {
-            transitionController.playniteStopping(
-                    transitionSpec.id, transitionSpec.hostId);
         }
     }
 
@@ -950,6 +924,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     }
 
     private void captureCurrentAttemptProcess(PlayniteTransitionGateway.Snapshot snapshot) {
+        if (snapshot == null || !snapshot.hasVerifiedProcessFor(
+                transitionSpec.playniteGameId)) return;
         String exactGame = PlayniteIdentityResolutionPolicy.verifiedStopTarget(
                 transitionSpec.playniteGameId, snapshot.gameState, snapshot.gameId);
         if (exactGame == null || exactGame.isEmpty() || snapshot.processId <= 0

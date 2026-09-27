@@ -569,6 +569,21 @@ try {
     }
     $closeListenerProcess = $null
 
+    # A stale runtime-status hint must not choose between profiles of one account.
+    $ambiguousConfig = Get-Content -LiteralPath (Join-Path $gateway "gateway.json") -Raw |
+        ConvertFrom-Json
+    $ambiguousConfig.profiles.foreign.owner_sid = $currentSid
+    $ambiguousConfig.profiles.foreign.windows_account_sid = $currentSid
+    $ambiguousConfig | ConvertTo-Json -Depth 5 |
+        Set-Content -LiteralPath (Join-Path $gateway "gateway.json") -Encoding UTF8
+    & $scriptPath -Action CloseStream -ResultPath $resultPath | Out-Null
+    $ambiguousClose = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+    if ($ambiguousClose.ok -or [string]$ambiguousClose.error -notmatch 'jednoznacznie') {
+        throw "Host Control selected a close target from the runtime-status hint: error=$($ambiguousClose.error)"
+    }
+    $gatewayConfig | ConvertTo-Json -Depth 5 |
+        Set-Content -LiteralPath (Join-Path $gateway "gateway.json") -Encoding UTF8
+
     $listenerScript = Join-Path $root "listener.ps1"
     @'
 param([int]$Port)

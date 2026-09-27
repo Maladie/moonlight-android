@@ -267,6 +267,13 @@ final class SessionOrchestrator implements AutoCloseable {
 
         SessionSnapshot snapshot = effects.resolve(intent.profileKey);
         if (!current(request)) return;
+        if (snapshot.observationState == SessionSnapshot.ObservationState.RECOVERY_REQUIRED
+                && !intent.matches(snapshot)) {
+            diagnostic("WARN", "orchestration.rejected", request, intent,
+                    "reason", "RECOVERY_REQUIRED");
+            effects.uncertainSessionFailed();
+            return;
+        }
         if (snapshot.state == SessionSnapshot.State.TERMINATING) {
             diagnostic("WARN", "orchestration.rejected", request, intent,
                     "reason", Rejection.TERMINATING.name());
@@ -314,19 +321,16 @@ final class SessionOrchestrator implements AutoCloseable {
                     awaitFreshSession(request, intent, replacementAuthorized,
                             reuseOnly, preparedTarget, pass);
                 }
-                return;
+            } else if (!opaqueReady) {
+                awaitOpaque(request, intent, freshType(intent), false,
+                        false, preparedTarget, pass);
+            } else if (preparedTarget == null) {
+                awaitPreflight(request, intent, false, false, pass,
+                        HostLaunchPreflight.Action.LAUNCH);
+            } else {
+                launch(request, intent, preparedTarget, freshType(intent), "", true);
             }
-            if (snapshot.hostGameAppId == 0) {
-                snapshot = new SessionSnapshot(snapshot.hostId, snapshot.profileId,
-                        SessionSnapshot.State.NONE, 0, "", false,
-                        false, false, snapshot.hostSleepRequested,
-                        snapshot.hostSleepObserved);
-            } else if (intent.sunshineAppId == snapshot.hostGameAppId) {
-                snapshot = new SessionSnapshot(snapshot.hostId, snapshot.profileId,
-                        SessionSnapshot.State.ACTIVE, snapshot.hostGameAppId,
-                        "", snapshot.retainedTransport, false, false,
-                        snapshot.hostSleepRequested, snapshot.hostSleepObserved);
-            }
+            return;
         }
 
         boolean matches = intent.matches(snapshot) && !effects.canAttemptRetainedSwitch(intent);

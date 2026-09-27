@@ -926,24 +926,16 @@ function Close-ActiveStream {
     $directory = Get-GatewayDirectory
     $config = Get-Content -LiteralPath (Join-Path $directory "gateway.json") -Raw |
         ConvertFrom-Json
-    $profileId = ""
-    try {
-        $profileId = [string](Get-Content -LiteralPath (Join-Path $directory `
-            "runtime-status.json") -Raw | ConvertFrom-Json).profile_id
-    } catch {}
-    $property = if ([string]::IsNullOrWhiteSpace($profileId)) { $null } else {
-        $config.profiles.PSObject.Properties[$profileId]
+    # Configurator keeps one standard profile per Windows account. The runtime-status
+    # hint is display metadata and must not select the close target.
+    $owned = @($config.profiles.PSObject.Properties | Where-Object {
+        Test-CurrentProfileOwner $_.Value
+    })
+    if ($owned.Count -ne 1) {
+        throw "Nie można jednoznacznie ustalić aktywnego profilu streamu."
     }
-    if (-not $property -or -not (Test-CurrentProfileOwner $property.Value)) {
-        $owned = @($config.profiles.PSObject.Properties | Where-Object {
-            Test-CurrentProfileOwner $_.Value
-        })
-        if ($owned.Count -ne 1) {
-            throw "Nie można jednoznacznie ustalić aktywnego profilu streamu."
-        }
-        $property = $owned[0]
-        $profileId = [string]$property.Name
-    }
+    $property = $owned[0]
+    $profileId = [string]$property.Name
     $endpoint = [string]$property.Value.vibepollo_bridge
     $uri = $null
     if (-not [uri]::TryCreate($endpoint, [UriKind]::Absolute, [ref]$uri) -or

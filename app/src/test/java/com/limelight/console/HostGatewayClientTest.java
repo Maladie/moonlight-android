@@ -14,6 +14,126 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class HostGatewayClientTest {
+    @Test public void coherentObservationRequiresExactSchemaScopeAndEvidence()
+            throws Exception {
+        long now = 1_700_000_000_000L;
+        JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
+        HostGatewayClient.SessionObservation parsed =
+                HostGatewayClient.parseSessionObservation(value, "kid", "parent",
+                        7, "transition-a", now + 100);
+        assertEquals("boot-a", parsed.producerBootId);
+        assertEquals(2L, parsed.producerRevision);
+        assertEquals(HostGatewayClient.Evidence.VERIFIED, parsed.processEvidence);
+        assertTrue(parsed.windowReady);
+
+        value.getJSONObject("scope").put("actor_profile_id", "other");
+        assertObservationRejected(value, "observation_correlation_mismatch", now);
+    }
+
+    @Test public void malformedTimestampAndMissingGameEvidenceFailClosed() throws Exception {
+        long now = 1_700_000_000_000L;
+        JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
+        value.getJSONObject("game").put("evidence", "ABSENT");
+        assertObservationRejected(value, "inconsistent_observation_evidence", now);
+        value = observation(now - 366L * 24L * 60L * 60L * 1_000L,
+                "boot-a", 2, 7, "transition-a");
+        assertObservationRejected(value, "stale_or_malformed_observation", now);
+        value = observation(now, "boot-a", 2, 7, "transition-a");
+        value.put("schema_version", 2);
+        assertObservationRejected(value, "unsupported_observation_schema", now);
+    }
+
+    @Test public void missingOrWronglyTypedCorrelationIsRejected() throws Exception {
+        long now = 1_700_000_000_000L;
+        JSONObject value = observation(now, "boot-a", 2, 7, "transition-a");
+        value.getJSONObject("correlation").remove("stream_session_id");
+        assertObservationRejected(value, "missing_observation_stream_session_id", now);
+
+        value = observation(now, "boot-a", 2, 7, "transition-a");
+        value.getJSONObject("correlation").put("control_generation", "4");
+        assertObservationRejected(value, "missing_observation_control_generation", now);
+    }
+
+    @Test public void providerClockSkewIsDiagnosticAndFreshnessExpiresLocally()
+            throws Exception {
+        long deviceWall = 1_700_000_000_000L;
+        long providerWall = deviceWall - 6L * 60L * 60L * 1_000L;
+        SessionStateResolver.resetProjectionOwnersForTests();
+        try {
+            SessionStateResolver.ProjectionOwner owner =
+                    SessionStateResolver.owner("host", "kid", "parent");
+            long ordinal = owner.nextRequestOrdinal();
+            HostGatewayClient.SessionObservation parsed =
+                    HostGatewayClient.parseSessionObservation(
+                            observation(providerWall, "boot-skew", 1, ordinal, ""),
+                            "kid", "parent", ordinal, "", deviceWall);
+            assertEquals(providerWall, parsed.observedAtUnixMs);
+            assertTrue(owner.accept(parsed,
+                    com.limelight.stream.RetainedStreamSessionCoordinator.snapshot(),
+                    1_000L));
+
+            SessionSnapshot locallyStale = owner.current(
+                    com.limelight.stream.RetainedStreamSessionCoordinator.snapshot(),
+                    7_000L);
+            assertEquals("UNAVAILABLE", locallyStale.processEvidence);
+            assertEquals(SessionSnapshot.ObservationState.PENDING,
+                    locallyStale.observationState);
+            assertEquals(SessionSnapshot.ObservationState.UNAVAILABLE,
+                    owner.current(
+                            com.limelight.stream.RetainedStreamSessionCoordinator.snapshot(),
+                            16_000L).observationState);
+        } finally {
+            SessionStateResolver.resetProjectionOwnersForTests();
+        }
+    }
+
+    private static JSONObject observation(long observedAt, String boot, long revision,
+                                          long ordinal, String transition) throws Exception {
+        return new JSONObject().put("ok", true).put("schema_version", 1)
+                .put("producer", new JSONObject().put("boot_id", boot)
+                        .put("revision", revision))
+                .put("observed_at_unix_ms", observedAt).put("fresh_for_ms", 5_000)
+                .put("state_episode", boot + ":1")
+                .put("state_since_unix_ms", observedAt)
+                .put("scope", new JSONObject().put("actor_profile_id", "kid")
+                        .put("execution_profile_id", "parent"))
+                .put("correlation", new JSONObject().put("request_ordinal", ordinal)
+                        .put("caller_transition_id", transition)
+                        .put("operation_id", "operation-a")
+                        .put("stream_session_id", "session-a")
+                        .put("control_generation", 4).put("actor_lease_epoch", 5))
+                .put("provider", new JSONObject().put("state", "running")
+                        .put("connector_evidence", "VERIFIED").put("reason", "none"))
+                .put("game", new JSONObject().put("state", "running")
+                        .put("evidence", "VERIFIED")
+                        .put("id", "steam:123"))
+                .put("process", new JSONObject().put("evidence", "VERIFIED")
+                        .put("process_id", 42).put("process_token", repeat('a', 64)))
+                .put("window", new JSONObject().put("evidence", "VERIFIED")
+                        .put("ready", true).put("target_kind", "game")
+                        .put("stable_samples", 3).put("reason", "target_window_ready"))
+                .put("capabilities", new JSONObject().put("host_guide_allowed", false)
+                        .put("requires_connector", true)
+                        .put("start_before_stream", false));
+    }
+
+    private static void assertObservationRejected(JSONObject value, String reason, long now)
+            throws Exception {
+        try {
+            HostGatewayClient.parseSessionObservation(value, "kid", "parent", 7,
+                    "transition-a", now);
+            throw new AssertionError("Observation was accepted");
+        } catch (java.io.IOException expected) {
+            assertEquals(reason, expected.getMessage());
+        }
+    }
+
+    private static String repeat(char value, int count) {
+        StringBuilder result = new StringBuilder(count);
+        for (int i = 0; i < count; i++) result.append(value);
+        return result.toString();
+    }
+
     @Test public void identityChallengeUsesTheGatewayDomainAndAllowsBoundedAsciiNonce() {
         assertTrue(HostGatewayClient.isValidIdentityChallenge(
                 "moonwaker-vibepollo-identity-v1\nchild:profile:nonce"));
@@ -84,23 +204,6 @@ public class HostGatewayClientTest {
         assertEquals(512 * 1024 * 1024, HostGatewayClient.adaptiveNetworkDownloadSize(
                 8L * 1024 * 1024, 67_108_864L));
     }
-
-    @Test public void currentGameGuideDecisionComesFromHostAndDefaultsToBlocked() throws Exception {
-        JSONObject current = new JSONObject().put("id", "legacy-steam-guid")
-                .put("state", "running").put("host_guide_allowed", true)
-                .put("requires_connector", false);
-        JSONObject response = new JSONObject().put("current", current);
-        assertTrue(HostGatewayClient.parseCurrentGame(response).hostGuideAllowed);
-        assertFalse(HostGatewayClient.parseCurrentGame(response).requiresConnector);
-        current.put("host_guide_allowed", false);
-        assertFalse(HostGatewayClient.parseCurrentGame(response).hostGuideAllowed);
-        current.remove("host_guide_allowed");
-        current.remove("requires_connector");
-        current.put("id", "steam:1");
-        assertFalse(HostGatewayClient.parseCurrentGame(response).hostGuideAllowed);
-        assertTrue(HostGatewayClient.parseCurrentGame(response).requiresConnector);
-    }
-
 
     @Test
     public void gameplayPermissionsAllowLaunchAndInputsWithoutServerCommands() {

@@ -81,4 +81,23 @@ if ($actions -notcontains "components" -or
     throw "The owning supervisor cleanup did not complete exactly once."
 }
 Remove-Item -LiteralPath $stopPath,$manualStopPath -Force -ErrorAction SilentlyContinue
+
+if ($source -notmatch '\$Name -eq "game-provider"\) \{ "/observation" \}' -or
+    $source -notmatch '\$status\.producer\.process_id' -or
+    $source -match 'legacyBridgeIdentity|connector_connected') {
+    throw "The supervisor does not use the canonical Game Provider observation identity."
+}
+$stopSource = Get-Content -LiteralPath `
+    (Join-Path $PSScriptRoot "Stop-MoonWakerProfileBridge.ps1") -Raw
+if ($stopSource -notmatch '/observation' -or $stopSource -match '/health|connector_connected|PlayniteBridge\.py') {
+    throw "The profile stop path still uses a legacy Game Provider contract."
+}
+$deploySource = Get-Content -LiteralPath `
+    (Join-Path (Split-Path -Parent $PSScriptRoot) "bridges\playnite\Deploy-PlayniteBridge.ps1") -Raw
+if ($deploySource -notmatch '/observation' -or
+    $deploySource -notmatch 'producer\.process_id' -or
+    $deploySource -notmatch 'connector_evidence' -or
+    $deploySource -match '/health|connector_connected|PlayniteBridge\.py|removeLegacyBridge') {
+    throw "The Game Provider deploy path still uses a legacy health contract."
+}
 Write-Output "MoonWakerProfileBridge health restart test passed."

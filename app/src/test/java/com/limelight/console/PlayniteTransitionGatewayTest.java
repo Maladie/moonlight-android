@@ -39,9 +39,10 @@ public class PlayniteTransitionGatewayTest {
 
         assertTrue(snapshot.gatewayReady);
         assertTrue(snapshot.connectorReady);
-        assertEquals(Arrays.asList("GET /api/v1/game/current",
-                "GET /api/v1/window/readiness", "POST /api/v1/game/stop-verified"),
-                client.requests);
+        assertEquals(2, client.requests.size());
+        assertTrue(client.requests.get(0).startsWith(
+                "GET /api/v1/session/observation?request_ordinal="));
+        assertEquals("POST /api/v1/game/stop-verified", client.requests.get(1));
         assertFalse(client.requests.contains("GET /api/v1/game-provider/health"));
         assertEquals("kid", gateway.gatewayConnection().profileId());
         assertEquals("kid", gateway.actorContext().actorProfileId);
@@ -49,7 +50,7 @@ public class PlayniteTransitionGatewayTest {
         assertEquals("secret", gateway.gatewayConnection().token());
         assertEquals(FINGERPRINT, gateway.gatewayConnection().certificateSha256());
         assertEquals("https://host:8785", gateway.gatewayConnection().endpoint());
-        assertEquals(Arrays.asList("kid", "kid", "kid"), client.profiles);
+        assertEquals(Arrays.asList("kid", "kid"), client.profiles);
     }
 
     @Test public void parentSnapshotRetainsHealthAndGameplayRoutes() throws Exception {
@@ -62,11 +63,33 @@ public class PlayniteTransitionGatewayTest {
         gateway.stopGame("steam:123", PROCESS_TOKEN);
 
         assertTrue(snapshot.connectorReady);
-        assertEquals(Arrays.asList("GET /api/v1/game-provider/health",
-                "GET /api/v1/game/current", "GET /api/v1/window/readiness",
-                "POST /api/v1/game/stop-verified"), client.requests);
-        assertEquals(Arrays.asList("parent", "parent", "parent", "parent"),
+        assertEquals(2, client.requests.size());
+        assertTrue(client.requests.get(0).startsWith(
+                "GET /api/v1/session/observation?request_ordinal="));
+        assertEquals("POST /api/v1/game/stop-verified", client.requests.get(1));
+        assertEquals(Arrays.asList("parent", "parent"),
                 client.profiles);
+    }
+
+    @Test public void rejectedObservationDoesNotLeakRawStateToConsumers() throws Exception {
+        SessionStateResolver.resetProjectionOwnersForTests();
+        RecordingClient client = new RecordingClient();
+        PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(
+                connection("parent"),
+                PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+
+        client.revision = 2L;
+        PlayniteTransitionGateway.Snapshot accepted = gateway.snapshot();
+        client.revision = 1L;
+        client.gameId = "steam:456";
+        PlayniteTransitionGateway.Snapshot rejected = gateway.snapshot();
+
+        assertTrue(accepted.gatewayReady);
+        assertFalse(rejected.gatewayReady);
+        assertEquals("unknown", rejected.gameState);
+        assertEquals("UNAVAILABLE", rejected.gameEvidence);
+        assertEquals(2, client.parsedObservations);
+        SessionStateResolver.resetProjectionOwnersForTests();
     }
 
     @Test public void capturedContextSurvivesDeterministicActorRebindOrdering()
@@ -83,8 +106,7 @@ public class PlayniteTransitionGatewayTest {
         parent.snapshot();
         child.stopGame("steam:123", PROCESS_TOKEN);
 
-        assertEquals(Arrays.asList("kid", "kid", "parent", "parent", "parent", "kid"),
-                trace.profiles);
+        assertEquals(Arrays.asList("kid", "parent", "kid"), trace.profiles);
         assertEquals("kid", child.actorContext().actorProfileId);
         assertEquals("parent", child.actorContext().executionProfileId);
         assertTrue(child.actorContext().child);
@@ -201,6 +223,20 @@ public class PlayniteTransitionGatewayTest {
     private static final class RecordingClient extends HostGatewayClient {
         final List<String> requests = new ArrayList<>();
         final List<String> profiles = new ArrayList<>();
+        long revision;
+        String gameState = "running";
+        String gameEvidence = "VERIFIED";
+        String gameId = "steam:123";
+        int parsedObservations;
+
+        @Override SessionObservation getSessionObservation(
+                GatewayConnection connection, String executionProfileId,
+                long requestOrdinal, String transitionId) throws IOException {
+            SessionObservation observation = super.getSessionObservation(connection,
+                    executionProfileId, requestOrdinal, transitionId);
+            parsedObservations++;
+            return observation;
+        }
 
         @Override JSONObject request(GatewayConnection connection, String path,
                                      String method, JSONObject body, int readTimeoutMs)
@@ -208,28 +244,44 @@ public class PlayniteTransitionGatewayTest {
             requests.add(method + " " + path);
             profiles.add(connection.profileId());
             try {
-                if ("/api/v1/game-provider/health".equals(path)) {
-                    return new JSONObject().put("bridge", new JSONObject()
-                            .put("connector_connected", true));
-                }
-                if ("/api/v1/game/current".equals(path)) {
-                    return new JSONObject().put("current", new JSONObject()
-                            .put("state", "running")
-                            .put("id", "steam:123")
-                            .put("process_id", 42)
-                            .put("running_scan_status", "complete")
-                            .put("running_scan_revision", "revision")
-                            .put("running_games", new org.json.JSONArray()
-                                    .put(new JSONObject().put("game_id", "steam:123")
-                                            .put("process_id", 42)
-                                            .put("process_token", PROCESS_TOKEN)))
-                            .put("requires_connector", true));
-                }
-                if ("/api/v1/window/readiness".equals(path)) {
-                    return new JSONObject().put("readiness", new JSONObject()
-                            .put("ready", true)
-                            .put("target_kind", "game")
-                            .put("stable_samples", 2));
+                if (path.startsWith("/api/v1/session/observation?")) {
+                    long ordinal = Long.parseLong(path.replaceFirst(
+                            ".*request_ordinal=([0-9]+).*", "$1"));
+                    long now = System.currentTimeMillis();
+                    String transition = java.net.URLDecoder.decode(path.replaceFirst(
+                            ".*transition_id=([^&]*).*", "$1"), "UTF-8");
+                    return new JSONObject().put("ok", true).put("schema_version", 1)
+                            .put("producer", new JSONObject().put("boot_id", "boot-a")
+                                    .put("revision", revision > 0L ? revision : ordinal))
+                            .put("observed_at_unix_ms", now).put("fresh_for_ms", 5_000)
+                            .put("state_episode", "boot-a:1")
+                            .put("state_since_unix_ms", now)
+                            .put("scope", new JSONObject()
+                                    .put("actor_profile_id", connection.profileId())
+                                    .put("execution_profile_id",
+                                            "kid".equals(connection.profileId())
+                                                    ? "parent" : connection.profileId()))
+                            .put("correlation", new JSONObject()
+                                    .put("request_ordinal", ordinal)
+                                    .put("caller_transition_id", transition)
+                                    .put("operation_id", "").put("stream_session_id", "")
+                                    .put("control_generation", 0)
+                                    .put("actor_lease_epoch", 0))
+                            .put("provider", new JSONObject().put("state", gameState)
+                                    .put("connector_evidence", "VERIFIED")
+                                    .put("reason", "none"))
+                            .put("game", new JSONObject().put("state", gameState)
+                                    .put("evidence", gameEvidence).put("id", gameId))
+                            .put("process", new JSONObject().put("evidence", "VERIFIED")
+                                    .put("process_id", 42).put("process_token", PROCESS_TOKEN))
+                            .put("window", new JSONObject().put("evidence", "VERIFIED")
+                                    .put("ready", true).put("target_kind", "game")
+                                    .put("stable_samples", 3)
+                                    .put("reason", "target_window_ready"))
+                            .put("capabilities", new JSONObject()
+                                    .put("host_guide_allowed", false)
+                                    .put("requires_connector", true)
+                                    .put("start_before_stream", false));
                 }
                 if ("/api/v1/game/stop-verified".equals(path)) {
                     assertEquals("steam:123", body.optString("game_id"));

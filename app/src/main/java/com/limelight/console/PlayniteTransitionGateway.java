@@ -57,6 +57,11 @@ public final class PlayniteTransitionGateway {
         public final int stableSamples;
         public final String reason;
         public final boolean hostGuideAllowed;
+        public final String observationState;
+        public final String gameEvidence;
+        public final String processEvidence;
+        public final long transportGeneration;
+        final SessionSnapshot sessionSnapshot;
 
         Snapshot(boolean gatewayReady, boolean connectorReady, String gameState,
                  String gameId, int processId, boolean windowReady, String targetKind,
@@ -87,6 +92,51 @@ public final class PlayniteTransitionGateway {
             this.stableSamples = stableSamples;
             this.reason = reason;
             this.hostGuideAllowed = hostGuideAllowed;
+            this.observationState = "UNAVAILABLE";
+            this.gameEvidence = gameId == null || gameId.trim().isEmpty()
+                    ? "ABSENT" : "VERIFIED";
+            this.processEvidence = processId > 0 ? "VERIFIED" : "UNAVAILABLE";
+            this.transportGeneration = 0L;
+            this.sessionSnapshot = null;
+        }
+
+        private Snapshot(SessionSnapshot projected,
+                         HostGatewayClient.SessionObservation observation,
+                         boolean gatewayReady) {
+            this.gatewayReady = gatewayReady;
+            this.connectorReady = observation != null
+                    && (observation.connectorEvidence == HostGatewayClient.Evidence.VERIFIED
+                    || !observation.requiresConnector);
+            this.gameState = observation == null ? "unknown" : observation.gameState;
+            this.gameId = projected.playniteGameId;
+            this.processId = projected.processId;
+            this.processToken = projected.processToken;
+            this.windowReady = projected.observationState
+                    == SessionSnapshot.ObservationState.READY;
+            this.targetKind = observation == null ? "playnite" : observation.targetKind;
+            this.stableSamples = observation == null ? 0 : observation.stableSamples;
+            this.reason = projected.observationReason;
+            this.hostGuideAllowed = observation != null && observation.hostGuideAllowed;
+            this.observationState = projected.observationState.name();
+            this.gameEvidence = observation == null
+                    ? "UNAVAILABLE" : observation.gameEvidence.name();
+            this.processEvidence = projected.processEvidence;
+            this.transportGeneration = projected.transportGeneration;
+            this.sessionSnapshot = projected;
+        }
+
+        /** Exact process proof from the one accepted canonical observation. */
+        public boolean hasVerifiedProcessFor(String expectedGameId) {
+            return "VERIFIED".equals(processEvidence)
+                    && SessionSnapshot.normalize(expectedGameId).equals(
+                    SessionSnapshot.normalize(gameId))
+                    && processId > 0 && !processToken.isEmpty();
+        }
+
+        public boolean hasVerifiedGameFor(String expectedGameId) {
+            return "VERIFIED".equals(gameEvidence)
+                    && SessionSnapshot.normalize(expectedGameId).equals(
+                    SessionSnapshot.normalize(gameId));
         }
     }
 
@@ -146,14 +196,25 @@ public final class PlayniteTransitionGateway {
     private final HostGatewayClient client;
     private final GatewayConnection connection;
     private final ActorContext actorContext;
+    private final String hostId;
+    private final SessionStateResolver.ProjectionOwner projectionOwner;
+    private final java.util.function.LongSupplier monotonicClock;
 
     private PlayniteTransitionGateway(GatewayConnection connection,
                                       ActorContext actorContext) {
-        this(connection, actorContext, new HostGatewayClient());
+        this(connection.endpoint(), connection, actorContext, new HostGatewayClient(),
+                () -> System.nanoTime() / 1_000_000L);
     }
 
     PlayniteTransitionGateway(GatewayConnection connection, ActorContext actorContext,
                               HostGatewayClient client) {
+        this(connection.endpoint(), connection, actorContext, client,
+                () -> System.nanoTime() / 1_000_000L);
+    }
+
+    PlayniteTransitionGateway(String hostId, GatewayConnection connection,
+                              ActorContext actorContext, HostGatewayClient client,
+                              java.util.function.LongSupplier monotonicClock) {
         if (connection == null || actorContext == null || client == null) {
             throw new NullPointerException("Gateway context");
         }
@@ -163,6 +224,10 @@ public final class PlayniteTransitionGateway {
         this.connection = connection;
         this.actorContext = actorContext;
         this.client = client;
+        this.hostId = hostId == null ? connection.endpoint() : hostId;
+        this.monotonicClock = monotonicClock;
+        this.projectionOwner = SessionStateResolver.owner(this.hostId,
+                actorContext.actorProfileId, actorContext.executionProfileId);
     }
 
     public static PlayniteTransitionGateway connect(Context context, String hostId,
@@ -177,28 +242,35 @@ public final class PlayniteTransitionGateway {
                     "reason", "connection_missing");
             return null;
         }
-        return new PlayniteTransitionGateway(connection, actorContext);
+        return new PlayniteTransitionGateway(hostId, connection, actorContext,
+                new HostGatewayClient(), () -> System.nanoTime() / 1_000_000L);
     }
 
     public Snapshot snapshot() throws IOException {
-        // Child actors may read their authorised game's state, but cannot inspect
-        // the parent profile's provider health. Do not widen their API permissions.
-        HostGatewayClient.PlayniteHealth health = actorContext.child ? null
-                : client.getPlayniteHealth(connection);
-        HostGatewayClient.PlayniteCurrentGame current =
-                client.getPlayniteCurrentGame(connection);
-        HostGatewayClient.PlayniteReadiness readiness =
-                client.getPlayniteReadiness(connection);
-        boolean connectorReady = actorContext.child || health.connectorConnected
-                || (!current.id.isEmpty() && !current.requiresConnector);
-        HostGatewayClient.RunningGame exact = current.runningGames == null
-                ? null : current.runningGames.find(current.id);
-        String processToken = exact != null && exact.processId == current.processId
-                ? exact.processToken : "";
-        return new Snapshot(true, connectorReady, current.state, current.id,
-                current.processId, readiness.ready, readiness.targetKind,
-                readiness.stableSamples, readiness.reason, current.hostGuideAllowed,
-                processToken);
+        long ordinal = projectionOwner.nextRequestOrdinal();
+        com.limelight.stream.RetainedStreamSessionCoordinator.Snapshot retained =
+                com.limelight.stream.RetainedStreamSessionCoordinator.snapshot();
+        String transition = retained.hostId.equalsIgnoreCase(hostId)
+                && retained.executionProfileId.equals(actorContext.executionProfileId)
+                ? retained.transitionId : "";
+        long now = monotonicClock.getAsLong();
+        try {
+            HostGatewayClient.SessionObservation observation =
+                    client.getSessionObservation(connection,
+                            actorContext.executionProfileId, ordinal, transition);
+            if (!projectionOwner.accept(observation, retained, now)) {
+                SessionSnapshot projected = projectionOwner.current(retained, now);
+                return new Snapshot(projected, null, false);
+            }
+            SessionSnapshot projected = projectionOwner.current(retained, now);
+            boolean correlated = projected.observationCorrelated
+                    && projected.requestOrdinal == observation.requestOrdinal;
+            return new Snapshot(projected, correlated ? observation : null, correlated);
+        } catch (IOException unavailable) {
+            SessionSnapshot projected = projectionOwner.unavailable(
+                    ordinal, retained, now, unavailable.getMessage());
+            return new Snapshot(projected, null, false);
+        }
     }
 
     public void startGame(String gameId) throws IOException {

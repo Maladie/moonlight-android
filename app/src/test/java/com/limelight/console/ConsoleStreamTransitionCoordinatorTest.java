@@ -242,9 +242,9 @@ public class ConsoleStreamTransitionCoordinatorTest {
                 gatewayWith(snapshot(true, true, "running", GAME, 0,
                         false, "game", 0, "waiting_for_game_identity")));
         identity.runObservation();
-        assertEquals(LaunchTransitionState.GAME_PROCESS_RUNNING,
+        assertEquals(LaunchTransitionState.CONNECTING_STREAM,
                 identity.controller.snapshot().state);
-        assertEquals("waiting for process details", identity.controller.snapshot().detail);
+        assertTrue(identity.controller.snapshot().inputBlocked);
 
         Harness fullscreen = new Harness(LaunchTransitionType.GAME,
                 gatewayWith(snapshot(true, true, "running", GAME, 42,
@@ -364,7 +364,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
-    public void subsequentEventsMapToController() {
+    public void subsequentEventsCannotProveReadinessOrStopping() {
         FakeGateway gateway = gatewayWith(snapshotReadyGame(), snapshotReadyGame());
         gateway.events.add(events(1));
         gateway.events.add(events(8,
@@ -379,11 +379,8 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         harness.runObservation();
 
-        assertTrue(harness.states.contains(LaunchTransitionState.GAME_STARTING));
-        assertTrue(harness.states.contains(LaunchTransitionState.GAME_PROCESS_RUNNING));
-        assertTrue(harness.states.contains(LaunchTransitionState.GAME_WINDOW_STABILIZING));
-        assertEquals(1, harness.callbacks.providerStopCalls);
-        assertEquals(LaunchTransitionState.PLAYNITE_STOPPING,
+        assertEquals(0, harness.callbacks.providerStopCalls);
+        assertEquals(LaunchTransitionState.GAME_READY,
                 harness.controller.snapshot().state);
     }
 
@@ -409,7 +406,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         assertFalse(harness.controller.snapshot().overlayVisible);
         assertFalse(harness.controller.snapshot().inputBlocked);
-        assertEquals(1, harness.callbacks.providerStopCalls);
+        assertEquals(0, harness.callbacks.providerStopCalls);
     }
 
     @Test
@@ -1631,6 +1628,18 @@ public class ConsoleStreamTransitionCoordinatorTest {
     }
 
     @Test
+    public void rejectedIdleSnapshotCannotStopCurrentGamePresentation() {
+        FakeGateway gateway = gatewayWith(snapshotReadyGame(),
+                snapshot(false, true, "idle", GAME, 0,
+                        false, "game", 0, "stale_observation"));
+        Harness harness = new Harness(LaunchTransitionType.GAME, gateway);
+
+        harness.runObservation();
+
+        assertEquals(0, harness.callbacks.providerStopCalls);
+    }
+
+    @Test
     public void verificationReportsAllOutcomes() {
         assertVerification(true, "verified");
         assertVerification(false, "still");
@@ -1749,7 +1758,8 @@ public class ConsoleStreamTransitionCoordinatorTest {
             boolean connectorReady, String gameState, String gameId, int processId,
             boolean windowReady, String targetKind, int stableSamples, String reason) {
         return new PlayniteTransitionGateway.Snapshot(gatewayReady, connectorReady,
-                gameState, gameId, processId, windowReady, targetKind, stableSamples, reason);
+                gameState, gameId, processId, windowReady, targetKind, stableSamples, reason,
+                false, processId > 0 ? PROCESS_TOKEN : "");
     }
 
     private static PlayniteTransitionGateway.Event event(

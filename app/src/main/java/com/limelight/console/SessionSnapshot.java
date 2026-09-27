@@ -7,6 +7,7 @@ import java.util.Objects;
 
 /** Immutable projection of already-owned session facts for one host. */
 final class SessionSnapshot {
+    enum ObservationState { PENDING, READY, IDLE, RECOVERY_REQUIRED, UNAVAILABLE }
     enum State {
         NONE,
         PREPARING,
@@ -20,6 +21,7 @@ final class SessionSnapshot {
     final HostProfileKey profileKey;
     final String hostId;
     final String profileId;
+    final String executionProfileId;
     final State state;
     final int hostGameAppId;
     final String playniteGameId;
@@ -32,65 +34,38 @@ final class SessionSnapshot {
     final boolean hostSleepRequested;
     final boolean hostSleepObserved;
     final String suspendId;
+    final ObservationState observationState;
+    final boolean observationCorrelated;
+    final String producerBootId;
+    final long producerRevision;
+    final long requestOrdinal;
+    final long transportGeneration;
+    final long controlGeneration;
+    final long actorLeaseEpoch;
+    final String operationId;
+    final String transitionId;
+    final String streamSessionId;
+    final String processEvidence;
+    final int processId;
+    final String processToken;
+    final String windowEvidence;
+    final String observationReason;
 
-    SessionSnapshot(String hostId, State state, int hostGameAppId,
-                    String playniteGameId, boolean retainedTransport,
-                    boolean explicitSuspension, boolean suspensionSleepObserved,
-                    boolean hostSleepRequested, boolean hostSleepObserved) {
-        this(hostId, GatewayConnection.DEFAULT_PROFILE_ID, state, hostGameAppId,
-                playniteGameId, retainedTransport,
-                explicitSuspension, suspensionSleepObserved, hostSleepRequested,
-                hostSleepObserved, "", false);
-    }
-
-    SessionSnapshot(String hostId, String profileId, State state, int hostGameAppId,
-                    String playniteGameId, boolean retainedTransport,
-                    boolean explicitSuspension, boolean suspensionSleepObserved,
-                    boolean hostSleepRequested, boolean hostSleepObserved) {
-        this(hostId, profileId, state, hostGameAppId, playniteGameId, retainedTransport,
-                explicitSuspension, suspensionSleepObserved, hostSleepRequested,
-                hostSleepObserved, "", false);
-    }
-
-    SessionSnapshot(String hostId, State state, int hostGameAppId,
-                    String playniteGameId, boolean retainedTransport,
-                    boolean explicitSuspension, boolean suspensionSleepObserved,
-                    boolean hostSleepRequested, boolean hostSleepObserved,
-                    String suspendId) {
-        this(hostId, GatewayConnection.DEFAULT_PROFILE_ID, state, hostGameAppId,
-                playniteGameId, retainedTransport,
-                explicitSuspension, suspensionSleepObserved, hostSleepRequested,
-                hostSleepObserved, suspendId, false);
-    }
-
-    SessionSnapshot(String hostId, String profileId, State state, int hostGameAppId,
-                    String playniteGameId, boolean retainedTransport,
-                    boolean explicitSuspension, boolean suspensionSleepObserved,
-                    boolean hostSleepRequested, boolean hostSleepObserved,
-                    String suspendId) {
-        this(hostId, profileId, state, hostGameAppId, playniteGameId, retainedTransport,
-                explicitSuspension, suspensionSleepObserved, hostSleepRequested,
-                hostSleepObserved, suspendId, false);
-    }
-
-    SessionSnapshot(String hostId, State state, int hostGameAppId,
-                    String playniteGameId, boolean retainedTransport,
-                    boolean explicitSuspension, boolean suspensionSleepObserved,
-                    boolean hostSleepRequested, boolean hostSleepObserved,
-                    String suspendId, boolean neutralStreamTarget) {
-        this(hostId, GatewayConnection.DEFAULT_PROFILE_ID, state, hostGameAppId,
-                playniteGameId, retainedTransport, explicitSuspension,
-                suspensionSleepObserved, hostSleepRequested, hostSleepObserved,
-                suspendId, neutralStreamTarget);
-    }
-
-    SessionSnapshot(String hostId, String profileId, State state, int hostGameAppId,
-                    String playniteGameId, boolean retainedTransport,
-                    boolean explicitSuspension, boolean suspensionSleepObserved,
-                    boolean hostSleepRequested, boolean hostSleepObserved,
-                    String suspendId, boolean neutralStreamTarget) {
+    SessionSnapshot(String hostId, String profileId, String executionProfileId,
+                    State state, int hostGameAppId, String playniteGameId,
+                    boolean retainedTransport, boolean explicitSuspension,
+                    boolean suspensionSleepObserved, boolean hostSleepRequested,
+                    boolean hostSleepObserved, String suspendId,
+                    boolean neutralStreamTarget, ObservationState observationState,
+                    boolean observationCorrelated,
+                    String producerBootId, long producerRevision, long requestOrdinal,
+                    long transportGeneration, long controlGeneration,
+                    long actorLeaseEpoch, String operationId, String transitionId,
+                    String streamSessionId, String processEvidence, int processId,
+                    String processToken, String windowEvidence, String observationReason) {
         this.hostId = normalize(hostId);
         this.profileId = GatewayConnection.normalizeProfileId(profileId);
+        this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);
         this.profileKey = this.hostId.isEmpty() ? null
                 : new HostProfileKey(this.hostId, this.profileId);
         this.state = state;
@@ -107,6 +82,31 @@ final class SessionSnapshot {
         this.hostSleepRequested = hostSleepRequested;
         this.hostSleepObserved = hostSleepObserved;
         this.suspendId = suspendId == null ? "" : suspendId.trim();
+        this.observationState = observationState;
+        this.observationCorrelated = observationCorrelated;
+        this.producerBootId = producerBootId == null ? "" : producerBootId;
+        this.producerRevision = producerRevision;
+        this.requestOrdinal = requestOrdinal;
+        this.transportGeneration = transportGeneration;
+        this.controlGeneration = controlGeneration;
+        this.actorLeaseEpoch = actorLeaseEpoch;
+        this.operationId = operationId == null ? "" : operationId;
+        this.transitionId = transitionId == null ? "" : transitionId;
+        this.streamSessionId = streamSessionId == null ? "" : streamSessionId;
+        this.processEvidence = processEvidence == null ? "UNAVAILABLE" : processEvidence;
+        this.processId = processId;
+        this.processToken = processToken == null ? "" : processToken;
+        this.windowEvidence = windowEvidence == null ? "UNAVAILABLE" : windowEvidence;
+        this.observationReason = observationReason == null ? "" : observationReason;
+    }
+
+    static SessionSnapshot pending(String hostId, String actorProfileId,
+                                   String executionProfileId) {
+        return new SessionSnapshot(hostId, actorProfileId, executionProfileId,
+                State.UNCERTAIN, 0, "", false, false, false,
+                false, false, "", false, ObservationState.PENDING, false,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "observation_pending");
     }
 
     boolean hasActiveSession() { return state == State.ACTIVE; }
@@ -120,10 +120,18 @@ final class SessionSnapshot {
     boolean isResumeAvailable() { return resumeAvailable; }
 
     String signature() {
-        return state + "|" + hostId + "|" + profileId + "|" + hostGameAppId + "|" + playniteGameId
+        return state + "|" + hostId + "|" + profileId + "|" + executionProfileId
+                + "|" + hostGameAppId + "|" + playniteGameId
                 + "|" + retainedTransport + "|" + explicitSuspension + "|"
                 + suspensionSleepObserved + "|" + hostSleepRequested + "|"
-                + hostSleepObserved + "|" + suspendId + "|" + neutralStreamTarget;
+                + hostSleepObserved + "|" + suspendId + "|" + neutralStreamTarget
+                + "|" + observationState + "|" + observationCorrelated + "|"
+                + producerBootId + "|"
+                + producerRevision + "|" + requestOrdinal + "|" + transportGeneration
+                + "|" + controlGeneration + "|" + actorLeaseEpoch + "|" + operationId
+                + "|" + transitionId + "|" + streamSessionId + "|" + processEvidence
+                + "|" + processId + "|" + processToken + "|" + windowEvidence
+                + "|" + observationReason;
     }
 
     @Override public boolean equals(Object value) {
@@ -137,16 +145,39 @@ final class SessionSnapshot {
                 && hostSleepRequested == other.hostSleepRequested
                 && hostSleepObserved == other.hostSleepObserved
                 && neutralStreamTarget == other.neutralStreamTarget
+                && observationCorrelated == other.observationCorrelated
+                && producerRevision == other.producerRevision
+                && requestOrdinal == other.requestOrdinal
+                && transportGeneration == other.transportGeneration
+                && controlGeneration == other.controlGeneration
+                && actorLeaseEpoch == other.actorLeaseEpoch
+                && processId == other.processId
                 && hostId.equals(other.hostId) && profileId.equals(other.profileId)
+                && executionProfileId.equals(other.executionProfileId)
                 && state == other.state
+                && observationState == other.observationState
                 && playniteGameId.equals(other.playniteGameId)
-                && suspendId.equals(other.suspendId);
+                && suspendId.equals(other.suspendId)
+                && producerBootId.equals(other.producerBootId)
+                && operationId.equals(other.operationId)
+                && transitionId.equals(other.transitionId)
+                && streamSessionId.equals(other.streamSessionId)
+                && processEvidence.equals(other.processEvidence)
+                && processToken.equals(other.processToken)
+                && windowEvidence.equals(other.windowEvidence)
+                && observationReason.equals(other.observationReason);
     }
 
     @Override public int hashCode() {
-        return Objects.hash(hostId, profileId, state, hostGameAppId, playniteGameId,
+        return Objects.hash(hostId, profileId, executionProfileId, state,
+                hostGameAppId, playniteGameId,
                 retainedTransport, explicitSuspension, suspensionSleepObserved,
-                hostSleepRequested, hostSleepObserved, suspendId, neutralStreamTarget);
+                hostSleepRequested, hostSleepObserved, suspendId, neutralStreamTarget,
+                observationState, observationCorrelated, producerBootId,
+                producerRevision, requestOrdinal,
+                transportGeneration, controlGeneration, actorLeaseEpoch, operationId,
+                transitionId, streamSessionId, processEvidence, processId, processToken,
+                windowEvidence, observationReason);
     }
 
     static String normalize(String value) {

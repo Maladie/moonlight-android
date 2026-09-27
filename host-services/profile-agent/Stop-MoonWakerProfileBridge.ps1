@@ -10,8 +10,7 @@ New-Item -ItemType File -Path $stopPath -Force | Out-Null
 $stopScripts = @(
     (Join-Path $ProfileRoot "discord\Stop-DiscordBridge.ps1"),
     (Join-Path $ProfileRoot "vibepollo\Stop-VibepolloBridge.ps1"),
-    (Join-Path $ProfileRoot "game-provider\Stop-PlayniteBridge.ps1"),
-    (Join-Path $ProfileRoot "playnite\Stop-PlayniteBridge.ps1"))
+    (Join-Path $ProfileRoot "game-provider\Stop-PlayniteBridge.ps1"))
 foreach ($script in $stopScripts) {
     if (Test-Path -LiteralPath $script) { try { & $script | Out-Null } catch {} }
 }
@@ -32,8 +31,7 @@ $stuck = @()
 foreach ($component in @(
     @{ name = "Discord"; directory = "discord"; config = "discord_bridge_config.json"; property = "port" },
     @{ name = "Vibepollo"; directory = "vibepollo"; config = "config.json"; property = "listen_port" },
-    @{ name = "Game Provider"; directory = "game-provider"; config = "config.json"; property = "listen_port" },
-    @{ name = "Playnite"; directory = "playnite"; config = "config.json"; property = "listen_port" })) {
+    @{ name = "Game Provider"; directory = "game-provider"; config = "config.json"; property = "listen_port" })) {
     $configPath = Join-Path (Join-Path $ProfileRoot $component.directory) $component.config
     if (-not (Test-Path -LiteralPath $configPath)) { continue }
     try {
@@ -44,20 +42,19 @@ foreach ($component in @(
         foreach ($ownerPid in $owners) {
             $process = Get-CimInstance Win32_Process -Filter "ProcessId=$ownerPid" -ErrorAction SilentlyContinue
             $commandLine = if ($process) { [string]$process.CommandLine } else { "" }
-            $verifiedPlaynite = $false
-            if ($component.name -in @("Game Provider", "Playnite") -and
+            $verifiedProvider = $false
+            if ($component.name -eq "Game Provider" -and
                 [string]::IsNullOrWhiteSpace($commandLine)) {
                 try {
-                    $health = Invoke-RestMethod -Uri "http://127.0.0.1:$port/health" -TimeoutSec 2
-                    $verifiedPlaynite = [int]$health.pid -eq [int]$ownerPid -and
-                        -not [string]::IsNullOrWhiteSpace([string]$health.version) -and
-                        ($null -ne $health.connector_connected -or
-                         [string]$health.component -in @("game-provider", "playnite"))
+                    $observation = Invoke-RestMethod `
+                        -Uri "http://127.0.0.1:$port/observation" -TimeoutSec 2
+                    $verifiedProvider = [string]$observation.producer.component -eq "game-provider" -and
+                        [int]$observation.producer.process_id -eq [int]$ownerPid -and
+                        -not [string]::IsNullOrWhiteSpace([string]$observation.producer.version)
                 } catch {}
             }
             if ($commandLine -like "*$ProfileRoot*" -or $commandLine -like "*Bridge*" -or
-                $commandLine -like "*GameProviderBridge.py*" -or
-                $commandLine -like "*PlayniteBridge.py*" -or $verifiedPlaynite) {
+                $commandLine -like "*GameProviderBridge.py*" -or $verifiedProvider) {
                 Stop-Process -Id $ownerPid -Force -ErrorAction SilentlyContinue
             }
         }

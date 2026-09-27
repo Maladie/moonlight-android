@@ -162,7 +162,7 @@ class ChildSharingGatewayTest(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("child_policy_revision_stale", result["error"])
 
-    def test_unshared_artwork_is_denied_but_common_current_state_stays_visible(self):
+    def test_unshared_artwork_is_denied_but_common_observation_stays_visible(self):
         self.state.proxy_bytes = mock.Mock(return_value=(200, b"image", "image/png"))
         self.state.child_playnite_artwork(
             self.client, "kid", "steam:123", "cover")
@@ -174,14 +174,17 @@ class ChildSharingGatewayTest(unittest.TestCase):
         self.state.proxy_bytes.assert_not_called()
 
         self.state.proxy = mock.Mock(return_value=(True, {
-            "state": "running", "id": "steam:999", "title": "Parent secret",
-            "processPath": "C:\\secret\\game.exe",
+            "game": {"state": "running", "id": "steam:999"},
+            "process": {"evidence": "PENDING", "process_id": 0,
+                        "process_token": "", "running_games": []},
         }))
-        status, current = self.state.child_playnite_state(
-            self.client, "kid", "current")
+        self.state.request_context.profile_id = "kid"
+        self.state.request_context.actor_profile_id = "kid"
+        self.state.request_context.execution_profile_id = "parent"
+        status, current = self.state.playnite_observation(1, "")
         self.assertEqual(200, status)
-        self.assertEqual("running", current["current"]["state"])
-        self.assertEqual("steam:999", current["current"]["id"])
+        self.assertEqual("running", current["game"]["state"])
+        self.assertEqual("steam:999", current["game"]["id"])
         self.state.proxy.assert_called_once()
 
         self.state.proxy.reset_mock()

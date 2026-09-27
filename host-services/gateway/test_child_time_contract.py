@@ -102,8 +102,12 @@ class ChildTimeContractTest(unittest.TestCase):
 
         def proxy(name, path, timeout=3.0, profile_id=None):
             self.proxy_calls.append((name, path, timeout, profile_id))
-            if path == "/game/current":
-                return True, {"state": "idle", "id": "", "running_games": []}
+            if path == "/observation":
+                return True, {"game": {"state": "idle", "id": "",
+                                       "evidence": "ABSENT"},
+                              "process": {"evidence": "ABSENT",
+                                          "running_games": [],
+                                          "running_scan_status": "complete"}}
             return True, {}
 
         self.proxy_json = mock.patch.object(

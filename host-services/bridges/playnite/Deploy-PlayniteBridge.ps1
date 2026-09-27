@@ -10,11 +10,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $ProfileRoot = [IO.Path]::GetFullPath($ProfileRoot)
-$componentName = if (Test-Path -LiteralPath (Join-Path $ProfileRoot "game-provider")) {
-    "game-provider"
-} else {
-    "playnite"
-}
+$componentName = "game-provider"
 $targetRoot = Join-Path $ProfileRoot $componentName
 $statePath = Join-Path $ProfileRoot "profile-bridge-state.json"
 $configPath = Join-Path $targetRoot "config.json"
@@ -37,16 +33,16 @@ $port = [int]$config.listen_port
 if ($port -lt 1 -or $port -gt 65535) {
     throw "The installed Bridge listen_port is invalid."
 }
-$healthUri = "http://127.0.0.1:$port/health"
+$observationUri = "http://127.0.0.1:$port/observation"
 
 function Get-ManagedBridgePid {
     $state = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json
     return [int]$state.components.$componentName.pid
 }
 
-function Get-BridgeHealth {
+function Get-BridgeObservation {
     try {
-        return Invoke-RestMethod -Uri $healthUri -TimeoutSec 2
+        return Invoke-RestMethod -Uri $observationUri -TimeoutSec 2
     } catch {
         return $null
     }
@@ -67,10 +63,7 @@ foreach ($name in $runtimeFiles) {
         $changed += $name
     }
 }
-$legacyBridgePath = Join-Path $targetRoot "PlayniteBridge.py"
-$removeLegacyBridge = Test-Path -LiteralPath $legacyBridgePath
-
-if ($changed.Count -eq 0 -and -not $removeLegacyBridge -and -not $ForceRestart) {
+if ($changed.Count -eq 0 -and -not $ForceRestart) {
     [pscustomobject]@{
         changed = $false
         restarted = $false
@@ -81,9 +74,10 @@ if ($changed.Count -eq 0 -and -not $removeLegacyBridge -and -not $ForceRestart) 
 }
 
 $oldPid = Get-ManagedBridgePid
-$health = Get-BridgeHealth
-if ($oldPid -le 0 -or $null -eq $health -or [int]$health.pid -ne $oldPid -or
-    [string]$health.component -notin @("game-provider", "playnite")) {
+$observation = Get-BridgeObservation
+if ($oldPid -le 0 -or $null -eq $observation -or
+    [int]$observation.producer.process_id -ne $oldPid -or
+    [string]$observation.producer.component -ne "game-provider") {
     throw "The supervisor state does not match the active Game Provider Bridge."
 }
 
@@ -103,29 +97,26 @@ foreach ($name in $changed) {
         throw "Bridge deployment hash mismatch for $name."
     }
 }
-if ($removeLegacyBridge) {
-    Remove-Item -LiteralPath $legacyBridgePath -Force
-}
-
 Stop-Process -Id $oldPid -Force
 $deadline = [DateTimeOffset]::UtcNow.AddSeconds($TimeoutSeconds)
 $newPid = 0
-$newHealth = $null
+$newObservation = $null
 do {
     Start-Sleep -Milliseconds 250
     try { $newPid = Get-ManagedBridgePid } catch { $newPid = 0 }
-    $newHealth = Get-BridgeHealth
-    if ($newPid -gt 0 -and $newPid -ne $oldPid -and $null -ne $newHealth -and
-        [int]$newHealth.pid -eq $newPid -and
-        [string]$newHealth.component -eq "game-provider" -and
-        [bool]$newHealth.connector_connected) {
+    $newObservation = Get-BridgeObservation
+    if ($newPid -gt 0 -and $newPid -ne $oldPid -and $null -ne $newObservation -and
+        [int]$newObservation.producer.process_id -eq $newPid -and
+        [string]$newObservation.producer.component -eq "game-provider" -and
+        [string]$newObservation.provider.connector_evidence -eq "VERIFIED") {
         break
     }
 } while ([DateTimeOffset]::UtcNow -lt $deadline)
 
-if ($newPid -le 0 -or $newPid -eq $oldPid -or $null -eq $newHealth -or
-    [int]$newHealth.pid -ne $newPid -or
-    -not [bool]$newHealth.connector_connected) {
+if ($newPid -le 0 -or $newPid -eq $oldPid -or $null -eq $newObservation -or
+    [int]$newObservation.producer.process_id -ne $newPid -or
+    [string]$newObservation.producer.component -ne "game-provider" -or
+    [string]$newObservation.provider.connector_evidence -ne "VERIFIED") {
     throw "The Game Provider Bridge did not restart healthy within $TimeoutSeconds seconds."
 }
 
@@ -134,7 +125,6 @@ if ($newPid -le 0 -or $newPid -eq $oldPid -or $null -eq $newHealth -or
     restarted = $true
     previous_pid = $oldPid
     pid = $newPid
-    connector_connected = [bool]$newHealth.connector_connected
+    connector_evidence = [string]$newObservation.provider.connector_evidence
     files = $changed
-    removed_legacy_bridge = $removeLegacyBridge
 }

@@ -7,13 +7,8 @@ client sends `after=<sequence>` and `transition_id=<id>`. Gateway validates and
 echoes `transition_id`; the client rejects a mismatched echo and the transition
 controller rejects callbacks for an inactive transition or host.
 
-The existing state endpoints remain the source of readiness evidence:
-
-- `GET /api/v1/playnite/health`
-- `GET /api/v1/playnite/game/current`
-- `GET /api/v1/playnite/window/readiness`
-
-`window/readiness.ready=true` currently means the Playnite-reported game process
+`GET /api/v1/session/observation` is the sole versioned source of readiness evidence.
+`window.ready=true` means the provider-reported game process
 or Playnite Fullscreen owns a visible foreground window on the configured
 streamed display with stable geometry for three consecutive samples. For games
 this is strong technical readiness, not proof that a main menu is visible.

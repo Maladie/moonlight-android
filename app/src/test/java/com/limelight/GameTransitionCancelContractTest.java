@@ -80,7 +80,7 @@ public class GameTransitionCancelContractTest {
 
         assertTrue(stop.contains("gateway.snapshot()"));
         assertTrue(stop.contains("PlayniteIdentityResolutionPolicy.verifiedStopTarget("));
-        assertTrue(stop.contains("current.processToken.isEmpty()"));
+        assertTrue(stop.contains("!current.hasVerifiedProcessFor(exactGame)"));
         assertTrue(stop.contains("gateway.stopGame(exactGame, current.processToken)"));
         assertFalse(stop.contains("gateway.stopGame(gameId)"));
     }
@@ -532,7 +532,7 @@ public class GameTransitionCancelContractTest {
         assertTrue(stop.indexOf("consoleLoadingView.showOpaque()")
                 < stop.indexOf("gateway.snapshot()"));
         assertTrue(stop.contains("PlayniteIdentityResolutionPolicy.verifiedStopTarget("));
-        assertTrue(stop.contains("current.processToken.isEmpty()"));
+        assertTrue(stop.contains("!current.hasVerifiedProcessFor(exactGame)"));
         assertTrue(stop.indexOf("gateway.stopGame(exactGame, current.processToken)")
                 < stop.indexOf("retainNeutralStreamAfterNaturalGameStop("));
         assertTrue(stop.contains("providerEndGameInFlight = true"));
@@ -626,7 +626,7 @@ public class GameTransitionCancelContractTest {
         assertTrue(provider.contains("operation.request.oldGameId.isEmpty()"));
         assertTrue(provider.contains("\"idle\".equalsIgnoreCase(current.gameState)"));
         assertTrue(provider.contains("if (!exactGame.isEmpty())"));
-        assertTrue(provider.contains("current.processToken.isEmpty()"));
+        assertTrue(provider.contains("!current.hasVerifiedProcessFor(exactGame)"));
         assertTrue(provider.contains("gateway.stopGame(exactGame, current.processToken);"));
     }
 

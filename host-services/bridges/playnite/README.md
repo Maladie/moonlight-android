@@ -20,12 +20,11 @@ termination is intentionally unavailable.
 Before dispatching a non-Steam game, the Bridge requests `steam://close/bigpicture`
 from the verified Steam process in the same Windows user session. Steam itself
 remains running. This is a close request, not an acknowledgement of input isolation.
-`/game/current` also returns `host_guide_allowed`, based on the current game's
+`/observation` also returns `capabilities.host_guide_allowed`, based on the current game's
 provider (not other running games). Android filters Guide from every outgoing
 controller packet for non-Steam games; local hold gestures and other buttons are
 unchanged. Managed sessions block Guide until a correlated host decision arrives,
-including after a retained game switch or reconnect. Install the matching Host
-update: older hosts without this field leave Guide blocked in managed sessions.
+including after a retained game switch or reconnect.
 
 Steam ownership comes from `IPlayerService/GetOwnedGames`; the active SteamID is
 read from the trusted local `loginusers.vdf`. Configure the Web API key for the

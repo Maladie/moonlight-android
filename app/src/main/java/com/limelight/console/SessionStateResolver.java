@@ -1,285 +1,262 @@
 package com.limelight.console;
 
-import com.limelight.stream.RetainedStreamSessionCoordinator;
 import com.limelight.gateway.GatewayConnection;
+import com.limelight.stream.RetainedStreamSessionCoordinator;
+import com.limelight.utils.SessionResumeManager;
 
-/** Pure precedence resolver over session facts read by ConsoleActivity. */
+import java.util.LinkedHashMap;
+import java.util.LinkedHashSet;
+import java.util.Map;
+import java.util.Set;
+
+/** Single owner of the versioned host observation and its local session projection. */
 final class SessionStateResolver {
-    static final class Observations {
-        final String hostId;
-        final String profileId;
-        String executionProfileId;
-        final int runningGameAppId;
-        final String resolvedPlayniteGameId;
-        final RetainedStreamSessionCoordinator.State retainedState;
-        final String retainedHostId;
-        final String retainedProfileId;
-        String retainedExecutionProfileId;
-        final int retainedAppId;
-        final String retainedPlayniteGameId;
-        final String suspendedHostId;
-        final String suspendedProfileId;
-        String suspendedExecutionProfileId;
-        final int suspendedAppId;
-        final String suspendedPlayniteGameId;
-        String suspendedId;
-        final long suspendedResumedAt;
-        final long suspendedSleepObservedAt;
+    static final long OBSERVATION_LIVENESS_MS = 15_000L;
+    private static final Map<String, ProjectionOwner> OWNERS = new LinkedHashMap<>();
+
+    static synchronized ProjectionOwner owner(String hostId, String actorProfileId,
+                                              String executionProfileId) {
+        String key = SessionSnapshot.normalize(hostId) + "|"
+                + GatewayConnection.normalizeProfileId(actorProfileId) + "|"
+                + GatewayConnection.normalizeProfileId(executionProfileId);
+        ProjectionOwner owner = OWNERS.get(key);
+        if (owner == null) {
+            owner = new ProjectionOwner(hostId, actorProfileId, executionProfileId);
+            OWNERS.put(key, owner);
+        }
+        return owner;
+    }
+
+    static synchronized void resetProjectionOwnersForTests() { OWNERS.clear(); }
+
+    static final class LocalFacts {
+        static final LocalFacts NONE = new LocalFacts(null, false, false, null,
+                false, false, false);
+
+        final SuspendedSessionStore.Session suspended;
         final boolean recentlyEnded;
-        final boolean pendingResume;
-        final String pendingResumeHostId;
-        final String pendingResumeProfileId;
-        String pendingResumeExecutionProfileId;
-        final int pendingResumeAppId;
-        final String hostSleepHostId;
+        final boolean pendingReconnect;
+        final SessionResumeManager.PendingSession pending;
         final boolean hostSleepRequested;
         final boolean hostSleepObserved;
-        boolean hostOnline;
-        String bridgeGameState;
-        boolean retainedOwnerLive;
-        boolean neutralStreamTarget;
+        final boolean neutralStreamTarget;
 
-        Observations(String hostId, int runningGameAppId, String resolvedPlayniteGameId,
-                     RetainedStreamSessionCoordinator.Snapshot retained,
-                     SuspendedSessionStore.Session suspended, boolean recentlyEnded,
-                     boolean pendingResume, String pendingResumeHostId,
-                     int pendingResumeAppId, String hostSleepHostId,
-                     HostSleepStateStore.State hostSleep, boolean hostOnline) {
-            this(hostId, GatewayConnection.DEFAULT_PROFILE_ID, runningGameAppId,
-                    resolvedPlayniteGameId, retained,
-                    suspended, recentlyEnded, pendingResume, pendingResumeHostId,
-                    GatewayConnection.DEFAULT_PROFILE_ID, pendingResumeAppId,
-                    hostSleepHostId, hostSleep, hostOnline);
-        }
-
-        Observations(String hostId, String profileId, int runningGameAppId,
-                     String resolvedPlayniteGameId,
-                     RetainedStreamSessionCoordinator.Snapshot retained,
-                     SuspendedSessionStore.Session suspended, boolean recentlyEnded,
-                     boolean pendingResume, String pendingResumeHostId,
-                     String pendingResumeProfileId, int pendingResumeAppId,
-                     String hostSleepHostId, HostSleepStateStore.State hostSleep,
-                     boolean hostOnline) {
-            this(hostId, profileId, runningGameAppId, resolvedPlayniteGameId,
-                    retained.state, retained.hostId, retained.profileId, retained.appId,
-                    retained.playniteGameId,
-                    suspended == null ? "" : suspended.hostId,
-                    suspended == null ? GatewayConnection.DEFAULT_PROFILE_ID
-                            : suspended.profileId,
-                    suspended == null ? 0 : suspended.sunshineAppId,
-                    suspended == null ? "" : suspended.playniteGameId,
-                    suspended == null ? -1L : suspended.resumedAt,
-                    suspended == null ? 0L : suspended.sleepObservedAt,
-                    recentlyEnded, pendingResume, pendingResumeHostId,
-                    pendingResumeProfileId, pendingResumeAppId, hostSleepHostId,
-                    hostSleep != null,
-                    hostSleep != null && hostSleep.sleepObservedAt > 0L);
-            this.hostOnline = hostOnline;
-            this.suspendedId = suspended == null ? "" : suspended.suspendId;
-            this.retainedExecutionProfileId = retained.executionProfileId;
-            this.suspendedExecutionProfileId = suspended == null
-                    ? GatewayConnection.DEFAULT_PROFILE_ID : suspended.executionProfileId;
-        }
-
-        Observations(String hostId, int runningGameAppId, String resolvedPlayniteGameId,
-                     RetainedStreamSessionCoordinator.State retainedState,
-                     String retainedHostId, int retainedAppId,
-                     String retainedPlayniteGameId, String suspendedHostId,
-                     int suspendedAppId, String suspendedPlayniteGameId,
-                     long suspendedResumedAt, long suspendedSleepObservedAt,
-                     boolean recentlyEnded, boolean pendingResume,
-                     String pendingResumeHostId, int pendingResumeAppId,
-                     String hostSleepHostId, boolean hostSleepRequested,
-                     boolean hostSleepObserved) {
-            this(hostId, GatewayConnection.DEFAULT_PROFILE_ID, runningGameAppId,
-                    resolvedPlayniteGameId, retainedState, retainedHostId,
-                    GatewayConnection.DEFAULT_PROFILE_ID, retainedAppId,
-                    retainedPlayniteGameId, suspendedHostId,
-                    GatewayConnection.DEFAULT_PROFILE_ID, suspendedAppId,
-                    suspendedPlayniteGameId, suspendedResumedAt,
-                    suspendedSleepObservedAt, recentlyEnded, pendingResume,
-                    pendingResumeHostId, GatewayConnection.DEFAULT_PROFILE_ID,
-                    pendingResumeAppId, hostSleepHostId, hostSleepRequested,
-                    hostSleepObserved);
-        }
-
-        Observations(String hostId, String profileId, int runningGameAppId,
-                     String resolvedPlayniteGameId,
-                     RetainedStreamSessionCoordinator.State retainedState,
-                     String retainedHostId, String retainedProfileId, int retainedAppId,
-                     String retainedPlayniteGameId, String suspendedHostId,
-                     String suspendedProfileId, int suspendedAppId,
-                     String suspendedPlayniteGameId, long suspendedResumedAt,
-                     long suspendedSleepObservedAt, boolean recentlyEnded,
-                     boolean pendingResume, String pendingResumeHostId,
-                     String pendingResumeProfileId, int pendingResumeAppId,
-                     String hostSleepHostId, boolean hostSleepRequested,
-                     boolean hostSleepObserved) {
-            this.hostId = SessionSnapshot.normalize(hostId);
-            this.profileId = GatewayConnection.normalizeProfileId(profileId);
-            this.executionProfileId = this.profileId;
-            this.runningGameAppId = runningGameAppId;
-            this.resolvedPlayniteGameId = SessionSnapshot.normalize(
-                    resolvedPlayniteGameId);
-            this.retainedState = retainedState;
-            this.retainedHostId = SessionSnapshot.normalize(retainedHostId);
-            this.retainedProfileId = GatewayConnection.normalizeProfileId(retainedProfileId);
-            this.retainedExecutionProfileId = this.retainedProfileId;
-            this.retainedAppId = retainedAppId;
-            this.retainedPlayniteGameId = SessionSnapshot.normalize(
-                    retainedPlayniteGameId);
-            this.suspendedHostId = SessionSnapshot.normalize(suspendedHostId);
-            this.suspendedProfileId = GatewayConnection.normalizeProfileId(suspendedProfileId);
-            this.suspendedExecutionProfileId = this.suspendedProfileId;
-            this.suspendedAppId = suspendedAppId;
-            this.suspendedPlayniteGameId = SessionSnapshot.normalize(
-                    suspendedPlayniteGameId);
-            this.suspendedResumedAt = suspendedResumedAt;
-            this.suspendedSleepObservedAt = suspendedSleepObservedAt;
+        LocalFacts(SuspendedSessionStore.Session suspended, boolean recentlyEnded,
+                   boolean pendingReconnect, SessionResumeManager.PendingSession pending,
+                   boolean hostSleepRequested, boolean hostSleepObserved,
+                   boolean neutralStreamTarget) {
+            this.suspended = suspended;
             this.recentlyEnded = recentlyEnded;
-            this.pendingResume = pendingResume;
-            this.pendingResumeHostId = SessionSnapshot.normalize(pendingResumeHostId);
-            this.pendingResumeProfileId = GatewayConnection.normalizeProfileId(
-                    pendingResumeProfileId);
-            this.pendingResumeExecutionProfileId = this.pendingResumeProfileId;
-            this.pendingResumeAppId = pendingResumeAppId;
-            this.hostSleepHostId = SessionSnapshot.normalize(hostSleepHostId);
+            this.pendingReconnect = pendingReconnect;
+            this.pending = pending;
             this.hostSleepRequested = hostSleepRequested;
             this.hostSleepObserved = hostSleepObserved;
-            this.hostOnline = false;
-            this.bridgeGameState = this.resolvedPlayniteGameId.isEmpty()
-                    ? "" : "running";
+            this.neutralStreamTarget = neutralStreamTarget;
         }
     }
 
-    SessionSnapshot resolve(Observations facts) {
-        String bridgeState = SessionSnapshot.normalize(facts.bridgeGameState);
-        boolean bridgeRunning = "running".equals(bridgeState)
-                && !facts.resolvedPlayniteGameId.isEmpty();
-        boolean bridgeIdle = "idle".equals(bridgeState);
-        boolean bridgeUncertain = !bridgeState.isEmpty()
-                && !bridgeRunning && !bridgeIdle;
-        boolean retainedExecutionMatches = facts.hostId.equals(facts.retainedHostId)
-                && facts.executionProfileId.equals(facts.retainedExecutionProfileId);
-        boolean retainedMatches = retainedExecutionMatches
-                && (facts.runningGameAppId == 0
-                || facts.retainedAppId == 0
-                || facts.runningGameAppId == facts.retainedAppId)
-                && (facts.resolvedPlayniteGameId.isEmpty()
-                || facts.retainedPlayniteGameId.isEmpty()
-                || facts.resolvedPlayniteGameId.equals(facts.retainedPlayniteGameId));
-        boolean retainedLive = facts.retainedOwnerLive && retainedMatches
-                && (facts.retainedState == RetainedStreamSessionCoordinator.State.HOME_LIVE
-                || facts.retainedState == RetainedStreamSessionCoordinator.State.PARKED_LIVE);
-        boolean retainedReconnect = retainedMatches && facts.retainedState
-                == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED;
-        boolean suspendedMatches = facts.hostId.equals(facts.suspendedHostId)
-                && facts.executionProfileId.equals(facts.suspendedExecutionProfileId);
-        boolean pendingMatches = facts.pendingResume
-                && facts.hostId.equals(facts.pendingResumeHostId)
-                && facts.executionProfileId.equals(facts.pendingResumeExecutionProfileId);
-        boolean sleepMatches = facts.hostId.equals(facts.hostSleepHostId);
-        boolean explicitSuspension = suspendedMatches && facts.suspendedResumedAt == 0L;
-        boolean suspensionSleepObserved = explicitSuspension
-                && facts.suspendedSleepObservedAt > 0L;
-        boolean sleepRequested = sleepMatches && facts.hostSleepRequested;
-        boolean sleepObserved = sleepRequested && facts.hostSleepObserved;
+    static final class ProjectionOwner {
+        private final String hostId;
+        private final String actorProfileId;
+        private final String executionProfileId;
+        private final Set<String> retiredBoots = new LinkedHashSet<>();
+        private long nextRequestOrdinal;
+        private long lastAcceptedOrdinal;
+        private String producerBootId = "";
+        private long producerRevision;
+        private HostGatewayClient.SessionObservation observation;
+        private long observationAcceptedAtMs;
+        private String episodeKey = "";
+        private long episodeDeadlineMs;
+        private SessionSnapshot published;
 
-        if (retainedExecutionMatches && facts.retainedState
-                == RetainedStreamSessionCoordinator.State.TERMINATING) {
-            return snapshot(facts, SessionSnapshot.State.TERMINATING,
-                    facts.retainedAppId, facts.retainedPlayniteGameId, false,
-                    explicitSuspension, suspensionSleepObserved,
-                    sleepRequested, sleepObserved);
+        private ProjectionOwner(String hostId, String actorProfileId,
+                                String executionProfileId) {
+            this.hostId = SessionSnapshot.normalize(hostId);
+            this.actorProfileId = GatewayConnection.normalizeProfileId(actorProfileId);
+            this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);
         }
 
-        if (retainedExecutionMatches && facts.retainedState
-                == RetainedStreamSessionCoordinator.State.PREPARING) {
-            return snapshot(facts, SessionSnapshot.State.PREPARING,
-                    facts.retainedAppId, facts.retainedPlayniteGameId, false,
-                    false, false, sleepRequested, sleepObserved);
+        synchronized long nextRequestOrdinal() {
+            if (nextRequestOrdinal == Long.MAX_VALUE) nextRequestOrdinal = 0L;
+            return ++nextRequestOrdinal;
         }
 
-        if (facts.hostOnline && bridgeUncertain && !retainedLive) {
-            return snapshot(facts, SessionSnapshot.State.UNCERTAIN,
-                    facts.runningGameAppId, facts.resolvedPlayniteGameId, false,
-                    explicitSuspension, suspensionSleepObserved,
-                    sleepRequested, sleepObserved);
-        }
-
-        if (facts.recentlyEnded && !retainedLive && !bridgeRunning) {
-            return snapshot(facts, SessionSnapshot.State.NONE, 0, "", false,
-                    false, false, sleepRequested, sleepObserved);
-        }
-
-        if (explicitSuspension && !retainedLive && !bridgeRunning && !bridgeIdle
-                && (facts.runningGameAppId == 0
-                || facts.runningGameAppId == facts.suspendedAppId)) {
-            return snapshot(facts, SessionSnapshot.State.SUSPENDED,
-                    facts.suspendedAppId, facts.suspendedPlayniteGameId, false,
-                    true, suspensionSleepObserved, sleepRequested, sleepObserved);
-        }
-
-        if (retainedReconnect && facts.neutralStreamTarget
-                && facts.retainedPlayniteGameId.isEmpty() && !bridgeRunning) {
-            return snapshot(facts, SessionSnapshot.State.RECONNECT_REQUIRED,
-                    facts.retainedAppId, "", false, false, false,
-                    sleepRequested, sleepObserved);
-        }
-
-        boolean hostLive = facts.hostOnline && facts.runningGameAppId != 0;
-        boolean bridgeLive = facts.hostOnline && bridgeRunning;
-        if (retainedLive || hostLive || bridgeLive) {
-            int appId = retainedLive && facts.retainedAppId != 0
-                    ? facts.retainedAppId : facts.runningGameAppId;
-            String gameId = bridgeRunning ? facts.resolvedPlayniteGameId : "";
-            if (gameId.isEmpty() && retainedLive && !bridgeIdle) {
-                gameId = facts.retainedPlayniteGameId;
+        synchronized boolean accept(HostGatewayClient.SessionObservation candidate,
+                                    RetainedStreamSessionCoordinator.Snapshot retained,
+                                    long nowMs) {
+            if (candidate == null || candidate.requestOrdinal != nextRequestOrdinal
+                    || candidate.requestOrdinal <= lastAcceptedOrdinal
+                    || !actorProfileId.equals(candidate.actorProfileId)
+                    || !executionProfileId.equals(candidate.executionProfileId)
+                    || retiredBoots.contains(candidate.producerBootId)) return false;
+            if (candidate.producerBootId.equals(producerBootId)) {
+                if (candidate.producerRevision <= producerRevision) return false;
+            } else if (!producerBootId.isEmpty()) {
+                retiredBoots.add(producerBootId);
+                while (retiredBoots.size() > 8) {
+                    retiredBoots.remove(retiredBoots.iterator().next());
+                }
             }
-            if (gameId.isEmpty() && suspendedMatches && facts.suspendedResumedAt > 0L
-                    && facts.suspendedAppId == appId && !bridgeIdle) {
-                gameId = facts.suspendedPlayniteGameId;
+            producerBootId = candidate.producerBootId;
+            producerRevision = candidate.producerRevision;
+            lastAcceptedOrdinal = candidate.requestOrdinal;
+            observation = candidate;
+            observationAcceptedAtMs = nowMs;
+            String nextEpisode = candidate.producerBootId + "|" + candidate.stateEpisode
+                    + "|" + candidate.operationId + "|" + candidate.callerTransitionId
+                    + "|" + candidate.providerState;
+            if (!nextEpisode.equals(episodeKey)) {
+                boolean continuingUnavailableEpisode = episodeDeadlineMs > 0L
+                        && episodeKey.endsWith("|unavailable")
+                        && published != null && published.observationState
+                        == SessionSnapshot.ObservationState.PENDING;
+                episodeKey = nextEpisode;
+                if (!continuingUnavailableEpisode) {
+                    episodeDeadlineMs = nowMs + OBSERVATION_LIVENESS_MS;
+                }
             }
-            return snapshot(facts, SessionSnapshot.State.ACTIVE, appId, gameId,
-                    retainedLive, explicitSuspension, suspensionSleepObserved,
-                    sleepRequested, sleepObserved);
+            published = project(retained, LocalFacts.NONE, nowMs, "");
+            return true;
         }
 
-
-        if (explicitSuspension && !bridgeIdle) {
-            return snapshot(facts, SessionSnapshot.State.SUSPENDED,
-                    facts.suspendedAppId, facts.suspendedPlayniteGameId, false,
-                    true, suspensionSleepObserved, sleepRequested, sleepObserved);
-        }
-
-        if (retainedReconnect || pendingMatches) {
-            int appId = retainedReconnect ? facts.retainedAppId : facts.pendingResumeAppId;
-            String gameId = retainedReconnect && !bridgeIdle
-                    ? facts.retainedPlayniteGameId : "";
-            if (gameId.isEmpty() && suspendedMatches && facts.suspendedResumedAt > 0L
-                    && facts.suspendedAppId == appId && !bridgeIdle) {
-                gameId = facts.suspendedPlayniteGameId;
+        synchronized SessionSnapshot unavailable(
+                long failedOrdinal, RetainedStreamSessionCoordinator.Snapshot retained,
+                long nowMs, String reason) {
+            if (failedOrdinal != nextRequestOrdinal || failedOrdinal <= lastAcceptedOrdinal) {
+                return project(retained, LocalFacts.NONE, nowMs, "");
             }
-            return snapshot(facts, SessionSnapshot.State.RECONNECT_REQUIRED,
-                    appId, gameId, false, false, false,
-                    sleepRequested, sleepObserved);
+            String unavailableEpisode = producerBootId + "|unavailable";
+            boolean resolvedEpisode = published != null
+                    && (published.observationState == SessionSnapshot.ObservationState.READY
+                    || published.observationState == SessionSnapshot.ObservationState.IDLE);
+            if (episodeKey.isEmpty() || resolvedEpisode) {
+                episodeKey = unavailableEpisode;
+                episodeDeadlineMs = nowMs + OBSERVATION_LIVENESS_MS;
+            }
+            published = project(retained, LocalFacts.NONE, nowMs,
+                    reason == null ? "observation_unavailable" : reason);
+            return published;
         }
 
-        return snapshot(facts, SessionSnapshot.State.NONE, 0, "", false,
-                false, false, sleepRequested, sleepObserved);
-    }
+        synchronized SessionSnapshot current(
+                RetainedStreamSessionCoordinator.Snapshot retained, long nowMs) {
+            return current(retained, LocalFacts.NONE, nowMs);
+        }
 
-    private static SessionSnapshot snapshot(Observations facts, SessionSnapshot.State state,
-                                            int appId, String gameId,
-                                            boolean retainedTransport,
-                                            boolean explicitSuspension,
-                                            boolean suspensionSleepObserved,
-                                            boolean hostSleepRequested,
-                                            boolean hostSleepObserved) {
-        return new SessionSnapshot(facts.hostId, facts.profileId, state, appId, gameId,
-                retainedTransport, explicitSuspension, suspensionSleepObserved,
-                hostSleepRequested, hostSleepObserved,
-                explicitSuspension ? facts.suspendedId : "",
-                facts.neutralStreamTarget);
+        synchronized SessionSnapshot current(
+                RetainedStreamSessionCoordinator.Snapshot retained, LocalFacts local,
+                long nowMs) {
+            published = project(retained, local == null ? LocalFacts.NONE : local, nowMs, "");
+            return published;
+        }
+
+        private SessionSnapshot project(RetainedStreamSessionCoordinator.Snapshot retained,
+                                        LocalFacts local, long nowMs,
+                                        String unavailableReason) {
+            RetainedStreamSessionCoordinator.State retainedState = retained == null
+                    ? RetainedStreamSessionCoordinator.State.NONE : retained.state;
+            boolean matchingTransport = retained != null
+                    && hostId.equals(SessionSnapshot.normalize(retained.hostId))
+                    && executionProfileId.equals(retained.executionProfileId);
+            boolean knownLive = matchingTransport && (retainedState
+                    == RetainedStreamSessionCoordinator.State.HOME_LIVE
+                    || retainedState == RetainedStreamSessionCoordinator.State.PARKED_LIVE);
+            boolean localTransport = matchingTransport && retainedState
+                    != RetainedStreamSessionCoordinator.State.NONE
+                    && retainedState != RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED;
+            boolean freshObservation = observation != null
+                    && nowMs - observationAcceptedAtMs
+                    <= Math.min(OBSERVATION_LIVENESS_MS, observation.freshForMs);
+            HostGatewayClient.SessionObservation current = freshObservation ? observation : null;
+            boolean correlationMatches = current != null && (!matchingTransport
+                    || (!retained.streamSessionId.isEmpty()
+                    && retained.streamSessionId.equals(current.streamSessionId)
+                    && retained.controlGeneration > 0L
+                    && current.controlGeneration == retained.controlGeneration
+                    && (retained.transitionId.isEmpty()
+                    || retained.transitionId.equals(current.callerTransitionId))));
+            HostGatewayClient.SessionObservation evidence = correlationMatches ? current : null;
+            boolean ready = unavailableReason.isEmpty() && evidence != null
+                    && evidence.gameEvidence == HostGatewayClient.Evidence.VERIFIED
+                    && evidence.processEvidence == HostGatewayClient.Evidence.VERIFIED
+                    && evidence.windowEvidence == HostGatewayClient.Evidence.VERIFIED
+                    && evidence.windowReady && (!matchingTransport || localTransport);
+            boolean idle = unavailableReason.isEmpty() && evidence != null
+                    && evidence.gameEvidence == HostGatewayClient.Evidence.ABSENT
+                    && "idle".equals(evidence.gameState)
+                    && (!matchingTransport || knownLive);
+            boolean expired = episodeDeadlineMs > 0L && nowMs >= episodeDeadlineMs;
+            SessionSnapshot.ObservationState disposition = ready
+                    ? SessionSnapshot.ObservationState.READY
+                    : idle ? SessionSnapshot.ObservationState.IDLE
+                    : expired ? (matchingTransport && retainedState
+                    != RetainedStreamSessionCoordinator.State.NONE
+                    ? SessionSnapshot.ObservationState.RECOVERY_REQUIRED
+                    : SessionSnapshot.ObservationState.UNAVAILABLE)
+                    : SessionSnapshot.ObservationState.PENDING;
+
+            boolean suspended = local.suspended != null
+                    && hostId.equals(SessionSnapshot.normalize(local.suspended.hostId))
+                    && executionProfileId.equals(local.suspended.executionProfileId)
+                    && local.suspended.resumedAt == 0L;
+            boolean pending = local.pendingReconnect && local.pending != null
+                    && hostId.equals(SessionSnapshot.normalize(local.pending.hostUuid))
+                    && executionProfileId.equals(local.pending.executionProfileId);
+            SessionSnapshot.State state;
+            if (matchingTransport && retainedState
+                    == RetainedStreamSessionCoordinator.State.TERMINATING) {
+                state = SessionSnapshot.State.TERMINATING;
+            } else if (matchingTransport && retainedState
+                    == RetainedStreamSessionCoordinator.State.PREPARING) {
+                state = SessionSnapshot.State.PREPARING;
+            } else if (knownLive) {
+                state = SessionSnapshot.State.ACTIVE;
+            } else if (local.recentlyEnded) {
+                state = SessionSnapshot.State.NONE;
+            } else if (suspended) {
+                state = SessionSnapshot.State.SUSPENDED;
+            } else if ((matchingTransport && retainedState
+                    == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED) || pending) {
+                state = SessionSnapshot.State.RECONNECT_REQUIRED;
+            } else if (idle || disposition == SessionSnapshot.ObservationState.UNAVAILABLE) {
+                state = SessionSnapshot.State.NONE;
+            } else {
+                state = SessionSnapshot.State.UNCERTAIN;
+            }
+
+            String gameId = evidence != null
+                    && evidence.gameEvidence == HostGatewayClient.Evidence.VERIFIED
+                    ? evidence.gameId : knownLive && !retained.playniteGameId.isEmpty()
+                    ? retained.playniteGameId : "";
+            int appId = matchingTransport ? retained.appId
+                    : suspended ? local.suspended.sunshineAppId
+                    : pending ? local.pending.appId : 0;
+            String reason = !unavailableReason.isEmpty() ? unavailableReason
+                    : current != null && !correlationMatches
+                    ? "observation_correlation_mismatch"
+                    : current == null ? observation == null
+                    ? "observation_pending" : "observation_stale" : current.reason;
+            return new SessionSnapshot(hostId, actorProfileId, executionProfileId,
+                    state, appId, gameId, knownLive, suspended,
+                    suspended && local.suspended.sleepObservedAt > 0L,
+                    local.hostSleepRequested, local.hostSleepObserved,
+                    suspended ? local.suspended.suspendId : "", local.neutralStreamTarget,
+                    disposition, correlationMatches,
+                    observation == null ? "" : observation.producerBootId,
+                    observation == null ? 0L : observation.producerRevision,
+                    observation == null ? 0L : observation.requestOrdinal,
+                    retained == null ? 0L : retained.transportGeneration,
+                    observation == null ? 0L : observation.controlGeneration,
+                    observation == null ? 0L : observation.actorLeaseEpoch,
+                    observation == null ? "" : observation.operationId,
+                    observation == null ? "" : observation.callerTransitionId,
+                    retained == null ? "" : retained.streamSessionId,
+                    evidence == null ? "UNAVAILABLE" : evidence.processEvidence.name(),
+                    evidence == null ? 0 : evidence.processId,
+                    evidence == null ? "" : evidence.processToken,
+                    evidence == null ? "UNAVAILABLE" : evidence.windowEvidence.name(),
+                    reason);
+        }
     }
 }

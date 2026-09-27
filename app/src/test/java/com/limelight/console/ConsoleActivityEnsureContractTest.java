@@ -193,26 +193,15 @@ public class ConsoleActivityEnsureContractTest {
 
         assertTrue(confirmation.contains(
                 "HostProfileKey confirmedKey = selectedProfileKey(host.uuid)"));
-        assertTrue(confirmation.matches("(?s).*runningGameObservations\\.get\\(\\s*"
-                + "confirmedKey\\.cacheKey\\(\\)\\).*"));
-        assertTrue(confirmation.matches("(?s).*requestEndPlayniteGame\\(host, item, "
-                + "confirmedGame, confirmedObservation,\\s*confirmedKey\\).*"));
-        assertTrue(stop.contains("String stateKey = confirmedKey.cacheKey()"));
+        assertTrue(confirmation.contains(
+                "requestEndPlayniteGame(host, item, confirmedKey)"));
         assertTrue(stop.contains("!confirmedKey.equals(selectedProfileKey(host.uuid))"));
-        assertTrue(stop.contains("runningGameObservations.get(stateKey)"));
-        assertTrue(stop.contains("runningGameObservations.put(stateKey"));
-        assertFalse(stop.contains("runningGameObservations.get(host.uuid)"));
-        assertTrue(stop.contains(
-                "activePlayniteGameResolvedAt.getOrDefault(stateKey, 0L)"));
-        assertTrue(stop.contains("boolean stoppedSessionGame = stoppedCurrent"));
-        assertTrue(stop.contains("if (stoppedSessionGame) markExactPlayniteGameIdle"));
-        assertTrue(stop.contains("if (sameStopScope)"));
-        assertTrue(stop.contains("resolveActivePlayniteGame(host, host.runningGameId != 0"));
+        assertTrue(stop.contains("stopActiveProviderGame(host, expectedGameId, true"));
+        assertTrue(stop.contains("refreshSessionProjection(host, host.runningGameId != 0"));
         assertTrue(hardReset.contains("String stateKey = profileKey.cacheKey()"));
-        assertTrue(hardReset.contains("activePlayniteGameIds.remove(stateKey)"));
-        assertTrue(hardReset.contains("activePlayniteGameStates.remove(stateKey)"));
-        assertTrue(hardReset.contains("activePlayniteGameAppIds.remove(stateKey)"));
-        assertTrue(hardReset.contains("activePlayniteGameResolvedAt.remove(stateKey)"));
+        assertTrue(hardReset.contains("publishedSessionSnapshots.remove(stateKey)"));
+        assertFalse(source.contains("RunningGameObservation"));
+        assertFalse(source.contains("getPlayniteCurrentGame("));
         assertTrue(hardReset.contains("lastFreshRunningAppIds.remove(host.uuid)"));
         assertTrue(hardReset.contains("lastFreshStreamSessionIds.remove(host.uuid)"));
     }
@@ -230,8 +219,8 @@ public class ConsoleActivityEnsureContractTest {
 
         assertTrue(effects.contains("terminateLiveRetainedForReplacement("));
         assertTrue(effects.contains("terminateKnownControlPlane(host, intent.profileId"));
-        assertTrue(effects.contains(
-                "RetainedStreamSessionCoordinator.beginDirectTermination("));
+        assertTrue(effects.matches("(?s).*RetainedStreamSessionCoordinator\\."
+                + "beginDirectTermination\\(\\s+retained\\).*"));
         assertFalse(effects.contains(".restoreReconnectIfTerminating("));
         assertFalse(effects.contains("closePreviousSession(ready"));
         assertTrue(helper.contains("RetainedStreamSessionCoordinator.terminate("));
@@ -341,20 +330,21 @@ public class ConsoleActivityEnsureContractTest {
                         "private void activatePlayniteItem("),
                 source.indexOf("private void startPlayniteInstallation("));
         String resolver = source.substring(source.indexOf(
-                        "private void resolveActivePlayniteGame("),
-                source.indexOf("private void invalidateActivePlayniteGameRequest("));
+                        "private void refreshSessionProjection("),
+                source.indexOf("private void invalidateSessionProjectionRequest("));
         String actions = source.substring(source.indexOf("private void showPlayniteGameActions("),
                 source.indexOf("private void confirmPlayniteUninstall("));
 
         assertTrue(orchestration.contains("@Override public void refreshSession("));
         assertTrue(orchestration.contains("streamLoadingView.setStep(1,"));
         assertTrue(orchestration.contains(
-                "resolveActivePlayniteGame(host, intent.profileKey, true, accepted ->"));
+                "refreshSessionProjection(host, intent.profileKey, true, accepted ->"));
         assertTrue(orchestration.contains("console_session_uncertain_title"));
         assertTrue(orchestration.contains("console_session_uncertain_details"));
-        assertTrue(resolver.contains("invalidateActivePlayniteGameRequest(host.uuid)"));
+        assertTrue(resolver.contains("invalidateSessionProjectionRequest(host.uuid)"));
         assertTrue(resolver.contains("completion.accept(false)"));
-        assertTrue(resolver.contains("completion.accept(true)"));
+        assertTrue(resolver.contains(
+                "completion.accept(projected != null && sameRenderScope)"));
         assertTrue(activation.contains("showUncertainSessionMessage()"));
         assertFalse(actions.contains("playnite_choose_launch_method"));
         assertFalse(source.contains("showPlayniteTargetPicker("));
@@ -412,7 +402,8 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(method.contains("State.PREPARING"));
         assertTrue(method.contains("if (retained.playniteGameId.isEmpty())"));
         assertTrue(method.indexOf("if (retained.playniteGameId.isEmpty())")
-                < method.indexOf("activePlayniteGameResolvedAt.getOrDefault"));
+                < method.indexOf("SessionSnapshot projection = resolveSessionSnapshot("));
+        assertTrue(method.contains("\"VERIFIED\".equals(projection.processEvidence)"));
         assertTrue(method.contains("host.runningGameId == retained.appId"));
         assertTrue(method.contains("retained.hostId.equalsIgnoreCase(intent.hostId)"));
         assertTrue(method.contains("!retained.playniteGameId.equalsIgnoreCase("));
@@ -428,16 +419,16 @@ public class ConsoleActivityEnsureContractTest {
                 source.indexOf("@Override public void onShowStreamAnyway()", source.indexOf(
                         "@Override public void onRetry()")));
         String resolve = source.substring(source.indexOf(
-                        "private void resolveActivePlayniteGame("),
-                source.indexOf("private void invalidateActivePlayniteGameRequest("));
+                        "private void refreshSessionProjection("),
+                source.indexOf("private void invalidateSessionProjectionRequest("));
 
         assertTrue(retry.contains("sessionOrchestrator.retry()"));
         assertFalse(retry.contains("sessionOrchestrator.cancel()"));
         assertFalse(retry.contains("showHome()"));
-        assertTrue(resolve.indexOf("boolean freshnessRecovered")
-                < resolve.indexOf("activePlayniteGameResolvedAt.put("));
-        assertTrue(resolve.contains("runningGamePresentationChanged(previous"));
-        assertTrue(resolve.contains("previousState, acceptedState, freshnessRecovered"));
+        assertTrue(resolve.contains("gateway.snapshot().sessionSnapshot"));
+        assertTrue(resolve.contains("publishedSessionSnapshots.put(stateKey, projected)"));
+        assertFalse(resolve.contains("getPlayniteCurrentGame("));
+        assertFalse(resolve.contains("activePlayniteGameIds"));
     }
 
     @Test public void warmUpCancelAndFailureRemainScopedAndInline() throws IOException {

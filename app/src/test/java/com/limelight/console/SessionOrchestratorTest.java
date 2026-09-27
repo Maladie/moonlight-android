@@ -293,8 +293,8 @@ public class SessionOrchestratorTest {
 
     @Test public void matchingRetainedTargetReturnsWithoutReadinessOrLaunch() {
         Fake effects = new Fake();
-        effects.snapshot = new SessionSnapshot("host", SessionSnapshot.State.ACTIVE, 42,
-                "game", true, false, false, false, false);
+        effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE, 42,
+                "game", true, "", false);
 
         orchestrator(effects).play(game());
 
@@ -305,8 +305,8 @@ public class SessionOrchestratorTest {
 
     @Test public void differentRetainedTargetUsesSafeReplacementPath() {
         Fake effects = new Fake();
-        effects.snapshot = new SessionSnapshot("host", SessionSnapshot.State.ACTIVE, 42,
-                "other", true, false, false, false, false);
+        effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE, 42,
+                "other", true, "", false);
 
         orchestrator(effects).play(game());
 
@@ -329,18 +329,8 @@ public class SessionOrchestratorTest {
 
     @Test public void neutralWarmUpReconnectHandsOffGameWithoutReplacement() {
         Fake effects = new Fake();
-        SessionStateResolver.Observations observations =
-                new SessionStateResolver.Observations(
-                        "host", "default", 77, "",
-                        RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
-                        "host", "default", 77, "", "", "default", 0, "",
-                        -1L, 0L, false, true, "host", "default", 77,
-                        "", false, false);
-        observations.hostOnline = true;
-        observations.bridgeGameState = "idle";
-        observations.retainedOwnerLive = false;
-        observations.neutralStreamTarget = true;
-        effects.snapshot = new SessionStateResolver().resolve(observations);
+        effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
+                77, "", false, "", true);
 
         PlayIntent game = game();
         orchestrator(effects).play(game);
@@ -356,9 +346,8 @@ public class SessionOrchestratorTest {
 
     @Test public void cancelledNeutralWarmUpReconnectIgnoresStaleOpaqueFrame() {
         Fake effects = new Fake();
-        effects.snapshot = new SessionSnapshot("host",
-                SessionSnapshot.State.RECONNECT_REQUIRED, 77, "",
-                false, false, false, false, false, "", true);
+        effects.snapshot = snapshot(SessionSnapshot.State.RECONNECT_REQUIRED,
+                77, "", false, "", true);
         effects.deferLoading = true;
         SessionOrchestrator orchestrator = orchestrator(effects);
 
@@ -395,8 +384,8 @@ public class SessionOrchestratorTest {
 
     @Test public void suspendedTargetCarriesCanonicalSuspendCorrelation() {
         Fake effects = new Fake();
-        effects.snapshot = new SessionSnapshot("host", SessionSnapshot.State.SUSPENDED,
-                42, "game", false, true, false, false, false, "suspend-a");
+        effects.snapshot = snapshot(SessionSnapshot.State.SUSPENDED,
+                42, "game", false, "suspend-a", false);
 
         orchestrator(effects).play(game());
         assertEquals(LaunchTransitionType.GENERIC, effects.launchType);
@@ -477,8 +466,8 @@ public class SessionOrchestratorTest {
 
     @Test public void retainedNeutralStreamLaunchesManagedGameWithoutClosingTransport() {
         Fake effects = new Fake();
-        effects.snapshot = new SessionSnapshot("host", SessionSnapshot.State.ACTIVE,
-                42, "", true, false, false, false, false);
+        effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE,
+                42, "", true, "", false);
         effects.canSwitch = true;
         effects.closeResult = SessionOrchestrator.CloseResult.REUSED;
         orchestrator(effects).play(game());
@@ -793,9 +782,19 @@ public class SessionOrchestratorTest {
 
     private static SessionSnapshot snapshot(SessionSnapshot.State state,
                                             int appId, String gameId) {
-        return new SessionSnapshot("host", state, appId, gameId,
-                false, state == SessionSnapshot.State.SUSPENDED,
-                false, false, false);
+        return snapshot(state, appId, gameId, false, "", false);
+    }
+
+    private static SessionSnapshot snapshot(SessionSnapshot.State state,
+                                            int appId, String gameId,
+                                            boolean retained, String suspendId,
+                                            boolean neutral) {
+        boolean suspended = state == SessionSnapshot.State.SUSPENDED;
+        return new SessionSnapshot("host", "default", "default", state, appId, gameId,
+                retained, suspended, false, false, false, suspendId, neutral,
+                SessionSnapshot.ObservationState.PENDING, false,
+                "", 0L, 0L, 0L, 0L, 0L, "", "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test");
     }
 
     private static final class Fake implements SessionOrchestrator.Effects {

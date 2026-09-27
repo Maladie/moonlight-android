@@ -446,12 +446,10 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(menu.indexOf("R.string.overlay_menu_end_game")
                 < menu.indexOf("R.string.overlay_menu_quit_session"));
         assertTrue(menu.contains("confirmTerminateSession(host, item.stableId())"));
-        assertTrue(stop.contains("stopActiveProviderGame(host, item.stableId(), true, confirmedKey.profileId)"));
-        assertTrue(stop.contains("markExactPlayniteGameIdle(host.uuid, expectedAppId"));
+        assertTrue(stop.contains("stopActiveProviderGame(host, expectedGameId, true, confirmedKey.profileId)"));
         assertTrue(stop.contains("refreshSessionState(host.uuid)"));
         assertTrue(stop.contains("R.string.overlay_menu_end_game_failed"));
-        assertTrue(stop.indexOf("if (stopped && sameStopScope)")
-                < stop.indexOf("markExactPlayniteGameIdle("));
+        assertTrue(stop.contains("refreshSessionProjection(host"));
         assertFalse(stop.contains("quitSunshineIfRunning"));
         assertFalse(stop.contains("quitApp"));
         assertFalse(stop.contains("stopConnection"));
@@ -459,41 +457,21 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(resource("values-pl/strings.xml").contains("Inne gry i stream nie zostaną zamknięte"));
     }
 
-    @Test public void runningBadgeAndStopRequireFreshExactBridgeFact() {
-        long now = 10_000L;
-        assertTrue(ConsoleActivity.isFreshExactBridgeRunning(
-                "host", "HOST", 42, "game", "running", "GAME", 42,
-                9_000L, now, 5_000L));
-        for (String state : new String[] {"unknown", "stopping", "idle", "ambiguous"}) {
-            assertFalse(ConsoleActivity.isFreshExactBridgeRunning(
-                    "host", "host", 42, "game", state, "game", 42,
-                    9_000L, now, 5_000L));
-        }
-        assertFalse(ConsoleActivity.isFreshExactBridgeRunning(
-                "host", "host", 42, "game", "running", "other", 42,
-                9_000L, now, 5_000L));
-        assertFalse(ConsoleActivity.isFreshExactBridgeRunning(
-                "host", "host", 42, "game", "running", "game", 7,
-                9_000L, now, 5_000L));
-        assertFalse(ConsoleActivity.isFreshExactBridgeRunning(
-                "host", "other-host", 42, "game", "running", "game", 42,
-                9_000L, now, 5_000L));
-        assertFalse(ConsoleActivity.isFreshExactBridgeRunning(
-                "host", "host", 42, "game", "running", "game", 42,
-                1_000L, now, 5_000L));
+    @Test public void runningBadgeAndStopRequireCanonicalProcessEvidence() throws Exception {
+        String source = consoleActivitySource();
+        String badge = source.substring(source.indexOf(
+                        "private boolean isFreshExactRunningManagedGame("),
+                source.indexOf("private void bindPlayniteCard("));
+        assertTrue(badge.contains("\"VERIFIED\".equals(snapshot.processEvidence)"));
+        assertTrue(badge.contains("snapshot.processToken.isEmpty()"));
+        assertFalse(badge.contains("activePlayniteGame"));
     }
 
-    @Test public void stopResultCannotClearFailureNewerObservationOrForeignGame() {
-        assertTrue(ConsoleActivity.shouldApplyExactStopResult(
-                true, 42, "game", 100L, 42, "running", "game", 100L));
-        assertFalse(ConsoleActivity.shouldApplyExactStopResult(
-                false, 42, "game", 100L, 42, "running", "game", 100L));
-        assertFalse(ConsoleActivity.shouldApplyExactStopResult(
-                true, 42, "game", 100L, 42, "running", "game", 101L));
-        assertFalse(ConsoleActivity.shouldApplyExactStopResult(
-                true, 42, "game", 100L, 42, "running", "other", 100L));
-        assertFalse(ConsoleActivity.shouldApplyExactStopResult(
-                true, 42, "game", 100L, 7, "running", "game", 100L));
+    @Test public void stopResultDoesNotMutateAnAlternateActivitySnapshot() throws Exception {
+        String source = consoleActivitySource();
+        assertFalse(source.contains("markExactPlayniteGameIdle("));
+        assertFalse(source.contains("shouldApplyExactStopResult("));
+        assertTrue(source.contains("refreshSessionProjection(host"));
     }
 
     private static String consoleActivitySource() throws IOException {

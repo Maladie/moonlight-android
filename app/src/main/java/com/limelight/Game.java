@@ -3445,7 +3445,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return;
             }
             if (!exactGame.isEmpty()) {
-                if (current.processToken.isEmpty()) {
+                if (!current.hasVerifiedProcessFor(exactGame)) {
                     throw new IOException("retained_switch_process_unconfirmed");
                 }
                 gateway.stopGame(exactGame, current.processToken);
@@ -4299,7 +4299,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     String exactGame = PlayniteIdentityResolutionPolicy.verifiedStopTarget(
                             gameId, current.gameState, current.gameId);
                     if (exactGame == null || exactGame.isEmpty()
-                            || current.processToken.isEmpty()) {
+                            || !current.hasVerifiedProcessFor(exactGame)) {
                         throw new IOException("provider_process_not_exact");
                     }
                     gateway.stopGame(exactGame, current.processToken);
@@ -6543,7 +6543,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         expected.playniteGameId, current.gameState, current.gameId);
                 if (exactGame == null) throw new IOException("provider_game_not_exact");
                 if (!exactGame.isEmpty()) {
-                    if (current.processToken.isEmpty()) {
+                    if (!current.hasVerifiedProcessFor(exactGame)) {
                         throw new IOException("provider_process_not_exact");
                     }
                     gateway.stopGame(exactGame, current.processToken);

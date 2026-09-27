@@ -4340,6 +4340,25 @@ class ProviderDiagnosticsTest(unittest.TestCase):
                            encoding="utf-8").splitlines()]
             self.assertTrue(all("request_id" not in entry for entry in entries))
 
+    def test_observation_replaces_removed_health_endpoint(self):
+        state = BridgeState(profile_id="living-room")
+        handler = object.__new__(GameProviderHandler)
+        handler.server = SimpleNamespace(state=state)
+        handler.send_json = mock.Mock()
+        handler._begin_diagnostics = mock.Mock()
+        handler._finish_diagnostics = mock.Mock()
+
+        handler.path = "/health"
+        handler.do_GET()
+        self.assertEqual(HTTPStatus.NOT_FOUND, handler.send_json.call_args.args[0])
+
+        handler.path = "/observation"
+        handler.do_GET()
+        status, observation = handler.send_json.call_args.args
+        self.assertEqual(HTTPStatus.OK, status)
+        self.assertEqual(1, observation["schema_version"])
+        self.assertIn("connector_evidence", observation["provider"])
+
     def test_writer_rotates_and_fails_open(self):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

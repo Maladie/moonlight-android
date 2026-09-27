@@ -145,13 +145,16 @@ public class PlayIntentTest {
     }
 
     private static SessionSnapshot snapshot(String host, int appId, String gameId) {
-        return new SessionSnapshot(host, SessionSnapshot.State.ACTIVE, appId, gameId,
-                false, false, false, false, false);
+        return snapshot(host, "default", appId, gameId);
     }
 
     private static SessionSnapshot snapshot(String host, String profileId,
                                             int appId, String gameId) {
-        return new SessionSnapshot(host, profileId, SessionSnapshot.State.ACTIVE,
-                appId, gameId, false, false, false, false, false);
+        return new SessionSnapshot(host, profileId, profileId,
+                SessionSnapshot.State.ACTIVE, appId, gameId,
+                false, false, false, false, false, "", false,
+                SessionSnapshot.ObservationState.READY, true,
+                "test", 1L, 1L, 0L, 0L, 0L, "", "", "",
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test");
     }
 }

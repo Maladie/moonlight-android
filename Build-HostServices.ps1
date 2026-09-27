@@ -38,7 +38,8 @@ $payloadRoot = Join-Path $temporary "payload\host-services"
 $zipPath = Join-Path $temporary "host-services.zip"
 New-Item -ItemType Directory -Path $payloadRoot, $OutputDirectory -Force | Out-Null
 try {
-    foreach ($directory in @("bridges", "gateway", "install", "profile-agent", "windows-login")) {
+    foreach ($directory in @("bridges", "gateway", "install", "profile-agent", "updater",
+            "windows-login")) {
         Copy-Item -LiteralPath (Join-Path $hostServices $directory) `
             -Destination $payloadRoot -Recurse -Force
     }
@@ -87,6 +88,16 @@ try {
     }
     & (Join-Path $hostServices "control\Build-MoonWakerHostControl.ps1") `
         -OutputDirectory $controlTarget | Out-Host
+
+    foreach ($required in @(
+            "version.json", "bridges", "gateway", "profile-agent", "control", "tools",
+            "updater", "windows-login",
+            "profile-agent\Stop-MoonWakerProfileBridge.ps1",
+            "windows-login\credential-provider\Uninstall-MoonWakerCredentialProvider.ps1")) {
+        if (-not (Test-Path -LiteralPath (Join-Path $payloadRoot $required))) {
+            throw "Incomplete MoonWaker host payload. Missing: $required"
+        }
+    }
 
     Get-ChildItem -LiteralPath (Join-Path $temporary "payload") -Recurse -Force |
         Where-Object {

@@ -92,8 +92,9 @@ public class ConsoleChildProfileUiContractTest {
                 activity.indexOf("private void finishTerminateSession(", start));
         assertFalse(close.contains("endChildBinding"));
         assertFalse(close.contains("childProfile"));
-        assertTrue(activity.contains("boolean runningSession = isFreshExactRunningManagedGame(host, item)\n"
-                + "                || isFreshExactBridgeRunning(selectedHostUuid, host.uuid,"));
+        assertTrue(activity.contains(
+                "boolean runningSession = isFreshExactRunningManagedGame(host, item);"));
+        assertFalse(activity.contains("getPlayniteCurrentGame("));
     }
 
     @Test public void disallowedRunningGameTriggersAutomaticCommonFullCloseBeforeChildLaunch()

@@ -185,8 +185,8 @@ class ChildManagementGatewayTest(unittest.TestCase):
         def capture(operation, fields):
             captured.append((operation, fields))
             return {"fields": {
-                "3": json.dumps({"ok": True, "name": "Łucja Żółć"},
-                                 ensure_ascii=False)}}
+                3: json.dumps({"ok": True, "name": "Łucja Żółć"},
+                              ensure_ascii=False)}}
 
         with mock.patch.object(broker, "request", side_effect=capture):
             result = broker.child_profile_api({

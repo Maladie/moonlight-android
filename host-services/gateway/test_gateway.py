@@ -132,16 +132,16 @@ class GatewayStateTest(unittest.TestCase):
 
     def test_protected_routes_require_current_unlock_lease(self):
         state, _client = self.pin_state()
-        state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+        state.playnite_observation = mock.Mock(return_value=(200, {"ok": True}))
 
         handler, responses = self.request_handler(
-            state, "/api/v1/playnite/health", "pin-token", "protected")
+            state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
         handler.do_GET()
         self.assertEqual(403, responses[0][0])
-        state.playnite_health.assert_not_called()
+        state.playnite_observation.assert_not_called()
 
         handler, responses = self.request_handler(
-            state, "/api/v1/playnite/health", "pin-token", "open")
+            state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "open")
         handler.do_GET()
         self.assertEqual(200, responses[0][0])
 
@@ -153,13 +153,13 @@ class GatewayStateTest(unittest.TestCase):
             self.assertEqual(200, responses[0][0])
 
             handler, responses = self.request_handler(
-                state, "/api/v1/playnite/health", "pin-token", "protected")
+                state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
             handler.do_GET()
             self.assertEqual(200, responses[0][0])
 
         with mock.patch.object(wakeplay_gateway.time, "monotonic", return_value=401.0):
             handler, responses = self.request_handler(
-                state, "/api/v1/playnite/health", "pin-token", "protected")
+                state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
             handler.do_GET()
             self.assertEqual(403, responses[0][0])
 
@@ -222,7 +222,7 @@ class GatewayStateTest(unittest.TestCase):
 
     def test_handler_propagates_profile_session_to_protected_routes(self):
         state, _client = self.pin_state()
-        state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+        state.playnite_observation = mock.Mock(return_value=(200, {"ok": True}))
         session_a = "01234567-89ab-cdef-0123-456789abcdef"
         session_b = "fedcba98-7654-3210-fedc-ba9876543210"
         second_profile = dict(state.config["profiles"]["protected"])
@@ -246,26 +246,27 @@ class GatewayStateTest(unittest.TestCase):
             for session_id, expected_status in (
                     (session_a, 200), (session_b, 403), (None, 403)):
                 handler, responses = self.request_handler(
-                    state, "/api/v1/playnite/health", "pin-token", "protected")
+                    state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
                 if session_id is not None:
                     handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_id
                 handler.do_GET()
                 self.assertEqual(expected_status, responses[0][0])
 
             handler, responses = self.request_handler(
-                state, "/api/v1/playnite/health", "pin-token", "protected")
+                state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
             handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
             handler.do_GET()
             self.assertEqual(200, responses[0][0])
 
             handler, responses = self.request_handler(
-                state, "/api/v1/playnite/health", "other-token", "protected")
+                state, "/api/v1/session/observation?request_ordinal=1", "other-token", "protected")
             handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
             handler.do_GET()
             self.assertEqual(403, responses[0][0])
 
             handler, responses = self.request_handler(
-                state, "/api/v1/playnite/health", "pin-token", "protected-other")
+                state, "/api/v1/session/observation?request_ordinal=1",
+                "pin-token", "protected-other")
             handler.headers[wakeplay_gateway.PROFILE_SESSION_HEADER] = session_a
             handler.do_GET()
             self.assertEqual(403, responses[0][0])
@@ -1139,6 +1140,72 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual("basia", runtime["profile_id"])
         self.assertGreater(runtime["updated_at"], 0)
 
+    @staticmethod
+    def replace_rejected_by_reader():
+        # os.replace onto runtime-status.json while another process holds it open;
+        # the injected error does not identify that process.
+        return PermissionError(13, "Access is denied", "runtime-status.json.tmp", 5,
+                               "runtime-status.json")
+
+    def test_rejected_runtime_status_replace_does_not_deny_authorized_request(self):
+        state = GatewayState(self.config_path, None)
+        state.config["profiles"]["basia"] = {
+            "enabled": True,
+            "discord_bridge": "http://127.0.0.1:8865",
+            "vibepollo_bridge": "http://127.0.0.1:8875",
+            "playnite_bridge": "http://127.0.0.1:8880",
+        }
+        state.request_context.request_id = "request-7"
+        recorder = mock.Mock()
+        with mock.patch.object(wakeplay_gateway.os, "replace",
+                               side_effect=self.replace_rejected_by_reader()), \
+                mock.patch.object(wakeplay_gateway, "DIAGNOSTICS", recorder):
+            self.assertEqual("basia", state.select_profile("basia", record_use=True))
+        self.assertFalse(state.runtime_status_path.exists())
+        deferred = recorder.record.call_args
+        self.assertEqual("runtime-status-write-deferred", deferred.args[0])
+        self.assertEqual("request-7", deferred.kwargs["request_id"])
+        self.assertEqual(5, deferred.kwargs["error_code"])
+
+        self.assertEqual("basia", state.select_profile("basia", record_use=True))
+        runtime = json.loads(state.runtime_status_path.read_text(encoding="utf-8"))
+        self.assertEqual("basia", runtime["profile_id"])
+
+    def test_health_request_succeeds_when_runtime_status_replace_is_rejected(self):
+        state, _client = self.pin_state()
+        state.playnite_observation = mock.Mock(return_value=(200, {"ok": True}))
+        with mock.patch.object(wakeplay_gateway.os, "replace",
+                               side_effect=self.replace_rejected_by_reader()):
+            handler, responses = self.request_handler(
+                state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "open")
+            handler.do_GET()
+        self.assertEqual([(200, {"ok": True})], responses)
+
+    def test_os_permission_error_is_a_host_fault_not_an_authorization_denial(self):
+        state, _client = self.pin_state()
+        host_path = r"C:\Program Files\MoonWaker\gateway\gateway.json"
+        state.playnite_observation = mock.Mock(
+            side_effect=PermissionError(13, "Access is denied", host_path, 5))
+        handler, responses = self.request_handler(
+            state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "open")
+        handler.do_GET()
+        self.assertEqual(500, responses[0][0])
+        self.assertNotIn("Program Files", json.dumps(responses[0][1]))
+
+        state.verify_pin = mock.Mock(
+            side_effect=PermissionError(13, "Access is denied", host_path, 5))
+        handler, responses = self.request_handler(
+            state, "/api/v1/profiles/pin/verify", "pin-token", "protected")
+        handler.read_json = lambda: {"pin": "2468"}
+        handler.do_POST()
+        self.assertEqual(500, responses[0][0])
+        self.assertNotIn("Program Files", json.dumps(responses[0][1]))
+
+        handler, responses = self.request_handler(
+            state, "/api/v1/session/observation?request_ordinal=1", "pin-token", "protected")
+        handler.do_GET()
+        self.assertEqual(403, responses[0][0])
+
     def test_unknown_or_invalid_profile_is_rejected(self):
         state = GatewayState(self.config_path, None)
         with self.assertRaises(ValueError):
@@ -1188,14 +1255,14 @@ class GatewayStateTest(unittest.TestCase):
             "last_seen_at": int(time.time()),
             "profile_grants": {"default": ["use_profile"]},
         })
-        state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+        state.playnite_observation = mock.Mock(return_value=(200, {"ok": True}))
         handler, responses = self.request_handler(
-            state, "/api/v1/playnite/health", token, "basia")
+            state, "/api/v1/session/observation?request_ordinal=1", token, "basia")
 
         handler.do_GET()
 
         self.assertEqual(403, responses[0][0])
-        state.playnite_health.assert_not_called()
+        state.playnite_observation.assert_not_called()
 
     def test_authorized_profile_header_reaches_profile_route(self):
         state = GatewayState(self.config_path, None)
@@ -1209,15 +1276,15 @@ class GatewayStateTest(unittest.TestCase):
             "last_seen_at": int(time.time()),
             "profile_grants": {"basia": ["use_profile"]},
         })
-        state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+        state.playnite_observation = mock.Mock(return_value=(200, {"ok": True}))
         handler, responses = self.request_handler(
-            state, "/api/v1/playnite/health", token, "basia")
+            state, "/api/v1/session/observation?request_ordinal=1", token, "basia")
 
         handler.do_GET()
 
         self.assertEqual((200, {"ok": True}), responses[0])
         self.assertEqual("basia", state.last_runtime_profile)
-        state.playnite_health.assert_called_once_with()
+        state.playnite_observation.assert_called_once_with("1", "")
 
     def test_missing_or_non_boolean_profile_enablement_fails_closed(self):
         token = "malformed-profile-token"
@@ -1263,15 +1330,15 @@ class GatewayStateTest(unittest.TestCase):
         state.discord_status.assert_not_called()
         state.proxy.assert_not_called()
 
-        state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+        state.playnite_observation = mock.Mock(return_value=(200, {"ok": True}))
         for profile_id in malformed_profiles:
             handler, responses = self.request_handler(
-                state, "/api/v1/playnite/health", token, profile_id)
+                state, "/api/v1/session/observation?request_ordinal=1", token, profile_id)
             handler.do_GET()
             self.assertEqual(403, responses[0][0], profile_id)
             with self.assertRaises(PermissionError, msg=profile_id):
                 state.select_profile(profile_id)
-        state.playnite_health.assert_not_called()
+        state.playnite_observation.assert_not_called()
 
     def test_host_wide_sleep_does_not_select_arbitrary_profile(self):
         state = GatewayState(self.config_path, None)
@@ -1330,8 +1397,16 @@ class GatewayStateTest(unittest.TestCase):
             "authenticated": state.profile_id == "basia",
             "error": "",
         }
-        state.proxy = lambda name, path, timeout=2.5: (
-            True, {"installed": state.profile_id == "basia"})
+        calls = []
+
+        def proxy(name, path, timeout=2.5, profile_id=None):
+            del timeout
+            calls.append((name, path, profile_id))
+            if name == "game_provider" and path == "/observation":
+                return True, {"provider": {"connector_evidence": "VERIFIED"}}
+            return True, {"installed": (profile_id or state.profile_id) == "basia"}
+
+        state.proxy = proxy
 
         summary = state.profiles_summary({
             "profile_grants": {
@@ -1348,6 +1423,8 @@ class GatewayStateTest(unittest.TestCase):
         self.assertTrue(basia["virtualhere_available"])
         self.assertNotIn("discord_bridge", basia)
         self.assertNotIn("vibepollo_bridge", basia)
+        self.assertFalse(any(name == "game_provider" and path == "/health"
+                             for name, path, _profile_id in calls))
 
     def test_idempotent_action_runs_once(self):
         state = GatewayState(self.config_path, None)
@@ -1448,11 +1525,20 @@ class GatewayStateTest(unittest.TestCase):
 
     def test_capabilities_advertise_vibepollo_app_management(self):
         state = GatewayState(self.config_path, None)
-        state.proxy = lambda name, path, timeout=2.5: (True, {"ok": True})
+        calls = []
+
+        def proxy(name, path, timeout=2.5, profile_id=None):
+            calls.append((name, path, profile_id))
+            return True, {"provider": {"connector_evidence": "VERIFIED"}}
+
+        state.proxy = proxy
 
         capabilities = state.capabilities()["capabilities"]
 
         self.assertTrue(capabilities["vibepollo_apps"]["available"])
+        self.assertIn(("game_provider", "/observation", "default"), calls)
+        self.assertFalse(any(name == "game_provider" and path == "/health"
+                             for name, path, _profile_id in calls))
 
     def test_discord_status_normalizes_bridge_health(self):
         state = GatewayState(self.config_path, None)
@@ -2454,12 +2540,12 @@ class LoginBrokerGatewayTest(unittest.TestCase):
         self.assertNotIn("kid", [profile["id"] for profile in
                                   self.state.profiles_summary(self.client)["profiles"]])
 
-        self.state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+        self.state.playnite_observation = mock.Mock(return_value=(200, {"ok": True}))
         handler, responses = GatewayStateTest.request_handler(
-            self.state, "/api/v1/playnite/health", "token", "kid")
+            self.state, "/api/v1/session/observation?request_ordinal=1", "token", "kid")
         handler.do_GET()
         self.assertEqual(403, responses[0][0])
-        self.state.playnite_health.assert_not_called()
+        self.state.playnite_observation.assert_not_called()
         for path in ("/api/v1/system/session/ensure",
                      "/api/v1/system/session/switch",
                      "/api/v1/system/session/cancel"):
@@ -2844,10 +2930,21 @@ class ChildTimeHousekeepingTest(unittest.TestCase):
 
         def proxy(name, path, timeout=2.5, profile_id=None):
             del timeout, profile_id
-            if name == "game_provider" and path == "/game/current":
-                return True, {**self.current,
-                              "running_games": [dict(item) for item in
-                                                 self.current["running_games"]]}
+            if name == "game_provider" and path == "/observation":
+                game_id = str(self.current.get("id") or "")
+                state = str(self.current.get("state") or "unknown")
+                running = [dict(item) for item in self.current["running_games"]]
+                scan_status = str(self.current.get(
+                    "running_scan_status", "complete"))
+                game_evidence = "VERIFIED" if game_id else (
+                    "ABSENT" if state == "idle" else "PENDING")
+                return True, {
+                    "game": {"state": state, "id": game_id,
+                             "evidence": game_evidence},
+                    "process": {"evidence": "VERIFIED" if running else "ABSENT",
+                                "running_games": running,
+                                "running_scan_status": scan_status},
+                }
             if name == "vibepollo" and path == "/snapshot?force=1":
                 return True, {**control_evidence(int(self.streamer_active),
                                                  self.streamer_active), "clients": [{

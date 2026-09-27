@@ -129,6 +129,7 @@ public final class RetainedStreamSessionCoordinator {
         public final String transitionId;
         public final long attempt;
         public final long controlGeneration;
+        public final long transportGeneration;
 
         private Snapshot(State state, String streamSessionId, String hostId, String profileId,
                          int appId,
@@ -143,6 +144,7 @@ public final class RetainedStreamSessionCoordinator {
             this.transitionId = transitionId;
             this.attempt = attempt;
             this.controlGeneration = RetainedStreamSessionCoordinator.controlGeneration;
+            this.transportGeneration = RetainedStreamSessionCoordinator.transportGeneration;
         }
     }
 
@@ -200,6 +202,8 @@ public final class RetainedStreamSessionCoordinator {
     private static String transitionId = "";
     private static long attempt;
     private static long controlGeneration;
+    private static long transportGeneration;
+    private static long nextTransportGeneration;
     private static boolean preparingHomeFrameClaimed;
     private static String acceptedHomeTransitionId = "";
     private static long acceptedHomeAttempt;
@@ -247,6 +251,7 @@ public final class RetainedStreamSessionCoordinator {
         if (state == State.PREPARING) return;
         String sessionId = normalize(retainedStreamSessionId);
         if (sessionId.isEmpty()) throw new IllegalArgumentException("Stream session ID is required");
+        establishTransportGenerationLocked(owner, sessionId);
         if (!sessionId.equals(streamSessionId)) controlGeneration = 0L;
         if (!sessionId.equals(streamSessionId) || controller.get() != owner) {
             switchOwner = null;
@@ -299,6 +304,7 @@ public final class RetainedStreamSessionCoordinator {
                 && appId == preparingAppId
                 && playniteGameId.equalsIgnoreCase(normalize(preparingPlayniteGameId));
         if (state != State.NONE && !exactReconnect) return false;
+        if (!exactReconnect) establishTransportGenerationLocked(owner, sessionId);
         if (!sessionId.equals(streamSessionId)) controlGeneration = 0L;
         controller = new WeakReference<>(owner);
         streamSessionId = sessionId;
@@ -647,6 +653,25 @@ public final class RetainedStreamSessionCoordinator {
         return new DirectTermination(terminationOperation);
     }
 
+    /** Begins recovery only if every captured local ownership fence is still current. */
+    public static synchronized DirectTermination beginDirectTermination(Snapshot expected) {
+        if (expected == null || state != expected.state
+                || (state != State.HOME_LIVE && state != State.PARKED_LIVE
+                && state != State.RECONNECT_REQUIRED)
+                || !streamSessionId.equals(expected.streamSessionId)
+                || !hostId.equalsIgnoreCase(expected.hostId)
+                || !profileId.equals(expected.profileId)
+                || !executionProfileId.equals(expected.executionProfileId)
+                || appId != expected.appId
+                || !playniteGameId.equalsIgnoreCase(expected.playniteGameId)
+                || !transitionId.equals(expected.transitionId)
+                || attempt != expected.attempt
+                || controlGeneration != expected.controlGeneration
+                || transportGeneration != expected.transportGeneration) return null;
+        return beginDirectTermination(expected.streamSessionId, expected.hostId,
+                expected.appId, expected.playniteGameId);
+    }
+
     public static synchronized DirectTermination beginDirectTermination(
             Controller expectedOwner, String expectedStreamSessionId,
             String terminatingHostId, int terminatingAppId, String terminatingGameId) {
@@ -987,6 +1012,7 @@ public final class RetainedStreamSessionCoordinator {
                 return false;
             }
             controller = new WeakReference<>(expectedOwner);
+            establishTransportGenerationLocked(expectedOwner, sessionId);
             streamSessionId = sessionId;
             hostId = expectedHost;
             executionProfileId = origin(expectedOwner, profileId);
@@ -1214,6 +1240,7 @@ public final class RetainedStreamSessionCoordinator {
         transitionId = "";
         attempt = 0L;
         controlGeneration = 0L;
+        transportGeneration = 0L;
         preparingHomeFrameClaimed = false;
         acceptedHomeTransitionId = "";
         acceptedHomeAttempt = 0L;
@@ -1226,6 +1253,14 @@ public final class RetainedStreamSessionCoordinator {
     private static boolean matches(String expectedStreamSessionId) {
         String expected = normalize(expectedStreamSessionId);
         return !expected.isEmpty() && expected.equals(streamSessionId);
+    }
+
+    private static void establishTransportGenerationLocked(Controller owner,
+                                                            String sessionId) {
+        if (transportGeneration > 0L && streamSessionId.equals(sessionId)
+                && controller.get() == owner) return;
+        if (nextTransportGeneration == Long.MAX_VALUE) nextTransportGeneration = 0L;
+        transportGeneration = ++nextTransportGeneration;
     }
 
     private static Controller liveControllerLocked() {

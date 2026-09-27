@@ -98,13 +98,9 @@ the header retain the fixed five-minute lease for compatibility.
 - `GET /api/v1/virtualhere/state` - VirtualHere state and shared devices.
 - `POST /api/v1/virtualhere/{use|stop|auto|restart}` - VirtualHere action.
 - `POST /api/v1/system/sleep` - schedule Windows sleep after the authenticated response is sent.
-- `GET /api/v1/playnite/health` - compatibility path for the selected profile's Game Provider Bridge state.
+- `GET /api/v1/session/observation` - the selected profile's versioned, correlated game/session observation.
 - `GET /api/v1/library?cursor=...&limit=...` - paged provider-neutral library and library descriptors.
 - `POST /api/v1/game/{start|install|uninstall|stop}` - dispatch to the record's authoritative provider.
-- `GET /api/v1/playnite/library/list?cursor=...&limit=...` - compatibility alias for `/api/v1/library`.
-- `GET /api/v1/playnite/game/current` - current Playnite game lifecycle state.
-- `GET /api/v1/playnite/window/readiness` - streamed-window readiness sample.
-- `POST /api/v1/playnite/game/{start|install|uninstall|stop}` - one-cycle compatibility aliases for provider-neutral game actions.
 - `POST /api/v1/playnite/show-fullscreen` - restore Playnite Fullscreen.
 
 Game-provider readiness is a privacy boundary. The TV must keep its opaque loading

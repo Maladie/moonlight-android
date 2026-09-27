@@ -328,13 +328,7 @@ class LoginBrokerClient:
             1: json.dumps(payload, ensure_ascii=False, separators=(",", ":")),
         })
         fields = result.get("fields") if isinstance(result, dict) else None
-        # ``decode_response`` keeps Broker field IDs numeric.  Accept the
-        # string form as well for test seams and older in-process callers.
-        raw = None
-        if isinstance(fields, dict):
-            raw = fields.get(3)
-            if raw is None:
-                raw = fields.get("3")
+        raw = fields.get(3) if isinstance(fields, dict) else None
         if raw:
             try:
                 response = json.loads(raw)
@@ -1993,11 +1987,21 @@ class GatewayState:
             if profile_id == self.last_runtime_profile and now - self.last_runtime_write < 5.0:
                 return
             temporary = self.runtime_status_path.with_suffix(".json.tmp")
-            temporary.write_text(json.dumps({
-                "profile_id": profile_id,
-                "updated_at": int(time.time()),
-            }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-            os.replace(temporary, self.runtime_status_path)
+            try:
+                temporary.write_text(json.dumps({
+                    "profile_id": profile_id,
+                    "updated_at": int(time.time()),
+                }, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+                os.replace(temporary, self.runtime_status_path)
+            except OSError as error:
+                # Windows rejects replacing a file another process holds open. This
+                # display hint must not fail an authorized request; the next one retries.
+                DIAGNOSTICS.record("runtime-status-write-deferred", level="WARN", error=error,
+                                   request_id=getattr(self.request_context, "request_id", None),
+                                   profile_id=profile_id,
+                                   error_code=int(getattr(error, "winerror", 0) or
+                                                  getattr(error, "errno", 0) or 0))
+                return
             self.last_runtime_profile = profile_id
             self.last_runtime_write = now
 
@@ -2133,7 +2137,9 @@ class GatewayState:
             }
         vibepollo_ok, vibepollo = self.proxy("vibepollo", "/health", timeout=1.0)
         discord_ok, discord = self.proxy("discord", "/health", timeout=1.0)
-        playnite_ok, playnite = self.proxy("game_provider", "/health", timeout=1.0)
+        playnite_ok, playnite = self.proxy(
+            "game_provider", "/observation", timeout=1.0,
+            profile_id=self.execution_profile_id)
         microphone = self.microphone_status()
         discord_audio = self.discord_audio_status()
         virtualhere_ok, virtualhere = (False, {"error": "Discord Bridge is offline."})
@@ -2152,8 +2158,8 @@ class GatewayState:
                 "vibepollo_fix": {"available": vibepollo_ok, "health": vibepollo},
                 "vibepollo_apps": {"available": vibepollo_ok, "health": vibepollo},
                 "vibepollo_pairing": {"available": vibepollo_ok, "health": vibepollo},
-                "game_provider": {"available": playnite_ok, "health": playnite},
-                "playnite": {"available": playnite_ok, "health": playnite},
+                "game_provider": {"available": playnite_ok, "observation": playnite},
+                "playnite": {"available": playnite_ok, "observation": playnite},
                 "discord": {"available": discord_ok, "health": discord},
                 "virtualhere": {
                     "available": virtualhere_ok and bool(virtualhere.get("installed", False)),
@@ -2944,10 +2950,13 @@ class GatewayState:
                 display_name = re.sub(r"[\x00-\x1f\x7f]", " ", display_name).strip()
                 discord = self.discord_status()
                 vibepollo_online, _ = self.proxy("vibepollo", "/health", timeout=1.0)
-                playnite_online, playnite_health = self.proxy(
-                    "game_provider", "/health", timeout=1.0)
-                playnite_connector = playnite_online and bool(
-                    playnite_health.get("connector_connected", False))
+                playnite_online, playnite_observation = self.proxy(
+                    "game_provider", "/observation", timeout=1.0,
+                    profile_id=str(profile_id))
+                provider = playnite_observation.get("provider") \
+                    if isinstance(playnite_observation, dict) else None
+                playnite_connector = playnite_online and isinstance(provider, dict) \
+                    and provider.get("connector_evidence") == "VERIFIED"
                 virtualhere_online = False
                 if discord["bridge_online"]:
                     virtualhere_ok, virtualhere = self.proxy(
@@ -3076,26 +3085,18 @@ class GatewayState:
         playnite_connector = False
         virtualhere_online = False
         if parent_available:
-            try:
-                vibepollo_online, _ = self.proxy(
-                    "vibepollo", "/health", timeout=1.0, profile_id=parent_id)
-                playnite_online, playnite_health = self.proxy(
-                    "game_provider", "/health", timeout=1.0,
-                    profile_id=parent_id)
-                virtualhere_ok, virtualhere = self.proxy(
-                    "discord", "/virtualhere-state", timeout=1.5,
-                    profile_id=parent_id)
-            except TypeError:
-                # Keep small test doubles and older in-process callers working.
-                vibepollo_online, _ = self.proxy(
-                    "vibepollo", "/health", timeout=1.0)
-                playnite_online, playnite_health = self.proxy(
-                    "game_provider", "/health", timeout=1.0)
-                virtualhere_ok, virtualhere = self.proxy(
-                    "discord", "/virtualhere-state", timeout=1.5)
-            playnite_connector = playnite_online and isinstance(
-                playnite_health, dict) and bool(
-                    playnite_health.get("connector_connected", False))
+            vibepollo_online, _ = self.proxy(
+                "vibepollo", "/health", timeout=1.0, profile_id=parent_id)
+            playnite_online, playnite_observation = self.proxy(
+                "game_provider", "/observation", timeout=1.0,
+                profile_id=parent_id)
+            virtualhere_ok, virtualhere = self.proxy(
+                "discord", "/virtualhere-state", timeout=1.5,
+                profile_id=parent_id)
+            provider = playnite_observation.get("provider") \
+                if isinstance(playnite_observation, dict) else None
+            playnite_connector = playnite_online and isinstance(provider, dict) \
+                and provider.get("connector_evidence") == "VERIFIED"
             virtualhere_online = virtualhere_ok and isinstance(
                 virtualhere, dict) and bool(virtualhere.get("installed", False))
         reason = str(policy.get("reason") or "none")
@@ -4001,21 +4002,29 @@ class GatewayState:
             return str(value or "").strip().casefold()
 
     def _child_time_current_game(self, parent_profile_id: str) -> dict[str, Any]:
-        ok, result = self.proxy("game_provider", "/game/current", timeout=3.0,
+        ok, result = self.proxy("game_provider", "/observation", timeout=3.0,
                                 profile_id=parent_profile_id)
         if not ok or not isinstance(result, dict):
             return {"kind": "unavailable", "snapshot": result if isinstance(result, dict) else {}}
-        current_id = self._state_game_id(result)
-        running = result.get("running_games")
-        running = [item for item in running if isinstance(item, dict)] \
-            if isinstance(running, list) else []
+        game = result.get("game")
+        process = result.get("process")
+        if not isinstance(game, dict) or not isinstance(process, dict):
+            return {"kind": "unavailable", "snapshot": result}
+        current_id = self._state_game_id(game)
+        running = process.get("running_games")
+        if not isinstance(running, list) or any(
+                not isinstance(item, dict) for item in running):
+            return {"kind": "unavailable", "snapshot": result}
         identities = []
         for item in running:
-            game_id = str(item.get("game_id") or item.get("gameId") or "").strip()
+            game_id = str(item.get("game_id") or "").strip()
             if game_id:
                 identities.append({**item, "game_id": game_id})
-        current_state = str(result.get("state") or "").casefold()
-        if current_id or identities or current_state in {"running", "starting", "stopping"}:
+        current_state = str(game.get("state") or "").casefold()
+        game_evidence = str(game.get("evidence") or "").upper()
+        process_evidence = str(process.get("evidence") or "").upper()
+        running_scan_status = str(process.get("running_scan_status") or "")
+        if (game_evidence == "VERIFIED" and current_id) or identities:
             current_normalized = self._child_time_normalize_game_id(current_id)
             identity = next((item for item in identities if current_normalized and
                              self._child_time_normalize_game_id(
@@ -4030,13 +4039,15 @@ class GatewayState:
                 identity = {"game_id": current_id}
             return {"kind": "active", "game_id": current_id,
                     "identity": identity, "running_games": identities,
-                    "running_scan_status": str(
-                        result.get("running_scan_status") or "unavailable"),
+                    "running_scan_status": running_scan_status,
                     "snapshot": result}
-        return {"kind": "idle", "game_id": "", "identity": None,
-                "running_games": [], "running_scan_status": str(
-                    result.get("running_scan_status") or "unavailable"),
-                "snapshot": result}
+        if game_evidence == "ABSENT" and process_evidence == "ABSENT" \
+                and current_state == "idle" and not current_id \
+                and running_scan_status == "complete":
+            return {"kind": "idle", "game_id": "", "identity": None,
+                    "running_games": [], "running_scan_status": running_scan_status,
+                    "snapshot": result}
+        return {"kind": "unavailable", "snapshot": result}
 
     @staticmethod
     def _child_time_session_matches(session: dict[str, Any], actor_id: str,
@@ -4934,10 +4945,16 @@ class GatewayState:
                                       profile_id=stream["execution_profile_id"])
             if not ok or not ControlOperationPolicy.streamer_idle(snapshot):
                 return False
-            ok, provider = self.proxy("game_provider", "/game/current", timeout=3.0,
+            ok, provider = self.proxy("game_provider", "/observation", timeout=3.0,
                                       profile_id=stream["execution_profile_id"])
-            if not ok or not isinstance(provider, dict) or provider.get("state") != "idle" \
-                    or provider.get("id") or provider.get("running_games"):
+            game = provider.get("game") if isinstance(provider, dict) else None
+            process = provider.get("process") if isinstance(provider, dict) else None
+            if not ok or not isinstance(game, dict) or not isinstance(process, dict) \
+                    or game.get("state") != "idle" or game.get("evidence") != "ABSENT" \
+                    or game.get("id") or process.get("evidence") != "ABSENT" \
+                    or process.get("running_scan_status") != "complete" \
+                    or not isinstance(process.get("running_games"), list) \
+                    or process.get("running_games"):
                 return False
         except OSError:
             return False
@@ -6501,27 +6518,6 @@ class GatewayState:
                     return value.strip(), True
         return "", kind in CHILD_GAME_EVENT_KINDS
 
-    def child_playnite_state(self, client: dict[str, Any], actor_profile_id: str,
-                             resource: str) -> tuple[int, Any]:
-        _actor_id, parent_id, _parent, _actor = self._child_policy_context(
-            client, actor_profile_id)
-        paths = {"current": "/game/current", "readiness": "/window/readiness"}
-        if resource not in paths:
-            return HTTPStatus.NOT_FOUND, {"error": "Unknown Playnite resource."}
-        ok, result = self.proxy("game_provider", paths[resource], timeout=3.0,
-                                profile_id=parent_id)
-        if not ok:
-            return HTTPStatus.BAD_GATEWAY, {
-                "ok": False, resource: {},
-                "error": "Unable to read child game provider state.",
-            }
-        # State and readiness feed the common parent lifecycle. The child library
-        # remains filtered and launch/resume still enforce the target grant, but
-        # hiding a running disallowed game as idle prevents the required common
-        # full-close-before-launch recovery path.
-        return HTTPStatus.OK, {"ok": True, resource: result if isinstance(result, dict) else {},
-                               "error": ""}
-
     def child_playnite_events(self, client: dict[str, Any], actor_profile_id: str,
                               after: Any, transition_id: Any = "") -> tuple[int, Any]:
         _actor_id, parent_id, _parent, _actor = self._child_policy_context(
@@ -6678,14 +6674,63 @@ class GatewayState:
             "error": "" if ok else "Child game start failed.",
         }
 
-    def playnite_health(self) -> tuple[int, Any]:
-        ok, result = self.proxy("game_provider", "/health", timeout=1.5)
-        return (HTTPStatus.OK if ok else HTTPStatus.SERVICE_UNAVAILABLE), {
-            "ok": ok,
-            "bridge": result if ok and isinstance(result, dict) else {},
-            "error": "" if ok else self.upstream_error(
-                result, "Game Provider Bridge is offline in this profile."),
+    def _observation_control_locked(self) -> dict[str, Any]:
+        active = self.control_state.get("active")
+        stream = self.control_state.get("stream")
+        record = active if isinstance(active, dict) else (
+            stream if isinstance(stream, dict) else {})
+        return {
+            "operation_id": str(record.get("operation_id") or ""),
+            "stream_session_id": str(record.get("stream_session_id") or ""),
+            "control_generation": int(record.get("generation") or
+                                      self.control_state.get("generation") or 0),
+            "actor_lease_epoch": int(record.get("actor_lease_epoch") or
+                                     self.control_state.get("actor_lease_epoch") or 0),
         }
+
+    def playnite_observation(self, request_ordinal: Any,
+                             transition_id: Any) -> tuple[int, Any]:
+        if isinstance(request_ordinal, bool):
+            raise ValueError("A positive request ordinal is required.")
+        ordinal = int(request_ordinal or 0)
+        if ordinal <= 0 or ordinal > 9_223_372_036_854_775_807:
+            raise ValueError("A positive request ordinal is required.")
+        transition = str(transition_id or "").strip()
+        if len(transition) > 128 or not re.fullmatch(
+                r"[A-Za-z0-9._:-]*", transition):
+            raise ValueError("Invalid transition ID.")
+        actor_id, execution_id = self.actor_profile_id, self.execution_profile_id
+        with self.lock:
+            before = self._observation_control_locked()
+        ok, provider = self.proxy("game_provider", "/observation", timeout=3.0,
+                                  profile_id=execution_id)
+        with self.lock:
+            after = self._observation_control_locked()
+        correlation = {**after, "caller_transition_id": transition,
+                       "request_ordinal": ordinal}
+        scope = {"actor_profile_id": actor_id,
+                 "execution_profile_id": execution_id}
+        if not ok or not isinstance(provider, dict):
+            return HTTPStatus.SERVICE_UNAVAILABLE, {
+                "ok": False, "scope": scope, "correlation": correlation,
+                "reason": "provider_observation_unavailable"}
+        if before != after:
+            return HTTPStatus.OK, {
+                **provider, "ok": False, "scope": scope,
+                "correlation": correlation,
+                "provider": {"state": "unknown",
+                             "connector_evidence": "UNAVAILABLE",
+                             "reason": "control_correlation_changed"},
+                "game": {"evidence": "UNAVAILABLE", "id": "",
+                         "state": "unknown"},
+                "process": {"evidence": "UNAVAILABLE", "process_id": 0,
+                            "process_token": ""},
+                "window": {"evidence": "UNAVAILABLE", "ready": False,
+                           "target_kind": "playnite", "stable_samples": 0,
+                           "reason": "control_correlation_changed"},
+                "reason": "control_correlation_changed"}
+        return HTTPStatus.OK, {**provider, "ok": True, "scope": scope,
+                              "correlation": correlation}
 
     def playnite_library(self, cursor: Any, limit: Any,
                          client: dict[str, Any] | None = None,
@@ -6739,26 +6784,6 @@ class GatewayState:
             "kind": normalized_kind,
         })
         return self.proxy_bytes("game_provider", path, timeout=8.0)
-
-    def playnite_state(self, resource: str,
-                       client: dict[str, Any] | None = None,
-                       actor_profile_id: str | None = None) -> tuple[int, Any]:
-        if client is not None and self.is_child_profile(actor_profile_id or self.actor_profile_id):
-            return self.child_playnite_state(
-                client, str(actor_profile_id or self.actor_profile_id), resource)
-        paths = {
-            "current": "/game/current",
-            "readiness": "/window/readiness",
-        }
-        if resource not in paths:
-            return HTTPStatus.NOT_FOUND, {"error": "Unknown Playnite resource."}
-        ok, result = self.proxy("game_provider", paths[resource], timeout=3.0)
-        return (HTTPStatus.OK if ok else HTTPStatus.BAD_GATEWAY), {
-            "ok": ok,
-            resource: result if ok and isinstance(result, dict) else {},
-            "error": "" if ok else self.upstream_error(
-                result, "Unable to read game provider state."),
-        }
 
     def playnite_events(self, after: Any, transition_id: Any = "",
                         client: dict[str, Any] | None = None,
@@ -6911,6 +6936,17 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
+
+    def send_permission_error(self, error: PermissionError) -> None:
+        self._diagnostic_error = error
+        if error.errno is None:
+            self.send_json(HTTPStatus.FORBIDDEN, {"error": str(error)})
+            return
+        # An OS access failure is a host fault, not an authorization denial, and
+        # its message carries host paths that must not reach LAN clients.
+        self._diagnostic_unexpected = True
+        self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR,
+                       {"error": "Host storage is unavailable."})
 
     def send_session_json(self, status: int, value: dict[str, Any]) -> None:
         if int(status) >= 400 and "error" not in value:
@@ -7399,8 +7435,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
             self._diagnostic_error = error
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
         except PermissionError as error:
-            self._diagnostic_error = error
-            self.send_json(HTTPStatus.FORBIDDEN, {"error": str(error)})
+            self.send_permission_error(error)
         except Exception as error:
             self._diagnostic_error = error
             self._diagnostic_unexpected = True
@@ -7494,12 +7529,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 f"{API_PREFIX}/playnite/library/list": "library",
                 f"{API_PREFIX}/artwork": "artwork",
                 f"{API_PREFIX}/playnite/artwork": "artwork",
-                f"{API_PREFIX}/game/current": "current",
-                f"{API_PREFIX}/playnite/game/current": "current",
-                f"{API_PREFIX}/window/readiness": "readiness",
-                f"{API_PREFIX}/playnite/window/readiness": "readiness",
                 f"{API_PREFIX}/game/events": "events",
                 f"{API_PREFIX}/playnite/events": "events",
+                f"{API_PREFIX}/session/observation": "observation",
             }
             resource = child_reads.get(path)
             if resource == "library":
@@ -7519,11 +7551,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 else:
                     self.send_json(status, {"error": "Game artwork is unavailable."})
                 return
-            if resource in {"current", "readiness"}:
-                status, result = self.state.playnite_state(
-                    resource, authenticated_client, actor_id)
-                self.send_json(status, result)
-                return
             if resource == "events":
                 status, result = self.state.playnite_events(
                     query.get("after", ["0"])[0],
@@ -7531,14 +7558,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     authenticated_client, actor_id)
                 self.send_json(status, result)
                 return
+            if resource == "observation":
+                status, result = self.state.playnite_observation(
+                    query.get("request_ordinal", ["0"])[0],
+                    query.get("transition_id", [""])[0])
+                self.send_json(status, result)
+                return
             if path == f"{API_PREFIX}/virtualhere/state":
                 status, result = self.state.virtualhere_state(
                     query.get("force", [""])[0].lower() == "true")
                 self.send_json(status, result)
                 return
-            self.send_json(HTTPStatus.FORBIDDEN, {
-                "ok": False, "error": "child_action_not_allowed",
-                "reason": "child_action_not_allowed"})
+            self.send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found."})
             return
         self.authorize_profile(authenticated_client)
         if path == f"{API_PREFIX}/capabilities":
@@ -7571,9 +7602,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
             status, result = self.state.virtualhere_state(
                 query.get("force", [""])[0].lower() == "true")
             self.send_json(status, result)
-        elif path in {f"{API_PREFIX}/game-provider/health",
-                      f"{API_PREFIX}/playnite/health"}:
-            status, result = self.state.playnite_health()
+        elif path == f"{API_PREFIX}/session/observation":
+            status, result = self.state.playnite_observation(
+                query.get("request_ordinal", ["0"])[0],
+                query.get("transition_id", [""])[0])
             self.send_json(status, result)
         elif path in {f"{API_PREFIX}/library",
                       f"{API_PREFIX}/playnite/library/list"}:
@@ -7588,14 +7620,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self.send_binary(status, body, content_type)
             else:
                 self.send_json(status, {"error": "Game artwork is unavailable."})
-        elif path in {f"{API_PREFIX}/game/current",
-                      f"{API_PREFIX}/playnite/game/current"}:
-            status, result = self.state.playnite_state("current")
-            self.send_json(status, result)
-        elif path in {f"{API_PREFIX}/window/readiness",
-                      f"{API_PREFIX}/playnite/window/readiness"}:
-            status, result = self.state.playnite_state("readiness")
-            self.send_json(status, result)
         elif path in {f"{API_PREFIX}/game/events",
                       f"{API_PREFIX}/playnite/events"}:
             status, result = self.state.playnite_events(
@@ -8189,8 +8213,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 return
             self.send_json(HTTPStatus.NOT_FOUND, {"error": "Endpoint not found."})
         except PermissionError as error:
-            self._diagnostic_error = error
-            self.send_json(HTTPStatus.FORBIDDEN, {"error": str(error)})
+            self.send_permission_error(error)
         except (ValueError, json.JSONDecodeError) as error:
             self._diagnostic_error = error
             self.send_json(HTTPStatus.BAD_REQUEST, {"error": str(error)})

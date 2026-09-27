@@ -82,6 +82,22 @@ public class RetainedStreamSessionCoordinatorTest {
         }
     }
 
+    @Test public void transportGenerationIsMonotonicAndIndependentOfRemoteControl() {
+        FakeController owner = new FakeController();
+        RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A, "host", 7, "game-a");
+        long first = RetainedStreamSessionCoordinator.snapshot().transportGeneration;
+        assertTrue(first > 0L);
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(owner, SESSION_A, 77L));
+        assertEquals(first, RetainedStreamSessionCoordinator.snapshot().transportGeneration);
+        assertEquals(77L, RetainedStreamSessionCoordinator.snapshot().controlGeneration);
+        RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A, "host", 7, "game-a");
+        assertEquals(first, RetainedStreamSessionCoordinator.snapshot().transportGeneration);
+        RetainedStreamSessionCoordinator.clear();
+        RetainedStreamSessionCoordinator.enterHome(owner, "session-b", "host", 7, "game-b");
+        assertTrue(RetainedStreamSessionCoordinator.snapshot().transportGeneration > first);
+        assertEquals(0L, RetainedStreamSessionCoordinator.snapshot().controlGeneration);
+    }
+
     @Test public void reauthorizationCommitsConnectionActorAndGenerationAtomically() {
         FakeController owner = new FakeController(); owner.origin = "parent";
         RetainedStreamSessionCoordinator.enterHome(owner, SESSION_A, "host", "child", 7, "");

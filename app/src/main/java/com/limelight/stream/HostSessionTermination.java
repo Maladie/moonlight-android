@@ -68,7 +68,9 @@ public final class HostSessionTermination {
                                 expectedGame, current.gameState, current.gameId);
                 if (exact == null) throw new IllegalStateException("provider_game_mismatch");
                 if (!exact.isEmpty()) {
-                    if (permit.processToken.isEmpty()
+                    if (!current.hasVerifiedProcessFor(exact)
+                            || permit.processToken.isEmpty()
+                            || !permit.processToken.equals(current.processToken)
                             || !exact.equalsIgnoreCase(permit.providerGameId)) {
                         throw new IllegalStateException("provider_process_mismatch");
                     }

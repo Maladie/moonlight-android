@@ -77,11 +77,26 @@ class ChildTimeControlTest(unittest.TestCase):
         def proxy(name, path, timeout=2.5, profile_id=None):
             del timeout
             self.proxy_calls.append((name, path, profile_id))
-            if name == "game_provider" and path == "/game/current":
+            if name == "game_provider" and path == "/observation":
+                game_id = str(self.current.get("id") or "")
+                state = str(self.current.get("state") or "unknown")
+                running = [dict(item) for item in
+                           self.current.get("running_games", [])]
+                scan_status = str(self.current.get(
+                    "running_scan_status", "complete"))
+                game_evidence = "VERIFIED" if game_id else (
+                    "ABSENT" if state == "idle" else "PENDING")
+                process_evidence = "VERIFIED" if running else (
+                    "ABSENT" if game_evidence == "ABSENT" and
+                    scan_status == "complete" else "PENDING")
                 return True, {
-                    **self.current,
-                    "running_games": [dict(item) for item in
-                                      self.current.get("running_games", [])],
+                    "game": {"state": state, "id": game_id,
+                             "evidence": game_evidence},
+                    "process": {
+                        "evidence": process_evidence,
+                        "running_games": running,
+                        "running_scan_status": scan_status,
+                    },
                 }
             if name == "vibepollo" and path == "/snapshot?force=1":
                 return True, {**control_evidence(int(self.streamer_active), self.streamer_active),
@@ -127,6 +142,31 @@ class ChildTimeControlTest(unittest.TestCase):
 
     def child(self):
         return self.state.config["profiles"]["kid"]
+
+    def test_current_game_requires_explicit_absence_before_idle(self):
+        observations = [
+            {},
+            {"game": {"state": "starting", "id": "", "evidence": "PENDING"},
+             "process": {"evidence": "PENDING", "running_games": [],
+                         "running_scan_status": "complete"}},
+            {"game": {"state": "unknown", "id": "", "evidence": "UNAVAILABLE"},
+             "process": {"evidence": "UNAVAILABLE", "running_games": [],
+                         "running_scan_status": "unavailable"}},
+        ]
+        for observation in observations:
+            with self.subTest(observation=observation):
+                self.state.proxy = lambda *args, value=observation, **kwargs: (
+                    True, value)
+                self.assertEqual(
+                    "unavailable",
+                    self.state._child_time_current_game("parent")["kind"])
+
+        self.state.proxy = lambda *args, **kwargs: (True, {
+            "game": {"state": "idle", "id": "", "evidence": "ABSENT"},
+            "process": {"evidence": "ABSENT", "running_games": [],
+                        "running_scan_status": "complete"},
+        })
+        self.assertEqual("idle", self.state._child_time_current_game("parent")["kind"])
 
     def start_running(self):
         previous_binds = len([call for call in self.bridge_calls
@@ -542,6 +582,12 @@ class ChildTimeControlTest(unittest.TestCase):
         def idle(name, path, **kwargs):
             calls.append(path)
             self.assertNotEqual("/action/close-app", path)
+            if name == "game_provider" and path == "/observation":
+                return True, {
+                    "game": {"state": "idle", "id": "", "evidence": "ABSENT"},
+                    "process": {"evidence": "ABSENT", "running_games": [],
+                                "running_scan_status": "complete"},
+                }
             return True, {**control_evidence(), "clients": [], "apps": []}
 
         restarted.proxy = idle

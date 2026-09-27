@@ -67,9 +67,10 @@ class ControlOperationTest(unittest.TestCase):
 
     def observe_provider_idle(self):
         self.state.proxy = lambda name, path, **_kwargs: (
-            (True, {"state": "idle", "id": "", "running_games": [],
-                    "running_scan_status": "complete"})
-            if name == "game_provider" and path == "/game/current"
+            (True, {"game": {"state": "idle", "id": "", "evidence": "ABSENT"},
+                    "process": {"evidence": "ABSENT", "running_games": [],
+                                "running_scan_status": "complete"}})
+            if name == "game_provider" and path == "/observation"
             else (False, {"error": "fixture_offline"}))
 
     def observe_exact_provider_game(self, game_id="steam:7"):
@@ -80,11 +81,14 @@ class ControlOperationTest(unittest.TestCase):
             "process_id": 77,
         })
         self.state.proxy = lambda name, path, **_kwargs: (
-            (True, {"state": "running", "id": game_id,
-                    "running_scan_status": "complete",
-                    "running_games": [{"game_id": game_id, "process_id": 77,
-                                       "process_token": token}]})
-            if name == "game_provider" and path == "/game/current"
+            (True, {"game": {"state": "running", "id": game_id,
+                             "evidence": "VERIFIED"},
+                    "process": {"evidence": "VERIFIED",
+                                "running_scan_status": "complete",
+                                "running_games": [{"game_id": game_id,
+                                                   "process_id": 77,
+                                                   "process_token": token}]}})
+            if name == "game_provider" and path == "/observation"
             else (False, {"error": "fixture_offline"}))
         return token
 
@@ -722,8 +726,12 @@ class ControlOperationTest(unittest.TestCase):
             calls.append((name, path))
             if name == "vibepollo" and path == "/snapshot?force=1":
                 return True, {**control_evidence(), "clients": [], "apps": []}
-            if name == "game_provider" and path == "/game/current":
-                return True, {"state": "idle", "id": "", "running_games": []}
+            if name == "game_provider" and path == "/observation":
+                return True, {"game": {"state": "idle", "id": "",
+                                       "evidence": "ABSENT"},
+                              "process": {"evidence": "ABSENT",
+                                          "running_games": [],
+                                          "running_scan_status": "complete"}}
             self.fail("Idle reconciliation attempted an effect")
         self.state.proxy = snapshot
         status, result = self.acquire(self.request("new-parent", session="stream-new"), 0)

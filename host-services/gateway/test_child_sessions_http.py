@@ -67,13 +67,40 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.current = {"id": "", "state": "idle", "running_games": []}
         self.streamer_active = False
         self.bridge_calls = []
+        self.observation_calls = []
 
         def proxy(name, path, timeout=2.5, profile_id=None):
             del timeout
-            if name == "game_provider" and path == "/game/current":
-                return True, {**self.current,
-                              "running_games": [dict(item) for item in
-                                                 self.current.get("running_games", [])]}
+            if name == "game_provider" and path == "/observation":
+                self.observation_calls.append((path, profile_id))
+                game_id = self.current.get("id", "")
+                running = [dict(item) for item in self.current.get("running_games", [])]
+                exact = running[0] if game_id and running else {}
+                return True, {
+                    "schema_version": 1,
+                    "producer": {"boot_id": "producer-boot", "revision": 7},
+                    "observed_at_unix_ms": 1_700_000_000_000,
+                    "fresh_for_ms": 5_000,
+                    "state_episode": "producer-boot:1",
+                    "state_since_unix_ms": 1_700_000_000_000,
+                    "provider": {"state": self.current.get("state", "idle"),
+                                 "connector_evidence": "VERIFIED",
+                                 "reason": "none"},
+                    "game": {"evidence": "VERIFIED" if game_id else "ABSENT",
+                             "id": game_id,
+                             "state": self.current.get("state", "idle")},
+                    "process": {"evidence": "VERIFIED" if exact else "ABSENT",
+                                "process_id": exact.get("process_id", 0),
+                                "process_token": exact.get("process_token", ""),
+                                "running_games": running,
+                                "running_scan_status": "complete"},
+                    "window": {"evidence": "ABSENT", "ready": False,
+                               "target_kind": "playnite", "stable_samples": 0,
+                               "reason": "no_running_game"},
+                    "capabilities": {"host_guide_allowed": True,
+                                     "requires_connector": False,
+                                     "start_before_stream": False},
+                }
             if path == "/health":
                 return True, {"connector_connected": True}
             if name == "vibepollo" and path == "/snapshot?force=1":
@@ -159,6 +186,41 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.assertEqual(1, len(responses))
         return responses[0]
 
+    def test_parent_and_child_use_the_same_atomic_observation_without_health(self):
+        for profile, capability, expected_execution in (
+                ("parent", False, "parent"), ("kid", True, "parent")):
+            status, body = self.get(
+                "/api/v1/session/observation?request_ordinal=9&transition_id=t-9",
+                profile=profile, capability=capability)
+            self.assertEqual(200, status)
+            self.assertTrue(body["ok"])
+            self.assertEqual(profile, body["scope"]["actor_profile_id"])
+            self.assertEqual(expected_execution,
+                             body["scope"]["execution_profile_id"])
+            self.assertEqual(9, body["correlation"]["request_ordinal"])
+            self.assertEqual("t-9", body["correlation"]["caller_transition_id"])
+        self.assertEqual([("/observation", "parent"),
+                          ("/observation", "parent")], self.observation_calls)
+
+    def test_control_change_across_provider_proxy_fails_closed(self):
+        original = self.state.proxy
+
+        def racing_proxy(name, path, timeout=2.5, profile_id=None):
+            result = original(name, path, timeout, profile_id)
+            if name == "game_provider" and path == "/observation":
+                with self.state.lock:
+                    self.state.control_state["generation"] += 1
+            return result
+
+        self.state.proxy = racing_proxy
+        status, body = self.get(
+            "/api/v1/session/observation?request_ordinal=10&transition_id=t-10",
+            profile="kid", capability=True)
+        self.assertEqual(200, status)
+        self.assertFalse(body["ok"])
+        self.assertEqual("control_correlation_changed", body["reason"])
+        self.assertEqual("UNAVAILABLE", body["game"]["evidence"])
+
     def establish_child_transport_and_start_game(self):
         session = self.state.child_time_session
         self.state.authorize_child_profile(self.client, "kid")
@@ -189,7 +251,8 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.assertEqual(200, status)
         self.assertNotIn("kid", [item["id"] for item in result["profiles"]])
 
-        status, result = self.get("/api/v1/game/current", profile="kid")
+        status, result = self.get(
+            "/api/v1/session/observation?request_ordinal=1", profile="kid")
         self.assertEqual(403, status)
         self.assertEqual("child_profiles_capability_required", result["error"])
 
@@ -224,8 +287,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
             self.assertFalse(self.state.control_state.get("stream"))
             status, result = self.get("/api/v1/game-provider/health", profile="kid",
                                       capability=True)
-            self.assertEqual(403, status)
-            self.assertEqual("child_action_not_allowed", result["error"])
+            self.assertEqual(404, status)
             proxy.assert_not_called()
             proxy_json.assert_not_called()
 
@@ -392,20 +454,20 @@ class ChildSessionsHttpTest(unittest.TestCase):
                               profile="kid", capability=True)
         self.assertEqual(403, status)
 
-    def test_child_snapshot_routes_exclude_parent_health(self):
-        for path in ("/api/v1/game/current", "/api/v1/window/readiness"):
+    def test_observation_replaces_old_snapshot_and_health_routes(self):
+        status, result = self.get(
+            "/api/v1/session/observation?request_ordinal=1",
+            profile="kid", capability=True)
+        self.assertEqual(200, status)
+        self.assertEqual(1, result["correlation"]["request_ordinal"])
+
+        for path in ("/api/v1/game/current", "/api/v1/window/readiness",
+                     "/api/v1/game-provider/health"):
             with self.subTest(path=path):
                 status, _ = self.get(path, profile="kid", capability=True)
-                self.assertEqual(200, status)
-        status, result = self.get("/api/v1/game-provider/health",
-                                  profile="kid", capability=True)
-        self.assertEqual(403, status)
-        self.assertEqual("child_action_not_allowed", result["error"])
-
-        status, result = self.get("/api/v1/game-provider/health",
-                                  profile="parent", capability=True)
-        self.assertEqual(200, status)
-        self.assertTrue(result["bridge"]["connector_connected"])
+                self.assertEqual(404, status)
+            status, _ = self.get(path, profile="parent", capability=True)
+            self.assertEqual(404, status)
 
     def test_child_cannot_inherit_parent_management_discord_or_sharing(self):
         before = list(self.bridge_calls)
@@ -413,9 +475,10 @@ class ChildSessionsHttpTest(unittest.TestCase):
             with self.subTest(path=path):
                 if path.endswith("/status"):
                     status, _ = self.get(path, profile="kid", capability=True)
+                    self.assertEqual(404, status)
                 else:
                     status, _ = self.post(path, {}, profile="kid", capability=True)
-                self.assertEqual(403, status)
+                    self.assertEqual(403, status)
 
         child_mutations = (
             ("/api/v1/profiles/children/create", {
