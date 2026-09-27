@@ -7015,17 +7015,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR,
                        {"error": "Host storage is unavailable."})
 
-    def send_permission_error(self, error: PermissionError) -> None:
-        self._diagnostic_error = error
-        if error.errno is None:
-            self.send_json(HTTPStatus.FORBIDDEN, {"error": str(error)})
-            return
-        # An OS access failure is a host fault, not an authorization denial, and
-        # its message carries host paths that must not reach LAN clients.
-        self._diagnostic_unexpected = True
-        self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR,
-                       {"error": "Host storage is unavailable."})
-
     def send_session_json(self, status: int, value: dict[str, Any]) -> None:
         if int(status) >= 400 and "error" not in value:
             value = {**value, "error": str(value.get("reason") or "session_request_failed")}
