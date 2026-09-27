@@ -80,6 +80,6 @@ public class GameStreamingAutopilotCalibrationContractTest {
     private static String source(String path) throws IOException {
         Path source = Paths.get(path);
         if (!Files.exists(source)) source = Paths.get("app").resolve(path);
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 }

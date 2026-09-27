@@ -17,7 +17,7 @@ public class AndroidAudioRendererDiagnosticsTest {
     @Test public void telemetryIsLifecycleOnlyAndCountsSuccessfulWrites() throws Exception {
         Path path = Paths.get("src/main/java/com/limelight/binding/audio/AndroidAudioRenderer.java");
         if (!Files.exists(path)) path = Paths.get("app").resolve(path);
-        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String pcm = source.substring(source.indexOf("public void playDecodedAudio("),
                 source.indexOf("public void start()"));
         assertFalse(pcm.contains("logAudioState("));

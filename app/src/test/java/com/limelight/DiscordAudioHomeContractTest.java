@@ -13,7 +13,7 @@ public class DiscordAudioHomeContractTest {
     @Test public void retainedMoonlightMixIsMutedOnHome() throws Exception {
         Path path = Paths.get("app/src/main/java/com/limelight/Game.java");
         if (!Files.exists(path)) path = Paths.get("..", path.toString());
-        String source = new String(Files.readAllBytes(path));
+        String source = new String(Files.readAllBytes(path)).replace("\r\n", "\n");
         int start = source.indexOf("private void openConsoleHome()");
         int end = source.indexOf("private void openPreparingConsoleHome()", start);
         String method = source.substring(start, end);

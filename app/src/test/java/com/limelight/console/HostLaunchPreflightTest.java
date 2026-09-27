@@ -38,7 +38,7 @@ public class HostLaunchPreflightTest {
             fake.run(game(42), new AtomicBoolean());
             assertTrue((Boolean) diagnosticsTestHook("flushForTests"));
             String events = new String(Files.readAllBytes(
-                    new File(directory, "events.jsonl").toPath()), StandardCharsets.UTF_8);
+                    new File(directory, "events.jsonl").toPath()), StandardCharsets.UTF_8).replace("\r\n", "\n");
             assertTrue(events.contains("\"event\":\"preflight.session_state\""));
             assertTrue(events.contains("\"state\":\"credential_issued\""));
             assertTrue(events.contains("\"state\":\"expired\""));

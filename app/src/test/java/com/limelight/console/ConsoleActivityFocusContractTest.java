@@ -16,7 +16,7 @@ public class ConsoleActivityFocusContractTest {
         if (!Files.exists(source)) {
             source = Paths.get("app/src/main/java/com/limelight/console/ConsoleActivity.java");
         }
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String method = text.substring(text.indexOf("private void applyPlayniteDiff"),
                 text.indexOf("private List<PlayniteDashboardItem> preserveOrderDuringFocus"));
 

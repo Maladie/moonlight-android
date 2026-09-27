@@ -39,6 +39,6 @@ public class DiscordSocialPanelControllerContractTest {
             path = Paths.get("app/src/main/java/com/limelight/console/"
                     + "DiscordSocialPanelController.java");
         }
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 }

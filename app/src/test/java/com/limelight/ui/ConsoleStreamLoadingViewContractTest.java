@@ -17,7 +17,7 @@ public class ConsoleStreamLoadingViewContractTest {
         if (!Files.exists(source)) {
             source = Paths.get("app/src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
         }
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String method = text.substring(text.indexOf("public void showLauncherInteraction"),
                 text.indexOf("public void setManualRevealAvailable"));
 
@@ -246,7 +246,7 @@ public class ConsoleStreamLoadingViewContractTest {
         if (!Files.exists(source)) {
             source = Paths.get("app/src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
         }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     private static String gameSource() throws IOException {
@@ -254,6 +254,6 @@ public class ConsoleStreamLoadingViewContractTest {
         if (!Files.exists(source)) {
             source = Paths.get("app/src/main/java/com/limelight/Game.java");
         }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 }

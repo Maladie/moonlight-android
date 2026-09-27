@@ -17,7 +17,7 @@ public class SessionResumeManagerTest {
         Path source = Paths.get("src/main/java/com/limelight/utils/SessionResumeManager.java");
         if (!Files.exists(source)) source = Paths.get(
                 "app/src/main/java/com/limelight/utils/SessionResumeManager.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String save = text.substring(text.indexOf("private static void save("),
                 text.indexOf("public static synchronized PendingSession pendingSession("));
         String restore = text.substring(text.indexOf("public static synchronized Intent buildResumeIntent("),
@@ -53,7 +53,7 @@ public class SessionResumeManagerTest {
         Path source = Paths.get("src/main/java/com/limelight/utils/SessionResumeManager.java");
         if (!Files.exists(source)) source = Paths.get(
                 "app/src/main/java/com/limelight/utils/SessionResumeManager.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
 
         assertEquals(2, text.split(
                 "gameIntent.getStringExtra\\(Game.EXTRA_STREAM_TARGET_NAME\\)", -1).length);
@@ -70,7 +70,7 @@ public class SessionResumeManagerTest {
         Path source = Paths.get("src/main/java/com/limelight/utils/SessionResumeManager.java");
         if (!Files.exists(source)) source = Paths.get(
                 "app/src/main/java/com/limelight/utils/SessionResumeManager.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
 
         assertTrue(text.contains("editor.putString(KEY_PROFILE_ID"));
         assertTrue(text.contains("if (!prefs.contains(KEY_PROFILE_ID)) return null;"));

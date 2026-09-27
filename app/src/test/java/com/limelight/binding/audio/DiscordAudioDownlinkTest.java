@@ -69,6 +69,6 @@ public class DiscordAudioDownlinkTest {
     private static String source(String relative) throws Exception {
         Path path = Paths.get(relative);
         if (!Files.exists(path)) path = Paths.get("..", relative);
-        return new String(Files.readAllBytes(path));
+        return new String(Files.readAllBytes(path)).replace("\r\n", "\n");
     }
 }

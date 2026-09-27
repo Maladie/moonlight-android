@@ -790,7 +790,7 @@ public class ConsoleActivityEnsureContractTest {
         if (!Files.exists(source)) {
             source = Paths.get("app/src/main/java/com/limelight/console/ConsoleActivity.java");
         }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     private static String streamHomeActivitySource() throws IOException {
@@ -799,13 +799,13 @@ public class ConsoleActivityEnsureContractTest {
             source = Paths.get(
                     "app/src/main/java/com/limelight/console/StreamHomeActivity.java");
         }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     private static String resourceSource(String name) throws IOException {
         Path source = Paths.get("src/main/res", name);
         if (!Files.exists(source)) source = Paths.get("app/src/main/res", name);
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     private static int occurrences(String source, String value) {

@@ -123,6 +123,6 @@ public class ConsoleActivityLibraryPerformanceContractTest {
         if (!Files.exists(source)) {
             source = Paths.get("app/src/main/java/com/limelight/console/" + file);
         }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 }

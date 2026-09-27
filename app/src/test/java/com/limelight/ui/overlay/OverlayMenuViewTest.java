@@ -88,7 +88,7 @@ public class OverlayMenuViewTest {
         Path source = Paths.get("src/main/java/com/limelight/ui/overlay/OverlayMenuView.java");
         if (!Files.exists(source)) source = Paths.get(
                 "app/src/main/java/com/limelight/ui/overlay/OverlayMenuView.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String menu = text.substring(text.indexOf("public void buildMenu()"),
                 text.indexOf("private void addVerticalButton("));
         String activate = text.substring(text.indexOf("private void activateSelected()"),
@@ -533,6 +533,6 @@ public class OverlayMenuViewTest {
     private static String readProjectFile(String modulePath, String rootPath) throws Exception {
         Path path = Paths.get(modulePath);
         if (!Files.exists(path)) path = Paths.get(rootPath);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 }

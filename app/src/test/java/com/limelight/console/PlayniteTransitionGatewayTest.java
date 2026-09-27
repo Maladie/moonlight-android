@@ -153,7 +153,7 @@ public class PlayniteTransitionGatewayTest {
                 "src/main/java/com/limelight/console/PlayniteTransitionGateway.java");
         if (!Files.exists(source)) source = Paths.get(
                 "app/src/main/java/com/limelight/console/PlayniteTransitionGateway.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String connect = text.substring(text.indexOf(
                         "public static PlayniteTransitionGateway connect("),
                 text.indexOf("public Snapshot snapshot()"));
@@ -210,7 +210,7 @@ public class PlayniteTransitionGatewayTest {
     }
 
     private static String read(Path path) throws IOException {
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     private static int occurrences(String text, String needle) {

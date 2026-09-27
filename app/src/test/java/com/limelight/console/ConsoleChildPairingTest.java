@@ -20,7 +20,7 @@ public class ConsoleChildPairingTest {
             throws IOException {
         String source = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/limelight/nvstream/http/NvHTTP.java")),
-                StandardCharsets.UTF_8);
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
         String authenticated = between(source, "public boolean unpairAuthenticated()",
                 "public InputStream getBoxArt");
         String legacy = between(source, "public void unpair()",
@@ -35,7 +35,7 @@ public class ConsoleChildPairingTest {
     @Test public void childPairingFailureOffersExplicitHostRepair() throws IOException {
         String source = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8);
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
         String failure = between(source, "private String childLaunchFailureMessage(",
                 "private static final class WarmUpBridgeProbe");
         String pairHost = between(source, "private void pairHost(ComputerDetails host)",
@@ -71,7 +71,7 @@ public class ConsoleChildPairingTest {
     @Test public void freshSelectedChildProfileRefreshStartsIdentityBinding() throws IOException {
         String source = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8);
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
         String refresh = between(source, "private void refreshHostProfiles(",
                 "private void refreshVisibleHostProfiles(");
 

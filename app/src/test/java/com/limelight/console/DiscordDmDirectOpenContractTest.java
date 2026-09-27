@@ -88,6 +88,6 @@ public class DiscordDmDirectOpenContractTest {
     private static String projectFile(String first, String second) throws IOException {
         Path path = Paths.get(first);
         if (!Files.exists(path)) path = Paths.get(second);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 }

@@ -89,6 +89,6 @@ public class GameChildSessionContractTest {
         if (!Files.exists(path)) {
             path = Paths.get("app/src/main/java/com/limelight/Game.java");
         }
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 }

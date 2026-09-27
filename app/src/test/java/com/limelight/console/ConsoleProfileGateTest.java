@@ -103,7 +103,7 @@ public class ConsoleProfileGateTest {
             throws Exception {
         String source = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8);
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
         String save = between(source, "private void saveHostProfiles(",
                 "private void showPinEntry(");
         String refresh = between(source, "private void refreshHostProfiles(",
@@ -119,7 +119,7 @@ public class ConsoleProfileGateTest {
 
     @Test public void endingChildGameKeepsProfileAndLibrary() throws Exception {
         String source = new String(Files.readAllBytes(Paths.get(
-                "src/main/java/com/limelight/console/ConsoleActivity.java")), StandardCharsets.UTF_8);
+                "src/main/java/com/limelight/console/ConsoleActivity.java")), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String consume = between(source, "private void consumeChildBindingState(",
                 "private void clearChildLibraryForPolicyChange(");
         assertTrue(consume.contains("binding.sessionId.equals(state.sessionId)"));
@@ -133,7 +133,7 @@ public class ConsoleProfileGateTest {
     @Test public void hostActivationCannotLoadLibraryBeforeGateResolution() throws Exception {
         String source = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8);
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
         String activation = between(source,
                 "private void activateHostFromSelection(String uuid)",
                 "private void resolveProfileGate(ComputerDetails host");
@@ -154,7 +154,7 @@ public class ConsoleProfileGateTest {
             throws Exception {
         String source = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8);
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
         String leave = between(source, "private void leaveHost()",
                 "private ImageButton addQuickAction(");
 
@@ -166,7 +166,7 @@ public class ConsoleProfileGateTest {
     @Test public void sameHostProfileChangeInvalidatesOldLibraryBeforeEntry() throws Exception {
         String source = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8);
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
         String gate = between(source,
                 "private void resolveProfileGate(ComputerDetails host, boolean focusApps,",
                 "private void enterHostAfterProfileGate(");
@@ -187,7 +187,7 @@ public class ConsoleProfileGateTest {
             throws Exception {
         String source = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8);
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
         String selection = between(source,
                 "private void selectProfile(ComputerDetails host, String profileId)",
                 "private void applySelectedProfile(");
@@ -210,7 +210,7 @@ public class ConsoleProfileGateTest {
     @Test public void pauseClearsOnlySecretAndKeepsPinScreenContext() throws Exception {
         String source = new String(Files.readAllBytes(Paths.get(
                 "src/main/java/com/limelight/console/ConsoleActivity.java")),
-                StandardCharsets.UTF_8);
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
         String pause = between(source, "protected void onPause()",
                 "public void onTrimMemory(int level)");
 

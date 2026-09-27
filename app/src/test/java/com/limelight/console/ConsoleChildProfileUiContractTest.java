@@ -322,7 +322,7 @@ public class ConsoleChildProfileUiContractTest {
     }
 
     private static String source(String path) throws Exception {
-        return new String(Files.readAllBytes(Paths.get(path)), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(Paths.get(path)), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     private static String between(String source, String start, String end) {

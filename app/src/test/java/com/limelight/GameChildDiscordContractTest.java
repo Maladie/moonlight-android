@@ -45,6 +45,6 @@ public class GameChildDiscordContractTest {
     private static String readProjectFile(String modulePath, String rootPath) throws IOException {
         Path path = Paths.get(modulePath);
         if (!Files.exists(path)) path = Paths.get(rootPath);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 }

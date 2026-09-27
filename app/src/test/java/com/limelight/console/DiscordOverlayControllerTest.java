@@ -111,7 +111,7 @@ public class DiscordOverlayControllerTest {
         Path source = Paths.get("src/main/java/com/limelight/console/DiscordOverlayController.java");
         if (!Files.exists(source)) source = Paths.get(
                 "app/src/main/java/com/limelight/console/DiscordOverlayController.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String method = text.substring(text.indexOf("public void onDiscordCommunitySendChat("),
                 text.indexOf("public void onDiscordCommunityOpenMessageInDiscord("));
 
@@ -223,7 +223,7 @@ public class DiscordOverlayControllerTest {
         Path source = Paths.get("src/main/java/com/limelight/console/DiscordOverlayController.java");
         if (!Files.exists(source)) source = Paths.get(
                 "app/src/main/java/com/limelight/console/DiscordOverlayController.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         assertTrue(text.contains("id.equals(friend.userId)"));
         assertFalse(text.contains("friend.displayName.equals"));
         assertTrue(text.contains("participant.avatarUrl"));
@@ -253,7 +253,7 @@ public class DiscordOverlayControllerTest {
         Path source = Paths.get("src/main/java/com/limelight/console/DiscordOverlayController.java");
         if (!Files.exists(source)) source = Paths.get(
                 "app/src/main/java/com/limelight/console/DiscordOverlayController.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String join = text.substring(text.indexOf("public void onDiscordCommunityJoinChannel("),
                 text.indexOf("public void onDiscordCommunityOpenFriendChat("));
         String leave = text.substring(text.indexOf("public void leave()"), text.indexOf("public void rejoin()"));

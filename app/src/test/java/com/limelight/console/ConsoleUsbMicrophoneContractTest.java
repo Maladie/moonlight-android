@@ -61,6 +61,6 @@ public class ConsoleUsbMicrophoneContractTest {
     private static String source(String relative) throws IOException {
         Path path = Paths.get(relative);
         if (!Files.exists(path)) path = Paths.get("app").resolve(relative);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 }

@@ -31,6 +31,6 @@ public class AppStreamSettingsUiContractTest {
     private static String source(String modulePath, String repositoryPath) throws IOException {
         Path source = Paths.get(modulePath);
         if (!Files.exists(source)) source = Paths.get(repositoryPath);
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 }

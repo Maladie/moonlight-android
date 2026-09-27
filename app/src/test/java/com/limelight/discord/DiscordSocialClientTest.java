@@ -28,7 +28,7 @@ public class DiscordSocialClientTest {
         if (!Files.exists(source)) {
             source = Paths.get("app/src/main/jni/discord-social/discord-social-jni.cpp");
         }
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         assertTrue(text.contains("env->NewString("));
         assertTrue(text.contains("codePoint > 0x10ffff"));
         assertTrue(text.contains("codePoint >= 0xd800"));

@@ -402,7 +402,7 @@ public class GameAutoWarmUpContractTest {
                     "app/src/main/java/com/limelight/binding/input/ControllerHandler.java");
         }
         String controller = new String(Files.readAllBytes(controllerPath),
-                StandardCharsets.UTF_8);
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
         String announce = between(controller, "public void announceConnectedControllers()",
                 "public void destroy()");
         assertTrue(announce.contains("primeControllerIfNeeded"));
@@ -415,7 +415,7 @@ public class GameAutoWarmUpContractTest {
         if (!Files.exists(source)) {
             source = Paths.get("app/src/main/java/com/limelight/Game.java");
         }
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     private static String between(String source, String start, String end) {

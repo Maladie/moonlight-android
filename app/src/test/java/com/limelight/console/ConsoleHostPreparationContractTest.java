@@ -11,7 +11,7 @@ public class ConsoleHostPreparationContractTest {
     @Test public void automaticPairingWaitsForBridgeAndReportsItsFailureStage() throws Exception {
         Path path = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
         if (!Files.exists(path)) path = Paths.get("app").resolve(path);
-        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String pairing = section(source, "private void beginAutomaticHostPairing(",
                 "private void cancelPendingPairing(");
 
@@ -31,7 +31,7 @@ public class ConsoleHostPreparationContractTest {
     @Test public void savedPairOnlyAuthorizesPreparationAndBinderJoinIsConsumedOnce() throws Exception {
         Path path = Paths.get("src/main/java/com/limelight/console/ConsoleActivity.java");
         if (!Files.exists(path)) path = Paths.get("app").resolve(path);
-        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        String source = new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String prepare = section(source, "private void prepareSelectedHost(",
                 "private void dispatchPendingHostPreparation()");
         assertTrue(prepare.contains("ConsoleActionCatalog.canPrepareHost(host)"));
@@ -97,7 +97,7 @@ public class ConsoleHostPreparationContractTest {
     private static String source(String relative) throws Exception {
         Path path = Paths.get(relative);
         if (!Files.exists(path)) path = Paths.get("app").resolve(relative);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     private static String section(String source, String begin, String end) {

@@ -225,7 +225,7 @@ public class S05ControlPlaneContractTest {
     private static String source(String relative) throws Exception {
         Path path = Paths.get("src/main/java", relative);
         if (!Files.exists(path)) path = Paths.get("app/src/main/java", relative);
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     private static String between(String source, String start, String end) {

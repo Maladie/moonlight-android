@@ -61,7 +61,7 @@ public class GameTransitionCancelContractTest {
     @Test public void cancelDoesNotWaitForAnotherVideoFrame() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String method = text.substring(text.indexOf("private void cancelTransition()"),
                 text.indexOf("private boolean returnRetainedObservationToDashboard()"));
 
@@ -113,7 +113,7 @@ public class GameTransitionCancelContractTest {
         Path path = Paths.get("src/main/java/com/limelight/stream/HostSessionTermination.java");
         if (!Files.exists(path)) path = Paths.get(
                 "app/src/main/java/com/limelight/stream/HostSessionTermination.java");
-        String host = new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        String host = new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
 
         assertTrue(close.contains("if (quitApplication)"));
         assertTrue(close.contains("terminateWholeSessionVerified(null)"));
@@ -165,9 +165,9 @@ public class GameTransitionCancelContractTest {
         if (!Files.exists(game)) game = Paths.get("app/src/main/java/com/limelight/Game.java");
         if (!Files.exists(coordinator)) coordinator = Paths.get(
                 "app/src/main/java/com/limelight/console/ConsoleStreamTransitionCoordinator.java");
-        String gameText = new String(Files.readAllBytes(game), StandardCharsets.UTF_8);
+        String gameText = new String(Files.readAllBytes(game), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String coordinatorText = new String(
-                Files.readAllBytes(coordinator), StandardCharsets.UTF_8);
+                Files.readAllBytes(coordinator), StandardCharsets.UTF_8).replace("\r\n", "\n");
 
         assertTrue(gameText.contains("onProviderGameStopped("));
         assertTrue(gameText.contains("providerStopConfirmed = true"));
@@ -186,7 +186,7 @@ public class GameTransitionCancelContractTest {
                 "src/main/java/com/limelight/binding/video/MediaCodecDecoderRenderer.java");
         if (!Files.exists(source)) source = Paths.get(
                 "app/src/main/java/com/limelight/binding/video/MediaCodecDecoderRenderer.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String listener = text.substring(text.indexOf("private void installFrameRenderedListener()"),
                 text.indexOf("public void requestNextFrameRendered"));
 
@@ -280,7 +280,7 @@ public class GameTransitionCancelContractTest {
     @Test public void connectingStateMakesInFlightTransportStoppable() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String start = text.substring(text.indexOf("private void startConnectionIfReady("),
                 text.indexOf("public void surfaceCreated("));
         String stop = text.substring(text.indexOf("private void stopConnection(Runnable"),
@@ -297,7 +297,7 @@ public class GameTransitionCancelContractTest {
             throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String setup = text.substring(text.indexOf("consoleLoadingView.doAfterNextFrame(() ->"),
                 text.indexOf("} else {", text.indexOf("consoleLoadingView.doAfterNextFrame(() ->")));
 
@@ -309,7 +309,7 @@ public class GameTransitionCancelContractTest {
             throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String failed = text.substring(text.indexOf("public void stageFailed("),
                 text.indexOf("public void connectionTerminated("));
         String terminated = text.substring(text.indexOf("public void connectionTerminated("),
@@ -374,7 +374,7 @@ public class GameTransitionCancelContractTest {
             throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String destroyed = text.substring(text.indexOf("protected void onDestroy()"),
                 text.indexOf("super.onDestroy()"));
         String bitrate = text.substring(text.indexOf("private void applyBitrateAndReconnect("),
@@ -785,7 +785,7 @@ public class GameTransitionCancelContractTest {
     private static String source() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     @Test public void revealedGameRecreatesAsObservationOnly() throws IOException {
@@ -799,7 +799,7 @@ public class GameTransitionCancelContractTest {
 
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String reveal = game.substring(game.indexOf("private void revealTransitionNow()"),
                 game.indexOf("private void cancelPendingAutomaticReveal()"));
         String retry = game.substring(game.indexOf("private void retryTransition()"),
@@ -830,7 +830,7 @@ public class GameTransitionCancelContractTest {
     @Test public void consoleConnectionFailureUsesFriendlyStageInStatus() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String failed = text.substring(text.indexOf("public void stageFailed("),
                 text.indexOf("public void connectionTerminated("));
         int transitionStart = failed.indexOf("if (transitionController != null)");
@@ -844,7 +844,7 @@ public class GameTransitionCancelContractTest {
     @Test public void missingInflatedStreamToastGetsAProgrammaticFallback() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         int lookup = game.indexOf("discordDmToastView = findViewById(");
         int controller = game.indexOf("discordOverlayController =", lookup);
         String initialization = game.substring(lookup, controller);
@@ -858,7 +858,7 @@ public class GameTransitionCancelContractTest {
     @Test public void overlayHintWaitsUntilPrivacyRevealCompletes() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String connected = game.substring(game.indexOf("public void connectionStarted()"),
                 game.indexOf("private ConsoleStreamTransitionCoordinator createTransitionCoordinator"));
         String reveal = game.substring(game.indexOf("private void revealTransitionNow()"),
@@ -872,7 +872,7 @@ public class GameTransitionCancelContractTest {
     @Test public void connectedStreamKeepsProcessDeathRecoveryCorrelation() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String connected = game.substring(game.indexOf("public void connectionStarted()"),
                 game.indexOf("private ConsoleStreamTransitionCoordinator createTransitionCoordinator"));
         String restore = game.substring(game.indexOf("private void restoreParkedStream("),
@@ -887,7 +887,7 @@ public class GameTransitionCancelContractTest {
     @Test public void lockedWindowsSessionReasonIsShownOnTheOverlay() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
-        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
+        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
         String status = game.substring(game.indexOf("private String transitionStatus("),
                 game.indexOf("private static String playniteInstallNotificationKey("));
 

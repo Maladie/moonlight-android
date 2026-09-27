@@ -72,6 +72,6 @@ public class DiscordDmSettingsContractTest {
         if (!Files.exists(path) && relative.startsWith("app/")) {
             path = Paths.get(relative.substring(4));
         }
-        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(path), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 }

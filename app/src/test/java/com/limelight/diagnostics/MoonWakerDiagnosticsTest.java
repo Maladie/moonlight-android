@@ -276,7 +276,7 @@ public class MoonWakerDiagnosticsTest {
     }
 
     private static String read(File file) throws Exception {
-        return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8);
+        return new String(Files.readAllBytes(file.toPath()), StandardCharsets.UTF_8).replace("\r\n", "\n");
     }
 
     private static String repeat(String value, int count) {
