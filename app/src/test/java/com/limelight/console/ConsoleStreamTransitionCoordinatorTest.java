@@ -20,6 +20,7 @@ import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
@@ -536,6 +537,43 @@ public class ConsoleStreamTransitionCoordinatorTest {
         assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS));
 
         assertEquals(before, controller.snapshot().state);
+    }
+
+    @Test
+    public void stopLetsReadOnlyEventResponseFinishWithoutInterruptingIt() throws Exception {
+        CountDownLatch entered = new CountDownLatch(1);
+        CountDownLatch release = new CountDownLatch(1);
+        AtomicBoolean interrupted = new AtomicBoolean();
+        ConsoleStreamTransitionCoordinator.Gateway gateway = new FakeGateway() {
+            @Override public PlayniteTransitionGateway.Snapshot snapshot() {
+                return ConsoleStreamTransitionCoordinatorTest.snapshot(
+                        true, true, "running", GAME, 42, true, "game", 0, "");
+            }
+            @Override public PlayniteTransitionGateway.Events awaitEvents(
+                    long after, String transitionId) {
+                entered.countDown();
+                try {
+                    release.await(2, TimeUnit.SECONDS);
+                } catch (InterruptedException error) {
+                    interrupted.set(true);
+                }
+                return events(after);
+            }
+        };
+        ExecutorService executor = Executors.newSingleThreadExecutor();
+        ConsoleStreamTransitionCoordinator coordinator = new ConsoleStreamTransitionCoordinator(
+                spec(LaunchTransitionType.GAME_CONNECTION),
+                started(LaunchTransitionType.GAME_CONNECTION, null), gateway, executor,
+                new FakeClock(), new InterruptingSleeper(), (action, delay) -> { },
+                new FakeCallbacks());
+
+        coordinator.start();
+        assertTrue(entered.await(2, TimeUnit.SECONDS));
+        coordinator.stop();
+        coordinator.close();
+        release.countDown();
+        assertTrue(executor.awaitTermination(2, TimeUnit.SECONDS));
+        assertFalse(interrupted.get());
     }
 
     @Test

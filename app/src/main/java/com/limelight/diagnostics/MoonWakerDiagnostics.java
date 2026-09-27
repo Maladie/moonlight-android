@@ -36,9 +36,10 @@ public final class MoonWakerDiagnostics {
             "transition_id", "stream_session_id", "request_id", "profile_id", "host_id",
             "game_id", "operation", "state", "from", "to", "stage", "status", "reason",
             "duration_ms", "http_status", "route", "method", "error_type", "milestone",
+            "response_content_length", "response_body_bytes_read",
             "kind", "dropped", "app_id", "overlay_visible", "input_blocked",
             "operation_authorized", "reveal_authorized", "manual_reveal_available",
-            "uncertain", "orchestration_id", "operation_id",
+            "uncertain", "thread_interrupted", "orchestration_id", "operation_id",
             "audio_renderer_id", "audio_volume", "audio_volume_result", "audio_track_state",
             "audio_play_state", "audio_session_id", "audio_play_head", "audio_buffers",
             "audio_nonzero_buffers", "audio_samples_written", "audio_write_result",
@@ -58,6 +59,10 @@ public final class MoonWakerDiagnostics {
         runId = UUID.randomUUID().toString();
         writer = new Writer(diagnosticsDirectory);
         writer.start();
+    }
+
+    static synchronized String currentRunId() {
+        return runId;
     }
 
     public static synchronized void installCrashHandler() {

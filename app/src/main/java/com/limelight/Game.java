@@ -27,6 +27,7 @@ import com.limelight.console.PlayniteIdentityResolutionPolicy;
 import com.limelight.console.HostGatewayStore;
 import com.limelight.discord.DiscordSocialClient;
 import com.limelight.diagnostics.MoonWakerDiagnostics;
+import com.limelight.diagnostics.StartupThreadWatchdog;
 import com.limelight.console.transition.LaunchTransitionController;
 import com.limelight.console.transition.LaunchTransitionSnapshot;
 import com.limelight.console.transition.LaunchTransitionSpec;
@@ -388,6 +389,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (BuildConfig.DEBUG) StartupThreadWatchdog.start(this);
         streamSessionId = normalizeOpaqueId(
                 getIntent().getStringExtra(EXTRA_STREAM_SESSION_ID));
         if (streamSessionId.isEmpty()) streamSessionId = UUID.randomUUID().toString();
@@ -1380,6 +1382,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // With Android native pointer capture, capture is lost when focus is lost,
         // so it must be requested again when focus is regained.
         inputCaptureProvider.onWindowFocusChanged(hasFocus);
+        if (hasFocus && connected && !streamHomeVisible && streamView != null
+                && (overlayMenuView == null || overlayMenuView.getVisibility() != View.VISIBLE)) {
+            streamView.post(() -> {
+                boolean focused = streamView.requestFocus();
+                MoonWakerDiagnostics.record("INFO", "android.stream", "activity.focus_restored",
+                        "status", focused ? "focused" : "unfocused");
+            });
+        }
     }
 
     @Override
@@ -1682,6 +1692,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onDestroy() {
+        StartupThreadWatchdog.stop();
+        MoonWakerDiagnostics.record("INFO", "android.stream", "activity.destroyed");
         stopChildMonitoring();
         cancelStreamingAutopilotCalibration();
         boolean acceptedWithoutTransport = false;
@@ -1779,6 +1791,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onPause() {
+        MoonWakerDiagnostics.record("INFO", "android.stream", "activity.paused",
+                "status", backgroundStreamParked ? "parked" : "active");
         if (discordDmNotifications != null) {
             discordDmNotifications.deactivateHost(discordDmHostToken);
         }
@@ -1814,6 +1828,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onResume() {
         super.onResume();
+        MoonWakerDiagnostics.record("INFO", "android.stream", "activity.resumed",
+                "status", backgroundStreamParked ? "parked" : "active");
         if (discordDmNotifications != null) {
             discordDmNotifications.activateHost(discordDmHostToken);
             discordDmNotifications.setWindowFocused(
@@ -1852,6 +1868,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onStop() {
         super.onStop();
+        MoonWakerDiagnostics.record("INFO", "android.stream", "activity.stopped",
+                "status", canParkBackgroundStream() ? "park_eligible" : "park_ineligible");
 
         cancelStreamingAutopilotCalibration();
 
@@ -3204,6 +3222,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void parkBackgroundStream() {
         if (backgroundStreamParked || switchableVideoRenderer == null) return;
+        MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.detaching");
         backgroundStreamParked = true;
         switchableVideoRenderer.detach();
         decoderRenderer = null;
@@ -4433,10 +4452,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void restoreParkedStream(SurfaceHolder holder) {
         if (!backgroundStreamParked || holder == null || holder.getSurface() == null
-                || !holder.getSurface().isValid()) return;
+                || !holder.getSurface().isValid()) {
+            MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.restore_skipped",
+                    "reason", backgroundStreamParked ? "surface_invalid" : "not_parked");
+            return;
+        }
+        MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.restoring");
         MediaCodecDecoderRenderer replacement = createDecoderRenderer();
         replacement.setRenderTarget(holder);
         if (!switchableVideoRenderer.attach(replacement)) {
+            MoonWakerDiagnostics.record("ERROR", "android.stream", "decoder.restore_failed",
+                    "reason", "attach_failed");
             LimeLog.severe("Failed to attach a decoder to the parked stream");
             reconnectRetainedStream();
             return;
@@ -4450,6 +4476,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         setInputGrabState(true);
         BackgroundStreamBridge.requestIdrFrame();
         scheduleRetainedRestoreWatchdog();
+        MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.restored",
+                "status", "awaiting_frame");
         hideSystemUi(50);
         streamView.post(streamView::requestFocus);
         LimeLog.info("Background stream decoder restored");
@@ -4461,12 +4489,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         transitionUiHandler.postDelayed(() -> {
             if (retainedRestoreAwaitingFrame && connected && !backgroundStreamParked) {
+                MoonWakerDiagnostics.record("WARN", "android.stream", "decoder.idr_retry");
                 LimeLog.warning("Retained stream has no frame yet; requesting another IDR");
                 BackgroundStreamBridge.requestIdrFrame();
             }
         }, 1_500L);
         retainedRestoreWatchdog = () -> {
             if (retainedRestoreAwaitingFrame && connected && !backgroundStreamParked) {
+                MoonWakerDiagnostics.record("WARN", "android.stream", "decoder.restore_timeout");
                 LimeLog.warning("Retained stream restore timed out; reconnecting transport");
                 reconnectRetainedStream();
             }
@@ -4566,6 +4596,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void stageFailed(final String stage, final int portFlags, final int errorCode) {
+        MoonWakerDiagnostics.record("ERROR", "android.stream-transport",
+                "stream.stage_failed", "stage", streamStageCode(stage), "reason", Integer.toString(errorCode),
+                "transition_id", transitionSpec == null ? "" : transitionSpec.id,
+                "stream_session_id", streamSessionId);
 
         if (cleanupUnrevealedProviderLaunch("stream-stage-failed:" + stage)
                 && !hasAutoWarmUpTransportIdentity()) return;
@@ -4617,8 +4651,19 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         });
     }
 
+    private static int streamStageCode(String stage) {
+        for (int code = 1; code < 12; code++) {
+            if (MoonBridge.getStageName(code).equals(stage)) return code;
+        }
+        return -1;
+    }
+
     @Override
     public void connectionTerminated(final int errorCode) {
+        MoonWakerDiagnostics.record("WARN", "android.stream-transport",
+                "stream.terminated", "reason", Integer.toString(errorCode),
+                "transition_id", transitionSpec == null ? "" : transitionSpec.id,
+                "stream_session_id", streamSessionId);
         cancelStreamingAutopilotCalibration();
         // An intentional bitrate reconnect is completed by the callback passed to
         // stopConnection(). Do not let the normal termination path finish this Activity
@@ -5224,6 +5269,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void onFirstVideoFrameRendered() {
+        MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.first_frame",
+                "status", retainedRestoreAwaitingFrame ? "restored" : "initial");
         logLaunchMilestone("first-video-frame-rendered");
         runOnUiThread(() -> {
             if (isDestroyed()) return;
@@ -5948,6 +5995,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void surfaceCreated(SurfaceHolder holder) {
         if (isFinishing() || isDestroyed()) return;
+        MoonWakerDiagnostics.record("INFO", "android.stream", "surface.created",
+                "status", backgroundStreamParked ? "parked" : "active");
         float desiredFrameRate;
 
         surfaceCreated = true;
@@ -5993,6 +6042,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         surfaceCreated = false;
+        MoonWakerDiagnostics.record("INFO", "android.stream", "surface.destroyed",
+                "status", backgroundStreamParked ? "parked" : "active");
         if (attemptedConnection && connected) {
             if (hasOwnRetainedSession()) {
                 RetainedStreamSessionCoordinator.parkForBackground(streamSessionId);
@@ -6384,6 +6435,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 if (discordDmNotifications != null) {
                     discordDmNotifications.setPresentationBlocked(discordDmHostToken, false);
                 }
+                if (connected && !streamHomeVisible) streamView.post(streamView::requestFocus);
             }
         });
     }

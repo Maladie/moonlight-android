@@ -70,6 +70,8 @@ public class MoonWakerDiagnosticsTest {
                 "transition_id", "host-id:game:123:456:1",
                 "stream_session_id", "e2488e65-762c-4e64-8511-4de5fc655231",
                 "request_id", "request:123",
+                "response_content_length", 123,
+                "response_body_bytes_read", 42,
                 "error_type", "java.net.SocketTimeoutException",
                 "status", "gateway_unavailable",
                 "app_id", 42,
@@ -106,6 +108,8 @@ public class MoonWakerDiagnosticsTest {
         assertEquals("e2488e65-762c-4e64-8511-4de5fc655231",
                 record.getString("stream_session_id"));
         assertEquals("request:123", record.getString("request_id"));
+        assertEquals(123, record.getInt("response_content_length"));
+        assertEquals(42, record.getInt("response_body_bytes_read"));
         assertEquals("java.net.SocketTimeoutException", record.getString("error_type"));
         assertEquals("gateway_unavailable", record.getString("status"));
         assertEquals(42, record.getInt("app_id"));

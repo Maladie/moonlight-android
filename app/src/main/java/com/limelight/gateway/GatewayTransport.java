@@ -14,6 +14,7 @@ import java.io.InputStream;
 import java.io.InterruptedIOException;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.ProtocolException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.security.GeneralSecurityException;
@@ -285,12 +286,18 @@ public final class GatewayTransport {
     }
 
     static byte[] readBounded(InputStream input, int limit) throws IOException {
+        return readBounded(input, limit, null);
+    }
+
+    static byte[] readBounded(InputStream input, int limit, int[] bytesRead)
+            throws IOException {
         ByteArrayOutputStream output = new ByteArrayOutputStream();
         byte[] buffer = new byte[8192];
         int read;
         int total = 0;
         while ((read = input.read(buffer)) >= 0) {
             total += read;
+            if (bytesRead != null) bytesRead[0] = total;
             if (total > limit) throw new ResponseTooLargeException(limit);
             output.write(buffer, 0, read);
         }
@@ -368,47 +375,123 @@ public final class GatewayTransport {
             recordRequest("request.started", method, path, effectiveRequestId, connection,
                     0, startedNanos, null);
         }
-        HttpsURLConnection http = null;
-        int status = 0;
-        try {
-            http = open(endpoint, path, trustManager, readTimeoutMs);
-            http.setRequestMethod(method);
-            applyHeaders(http, buildRequestHeaders(
-                    connection, post, connection == null, effectiveRequestId));
-            if (post) {
-                byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
-                http.setDoOutput(true);
-                http.setFixedLengthStreamingMode(payload.length);
-                try (OutputStream output = http.getOutputStream()) {
-                    output.write(payload);
+        for (int attempt = 0; attempt < 2; attempt++) {
+            HttpsURLConnection http = null;
+            int status = 0;
+            long responseContentLength = -1;
+            int[] responseBytesRead = {0};
+            String phase = "open";
+            try {
+                http = open(endpoint, path, trustManager, readTimeoutMs);
+                http.setRequestMethod(method);
+                applyHeaders(http, buildRequestHeaders(
+                        connection, post, connection == null, effectiveRequestId));
+                if (post) {
+                    byte[] payload = body.toString().getBytes(StandardCharsets.UTF_8);
+                    http.setDoOutput(true);
+                    http.setFixedLengthStreamingMode(payload.length);
+                    try (OutputStream output = http.getOutputStream()) {
+                        output.write(payload);
+                    }
                 }
+                phase = "response_code";
+                status = http.getResponseCode();
+                responseContentLength = http.getContentLengthLong();
+                phase = "response_stream";
+                InputStream input = status >= 400 ? http.getErrorStream() : http.getInputStream();
+                phase = "response_body";
+                byte[] raw = input != null
+                        ? readAndClose(input, JSON_LIMIT, responseBytesRead) : new byte[0];
+                phase = "json_decode";
+                JSONObject response = decodeJsonResponse(status, raw);
+                if (connection == null
+                        && (trustManager.seenFingerprint == null
+                        || trustManager.seenFingerprint.isEmpty())) {
+                    throw new GatewayException("The gateway did not present a certificate.", 0);
+                }
+                if (post) {
+                    recordRequest("request.completed", method, path, effectiveRequestId, connection,
+                            status, startedNanos, null);
+                }
+                if (attempt > 0) {
+                    recordRequest("request.recovered", method, path, effectiveRequestId, connection,
+                            status, startedNanos, null);
+                }
+                return response;
+            } catch (GeneralSecurityException error) {
+                IOException wrapped = new IOException("Unable to initialize gateway TLS.", error);
+                recordRequest("request.failed", method, path, effectiveRequestId, connection,
+                        status, startedNanos, wrapped);
+                throw wrapped;
+            } catch (IOException | RuntimeException error) {
+                boolean threadInterrupted = Thread.currentThread().isInterrupted();
+                if (status > 0 && ("response_stream".equals(phase)
+                        || "response_body".equals(phase))) {
+                    MoonWakerDiagnostics.record("ERROR", "android.gateway",
+                            "response_body.failed", "method", method,
+                            "route", diagnosticRoute(path),
+                            "request_id", effectiveRequestId, "http_status", status,
+                            "response_content_length", responseContentLength >= 0
+                                    ? responseContentLength : null,
+                            "response_body_bytes_read", responseBytesRead[0],
+                            "error_type", error.getClass().getName());
+                }
+                if (attempt == 0 && canRetryTruncatedSuccess(path, body, requestId)
+                        && status >= 200 && status < 300 && "response_body".equals(phase)
+                        && error instanceof ProtocolException && !threadInterrupted
+                        && "unexpected_eof".equals(diagnosticFailureReason(error))) {
+                    MoonWakerDiagnostics.record("WARN", "android.gateway", "request.retrying",
+                            "route", diagnosticRoute(path), "request_id", effectiveRequestId,
+                            "http_status", status, "reason", "unexpected_eof");
+                    continue;
+                }
+                recordRequest("request.failed", method, path, effectiveRequestId, connection,
+                        status, startedNanos, error);
+                MoonWakerDiagnostics.record("ERROR", "android.gateway", "request.failure_detail",
+                        "route", diagnosticRoute(path), "request_id", effectiveRequestId,
+                        "stage", phase, "thread_interrupted", threadInterrupted,
+                        "reason", diagnosticFailureReason(error),
+                        "kind", diagnosticRequestOwner(error));
+                throw error;
+            } finally {
+                if (http != null) http.disconnect();
             }
-            status = http.getResponseCode();
-            InputStream input = status >= 400 ? http.getErrorStream() : http.getInputStream();
-            byte[] raw = input != null ? readAndClose(input, JSON_LIMIT) : new byte[0];
-            JSONObject response = decodeJsonResponse(status, raw);
-            if (connection == null
-                    && (trustManager.seenFingerprint == null
-                    || trustManager.seenFingerprint.isEmpty())) {
-                throw new GatewayException("The gateway did not present a certificate.", 0);
-            }
-            if (post) {
-                recordRequest("request.completed", method, path, effectiveRequestId, connection,
-                        status, startedNanos, null);
-            }
-            return response;
-        } catch (GeneralSecurityException error) {
-            IOException wrapped = new IOException("Unable to initialize gateway TLS.", error);
-            recordRequest("request.failed", method, path, effectiveRequestId, connection,
-                    status, startedNanos, wrapped);
-            throw wrapped;
-        } catch (IOException | RuntimeException error) {
-            recordRequest("request.failed", method, path, effectiveRequestId, connection,
-                    status, startedNanos, error);
-            throw error;
-        } finally {
-            if (http != null) http.disconnect();
         }
+        throw new AssertionError("Unreachable gateway retry state");
+    }
+
+    static boolean canRetryTruncatedSuccess(String path, JSONObject body, String requestId) {
+        if (body == null) return true;
+        if (requestId == null) return false;
+        if ("/api/v1/system/session/ensure".equals(path)) return true;
+        return "/api/v1/control/operation/acquire".equals(path)
+                && ("reauthorize".equals(body.optString("intent"))
+                || "full_quit".equals(body.optString("intent")))
+                && requestId.equals(body.optString("operation_id"));
+    }
+
+    private static String diagnosticFailureReason(Throwable error) {
+        String message = error.getMessage();
+        if (message == null) return "no_message";
+        String lower = message.toLowerCase(Locale.US);
+        if (lower.contains("unexpected end of stream")) return "unexpected_eof";
+        if (lower.contains("unexpected status line")) return "status_line";
+        if (lower.contains("interrupted")) return "interrupted";
+        if (lower.contains("timed out")) return "timeout";
+        if (lower.contains("closed")) return "closed";
+        if (lower.contains("reset")) return "reset";
+        return "other";
+    }
+
+    private static String diagnosticRequestOwner(Throwable error) {
+        for (StackTraceElement frame : error.getStackTrace()) {
+            String owner = frame.getClassName();
+            if (owner.startsWith("com.limelight.console.ConsoleActivity")) return "console";
+            if (owner.startsWith("com.limelight.console.PlayniteTransitionGateway"))
+                return "transition";
+            if (owner.equals("com.limelight.Game")) return "stream";
+        }
+        return "other";
     }
 
     String effectiveRequestId(String requestId) {
@@ -475,8 +558,13 @@ public final class GatewayTransport {
     }
 
     private static byte[] readAndClose(InputStream input, int limit) throws IOException {
+        return readAndClose(input, limit, null);
+    }
+
+    private static byte[] readAndClose(InputStream input, int limit, int[] bytesRead)
+            throws IOException {
         try (InputStream stream = input) {
-            return readBounded(stream, limit);
+            return readBounded(stream, limit, bytesRead);
         }
     }
 

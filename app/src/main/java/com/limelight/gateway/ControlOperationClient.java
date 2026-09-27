@@ -223,5 +223,9 @@ public final class ControlOperationClient {
         public boolean succeeded() {
             return "succeeded".equals(state);
         }
+
+        public boolean providerStopped() {
+            return "provider_stopped".equals(state);
+        }
     }
 }

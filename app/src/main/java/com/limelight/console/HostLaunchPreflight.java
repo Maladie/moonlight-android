@@ -570,6 +570,10 @@ final class HostLaunchPreflight {
             return Result.failed(Stage.INTERACTIVE_SESSION_READY,
                     FailureReason.WINDOWS_IDENTITY_MISMATCH, profile.name);
         }
+        long sessionStarted = clock.now();
+        String lastState = session.state;
+        String lastReason = session.reason;
+        recordSessionState(request, session, 0);
         if (session.isReady()) return Result.ready(null, null);
         if (!session.canPoll()) {
             return Result.failed(Stage.INTERACTIVE_SESSION_READY,
@@ -578,12 +582,20 @@ final class HostLaunchPreflight {
 
         String attemptId = session.attemptId;
         long deadline = clock.now() + SESSION_TIMEOUT_MS;
+        boolean pollErrorRecorded = false;
         while (!cancelled.getAsBoolean() && clock.now() < deadline) {
             if (!waiter.await(session.retryAfterMs, cancelled)) break;
             try {
                 session = gateway.sessionStatus(request.hostId, request.profileId,
                         request.requestId, attemptId);
             } catch (IOException | RuntimeException unavailable) {
+                if (!pollErrorRecorded) {
+                    MoonWakerDiagnostics.record("WARN", "android.host-preflight",
+                            "preflight.session_poll_error", "request_id", request.requestId,
+                            "profile_id", request.profileId,
+                            "error_type", unavailable.getClass().getSimpleName());
+                    pollErrorRecorded = true;
+                }
                 continue;
             }
             if (cancelled.getAsBoolean()) {
@@ -596,6 +608,11 @@ final class HostLaunchPreflight {
                 return Result.failed(Stage.INTERACTIVE_SESSION_READY,
                         FailureReason.WINDOWS_IDENTITY_MISMATCH, profile.name);
             }
+            if (!session.state.equals(lastState) || !session.reason.equals(lastReason)) {
+                recordSessionState(request, session, clock.now() - sessionStarted);
+                lastState = session.state;
+                lastReason = session.reason;
+            }
             if (session.isReady()) return Result.ready(null, null);
             if (!session.canPoll()) {
                 return Result.failed(Stage.INTERACTIVE_SESSION_READY,
@@ -606,6 +623,13 @@ final class HostLaunchPreflight {
         return cancelled.getAsBoolean() ? Result.cancelled()
                 : Result.failed(Stage.INTERACTIVE_SESSION_READY,
                 FailureReason.WINDOWS_SIGN_IN_TIMEOUT, profile.name);
+    }
+
+    private static void recordSessionState(Request request, Session session, long elapsedMs) {
+        MoonWakerDiagnostics.record("INFO", "android.host-preflight",
+                "preflight.session_state", "request_id", request.requestId,
+                "profile_id", request.profileId, "state", session.state,
+                "reason", session.reason, "duration_ms", Math.max(0L, elapsedMs));
     }
 
     private Profile awaitPlayniteProfile(Request request, Profile initial,

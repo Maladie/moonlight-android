@@ -90,6 +90,7 @@ import com.limelight.computers.ComputerManagerService;
 import com.limelight.grid.assets.CachedAppAssetLoader;
 import com.limelight.grid.assets.DiskAssetLoader;
 import com.limelight.grid.assets.NetworkAssetLoader;
+import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
 import com.limelight.gateway.ChildSessionClient;
 import com.limelight.gateway.ControlOperationClient;
@@ -1938,6 +1939,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     @Override
     protected void onDestroy() {
+        MoonWakerDiagnostics.record("INFO", "android.console", "activity.destroyed");
         active = false;
         pendingHostPreparation = null;
         cancelOfflinePinAttempt();
@@ -1964,7 +1966,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         cancelPlayniteArtworkPrefetch();
         if (sessionOrchestrator != null) sessionOrchestrator.close();
         if (gameOperationsController != null) gameOperationsController.close();
-        playniteExecutor.shutdownNow();
+        playniteExecutor.shutdown();
         playniteArtworkExecutor.shutdownNow();
         executor.shutdownNow();
         super.onDestroy();
@@ -8685,7 +8687,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void cancelPlayniteRequest() {
         if (playniteRequest != null) {
-            playniteRequest.cancel(true);
+            playniteRequest.cancel(false);
             playniteRequest = null;
         }
     }

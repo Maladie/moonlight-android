@@ -69,6 +69,18 @@ public class ControlOperationClientTest {
         client.acquire(connection, "op-1", "launch", "stream-1", 7, 0, 0, "");
     }
 
+    @Test public void recoveredProviderStopDoesNotCompleteTheWholeQuit() throws Exception {
+        ControlOperationClient client = new ControlOperationClient((connection, path, body,
+                                                                     requestId, timeout) ->
+                response(requestId, "stream-1", 7, 4, 3,
+                        path.endsWith("reconcile") ? "provider_stopped" : "permitted"));
+        ControlOperationClient.Permit permit = client.acquire(connection, "close", "full_quit",
+                "stream-1", 7, 3, 7, "");
+        ControlOperationClient.Result result = client.reconcile(connection, permit, 7);
+        assertTrue(result.providerStopped());
+        assertFalse(result.succeeded());
+    }
+
     @Test public void parentTerminalAllowsTheBoundedHostChildCleanupToFinish() throws Exception {
         ControlOperationClient client = new ControlOperationClient((connection, path, body,
                                                                      requestId, timeout) -> {

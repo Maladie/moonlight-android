@@ -13,6 +13,7 @@ import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.nvstream.http.NvHTTP;
 
 import java.io.ByteArrayInputStream;
+import java.io.IOException;
 import java.security.cert.CertificateFactory;
 import java.security.cert.X509Certificate;
 import java.util.UUID;
@@ -75,7 +76,18 @@ public final class HostSessionTermination {
                         throw new IllegalStateException("provider_process_mismatch");
                     }
                     effectResultUncertain = true;
-                    provider.stopGameWithinControl(exact, permit);
+                    try {
+                        provider.stopGameWithinControl(exact, permit);
+                    } catch (IOException lostResponse) {
+                        try {
+                            control.complete(gateway, permit, false);
+                        } catch (IOException ignored) {
+                            // The host keeps the exact operation uncertain.
+                        }
+                        if (!control.reconcile(gateway, permit, running).providerStopped()) {
+                            throw lostResponse;
+                        }
+                    }
                     effectResultUncertain = false;
                 }
             }
