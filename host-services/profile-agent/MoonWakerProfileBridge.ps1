@@ -143,14 +143,23 @@ function Write-State([string]$Status) {
             pid = if ($null -ne $process -and -not $process.HasExited) { $process.Id } else { 0 }
         }
     }
-    [ordered]@{
+    $stateJson = [ordered]@{
         profile_id = $ProfileId
         owner = [Security.Principal.WindowsIdentity]::GetCurrent().Name
         supervisor_pid = $PID
         status = $Status
         updated_at = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds()
         components = $components
-    } | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $statePath -Encoding UTF8
+    } | ConvertTo-Json -Depth 8
+    for ($attempt = 0; $attempt -lt 3; $attempt++) {
+        try {
+            $stateJson | Set-Content -LiteralPath $statePath -Encoding UTF8
+            return
+        } catch {
+            if ($attempt -eq 2) { throw }
+            Start-Sleep -Milliseconds 100
+        }
+    }
 }
 
 function Get-CompatiblePythonExecutable {
@@ -273,7 +282,7 @@ function Should-Restart-Component([string]$Name, [bool]$Healthy,
     } else { 0 }
     $failureCount++
     $FailureCounts[$Name] = $failureCount
-    $requiredFailures = if ($Name -eq "vibepollo") { 2 } else { 1 }
+    $requiredFailures = if ($Name -in @("vibepollo", "game-provider")) { 2 } else { 1 }
     return $failureCount -ge $requiredFailures
 }
 
@@ -377,6 +386,11 @@ try {
         Write-State "running"
         Start-Sleep -Seconds 2
     }
+} catch {
+    Write-AgentDiagnosticEvent "supervisor.loop_failed" @{
+        profile_id = $ProfileId; status = "failed"
+    } $_.Exception
+    throw
 } finally {
     Complete-ProfileBridge
     if ($ownsMutex) { try { $mutex.ReleaseMutex() } catch {} }

@@ -1139,6 +1139,72 @@ class GatewayStateTest(unittest.TestCase):
         self.assertEqual("basia", runtime["profile_id"])
         self.assertGreater(runtime["updated_at"], 0)
 
+    @staticmethod
+    def replace_rejected_by_reader():
+        # os.replace onto runtime-status.json while another process holds it open;
+        # the injected error does not identify that process.
+        return PermissionError(13, "Access is denied", "runtime-status.json.tmp", 5,
+                               "runtime-status.json")
+
+    def test_rejected_runtime_status_replace_does_not_deny_authorized_request(self):
+        state = GatewayState(self.config_path, None)
+        state.config["profiles"]["basia"] = {
+            "enabled": True,
+            "discord_bridge": "http://127.0.0.1:8865",
+            "vibepollo_bridge": "http://127.0.0.1:8875",
+            "playnite_bridge": "http://127.0.0.1:8880",
+        }
+        state.request_context.request_id = "request-7"
+        recorder = mock.Mock()
+        with mock.patch.object(wakeplay_gateway.os, "replace",
+                               side_effect=self.replace_rejected_by_reader()), \
+                mock.patch.object(wakeplay_gateway, "DIAGNOSTICS", recorder):
+            self.assertEqual("basia", state.select_profile("basia", record_use=True))
+        self.assertFalse(state.runtime_status_path.exists())
+        deferred = recorder.record.call_args
+        self.assertEqual("runtime-status-write-deferred", deferred.args[0])
+        self.assertEqual("request-7", deferred.kwargs["request_id"])
+        self.assertEqual(5, deferred.kwargs["error_code"])
+
+        self.assertEqual("basia", state.select_profile("basia", record_use=True))
+        runtime = json.loads(state.runtime_status_path.read_text(encoding="utf-8"))
+        self.assertEqual("basia", runtime["profile_id"])
+
+    def test_health_request_succeeds_when_runtime_status_replace_is_rejected(self):
+        state, _client = self.pin_state()
+        state.playnite_health = mock.Mock(return_value=(200, {"ok": True}))
+        with mock.patch.object(wakeplay_gateway.os, "replace",
+                               side_effect=self.replace_rejected_by_reader()):
+            handler, responses = self.request_handler(
+                state, "/api/v1/game-provider/health", "pin-token", "open")
+            handler.do_GET()
+        self.assertEqual([(200, {"ok": True})], responses)
+
+    def test_os_permission_error_is_a_host_fault_not_an_authorization_denial(self):
+        state, _client = self.pin_state()
+        host_path = r"C:\Program Files\MoonWaker\gateway\gateway.json"
+        state.playnite_health = mock.Mock(
+            side_effect=PermissionError(13, "Access is denied", host_path, 5))
+        handler, responses = self.request_handler(
+            state, "/api/v1/game-provider/health", "pin-token", "open")
+        handler.do_GET()
+        self.assertEqual(500, responses[0][0])
+        self.assertNotIn("Program Files", json.dumps(responses[0][1]))
+
+        state.verify_pin = mock.Mock(
+            side_effect=PermissionError(13, "Access is denied", host_path, 5))
+        handler, responses = self.request_handler(
+            state, "/api/v1/profiles/pin/verify", "pin-token", "protected")
+        handler.read_json = lambda: {"pin": "2468"}
+        handler.do_POST()
+        self.assertEqual(500, responses[0][0])
+        self.assertNotIn("Program Files", json.dumps(responses[0][1]))
+
+        handler, responses = self.request_handler(
+            state, "/api/v1/playnite/health", "pin-token", "protected")
+        handler.do_GET()
+        self.assertEqual(403, responses[0][0])
+
     def test_unknown_or_invalid_profile_is_rejected(self):
         state = GatewayState(self.config_path, None)
         with self.assertRaises(ValueError):
@@ -2154,7 +2220,9 @@ class GatewayDiagnosticsTest(unittest.TestCase):
                 "request.failed", level="ERROR", method="POST",
                 route="/api/v1/game/{id}", request_id="req:42",
                 profile_id="living-room", status="failed", http_status=500,
-                duration_ms=12, reason="Bearer secret", Authorization="token")
+                duration_ms=12, response_content_length=123,
+                response_body_bytes_written=0, snapshot_session_count=1,
+                reason="Bearer secret", Authorization="token")
             try:
                 raise RuntimeError("Bearer secret from C:/private/config.json")
             except RuntimeError as error:
@@ -2169,6 +2237,9 @@ class GatewayDiagnosticsTest(unittest.TestCase):
             self.assertEqual("host.gateway", first["component"])
             self.assertEqual("req:42", first["request_id"])
             self.assertEqual("/api/v1/game/{id}", first["route"])
+            self.assertEqual(123, first["response_content_length"])
+            self.assertEqual(0, first["response_body_bytes_written"])
+            self.assertEqual(1, first["snapshot_session_count"])
             self.assertTrue(first["ts"].endswith("Z"))
             self.assertNotIn("reason", first)
             self.assertNotIn("Authorization", first)
@@ -2770,6 +2841,37 @@ class LoginBrokerGatewayTest(unittest.TestCase):
             self.client, "living-room", "request-one", attempt_id)
         self.assertEqual(200, status)
         self.assertEqual("ready", result["state"])
+
+    def test_issued_credential_needs_matching_active_session(self):
+        attempt_id = "0123456789abcdef0123456789abcdef"
+        self.broker.attempt = self.broker.reply(True, "credential_issued")
+        status, result = self.state.session_attempt_status(
+            self.client, "living-room", "request-one", attempt_id)
+        self.assertEqual(202, status)
+        self.assertEqual("credential_issued", result["state"])
+
+        self.broker.profile = self.broker.reply(
+            True, "active", fields={3: "ready", 4: "none"})
+        status, result = self.state.session_attempt_status(
+            self.client, "living-room", "request-one", attempt_id)
+        self.assertEqual(200, status)
+        self.assertEqual("ready", result["state"])
+        self.assertEqual("active", result["session_state"])
+        self.assertEqual(2, len(self.broker.state_calls))
+
+        self.broker.attempt = self.broker.reply(
+            False, "credential_issued", "provider_failed")
+        status, result = self.state.session_attempt_status(
+            self.client, "living-room", "request-one", attempt_id)
+        self.assertEqual(409, status)
+        self.assertEqual("provider_failed", result["reason"])
+
+        self.broker.attempt = self.broker.reply(
+            False, "action_required", "attempt_expired")
+        status, result = self.state.session_attempt_status(
+            self.client, "living-room", "request-one", attempt_id)
+        self.assertEqual(409, status)
+        self.assertEqual("attempt_expired", result["reason"])
 
     def test_cancel_and_profile_summary_expose_coarse_states(self):
         attempt_id = "0123456789abcdef0123456789abcdef"

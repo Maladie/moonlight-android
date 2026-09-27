@@ -4,6 +4,8 @@
 #include <string>
 #include <vector>
 
+bool TestBrokerPipe();
+
 namespace
 {
     void AppendUInt32(std::vector<BYTE>* bytes, DWORD value)
@@ -121,6 +123,26 @@ namespace
         {
             return false;
         }
+        if (!Expect(moonwaker::ResetPendingAttemptNotificationAfterFailure(
+                    L"first", &lastAttempt),
+                L"failed CredentialsChanged releases this attempt for retry") ||
+            !Expect(moonwaker::ShouldNotifyPendingAttempt(L"first", &lastAttempt),
+                L"the same pending attempt is retried after callback failure") ||
+            !Expect(!moonwaker::ShouldNotifyPendingAttempt(L"first", &lastAttempt),
+                L"a successful retry restores duplicate suppression"))
+        {
+            return false;
+        }
+        if (!Expect(moonwaker::ShouldNotifyPendingAttempt(L"second", &lastAttempt),
+                L"new pending attempt replaces the prior dedupe entry") ||
+            !Expect(!moonwaker::ResetPendingAttemptNotificationAfterFailure(
+                    L"first", &lastAttempt) && lastAttempt == L"second",
+                L"late failure for an older attempt preserves the newer entry") ||
+            !Expect(!moonwaker::ShouldNotifyPendingAttempt(L"second", &lastAttempt),
+                L"new attempt remains deduplicated after stale failure"))
+        {
+            return false;
+        }
         lastAttempt.clear(); // SetUserArray/Advise makes enumeration eligible again.
         if (!Expect(moonwaker::ShouldNotifyPendingAttempt(L"first", &lastAttempt),
                 L"user-array readiness allows catch-up for same attempt") ||
@@ -141,7 +163,7 @@ int wmain()
 {
     const bool ok = TestObserveRequest() && TestAcquireRequest() &&
         TestReplyAndUtf8() && TestMalformedReplyRejected() &&
-        TestPendingAttemptNotificationPolicy();
+        TestPendingAttemptNotificationPolicy() && TestBrokerPipe();
     if (ok)
     {
         std::wcout << L"MoonWaker credential-provider protocol tests passed."

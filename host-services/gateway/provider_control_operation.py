@@ -69,7 +69,7 @@ class ProviderControlOperation:
 
 class StreamerControlOperation:
     @staticmethod
-    def _await_idle(proxy, profile_id, timeout=5.0):
+    def _await_idle(proxy, profile_id, timeout=5.0, trace=None):
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -79,23 +79,72 @@ class StreamerControlOperation:
                 ok, observed = proxy(
                     "vibepollo", "/snapshot?force=1",
                     timeout=min(2.0, remaining), profile_id=profile_id)
+                if trace is not None:
+                    session = observed.get("session") if isinstance(observed, dict) else None
+                    clients = ControlOperationPolicy._snapshot_items(
+                        observed.get("clients")) if isinstance(observed, dict) else None
+                    apps = ControlOperationPolicy._snapshot_items(
+                        observed.get("apps")) if isinstance(observed, dict) else None
+                    unavailable = observed.get("control_unavailable_sources") \
+                        if isinstance(observed, dict) else None
+                    trace.update({
+                        "snapshot_attempts": trace.get("snapshot_attempts", 0) + 1,
+                        "snapshot_http_ok": int(bool(ok)),
+                        "snapshot_http_status": 200 if ok else
+                            (observed.get("status") if isinstance(observed, dict)
+                             and type(observed.get("status")) is int else 0),
+                        "snapshot_control_fresh": int(isinstance(observed, dict)
+                                                      and observed.get("control_fresh") is True),
+                        "snapshot_unavailable_source_count": len(unavailable)
+                            if isinstance(unavailable, list) else None,
+                        "snapshot_session_active": int(session["active"])
+                            if isinstance(session, dict) and
+                            type(session.get("active")) is bool else None,
+                        "snapshot_app_running": int(session["app_running"])
+                            if isinstance(session, dict) and
+                            type(session.get("app_running")) is bool else None,
+                        "snapshot_session_count": session.get("count")
+                            if isinstance(session, dict) and
+                            type(session.get("count")) is int else None,
+                        "snapshot_connected_clients": sum(isinstance(item, dict)
+                            and item.get("connected") is True for item in clients)
+                            if clients is not None else None,
+                        "snapshot_running_apps": sum(isinstance(item, dict)
+                            and item.get("running") is True for item in apps)
+                            if apps is not None else None,
+                    })
                 if ok and ControlOperationPolicy.streamer_idle(observed):
                     return True
             except OSError:
-                pass
+                if trace is not None:
+                    trace["snapshot_attempts"] = trace.get("snapshot_attempts", 0) + 1
+                    trace["snapshot_http_ok"] = 0
+                    trace["snapshot_http_status"] = 0
+                    for key in ("snapshot_control_fresh", "snapshot_unavailable_source_count",
+                                "snapshot_session_active", "snapshot_app_running",
+                                "snapshot_session_count", "snapshot_connected_clients",
+                                "snapshot_running_apps"):
+                        trace.pop(key, None)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 return False
             time.sleep(min(0.25, remaining))
 
     @staticmethod
-    def force_close(proxy, profile_id):
+    def force_close(proxy, profile_id, trace=None):
         try:
-            proxy("vibepollo", "/action/close-app", timeout=8.0,
-                  profile_id=profile_id)
+            ok, result = proxy("vibepollo", "/action/close-app", timeout=8.0,
+                               profile_id=profile_id)
+            if trace is not None:
+                trace["close_http_ok"] = int(bool(ok))
+                trace["close_http_status"] = 200 if ok else (
+                    result.get("status") if isinstance(result, dict)
+                    and type(result.get("status")) is int else 0)
         except OSError:
-            pass
-        return StreamerControlOperation._await_idle(proxy, profile_id)
+            if trace is not None:
+                trace["close_http_ok"] = 0
+                trace["close_http_status"] = 0
+        return StreamerControlOperation._await_idle(proxy, profile_id, trace=trace)
 
     @staticmethod
     def close(proxy, profile_id, stream):

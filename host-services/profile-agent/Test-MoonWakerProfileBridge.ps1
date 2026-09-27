@@ -25,8 +25,18 @@ if ($healthyRestart -or [int]$counts["vibepollo"] -ne 0) {
 if (Should-Restart-Component "vibepollo" $false $counts) {
     throw "A post-recovery Vibepollo miss must start a new failure streak."
 }
+if (Should-Restart-Component "game-provider" $false $counts) {
+    throw "A single Game Provider health miss must not interrupt an active launch."
+}
 if (-not (Should-Restart-Component "game-provider" $false $counts)) {
-    throw "Game Provider health remains an immediate restart signal."
+    throw "Two consecutive Game Provider health misses must restart the component."
+}
+$healthyRestart = Should-Restart-Component "game-provider" $true $counts
+if ($healthyRestart -or [int]$counts["game-provider"] -ne 0) {
+    throw "A healthy Game Provider probe must reset its failure streak."
+}
+if (Should-Restart-Component "game-provider" $false $counts) {
+    throw "A post-recovery Game Provider miss must start a new failure streak."
 }
 
 $stateStart = $source.IndexOf("function Write-State")
@@ -45,7 +55,18 @@ if (Test-Path -LiteralPath $statePath) {
     throw "A non-owner wrote shared profile state."
 }
 $script:ownsMutex = $true
+function Set-Content {
+    param([string]$LiteralPath, [string]$Encoding, [Parameter(ValueFromPipeline)][string]$Value)
+    process {
+        $script:writeAttempts++
+        if ($script:writeAttempts -eq 1) { throw [IO.IOException]::new("transient sharing violation") }
+        Microsoft.PowerShell.Management\Set-Content -LiteralPath $LiteralPath -Encoding $Encoding -Value $Value
+    }
+}
+$script:writeAttempts = 0
 Write-State "running"
+Remove-Item Function:\Set-Content
+if ($writeAttempts -ne 2) { throw "The state writer did not retry a transient failure." }
 if (-not (Test-Path -LiteralPath $statePath)) {
     throw "The owning supervisor did not write profile state."
 }

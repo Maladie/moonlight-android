@@ -77,6 +77,56 @@ function Get-FreeTcpPort {
     finally { $listener.Stop() }
 }
 
+function Test-HostControlSingleton {
+    $compiler = "C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe"
+    if (-not (Test-Path -LiteralPath $compiler)) {
+        $compiler = "C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe"
+    }
+    if (-not (Test-Path -LiteralPath $compiler)) {
+        throw ".NET Framework C# compiler was not found for the headless singleton test."
+    }
+
+    $separatorCharacters = [char[]]@([IO.Path]::DirectorySeparatorChar,
+        [IO.Path]::AltDirectorySeparatorChar)
+    $tempParent = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd($separatorCharacters)
+    $testRoot = [IO.Path]::GetFullPath((Join-Path $tempParent `
+        ("MoonWakerHostControlSingletonTest-" + [guid]::NewGuid().ToString("N"))))
+    if ([IO.Directory]::GetParent($testRoot).FullName.TrimEnd($separatorCharacters) -ine $tempParent) {
+        throw "Headless Host Control singleton test directory escaped the temporary parent."
+    }
+    New-Item -ItemType Directory -Path $testRoot -Force | Out-Null
+    try {
+        $testExecutable = Join-Path $testRoot "HostControlSingletonTests.exe"
+        $compilerArguments = @(
+            "/nologo", "/target:exe", "/main:MoonWaker.HostControl.SingletonTests",
+            "/out:$testExecutable", "/reference:System.dll", "/reference:System.Core.dll",
+            "/reference:System.Drawing.dll", "/reference:System.Windows.Forms.dll",
+            "/reference:System.Web.Extensions.dll", "/reference:System.Security.dll",
+            (Join-Path $PSScriptRoot "MoonWakerHostControl.cs"),
+            (Join-Path $PSScriptRoot "Test-MoonWakerHostControlSingleton.cs"))
+        $compilerOutput = & $compiler @compilerArguments 2>&1
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $testExecutable)) {
+            throw ("Headless Host Control singleton test compilation failed: " +
+                ($compilerOutput -join [Environment]::NewLine))
+        }
+        & $testExecutable
+        if ($LASTEXITCODE -ne 0) {
+            throw "Headless Host Control singleton test failed with exit code $LASTEXITCODE."
+        }
+    }
+    finally {
+        $resolvedTestRoot = [IO.Path]::GetFullPath($testRoot)
+        $resolvedTestParent = ([IO.Directory]::GetParent($resolvedTestRoot).FullName).TrimEnd(
+            $separatorCharacters)
+        if ($resolvedTestParent -ine $tempParent -or
+            [IO.Path]::GetFileName($resolvedTestRoot) -notmatch `
+                '^MoonWakerHostControlSingletonTest-[0-9a-f]{32}$') {
+            throw "Refusing to recursively remove an unexpected singleton test directory."
+        }
+        Remove-Item -LiteralPath $resolvedTestRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+}
+
 function Protect-TestValue([string]$Value) {
     Add-Type -AssemblyName System.Security
     $plainBytes = [Text.Encoding]::Unicode.GetBytes($Value)
@@ -90,6 +140,7 @@ function Protect-TestValue([string]$Value) {
 }
 
 try {
+    Test-HostControlSingleton
     New-Item -ItemType Directory -Path $control, $gateway, (Join-Path $profile "game-provider"), `
         (Join-Path $profile "discord"), (Join-Path $profile "vibepollo"), $legendaryState, `
         $foreignProfile -Force | Out-Null
@@ -568,6 +619,21 @@ try {
         throw "Host Control did not send the close-stream request to the active local profile: error=$($closeResult.error); listener_exited=$closeListenerExited; request=$closeRequest"
     }
     $closeListenerProcess = $null
+
+    # A stale runtime-status hint must not choose between profiles of one account.
+    $ambiguousConfig = Get-Content -LiteralPath (Join-Path $gateway "gateway.json") -Raw |
+        ConvertFrom-Json
+    $ambiguousConfig.profiles.foreign.owner_sid = $currentSid
+    $ambiguousConfig.profiles.foreign.windows_account_sid = $currentSid
+    $ambiguousConfig | ConvertTo-Json -Depth 5 |
+        Set-Content -LiteralPath (Join-Path $gateway "gateway.json") -Encoding UTF8
+    & $scriptPath -Action CloseStream -ResultPath $resultPath | Out-Null
+    $ambiguousClose = Get-Content -LiteralPath $resultPath -Raw | ConvertFrom-Json
+    if ($ambiguousClose.ok -or [string]$ambiguousClose.error -notmatch 'jednoznacznie') {
+        throw "Host Control selected a close target from the runtime-status hint: error=$($ambiguousClose.error)"
+    }
+    $gatewayConfig | ConvertTo-Json -Depth 5 |
+        Set-Content -LiteralPath (Join-Path $gateway "gateway.json") -Encoding UTF8
 
     $listenerScript = Join-Path $root "listener.ps1"
     @'

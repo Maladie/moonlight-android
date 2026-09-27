@@ -185,6 +185,61 @@ class ControlOperationTest(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("uncertain", blocked["state"])
 
+    def test_full_quit_recovers_only_exact_retired_provider_stop(self):
+        _status, launch = self.acquire(self.request("transport"))
+        self.complete(launch)
+        token = self.observe_exact_provider_game()
+        _status, permit = self.acquire(self.request(
+            "close", "full_quit", expected_generation=launch["generation"]))
+        active = self.state.control_state["active"]
+        active["effect_request_sha256"] = ControlOperationPolicy.effect_hash(
+            "/game/stop-verified", {"force": False, "game_id": "steam:7",
+                                     "expected_process_token": token})
+        self.complete(permit, False)
+        self.state.provider_control_operation.retire = lambda _active: (
+            True, {"accepted": True, "command": "stop", "stopped_current": True,
+                   "stopped_game_id": "steam:8"})
+        body = {"operation_id": "close", "observed_sunshine_app_id": 7}
+        status, wrong = self.state.control_operation_reconcile(
+            self.client, body, "close")
+        self.assertEqual(409, status)
+        self.assertEqual("terminal_owner_required", wrong["reason"])
+        self.assertEqual("uncertain", active["state"])
+
+        self.state.provider_control_operation.retire = lambda _active: (
+            True, {"accepted": True, "command": "stop", "stopped_current": True,
+                   "stopped_game_id": "steam:7"})
+        status, confirmed = self.state.control_operation_reconcile(
+            self.client, body, "close")
+        self.assertEqual(200, status)
+        self.assertEqual("provider_stopped", confirmed["state"])
+        self.assertEqual("uncertain", active["state"])
+        self.assertEqual(200, self.complete(permit, True)[0])
+        self.assertIsNone(self.state.control_state["stream"])
+
+    def test_full_quit_lost_response_replays_only_exact_pending_permit(self):
+        _status, launch = self.acquire(self.request("transport"))
+        self.complete(launch)
+        self.observe_exact_provider_game()
+        body = self.request("close", "full_quit",
+                            expected_generation=launch["generation"])
+        status, permit = self.acquire(body)
+        self.assertEqual(200, status)
+        generation = self.state.control_state["generation"]
+
+        status, replay = self.acquire(body, 0)
+        self.assertEqual(200, status)
+        self.assertEqual(permit, replay)
+        self.assertEqual(generation, self.state.control_state["generation"])
+
+        status, wrong = self.acquire({**body, "observed_sunshine_app_id": 0}, 0)
+        self.assertEqual(409, status)
+        self.assertEqual("operation_id_reused", wrong["reason"])
+        status, wrong = self.acquire({**body, "sunshine_app_id": 8}, 0)
+        self.assertEqual(409, status)
+        self.assertEqual("operation_id_reused", wrong["reason"])
+        self.assertEqual(200, self.complete(permit, True)[0])
+
     def test_definitive_launch_failure_releases_fence_for_next_play(self):
         _status, permit = self.acquire(self.request("op-rejected"))
         status, failed = self.state.control_operation_complete(self.client, {
@@ -536,6 +591,22 @@ class ControlOperationTest(unittest.TestCase):
             "clients": {"uuid": VIBE_UUID, "connected": True},
             "apps": {"app_id": 7, "running": True},
         }, stream))
+
+    def test_force_close_trace_keeps_close_failure_and_authoritative_idle(self):
+        calls = []
+        def proxy(_name, path, **_kwargs):
+            calls.append(path)
+            if path == "/action/close-app":
+                return False, {"status": 500}
+            return True, {**control_evidence(), "clients": [], "apps": []}
+
+        trace = {}
+        self.assertTrue(StreamerControlOperation.force_close(proxy, "parent", trace))
+        self.assertEqual(["/action/close-app", "/snapshot?force=1"], calls)
+        self.assertEqual(0, trace["close_http_ok"])
+        self.assertEqual(500, trace["close_http_status"])
+        self.assertEqual(1, trace["snapshot_http_ok"])
+        self.assertEqual(0, trace["snapshot_session_count"])
 
     def test_unavailable_or_contradictory_snapshot_is_not_control_evidence(self):
         stream = {"vibepollo_client_uuid": VIBE_UUID, "sunshine_app_id": 7}

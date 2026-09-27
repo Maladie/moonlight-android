@@ -7,6 +7,7 @@ using System.Runtime.InteropServices;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
+using System.Threading;
 using Microsoft.Win32.SafeHandles;
 
 namespace MoonWaker.WindowsLogin
@@ -29,6 +30,10 @@ namespace MoonWaker.WindowsLogin
                 Run("management uses injected validation, secret and session backends", TestManagement);
                 Run("attempts are bound, observable, idempotent and single-use", TestAttemptLifecycle);
                 Run("provider failure deletes the credential and prevents retry", TestProviderFailure);
+                Run("late failure reports do not delete a credential after cancellation", TestLateFailureAfterCancel);
+                Run("late failure after expiry leaves the credential untouched", TestLateFailureAfterExpiry);
+                Run("failure reports cannot delete a replaced credential", TestFailureReportPreservesReplacement);
+                Run("cancellation and expiry win over an in-flight acquire", TestAcquireTerminalRace);
                 Run("attempt expiry is terminal", TestExpiry);
                 Run("MWLB/MWLR v1 framing matches the Configurator contract", TestWireProtocol);
                 Run("session classification handles lock and another active user", TestSessionClassification);
@@ -180,6 +185,149 @@ namespace MoonWaker.WindowsLogin
             using (BrokerReply state = Gateway(harness.Core, BrokerCore.GatewayAttemptState,
                 1, "android-tv", 2, ProfileId, 3, "request-failure", 4, attemptId))
                 AssertFail(state, "action_required", "logon_failed");
+        }
+
+        private static void TestLateFailureAfterCancel()
+        {
+            Harness harness = new Harness();
+            Configure(harness);
+            string attemptId;
+            using (BrokerReply begin = Begin(harness, "request-cancel-issued"))
+                attemptId = (string)begin.Extra[3];
+            using (BrokerReply acquired = Provider(harness.Core, BrokerCore.ProviderAcquire,
+                1, attemptId, 2, "android-tv", 3, ProfileId, 4, "request-cancel-issued"))
+                AssertOk(acquired, "credential_issued");
+            using (BrokerReply cancelled = Gateway(harness.Core, BrokerCore.GatewayCancelAttempt,
+                1, "android-tv", 2, ProfileId, 3, "request-cancel-issued", 4, attemptId))
+                AssertFail(cancelled, "action_required", "attempt_cancelled");
+            using (BrokerReply lateFailure = Provider(harness.Core, BrokerCore.ProviderReport,
+                1, attemptId, 2, "android-tv", 3, ProfileId, 4, "request-cancel-issued",
+                5, "failure", 6, "late_failure"))
+                AssertFail(lateFailure, "action_required", "attempt_cancelled");
+            Assert(harness.Secrets.Contains(ProfileId),
+                "late failure report after cancellation deleted the configured credential");
+        }
+
+        private static void TestFailureReportPreservesReplacement()
+        {
+            Harness harness = new Harness();
+            Configure(harness);
+            string attemptId;
+            using (BrokerReply begin = Begin(harness, "request-replaced"))
+                attemptId = (string)begin.Extra[3];
+            using (BrokerReply acquired = Provider(harness.Core, BrokerCore.ProviderAcquire,
+                1, attemptId, 2, "android-tv", 3, ProfileId, 4, "request-replaced"))
+                AssertOk(acquired, "credential_issued");
+
+            Configure(harness, "replacement-password");
+            using (BrokerReply failed = Provider(harness.Core, BrokerCore.ProviderReport,
+                1, attemptId, 2, "android-tv", 3, ProfileId, 4, "request-replaced",
+                5, "failure", 6, "windows_logon_failed"))
+                AssertFail(failed, "action_required", "windows_logon_failed");
+            using (BrokerReply state = Management(harness.Core,
+                BrokerCore.ManagementCredentialState, 1, ProfileId, 2, Sid, 3, Account))
+                AssertOk(state, "ready");
+
+            using (BrokerReply duplicate = Provider(harness.Core, BrokerCore.ProviderReport,
+                1, attemptId, 2, "android-tv", 3, ProfileId, 4, "request-replaced",
+                5, "failure", 6, "windows_logon_failed"))
+                AssertFail(duplicate, "action_required", "windows_logon_failed");
+            using (BrokerReply state = Management(harness.Core,
+                BrokerCore.ManagementCredentialState, 1, ProfileId, 2, Sid, 3, Account))
+                AssertOk(state, "ready");
+        }
+
+        private static void TestLateFailureAfterExpiry()
+        {
+            DateTime now = new DateTime(2026, 9, 4, 8, 0, 0, DateTimeKind.Utc);
+            Harness harness = new Harness(delegate { return now; }, TimeSpan.FromSeconds(10));
+            Configure(harness);
+            string attemptId;
+            using (BrokerReply begin = Begin(harness, "request-late-failure-after-expiry"))
+                attemptId = (string)begin.Extra[3];
+            using (BrokerReply acquired = Provider(harness.Core, BrokerCore.ProviderAcquire,
+                1, attemptId, 2, "android-tv", 3, ProfileId, 4,
+                "request-late-failure-after-expiry"))
+                AssertOk(acquired, "credential_issued");
+
+            now = now.AddSeconds(11);
+            using (BrokerReply failure = Provider(harness.Core, BrokerCore.ProviderReport,
+                1, attemptId, 2, "android-tv", 3, ProfileId, 4,
+                "request-late-failure-after-expiry", 5, "failure", 6, "logon_failed"))
+                AssertFail(failure, "action_required", "attempt_expired");
+            Assert(harness.Secrets.Contains(ProfileId),
+                "late failure report after expiry deleted the configured credential");
+        }
+
+        private static void TestAcquireTerminalRace()
+        {
+            Harness cancelled = new Harness();
+            Configure(cancelled);
+            string cancelledAttempt;
+            using (BrokerReply begin = Begin(cancelled, "request-cancel-during-acquire"))
+                cancelledAttempt = (string)begin.Extra[3];
+            cancelled.Secrets.BlockNextRead = true;
+            StartBlockedAcquire(cancelled, cancelledAttempt,
+                "request-cancel-during-acquire");
+            using (BrokerReply cancel = Gateway(cancelled.Core, BrokerCore.GatewayCancelAttempt,
+                1, "android-tv", 2, ProfileId, 3, "request-cancel-during-acquire",
+                4, cancelledAttempt))
+                AssertFail(cancel, "action_required", "attempt_cancelled");
+            cancelled.Secrets.ContinueRead.Set();
+            Assert(cancelled.Secrets.AcquireThread.Join(5000),
+                "cancelled acquire did not finish");
+            using (cancelled.Secrets.AcquireReply)
+            {
+                AssertFail(cancelled.Secrets.AcquireReply,
+                    "action_required", "credential_already_issued");
+                Assert(!cancelled.Secrets.AcquireReply.Extra.ContainsKey(4),
+                    "cancelled in-flight acquire returned a password");
+            }
+            using (BrokerReply state = Gateway(cancelled.Core,
+                BrokerCore.GatewayAttemptState, 1, "android-tv", 2, ProfileId,
+                3, "request-cancel-during-acquire", 4, cancelledAttempt))
+                AssertFail(state, "action_required", "attempt_cancelled");
+            Assert(cancelled.Secrets.Contains(ProfileId),
+                "cancelled in-flight acquire deleted the configured credential");
+
+            DateTime now = new DateTime(2026, 9, 4, 8, 0, 0, DateTimeKind.Utc);
+            Harness expired = new Harness(delegate { return now; }, TimeSpan.FromSeconds(10));
+            Configure(expired);
+            string expiredAttempt;
+            using (BrokerReply begin = Begin(expired, "request-expire-during-acquire"))
+                expiredAttempt = (string)begin.Extra[3];
+            expired.Secrets.BlockNextRead = true;
+            StartBlockedAcquire(expired, expiredAttempt,
+                "request-expire-during-acquire");
+            now = now.AddSeconds(11);
+            expired.Secrets.ContinueRead.Set();
+            Assert(expired.Secrets.AcquireThread.Join(5000),
+                "expired acquire did not finish");
+            using (expired.Secrets.AcquireReply)
+            {
+                AssertFail(expired.Secrets.AcquireReply,
+                    "action_required", "credential_already_issued");
+                Assert(!expired.Secrets.AcquireReply.Extra.ContainsKey(4),
+                    "expired in-flight acquire returned a password");
+            }
+            using (BrokerReply state = Gateway(expired.Core,
+                BrokerCore.GatewayAttemptState, 1, "android-tv", 2, ProfileId,
+                3, "request-expire-during-acquire", 4, expiredAttempt))
+                AssertFail(state, "action_required", "attempt_expired");
+            Assert(expired.Secrets.Contains(ProfileId),
+                "expired in-flight acquire deleted the configured credential");
+        }
+
+        private static void StartBlockedAcquire(Harness harness, string attemptId,
+            string requestId)
+        {
+            harness.Secrets.AcquireThread = new Thread(delegate() {
+                harness.Secrets.AcquireReply = Provider(harness.Core, BrokerCore.ProviderAcquire,
+                    1, attemptId, 2, "android-tv", 3, ProfileId, 4, requestId);
+            });
+            harness.Secrets.AcquireThread.Start();
+            Assert(harness.Secrets.ReadEntered.WaitOne(5000),
+                "provider acquire did not enter the blocked secret read");
         }
 
         private static void TestExpiry()
@@ -522,7 +670,13 @@ namespace MoonWaker.WindowsLogin
 
         private static void Configure(Harness harness)
         {
-            char[] password = Password.ToCharArray();
+            Configure(harness, Password);
+        }
+
+        private static void Configure(Harness harness, string value)
+        {
+            harness.Accounts.ExpectedPassword = value;
+            char[] password = value.ToCharArray();
             try
             {
                 using (BrokerReply reply = Management(harness.Core, BrokerCore.ManagementConfigure,
@@ -716,6 +870,11 @@ namespace MoonWaker.WindowsLogin
         {
             private readonly Dictionary<string, CredentialMaterial> values =
                 new Dictionary<string, CredentialMaterial>(StringComparer.Ordinal);
+            internal bool BlockNextRead;
+            internal readonly ManualResetEvent ReadEntered = new ManualResetEvent(false);
+            internal readonly ManualResetEvent ContinueRead = new ManualResetEvent(false);
+            internal Thread AcquireThread;
+            internal BrokerReply AcquireReply;
 
             public void Put(ProfileIdentity identity, char[] password)
             {
@@ -725,6 +884,13 @@ namespace MoonWaker.WindowsLogin
 
             public bool TryRead(string profileId, out CredentialMaterial credential)
             {
+                if (BlockNextRead)
+                {
+                    BlockNextRead = false;
+                    ReadEntered.Set();
+                    if (!ContinueRead.WaitOne(5000))
+                        throw new TimeoutException("Test did not release blocked secret read.");
+                }
                 CredentialMaterial stored;
                 if (!values.TryGetValue(profileId, out stored))
                 {

@@ -52,6 +52,8 @@ $providerProject = Join-Path $PSScriptRoot 'MoonWakerCredentialProvider.vcxproj'
 $protocolTestProject = Join-Path $PSScriptRoot 'CredentialProviderProtocolTests.vcxproj'
 $providerSource = Join-Path $PSScriptRoot 'MoonWakerCredentialProvider.cpp'
 $protocolSource = Join-Path $PSScriptRoot 'BrokerProtocol.cpp'
+$pipeSource = Join-Path $PSScriptRoot 'BrokerPipe.cpp'
+$pipeTestSource = Join-Path $PSScriptRoot 'BrokerPipeTests.cpp'
 $protocolTestSource = Join-Path $PSScriptRoot 'CredentialProviderProtocolTests.cpp'
 $moduleDefinition = Join-Path $PSScriptRoot 'MoonWakerCredentialProvider.def'
 $dll = Join-Path $output 'MoonWakerCredentialProvider.dll'
@@ -74,7 +76,7 @@ if ($msbuild) {
         @('-O2', '-DNDEBUG')
     }
     & $compiler @commonArguments @configurationArguments '-shared' '-static' '-o' $dll `
-        $providerSource $protocolSource $moduleDefinition `
+        $providerSource $protocolSource $pipeSource $moduleDefinition `
         '-lcredui' '-lsecur32' '-ladvapi32' '-lole32' '-luuid'
     if ($LASTEXITCODE -ne 0) { throw 'MoonWaker Credential Provider LLVM-MinGW build failed.' }
 }
@@ -91,7 +93,7 @@ if (!$SkipTests) {
         if ($LASTEXITCODE -ne 0) { throw 'Credential Provider protocol test build failed.' }
     } else {
         & $compiler @commonArguments @configurationArguments '-static' '-municode' '-o' $testExecutable `
-            $protocolTestSource $protocolSource
+            $protocolTestSource $protocolSource $pipeSource $pipeTestSource
         if ($LASTEXITCODE -ne 0) { throw 'Credential Provider protocol test LLVM-MinGW build failed.' }
     }
     Assert-X64Pe $testExecutable

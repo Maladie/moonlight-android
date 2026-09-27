@@ -31,7 +31,9 @@ class VibepolloBridgeContractTest(unittest.TestCase):
         source = self.source()
 
         self.assertIn("$script:ApiProcessTimeoutMs = 5000", source)
-        self.assertIn("WaitForExit($script:ApiProcessTimeoutMs)", source)
+        self.assertIn("$remainingMs = $TimeoutMs - [int]$deadline.ElapsedMilliseconds", source)
+        self.assertIn("WaitForExit($remainingMs)", source)
+        self.assertIn("Get-ForcedControlSources -TimeoutMs ($controlDeadlineMs - 100)", source)
 
     def test_identity_proof_route_uses_trusted_state_and_live_client(self):
         source = self.source()

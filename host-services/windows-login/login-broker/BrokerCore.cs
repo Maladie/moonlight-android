@@ -386,6 +386,9 @@ namespace MoonWaker.WindowsLogin
         internal DateTime CreatedUtc;
         internal string State;
         internal string Reason;
+        internal bool AcquireStarted;
+        internal bool ProviderFailureReported;
+        internal long CredentialGeneration;
     }
 
     internal sealed class AttemptLedger
@@ -565,7 +568,7 @@ namespace MoonWaker.WindowsLogin
                 Expire(now);
                 AttemptRecord oldest = null;
                 foreach (AttemptRecord record in byId.Values)
-                    if (record.State == "pending" &&
+                    if (record.State == "pending" && !record.AcquireStarted &&
                         (oldest == null || record.CreatedUtc < oldest.CreatedUtc))
                         oldest = record;
                 pending = oldest == null ? null : Copy(oldest);
@@ -607,6 +610,7 @@ namespace MoonWaker.WindowsLogin
                 ExpireOne(record, utcNow());
                 if (record.State == "pending" || record.State == "credential_issued")
                 {
+                    record.AcquireStarted = false;
                     record.State = "action_required";
                     record.Reason = "attempt_cancelled";
                 }
@@ -614,33 +618,75 @@ namespace MoonWaker.WindowsLogin
             }
         }
 
-        internal AttemptRecord Acquire(string attemptId, string clientId, string profileId,
+        internal AttemptRecord BeginAcquire(string attemptId, string clientId, string profileId,
             string requestId)
         {
             lock (gate)
             {
                 AttemptRecord record = FindProvider(attemptId, clientId, profileId, requestId);
                 ExpireOne(record, utcNow());
-                if (record.State != "pending")
+                if (record.State != "pending" || record.AcquireStarted)
                     throw new BrokerFault("action_required", "credential_already_issued");
-                record.State = "credential_issued";
+                record.AcquireStarted = true;
                 return Copy(record);
             }
         }
 
-        internal AttemptRecord Report(string attemptId, string clientId, string profileId,
-            string requestId, bool succeeded, string reason)
+        internal AttemptRecord CompleteAcquire(string attemptId, string clientId,
+            string profileId, string requestId, long credentialGeneration)
         {
             lock (gate)
             {
                 AttemptRecord record = FindProvider(attemptId, clientId, profileId, requestId);
                 ExpireOne(record, utcNow());
-                if (record.State == "completed" || record.State == "action_required")
+                if (record.State != "pending" || !record.AcquireStarted)
+                    throw new BrokerFault("action_required", "credential_already_issued");
+                record.AcquireStarted = false;
+                record.State = "credential_issued";
+                record.CredentialGeneration = credentialGeneration;
+                return Copy(record);
+            }
+        }
+
+        internal AttemptRecord FailAcquire(string attemptId, string clientId,
+            string profileId, string requestId, string reason)
+        {
+            lock (gate)
+            {
+                AttemptRecord record = FindProvider(attemptId, clientId, profileId, requestId);
+                ExpireOne(record, utcNow());
+                if (record.State == "pending" && record.AcquireStarted)
+                {
+                    record.AcquireStarted = false;
+                    record.State = "action_required";
+                    record.Reason = SafeReason(reason);
+                }
+                return Copy(record);
+            }
+        }
+
+        internal AttemptRecord Report(string attemptId, string clientId, string profileId,
+            string requestId, bool succeeded, string reason, out bool deleteCredential)
+        {
+            deleteCredential = false;
+            lock (gate)
+            {
+                AttemptRecord record = FindProvider(attemptId, clientId, profileId, requestId);
+                ExpireOne(record, utcNow());
+                if (record.State == "completed")
                     return Copy(record);
+                if (record.State == "action_required")
+                {
+                    deleteCredential = !succeeded && record.ProviderFailureReported &&
+                        String.Equals(record.Reason, SafeReason(reason), StringComparison.Ordinal);
+                    return Copy(record);
+                }
                 if (record.State != "credential_issued")
                     throw new BrokerFault("action_required", "credential_not_issued");
                 record.State = succeeded ? "completed" : "action_required";
                 record.Reason = succeeded ? "none" : SafeReason(reason);
+                record.ProviderFailureReported = !succeeded;
+                deleteCredential = !succeeded;
                 return Copy(record);
             }
         }
@@ -654,21 +700,11 @@ namespace MoonWaker.WindowsLogin
                 ExpireOne(record, utcNow());
                 if (record.State == "pending" || record.State == "credential_issued")
                 {
+                    record.AcquireStarted = false;
                     record.State = "action_required";
                     record.Reason = "attempt_cancelled";
                 }
                 return Copy(record);
-            }
-        }
-
-        internal void Fail(string attemptId, string reason)
-        {
-            lock (gate)
-            {
-                AttemptRecord record;
-                if (!byId.TryGetValue(attemptId, out record)) return;
-                record.State = "action_required";
-                record.Reason = SafeReason(reason);
             }
         }
 
@@ -719,6 +755,7 @@ namespace MoonWaker.WindowsLogin
             if ((record.State == "pending" || record.State == "credential_issued") &&
                 now - record.CreatedUtc >= lifetime)
             {
+                record.AcquireStarted = false;
                 record.State = "action_required";
                 record.Reason = "attempt_expired";
             }
@@ -783,7 +820,10 @@ namespace MoonWaker.WindowsLogin
                 Id = value.Id, ClientId = value.ClientId, ActorProfileId = value.ActorProfileId,
                 RequestId = value.RequestId,
                 Identity = value.Identity, CreatedUtc = value.CreatedUtc,
-                State = value.State, Reason = value.Reason
+                State = value.State, Reason = value.Reason,
+                AcquireStarted = value.AcquireStarted,
+                ProviderFailureReported = value.ProviderFailureReported,
+                CredentialGeneration = value.CredentialGeneration
             };
         }
     }
@@ -819,6 +859,9 @@ namespace MoonWaker.WindowsLogin
         private readonly AttemptLedger attempts;
         private readonly Func<bool> providerReady;
         private readonly Func<string, string> childProfileApi;
+        private readonly object credentialGate = new object();
+        private readonly Dictionary<string, long> credentialGenerations =
+            new Dictionary<string, long>(StringComparer.Ordinal);
 
         internal BrokerCore(IAccountValidator accounts, ISecretStore secrets,
             ISessionStateBackend sessions, AttemptLedger attempts)
@@ -857,7 +900,11 @@ namespace MoonWaker.WindowsLogin
                     try
                     {
                         accounts.Validate(identity, password);
-                        secrets.Put(identity, password);
+                        lock (credentialGate)
+                        {
+                            secrets.Put(identity, password);
+                            AdvanceCredentialGeneration(identity.ProfileId);
+                        }
                         return BrokerReply.Ok("ready");
                     }
                     finally { Array.Clear(password, 0, password.Length); }
@@ -877,14 +924,18 @@ namespace MoonWaker.WindowsLogin
                 }
                 if (request.Operation == ManagementDelete)
                 {
-                    CredentialMaterial stored;
-                    if (secrets.TryRead(identity.ProfileId, out stored))
+                    lock (credentialGate)
                     {
-                        using (stored)
-                            if (!identity.Same(stored.Identity))
-                                return BrokerReply.Fail("action_required", "credential_identity_mismatch");
+                        CredentialMaterial stored;
+                        if (secrets.TryRead(identity.ProfileId, out stored))
+                        {
+                            using (stored)
+                                if (!identity.Same(stored.Identity))
+                                    return BrokerReply.Fail("action_required", "credential_identity_mismatch");
+                        }
+                        secrets.Delete(identity.ProfileId);
+                        AdvanceCredentialGeneration(identity.ProfileId);
                     }
-                    secrets.Delete(identity.ProfileId);
                     return BrokerReply.Ok("deleted");
                 }
                 if (request.Operation == ManagementCredentialState)
@@ -1091,21 +1142,43 @@ namespace MoonWaker.WindowsLogin
                 string requestId = request.Text(4, 128);
                 if (request.Operation == ProviderAcquire)
                 {
-                    AttemptRecord attempt = attempts.Acquire(attemptId, clientId, profileId,
+                    AttemptRecord attempt = attempts.BeginAcquire(attemptId, clientId, profileId,
                         requestId);
                     CredentialMaterial credential = null;
-                    if (!secrets.TryRead(profileId, out credential) ||
-                        !attempt.Identity.Same(credential.Identity))
+                    try
+                    {
+                        lock (credentialGate)
+                        {
+                            if (!secrets.TryRead(profileId, out credential) || credential == null ||
+                                !attempt.Identity.Same(credential.Identity))
+                            {
+                                if (credential != null)
+                                {
+                                    credential.Dispose();
+                                    credential = null;
+                                }
+                                AttemptRecord failed = attempts.FailAcquire(attemptId, clientId,
+                                    profileId, requestId, "credential_missing");
+                                return BrokerReply.Fail(failed.State, failed.Reason);
+                            }
+                            using (credential)
+                            {
+                                attempt = attempts.CompleteAcquire(attemptId, clientId,
+                                    profileId, requestId, CredentialGeneration(profileId));
+                                return BrokerReply.Ok("credential_issued")
+                                    .Add(3, attempt.Identity.AccountName)
+                                    .Add(4, (char[])credential.Password.Clone())
+                                    .Add(5, attempt.Identity.Sid);
+                            }
+                        }
+                    }
+                    catch
                     {
                         if (credential != null) credential.Dispose();
-                        attempts.Fail(attemptId, "credential_missing");
-                        return BrokerReply.Fail("action_required", "credential_missing");
+                        attempts.FailAcquire(attemptId, clientId, profileId,
+                            requestId, "broker_operation_failed");
+                        throw;
                     }
-                    using (credential)
-                        return BrokerReply.Ok("credential_issued")
-                            .Add(3, attempt.Identity.AccountName)
-                            .Add(4, (char[])credential.Password.Clone())
-                            .Add(5, attempt.Identity.Sid);
                 }
                 if (request.Operation == ProviderReport)
                 {
@@ -1113,9 +1186,20 @@ namespace MoonWaker.WindowsLogin
                     bool success = String.Equals(outcome, "success", StringComparison.Ordinal);
                     if (!success && !String.Equals(outcome, "failure", StringComparison.Ordinal))
                         throw new BrokerFault("action_required", "invalid_provider_outcome");
+                    bool deleteCredential;
                     AttemptRecord attempt = attempts.Report(attemptId, clientId, profileId,
-                        requestId, success, request.OptionalText(6, 80));
-                    if (!success && attempt.State == "action_required") secrets.Delete(profileId);
+                        requestId, success, request.OptionalText(6, 80), out deleteCredential);
+                    if (deleteCredential)
+                    {
+                        lock (credentialGate)
+                        {
+                            if (CredentialGeneration(profileId) == attempt.CredentialGeneration)
+                            {
+                                secrets.Delete(profileId);
+                                AdvanceCredentialGeneration(profileId);
+                            }
+                        }
+                    }
                     return attempt.State == "action_required"
                         ? BrokerReply.Fail(attempt.State, attempt.Reason)
                         : BrokerReply.Ok(attempt.State);
@@ -1131,6 +1215,18 @@ namespace MoonWaker.WindowsLogin
         {
             return new ProfileIdentity(request.Text(profileField, 64),
                 request.Text(sidField, 184), request.Text(accountField, 256));
+        }
+
+        private long CredentialGeneration(string profileId)
+        {
+            long generation;
+            return credentialGenerations.TryGetValue(profileId, out generation)
+                ? generation : 0;
+        }
+
+        private void AdvanceCredentialGeneration(string profileId)
+        {
+            credentialGenerations[profileId] = CredentialGeneration(profileId) + 1;
         }
 
         private static BrokerReply AttemptReply(AttemptRecord attempt)

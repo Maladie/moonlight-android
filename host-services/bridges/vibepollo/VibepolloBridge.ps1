@@ -16,6 +16,7 @@ $script:LogDirectory = Join-Path $script:Root "logs"
 $script:ExportDirectory = Join-Path $script:Root "exports"
 New-Item -ItemType Directory -Path $script:LogDirectory, $script:ExportDirectory -Force | Out-Null
 $script:LogPath = Join-Path $script:LogDirectory ("bridge_{0}.log" -f (Get-Date -Format "yyyyMMdd"))
+$script:ControlProbeLogPath = Join-Path $script:LogDirectory 'control-snapshot-diagnostics.jsonl'
 
 function Write-BridgeLog {
     param([string]$Message, [ValidateSet("DEBUG", "INFO", "WARN", "ERROR")][string]$Level = "INFO")
@@ -97,6 +98,7 @@ if (-not $script:PythonExe -or -not (Test-Path -LiteralPath $script:PythonExe)) 
 $script:Cache = @{}
 $script:CacheTime = @{}
 $script:DeniedKeys = @{}
+$script:ControlSourceProbe = [ordered]@{}
 $script:LastApiError = ""
 $script:LastApiSuccess = $null
 $script:ApiUnavailableUntil = [datetime]::MinValue
@@ -112,17 +114,22 @@ $script:GameRecordIdPattern = '^(?:[a-z][a-z0-9_-]{1,31}:[a-z0-9._-]{1,128}|[0-9
 
 function Invoke-VibepolloApi {
     param(
-        [Parameter(Mandatory)][string]$Path,
+        [string]$Path = '',
         [ValidateSet("GET", "POST", "PATCH", "DELETE")][string]$Method = "GET",
         $Body = $null,
         [switch]$Binary,
         [switch]$RawText,
+        [switch]$ControlBatch,
         [int]$TimeoutMs = $script:ApiProcessTimeoutMs
     )
-    $transportRequest = [ordered]@{
-        base_url = $script:BaseUrl; path = $Path; method = $Method
-        token = $script:ApiToken; body = $Body
+    $transportRequest = if ($ControlBatch) {
+        [ordered]@{ base_url = $script:BaseUrl; token = $script:ApiToken
+            control_snapshot = $true }
+    } else {
+        [ordered]@{ base_url = $script:BaseUrl; path = $Path; method = $Method
+            token = $script:ApiToken; body = $Body }
     }
+    $deadline = [Diagnostics.Stopwatch]::StartNew()
     try {
         $startInfo = [Diagnostics.ProcessStartInfo]::new()
         $startInfo.FileName = $script:PythonExe
@@ -139,10 +146,11 @@ function Invoke-VibepolloApi {
         $stderrTask = $process.StandardError.ReadToEndAsync()
         $process.StandardInput.Write((ConvertTo-JsonSafe $transportRequest 8))
         $process.StandardInput.Close()
-        # VibepolloTransport has a three-second urllib deadline. Keep the
-        # outer process alive long enough for that deadline plus startup/output
-        # overhead, while retaining a bounded listener operation.
-        if (-not $process.WaitForExit($TimeoutMs)) {
+        # Include process startup and stdin delivery in the caller's deadline.
+        # The forced control snapshot must release the single-threaded listener
+        # before the supervisor's two-second health boundary.
+        $remainingMs = $TimeoutMs - [int]$deadline.ElapsedMilliseconds
+        if ($remainingMs -le 0 -or -not $process.WaitForExit($remainingMs)) {
             try { $process.Kill() } catch {}
             throw "TLS transport timed out"
         }
@@ -151,6 +159,15 @@ function Invoke-VibepolloApi {
         if (-not $stdout) { throw "TLS transport returned no data. $stderr" }
         $response = $stdout | ConvertFrom-Json
         if (-not $response.ok) { throw "HTTP $($response.status): $($response.error)" }
+        if ($ControlBatch) {
+            if (@($response.control_sources.PSObject.Properties | Where-Object {
+                        $_.Value.ok -eq $true }).Count -gt 0) {
+                $script:LastApiError = ""
+                $script:LastApiSuccess = Get-Date
+                $script:ApiUnavailableUntil = [datetime]::MinValue
+            }
+            return $response.control_sources
+        }
         $script:LastApiError = ""
         $script:LastApiSuccess = Get-Date
         $script:ApiUnavailableUntil = [datetime]::MinValue
@@ -168,10 +185,52 @@ function Invoke-VibepolloApi {
     }
 }
 
+function Get-ForcedControlSources {
+    param([int]$TimeoutMs = 1400)
+    $sources = @('session', 'rtsp', 'webrtc', 'apps', 'clients')
+    $values = [ordered]@{}
+    $timer = [Diagnostics.Stopwatch]::StartNew()
+    try {
+        $batch = Invoke-VibepolloApi -ControlBatch -TimeoutMs $TimeoutMs
+        foreach ($source in $sources) {
+            $property = $batch.PSObject.Properties[$source]
+            $row = if ($null -ne $property) { $property.Value } else { $null }
+            $outcome = 'transport_error'
+            $value = $null
+            if ($null -ne $row) {
+                if ($row.ok -eq $true -and [int]$row.status -eq 200) {
+                    try {
+                        $value = [string]$row.content | ConvertFrom-Json -ErrorAction Stop
+                        $outcome = 'ok'
+                    } catch { $outcome = 'schema_invalid' }
+                } elseif ($row.timeout -eq $true) {
+                    $outcome = 'timeout'
+                } elseif ([int]$row.status -ge 400 -and [int]$row.status -le 599) {
+                    $outcome = 'http_' + [string][int]$row.status
+                }
+                $duration = [Math]::Max(0, [int]$row.duration_ms)
+            } else { $duration = 0 }
+            $values[$source] = $value
+            $script:ControlSourceProbe[$source] = [pscustomobject]@{
+                outcome = $outcome; elapsed_ms = $duration }
+        }
+    } catch {
+        $outcome = if ($_.Exception.Message -match '(?i)timed out|timeout') {
+            'timeout' } else { 'transport_error' }
+        foreach ($source in $sources) {
+            $values[$source] = $null
+            $script:ControlSourceProbe[$source] = [pscustomobject]@{
+                outcome = $outcome; elapsed_ms = [int]$timer.ElapsedMilliseconds }
+        }
+    }
+    return $values
+}
+
 function Get-CachedApi {
     param([string]$Key, [string]$Path, [double]$TtlSeconds, [switch]$Force,
         [switch]$CacheOnly, [switch]$RawText,
         [int]$TimeoutMs = $script:ApiProcessTimeoutMs)
+    $controlProbe = [bool]$Force -and $Key -in @('session', 'rtsp', 'webrtc', 'apps', 'clients')
     $now = Get-Date
     if ($CacheOnly) {
         return $(if ($script:Cache.ContainsKey($Key)) { $script:Cache[$Key] } else { $null })
@@ -181,17 +240,38 @@ function Get-CachedApi {
             return $(if ($script:Cache.ContainsKey($Key)) { $script:Cache[$Key] } else { $null })
         }
     }
-    if ($script:DeniedKeys.ContainsKey($Key)) { return $null }
+    if ($script:DeniedKeys.ContainsKey($Key)) {
+        if ($controlProbe) {
+            $script:ControlSourceProbe[$Key] = [pscustomobject]@{
+                outcome = 'denied_cached'; elapsed_ms = 0 }
+        }
+        return $null
+    }
     $fresh = $script:Cache.ContainsKey($Key) -and $script:CacheTime.ContainsKey($Key) -and
         (($now - $script:CacheTime[$Key]).TotalSeconds -lt $TtlSeconds)
     if (-not $Force -and $fresh) { return $script:Cache[$Key] }
+    $timer = [Diagnostics.Stopwatch]::StartNew()
     try {
         $value = Invoke-VibepolloApi -Path $Path -RawText:$RawText -TimeoutMs $TimeoutMs
+        if ($controlProbe) {
+            $script:ControlSourceProbe[$Key] = [pscustomobject]@{
+                outcome = 'ok'; elapsed_ms = [int]$timer.ElapsedMilliseconds }
+        }
         $script:Cache[$Key] = $value
         $script:CacheTime[$Key] = $now
         return $value
     }
     catch {
+        if ($controlProbe) {
+            $message = [string]$_.Exception.Message
+            $outcome = if ($message -match 'HTTP ([0-9]{3})') {
+                'http_' + $Matches[1]
+            } elseif ($message -match '(?i)timed out|timeout') {
+                'timeout'
+            } else { 'transport_error' }
+            $script:ControlSourceProbe[$Key] = [pscustomobject]@{
+                outcome = $outcome; elapsed_ms = [int]$timer.ElapsedMilliseconds }
+        }
         if ($_.Exception.Message -match 'HTTP 403') {
             $script:DeniedKeys[$Key] = $true
             Write-BridgeLog "Disabling unavailable optional source '$Key' until bridge restart" "INFO"
@@ -356,54 +436,29 @@ function Get-DerivedSessionMetrics {
 
 function Build-Snapshot {
     param([switch]$Force)
+    if ($Force) { $script:ControlSourceProbe = [ordered]@{} }
     # A forced snapshot is control evidence. Keep it bounded to the five
     # authoritative sources below; optional UI telemetry may only reuse cache.
-    # Query every control source even when one endpoint stalls. Previously one
-    # source could spend the entire shared allowance and skip all later evidence,
-    # making normal closure permanently uncertain. The aggregate remains below
-    # the supervisor's two-second health boundary.
+    # One helper process fetches them concurrently within the supervisor's
+    # two-second health boundary; missing sources remain fail-closed.
     $controlDeadlineMs = 1500
-    $controlRequestTimeoutMs = 250
-    $controlTimer = [Diagnostics.Stopwatch]::StartNew()
-    $metadata = Get-CachedApi "metadata" "/api/metadata" 60 -CacheOnly:$Force
-    $remainingMs = $controlDeadlineMs - [int]$controlTimer.ElapsedMilliseconds
-    $sessionStatus = if (-not $Force) {
-        Get-CachedApi "session" "/api/session/status" 2
-    } elseif ($remainingMs -gt 0) {
-        Get-CachedApi "session" "/api/session/status" 2 -Force `
-            -TimeoutMs ([Math]::Min($controlRequestTimeoutMs, $remainingMs))
+    $controlSources = if ($Force) {
+        Get-ForcedControlSources -TimeoutMs ($controlDeadlineMs - 100)
     } else { $null }
+    $metadata = Get-CachedApi "metadata" "/api/metadata" 60 -CacheOnly:$Force
+    $sessionStatus = if ($Force) { $controlSources['session'] } else {
+        Get-CachedApi "session" "/api/session/status" 2 }
     $hostStats = Get-CachedApi "hoststats" "/api/host/stats" 2 -CacheOnly:$Force
     $hostInfo = Get-CachedApi "hostinfo" "/api/host/info" 300 -CacheOnly:$Force
-    $remainingMs = $controlDeadlineMs - [int]$controlTimer.ElapsedMilliseconds
-    $rtsp = if (-not $Force) {
-        Get-CachedApi "rtsp" "/api/rtsp/sessions" 2
-    } elseif ($remainingMs -gt 0) {
-        Get-CachedApi "rtsp" "/api/rtsp/sessions" 2 -Force `
-            -TimeoutMs ([Math]::Min($controlRequestTimeoutMs, $remainingMs))
-    } else { $null }
-    $remainingMs = $controlDeadlineMs - [int]$controlTimer.ElapsedMilliseconds
-    $webrtc = if (-not $Force) {
-        Get-CachedApi "webrtc" "/api/webrtc/sessions" 3
-    } elseif ($remainingMs -gt 0) {
-        Get-CachedApi "webrtc" "/api/webrtc/sessions" 3 -Force `
-            -TimeoutMs ([Math]::Min($controlRequestTimeoutMs, $remainingMs))
-    } else { $null }
+    $rtsp = if ($Force) { $controlSources['rtsp'] } else {
+        Get-CachedApi "rtsp" "/api/rtsp/sessions" 2 }
+    $webrtc = if ($Force) { $controlSources['webrtc'] } else {
+        Get-CachedApi "webrtc" "/api/webrtc/sessions" 3 }
     $active = Get-CachedApi "activehistory" "/api/history/sessions/active" 2 -CacheOnly:$Force
-    $remainingMs = $controlDeadlineMs - [int]$controlTimer.ElapsedMilliseconds
-    $appsRaw = if (-not $Force) {
-        Get-CachedApi "apps" "/api/apps" 12
-    } elseif ($remainingMs -gt 0) {
-        Get-CachedApi "apps" "/api/apps" 12 -Force `
-            -TimeoutMs ([Math]::Min($controlRequestTimeoutMs, $remainingMs))
-    } else { $null }
-    $remainingMs = $controlDeadlineMs - [int]$controlTimer.ElapsedMilliseconds
-    $clientsRaw = if (-not $Force) {
-        Get-CachedApi "clients" "/api/clients/list" 12
-    } elseif ($remainingMs -gt 0) {
-        Get-CachedApi "clients" "/api/clients/list" 12 -Force `
-            -TimeoutMs ([Math]::Min($controlRequestTimeoutMs, $remainingMs))
-    } else { $null }
+    $appsRaw = if ($Force) { $controlSources['apps'] } else {
+        Get-CachedApi "apps" "/api/apps" 12 }
+    $clientsRaw = if ($Force) { $controlSources['clients'] } else {
+        Get-CachedApi "clients" "/api/clients/list" 12 }
     $rtss = Get-CachedApi "rtss" "/api/rtss/status" 15 -CacheOnly:$Force
     $lossless = Get-CachedApi "lossless" "/api/lossless_scaling/status" 15 -CacheOnly:$Force
     # Vibepollo serves /api/logs as UTF-8 text, not as a JSON document.
@@ -446,6 +501,38 @@ function Build-Snapshot {
         if ($null -eq $clientCollection -or $null -eq $clientCollection.Value) { 'clients' }
         if (-not $sessionStatusValid -and -not $derivedSessionValid) { 'session' }
     )
+    if ($Force) {
+        foreach ($source in @('session', 'rtsp', 'webrtc', 'apps', 'clients')) {
+            if (-not $script:ControlSourceProbe.Contains($source)) {
+                $script:ControlSourceProbe[$source] = [pscustomobject]@{
+                    outcome = 'budget_exhausted'; elapsed_ms = 0 }
+            } elseif ($source -in $controlUnavailable -and
+                    $script:ControlSourceProbe[$source].outcome -eq 'ok') {
+                $script:ControlSourceProbe[$source].outcome = 'schema_invalid'
+            }
+        }
+        # Record only bounded source names, outcomes and durations. The Bridge
+        # retains no token, URL, response body or exception text in this trace.
+        $sourceRows = @(foreach ($source in @('session', 'rtsp', 'webrtc', 'apps', 'clients')) {
+            $probe = $script:ControlSourceProbe[$source]
+            $outcome = [string]$probe.outcome
+            [pscustomobject]@{
+                source = $source
+                outcome = $outcome
+                http_status = $(if ($outcome -match '^http_([0-9]{3})$') {
+                    [int]$Matches[1] } else { 0 })
+                timeout = ($outcome -eq 'timeout')
+                duration_ms = [int]$probe.elapsed_ms
+            }
+        })
+        try {
+            Add-Content -LiteralPath $script:ControlProbeLogPath -Encoding UTF8 -Value (
+                ConvertTo-JsonSafe ([pscustomobject]@{
+                    ts_utc = [DateTime]::UtcNow.ToString('o')
+                    sources = $sourceRows
+                }) 5)
+        } catch { }
+    }
     $statusActiveCount = if ($sessionStatusValid) { [int]$sessionCountValue } else {
         $rtspSessions.Count + $webSessions.Count
     }
@@ -501,6 +588,7 @@ function Build-Snapshot {
         generated_at = [DateTimeOffset]::Now.ToUnixTimeMilliseconds()
         control_fresh = ([bool]$Force -and $controlUnavailable.Count -eq 0)
         control_unavailable_sources = $controlUnavailable
+        control_source_probe = $(if ($Force) { $script:ControlSourceProbe } else { $null })
         bridge = [pscustomobject]@{
             online = $true; uptime_seconds = [math]::Round(((Get-Date) - $script:StartedAt).TotalSeconds)
             api_error = $script:LastApiError; base_url = $script:BaseUrl
