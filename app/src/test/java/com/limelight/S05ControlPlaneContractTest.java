@@ -25,7 +25,7 @@ public class S05ControlPlaneContractTest {
         String host = source("com/limelight/stream/HostSessionTermination.java");
         assertTrue(host.indexOf("getComputerDetails(true)")
                 < host.indexOf("control.acquire("));
-        assertTrue(host.indexOf("control.acquire(") < host.indexOf("provider.snapshot()"));
+        assertTrue(host.indexOf("control.acquire(") < host.indexOf("provider.snapshotWithinControl(permit)"));
         assertTrue(host.indexOf("provider.stopGame(") < host.indexOf("http.quitApp()"));
 
         assertFalse(source("com/limelight/Game.java").contains(".quitApp("));

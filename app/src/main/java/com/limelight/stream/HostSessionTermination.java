@@ -59,7 +59,7 @@ public final class HostSessionTermination {
                 PlayniteTransitionGateway provider = PlayniteTransitionGateway.connect(
                         context, hostId, activeHost, actor);
                 if (provider == null) throw new IllegalStateException("gateway_unavailable");
-                PlayniteTransitionGateway.Snapshot current = provider.snapshot();
+                PlayniteTransitionGateway.Snapshot current = provider.snapshotWithinControl(permit);
                 String expectedGame = gameId == null ? "" : gameId.trim();
                 boolean providerIdle = "idle".equalsIgnoreCase(current.gameState)
                         && (current.gameId == null || current.gameId.trim().isEmpty());

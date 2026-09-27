@@ -100,6 +100,32 @@ public final class PlayniteTransitionGateway {
             this.sessionSnapshot = null;
         }
 
+        /** Provider evidence of one observation already fenced by the caller's own control permit. */
+        private Snapshot(SessionSnapshot projected,
+                         HostGatewayClient.SessionObservation fenced) {
+            this.gatewayReady = true;
+            this.connectorReady = fenced.connectorEvidence == HostGatewayClient.Evidence.VERIFIED
+                    || !fenced.requiresConnector;
+            this.gameState = fenced.gameState;
+            this.gameId = fenced.gameEvidence == HostGatewayClient.Evidence.VERIFIED
+                    ? fenced.gameId : "";
+            boolean exactProcess = fenced.processEvidence == HostGatewayClient.Evidence.VERIFIED;
+            this.processId = exactProcess ? fenced.processId : 0;
+            this.processToken = exactProcess && fenced.processToken != null
+                    ? fenced.processToken : "";
+            this.windowReady = fenced.windowEvidence == HostGatewayClient.Evidence.VERIFIED
+                    && fenced.windowReady;
+            this.targetKind = fenced.targetKind;
+            this.stableSamples = fenced.stableSamples;
+            this.reason = fenced.reason;
+            this.hostGuideAllowed = fenced.hostGuideAllowed;
+            this.observationState = projected.observationState.name();
+            this.gameEvidence = fenced.gameEvidence.name();
+            this.processEvidence = fenced.processEvidence.name();
+            this.transportGeneration = projected.transportGeneration;
+            this.sessionSnapshot = projected;
+        }
+
         private Snapshot(SessionSnapshot projected,
                          HostGatewayClient.SessionObservation observation,
                          boolean gatewayReady) {
@@ -271,6 +297,44 @@ public final class PlayniteTransitionGateway {
                     ordinal, retained, now, unavailable.getMessage());
             return new Snapshot(projected, null, false);
         }
+    }
+
+    /**
+     * Observation for an exact control operation this client holds. Acquiring the permit
+     * advances the Gateway control generation beyond the one bound to the retained stream,
+     * so the ordinary projection correlation cannot match; the provider evidence is exposed
+     * only when the accepted observation carries this permit's operation, generation and
+     * stream session. The canonical projection is still updated through its single owner.
+     */
+    public Snapshot snapshotWithinControl(ControlOperationClient.Permit permit) throws IOException {
+        long ordinal = projectionOwner.nextRequestOrdinal();
+        com.limelight.stream.RetainedStreamSessionCoordinator.Snapshot retained =
+                com.limelight.stream.RetainedStreamSessionCoordinator.snapshot();
+        String transition = retained.hostId.equalsIgnoreCase(hostId)
+                && retained.executionProfileId.equals(actorContext.executionProfileId)
+                ? retained.transitionId : "";
+        long now = monotonicClock.getAsLong();
+        HostGatewayClient.SessionObservation observation;
+        try {
+            observation = client.getSessionObservation(connection,
+                    actorContext.executionProfileId, ordinal, transition);
+        } catch (IOException unavailable) {
+            return new Snapshot(projectionOwner.unavailable(
+                    ordinal, retained, now, unavailable.getMessage()), null, false);
+        }
+        boolean accepted = projectionOwner.accept(observation, retained, now);
+        SessionSnapshot projected = projectionOwner.current(retained, now);
+        boolean fenced = accepted && permit != null
+                && !permit.operationId.isEmpty()
+                && permit.operationId.equals(observation.operationId)
+                && permit.generation > 0L
+                && permit.generation == observation.controlGeneration
+                && !permit.streamSessionId.isEmpty()
+                && permit.streamSessionId.equals(observation.streamSessionId);
+        if (fenced) return new Snapshot(projected, observation);
+        // Outside the caller's exact permit nothing proves the stop target: fail closed.
+        return new Snapshot(false, false, "unknown", "", 0, false, "playnite", 0,
+                "control_correlation_mismatch");
     }
 
     public void startGame(String gameId) throws IOException {
