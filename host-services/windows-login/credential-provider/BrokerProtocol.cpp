@@ -115,6 +115,17 @@ namespace moonwaker
         return true;
     }
 
+    bool ResetPendingAttemptNotificationAfterFailure(const std::wstring& attemptId,
+        std::wstring* lastAttemptId)
+    {
+        if (attemptId.empty() || *lastAttemptId != attemptId)
+        {
+            return false;
+        }
+        lastAttemptId->clear();
+        return true;
+    }
+
     std::vector<BYTE> Utf8(const std::wstring& value)
     {
         if (value.empty())

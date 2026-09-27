@@ -16,6 +16,7 @@ import queue
 import re
 import secrets
 import ssl
+import socket
 import struct
 import subprocess
 import threading
@@ -127,6 +128,12 @@ DIAGNOSTIC_FIELDS = {
     "method", "route", "request_id", "profile_id", "actor_profile_id",
     "execution_profile_id", "status",
     "http_status", "duration_ms", "error_type", "error_code",
+    "response_content_length", "response_body_bytes_written",
+    "close_http_ok", "close_http_status", "snapshot_attempts",
+    "snapshot_http_ok", "snapshot_http_status", "snapshot_control_fresh",
+    "snapshot_unavailable_source_count", "snapshot_session_active",
+    "snapshot_app_running", "snapshot_session_count",
+    "snapshot_connected_clients", "snapshot_running_apps",
     "operation_id", "generation", "actor_lease_epoch", "effect_sequence",
     "stream_session_id", "child_session_id", "intent", "state", "reason",
 }
@@ -2467,19 +2474,20 @@ class GatewayState:
         if state == "broker_unavailable":
             return HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, "state": state,
                                                      "reason": reason}
-        if state == "completed":
+        if state == "completed" or (state == "credential_issued" and result.get("success")):
             profile = self.config.get("profiles", {}).get(profile_id, {})
             current = self.profile_login_state(profile)
             if current["session_state"] == "active":
                 return HTTPStatus.OK, {"ok": True, "state": "ready", "reason": "none",
                                        "session_state": "active", "attempt_id": attempt_id}
-            if current["remote_sign_in_state"] == "broker_unavailable":
-                return HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, **current,
-                                                         "attempt_id": attempt_id}
-            return HTTPStatus.ACCEPTED, {"ok": True, "state": "session_starting",
-                                         "reason": "none",
-                                         "session_state": current["session_state"],
-                                         "attempt_id": attempt_id}
+            if state == "completed":
+                if current["remote_sign_in_state"] == "broker_unavailable":
+                    return HTTPStatus.SERVICE_UNAVAILABLE, {"ok": False, **current,
+                                                             "attempt_id": attempt_id}
+                return HTTPStatus.ACCEPTED, {"ok": True, "state": "session_starting",
+                                             "reason": "none",
+                                             "session_state": current["session_state"],
+                                             "attempt_id": attempt_id}
         body = {"ok": bool(result.get("success")), "state": state, "reason": reason,
                 "attempt_id": attempt_id}
         return (HTTPStatus.ACCEPTED if result.get("success") else HTTPStatus.CONFLICT), body
@@ -2706,11 +2714,23 @@ class GatewayState:
                 and bool(provider.get("accepted", False))
         except Exception as error:
             provider = {"error": type(error).__name__}
+        streamer_trace: dict[str, Any] = {}
         try:
             session_ok = StreamerControlOperation.force_close(
-                self.proxy, reset_profile_id)
-        except Exception:
+                self.proxy, reset_profile_id, trace=streamer_trace)
+        except Exception as error:
             session_ok = False
+            streamer_trace["close_http_ok"] = 0
+            DIAGNOSTICS.record("hard-reset-streamer-close-error", level="WARN",
+                               error=error, operation_id=reset_operation.get("operation_id"))
+        DIAGNOSTICS.record(
+            "hard-reset-streamer-close", level="INFO" if session_ok else "WARN",
+            operation_id=reset_operation.get("operation_id"),
+            generation=reset_operation.get("generation"),
+            actor_lease_epoch=reset_operation.get("actor_lease_epoch"),
+            stream_session_id=reset_operation.get("pre_reset_stream_session_id") or
+                reset_operation.get("stream_session_id"),
+            profile_id=reset_profile_id, **streamer_trace)
         cleanup_confirmed = provider_accepted and session_ok
         with self.control_condition:
             current = self.control_state.get("active")
@@ -2889,6 +2909,8 @@ class GatewayState:
                 "effect_sequence": 0,
                 "operation_id": f"hard-reset:{reset_generation}:{reset_epoch}",
                 "stream_session_id": f"hard-reset:{reset_generation}",
+                "pre_reset_stream_session_id": str(stream.get("stream_session_id") or "")
+                    if isinstance(stream, dict) else "",
                 "child_session_id": child_session_id,
                 "client_id": requester_client_id or next(iter(owner_clients), ""),
                 "vibepollo_client_uuid": "",
@@ -4426,6 +4448,22 @@ class GatewayState:
             "observed_sunshine_app_id": observed_app_id,
             "child_session_id": child_session_id,
         }
+        # A lost response must not strand a full-quit permit before its owner
+        # can perform the effect. Replay only the same still-permitted stop.
+        with self.control_condition:
+            active = self.control_state.get("active")
+            if isinstance(active, dict) and active.get("operation_id") == operation_id \
+                    and intent == "full_quit" and active.get("state") == "permitted":
+                if (self._control_signature(active) != self._control_signature(proposed)
+                        or active.get("observed_sunshine_app_id") != observed_app_id
+                        or active.get("vibepollo_client_uuid") != client_uuid):
+                    return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                                 "reason": "operation_id_reused"}
+                DIAGNOSTICS.record("control-operation-permit-replayed",
+                                   operation_id=operation_id, intent=intent,
+                                   generation=active.get("generation"),
+                                   actor_lease_epoch=active.get("actor_lease_epoch"))
+                return HTTPStatus.OK, self._control_result(active)
         parent_cleanup = self._control_finish_child_stream(
             client, proposed, expected_generation, observed_app_id)
         if parent_cleanup is not None:
@@ -4828,6 +4866,33 @@ class GatewayState:
             if active.get("state") != "uncertain":
                 return HTTPStatus.CONFLICT, {**self._control_result(active),
                                              "reason": "operation_in_progress"}
+            if active.get("intent") == "full_quit" and active.get("direction") == "stop" \
+                    and observed_app_id in (0, active.get("sunshine_app_id")):
+                game_id = str(active.get("provider_game_id") or "")
+                token = str(active.get("process_token") or "")
+                expected_hashes = {
+                    ControlOperationPolicy.effect_hash("/game/stop-verified", payload)
+                    for payload in (
+                        {"game_id": game_id, "expected_process_token": token},
+                        {"force": False, "game_id": game_id,
+                         "expected_process_token": token},
+                    )
+                }
+                if game_id and re.fullmatch(r"[0-9a-f]{64}", token) and \
+                        active.get("effect_request_sha256") in expected_hashes:
+                    retired, effect = self.provider_control_operation.retire(active)
+                    if retired and isinstance(effect, dict) and \
+                            effect.get("accepted") is True and \
+                            effect.get("command") == "stop" and \
+                            effect.get("stopped_current") is True and \
+                            self._child_time_normalize_game_id(
+                                effect.get("stopped_game_id")) == \
+                            self._child_time_normalize_game_id(game_id):
+                        active["effect_result"] = effect
+                        self._control_save_locked()
+                        return HTTPStatus.OK, {**self._control_result(active),
+                                               "ok": True, "state": "provider_stopped",
+                                               "reason": "none"}
             # An app-id sample cannot fence a permit holder whose direct effect may
             # still be delayed.  Only the exact holder's durable terminal write (or
             # a host-owned child cleanup retry below) may release this barrier.
@@ -6929,6 +6994,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def send_json(self, status: int, value: Any) -> None:
         self._response_status = int(status)
         body = compact_json(value)
+        self._response_content_length = len(body)
         self.send_response(int(status))
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -6936,6 +7002,18 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.wfile.write(body)
+        self._response_body_bytes_written = len(body)
+
+    def send_permission_error(self, error: PermissionError) -> None:
+        self._diagnostic_error = error
+        if error.errno is None:
+            self.send_json(HTTPStatus.FORBIDDEN, {"error": str(error)})
+            return
+        # An OS access failure is a host fault, not an authorization denial, and
+        # its message carries host paths that must not reach LAN clients.
+        self._diagnostic_unexpected = True
+        self.send_json(HTTPStatus.INTERNAL_SERVER_ERROR,
+                       {"error": "Host storage is unavailable."})
 
     def send_permission_error(self, error: PermissionError) -> None:
         self._diagnostic_error = error
@@ -7382,6 +7460,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self._diagnostic_error: BaseException | None = None
         self._diagnostic_unexpected = False
         self._response_status = 0
+        self._response_content_length = 0
+        self._response_body_bytes_written = 0
         for key in ("request_id", "profile_id", "actor_profile_id", "execution_profile_id"):
             if hasattr(self.state.request_context, key):
                 delattr(self.state.request_context, key)
@@ -7404,6 +7484,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "route": self._diagnostic_route,
                     "status": "failed" if failed else "completed",
                     "http_status": status if status > 0 else None,
+                    "response_content_length": self._response_content_length,
+                    "response_body_bytes_written": self._response_body_bytes_written,
                     "duration_ms": max(0, int(
                         (time.monotonic() - self._diagnostic_started) * 1000)),
                     "request_id": str(getattr(
@@ -8234,6 +8316,23 @@ class GatewayServer(ThreadingHTTPServer):
     def __init__(self, address: tuple[str, int], state: GatewayState) -> None:
         super().__init__(address, GatewayHandler)
         self.state = state
+
+    def shutdown_request(self, request: socket.socket) -> None:
+        if not isinstance(request, ssl.SSLSocket):
+            super().shutdown_request(request)
+            return
+        unwrapped = None
+        try:
+            # TCPServer's SHUT_WR skips TLS close_notify and can truncate a
+            # response already handed to the socket. Bound the peer handshake.
+            request.settimeout(0.1)
+            unwrapped = request.unwrap()
+        except (OSError, ValueError):
+            pass
+        finally:
+            if unwrapped is not None:
+                unwrapped.close()
+            self.close_request(request)
 
 
 def main() -> None:

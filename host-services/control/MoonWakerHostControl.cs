@@ -11,13 +11,15 @@ using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web.Script.Serialization;
 using System.Windows.Forms;
+using Timer = System.Windows.Forms.Timer;
 
-[assembly: AssemblyVersion("0.7.118.0")]
-[assembly: AssemblyFileVersion("0.7.118.0")]
-[assembly: AssemblyInformationalVersion("0.7.118+2026.09.21")]
+[assembly: AssemblyVersion("0.7.121.0")]
+[assembly: AssemblyFileVersion("0.7.121.0")]
+[assembly: AssemblyInformationalVersion("0.7.121+2026.09.27-s06-integration")]
 
 namespace MoonWaker.HostControl
 {
@@ -30,15 +32,153 @@ namespace MoonWaker.HostControl
         internal static extern bool UnregisterHotKey(IntPtr window, int id);
     }
 
+    internal sealed class HostControlInstance : IDisposable
+    {
+        private readonly Mutex mutex;
+        private readonly EventWaitHandle activationEvent;
+        private readonly bool ownsMutex;
+
+        internal bool IsPrimary { get; private set; }
+        internal WaitHandle ActivationEvent { get { return activationEvent; } }
+
+        internal static HostControlInstance CreateForCurrentUser()
+        {
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                if (identity == null || identity.User == null)
+                    throw new InvalidOperationException("The current Windows user SID is unavailable.");
+                return new HostControlInstance(
+                    @"Local\MoonWakerHostControl." + identity.User.Value);
+            }
+        }
+
+        internal HostControlInstance(string objectNamePrefix)
+        {
+            if (String.IsNullOrWhiteSpace(objectNamePrefix) ||
+                !objectNamePrefix.StartsWith(@"Local\", StringComparison.OrdinalIgnoreCase) ||
+                objectNamePrefix.Length <= 6)
+                throw new ArgumentException("Host Control instance names must be session-local.",
+                    "objectNamePrefix");
+
+            using (WindowsIdentity identity = WindowsIdentity.GetCurrent())
+            {
+                if (identity == null || identity.User == null)
+                    throw new InvalidOperationException("The current Windows user SID is unavailable.");
+
+                EventWaitHandle openedActivationEvent = null;
+                Mutex openedMutex = null;
+                bool ownsOpenedMutex = false;
+                try
+                {
+                    bool activationEventCreated;
+                    openedActivationEvent = new EventWaitHandle(false,
+                        EventResetMode.AutoReset, objectNamePrefix + ".Activate",
+                        out activationEventCreated, CreateEventSecurity(identity.User));
+
+                    bool mutexCreated;
+                    openedMutex = new Mutex(true, objectNamePrefix + ".Mutex",
+                        out mutexCreated, CreateMutexSecurity(identity.User));
+                    ownsOpenedMutex = mutexCreated;
+                    if (!mutexCreated)
+                    {
+                        try { ownsOpenedMutex = openedMutex.WaitOne(0); }
+                        catch (AbandonedMutexException) { ownsOpenedMutex = true; }
+                    }
+                }
+                catch
+                {
+                    if (openedMutex != null) openedMutex.Dispose();
+                    if (openedActivationEvent != null) openedActivationEvent.Dispose();
+                    throw;
+                }
+
+                activationEvent = openedActivationEvent;
+                mutex = openedMutex;
+                ownsMutex = ownsOpenedMutex;
+                IsPrimary = ownsOpenedMutex;
+            }
+        }
+
+        internal bool ShouldRun(bool startInTray)
+        {
+            if (IsPrimary) return true;
+            if (!startInTray) activationEvent.Set();
+            return false;
+        }
+
+        public void Dispose()
+        {
+            try
+            {
+                if (ownsMutex) mutex.ReleaseMutex();
+            }
+            finally
+            {
+                mutex.Dispose();
+                activationEvent.Dispose();
+            }
+        }
+
+        private static MutexSecurity CreateMutexSecurity(SecurityIdentifier userSid)
+        {
+            MutexSecurity security = new MutexSecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.AddAccessRule(new MutexAccessRule(userSid, MutexRights.FullControl,
+                AccessControlType.Allow));
+            security.AddAccessRule(new MutexAccessRule(
+                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                MutexRights.FullControl, AccessControlType.Allow));
+            return security;
+        }
+
+        private static EventWaitHandleSecurity CreateEventSecurity(SecurityIdentifier userSid)
+        {
+            EventWaitHandleSecurity security = new EventWaitHandleSecurity();
+            security.SetAccessRuleProtection(true, false);
+            security.AddAccessRule(new EventWaitHandleAccessRule(userSid,
+                EventWaitHandleRights.FullControl, AccessControlType.Allow));
+            security.AddAccessRule(new EventWaitHandleAccessRule(
+                new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null),
+                EventWaitHandleRights.FullControl, AccessControlType.Allow));
+            return security;
+        }
+    }
+
+    internal sealed class HostControlActivationListener : IDisposable
+    {
+        private RegisteredWaitHandle registration;
+
+        internal HostControlActivationListener(WaitHandle activationEvent, Action activate)
+        {
+            if (activationEvent == null) throw new ArgumentNullException("activationEvent");
+            if (activate == null) throw new ArgumentNullException("activate");
+            registration = ThreadPool.RegisterWaitForSingleObject(activationEvent,
+                delegate(object state, bool timedOut)
+                {
+                    if (!timedOut) activate();
+                }, null, Timeout.Infinite, false);
+        }
+
+        public void Dispose()
+        {
+            RegisteredWaitHandle current = Interlocked.Exchange(ref registration, null);
+            if (current != null) current.Unregister(null);
+        }
+    }
+
     internal static class Program
     {
         [STAThread]
         private static void Main(string[] args)
         {
-            Application.EnableVisualStyles();
-            Application.SetCompatibleTextRenderingDefault(false);
             bool startInTray = args != null && Array.IndexOf(args, "--tray") >= 0;
-            Application.Run(new ControlForm(startInTray));
+            using (HostControlInstance instance = HostControlInstance.CreateForCurrentUser())
+            {
+                if (!instance.ShouldRun(startInTray)) return;
+                Application.EnableVisualStyles();
+                Application.SetCompatibleTextRenderingDefault(false);
+                Application.Run(new ControlForm(startInTray, instance.ActivationEvent));
+            }
         }
     }
 
@@ -67,6 +207,8 @@ namespace MoonWaker.HostControl
         private static readonly Icon moonWakerIcon = MoonWakerIcon.Create();
         private readonly NotifyIcon trayIcon = new NotifyIcon();
         private readonly StreamHotkeyPipe streamHotkeyPipe;
+        private readonly WaitHandle activationEvent;
+        private HostControlActivationListener activationListener;
         private readonly bool startInTray;
         private bool refreshing;
         private bool exiting;
@@ -78,9 +220,10 @@ namespace MoonWaker.HostControl
         private const uint StreamHotkeyModifiers = 0x0001 | 0x0002 | 0x0004 | 0x4000;
         private const uint StreamHotkeyKey = 0x23;
 
-        public ControlForm(bool startInTray)
+        public ControlForm(bool startInTray, WaitHandle activationEvent)
         {
             this.startInTray = startInTray;
+            this.activationEvent = activationEvent;
             script = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "Invoke-MoonWakerHostControl.ps1");
             hostVersion = ReadHostVersion();
             Text = "MoonWaker Host Control " + hostVersion;
@@ -230,7 +373,15 @@ namespace MoonWaker.HostControl
             {
                 RefreshStatus();
                 timer.Start();
-                if (this.startInTray) BeginInvoke((MethodInvoker)HideToTray);
+                if (this.startInTray)
+                {
+                    BeginInvoke((MethodInvoker)delegate
+                    {
+                        HideToTray();
+                        StartActivationListener();
+                    });
+                }
+                else StartActivationListener();
             };
             Resize += delegate { if (WindowState == FormWindowState.Minimized) HideToTray(); };
         }
@@ -271,6 +422,24 @@ namespace MoonWaker.HostControl
             BringToFront();
         }
 
+        private void StartActivationListener()
+        {
+            if (activationListener != null) return;
+            activationListener = new HostControlActivationListener(activationEvent,
+                delegate
+                {
+                    if (IsDisposed || !IsHandleCreated) return;
+                    try
+                    {
+                        BeginInvoke((MethodInvoker)delegate
+                        {
+                            if (!IsDisposed && IsHandleCreated) ShowControl();
+                        });
+                    }
+                    catch (InvalidOperationException) { }
+                });
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (!exiting && e.CloseReason == CloseReason.UserClosing)
@@ -278,6 +447,11 @@ namespace MoonWaker.HostControl
                 e.Cancel = true;
                 HideToTray();
                 return;
+            }
+            if (activationListener != null)
+            {
+                activationListener.Dispose();
+                activationListener = null;
             }
             streamHotkeyPipe.Dispose();
             trayIcon.Visible = false;

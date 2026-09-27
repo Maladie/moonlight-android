@@ -2,7 +2,8 @@
 [CmdletBinding()]
 param(
     [string] $OutputDirectory = (Join-Path (Split-Path -Parent $PSScriptRoot) "dist"),
-    [string] $CredentialProviderBinary = ""
+    [string] $CredentialProviderBinary = "",
+    [string] $LegendaryBinary = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -115,7 +116,8 @@ try {
         Copy-Item -LiteralPath $source -Destination $destination -Force
     }
     & (Join-Path $PSScriptRoot "Install-LegendaryPayload.ps1") `
-        -TargetDirectory (Join-Path $payloadHostServices "tools\legendary")
+        -TargetDirectory (Join-Path $payloadHostServices "tools\legendary") `
+        -SourceBinary $LegendaryBinary
 
     $payloadGateway = Join-Path $payloadHostServices "gateway"
     & (Join-Path $payloadHostServices `

@@ -2240,7 +2240,9 @@ class GatewayDiagnosticsTest(unittest.TestCase):
                 "request.failed", level="ERROR", method="POST",
                 route="/api/v1/game/{id}", request_id="req:42",
                 profile_id="living-room", status="failed", http_status=500,
-                duration_ms=12, reason="Bearer secret", Authorization="token")
+                duration_ms=12, response_content_length=123,
+                response_body_bytes_written=0, snapshot_session_count=1,
+                reason="Bearer secret", Authorization="token")
             try:
                 raise RuntimeError("Bearer secret from C:/private/config.json")
             except RuntimeError as error:
@@ -2255,6 +2257,9 @@ class GatewayDiagnosticsTest(unittest.TestCase):
             self.assertEqual("host.gateway", first["component"])
             self.assertEqual("req:42", first["request_id"])
             self.assertEqual("/api/v1/game/{id}", first["route"])
+            self.assertEqual(123, first["response_content_length"])
+            self.assertEqual(0, first["response_body_bytes_written"])
+            self.assertEqual(1, first["snapshot_session_count"])
             self.assertTrue(first["ts"].endswith("Z"))
             self.assertNotIn("reason", first)
             self.assertNotIn("Authorization", first)
@@ -2856,6 +2861,37 @@ class LoginBrokerGatewayTest(unittest.TestCase):
             self.client, "living-room", "request-one", attempt_id)
         self.assertEqual(200, status)
         self.assertEqual("ready", result["state"])
+
+    def test_issued_credential_needs_matching_active_session(self):
+        attempt_id = "0123456789abcdef0123456789abcdef"
+        self.broker.attempt = self.broker.reply(True, "credential_issued")
+        status, result = self.state.session_attempt_status(
+            self.client, "living-room", "request-one", attempt_id)
+        self.assertEqual(202, status)
+        self.assertEqual("credential_issued", result["state"])
+
+        self.broker.profile = self.broker.reply(
+            True, "active", fields={3: "ready", 4: "none"})
+        status, result = self.state.session_attempt_status(
+            self.client, "living-room", "request-one", attempt_id)
+        self.assertEqual(200, status)
+        self.assertEqual("ready", result["state"])
+        self.assertEqual("active", result["session_state"])
+        self.assertEqual(2, len(self.broker.state_calls))
+
+        self.broker.attempt = self.broker.reply(
+            False, "credential_issued", "provider_failed")
+        status, result = self.state.session_attempt_status(
+            self.client, "living-room", "request-one", attempt_id)
+        self.assertEqual(409, status)
+        self.assertEqual("provider_failed", result["reason"])
+
+        self.broker.attempt = self.broker.reply(
+            False, "action_required", "attempt_expired")
+        status, result = self.state.session_attempt_status(
+            self.client, "living-room", "request-one", attempt_id)
+        self.assertEqual(409, status)
+        self.assertEqual("attempt_expired", result["reason"])
 
     def test_cancel_and_profile_summary_expose_coarse_states(self):
         attempt_id = "0123456789abcdef0123456789abcdef"

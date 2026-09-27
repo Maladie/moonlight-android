@@ -15,6 +15,7 @@
 #include <vector>
 
 #include "BrokerProtocol.h"
+#include "BrokerPipe.h"
 
 namespace
 {
@@ -29,6 +30,7 @@ namespace
     constexpr wchar_t kSettingsKey[] =
         L"SOFTWARE\\MoonWaker\\WindowsLogin\\CredentialProvider";
     constexpr DWORD kPipeWaitMilliseconds = 750;
+    constexpr DWORD kPipeTransactionMilliseconds = 3000;
     constexpr DWORD kAttemptPollMilliseconds = 250;
 
     constexpr BYTE kObserve = 1;
@@ -39,6 +41,30 @@ namespace
 
     volatile LONG g_liveObjects = 0;
     volatile LONG g_serverLocks = 0;
+
+    // Fixed labels only: the lab can inspect LogonUI progress without recording identities or secrets.
+    void TraceProvider(const char* label)
+    {
+        wchar_t programData[MAX_PATH] = {};
+        const DWORD length = GetEnvironmentVariableW(L"ProgramData", programData, MAX_PATH);
+        if (length == 0 || length >= MAX_PATH)
+        {
+            return;
+        }
+        const std::wstring directory = std::wstring(programData) + L"\\MoonWaker";
+        CreateDirectoryW(directory.c_str(), nullptr);
+        const std::wstring path = directory + L"\\credential-provider.trace";
+        HANDLE file = CreateFileW(path.c_str(), FILE_APPEND_DATA,
+            FILE_SHARE_READ | FILE_SHARE_WRITE, nullptr, OPEN_ALWAYS,
+            FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (file != INVALID_HANDLE_VALUE)
+        {
+            const std::string line = std::string(label) + "\n";
+            DWORD written = 0;
+            WriteFile(file, line.data(), static_cast<DWORD>(line.size()), &written, nullptr);
+            CloseHandle(file);
+        }
+    }
 
     enum FieldId : DWORD
     {
@@ -235,40 +261,6 @@ namespace
         return system;
     }
 
-    bool WriteAll(HANDLE pipe, const std::vector<BYTE>& bytes)
-    {
-        size_t offset = 0;
-        while (offset < bytes.size())
-        {
-            DWORD written = 0;
-            const DWORD chunk = static_cast<DWORD>(
-                (std::min)(bytes.size() - offset, static_cast<size_t>(MAXDWORD)));
-            if (!WriteFile(pipe, bytes.data() + offset, chunk, &written, nullptr) ||
-                written == 0)
-            {
-                return false;
-            }
-            offset += written;
-        }
-        return true;
-    }
-
-    bool ReadAll(HANDLE pipe, BYTE* destination, DWORD bytes)
-    {
-        DWORD offset = 0;
-        while (offset < bytes)
-        {
-            DWORD read = 0;
-            if (!ReadFile(pipe, destination + offset, bytes - offset, &read, nullptr) ||
-                read == 0)
-            {
-                return false;
-            }
-            offset += read;
-        }
-        return true;
-    }
-
     DWORD ReadUInt32(const BYTE* bytes)
     {
         return static_cast<DWORD>(bytes[0]) |
@@ -277,7 +269,7 @@ namespace
             (static_cast<DWORD>(bytes[3]) << 24);
     }
 
-    bool ReadBrokerReply(HANDLE pipe, std::vector<BYTE>* bytes)
+    bool ReadBrokerReply(HANDLE pipe, std::vector<BYTE>* bytes, ULONGLONG deadline)
     {
         if (bytes == nullptr)
         {
@@ -285,7 +277,7 @@ namespace
         }
         moonwaker::SecureClear(bytes);
         BYTE header[8] = {};
-        if (!ReadAll(pipe, header, sizeof(header)) ||
+        if (!moonwaker::ReadBrokerPipe(pipe, header, sizeof(header), deadline) ||
             memcmp(header, "MWLR", 4) != 0 ||
             header[4] != moonwaker::kProtocolVersion || header[5] > 1 ||
             header[6] > moonwaker::kMaximumFields || header[7] != 0)
@@ -299,7 +291,7 @@ namespace
         for (BYTE index = 0; index < fieldCount; ++index)
         {
             BYTE fieldHeader[5] = {};
-            if (!ReadAll(pipe, fieldHeader, sizeof(fieldHeader)))
+            if (!moonwaker::ReadBrokerPipe(pipe, fieldHeader, sizeof(fieldHeader), deadline))
             {
                 moonwaker::SecureClear(bytes);
                 return false;
@@ -317,7 +309,8 @@ namespace
             SecureZeroMemory(fieldHeader, sizeof(fieldHeader));
             const size_t offset = bytes->size();
             bytes->resize(offset + length);
-            if (length != 0 && !ReadAll(pipe, bytes->data() + offset, length))
+            if (length != 0 && !moonwaker::ReadBrokerPipe(pipe, bytes->data() + offset,
+                    length, deadline))
             {
                 moonwaker::SecureClear(bytes);
                 return false;
@@ -329,30 +322,27 @@ namespace
     bool BrokerCall(BYTE operation, const std::vector<moonwaker::Field>& fields,
         moonwaker::Reply* reply)
     {
+        const ULONGLONG started = GetTickCount64();
+        const ULONGLONG deadline = started + kPipeTransactionMilliseconds;
         std::vector<BYTE> request;
         if (reply == nullptr || !moonwaker::BuildRequest(operation, fields, &request))
         {
             return false;
         }
-        if (!WaitNamedPipeW(kBrokerPipe, kPipeWaitMilliseconds))
-        {
-            moonwaker::SecureClear(&request);
-            return false;
-        }
-        HANDLE pipe = CreateFileW(kBrokerPipe, GENERIC_READ | GENERIC_WRITE, 0,
-            nullptr, OPEN_EXISTING,
-            SECURITY_SQOS_PRESENT | SECURITY_IDENTIFICATION, nullptr);
+        HANDLE pipe = moonwaker::ConnectBrokerPipe(kBrokerPipe,
+            started + kPipeWaitMilliseconds);
         if (pipe == INVALID_HANDLE_VALUE)
         {
             moonwaker::SecureClear(&request);
             return false;
         }
-        bool ok = IsSystemPipeServer(pipe) && WriteAll(pipe, request);
+        bool ok = IsSystemPipeServer(pipe) && moonwaker::WriteBrokerPipe(pipe,
+            request.data(), static_cast<DWORD>(request.size()), deadline);
         moonwaker::SecureClear(&request);
         std::vector<BYTE> response;
         if (ok)
         {
-            ok = ReadBrokerReply(pipe, &response) &&
+            ok = ReadBrokerReply(pipe, &response, deadline) &&
                 moonwaker::ParseReply(response, reply);
         }
         moonwaker::SecureClear(&response);
@@ -466,7 +456,7 @@ namespace
             return true;
         }
 
-        void Report(const AttemptDescriptor& attempt, bool success,
+        bool Report(const AttemptDescriptor& attempt, bool success,
             const wchar_t* reason) const
         {
             std::vector<moonwaker::Field> fields;
@@ -476,8 +466,8 @@ namespace
             fields.push_back(TextField(4, attempt.requestId));
             fields.push_back(TextField(5, success ? L"success" : L"failure"));
             fields.push_back(TextField(6, reason == nullptr ? L"" : reason));
-            moonwaker::Reply ignored;
-            BrokerCall(kReport, fields, &ignored);
+            moonwaker::Reply reply;
+            return BrokerCall(kReport, fields, &reply) && reply.success;
         }
     };
 
@@ -744,7 +734,8 @@ namespace
             {
                 return E_INVALIDARG;
             }
-            *autoLogon = FALSE;
+            TraceProvider("credential_selected");
+            *autoLogon = TRUE;
             return S_OK;
         }
 
@@ -837,6 +828,7 @@ namespace
             PWSTR* optionalStatusText,
             CREDENTIAL_PROVIDER_STATUS_ICON* optionalStatusIcon) override
         {
+            TraceProvider("serialization_requested");
             if (response == nullptr || serialization == nullptr)
             {
                 return E_INVALIDARG;
@@ -855,6 +847,7 @@ namespace
             if (!IsProviderEnabled() ||
                 InterlockedCompareExchange(&serializationStarted_, 1, 0) != 0)
             {
+                TraceProvider("serialization_unavailable");
                 SignalRefresh();
                 return S_OK;
             }
@@ -865,6 +858,7 @@ namespace
             std::vector<wchar_t> password;
             if (!broker.Acquire(attempt_, &account, &sid, &password))
             {
+                TraceProvider("acquire_failed");
                 broker.Report(attempt_, false, L"acquire_failed");
                 InterlockedExchange(&reported_, 1);
                 SignalRefresh();
@@ -880,6 +874,7 @@ namespace
                 return S_OK;
             }
             acquired_ = true;
+            TraceProvider("credential_acquired");
 
             HRESULT result = E_ACCESSDENIED;
             if (account == attempt_.account && sid == attempt_.sid &&
@@ -961,8 +956,11 @@ namespace
             if (acquired_ && InterlockedCompareExchange(&reported_, 1, 0) == 0)
             {
                 const bool success = status == 0;
-                BrokerClient().Report(attempt_, success,
+                TraceProvider(success ? "report_result_success" : "report_result_failure");
+                const bool acknowledged = BrokerClient().Report(attempt_, success,
                     success ? L"none" : L"windows_logon_failed");
+                TraceProvider(acknowledged ? "broker_report_acknowledged" :
+                    "broker_report_unacknowledged");
                 if (!success && optionalStatusText != nullptr)
                 {
                     DuplicateString(
@@ -1010,6 +1008,7 @@ namespace
             hotkeyStopEvent_ = CreateEventW(nullptr, TRUE, FALSE, nullptr);
             attemptEvent_ = CreateEventW(nullptr, FALSE, FALSE, kAttemptEvent);
             InterlockedIncrement(&g_liveObjects);
+            TraceProvider(attemptEvent_ == nullptr ? "provider_no_event" : "provider_created");
         }
 
         IFACEMETHODIMP QueryInterface(REFIID iid, void** object) override
@@ -1054,6 +1053,7 @@ namespace
         {
             if (scenario != CPUS_LOGON && scenario != CPUS_UNLOCK_WORKSTATION)
             {
+                TraceProvider("scenario_rejected");
                 scenario_ = CPUS_INVALID;
                 ReleaseCredential();
                 return scenario == CPUS_CREDUI || scenario == CPUS_CHANGE_PASSWORD ||
@@ -1069,6 +1069,7 @@ namespace
                 ReleaseCredential();
             }
             scenario_ = scenario;
+            TraceProvider("scenario_accepted");
             return S_OK;
         }
 
@@ -1086,6 +1087,7 @@ namespace
             {
                 return E_INVALIDARG;
             }
+            TraceProvider("advised");
             EnterCriticalSection(&eventLock_);
             lastNotifiedAttemptId_.clear();
             events_ = events;
@@ -1100,6 +1102,7 @@ namespace
                     &notifierThreadId_);
                 if (notifierThread_ == nullptr)
                 {
+                    TraceProvider("notifier_create_failed");
                     const DWORD error = GetLastError();
                     Release();
                     UnAdvise();
@@ -1221,6 +1224,7 @@ namespace
                 *count = 1;
                 *defaultIndex = 0;
                 *autoLogonWithDefault = TRUE;
+                TraceProvider("credential_default_auto");
             }
             return S_OK;
         }
@@ -1228,18 +1232,26 @@ namespace
         IFACEMETHODIMP GetCredentialAt(DWORD index,
             ICredentialProviderCredential** credential) override
         {
+            TraceProvider("credential_at_called");
             if (credential == nullptr)
             {
+                TraceProvider("credential_at_invalid_output");
                 return E_INVALIDARG;
             }
             *credential = nullptr;
-            RefreshCredential();
+            // Return the snapshot that GetCredentialCount advertised. Acquire in
+            // GetSerialization remains the authoritative single-use check.
             if (index != 0 || credential_ == nullptr)
             {
+                TraceProvider("credential_at_unavailable");
                 return E_INVALIDARG;
             }
-            return credential_->QueryInterface(IID_ICredentialProviderCredential,
+            const HRESULT result = credential_->QueryInterface(
+                IID_ICredentialProviderCredential,
                 reinterpret_cast<void**>(credential));
+            TraceProvider(SUCCEEDED(result) ? "credential_returned" :
+                "credential_query_failed");
+            return result;
         }
 
         IFACEMETHODIMP SetUserArray(ICredentialProviderUserArray* users) override
@@ -1290,6 +1302,7 @@ namespace
         {
             Provider* self = static_cast<Provider*>(context);
             const HRESULT initialized = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            TraceProvider("notifier_started");
             HANDLE waits[] = {self->stopEvent_, self->attemptEvent_};
             while (true)
             {
@@ -1313,10 +1326,12 @@ namespace
         {
             if (!IsActiveConsoleSession())
             {
+                if (eventSignaled) TraceProvider("signal_inactive_session");
                 return;
             }
             AttemptDescriptor attempt;
             const bool pending = BrokerClient().Observe(&attempt);
+            if (eventSignaled && !pending) TraceProvider("signal_no_pending");
             ICredentialProviderEvents* events = nullptr;
             UINT_PTR adviseContext = 0;
             EnterCriticalSection(&eventLock_);
@@ -1331,10 +1346,21 @@ namespace
                 adviseContext = adviseContext_;
             }
             LeaveCriticalSection(&eventLock_);
+            if (newAttempt) TraceProvider("pending_observed");
             if (events != nullptr)
             {
-                events->CredentialsChanged(adviseContext);
+                TraceProvider("credentials_changed");
+                const HRESULT result = events->CredentialsChanged(adviseContext);
+                TraceProvider(SUCCEEDED(result) ? "credentials_changed_succeeded" :
+                    "credentials_changed_failed");
                 events->Release();
+                if (FAILED(result) && pending)
+                {
+                    EnterCriticalSection(&eventLock_);
+                    moonwaker::ResetPendingAttemptNotificationAfterFailure(
+                        attempt.attemptId, &lastNotifiedAttemptId_);
+                    LeaveCriticalSection(&eventLock_);
+                }
             }
         }
 
@@ -1392,10 +1418,21 @@ namespace
             }
             AttemptDescriptor attempt;
             BrokerClient broker;
-            if (!broker.Observe(&attempt) ||
-                !ValidBrokerIdentity(attempt.account, attempt.sid) ||
-                !UserArrayContainsSid(userArray_, attempt.sid))
+            if (!broker.Observe(&attempt))
             {
+                if (credential_ != nullptr) TraceProvider("credential_refresh_pending_lost");
+                ReleaseCredential();
+                return;
+            }
+            if (!ValidBrokerIdentity(attempt.account, attempt.sid))
+            {
+                TraceProvider("identity_rejected");
+                ReleaseCredential();
+                return;
+            }
+            if (!UserArrayContainsSid(userArray_, attempt.sid))
+            {
+                TraceProvider("user_array_rejected");
                 ReleaseCredential();
                 return;
             }
@@ -1407,6 +1444,7 @@ namespace
             Credential* credential = new (std::nothrow) Credential(attempt, scenario_);
             if (credential != nullptr)
             {
+                TraceProvider("credential_created");
                 credential_ = credential;
                 currentAttempt_ = std::move(attempt);
             }

@@ -6,6 +6,17 @@ import sys
 import base64
 import urllib.error
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
+from time import monotonic
+
+
+CONTROL_PATHS = {
+    "session": "/api/session/status",
+    "rtsp": "/api/rtsp/sessions",
+    "webrtc": "/api/webrtc/sessions",
+    "apps": "/api/apps",
+    "clients": "/api/clients/list",
+}
 
 
 def reply(value):
@@ -15,9 +26,34 @@ def reply(value):
     sys.stdout.flush()
 
 
+def control_snapshot(base_url, headers, context):
+    """Fetch only the fixed control sources in one bounded helper process."""
+    def fetch(item):
+        name, path = item
+        started = monotonic()
+        request = urllib.request.Request(base_url + path, headers=headers, method="GET")
+        try:
+            with urllib.request.urlopen(request, context=context, timeout=0.6) as response:
+                result = {"ok": True, "status": response.status,
+                          "content": response.read().decode("utf-8", errors="replace")}
+        except urllib.error.HTTPError as error:
+            result = {"ok": False, "status": error.code, "timeout": False}
+        except Exception as error:
+            reason = getattr(error, "reason", None)
+            result = {"ok": False, "status": 0,
+                      "timeout": isinstance(error, TimeoutError) or isinstance(reason, TimeoutError)}
+        result["duration_ms"] = int((monotonic() - started) * 1000)
+        return name, result
+
+    with ThreadPoolExecutor(max_workers=len(CONTROL_PATHS)) as workers:
+        sources = dict(workers.map(fetch, CONTROL_PATHS.items()))
+    reply({"ok": True, "control_sources": sources})
+    return 0
+
+
 def main():
     request_data = json.load(sys.stdin)
-    url = request_data["base_url"].rstrip("/") + request_data["path"]
+    base_url = request_data["base_url"].rstrip("/")
     method = request_data.get("method", "GET").upper()
     token = request_data.get("token", "")
     username = request_data.get("username", "")
@@ -34,6 +70,12 @@ def main():
     if body is not None:
         data = json.dumps(body, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         headers["Content-Type"] = "application/json"
+    if request_data.get("control_snapshot") is True:
+        context = ssl.create_default_context()
+        context.check_hostname = False
+        context.verify_mode = ssl.CERT_NONE
+        return control_snapshot(base_url, headers, context)
+    url = base_url + request_data["path"]
     req = urllib.request.Request(url, data=data, headers=headers, method=method)
     context = ssl.create_default_context()
     context.check_hostname = False

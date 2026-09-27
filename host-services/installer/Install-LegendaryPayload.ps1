@@ -1,6 +1,9 @@
 #requires -Version 5.1
 [CmdletBinding()]
-param([Parameter(Mandatory)][string]$TargetDirectory)
+param(
+    [Parameter(Mandatory)][string]$TargetDirectory,
+    [string]$SourceBinary = ""
+)
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
@@ -14,7 +17,17 @@ if (Test-Path -LiteralPath $target) {
     if ((Get-Item -LiteralPath $target).Length -eq $expectedSize -and $hash -eq $expectedHash) { return }
     Remove-Item -LiteralPath $target -Force
 }
-Invoke-WebRequest -Uri $url -OutFile $target -UseBasicParsing
+if ([string]::IsNullOrWhiteSpace($SourceBinary)) {
+    Invoke-WebRequest -Uri $url -OutFile $target -UseBasicParsing
+} else {
+    $source = (Resolve-Path -LiteralPath $SourceBinary).Path
+    $sourceHash = (Get-FileHash -LiteralPath $source -Algorithm SHA256).Hash.ToLowerInvariant()
+    if ((Get-Item -LiteralPath $source).Length -ne $expectedSize -or
+        $sourceHash -ne $expectedHash) {
+        throw "Legendary source hash or size verification failed."
+    }
+    Copy-Item -LiteralPath $source -Destination $target -Force
+}
 $hash = (Get-FileHash -LiteralPath $target -Algorithm SHA256).Hash.ToLowerInvariant()
 if ((Get-Item -LiteralPath $target).Length -ne $expectedSize -or $hash -ne $expectedHash) {
     Remove-Item -LiteralPath $target -Force -ErrorAction SilentlyContinue
