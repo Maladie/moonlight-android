@@ -215,7 +215,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         stopped = true;
         epoch++;
         if (observation != null) {
-            observation.cancel(true);
+            observation.cancel(false);
             observation = null;
         }
     }
@@ -367,7 +367,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             closed = true;
         }
         stop();
-        executor.shutdownNow();
+        executor.shutdown();
     }
 
     public boolean isInstallationConfirmationStream() {

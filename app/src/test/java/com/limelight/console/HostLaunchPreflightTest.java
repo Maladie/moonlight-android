@@ -1,10 +1,14 @@
 package com.limelight.console;
 
+import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.nvstream.http.NvApp;
 
 import org.junit.Test;
 
 import java.io.IOException;
+import java.io.File;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -19,6 +23,37 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class HostLaunchPreflightTest {
+    @Test public void signInDiagnosticRecordsStateTransitionsWithoutAttemptId() throws Exception {
+        Fake fake = new Fake();
+        String attempt = "0123456789abcdef0123456789abcdef";
+        fake.session = new HostLaunchPreflight.Session("pending", "none", attempt, 500);
+        fake.sessionStatuses.add(new HostLaunchPreflight.Session(
+                "credential_issued", "none", attempt, 500));
+        fake.sessionStatuses.add(new HostLaunchPreflight.Session(
+                "expired", "windows_sign_in_expired", attempt, 500));
+        File directory = Files.createTempDirectory("preflight-sign-in").toFile();
+        diagnosticsTestHook("resetForTests");
+        try {
+            MoonWakerDiagnostics.initialize(directory);
+            fake.run(game(42), new AtomicBoolean());
+            assertTrue((Boolean) diagnosticsTestHook("flushForTests"));
+            String events = new String(Files.readAllBytes(
+                    new File(directory, "events.jsonl").toPath()), StandardCharsets.UTF_8);
+            assertTrue(events.contains("\"event\":\"preflight.session_state\""));
+            assertTrue(events.contains("\"state\":\"credential_issued\""));
+            assertTrue(events.contains("\"state\":\"expired\""));
+            assertFalse(events.contains(attempt));
+        } finally {
+            diagnosticsTestHook("resetForTests");
+        }
+    }
+
+    private static Object diagnosticsTestHook(String name) throws Exception {
+        java.lang.reflect.Method method = MoonWakerDiagnostics.class.getDeclaredMethod(name);
+        method.setAccessible(true);
+        return method.invoke(null);
+    }
+
     @Test public void verifiedSwitchTargetSkipsAppListButNotGatewayOrCancellation() {
         Fake fake = new Fake();
         fake.retainedTarget = app("MoonWaker Stream", 77, PlayniteTargetResolver.MOONWAKER_STREAM_UUID);

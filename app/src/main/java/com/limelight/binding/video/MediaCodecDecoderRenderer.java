@@ -95,6 +95,7 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
     private volatile VideoStatsListener videoStatsListener;
 
     private static final int CR_MAX_TRIES = 10;
+    private static final int INPUT_BUFFER_STALL_MS = 250;
     private static final int CR_RECOVERY_TYPE_NONE = 0;
     private static final int CR_RECOVERY_TYPE_FLUSH = 1;
     private static final int CR_RECOVERY_TYPE_RESTART = 2;
@@ -1187,6 +1188,17 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
             // If we don't have an input buffer index yet, fetch one now
             while (nextInputBufferIndex < 0 && !stopping) {
                 nextInputBufferIndex = videoDecoder.dequeueInputBuffer(10000);
+                if (nextInputBufferIndex < 0 &&
+                        SystemClock.uptimeMillis() - startTime >= INPUT_BUFFER_STALL_MS) {
+                    if (codecRecoveryAttempts < CR_MAX_TRIES) {
+                        int recovery = codecRecoveryAttempts == 0 ?
+                                CR_RECOVERY_TYPE_RESTART : CR_RECOVERY_TYPE_RESET;
+                        if (codecRecoveryType.compareAndSet(CR_RECOVERY_TYPE_NONE, recovery)) {
+                            LimeLog.warning("Decoder input buffer stalled; recovering codec");
+                        }
+                    }
+                    break;
+                }
             }
 
             // Get the backing ByteBuffer for the input buffer index
@@ -1229,9 +1241,9 @@ public class MediaCodecDecoderRenderer extends VideoDecoderRenderer implements C
         }
 
         if (nextInputBuffer == null) {
-            // We've been hung for 5 seconds and no other exception was reported,
-            // so generate a decoder hung exception
-            if (deltaMs >= 5000 && initialException == null) {
+            // Report a persistent stall after recovery attempts are exhausted.
+            if ((deltaMs >= 5000 || codecRecoveryAttempts >= CR_MAX_TRIES)
+                    && !stopping) {
                 DecoderHungException decoderHungException = new DecoderHungException(deltaMs);
                 if (!reportedCrash) {
                     reportedCrash = true;

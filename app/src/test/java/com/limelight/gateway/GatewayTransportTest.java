@@ -4,6 +4,7 @@ import org.json.JSONObject;
 import org.junit.Test;
 
 import java.io.ByteArrayInputStream;
+import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InterruptedIOException;
@@ -109,6 +110,27 @@ public class GatewayTransportTest {
         } catch (IllegalArgumentException expected) {
             // Expected.
         }
+    }
+
+    @Test public void truncatedSuccessRetryRequiresRecoverableExactOperation() throws Exception {
+        JSONObject reauthorize = new JSONObject()
+                .put("intent", "reauthorize").put("operation_id", "op-1");
+        assertTrue(GatewayTransport.canRetryTruncatedSuccess(
+                "/api/v1/control/operation/acquire", reauthorize, "op-1"));
+        assertFalse(GatewayTransport.canRetryTruncatedSuccess(
+                "/api/v1/control/operation/acquire", reauthorize, "op-2"));
+        assertTrue(GatewayTransport.canRetryTruncatedSuccess(
+                "/api/v1/control/operation/acquire",
+                new JSONObject().put("intent", "full_quit").put("operation_id", "op-1"),
+                "op-1"));
+        assertFalse(GatewayTransport.canRetryTruncatedSuccess(
+                "/api/v1/control/operation/acquire",
+                new JSONObject().put("intent", "hard_reset").put("operation_id", "op-1"),
+                "op-1"));
+        assertFalse(GatewayTransport.canRetryTruncatedSuccess(
+                "/api/v1/control/operation/complete", reauthorize, "op-1"));
+        assertTrue(GatewayTransport.canRetryTruncatedSuccess(
+                "/api/v1/game/current", null, null));
     }
 
     @Test public void callerSuppliedRequestIdIsValidatedWithoutGeneratingAnother() throws Exception {
@@ -222,6 +244,27 @@ public class GatewayTransportTest {
             fail("Expected ResponseTooLargeException");
         } catch (GatewayTransport.ResponseTooLargeException expected) {
             // Expected.
+        }
+    }
+
+    @Test public void boundedReadKeepsPartialByteCountWhenSocketFails() throws Exception {
+        int[] bytesRead = {0};
+        InputStream interrupted = new FilterInputStream(
+                new ByteArrayInputStream(new byte[]{1, 2, 3})) {
+            private boolean delivered;
+
+            @Override public int read(byte[] buffer, int offset, int length)
+                    throws IOException {
+                if (delivered) throw new IOException("unexpected_eof");
+                delivered = true;
+                return super.read(buffer, offset, length);
+            }
+        };
+        try {
+            GatewayTransport.readBounded(interrupted, 8, bytesRead);
+            fail("Expected interrupted response body");
+        } catch (IOException expected) {
+            assertEquals(3, bytesRead[0]);
         }
     }
 
