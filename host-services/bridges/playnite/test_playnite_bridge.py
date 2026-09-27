@@ -42,6 +42,64 @@ GAME_ID = "840317c9-b9a4-4f72-be8e-807414e36a9b"
 SECOND_GAME_ID = "65705ca9-b9c7-4ada-b4b7-f73ffb8ac64f"
 
 
+class RunningScanCompletenessTest(unittest.TestCase):
+    OWN = {"process_id": 100, "process_path": "C:/Games/A/a.exe",
+           "process_started_filetime": 5, "user_sid": "own", "session_id": 1}
+
+    def scan(self, statuses, visible):
+        probe = object.__new__(WindowProbe)
+        probe.kernel32 = mock.Mock()
+        pids = [100] + sorted(statuses)
+        entries = iter(pids)
+
+        def next_entry(_snapshot, entry):
+            value = next(entries, None)
+            if value is None:
+                return False
+            entry._obj.th32ProcessID = value
+            return True
+
+        probe.kernel32.CreateToolhelp32Snapshot.return_value = 1
+        probe.kernel32.Process32FirstW.side_effect = next_entry
+        probe.kernel32.Process32NextW.side_effect = next_entry
+
+        class User32:
+            @staticmethod
+            def IsWindowVisible(_hwnd):
+                return True
+
+            @staticmethod
+            def GetWindowThreadProcessId(hwnd, pid):
+                pid._obj.value = hwnd
+
+            @staticmethod
+            def EnumWindows(callback, _value):
+                for hwnd in visible:
+                    callback(hwnd, 0)
+                return True
+
+        probe.user32 = User32()
+        probe.process_identity = mock.Mock(side_effect=lambda pid, include_owner=False: (
+            self.OWN if pid in (100, os.getpid()) else None))
+        probe.process_identity_status = mock.Mock(side_effect=lambda pid, include_owner=False: (
+            ("alive", self.OWN) if pid == 100 else (statuses[pid], None)))
+        with mock.patch.object(ctypes, "get_last_error", return_value=18, create=True):
+            return probe.scan_running_processes()
+
+    def test_unreadable_processes_without_a_window_keep_the_scan_complete(self):
+        result, status = self.scan({600: "unknown", 700: "unknown"}, visible=[100])
+        self.assertEqual("complete", status)
+        self.assertEqual([100], [item["process_id"] for item in result])
+
+    def test_unreadable_process_with_a_visible_window_makes_the_scan_partial(self):
+        _result, status = self.scan({600: "unknown", 700: "unknown"}, visible=[100, 700])
+        self.assertEqual("partial", status)
+
+    def test_process_that_exited_during_the_scan_is_absent_not_partial(self):
+        _result, status = self.scan({600: "gone"}, visible=[600])
+        self.assertEqual("complete", status)
+
+
 class SteamClosePreparationTest(unittest.TestCase):
     def setUp(self):
         self.probe = WindowProbe(None)

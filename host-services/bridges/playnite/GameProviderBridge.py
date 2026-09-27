@@ -517,7 +517,12 @@ class WindowProbe:
                 pid = int(entry.th32ProcessID)
                 identity = self.process_identity(pid, include_owner=True) if pid > 4 else None
                 if identity is None:
-                    if pid > 4:
+                    # An unreadable process has no path to match, so it can hide a
+                    # game only if it shows a window on this user's desktop. Services,
+                    # csrss/winlogon/dwm and processes that exited during the scan
+                    # cannot be a candidate and must not make every scan partial.
+                    if pid > 4 and pid in visible_pids \
+                            and self.process_identity_status(pid)[0] != "gone":
                         status = "partial"
                 elif identity["user_sid"] == own["user_sid"] \
                         and identity["session_id"] == own["session_id"]:
