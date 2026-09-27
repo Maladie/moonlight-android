@@ -39,7 +39,7 @@ class SessionRecoveryTest(unittest.TestCase):
         probe = mock.Mock()
         probe.process_identity.side_effect = lambda pid, **kw: (
             own if pid == os.getpid() else self.processes.get(pid))
-        probe.scan_running_processes.side_effect = lambda: (list(self.processes.values()), "complete")
+        probe.scan_running_processes.side_effect = lambda _images: (list(self.processes.values()), "complete")
         probe.force_terminate_verified_process.side_effect = lambda value: bool(
             self.processes.pop(value["process_id"], None))
         self.bridge.state.running_process_probe = probe

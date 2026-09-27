@@ -487,7 +487,13 @@ class WindowProbe:
         finally:
             self.kernel32.CloseHandle(token)
 
-    def scan_running_processes(self) -> tuple[list[dict[str, Any]], str]:
+    def scan_running_processes(self, game_images: set[str]) -> tuple[list[dict[str, Any]], str]:
+        """Own-user processes; ``partial`` when an unreadable process could still match.
+
+        An unreadable process exposes only its image name and windows, so it can be a
+        game only through the matcher's two routes: a visible window on this desktop or
+        the image name of an exact game executable (``game_images``, casefolded).
+        """
         own = self.process_identity(os.getpid(), include_owner=True)
         if own is None or not self.user32:
             return [], "unavailable"
@@ -517,11 +523,8 @@ class WindowProbe:
                 pid = int(entry.th32ProcessID)
                 identity = self.process_identity(pid, include_owner=True) if pid > 4 else None
                 if identity is None:
-                    # An unreadable process has no path to match, so it can hide a
-                    # game only if it shows a window on this user's desktop. Services,
-                    # csrss/winlogon/dwm and processes that exited during the scan
-                    # cannot be a candidate and must not make every scan partial.
-                    if pid > 4 and pid in visible_pids \
+                    if pid > 4 and (pid in visible_pids
+                                    or entry.szExeFile.casefold() in game_images) \
                             and self.process_identity_status(pid)[0] != "gone":
                         status = "partial"
                 elif identity["user_sid"] == own["user_sid"] \
@@ -4000,7 +4003,6 @@ class BridgeState:
             native_confirmation = self._native_reconciliation_confirmation if self.connected else None
         if probe is None:
             return [], "unavailable", revision
-        identities, status = probe.scan_running_processes()
         exact_paths = set()
         for game in games:
             executable = str(game.get("exe") or game.get("executable") or "").strip()
@@ -4008,6 +4010,8 @@ class BridgeState:
                 directory = str(game.get("installDir") or game.get("install_dir") or "")
                 exact_paths.add(self._normalized_process_path(
                     executable if ntpath.isabs(executable) else ntpath.join(directory, executable)))
+        identities, status = probe.scan_running_processes(
+            {ntpath.basename(path).casefold() for path in exact_paths})
         matches: dict[str, list[dict[str, Any]]] = {}
         for identity in identities:
             path = self._normalized_process_path(identity.get("process_path"))

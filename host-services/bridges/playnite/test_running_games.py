@@ -133,7 +133,7 @@ class RunningGamesTest(unittest.TestCase):
         self.probe.scan_running_processes.return_value = ([self.hk,
             identity(44, r"C:\Games\HK\UnityCrashHandler64.exe")], "partial")
         self.assertEqual(1, len(self.state._verified_running_games()[0]))
-        self.probe.scan_running_processes.side_effect = lambda: (
+        self.probe.scan_running_processes.side_effect = lambda _images: (
             setattr(self.state, "library_revision", "3") or ([self.hk], "complete"))
         self.state.refresh_running_games()
         self.assertEqual([], self.state.current_snapshot()["running_games"])
@@ -179,6 +179,12 @@ class RunningGamesTest(unittest.TestCase):
                          {game["game_id"] for game in running})
         self.assertEqual(44, next(game["process_id"] for game in running
                                   if game["game_id"] == guid))
+
+    def test_scan_receives_the_image_names_of_exact_game_executables(self):
+        self.state.library["steam:2"] = {"id": "steam:2", "provider": "steam",
+                                         "installDir": r"C:\Games\Celeste", "exe": "Celeste.exe"}
+        self.state._verified_running_games()
+        self.probe.scan_running_processes.assert_called_once_with({"celeste.exe"})
 
     def test_emulator_stop_event_waits_for_exact_process_exit(self):
         guid = "840317c9-b9a4-4f72-be8e-807414e36a9b"
@@ -626,13 +632,13 @@ class NativeRunningGamesTest(unittest.TestCase):
             setattr(entry._obj, "th32ProcessID", 11) or True)
         self.probe.kernel32.Process32NextW.return_value = False
         with mock.patch("GameProviderBridge.time.monotonic", side_effect=[0, 1]):
-            self.assertEqual(([], "unavailable"), self.probe.scan_running_processes())
+            self.assertEqual(([], "unavailable"), self.probe.scan_running_processes(set()))
         with mock.patch.object(ctypes, "get_last_error", return_value=5, create=True):
-            self.assertEqual(([], "unavailable"), self.probe.scan_running_processes())
+            self.assertEqual(([], "unavailable"), self.probe.scan_running_processes(set()))
         for change in ({"user_sid": "foreign"}, {"session_id": 2}):
             self.probe.process_identity.side_effect = [self.expected, {**self.expected, **change}]
             with mock.patch.object(ctypes, "get_last_error", return_value=18, create=True):
-                self.assertEqual(([], "complete"), self.probe.scan_running_processes())
+                self.assertEqual(([], "complete"), self.probe.scan_running_processes(set()))
 
 
 if __name__ == "__main__":

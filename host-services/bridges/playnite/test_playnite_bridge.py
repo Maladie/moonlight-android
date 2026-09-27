@@ -46,7 +46,7 @@ class RunningScanCompletenessTest(unittest.TestCase):
     OWN = {"process_id": 100, "process_path": "C:/Games/A/a.exe",
            "process_started_filetime": 5, "user_sid": "own", "session_id": 1}
 
-    def scan(self, statuses, visible):
+    def scan(self, statuses, visible, images=frozenset(), names=None):
         probe = object.__new__(WindowProbe)
         probe.kernel32 = mock.Mock()
         pids = [100] + sorted(statuses)
@@ -57,6 +57,7 @@ class RunningScanCompletenessTest(unittest.TestCase):
             if value is None:
                 return False
             entry._obj.th32ProcessID = value
+            entry._obj.szExeFile = (names or {}).get(value, "svc.exe")
             return True
 
         probe.kernel32.CreateToolhelp32Snapshot.return_value = 1
@@ -84,7 +85,7 @@ class RunningScanCompletenessTest(unittest.TestCase):
         probe.process_identity_status = mock.Mock(side_effect=lambda pid, include_owner=False: (
             ("alive", self.OWN) if pid == 100 else (statuses[pid], None)))
         with mock.patch.object(ctypes, "get_last_error", return_value=18, create=True):
-            return probe.scan_running_processes()
+            return probe.scan_running_processes(set(images))
 
     def test_unreadable_processes_without_a_window_keep_the_scan_complete(self):
         result, status = self.scan({600: "unknown", 700: "unknown"}, visible=[100])
@@ -95,8 +96,14 @@ class RunningScanCompletenessTest(unittest.TestCase):
         _result, status = self.scan({600: "unknown", 700: "unknown"}, visible=[100, 700])
         self.assertEqual("partial", status)
 
+    def test_unreadable_process_named_like_an_exact_game_executable_makes_the_scan_partial(self):
+        _result, status = self.scan({600: "unknown", 700: "unknown"}, visible=[100],
+                                    images={"hollow_knight.exe"}, names={700: "Hollow_Knight.EXE"})
+        self.assertEqual("partial", status)
+
     def test_process_that_exited_during_the_scan_is_absent_not_partial(self):
-        _result, status = self.scan({600: "gone"}, visible=[600])
+        _result, status = self.scan({600: "gone"}, visible=[600],
+                                    images={"svc.exe"})
         self.assertEqual("complete", status)
 
 
