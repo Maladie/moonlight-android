@@ -3,6 +3,7 @@
 param(
     [string]$OutputDirectory = "",
     [string]$CredentialProviderBinary = "",
+    [string]$LegendaryBinary = "",
     [switch]$SkipTests
 )
 
@@ -72,7 +73,7 @@ try {
     Copy-Item -LiteralPath $credentialProviderDll -Destination (Join-Path $payloadRoot `
         "windows-login\credential-provider\MoonWakerCredentialProvider.dll") -Force
     & (Join-Path $hostServices "installer\Install-LegendaryPayload.ps1") `
-        -TargetDirectory (Join-Path $payloadRoot "tools\legendary")
+        -TargetDirectory (Join-Path $payloadRoot "tools\legendary") -SourceBinary $LegendaryBinary
     Copy-Item -LiteralPath (Join-Path $hostServices "version.json") `
         -Destination $payloadRoot -Force
     $controlTarget = Join-Path $payloadRoot "control"
