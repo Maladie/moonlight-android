@@ -111,6 +111,23 @@ public final class MoonWakerDiagnostics {
         return DROPPED.get();
     }
 
+    /**
+     * Waits until every record queued before this call has been written or counted as lost,
+     * then returns the loss count; -1 when there is no writer or the drain did not complete.
+     */
+    public static long drainAndCount() {
+        Writer current;
+        synchronized (MoonWakerDiagnostics.class) {
+            current = writer;
+        }
+        try {
+            return current != null && current.flush() ? DROPPED.get() : -1L;
+        } catch (InterruptedException interrupted) {
+            Thread.currentThread().interrupt();
+            return -1L;
+        }
+    }
+
     public static boolean exportTo(OutputStream output) {
         if (output == null) return false;
         try {

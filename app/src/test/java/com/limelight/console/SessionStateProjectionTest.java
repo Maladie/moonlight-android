@@ -251,6 +251,18 @@ public class SessionStateProjectionTest {
         assertEquals(4, recorded.size());
     }
 
+    @Test public void sampleConfirmationReportsUndrainedWriterAndRejectsBadMarkers() {
+        recordInto();
+        assertTrue(SessionStateResolver.confirmSamples("phase-19:end"));
+        Object[] confirmation = recorded.get(0);
+        assertEquals("projection.sample_drained", confirmation[0]);
+        assertEquals("phase-19:end", field(confirmation, "sample_marker"));
+        assertEquals("not_drained", field(confirmation, "status"));
+        assertEquals(-1L, field(confirmation, "dropped"));
+        assertFalse(SessionStateResolver.confirmSamples("bad marker"));
+        assertEquals(1, recorded.size());
+    }
+
     @Test public void projectionDiagnosticIsEmittedOncePerDistinctPublication() {
         recordInto();
         long ordinal = owner.nextRequestOrdinal();

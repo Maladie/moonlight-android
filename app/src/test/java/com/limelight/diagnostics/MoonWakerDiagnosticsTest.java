@@ -75,6 +75,23 @@ public class MoonWakerDiagnosticsTest {
         assertEquals(1L, record.getLong("dropped"));
     }
 
+    @Test public void drainedCountIncludesAWriteFailureOfAnEarlierQueuedRecord() throws Exception {
+        File notADirectory = new File(directory, "occupied");
+        assertTrue(notADirectory.createNewFile());
+        MoonWakerDiagnostics.initialize(notADirectory);
+        long before = MoonWakerDiagnostics.droppedCount();
+
+        assertTrue(MoonWakerDiagnostics.record("INFO", "android.session", "projection.published"));
+        long drained = MoonWakerDiagnostics.drainAndCount();
+
+        assertTrue(drained >= before + 1);
+        assertEquals(MoonWakerDiagnostics.droppedCount(), drained);
+    }
+
+    @Test public void drainWithoutWriterIsNotConfirmed() {
+        assertEquals(-1L, MoonWakerDiagnostics.drainAndCount());
+    }
+
     @Test public void projectionCorrelatorsAreAllowlistedAndOthersDropped() throws Exception {
         MoonWakerDiagnostics.initialize(directory);
         MoonWakerDiagnostics.record("INFO", "android.session", "projection.published",

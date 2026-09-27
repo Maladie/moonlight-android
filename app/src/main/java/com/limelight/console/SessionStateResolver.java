@@ -50,6 +50,19 @@ final class SessionStateResolver {
      * marker, including unchanged state, so an external observer can sample phase boundaries.
      * Returns the number of owners whose sample was queued, or -1 for an invalid marker.
      */
+    /**
+     * After a boundary sample, confirms persistence: drains the diagnostic writer and records
+     * the post-drain loss count under the same marker. A missing confirmation or a changed
+     * count means the boundary evidence is unavailable. Must not run on the main thread.
+     */
+    static boolean confirmSamples(String marker) {
+        if (marker == null || !SAMPLE_MARKER.matcher(marker).matches()) return false;
+        long dropped = MoonWakerDiagnostics.drainAndCount();
+        return diagnosticSink.record("INFO", "android.session", "projection.sample_drained",
+                "sample_marker", marker, "status", dropped >= 0L ? "drained" : "not_drained",
+                "dropped", dropped);
+    }
+
     static synchronized int sampleAll(String marker, long nowMs) {
         if (marker == null || !SAMPLE_MARKER.matcher(marker).matches()) return -1;
         int queued = 0;
