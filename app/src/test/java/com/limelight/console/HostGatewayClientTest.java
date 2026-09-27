@@ -11,6 +11,7 @@ import java.util.List;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertTrue;
 
 public class HostGatewayClientTest {
@@ -68,7 +69,7 @@ public class HostGatewayClientTest {
                             observation(providerWall, "boot-skew", 1, ordinal, ""),
                             "kid", "parent", ordinal, "", deviceWall);
             assertEquals(providerWall, parsed.observedAtUnixMs);
-            assertTrue(owner.accept(parsed,
+            assertNotNull(owner.accept(parsed,
                     com.limelight.stream.RetainedStreamSessionCoordinator.snapshot(),
                     1_000L));
 

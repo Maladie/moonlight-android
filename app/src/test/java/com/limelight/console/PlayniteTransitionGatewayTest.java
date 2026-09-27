@@ -93,13 +93,13 @@ public class PlayniteTransitionGatewayTest {
     }
 
     private static com.limelight.gateway.ControlOperationClient.Permit permit(
-            String operationId, String session, long generation) throws Exception {
+            String operationId, String session, long generation, long epoch) throws Exception {
         java.lang.reflect.Constructor<com.limelight.gateway.ControlOperationClient.Permit> create =
                 com.limelight.gateway.ControlOperationClient.Permit.class.getDeclaredConstructor(
                         String.class, String.class, int.class, long.class, long.class,
                         String.class, String.class, String.class, String.class, int.class);
         create.setAccessible(true);
-        return create.newInstance(operationId, session, 7, generation, 1L, "permitted", "none",
+        return create.newInstance(operationId, session, 7, generation, epoch, "permitted", "none",
                 "steam:123", PROCESS_TOKEN, 42);
     }
 
@@ -110,20 +110,22 @@ public class PlayniteTransitionGatewayTest {
         client.operationId = "control-full-quit-1";
         client.streamSessionId = "session-1";
         client.controlGeneration = 2L;
+        client.actorLeaseEpoch = 3L;
         PlayniteTransitionGateway gateway = new PlayniteTransitionGateway(
                 connection("parent"),
                 PlayniteTransitionGateway.ActorContext.parent("parent"), client);
 
         PlayniteTransitionGateway.Snapshot fenced = gateway.snapshotWithinControl(
-                permit("control-full-quit-1", "session-1", 2L));
+                permit("control-full-quit-1", "session-1", 2L, 3L));
         assertTrue(fenced.hasVerifiedProcessFor("steam:123"));
         assertEquals(PROCESS_TOKEN, fenced.processToken);
         assertEquals("running", fenced.gameState);
 
         for (com.limelight.gateway.ControlOperationClient.Permit other : Arrays.asList(
-                permit("control-full-quit-other", "session-1", 2L),
-                permit("control-full-quit-1", "session-1", 1L),
-                permit("control-full-quit-1", "session-2", 2L))) {
+                permit("control-full-quit-other", "session-1", 2L, 3L),
+                permit("control-full-quit-1", "session-1", 1L, 3L),
+                permit("control-full-quit-1", "session-2", 2L, 3L),
+                permit("control-full-quit-1", "session-1", 2L, 2L))) {
             PlayniteTransitionGateway.Snapshot closed = gateway.snapshotWithinControl(other);
             assertFalse(closed.hasVerifiedProcessFor("steam:123"));
             assertEquals("", closed.processToken);
@@ -267,6 +269,7 @@ public class PlayniteTransitionGatewayTest {
         String operationId = "";
         String streamSessionId = "";
         long controlGeneration;
+        long actorLeaseEpoch;
         String gameState = "running";
         String gameEvidence = "VERIFIED";
         String gameId = "steam:123";
@@ -310,7 +313,7 @@ public class PlayniteTransitionGatewayTest {
                                     .put("operation_id", operationId)
                                     .put("stream_session_id", streamSessionId)
                                     .put("control_generation", controlGeneration)
-                                    .put("actor_lease_epoch", 0))
+                                    .put("actor_lease_epoch", actorLeaseEpoch))
                             .put("provider", new JSONObject().put("state", gameState)
                                     .put("connector_evidence", "VERIFIED")
                                     .put("reason", "none"))

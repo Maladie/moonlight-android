@@ -42,16 +42,16 @@ public class SessionStateProjectionTest {
     @Test public void delayedDispatchAndRetiredBootAreRejected() {
         long delayed = owner.nextRequestOrdinal();
         long current = owner.nextRequestOrdinal();
-        assertFalse(owner.accept(pending("boot-a", 1, delayed, "episode-a"),
+        assertNull(owner.accept(pending("boot-a", 1, delayed, "episode-a"),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
-        assertTrue(owner.accept(pending("boot-a", 2, current, "episode-a"),
+        assertNotNull(owner.accept(pending("boot-a", 2, current, "episode-a"),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
 
         long restarted = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(pending("boot-b", 1, restarted, "episode-b"),
+        assertNotNull(owner.accept(pending("boot-b", 1, restarted, "episode-b"),
                 RetainedStreamSessionCoordinator.snapshot(), 1L));
         long lateOldBoot = owner.nextRequestOrdinal();
-        assertFalse(owner.accept(pending("boot-a", 3, lateOldBoot, "episode-a"),
+        assertNull(owner.accept(pending("boot-a", 3, lateOldBoot, "episode-a"),
                 RetainedStreamSessionCoordinator.snapshot(), 2L));
     }
 
@@ -80,14 +80,27 @@ public class SessionStateProjectionTest {
         assertEquals("suspend-a", snapshot.suspendId);
     }
 
+    @Test public void acceptReturnsTheProjectionOfItsOwnObservationNotALaterOne() {
+        long first = owner.nextRequestOrdinal();
+        SessionSnapshot own = owner.accept(pending("boot-a", 1, first, "episode-a"),
+                RetainedStreamSessionCoordinator.snapshot(), 0L);
+        long second = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(pending("boot-a", 2, second, "episode-a"),
+                RetainedStreamSessionCoordinator.snapshot(), 1L));
+
+        assertEquals(first, own.requestOrdinal);
+        assertEquals(second, owner.current(
+                RetainedStreamSessionCoordinator.snapshot(), 2L).requestOrdinal);
+    }
+
     @Test public void unknownEpisodeCannotEraseLiveTransportOrExtendItsDeadline() {
         RetainedStreamSessionCoordinator.enterHome(new Controller(), "session", "host",
                 "child", 42, "game");
         long first = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(pending("boot-a", 1, first, "episode-a"),
+        assertNotNull(owner.accept(pending("boot-a", 1, first, "episode-a"),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
         long second = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(pending("boot-a", 2, second, "episode-a"),
+        assertNotNull(owner.accept(pending("boot-a", 2, second, "episode-a"),
                 RetainedStreamSessionCoordinator.snapshot(), 10_000L));
 
         SessionSnapshot expired = owner.current(
@@ -103,13 +116,13 @@ public class SessionStateProjectionTest {
         RetainedStreamSessionCoordinator.enterHome(new Controller(), "session", "host",
                 "child", 42, "game");
         long first = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(pending("boot-a", 1, first, "episode-a"),
+        assertNotNull(owner.accept(pending("boot-a", 1, first, "episode-a"),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
         long failed = owner.nextRequestOrdinal();
         owner.unavailable(failed, RetainedStreamSessionCoordinator.snapshot(),
                 10_000L, "offline");
         long second = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(pending("boot-a", 2, second, "episode-a"),
+        assertNotNull(owner.accept(pending("boot-a", 2, second, "episode-a"),
                 RetainedStreamSessionCoordinator.snapshot(), 16_000L));
 
         assertEquals(SessionSnapshot.ObservationState.RECOVERY_REQUIRED,
@@ -131,7 +144,7 @@ public class SessionStateProjectionTest {
         SessionStateResolver.ProjectionOwner idleOwner = SessionStateResolver.owner(
                 "other", "child", "parent");
         long ordinal = idleOwner.nextRequestOrdinal();
-        assertTrue(idleOwner.accept(idle("boot-idle", ordinal),
+        assertNotNull(idleOwner.accept(idle("boot-idle", ordinal),
                 RetainedStreamSessionCoordinator.snapshot(), 20_000L));
         assertEquals(SessionSnapshot.ObservationState.IDLE,
                 idleOwner.current(RetainedStreamSessionCoordinator.snapshot(), 20_000L)
@@ -145,7 +158,7 @@ public class SessionStateProjectionTest {
         assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
                 controller, "session", 1L));
         long ordinal = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(ready("boot-ready", ordinal),
+        assertNotNull(owner.accept(ready("boot-ready", ordinal),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
         SessionSnapshot snapshot = owner.current(
                 RetainedStreamSessionCoordinator.snapshot(), 0L);
@@ -163,7 +176,7 @@ public class SessionStateProjectionTest {
         assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
                 controller, "session", 1L));
         long ordinal = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(ready("boot-ready", ordinal),
+        assertNotNull(owner.accept(ready("boot-ready", ordinal),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
         SessionSnapshot snapshot = owner.current(
                 RetainedStreamSessionCoordinator.snapshot(), 0L);
@@ -213,7 +226,7 @@ public class SessionStateProjectionTest {
     @Test public void recordThatCannotBeQueuedIsRetriedOnTheNextPublication() {
         recordInto(false);
         long ordinal = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(ready("boot-fresh", ordinal),
+        assertNotNull(owner.accept(ready("boot-fresh", ordinal),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
         assertEquals(0L, owner.diagnosticEventsForTests());
 
@@ -227,7 +240,7 @@ public class SessionStateProjectionTest {
     @Test public void boundarySamplesRecordUnchangedAndUnpublishedProjections() {
         recordInto();
         long ordinal = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(ready("boot-fresh", ordinal),
+        assertNotNull(owner.accept(ready("boot-fresh", ordinal),
                 RetainedStreamSessionCoordinator.snapshot(), 1_000L));
         SessionStateResolver.owner("other-host", "parent", "parent");
         recorded.clear();
@@ -266,7 +279,7 @@ public class SessionStateProjectionTest {
     @Test public void projectionDiagnosticIsEmittedOncePerDistinctPublication() {
         recordInto();
         long ordinal = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(ready("boot-fresh", ordinal),
+        assertNotNull(owner.accept(ready("boot-fresh", ordinal),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
         long afterAccept = owner.diagnosticEventsForTests();
         owner.current(RetainedStreamSessionCoordinator.snapshot(), 100L);
@@ -284,7 +297,7 @@ public class SessionStateProjectionTest {
         assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
                 controller, "session", 1L));
         long first = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(ready("boot-ready", first),
+        assertNotNull(owner.accept(ready("boot-ready", first),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
         long second = owner.nextRequestOrdinal();
         // Same episode, provider freshness 5 s (the lab provider value), polled every ~6 s.
@@ -296,7 +309,7 @@ public class SessionStateProjectionTest {
                 HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
                 HostGatewayClient.Evidence.VERIFIED, true, "game", 3, "target_window_ready",
                 false, true, false);
-        assertTrue(owner.accept(again, RetainedStreamSessionCoordinator.snapshot(), 20_000L));
+        assertNotNull(owner.accept(again, RetainedStreamSessionCoordinator.snapshot(), 20_000L));
         assertEquals(SessionSnapshot.ObservationState.READY,
                 owner.current(RetainedStreamSessionCoordinator.snapshot(), 20_000L)
                         .observationState);
@@ -312,7 +325,7 @@ public class SessionStateProjectionTest {
 
     @Test public void freshStreamCanBecomeReadyBeforeItIsRetained() {
         long ordinal = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(ready("boot-fresh", ordinal),
+        assertNotNull(owner.accept(ready("boot-fresh", ordinal),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
 
         SessionSnapshot snapshot = owner.current(
@@ -329,10 +342,10 @@ public class SessionStateProjectionTest {
         assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
                 controller, "session", 1L));
         long ordinal = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(idle("boot-idle-retained", ordinal),
+        assertNotNull(owner.accept(idle("boot-idle-retained", ordinal),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
         long refreshedOrdinal = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(idle("boot-idle-retained", 2L, refreshedOrdinal),
+        assertNotNull(owner.accept(idle("boot-idle-retained", 2L, refreshedOrdinal),
                 RetainedStreamSessionCoordinator.snapshot(), 10_000L));
 
         SessionSnapshot snapshot = owner.current(
@@ -354,7 +367,7 @@ public class SessionStateProjectionTest {
     @Test public void delayedFailureAfterNewerSuccessDoesNotReplaceReadyOrDeadline() {
         long delayed = owner.nextRequestOrdinal();
         long current = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(ready("boot-ready", current),
+        assertNotNull(owner.accept(ready("boot-ready", current),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
 
         SessionSnapshot snapshot = owner.unavailable(delayed,
@@ -372,7 +385,7 @@ public class SessionStateProjectionTest {
         assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
                 controller, "session", 1L));
         long ordinal = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(observation("boot-mismatch", 1L, ordinal, "running",
+        assertNotNull(owner.accept(observation("boot-mismatch", 1L, ordinal, "running",
                         "running", HostGatewayClient.Evidence.VERIFIED, "game",
                         HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
                         HostGatewayClient.Evidence.VERIFIED, true, "target_window_ready",
@@ -390,7 +403,7 @@ public class SessionStateProjectionTest {
 
     @Test public void expiredObservationWithoutMatchingTransportDropsGameIdentity() {
         long ordinal = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(ready("boot-ready", ordinal),
+        assertNotNull(owner.accept(ready("boot-ready", ordinal),
                 RetainedStreamSessionCoordinator.snapshot(), 0L));
         assertEquals("game", owner.current(
                 RetainedStreamSessionCoordinator.snapshot(), 0L).playniteGameId);
@@ -407,7 +420,7 @@ public class SessionStateProjectionTest {
         RetainedStreamSessionCoordinator.Snapshot firstTransport =
                 RetainedStreamSessionCoordinator.snapshot();
         long ordinal = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(pending("boot-recovery", 1, ordinal, "episode-recovery"),
+        assertNotNull(owner.accept(pending("boot-recovery", 1, ordinal, "episode-recovery"),
                 firstTransport, 0L));
 
         SessionSnapshot recovery = owner.current(firstTransport, 15_000L);
@@ -444,7 +457,7 @@ public class SessionStateProjectionTest {
                 RetainedStreamSessionCoordinator.snapshot().streamSessionId);
 
         long nextOrdinal = owner.nextRequestOrdinal();
-        assertTrue(owner.accept(readyForNextPlay("boot-next", nextOrdinal),
+        assertNotNull(owner.accept(readyForNextPlay("boot-next", nextOrdinal),
                 nextTransport, 16_001L));
         SessionSnapshot nextPlay = owner.current(nextTransport, 16_001L);
         assertEquals("operation-next", nextPlay.operationId);

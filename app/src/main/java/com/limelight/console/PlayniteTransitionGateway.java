@@ -284,14 +284,12 @@ public final class PlayniteTransitionGateway {
             HostGatewayClient.SessionObservation observation =
                     client.getSessionObservation(connection,
                             actorContext.executionProfileId, ordinal, transition);
-            if (!projectionOwner.accept(observation, retained, now)) {
-                SessionSnapshot projected = projectionOwner.current(retained, now);
-                return new Snapshot(projected, null, false);
+            SessionSnapshot accepted = projectionOwner.accept(observation, retained, now);
+            if (accepted == null) {
+                return new Snapshot(projectionOwner.current(retained, now), null, false);
             }
-            SessionSnapshot projected = projectionOwner.current(retained, now);
-            boolean correlated = projected.observationCorrelated
-                    && projected.requestOrdinal == observation.requestOrdinal;
-            return new Snapshot(projected, correlated ? observation : null, correlated);
+            boolean correlated = accepted.observationCorrelated;
+            return new Snapshot(accepted, correlated ? observation : null, correlated);
         } catch (IOException unavailable) {
             SessionSnapshot projected = projectionOwner.unavailable(
                     ordinal, retained, now, unavailable.getMessage());
@@ -303,8 +301,8 @@ public final class PlayniteTransitionGateway {
      * Observation for an exact control operation this client holds. Acquiring the permit
      * advances the Gateway control generation beyond the one bound to the retained stream,
      * so the ordinary projection correlation cannot match; the provider evidence is exposed
-     * only when the accepted observation carries this permit's operation, generation and
-     * stream session. The canonical projection is still updated through its single owner.
+     * only when the accepted observation carries this permit's operation, generation,
+     * stream session and actor lease epoch. The canonical projection is still updated through its single owner.
      */
     public Snapshot snapshotWithinControl(ControlOperationClient.Permit permit) throws IOException {
         long ordinal = projectionOwner.nextRequestOrdinal();
@@ -322,16 +320,17 @@ public final class PlayniteTransitionGateway {
             return new Snapshot(projectionOwner.unavailable(
                     ordinal, retained, now, unavailable.getMessage()), null, false);
         }
-        boolean accepted = projectionOwner.accept(observation, retained, now);
-        SessionSnapshot projected = projectionOwner.current(retained, now);
-        boolean fenced = accepted && permit != null
+        // The owner returns the projection of this exact observation, never a newer one.
+        SessionSnapshot accepted = projectionOwner.accept(observation, retained, now);
+        boolean fenced = accepted != null && permit != null
                 && !permit.operationId.isEmpty()
                 && permit.operationId.equals(observation.operationId)
                 && permit.generation > 0L
                 && permit.generation == observation.controlGeneration
                 && !permit.streamSessionId.isEmpty()
-                && permit.streamSessionId.equals(observation.streamSessionId);
-        if (fenced) return new Snapshot(projected, observation);
+                && permit.streamSessionId.equals(observation.streamSessionId)
+                && permit.actorLeaseEpoch == observation.actorLeaseEpoch;
+        if (fenced) return new Snapshot(accepted, observation);
         // Outside the caller's exact permit nothing proves the stop target: fail closed.
         return new Snapshot(false, false, "unknown", "", 0, false, "playnite", 0,
                 "control_correlation_mismatch");

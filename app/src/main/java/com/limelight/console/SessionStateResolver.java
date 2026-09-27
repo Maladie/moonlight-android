@@ -180,16 +180,17 @@ final class SessionStateResolver {
             return ++nextRequestOrdinal;
         }
 
-        synchronized boolean accept(HostGatewayClient.SessionObservation candidate,
+        /** The projection published for this exact observation, or null when rejected. */
+        synchronized SessionSnapshot accept(HostGatewayClient.SessionObservation candidate,
                                     RetainedStreamSessionCoordinator.Snapshot retained,
                                     long nowMs) {
             if (candidate == null || candidate.requestOrdinal != nextRequestOrdinal
                     || candidate.requestOrdinal <= lastAcceptedOrdinal
                     || !actorProfileId.equals(candidate.actorProfileId)
                     || !executionProfileId.equals(candidate.executionProfileId)
-                    || retiredBoots.contains(candidate.producerBootId)) return false;
+                    || retiredBoots.contains(candidate.producerBootId)) return null;
             if (candidate.producerBootId.equals(producerBootId)) {
-                if (candidate.producerRevision <= producerRevision) return false;
+                if (candidate.producerRevision <= producerRevision) return null;
             } else if (!producerBootId.isEmpty()) {
                 retiredBoots.add(producerBootId);
                 while (retiredBoots.size() > 8) {
@@ -219,7 +220,7 @@ final class SessionStateResolver {
                     || published.observationState == SessionSnapshot.ObservationState.IDLE) {
                 lastResolvedAtMs = nowMs;
             }
-            return true;
+            return published;
         }
 
         synchronized SessionSnapshot unavailable(
