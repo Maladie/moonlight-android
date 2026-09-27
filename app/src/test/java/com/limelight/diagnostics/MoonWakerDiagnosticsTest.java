@@ -59,6 +59,28 @@ public class MoonWakerDiagnosticsTest {
         assertFalse(read(new File(directory, "events.jsonl")).contains("secret"));
     }
 
+    @Test public void projectionCorrelatorsAreAllowlistedAndOthersDropped() throws Exception {
+        MoonWakerDiagnostics.initialize(directory);
+        MoonWakerDiagnostics.record("INFO", "android.session", "projection.published",
+                "execution_profile_id", "p-parent", "observation_state", "RECOVERY_REQUIRED",
+                "correlation_matches", true, "known_live", true, "game_evidence", "VERIFIED",
+                "process_evidence", "VERIFIED", "process_id", 6232,
+                "process_token_fp", "0123456789ab", "window_evidence", "VERIFIED",
+                "producer_boot_id", "boot-1", "producer_revision", 7L, "request_ordinal", 9L,
+                "control_generation", 3L, "actor_lease_epoch", 2L, "transport_generation", 4L,
+                "episode_remaining_ms", -1L, "process_token", "secret-token");
+        assertTrue(MoonWakerDiagnostics.flushForTests());
+        JSONObject record = new JSONObject(Files.readAllLines(
+                new File(directory, "events.jsonl").toPath(), StandardCharsets.UTF_8).get(0));
+        assertEquals("RECOVERY_REQUIRED", record.getString("observation_state"));
+        assertTrue(record.getBoolean("known_live"));
+        assertEquals(6232, record.getInt("process_id"));
+        assertEquals(4L, record.getLong("transport_generation"));
+        assertEquals(-1L, record.getLong("episode_remaining_ms"));
+        assertFalse(record.has("process_token"));
+        assertFalse(read(new File(directory, "events.jsonl")).contains("secret-token"));
+    }
+
     @Test public void recordRestrictsStringsAndKeepsPlannedCorrelationValues()
             throws Exception {
         MoonWakerDiagnostics.initialize(directory);

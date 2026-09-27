@@ -156,6 +156,49 @@ public class SessionStateProjectionTest {
         assertEquals(TOKEN, snapshot.processToken);
     }
 
+    @Test public void projectionDiagnosticCarriesAcceptedEvidenceButNotTheProcessToken() {
+        Controller controller = new Controller();
+        RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",
+                "child", 42, "game");
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                controller, "session", 1L));
+        long ordinal = owner.nextRequestOrdinal();
+        assertTrue(owner.accept(ready("boot-ready", ordinal),
+                RetainedStreamSessionCoordinator.snapshot(), 0L));
+        SessionSnapshot snapshot = owner.current(
+                RetainedStreamSessionCoordinator.snapshot(), 0L);
+
+        java.util.Map<String, Object> fields = new java.util.HashMap<>();
+        Object[] pairs = SessionStateResolver.projectionDiagnostic(
+                snapshot, HostGatewayClient.Evidence.VERIFIED, 15_000L);
+        for (int index = 0; index + 1 < pairs.length; index += 2) {
+            fields.put((String) pairs[index], pairs[index + 1]);
+        }
+        assertEquals("child", fields.get("profile_id"));
+        assertEquals("parent", fields.get("execution_profile_id"));
+        assertEquals("READY", fields.get("observation_state"));
+        assertEquals("VERIFIED", fields.get("game_evidence"));
+        assertEquals("VERIFIED", fields.get("process_evidence"));
+        assertEquals("boot-ready", fields.get("producer_boot_id"));
+        assertEquals(ordinal, fields.get("request_ordinal"));
+        assertEquals(snapshot.transportGeneration, fields.get("transport_generation"));
+        assertEquals(12, ((String) fields.get("process_token_fp")).length());
+        assertFalse(java.util.Arrays.asList(pairs).contains(TOKEN));
+    }
+
+    @Test public void projectionDiagnosticIsEmittedOncePerDistinctPublication() {
+        long ordinal = owner.nextRequestOrdinal();
+        assertTrue(owner.accept(ready("boot-fresh", ordinal),
+                RetainedStreamSessionCoordinator.snapshot(), 0L));
+        long afterAccept = owner.diagnosticEventsForTests();
+        owner.current(RetainedStreamSessionCoordinator.snapshot(), 100L);
+        owner.current(RetainedStreamSessionCoordinator.snapshot(), 200L);
+        assertEquals(afterAccept, owner.diagnosticEventsForTests());
+
+        owner.current(RetainedStreamSessionCoordinator.snapshot(), 20_000L);
+        assertEquals(afterAccept + 1, owner.diagnosticEventsForTests());
+    }
+
     @Test public void freshStreamCanBecomeReadyBeforeItIsRetained() {
         long ordinal = owner.nextRequestOrdinal();
         assertTrue(owner.accept(ready("boot-fresh", ordinal),

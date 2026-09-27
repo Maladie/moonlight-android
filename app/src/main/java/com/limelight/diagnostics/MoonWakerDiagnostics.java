@@ -43,7 +43,12 @@ public final class MoonWakerDiagnostics {
             "audio_renderer_id", "audio_volume", "audio_volume_result", "audio_track_state",
             "audio_play_state", "audio_session_id", "audio_play_head", "audio_buffers",
             "audio_nonzero_buffers", "audio_samples_written", "audio_write_result",
-            "audio_buffer_age_ms", "audio_write_age_ms"));
+            "audio_buffer_age_ms", "audio_write_age_ms",
+            "execution_profile_id", "observation_state", "correlation_matches", "known_live",
+            "game_evidence", "process_evidence", "process_id", "process_token_fp",
+            "window_evidence", "producer_boot_id", "producer_revision", "request_ordinal",
+            "control_generation", "actor_lease_epoch", "transport_generation",
+            "episode_remaining_ms"));
 
     private static Writer writer;
     private static File directory;
