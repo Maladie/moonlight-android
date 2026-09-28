@@ -201,6 +201,7 @@ final class SessionStateResolver {
         synchronized SessionSnapshot accept(HostGatewayClient.SessionObservation candidate,
                                     RetainedStreamSessionCoordinator.Snapshot retained,
                                     long nowMs) {
+            retained = liveSnapshot(retained);
             retireObservationAtTerminationBoundary(retained);
             if (candidate == null || candidate.requestOrdinal != nextRequestOrdinal
                     || candidate.requestOrdinal <= lastAcceptedOrdinal
@@ -244,6 +245,7 @@ final class SessionStateResolver {
         synchronized SessionSnapshot unavailable(
                 long failedOrdinal, RetainedStreamSessionCoordinator.Snapshot retained,
                 long nowMs, String reason) {
+            retained = liveSnapshot(retained);
             retireObservationAtTerminationBoundary(retained);
             if (failedOrdinal != nextRequestOrdinal || failedOrdinal <= lastAcceptedOrdinal) {
                 return project(retained, LocalFacts.NONE, nowMs, "");
@@ -269,6 +271,7 @@ final class SessionStateResolver {
         synchronized SessionSnapshot current(
                 RetainedStreamSessionCoordinator.Snapshot retained, LocalFacts local,
                 long nowMs) {
+            retained = liveSnapshot(retained);
             retireObservationAtTerminationBoundary(retained);
             published = publish(project(retained, local == null ? LocalFacts.NONE : local,
                     nowMs, ""), nowMs);
@@ -283,6 +286,18 @@ final class SessionStateResolver {
          * between; on any change drop the observation and reject every request dispatched so
          * far, so only a later poll can publish READY or IDLE again.
          */
+        /**
+         * A caller's snapshot may predate blocking I/O; when a termination boundary passed
+         * meanwhile, project from the coordinator's current state instead.
+         */
+        private static RetainedStreamSessionCoordinator.Snapshot liveSnapshot(
+                RetainedStreamSessionCoordinator.Snapshot retained) {
+            if (retained == null) return null;
+            RetainedStreamSessionCoordinator.Snapshot live =
+                    RetainedStreamSessionCoordinator.snapshot();
+            return live.terminationEpoch != retained.terminationEpoch ? live : retained;
+        }
+
         private void retireObservationAtTerminationBoundary(
                 RetainedStreamSessionCoordinator.Snapshot retained) {
             if (retained != null) retireObservationAtTerminationBoundary(retained.terminationEpoch);

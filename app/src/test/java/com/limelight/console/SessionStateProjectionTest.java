@@ -532,6 +532,31 @@ public class SessionStateProjectionTest {
                 owner.current(ended, 7L).observationState);
     }
 
+    @Test public void responseCarryingASnapshotFromBeforeTheBoundaryIsRejected() {
+        Controller controller = new Controller();
+        RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",
+                "child", 42, "game");
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                controller, "session", 1L));
+        long first = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(ready("boot", first),
+                RetainedStreamSessionCoordinator.snapshot(), 0L));
+
+        // Dispatch, capture the snapshot, then both TERMINATING edges pass during the I/O.
+        long inFlight = owner.nextRequestOrdinal();
+        RetainedStreamSessionCoordinator.Snapshot beforeBoundary =
+                RetainedStreamSessionCoordinator.snapshot();
+        assertTrue(RetainedStreamSessionCoordinator.markTerminating(
+                "session", "host", 42, "game"));
+        clearRetainedTransport();
+
+        // The very first owner call after the boundary carries the old snapshot.
+        assertNull(owner.accept(ready("boot", 2L, inFlight), beforeBoundary, 4L));
+        SessionSnapshot afterwards = owner.current(beforeBoundary, 5L);
+        assertEquals(SessionSnapshot.ObservationState.PENDING, afterwards.observationState);
+        assertFalse(afterwards.retainedTransport);
+    }
+
     @Test public void terminationRolledBackToReconnectAlsoFencesTheOldObservation() {
         Controller controller = new Controller();
         RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",
