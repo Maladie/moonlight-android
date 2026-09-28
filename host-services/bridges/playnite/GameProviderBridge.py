@@ -4205,6 +4205,10 @@ class BridgeState:
             **identity, "process_path": self._normalized_process_path(identity.get("process_path"))})
         return "alive" if live == captured else "reused"
 
+    def running_scan_outdated(self) -> bool:
+        with self.lock:
+            return self._running_scan_revision != self.library_revision
+
     def refresh_running_games(self) -> None:
         started = time.monotonic()
         with self.lock:
@@ -5173,7 +5177,11 @@ class WindowReadinessWorker:
                         # Window inspection is advisory. A transient Win32 failure must
                         # never stop readiness or installation lifecycle monitoring.
                         pass
-            if time.monotonic() - last_running_scan >= 5.0:
+            # A catalog update invalidates the running scan (it is fresh only for the current
+            # library revision); rescan at once instead of leaving process evidence stale for
+            # up to the regular interval.
+            since_scan = time.monotonic() - last_running_scan
+            if since_scan >= 5.0 or (since_scan >= 1.0 and self.state.running_scan_outdated()):
                 self.state.refresh_running_games()
                 last_running_scan = time.monotonic()
             time.sleep(0.25)

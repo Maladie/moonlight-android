@@ -351,6 +351,35 @@ public final class PlayniteTransitionGateway {
                 "control_correlation_mismatch");
     }
 
+    static final long STOP_EVIDENCE_RETRY_MILLIS = 250L;
+
+    /**
+     * The within-control read a stop decision uses. A catalog refresh (the dashboard refreshes
+     * as a close returns to it) briefly makes the provider's running scan stale: the game stays
+     * verified while its process evidence is pending. Re-read under the same permit, bounded,
+     * until the answer is idle or names the expected game's verified process; any other final
+     * answer is returned unchanged and the caller still fails closed on it.
+     */
+    public Snapshot stopEvidenceWithinControl(ControlOperationClient.Permit permit,
+                                              String expectedGameId, long timeoutMillis)
+            throws IOException, InterruptedException {
+        long deadline = monotonicClock.getAsLong() + timeoutMillis;
+        Snapshot current = snapshotWithinControl(permit);
+        String expected = expectedGameId == null ? "" : expectedGameId.trim();
+        while (!expected.isEmpty() && !settledForStop(current, expected)
+                && monotonicClock.getAsLong() < deadline) {
+            Thread.sleep(STOP_EVIDENCE_RETRY_MILLIS);
+            current = snapshotWithinControl(permit);
+        }
+        return current;
+    }
+
+    static boolean settledForStop(Snapshot snapshot, String expectedGameId) {
+        boolean idle = "idle".equalsIgnoreCase(snapshot.gameState)
+                && (snapshot.gameId == null || snapshot.gameId.trim().isEmpty());
+        return idle || snapshot.hasVerifiedProcessFor(expectedGameId);
+    }
+
     public void startGame(String gameId) throws IOException {
         client.startGame(connection, gameId);
     }

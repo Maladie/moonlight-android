@@ -176,6 +176,43 @@ public class PlayniteTransitionGatewayTest {
         SessionStateResolver.resetProjectionOwnersForTests();
     }
 
+    @Test public void stopEvidenceWaitsOutAStaleRunningScanUnderTheSamePermit() throws Exception {
+        // Lab diag146b: the dashboard's library refresh made the provider's running scan stale
+        // while the full-quit read was in flight; the game was verified, its process pending,
+        // so the close completed as failed (effect_rejected) and the game kept running.
+        SessionStateResolver.resetProjectionOwnersForTests();
+        RecordingClient client = new RecordingClient();
+        client.operationId = "control-full-quit-1";
+        client.streamSessionId = "session-1";
+        client.controlGeneration = 2L;
+        client.actorLeaseEpoch = 3L;
+        client.processPending = true;
+        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(
+                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        client.beforeReturn = () -> client.processPending = false;
+
+        PlayniteTransitionGateway.Snapshot settled = termination.stopEvidenceWithinControl(
+                permit("control-full-quit-1", "session-1", 2L, 3L), "steam:123", 5_000L);
+
+        assertEquals(2, client.parsedObservations);
+        assertTrue(settled.hasVerifiedProcessFor("steam:123"));
+        assertEquals(PROCESS_TOKEN, settled.processToken);
+
+        client.parsedObservations = 0;
+        client.idle = true;
+        PlayniteTransitionGateway.Snapshot idle = termination.stopEvidenceWithinControl(
+                permit("control-full-quit-1", "session-1", 2L, 3L), "steam:123", 5_000L);
+        assertEquals(1, client.parsedObservations);
+        assertEquals("idle", idle.gameState);
+
+        client.idle = false;
+        client.processPending = true;
+        PlayniteTransitionGateway.Snapshot pending = termination.stopEvidenceWithinControl(
+                permit("control-full-quit-1", "session-1", 2L, 3L), "steam:123", 300L);
+        assertFalse(pending.hasVerifiedProcessFor("steam:123"));
+        SessionStateResolver.resetProjectionOwnersForTests();
+    }
+
     @Test public void rejectedIdleControlReadCannotLetFullQuitSkipTheStop() throws Exception {
         // R011 P1: the full-quit read (idle, ordinal N) loses to a newer dashboard read that
         // still shows the permit's game running (N+1). The rejected idle must not read as idle.
@@ -347,6 +384,7 @@ public class PlayniteTransitionGatewayTest {
         long actorLeaseEpoch;
         Runnable beforeReturn;
         boolean idle;
+        boolean processPending;
         String gameState = "running";
         String gameEvidence = "VERIFIED";
         String gameId = "steam:123";
@@ -402,13 +440,13 @@ public class PlayniteTransitionGatewayTest {
                                             .put("evidence", "ABSENT").put("id", "")
                                     : new JSONObject().put("state", gameState)
                                             .put("evidence", gameEvidence).put("id", gameId))
-                            .put("process", idle
-                                    ? new JSONObject().put("evidence", "ABSENT")
+                            .put("process", idle || processPending
+                                    ? new JSONObject().put("evidence", idle ? "ABSENT" : "PENDING")
                                             .put("process_id", 0).put("process_token", "")
                                     : new JSONObject().put("evidence", "VERIFIED")
                                             .put("process_id", 42).put("process_token", PROCESS_TOKEN))
-                            .put("window", idle
-                                    ? new JSONObject().put("evidence", "ABSENT")
+                            .put("window", idle || processPending
+                                    ? new JSONObject().put("evidence", idle ? "ABSENT" : "PENDING")
                                             .put("ready", false).put("target_kind", "game")
                                             .put("stable_samples", 0).put("reason", "none")
                                     : new JSONObject().put("evidence", "VERIFIED")

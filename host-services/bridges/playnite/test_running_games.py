@@ -61,6 +61,19 @@ class ProcessIdentityStatusTest(unittest.TestCase):
             self.assertEqual(expected, self.probe.process_identity_status(44)[0])
 
 
+class RunningScanFreshnessTest(unittest.TestCase):
+    def test_catalog_update_marks_the_running_scan_outdated(self):
+        # A library revision change leaves process evidence stale until the next scan; the
+        # monitor rescans promptly instead of waiting out the 5 s interval (lab diag146b).
+        state = BridgeState(game_operations=GameOperationsService(
+            OperationJournal(None), steam=SteamProvider(root_resolver=lambda: None)))
+        state.library_revision = "2"
+        state._running_scan_revision = "1"
+        self.assertTrue(state.running_scan_outdated())
+        state._running_scan_revision = "2"
+        self.assertFalse(state.running_scan_outdated())
+
+
 class RunningGamesTest(unittest.TestCase):
     def setUp(self):
         service = GameOperationsService(OperationJournal(None),

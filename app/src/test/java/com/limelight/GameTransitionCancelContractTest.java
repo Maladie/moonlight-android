@@ -121,8 +121,8 @@ public class GameTransitionCancelContractTest {
         assertFalse(close.contains("doQuit()"));
         assertTrue(helper.contains("HostSessionTermination.run("));
         assertFalse(helper.contains("closeStreamWithPrivacy(true)"));
-        assertTrue(host.indexOf("control.acquire(") < host.indexOf("provider.snapshotWithinControl(permit)"));
-        assertTrue(host.indexOf("provider.snapshotWithinControl(permit)") < host.indexOf("provider.stopGameWithinControl("));
+        assertTrue(host.indexOf("control.acquire(") < host.indexOf("provider.stopEvidenceWithinControl("));
+        assertTrue(host.indexOf("provider.stopEvidenceWithinControl(") < host.indexOf("provider.stopGameWithinControl("));
         assertTrue(host.indexOf("provider.stopGameWithinControl(") < host.indexOf("http.quitApp()"));
         assertTrue(host.contains("provider_game_mismatch"));
     }

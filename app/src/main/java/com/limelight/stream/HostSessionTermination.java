@@ -21,6 +21,8 @@ import java.util.UUID;
 /** Activity-free host half of one exact whole-session termination. */
 public final class HostSessionTermination {
     private static final long VERIFY_TIMEOUT_NANOS = 8_000_000_000L;
+    // The provider rescans running games at once after a catalog update (5 s interval otherwise).
+    private static final long STOP_EVIDENCE_TIMEOUT_MILLIS = 8_000L;
 
     private HostSessionTermination() { }
 
@@ -59,8 +61,9 @@ public final class HostSessionTermination {
                 PlayniteTransitionGateway provider = PlayniteTransitionGateway.connect(
                         context, hostId, activeHost, actor);
                 if (provider == null) throw new IllegalStateException("gateway_unavailable");
-                PlayniteTransitionGateway.Snapshot current = provider.snapshotWithinControl(permit);
                 String expectedGame = gameId == null ? "" : gameId.trim();
+                PlayniteTransitionGateway.Snapshot current = provider.stopEvidenceWithinControl(
+                        permit, expectedGame, STOP_EVIDENCE_TIMEOUT_MILLIS);
                 boolean providerIdle = "idle".equalsIgnoreCase(current.gameState)
                         && (current.gameId == null || current.gameId.trim().isEmpty());
                 String exact = providerIdle ? ""
