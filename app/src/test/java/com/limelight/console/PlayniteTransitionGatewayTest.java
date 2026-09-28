@@ -134,6 +134,48 @@ public class PlayniteTransitionGatewayTest {
         SessionStateResolver.resetProjectionOwnersForTests();
     }
 
+    @Test public void controlSnapshotKeepsPermitEvidenceWhenADashboardPollWinsTheDispatch()
+            throws Exception {
+        // Lab F-S06-6: "Close game and stream" returns to the dashboard, whose poll takes a
+        // newer ordinal while the full-quit read is in flight; the owner then rejects that read.
+        SessionStateResolver.resetProjectionOwnersForTests();
+        RecordingClient client = new RecordingClient();
+        client.operationId = "control-full-quit-1";
+        client.streamSessionId = "session-1";
+        client.controlGeneration = 2L;
+        client.actorLeaseEpoch = 3L;
+        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(
+                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(
+                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        client.beforeReturn = () -> {
+            try {
+                dashboard.snapshot();
+            } catch (IOException error) {
+                throw new AssertionError(error);
+            }
+        };
+
+        PlayniteTransitionGateway.Snapshot fenced = termination.snapshotWithinControl(
+                permit("control-full-quit-1", "session-1", 2L, 3L));
+
+        assertEquals(2, client.parsedObservations);
+        assertEquals(2L, fenced.sessionSnapshot.requestOrdinal);
+        assertTrue(fenced.hasVerifiedProcessFor("steam:123"));
+        assertEquals(PROCESS_TOKEN, fenced.processToken);
+        client.beforeReturn = () -> {
+            try {
+                dashboard.snapshot();
+            } catch (IOException error) {
+                throw new AssertionError(error);
+            }
+        };
+        PlayniteTransitionGateway.Snapshot other = termination.snapshotWithinControl(
+                permit("control-full-quit-other", "session-1", 2L, 3L));
+        assertFalse(other.hasVerifiedProcessFor("steam:123"));
+        SessionStateResolver.resetProjectionOwnersForTests();
+    }
+
     @Test public void capturedContextSurvivesDeterministicActorRebindOrdering()
             throws Exception {
         RecordingClient trace = new RecordingClient();
@@ -270,6 +312,7 @@ public class PlayniteTransitionGatewayTest {
         String streamSessionId = "";
         long controlGeneration;
         long actorLeaseEpoch;
+        Runnable beforeReturn;
         String gameState = "running";
         String gameEvidence = "VERIFIED";
         String gameId = "steam:123";
@@ -281,6 +324,9 @@ public class PlayniteTransitionGatewayTest {
             SessionObservation observation = super.getSessionObservation(connection,
                     executionProfileId, requestOrdinal, transitionId);
             parsedObservations++;
+            Runnable interleaved = beforeReturn;
+            beforeReturn = null;
+            if (interleaved != null) interleaved.run();
             return observation;
         }
 

@@ -180,6 +180,18 @@ final class SessionStateResolver {
             return ++nextRequestOrdinal;
         }
 
+        /**
+         * Whether a rejected observation may still carry evidence for its caller's own control
+         * permit: same scope and a producer boot that is not retired. Only the dispatch and
+         * revision ordering of the published projection rejected it.
+         */
+        synchronized boolean admitsPermitEvidence(HostGatewayClient.SessionObservation candidate) {
+            return candidate != null
+                    && actorProfileId.equals(candidate.actorProfileId)
+                    && executionProfileId.equals(candidate.executionProfileId)
+                    && !retiredBoots.contains(candidate.producerBootId);
+        }
+
         /** The projection published for this exact observation, or null when rejected. */
         synchronized SessionSnapshot accept(HostGatewayClient.SessionObservation candidate,
                                     RetainedStreamSessionCoordinator.Snapshot retained,

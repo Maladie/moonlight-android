@@ -301,8 +301,13 @@ public final class PlayniteTransitionGateway {
      * Observation for an exact control operation this client holds. Acquiring the permit
      * advances the Gateway control generation beyond the one bound to the retained stream,
      * so the ordinary projection correlation cannot match; the provider evidence is exposed
-     * only when the accepted observation carries this permit's operation, generation,
-     * stream session and actor lease epoch. The canonical projection is still updated through its single owner.
+     * only when the observation carries this permit's operation, generation, stream session
+     * and actor lease epoch. The canonical projection is still updated through its single
+     * owner. The dashboard polls the same owner, typically at the moment a close returns to it,
+     * so this read can lose the owner's dispatch ordering; the permit fence already proves the
+     * observation was produced within this operation, so its evidence stays usable when the
+     * owner admits its scope and producer boot. The returned projection is then the owner's
+     * current one; the stop decision reads only the fenced observation's evidence.
      */
     public Snapshot snapshotWithinControl(ControlOperationClient.Permit permit) throws IOException {
         long ordinal = projectionOwner.nextRequestOrdinal();
@@ -322,7 +327,8 @@ public final class PlayniteTransitionGateway {
         }
         // The owner returns the projection of this exact observation, never a newer one.
         SessionSnapshot accepted = projectionOwner.accept(observation, retained, now);
-        boolean fenced = accepted != null && permit != null
+        boolean fenced = (accepted != null || projectionOwner.admitsPermitEvidence(observation))
+                && permit != null
                 && !permit.operationId.isEmpty()
                 && permit.operationId.equals(observation.operationId)
                 && permit.generation > 0L
@@ -330,7 +336,10 @@ public final class PlayniteTransitionGateway {
                 && !permit.streamSessionId.isEmpty()
                 && permit.streamSessionId.equals(observation.streamSessionId)
                 && permit.actorLeaseEpoch == observation.actorLeaseEpoch;
-        if (fenced) return new Snapshot(accepted, observation);
+        if (fenced) {
+            return new Snapshot(accepted != null ? accepted
+                    : projectionOwner.current(retained, now), observation);
+        }
         // Outside the caller's exact permit nothing proves the stop target: fail closed.
         return new Snapshot(false, false, "unknown", "", 0, false, "playnite", 0,
                 "control_correlation_mismatch");
