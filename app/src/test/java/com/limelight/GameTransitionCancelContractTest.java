@@ -294,11 +294,31 @@ public class GameTransitionCancelContractTest {
                 true, false, true, null));
 
         String text = source();
+        String keyDown = text.substring(text.indexOf("public boolean handleKeyDown("),
+                text.indexOf("if (isImeVisible", text.indexOf("public boolean handleKeyDown(")));
+        // The loading view turns Back/B key-down into a Cancel click, so the decision must
+        // precede its delegation; its key-up handling then consumes the matching release.
+        assertTrue(keyDown.indexOf("isBackKeyDown(event)")
+                < keyDown.indexOf("consoleLoadingView.handleControllerKey(event)"));
+        assertTrue(keyDown.indexOf("shouldReturnTimedOutRevealedStreamToDashboard(")
+                < keyDown.indexOf("consoleLoadingView.handleControllerKey(event)"));
+        assertTrue(keyDown.contains("openConsoleHome();"));
+        assertFalse(keyDown.contains("cancelTransition()"));
         String keyUp = text.substring(text.indexOf("public boolean handleKeyUp("),
                 text.indexOf("if (isImeVisible", text.indexOf("public boolean handleKeyUp(")));
-        assertTrue(keyUp.indexOf("shouldReturnTimedOutRevealedStreamToDashboard(")
-                < keyUp.indexOf("cancelTransition()"));
-        assertTrue(keyUp.contains("openConsoleHome()"));
+        assertTrue(keyUp.contains("consoleLoadingView.handleControllerKey(event)"));
+        Path viewPath = Paths.get("src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
+        if (!Files.exists(viewPath)) {
+            viewPath = Paths.get("app/src/main/java/com/limelight/ui/ConsoleStreamLoadingView.java");
+        }
+        String view = new String(Files.readAllBytes(viewPath), StandardCharsets.UTF_8)
+                .replace("\r\n", "\n");
+        String control = view.substring(view.indexOf("public boolean handleControllerKey("),
+                view.indexOf("KeyEvent.KEYCODE_DPAD_LEFT", view.indexOf("public boolean handleControllerKey(")));
+        assertTrue(control.contains("return isLoadingActionKey(keyCode);"));
+        assertTrue(control.contains("return cancelView.performClick()"));
+        int onCancel = text.indexOf("public void onCancel()");
+        assertTrue(text.substring(onCancel, onCancel + 120).contains("cancelTransition();"));
         String home = text.substring(text.indexOf("private void openConsoleHome()"),
                 text.indexOf("private void openPreparingConsoleHome()"));
         assertFalse(home.contains("stopProviderGame("));

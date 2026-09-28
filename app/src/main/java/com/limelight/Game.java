@@ -2171,6 +2171,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public boolean handleKeyDown(KeyEvent event) {
         if (consumeOverlayOwnedKeySequence(event)) return true;
         if (isTransitionInputBlocked()) {
+            // The loading view turns Back/B key-down into Cancel; decide first. Its key-up
+            // consumption already swallows the matching release.
+            if (isBackKeyDown(event) && shouldReturnTimedOutRevealedStreamToDashboard(
+                    connected, streamHomeVisible, streamEverRevealed,
+                    transitionController == null ? null
+                            : transitionController.snapshot().state)) {
+                // The cover stays; the retained transport is not a launch to cancel.
+                openConsoleHome();
+                return true;
+            }
             if (consoleLoadingView != null) {
                 consoleLoadingView.handleControllerKey(event);
             }
@@ -2292,15 +2302,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
             if (event.getKeyCode() == KeyEvent.KEYCODE_BACK
                     || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B) {
-                if (shouldReturnTimedOutRevealedStreamToDashboard(
-                        connected, streamHomeVisible, streamEverRevealed,
-                        transitionController == null ? null
-                                : transitionController.snapshot().state)) {
-                    // The cover stays; the retained transport is not a launch to cancel.
-                    openConsoleHome();
-                } else {
-                    cancelTransition();
-                }
+                cancelTransition();
             }
             return true;
         }
@@ -5721,6 +5723,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 transitionSpec == null ? null : transitionSpec.type,
                 transitionSpec == null ? "" : transitionSpec.playniteGameId,
                 retained.state, exactOwner);
+    }
+
+    private static boolean isBackKeyDown(KeyEvent event) {
+        return event.getAction() == KeyEvent.ACTION_DOWN && event.getRepeatCount() == 0
+                && (event.getKeyCode() == KeyEvent.KEYCODE_BACK
+                || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B);
     }
 
     static boolean shouldReturnTimedOutRevealedStreamToDashboard(
