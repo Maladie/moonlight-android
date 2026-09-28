@@ -4423,6 +4423,20 @@ class ProviderDiagnosticsTest(unittest.TestCase):
         self.assertEqual(HTTPStatus.OK, status)
         self.assertEqual(1, observation["schema_version"])
         self.assertIn("connector_evidence", observation["provider"])
+        self.assertNotIn("target", observation["process"])
+
+        state.target_process_status = mock.Mock(return_value="unknown")
+        handler.path = "/observation?target_process_id=55&target_process_token=" + "b" * 64
+        handler.do_GET()
+        status, observation = handler.send_json.call_args.args
+        self.assertEqual(HTTPStatus.OK, status)
+        self.assertEqual({"process_id": 55, "status": "unknown"}, observation["process"]["target"])
+        state.target_process_status.assert_called_once_with(55, "b" * 64)
+        for invalid in ("target_process_id=55", "target_process_id=0&target_process_token=" + "b" * 64,
+                        "target_process_id=55&target_process_token=B"):
+            handler.path = "/observation?" + invalid
+            handler.do_GET()
+            self.assertEqual(HTTPStatus.BAD_REQUEST, handler.send_json.call_args.args[0])
 
     def test_writer_rotates_and_fails_open(self):
         with tempfile.TemporaryDirectory() as temporary:

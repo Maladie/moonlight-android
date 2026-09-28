@@ -16,6 +16,7 @@ from types import SimpleNamespace
 from unittest import mock
 
 import wakeplay_gateway
+from provider_target_fixture import target_aware
 from wakeplay_gateway import (
     GatewayDiagnostics, GatewayHandler, GatewayState, diagnostic_route, sha256_text,
 )
@@ -3000,7 +3001,7 @@ class ChildTimeHousekeepingTest(unittest.TestCase):
                 return True, {"accepted": True, "state": "stopped"}
             return True, {}
 
-        self.state.proxy = proxy
+        self.state.proxy = target_aware(proxy)
         self.state.proxy_json = proxy_json
         self.state.child_time_usage = {
             "schema_version": wakeplay_gateway.CHILD_USAGE_SCHEMA_VERSION,

@@ -4,6 +4,7 @@ import threading
 import unittest
 from unittest.mock import patch
 from control_snapshot_fixture import control_evidence
+from provider_target_fixture import target_aware
 from pathlib import Path
 
 import wakeplay_gateway
@@ -66,12 +67,12 @@ class ControlOperationTest(unittest.TestCase):
             self.client, body, permit["operation_id"])
 
     def observe_provider_idle(self):
-        self.state.proxy = lambda name, path, **_kwargs: (
+        self.state.proxy = target_aware(lambda name, path, **_kwargs: (
             (True, {"game": {"state": "idle", "id": "", "evidence": "ABSENT"},
                     "process": {"evidence": "ABSENT", "running_games": [],
                                 "running_scan_status": "complete"}})
             if name == "game_provider" and path == "/observation"
-            else (False, {"error": "fixture_offline"}))
+            else (False, {"error": "fixture_offline"})))
 
     def observe_exact_provider_game(self, game_id="steam:7"):
         token = "a" * 64
@@ -80,7 +81,7 @@ class ControlOperationTest(unittest.TestCase):
             "process_token": token,
             "process_id": 77,
         })
-        self.state.proxy = lambda name, path, **_kwargs: (
+        self.state.proxy = target_aware(lambda name, path, **_kwargs: (
             (True, {"game": {"state": "running", "id": game_id,
                              "evidence": "VERIFIED"},
                     "process": {"evidence": "VERIFIED",
@@ -89,7 +90,7 @@ class ControlOperationTest(unittest.TestCase):
                                                    "process_id": 77,
                                                    "process_token": token}]}})
             if name == "game_provider" and path == "/observation"
-            else (False, {"error": "fixture_offline"}))
+            else (False, {"error": "fixture_offline"})))
         return token
 
     def test_second_start_waits_for_terminal_result(self):
@@ -804,7 +805,7 @@ class ControlOperationTest(unittest.TestCase):
                                           "running_games": [],
                                           "running_scan_status": "complete"}}
             self.fail("Idle reconciliation attempted an effect")
-        self.state.proxy = snapshot
+        self.state.proxy = target_aware(snapshot)
         status, result = self.acquire(self.request("new-parent", session="stream-new"), 0)
         self.assertEqual(200, status, result)
         self.assertGreater(result["generation"], launch["generation"])

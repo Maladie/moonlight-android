@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from control_snapshot_fixture import control_evidence
+from provider_target_fixture import target_aware
 from datetime import datetime, timedelta, timezone
 from http import HTTPStatus
 from pathlib import Path
@@ -112,7 +113,7 @@ class ChildTimeContractTest(unittest.TestCase):
 
         self.proxy_json = mock.patch.object(
             self.state, "proxy_json", side_effect=proxy_json)
-        self.proxy = mock.patch.object(self.state, "proxy", side_effect=proxy)
+        self.proxy = mock.patch.object(self.state, "proxy", side_effect=target_aware(proxy))
         self.proxy_json.start()
         self.proxy.start()
 
@@ -450,6 +451,12 @@ class ChildTimeBridgeIntegrationTest(unittest.TestCase):
             dict(own_identity) if pid == os.getpid() else None)
         probe.scan_running_processes.return_value = (
             [dict(child_identity)], "complete")
+        stopped = []
+        probe.stop_verified_process.side_effect = lambda value, _timeout: (
+            stopped.append(value["process_id"]) is None)
+        probe.process_identity_status.side_effect = lambda pid, include_owner=False: (
+            ("alive", dict(child_identity)) if pid == process_id and pid not in stopped
+            else ("gone", None))
         self.bridge.state.running_process_probe = probe
         with self.bridge.state.lock:
             self.bridge.state.current = {

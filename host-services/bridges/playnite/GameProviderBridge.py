@@ -301,6 +301,7 @@ class WindowProbe:
     WM_CLOSE = 0x0010
     SW_RESTORE = 9
     TH32CS_SNAPPROCESS = 0x00000002
+    STILL_ACTIVE = 259
 
     def __init__(self, game_operations: GameOperationsService) -> None:
         self.game_operations = game_operations
@@ -387,6 +388,9 @@ class WindowProbe:
                 ctypes.POINTER(wintypes.FILETIME), ctypes.POINTER(wintypes.FILETIME),
                 ctypes.POINTER(wintypes.FILETIME)]
             self.kernel32.GetProcessTimes.restype = wintypes.BOOL
+            self.kernel32.GetExitCodeProcess.argtypes = [
+                wintypes.HANDLE, ctypes.POINTER(wintypes.DWORD)]
+            self.kernel32.GetExitCodeProcess.restype = wintypes.BOOL
             self.kernel32.CreateToolhelp32Snapshot.argtypes = [wintypes.DWORD, wintypes.DWORD]
             self.kernel32.CreateToolhelp32Snapshot.restype = wintypes.HANDLE
             try:
@@ -439,6 +443,12 @@ class WindowProbe:
                         handle, ctypes.byref(created), ctypes.byref(exited),
                         ctypes.byref(kernel), ctypes.byref(user)):
                 return "unknown", None
+            exit_code = wintypes.DWORD()
+            if not self.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return "unknown", None
+            if exit_code.value != self.STILL_ACTIVE:
+                # A handle held elsewhere keeps an exited process object openable.
+                return "gone", None
             started = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
             identity = {
                 "process_id": process_id,
@@ -4044,14 +4054,11 @@ class BridgeState:
                     status = "partial"
                     continue
             value = {**identity, "process_path": path, "game_id": game_id}
-            fingerprint = [self.profile_id, game_id, value.get("user_sid"),
-                           value.get("session_id"), value.get("process_id"), path,
-                           value.get("process_started_filetime")]
             if not value.get("user_sid") or int(value.get("process_id") or 0) <= 0 \
                     or int(value.get("process_started_filetime") or 0) <= 0:
                 status = "partial"
                 continue
-            value["process_token"] = hashlib.sha256(compact_json(fingerprint)).hexdigest()
+            value["process_token"] = self._process_token(game_id, value)
             matches.setdefault(game_id, []).append(value)
 
         # Playnite emulator entries often have no executable and point at a ROM
@@ -4087,13 +4094,9 @@ class BridgeState:
                 path = self._normalized_process_path(fresh.get("process_path"))
                 if path:
                     value = {**fresh, "process_path": path, "game_id": current_id}
-                    fingerprint = [self.profile_id, current_id, value.get("user_sid"),
-                                   value.get("session_id"), value.get("process_id"), path,
-                                   value.get("process_started_filetime")]
                     if value.get("user_sid") and int(value.get("process_id") or 0) > 0 \
                             and int(value.get("process_started_filetime") or 0) > 0:
-                        value["process_token"] = hashlib.sha256(
-                            compact_json(fingerprint)).hexdigest()
+                        value["process_token"] = self._process_token(current_id, value)
                         matches.setdefault(current_id, []).append(value)
         verified = []
         for values in matches.values():
@@ -4152,6 +4155,33 @@ class BridgeState:
             self._save_library_cache_locked()
             self._publish_locked("library-updated", {
                 "count": len(self.library), "revision": self.library_revision})
+
+    def _process_token(self, game_id: str, identity: dict[str, Any]) -> str:
+        """Exact process identity for one game: owner, session, PID, path and start time."""
+        return hashlib.sha256(compact_json([
+            self.profile_id, game_id, identity.get("user_sid"), identity.get("session_id"),
+            identity.get("process_id"), identity.get("process_path"),
+            identity.get("process_started_filetime")])).hexdigest()
+
+    def target_process_status(self, process_id: int, process_token: str) -> str:
+        """Exact status of one previously verified process, independent of catalog matching.
+
+        ``gone``: no live process has the PID. ``reused``: a readable live process holds the
+        PID but no library game yields the token. ``alive``: the exact process still runs.
+        ``unknown``: the PID is live but unreadable, so the target cannot be retired.
+        """
+        probe = self.running_process_probe
+        if probe is None:
+            return "unknown"
+        status, identity = probe.process_identity_status(process_id, include_owner=True)
+        if status != "alive":
+            return status
+        value = {**identity,
+                 "process_path": self._normalized_process_path(identity.get("process_path"))}
+        with self.lock:
+            game_ids = [str(game.get("id") or "") for game in self.library.values()]
+        return "alive" if any(self._process_token(game_id, value) == process_token
+                              for game_id in game_ids) else "reused"
 
     def refresh_running_games(self) -> None:
         started = time.monotonic()
@@ -5392,7 +5422,19 @@ class GameProviderHandler(BaseHTTPRequestHandler):
                     query.get("kind", ["cover"])[0])
                 self.send_binary(HTTPStatus.OK, body, content_type)
             elif target.path == "/observation":
-                self.send_json(HTTPStatus.OK, self.state.observation_snapshot())
+                snapshot = self.state.observation_snapshot()
+                target_ids = query.get("target_process_id", [])
+                target_tokens = query.get("target_process_token", [])
+                if target_ids or target_tokens:
+                    if len(target_ids) != 1 or len(target_tokens) != 1 \
+                            or not re.fullmatch(r"[1-9][0-9]{0,9}", target_ids[0]) \
+                            or not re.fullmatch(r"[0-9a-f]{64}", target_tokens[0]):
+                        raise ValueError("Invalid observation target.")
+                    snapshot["process"]["target"] = {
+                        "process_id": int(target_ids[0]),
+                        "status": self.state.target_process_status(
+                            int(target_ids[0]), target_tokens[0])}
+                self.send_json(HTTPStatus.OK, snapshot)
             elif target.path == "/events":
                 after = int(query.get("after", ["0"])[0])
                 events = self.state.events_after(after, 20.0)

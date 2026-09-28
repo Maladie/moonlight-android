@@ -4023,20 +4023,41 @@ class GatewayState:
         except ValueError:
             return str(value or "").strip().casefold()
 
-    def _child_time_current_game(self, parent_profile_id: str) -> dict[str, Any]:
-        ok, result = self.proxy("game_provider", "/observation", timeout=3.0,
+    def _child_time_current_game(self, parent_profile_id: str,
+                                 target: Any = None) -> dict[str, Any]:
+        """Provider state, with the exact status of a retained target when one is given.
+
+        Absence from a catalog scan never retires a process: a windowless or exe-less
+        emulator is not a catalog match. With a target, idle also requires the exact
+        target to be gone (or its PID reused), and ``target_status`` carries that proof.
+        """
+        token = self._child_time_process_token(target)
+        target_pid = int((target or {}).get("process_id") or 0) if token else 0
+        path = "/observation"
+        if token and target_pid > 0:
+            path += "?" + urllib.parse.urlencode({"target_process_id": target_pid,
+                                                  "target_process_token": token})
+        ok, result = self.proxy("game_provider", path, timeout=3.0,
                                 profile_id=parent_profile_id)
+        exact = {"target_token": token, "target_status": "unknown"}
         if not ok or not isinstance(result, dict):
-            return {"kind": "unavailable", "snapshot": result if isinstance(result, dict) else {}}
+            return {"kind": "unavailable", **exact,
+                    "snapshot": result if isinstance(result, dict) else {}}
         game = result.get("game")
         process = result.get("process")
         if not isinstance(game, dict) or not isinstance(process, dict):
-            return {"kind": "unavailable", "snapshot": result}
+            return {"kind": "unavailable", **exact, "snapshot": result}
+        reported = process.get("target")
+        if token and target_pid > 0 and isinstance(reported, dict) \
+                and reported.get("process_id") == target_pid \
+                and reported.get("status") in {"gone", "reused", "alive", "unknown"}:
+            exact["target_status"] = reported["status"]
+        target_retired = not token or exact["target_status"] in {"gone", "reused"}
         current_id = self._state_game_id(game)
         running = process.get("running_games")
         if not isinstance(running, list) or any(
                 not isinstance(item, dict) for item in running):
-            return {"kind": "unavailable", "snapshot": result}
+            return {"kind": "unavailable", **exact, "snapshot": result}
         identities = []
         for item in running:
             game_id = str(item.get("game_id") or "").strip()
@@ -4061,15 +4082,15 @@ class GatewayState:
                 identity = {"game_id": current_id}
             return {"kind": "active", "game_id": current_id,
                     "identity": identity, "running_games": identities,
-                    "running_scan_status": running_scan_status,
+                    "running_scan_status": running_scan_status, **exact,
                     "snapshot": result}
         if game_evidence == "ABSENT" and process_evidence == "ABSENT" \
                 and current_state == "idle" and not current_id \
-                and running_scan_status == "complete":
+                and running_scan_status == "complete" and target_retired:
             return {"kind": "idle", "game_id": "", "identity": None,
                     "running_games": [], "running_scan_status": running_scan_status,
-                    "snapshot": result}
-        return {"kind": "unavailable", "snapshot": result}
+                    **exact, "snapshot": result}
+        return {"kind": "unavailable", **exact, "snapshot": result}
 
     @staticmethod
     def _child_time_session_matches(session: dict[str, Any], actor_id: str,
@@ -4547,7 +4568,7 @@ class GatewayState:
                 if observed_app_id not in {0, int(stream.get("sunshine_app_id") or 0)}:
                     return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                                  "reason": "unmanaged_stream"}
-                current = self._child_time_current_game(execution_id)
+                current = self._child_time_current_game(execution_id, stream)
                 current_game_id = str(current.get("game_id") or "")
                 current_identity = current.get("identity")
                 current_token = self._child_time_process_token(current_identity)
@@ -4591,7 +4612,9 @@ class GatewayState:
                             "game_stopped", "actor_replaced", "replacement"}:
                     return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                                  "reason": "retained_owner_unconfirmed"}
-                current = self._child_time_current_game(execution_id)
+                current = self._child_time_current_game(
+                    execution_id, stream if self._child_time_process_token(stream)
+                    else self.child_time_session if child_session_id else None)
                 current_game_id = str(current.get("game_id") or "")
                 current_identity = current.get("identity")
                 current_token = self._child_time_process_token(current_identity)
@@ -4641,7 +4664,7 @@ class GatewayState:
                     return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                                  "reason": "unmanaged_stream"}
                 if intent in {"resume", "reconnect", "warm_up"}:
-                    current = self._child_time_current_game(execution_id)
+                    current = self._child_time_current_game(execution_id, stream)
                     current_game_id = str(current.get("game_id") or "")
                     current_identity = current.get("identity")
                     current_token = self._child_time_process_token(current_identity)
@@ -5010,16 +5033,8 @@ class GatewayState:
                                       profile_id=stream["execution_profile_id"])
             if not ok or not ControlOperationPolicy.streamer_idle(snapshot):
                 return False
-            ok, provider = self.proxy("game_provider", "/observation", timeout=3.0,
-                                      profile_id=stream["execution_profile_id"])
-            game = provider.get("game") if isinstance(provider, dict) else None
-            process = provider.get("process") if isinstance(provider, dict) else None
-            if not ok or not isinstance(game, dict) or not isinstance(process, dict) \
-                    or game.get("state") != "idle" or game.get("evidence") != "ABSENT" \
-                    or game.get("id") or process.get("evidence") != "ABSENT" \
-                    or process.get("running_scan_status") != "complete" \
-                    or not isinstance(process.get("running_games"), list) \
-                    or process.get("running_games"):
+            if self._child_time_current_game(
+                    stream["execution_profile_id"], stream).get("kind") != "idle":
                 return False
         except OSError:
             return False
@@ -5034,11 +5049,11 @@ class GatewayState:
     def _control_bridge_binding(permit: dict[str, Any]) -> dict[str, Any]:
         return ControlOperationPolicy.bridge_binding(permit)
 
-    def _child_time_process_absent(self, current: dict[str, Any], token: str) -> bool:
-        """A complete process scan can retire A without ever touching replacement B."""
-        return bool(token) and current.get("running_scan_status") == "complete" and not any(
-            self._child_time_process_token(item) == token
-            for item in current.get("running_games", []))
+    @staticmethod
+    def _child_time_process_absent(current: dict[str, Any], token: str) -> bool:
+        """Only the provider's exact target status retires A; replacement B is untouched."""
+        return bool(token) and current.get("target_token") == token \
+            and current.get("target_status") in {"gone", "reused"}
 
     def _child_time_adopt_terminal_identity(self, session: dict[str, Any],
                                             permit: dict[str, Any],
@@ -5237,7 +5252,7 @@ class GatewayState:
                     "operation_id": str(active.get("operation_id") or ""),
                 }
             try:
-                current = self._child_time_current_game(parent_id)
+                current = self._child_time_current_game(parent_id, active)
             except (OSError, TimeoutError, TypeError, ValueError):
                 return HTTPStatus.CONFLICT, {
                     "ok": False, "state": "blocked", "phase": "cleanup_required",
@@ -5326,7 +5341,7 @@ class GatewayState:
             -> tuple[bool, str]:
         del client, wall
         current = self._child_time_current_game(
-            str(session.get("execution_profile_id") or ""))
+            str(session.get("execution_profile_id") or ""), session)
         if current.get("kind") == "idle":
             return True, "none"
         token = self._child_time_process_token(session)
@@ -5378,7 +5393,7 @@ class GatewayState:
         deadline = self.child_terminal_operation.clock() + 20.0
         while self.child_terminal_operation.clock() <= deadline:
             observed = self._child_time_current_game(
-                str(session.get("execution_profile_id") or ""))
+                str(session.get("execution_profile_id") or ""), session)
             if observed.get("kind") == "idle":
                 return True, "none"
             if self._child_time_process_absent(observed, token):
@@ -5923,7 +5938,7 @@ class GatewayState:
                 "actor_profile_id": actor_id, "execution_profile_id": parent_id,
                 "client_id": client_id, "game_id": canonical,
             }
-        current = self._child_time_current_game(parent_id)
+        current = self._child_time_current_game(parent_id, self.control_state.get("stream"))
         if current.get("kind") == "active" and \
                 self._child_time_normalize_game_id(current.get("game_id")) != \
                 self._child_time_normalize_game_id(canonical):

@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from control_snapshot_fixture import control_evidence
+from provider_target_fixture import target_aware
 from datetime import datetime, timezone
 from email.message import Message
 from pathlib import Path
@@ -143,7 +144,7 @@ class ChildSessionsHttpTest(unittest.TestCase):
                 return True, {"accepted": True, "stopped_count": 1}
             return True, {}
 
-        self.state.proxy = proxy
+        self.state.proxy = target_aware(proxy)
         self.state.proxy_json = proxy_json
         self.state.login_broker.profile_state = mock.Mock(return_value={
             "success": True, "state": "active", "fields": {3: "ready", 4: "none"}})

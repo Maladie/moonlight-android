@@ -35,6 +35,15 @@ class ProcessIdentityStatusTest(unittest.TestCase):
         self.assertEqual(("unknown", None), self.probe.process_identity_status(44))
         self.probe.kernel32.CloseHandle.assert_called_once_with(1)
 
+    def test_exited_process_held_open_elsewhere_is_gone(self):
+        self.probe.kernel32.OpenProcess.return_value = 1
+        self.probe.kernel32.QueryFullProcessImageNameW.return_value = True
+        self.probe.kernel32.GetProcessTimes.return_value = True
+        for exit_code, expected in ((0, "gone"), (WindowProbe.STILL_ACTIVE, "alive")):
+            self.probe.kernel32.GetExitCodeProcess.side_effect = \
+                lambda _handle, value, code=exit_code: setattr(value._obj, "value", code) is None
+            self.assertEqual(expected, self.probe.process_identity_status(44)[0])
+
 
 class RunningGamesTest(unittest.TestCase):
     def setUp(self):
@@ -179,6 +188,25 @@ class RunningGamesTest(unittest.TestCase):
                          {game["game_id"] for game in running})
         self.assertEqual(44, next(game["process_id"] for game in running
                                   if game["game_id"] == guid))
+
+    def test_retained_target_status_is_exact_even_for_an_exe_less_emulator(self):
+        # An exe-less emulator entry: once windowless it is never a catalog match, so only
+        # the exact target status can tell whether the retained process ended.
+        self.state.library["playnite:emu"] = {"id": "playnite:emu", "provider": "playnite",
+                                              "installDir": r"C:\Roms", "exe": ""}
+        emulator = identity(55, r"C:\Emulators\retroarch.exe", 500)
+        token = self.state._process_token("playnite:emu", {
+            **emulator, "process_path": self.state._normalized_process_path(
+                emulator["process_path"])})
+        for probed, expected in (
+                (("unknown", None), "unknown"),
+                (("alive", emulator), "alive"),
+                (("alive", {**emulator, "process_started_filetime": 501}), "reused"),
+                (("gone", None), "gone")):
+            with self.subTest(expected=expected):
+                self.probe.process_identity_status.return_value = probed
+                self.assertEqual(expected, self.state.target_process_status(55, token))
+                self.probe.process_identity_status.assert_called_with(55, include_owner=True)
 
     def test_scan_receives_the_image_names_of_exact_game_executables(self):
         self.state.library["steam:2"] = {"id": "steam:2", "provider": "steam",

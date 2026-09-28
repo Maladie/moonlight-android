@@ -3,6 +3,7 @@ import tempfile
 import threading
 import unittest
 from control_snapshot_fixture import control_evidence
+from provider_target_fixture import target_aware
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from uuid import uuid4
@@ -131,7 +132,7 @@ class ChildTimeControlTest(unittest.TestCase):
                 return True, {"accepted": True}
             return True, {}
 
-        self.state.proxy = proxy
+        self.state.proxy = target_aware(proxy)
         self.state.proxy_json = proxy_json
 
     def tearDown(self):
@@ -167,6 +168,38 @@ class ChildTimeControlTest(unittest.TestCase):
                         "running_scan_status": "complete"},
         })
         self.assertEqual("idle", self.state._child_time_current_game("parent")["kind"])
+
+    def test_retained_target_retires_only_on_exact_gone_or_reused_status(self):
+        # An exe-less emulator that turned windowless is absent from a complete scan while
+        # it still runs; only the provider's exact target status may retire its token.
+        token = "b" * 64
+        target = {"process_id": 55, "process_token": token}
+        paths = []
+
+        def idle_scan(name, path, **_kwargs):
+            paths.append(path)
+            return True, {"game": {"state": "idle", "id": "", "evidence": "ABSENT"},
+                          "process": {"evidence": "ABSENT", "running_games": [],
+                                      "running_scan_status": "complete"}}
+
+        for status, retired in (("unknown", False), ("alive", False),
+                                ("gone", True), ("reused", True)):
+            with self.subTest(status=status):
+                self.state.proxy = target_aware(idle_scan, lambda value=status: value)
+                current = self.state._child_time_current_game("parent", target)
+                self.assertEqual("idle" if retired else "unavailable", current["kind"])
+                self.assertEqual(retired, self.state._child_time_process_absent(current, token))
+                self.assertFalse(self.state._child_time_process_absent(current, "c" * 64))
+
+        self.state.proxy = idle_scan
+        current = self.state._child_time_current_game("parent", target)
+        self.assertIn("target_process_id=55", paths[-1])
+        self.assertIn("target_process_token=" + token, paths[-1])
+        self.assertEqual("unavailable", current["kind"])
+        self.assertFalse(self.state._child_time_process_absent(current, token))
+        untargeted = self.state._child_time_current_game("parent")
+        self.assertEqual("idle", untargeted["kind"])
+        self.assertFalse(self.state._child_time_process_absent(untargeted, token))
 
     def start_running(self):
         previous_binds = len([call for call in self.bridge_calls
@@ -590,7 +623,7 @@ class ChildTimeControlTest(unittest.TestCase):
                 }
             return True, {**control_evidence(), "clients": [], "apps": []}
 
-        restarted.proxy = idle
+        restarted.proxy = target_aware(idle)
         status, result = restarted.child_time_session_status(self.client, "kid", session_id)
         self.assertEqual(200, status)
         self.assertFalse(result["cleanup_required"])
@@ -1350,11 +1383,11 @@ class ChildTimeControlTest(unittest.TestCase):
         start_results = []
         terminal_results = []
 
-        def current(execution_profile_id):
+        def current(execution_profile_id, target=None):
             if threading.current_thread().name == "late-start":
                 start_before_publish.set()
                 self.assertTrue(release_start.wait(1.0))
-            return original_current(execution_profile_id)
+            return original_current(execution_profile_id, target)
 
         def proxy_json(name, path, body, **kwargs):
             if path == "/game/stop-verified":
