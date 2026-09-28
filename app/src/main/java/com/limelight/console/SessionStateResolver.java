@@ -201,7 +201,15 @@ final class SessionStateResolver {
         synchronized SessionSnapshot accept(HostGatewayClient.SessionObservation candidate,
                                     RetainedStreamSessionCoordinator.Snapshot retained,
                                     long nowMs) {
-            retained = liveSnapshot(retained);
+            // Boundary check and publication are one step against coordinator transitions.
+            return RetainedStreamSessionCoordinator.underStateLock(
+                    () -> acceptLocked(candidate, retained, nowMs));
+        }
+
+        private SessionSnapshot acceptLocked(HostGatewayClient.SessionObservation candidate,
+                                             RetainedStreamSessionCoordinator.Snapshot caller,
+                                             long nowMs) {
+            RetainedStreamSessionCoordinator.Snapshot retained = liveSnapshot(caller);
             retireObservationAtTerminationBoundary(retained);
             if (candidate == null || candidate.requestOrdinal != nextRequestOrdinal
                     || candidate.requestOrdinal <= lastAcceptedOrdinal
@@ -245,7 +253,14 @@ final class SessionStateResolver {
         synchronized SessionSnapshot unavailable(
                 long failedOrdinal, RetainedStreamSessionCoordinator.Snapshot retained,
                 long nowMs, String reason) {
-            retained = liveSnapshot(retained);
+            return RetainedStreamSessionCoordinator.underStateLock(
+                    () -> unavailableLocked(failedOrdinal, retained, nowMs, reason));
+        }
+
+        private SessionSnapshot unavailableLocked(
+                long failedOrdinal, RetainedStreamSessionCoordinator.Snapshot caller,
+                long nowMs, String reason) {
+            RetainedStreamSessionCoordinator.Snapshot retained = liveSnapshot(caller);
             retireObservationAtTerminationBoundary(retained);
             if (failedOrdinal != nextRequestOrdinal || failedOrdinal <= lastAcceptedOrdinal) {
                 return project(retained, LocalFacts.NONE, nowMs, "");
@@ -271,7 +286,14 @@ final class SessionStateResolver {
         synchronized SessionSnapshot current(
                 RetainedStreamSessionCoordinator.Snapshot retained, LocalFacts local,
                 long nowMs) {
-            retained = liveSnapshot(retained);
+            return RetainedStreamSessionCoordinator.underStateLock(
+                    () -> currentLocked(retained, local, nowMs));
+        }
+
+        private SessionSnapshot currentLocked(
+                RetainedStreamSessionCoordinator.Snapshot caller, LocalFacts local,
+                long nowMs) {
+            RetainedStreamSessionCoordinator.Snapshot retained = liveSnapshot(caller);
             retireObservationAtTerminationBoundary(retained);
             published = publish(project(retained, local == null ? LocalFacts.NONE : local,
                     nowMs, ""), nowMs);

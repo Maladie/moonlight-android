@@ -557,6 +557,44 @@ public class SessionStateProjectionTest {
         assertFalse(afterwards.retainedTransport);
     }
 
+    @Test public void aTransitionCannotInterleaveWithTheEpochCheckAndPublication()
+            throws Exception {
+        Controller controller = new Controller();
+        RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",
+                "child", 42, "game");
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                controller, "session", 1L));
+        long first = owner.nextRequestOrdinal();
+        RetainedStreamSessionCoordinator.Snapshot captured =
+                RetainedStreamSessionCoordinator.snapshot();
+
+        // While the owner validates the epoch and publishes, a termination on another thread
+        // must wait: the diagnostic record of the publication runs inside that section.
+        final Thread[] terminator = new Thread[1];
+        final boolean[] blockedDuringPublication = new boolean[1];
+        SessionStateResolver.diagnosticSink = (level, component, event, fields) -> {
+            if ("projection.published".equals(event) && terminator[0] == null) {
+                terminator[0] = new Thread(() -> RetainedStreamSessionCoordinator
+                        .markTerminating("session", "host", 42, "game"));
+                terminator[0].start();
+                try {
+                    terminator[0].join(300L);
+                } catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                }
+                blockedDuringPublication[0] = terminator[0].isAlive();
+            }
+            return true;
+        };
+
+        assertNotNull(owner.accept(ready("boot", first), captured, 0L));
+        terminator[0].join(5_000L);
+
+        assertTrue(blockedDuringPublication[0]);
+        assertEquals(RetainedStreamSessionCoordinator.State.TERMINATING,
+                RetainedStreamSessionCoordinator.state());
+    }
+
     @Test public void terminationRolledBackToReconnectAlsoFencesTheOldObservation() {
         Controller controller = new Controller();
         RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",

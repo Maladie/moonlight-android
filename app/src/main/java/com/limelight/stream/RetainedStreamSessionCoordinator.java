@@ -1298,6 +1298,15 @@ public final class RetainedStreamSessionCoordinator {
                 && attempt == expectedAttempt;
     }
 
+    /**
+     * Runs {@code body} while no state transition can happen, so a caller can validate a
+     * snapshot and act on it as one step. The body must not wait for another lock that a
+     * coordinator caller may hold.
+     */
+    public static synchronized <T> T underStateLock(java.util.function.Supplier<T> body) {
+        return body.get();
+    }
+
     private static void setStateLocked(State next) {
         if (state == next) return;
         State previous = state;
