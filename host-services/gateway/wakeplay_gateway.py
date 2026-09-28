@@ -5454,6 +5454,7 @@ class GatewayState:
         if not accepted:
             return False, "cleanup_required"
         deadline = self.child_terminal_operation.clock() + 20.0
+        observed: dict[str, Any] = {}
         while self.child_terminal_operation.clock() <= deadline:
             observed = self._child_time_current_game(
                 str(session.get("execution_profile_id") or ""), session)
@@ -5462,6 +5463,10 @@ class GatewayState:
             if self._child_time_process_absent(observed, token):
                 return True, "none"
             self.child_terminal_operation.wait(1.0)
+        # Fixed classes only: why the exact process was never confirmed gone.
+        DIAGNOSTICS.record("child-stop-unconfirmed", state=str(observed.get("kind") or ""),
+                           reason=str(observed.get("target_status") or ""),
+                           child_session_id=str(session.get("session_id") or ""))
         return False, "cleanup_required"
 
     def _child_time_control_call(self, session: dict[str, Any], operation: Any) -> Any:
