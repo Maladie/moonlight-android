@@ -162,6 +162,30 @@ class ChildSharingGatewayTest(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("child_policy_revision_stale", result["error"])
 
+    def test_slow_observation_records_lock_and_provider_timing(self):
+        # Lab formal132/diag156a: an observation read that outlives the Android client's 5 s
+        # timeout right after a game start; the Gateway now says where the time went.
+        self.state.proxy = mock.Mock(return_value=(True, {"game": {"state": "idle"}}))
+        self.state.request_context.profile_id = "kid"
+        self.state.request_context.actor_profile_id = "kid"
+        self.state.request_context.execution_profile_id = "parent"
+        recorder = mock.Mock()
+        with mock.patch.object(wakeplay_gateway, "DIAGNOSTICS", recorder):
+            with mock.patch.object(wakeplay_gateway, "OBSERVATION_SLOW_MS", 0):
+                status, _ = self.state.playnite_observation(1, "")
+            self.assertEqual(200, status)
+            slow = [call for call in recorder.record.call_args_list
+                    if call.args and call.args[0] == "observation-slow"]
+            self.assertEqual(1, len(slow))
+            self.assertRegex(slow[0].kwargs["reason"],
+                             r"^lockwait-\d+-provider-\d+-inflight-1$")
+            recorder.reset_mock()
+            status, _ = self.state.playnite_observation(2, "")
+            self.assertEqual(200, status)
+            self.assertFalse([call for call in recorder.record.call_args_list
+                              if call.args and call.args[0] == "observation-slow"])
+        self.assertEqual(0, self.state.observation_inflight)
+
     def test_unshared_artwork_is_denied_but_common_observation_stays_visible(self):
         self.state.proxy_bytes = mock.Mock(return_value=(200, b"image", "image/png"))
         self.state.child_playnite_artwork(

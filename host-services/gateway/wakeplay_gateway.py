@@ -584,6 +584,7 @@ class GatewayDiagnostics:
 
 
 DIAGNOSTICS = GatewayDiagnostics()
+OBSERVATION_SLOW_MS = 1500
 
 # Antivirus or indexing can briefly hold the registry without delete sharing (the Configurator hit
 # this in the lab). os.replace (MoveFileEx) reports that as ERROR_ACCESS_DENIED (5), ReplaceFile as
@@ -814,6 +815,7 @@ class GatewayState:
         self.child_profiles_api_enabled = (
             self.config.get("child_profiles_enabled") is True)
         self.lock = threading.RLock()
+        self.observation_inflight = 0
         self.request_context = threading.local()
         self.child_usage_path = self.config_path.with_name(CHILD_TIME_USAGE_FILE)
         self.child_time_clock = None
@@ -6847,6 +6849,17 @@ class GatewayState:
                                      self.control_state.get("actor_lease_epoch") or 0),
         }
 
+    def _record_slow_observation(self, started: float, locked: float, proxied: float,
+                                 in_flight: int) -> None:
+        """Timing of a slow observation read; the Android client gives up after 5 s."""
+        total_ms = int((time.monotonic() - started) * 1000)
+        if total_ms < OBSERVATION_SLOW_MS:
+            return
+        DIAGNOSTICS.record(
+            "observation-slow", level="WARN", duration_ms=total_ms,
+            reason="lockwait-%d-provider-%d-inflight-%d" % (
+                int((locked - started) * 1000), int((proxied - locked) * 1000), in_flight))
+
     def playnite_observation(self, request_ordinal: Any,
                              transition_id: Any) -> tuple[int, Any]:
         if isinstance(request_ordinal, bool):
@@ -6859,12 +6872,22 @@ class GatewayState:
                 r"[A-Za-z0-9._:-]*", transition):
             raise ValueError("Invalid transition ID.")
         actor_id, execution_id = self.actor_profile_id, self.execution_profile_id
+        started = time.monotonic()
         with self.lock:
+            locked = time.monotonic()
+            self.observation_inflight += 1
+            in_flight = self.observation_inflight
             before = self._observation_control_locked()
-        ok, provider = self.proxy("game_provider", "/observation", timeout=3.0,
-                                  profile_id=execution_id)
-        with self.lock:
-            after = self._observation_control_locked()
+        try:
+            ok, provider = self.proxy("game_provider", "/observation", timeout=3.0,
+                                      profile_id=execution_id)
+            proxied = time.monotonic()
+            with self.lock:
+                after = self._observation_control_locked()
+        finally:
+            with self.lock:
+                self.observation_inflight -= 1
+        self._record_slow_observation(started, locked, proxied, in_flight)
         correlation = {**after, "caller_transition_id": transition,
                        "request_ordinal": ordinal}
         scope = {"actor_profile_id": actor_id,
