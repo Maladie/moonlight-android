@@ -130,6 +130,8 @@ public final class RetainedStreamSessionCoordinator {
         public final long attempt;
         public final long controlGeneration;
         public final long transportGeneration;
+        /** Advances each time the session enters or leaves TERMINATING, seen or not. */
+        public final long terminationEpoch;
 
         private Snapshot(State state, String streamSessionId, String hostId, String profileId,
                          int appId,
@@ -145,6 +147,7 @@ public final class RetainedStreamSessionCoordinator {
             this.attempt = attempt;
             this.controlGeneration = RetainedStreamSessionCoordinator.controlGeneration;
             this.transportGeneration = RetainedStreamSessionCoordinator.transportGeneration;
+            this.terminationEpoch = RetainedStreamSessionCoordinator.terminationEpoch;
         }
     }
 
@@ -192,6 +195,7 @@ public final class RetainedStreamSessionCoordinator {
     }
 
     private static State state = State.NONE;
+    private static long terminationEpoch;
     private static WeakReference<Controller> controller = new WeakReference<>(null);
     private static String streamSessionId = "";
     private static String hostId = "";
@@ -1298,6 +1302,7 @@ public final class RetainedStreamSessionCoordinator {
         if (state == next) return;
         State previous = state;
         state = next;
+        if (previous == State.TERMINATING || next == State.TERMINATING) terminationEpoch++;
         MoonWakerDiagnostics.record("INFO", "android.retained-stream",
                 "retained_stream.state_changed",
                 "from", previous.name(),

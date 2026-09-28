@@ -506,6 +506,55 @@ public class SessionStateProjectionTest {
                 owner.current(ended, 7L).observationState);
     }
 
+    @Test public void terminationNobodySampledStillFencesTheOldObservation() {
+        Controller controller = new Controller();
+        RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",
+                "child", 42, "game");
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                controller, "session", 1L));
+        long first = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(ready("boot", first),
+                RetainedStreamSessionCoordinator.snapshot(), 0L));
+        long inFlight = owner.nextRequestOrdinal();
+
+        // HOME_LIVE -> TERMINATING -> NONE with no owner call in between.
+        assertTrue(RetainedStreamSessionCoordinator.markTerminating(
+                "session", "host", 42, "game"));
+        clearRetainedTransport();
+        RetainedStreamSessionCoordinator.Snapshot ended = RetainedStreamSessionCoordinator.snapshot();
+
+        assertEquals(SessionSnapshot.ObservationState.PENDING,
+                owner.current(ended, 3L).observationState);
+        assertNull(owner.accept(ready("boot", 2L, inFlight), ended, 4L));
+        long afterwards = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(idle("boot", 3L, afterwards), ended, 6L));
+        assertEquals(SessionSnapshot.ObservationState.IDLE,
+                owner.current(ended, 7L).observationState);
+    }
+
+    @Test public void terminationRolledBackToReconnectAlsoFencesTheOldObservation() {
+        Controller controller = new Controller();
+        RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",
+                "child", 42, "game");
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                controller, "session", 1L));
+        long first = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(ready("boot", first),
+                RetainedStreamSessionCoordinator.snapshot(), 0L));
+        long inFlight = owner.nextRequestOrdinal();
+
+        assertTrue(RetainedStreamSessionCoordinator.markTerminating(
+                "session", "host", 42, "game"));
+        assertTrue(RetainedStreamSessionCoordinator.restoreReconnectIfTerminating(
+                "session", "host", 42, "game"));
+        RetainedStreamSessionCoordinator.Snapshot rolledBack =
+                RetainedStreamSessionCoordinator.snapshot();
+
+        assertEquals(SessionSnapshot.ObservationState.PENDING,
+                owner.current(rolledBack, 3L).observationState);
+        assertNull(owner.accept(ready("boot", 2L, inFlight), rolledBack, 4L));
+    }
+
     private static HostGatewayClient.SessionObservation ready(
             String boot, long revision, long ordinal) {
         return observation(boot, revision, ordinal, "running-" + revision, "running",
