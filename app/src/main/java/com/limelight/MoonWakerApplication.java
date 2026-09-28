@@ -108,8 +108,9 @@ public final class MoonWakerApplication extends Application implements
                 UsbMicrophoneService.SELECTED_HOST, "");
         HostGatewayStore store = new HostGatewayStore(this);
         GatewayConnection connection = store.loadForHost(selectedHost, null);
-        // A child actor has no Discord route; polling it would only collect 404s.
-        if (connection != null && store.isChildProfile(selectedHost, connection.profileId())) {
+        // Only a known parent profile has Discord routes; a child or unclassified profile
+        // would only collect 404s.
+        if (connection != null && !store.discordEligible(selectedHost, connection.profileId())) {
             connection = null;
         }
         int gain = defaultPreferences.getInt(
@@ -131,7 +132,9 @@ public final class MoonWakerApplication extends Application implements
                 || (preferences == consolePreferences
                 && UsbMicrophoneService.SELECTED_HOST.equals(key))
                 || (preferences == gatewayPreferences
-                && UsbMicrophoneService.isGatewayKeyForSelectedHost(selectedHost, key));
+                && (UsbMicrophoneService.isGatewayKeyForSelectedHost(selectedHost, key)
+                // The cached profile list decides Discord eligibility.
+                || (selectedHost + ".profiles").equals(key)));
         if (micChanged) updateUsbMicrophoneService();
         if (discordAudioChanged) updateDiscordAudio();
     }

@@ -336,14 +336,19 @@ public final class HostGatewayStore {
         return new ProfileSelection(allowed, selected);
     }
 
-    /** Discord is a parent-profile integration; the Gateway exposes no Discord route to a child. */
-    public boolean isChildProfile(String hostUuid, String profileId) {
-        return isChild(profiles(hostUuid).profiles, profileId);
+    /**
+     * Discord is a parent-profile integration; the Gateway exposes no Discord route to a child.
+     * A selected profile missing from the cached list cannot be classified, so it is not eligible
+     * until the list is refreshed.
+     */
+    public boolean discordEligible(String hostUuid, String profileId) {
+        return discordEligible(profiles(hostUuid).profiles, profileId);
     }
 
-    static boolean isChild(List<HostGatewayClient.IntegrationProfile> profiles, String profileId) {
+    static boolean discordEligible(List<HostGatewayClient.IntegrationProfile> profiles,
+                                   String profileId) {
         HostGatewayClient.IntegrationProfile profile = find(profiles, profileId);
-        return profile != null && profile.isChild();
+        return profile != null && !profile.isChild();
     }
 
     private static HostGatewayClient.IntegrationProfile find(

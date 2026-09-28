@@ -14,7 +14,7 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class ConsoleProfileGateTest {
-    @Test public void onlyAChildProfileIsReportedAsChild() {
+    @Test public void onlyAKnownParentProfileIsDiscordEligible() {
         HostGatewayClient.IntegrationProfile child = new HostGatewayClient.IntegrationProfile(
                 "kid", "Kid", false, false, false, false, false, false, false, true, false,
                 "active", "available", false, false, 0,
@@ -23,10 +23,11 @@ public class ConsoleProfileGateTest {
         java.util.List<HostGatewayClient.IntegrationProfile> profiles =
                 Arrays.asList(profile("basia"), child);
 
-        assertTrue(HostGatewayStore.isChild(profiles, "kid"));
-        assertFalse(HostGatewayStore.isChild(profiles, "basia"));
-        assertFalse(HostGatewayStore.isChild(profiles, "unknown"));
-        assertFalse(HostGatewayStore.isChild(profiles, null));
+        assertTrue(HostGatewayStore.discordEligible(profiles, "basia"));
+        assertFalse(HostGatewayStore.discordEligible(profiles, "kid"));
+        assertFalse(HostGatewayStore.discordEligible(profiles, "unknown"));
+        assertFalse(HostGatewayStore.discordEligible(profiles, null));
+        assertFalse(HostGatewayStore.discordEligible(Collections.emptyList(), "basia"));
     }
 
     @Test public void multipleProfilesWithoutAutomaticProfileShowGate() {
