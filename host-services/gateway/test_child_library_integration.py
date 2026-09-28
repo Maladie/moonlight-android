@@ -150,6 +150,7 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
             "actor_profile_id": "kid",
             "execution_profile_id": "living-room",
             "game_id": canonical(RAW_ALLOWED),
+            "phase": "launch_pending",
             "vibepollo_client_uuid": "11111111-2222-4333-8444-555555555555",
             "last_playable_seconds": 60,
         }
@@ -356,6 +357,11 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
         self.bridge.state.start_game = mock.Mock(return_value={
             "accepted": True, "command": "launch"})
         self.bind_control_stream()
+        # Android sends the library's raw Playnite GUID; the time session holds the
+        # canonical playnite:<guid>. The HTTP pre-check must not compare them raw.
+        handler = object.__new__(wakeplay_gateway.GatewayHandler)
+        handler.server = SimpleNamespace(state=self.gateway)
+        handler._require_child_start_session(self.client, "kid")
         self.gateway.request_context.request_id = "child-library-start"
         status, result = self.gateway.playnite_action(
             "game/start", {"game_id": RAW_ALLOWED.upper()},
@@ -384,6 +390,21 @@ class ChildLibraryIntegrationTest(unittest.TestCase):
                 "game/start", {"game_id": RAW_FOREIGN},
                 self.client, "kid")
         self.bridge.state.start_game.assert_called_once()
+
+        # Stop names the game by the same raw library id; it binds after resolution.
+        self.gateway.request_context.request_id = "child-library-stop"
+        self.gateway.playnite_action(
+            "game/stop-verified", {"game_id": RAW_ALLOWED.upper(),
+                                   "expected_process_token": "a" * 64},
+            self.client, "kid")
+        self.assertEqual(canonical(RAW_ALLOWED), [
+            call for call in self.bridge.calls
+            if call[0] == "json" and call[2] == "/game/stop-verified"][-1][3]["game_id"])
+        with self.assertRaises(PermissionError):
+            self.gateway.playnite_action(
+                "game/stop-verified", {"game_id": RAW_FOREIGN,
+                                       "expected_process_token": "a" * 64},
+                self.client, "kid")
 
 
 if __name__ == "__main__":

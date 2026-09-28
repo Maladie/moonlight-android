@@ -2645,6 +2645,13 @@ class GatewayState:
                               body: dict[str, Any], request_id: str) -> tuple[int, Any]:
         actor_id = str(actor_profile_id or "")
         client_id = self.broker_client_id(client)
+        # Resolve the requested game through the provider before the fence; the
+        # comparison below requires the same session, so a handoff in between fails.
+        resolved_for = self.child_time_session
+        requested_game = self._child_request_game(
+            str(resolved_for.get("execution_profile_id") or ""),
+            body.get("playnite_game_id")) \
+            if body.get("playnite_game_id") and isinstance(resolved_for, dict) else ""
         # Hold the common state fence from exact actor/stream validation until
         # the sleep is scheduled and this time attachment is durably released.
         # A concurrent A->B handoff therefore happens wholly before or after
@@ -2656,10 +2663,8 @@ class GatewayState:
                         ("actor_profile_id", actor_id),
                         ("client_id", client_id))):
                 raise PermissionError("child_session_required")
-            requested_game = self._child_time_normalize_game_id(
-                body.get("playnite_game_id"))
-            if requested_game and requested_game != self._child_time_normalize_game_id(
-                    session.get("game_id")):
+            if requested_game and (session is not resolved_for or requested_game !=
+                                   self._child_time_normalize_game_id(session.get("game_id"))):
                 raise PermissionError("child_session_binding_mismatch")
             stream = self.control_state.get("stream")
             exact_stream = isinstance(stream, dict) and all(
@@ -3538,6 +3543,14 @@ class GatewayState:
             raise PermissionError("The game is unavailable to this child.")
         catalog_revision = self._child_catalog_revision(result.get("revision"))
         return canonical, self._child_game_key(parent_id, canonical), catalog_revision
+
+    def _child_request_game(self, parent_profile_id: str, requested: Any) -> str:
+        """Normalized canonical id of a child request's game.
+
+        A raw Playnite GUID can name a steam:/epic: record, so a request id is only
+        comparable with a time session's canonical game after provider resolution."""
+        canonical, _key, _revision = self._resolve_child_catalog_game(parent_profile_id, requested)
+        return self._child_time_normalize_game_id(canonical)
 
     def _child_policy_context(self, client: dict[str, Any], actor_profile_id: str,
                               permission: str = "use_profile") \
@@ -6684,7 +6697,7 @@ class GatewayState:
                 raise PermissionError("child_session_binding_mismatch")
             game_id = str(session.get("game_id") or "")
             if action == "game/stop-verified" and \
-                    self._child_time_normalize_game_id(body.get("game_id")) != \
+                    self._child_request_game(parent_id, body.get("game_id")) != \
                     self._child_time_normalize_game_id(game_id):
                 raise PermissionError("child_session_binding_mismatch")
             payload = {"game_id": game_id} \
@@ -7359,8 +7372,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.state.request_context.execution_profile_id = parent_id
         return actor_id
 
-    def _require_child_start_session(self, client: dict[str, Any],
-                                     actor_id: str, game_id: Any) -> None:
+    def _require_child_start_session(self, client: dict[str, Any], actor_id: str) -> None:
+        # The game binding is checked by child_playnite_action on the provider-resolved
+        # canonical id; the raw request id (e.g. a bare Playnite GUID) cannot be compared here.
         session = self.state.child_time_session
         if not isinstance(session, dict):
             raise PermissionError("child_session_required")
@@ -7369,9 +7383,6 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 self.state.broker_client_id(client) or
                 str(session.get("phase") or "") not in {"launch_pending", "running"}):
             raise PermissionError("child_session_required")
-        if (self.state._child_time_normalize_game_id(session.get("game_id")) !=
-                self.state._child_time_normalize_game_id(game_id)):
-            raise PermissionError("child_session_binding_mismatch")
 
     def _require_child_profile_session(self) -> str:
         profile_session = self.profile_session_id()
@@ -8124,8 +8135,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
                         return
                     body = self.read_json()
                     if child_action == "game/start":
-                        self._require_child_start_session(
-                            authenticated_client, actor_id, body.get("game_id"))
+                        self._require_child_start_session(authenticated_client, actor_id)
                     status, result = self.state.idempotent(
                         f"{actor_id}:game-provider:{request_id}",
                         lambda: self.state.playnite_action(
