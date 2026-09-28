@@ -431,6 +431,13 @@ class WindowProbe:
             return ("gone", None) if ctypes.get_last_error() in {87, 1168} \
                 else ("unknown", None)
         try:
+            # Exit first: a handle held elsewhere keeps an exited process object openable,
+            # and its image/time queries can then fail, which must not read as "unknown".
+            exit_code = wintypes.DWORD()
+            if not self.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
+                return "unknown", None
+            if exit_code.value != self.STILL_ACTIVE:
+                return "gone", None
             size = wintypes.DWORD(32768)
             buffer = ctypes.create_unicode_buffer(size.value)
             created = wintypes.FILETIME()
@@ -443,12 +450,6 @@ class WindowProbe:
                         handle, ctypes.byref(created), ctypes.byref(exited),
                         ctypes.byref(kernel), ctypes.byref(user)):
                 return "unknown", None
-            exit_code = wintypes.DWORD()
-            if not self.kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code)):
-                return "unknown", None
-            if exit_code.value != self.STILL_ACTIVE:
-                # A handle held elsewhere keeps an exited process object openable.
-                return "gone", None
             started = (int(created.dwHighDateTime) << 32) | int(created.dwLowDateTime)
             identity = {
                 "process_id": process_id,

@@ -28,11 +28,27 @@ class ProcessIdentityStatusTest(unittest.TestCase):
         with mock.patch("GameProviderBridge.ctypes.get_last_error", return_value=5):
             self.assertEqual(("unknown", None), self.probe.process_identity_status(44))
 
-    def test_query_failure_is_unknown(self):
+    def exit_code(self, code):
+        self.probe.kernel32.GetExitCodeProcess.side_effect = \
+            lambda _handle, value: setattr(value._obj, "value", code) is None
+
+    def test_query_failure_of_a_live_process_is_unknown(self):
         self.probe.kernel32.OpenProcess.return_value = 1
+        self.exit_code(WindowProbe.STILL_ACTIVE)
         self.probe.kernel32.QueryFullProcessImageNameW.return_value = False
 
         self.assertEqual(("unknown", None), self.probe.process_identity_status(44))
+        self.probe.kernel32.CloseHandle.assert_called_once_with(1)
+
+    def test_exited_process_is_gone_even_when_its_image_query_fails(self):
+        # Lab S06 diag145c: the stopped child game (no longer running) was reported
+        # "unknown", so the Gateway could never confirm the child stop.
+        self.probe.kernel32.OpenProcess.return_value = 1
+        self.exit_code(0)
+        self.probe.kernel32.QueryFullProcessImageNameW.return_value = False
+        self.probe.kernel32.GetProcessTimes.return_value = False
+
+        self.assertEqual(("gone", None), self.probe.process_identity_status(44, include_owner=True))
         self.probe.kernel32.CloseHandle.assert_called_once_with(1)
 
     def test_exited_process_held_open_elsewhere_is_gone(self):
