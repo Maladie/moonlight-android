@@ -869,6 +869,20 @@ public class GameTransitionCancelContractTest {
                 < reveal.indexOf("showOverlayMenuHint()"));
     }
 
+    @Test public void retainedRestoreKeepsRequestingIdrBeforeReconnecting() throws IOException {
+        Path source = Paths.get("src/main/java/com/limelight/Game.java");
+        if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
+        String game = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
+        String watchdog = game.substring(game.indexOf("private void scheduleRetainedRestoreWatchdog("),
+                game.indexOf("private void reconnectRetainedStream("));
+
+        // Lab tail reached 7.3 s to the first restored frame; 5 s forced a needless reconnect.
+        assertTrue(game.contains("RETAINED_RESTORE_TIMEOUT_MS = 10_000L"));
+        assertTrue(watchdog.contains("transitionUiHandler.postDelayed(this, RETAINED_RESTORE_IDR_RETRY_MS)"));
+        assertTrue(watchdog.contains("transitionUiHandler.removeCallbacks(retainedRestoreIdrRetry)"));
+        assertTrue(watchdog.contains("postDelayed(retainedRestoreWatchdog, RETAINED_RESTORE_TIMEOUT_MS)"));
+    }
+
     @Test public void connectedStreamKeepsProcessDeathRecoveryCorrelation() throws IOException {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");

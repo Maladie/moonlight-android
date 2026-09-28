@@ -230,7 +230,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean connected = false;
     private boolean userInitiatedDisconnect = false;
     private boolean streamHomeVisible = false;
+    private static final long RETAINED_RESTORE_IDR_RETRY_MS = 1_500L;
+    private static final long RETAINED_RESTORE_TIMEOUT_MS = 10_000L;
     private boolean retainedRestoreAwaitingFrame;
+    private Runnable retainedRestoreIdrRetry;
     private Runnable retainedRestoreWatchdog;
     private boolean backgroundStreamParked = false;
     private boolean autoEnterPip = false;
@@ -4487,13 +4490,22 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (retainedRestoreWatchdog != null) {
             transitionUiHandler.removeCallbacks(retainedRestoreWatchdog);
         }
-        transitionUiHandler.postDelayed(() -> {
-            if (retainedRestoreAwaitingFrame && connected && !backgroundStreamParked) {
-                MoonWakerDiagnostics.record("WARN", "android.stream", "decoder.idr_retry");
-                LimeLog.warning("Retained stream has no frame yet; requesting another IDR");
-                BackgroundStreamBridge.requestIdrFrame();
+        // Lab tail: the first restored frame took up to 7.3 s on a loaded emulator, so a
+        // reconnect is only worth its cost after repeated IDR requests went unanswered.
+        if (retainedRestoreIdrRetry != null) {
+            transitionUiHandler.removeCallbacks(retainedRestoreIdrRetry);
+        }
+        retainedRestoreIdrRetry = new Runnable() {
+            @Override public void run() {
+                if (retainedRestoreAwaitingFrame && connected && !backgroundStreamParked) {
+                    MoonWakerDiagnostics.record("WARN", "android.stream", "decoder.idr_retry");
+                    LimeLog.warning("Retained stream has no frame yet; requesting another IDR");
+                    BackgroundStreamBridge.requestIdrFrame();
+                    transitionUiHandler.postDelayed(this, RETAINED_RESTORE_IDR_RETRY_MS);
+                }
             }
-        }, 1_500L);
+        };
+        transitionUiHandler.postDelayed(retainedRestoreIdrRetry, RETAINED_RESTORE_IDR_RETRY_MS);
         retainedRestoreWatchdog = () -> {
             if (retainedRestoreAwaitingFrame && connected && !backgroundStreamParked) {
                 MoonWakerDiagnostics.record("WARN", "android.stream", "decoder.restore_timeout");
@@ -4501,7 +4513,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 reconnectRetainedStream();
             }
         };
-        transitionUiHandler.postDelayed(retainedRestoreWatchdog, 5_000L);
+        transitionUiHandler.postDelayed(retainedRestoreWatchdog, RETAINED_RESTORE_TIMEOUT_MS);
     }
 
     private void reconnectRetainedStream() {
