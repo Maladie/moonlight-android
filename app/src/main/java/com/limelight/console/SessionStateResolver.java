@@ -297,7 +297,8 @@ final class SessionStateResolver {
             fields[projection.length] = "sample_marker";
             fields[projection.length + 1] = marker;
             fields[projection.length + 2] = "published_age_ms";
-            fields[projection.length + 3] = published == null ? -1L : Math.max(0L, nowMs - publishedAtMs);
+            // Raw age: a negative value exposes a publication/sampling time-base mismatch.
+            fields[projection.length + 3] = published == null ? -1L : nowMs - publishedAtMs;
             fields[projection.length + 4] = "dropped";
             fields[projection.length + 5] = MoonWakerDiagnostics.droppedCount();
             return diagnosticSink.record("INFO", "android.session", "projection.sampled", fields);

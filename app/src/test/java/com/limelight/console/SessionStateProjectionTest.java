@@ -262,6 +262,10 @@ public class SessionStateProjectionTest {
         assertEquals(-1, SessionStateResolver.sampleAll("bad marker", 3_000L));
         assertEquals(-1, SessionStateResolver.sampleAll(null, 3_000L));
         assertEquals(4, recorded.size());
+
+        // A sampling clock behind the publication clock is reported, not clamped to "fresh".
+        assertEquals(2, SessionStateResolver.sampleAll("phase-17:skew", 900L));
+        assertEquals(-100L, field(recorded.get(4), "published_age_ms"));
     }
 
     @Test public void sampleConfirmationReportsUndrainedWriterAndRejectsBadMarkers() {
