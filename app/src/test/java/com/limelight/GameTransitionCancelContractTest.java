@@ -2,6 +2,7 @@ package com.limelight;
 
 import org.junit.Test;
 
+import com.limelight.console.transition.LaunchTransitionState;
 import com.limelight.console.transition.LaunchTransitionType;
 import com.limelight.stream.RetainedStreamSessionCoordinator;
 
@@ -275,6 +276,34 @@ public class GameTransitionCancelContractTest {
                 "gc-a", "game-a", "gc-b", "game-b", true));
         assertFalse(Game.shouldOpenRetainedObservationDashboard(
                 "gc-a", "game-a", "gc-a", "game-a", false));
+    }
+
+    @Test public void backOnTimedOutRevealedStreamReturnsToDashboardWithoutStoppingProvider()
+            throws IOException {
+        assertTrue(Game.shouldReturnTimedOutRevealedStreamToDashboard(
+                true, false, true, LaunchTransitionState.TIMED_OUT));
+        assertFalse(Game.shouldReturnTimedOutRevealedStreamToDashboard(
+                true, false, false, LaunchTransitionState.TIMED_OUT));
+        assertFalse(Game.shouldReturnTimedOutRevealedStreamToDashboard(
+                false, false, true, LaunchTransitionState.TIMED_OUT));
+        assertFalse(Game.shouldReturnTimedOutRevealedStreamToDashboard(
+                true, true, true, LaunchTransitionState.TIMED_OUT));
+        assertFalse(Game.shouldReturnTimedOutRevealedStreamToDashboard(
+                true, false, true, LaunchTransitionState.GAME_STOPPING));
+        assertFalse(Game.shouldReturnTimedOutRevealedStreamToDashboard(
+                true, false, true, null));
+
+        String text = source();
+        String keyUp = text.substring(text.indexOf("public boolean handleKeyUp("),
+                text.indexOf("if (isImeVisible", text.indexOf("public boolean handleKeyUp(")));
+        assertTrue(keyUp.indexOf("shouldReturnTimedOutRevealedStreamToDashboard(")
+                < keyUp.indexOf("cancelTransition()"));
+        assertTrue(keyUp.contains("openConsoleHome()"));
+        String home = text.substring(text.indexOf("private void openConsoleHome()"),
+                text.indexOf("private void openPreparingConsoleHome()"));
+        assertFalse(home.contains("stopProviderGame("));
+        assertFalse(home.contains("stopConnection"));
+        assertFalse(home.contains("revealStream"));
     }
 
     @Test public void connectingStateMakesInFlightTransportStoppable() throws IOException {

@@ -2292,7 +2292,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
             if (event.getKeyCode() == KeyEvent.KEYCODE_BACK
                     || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B) {
-                cancelTransition();
+                if (shouldReturnTimedOutRevealedStreamToDashboard(
+                        connected, streamHomeVisible, streamEverRevealed,
+                        transitionController == null ? null
+                                : transitionController.snapshot().state)) {
+                    // The cover stays; the retained transport is not a launch to cancel.
+                    openConsoleHome();
+                } else {
+                    cancelTransition();
+                }
             }
             return true;
         }
@@ -5713,6 +5721,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 transitionSpec == null ? null : transitionSpec.type,
                 transitionSpec == null ? "" : transitionSpec.playniteGameId,
                 retained.state, exactOwner);
+    }
+
+    static boolean shouldReturnTimedOutRevealedStreamToDashboard(
+            boolean connected, boolean streamHomeVisible, boolean streamEverRevealed,
+            LaunchTransitionState state) {
+        return connected && !streamHomeVisible && streamEverRevealed
+                && state == LaunchTransitionState.TIMED_OUT;
     }
 
     static boolean isForegroundRetainedObservation(
