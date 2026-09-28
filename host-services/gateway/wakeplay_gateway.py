@@ -578,6 +578,24 @@ class GatewayDiagnostics:
 
 DIAGNOSTICS = GatewayDiagnostics()
 
+# Antivirus or indexing can briefly hold the registry without delete sharing (the Configurator hit
+# this in the lab). os.replace (MoveFileEx) reports that as ERROR_ACCESS_DENIED (5), ReplaceFile as
+# ERROR_SHARING_VIOLATION (32). Callers hold registry_update_lock, so waiting cannot interleave writers.
+REGISTRY_REPLACE_TRANSIENT_WINERRORS = (5, 32)
+
+
+def replace_registry_file(source: Path, destination: Path,
+                          attempts: int = 30, delay_seconds: float = 0.1) -> None:
+    for attempt in range(1, attempts + 1):
+        try:
+            os.replace(source, destination)
+            return
+        except PermissionError as error:
+            if (getattr(error, "winerror", None) not in REGISTRY_REPLACE_TRANSIENT_WINERRORS
+                    or attempt == attempts):
+                raise
+        time.sleep(delay_seconds)
+
 
 class GatewayState:
     def __init__(self, config_path: Path, pairing_code: str | None,
@@ -1290,7 +1308,10 @@ class GatewayState:
         temporary = self.config_path.with_suffix(self.config_path.suffix + ".tmp")
         temporary.write_text(
             json.dumps(registry, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
-        os.replace(temporary, self.config_path)
+        try:
+            replace_registry_file(temporary, self.config_path)
+        finally:
+            temporary.unlink(missing_ok=True)
         self.registry_modified_ns = self.config_path.stat().st_mtime_ns
 
     def refresh_registry_if_changed(self) -> None:

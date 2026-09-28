@@ -554,6 +554,46 @@ class GatewayStateTest(unittest.TestCase):
 
         self.assertEqual(123, state.config["clients"][0]["last_seen_at"])
 
+    @unittest.skipUnless(os.name == "nt", "Windows delete-sharing semantics")
+    def test_registry_replace_waits_out_a_brief_reader_without_delete_sharing(self):
+        state = GatewayState(self.config_path, None)
+        registry = json.loads(self.config_path.read_text(encoding="utf-8"))
+        registry["certificate"] = "rotated.pem"
+        reader = self.config_path.open("rb")  # Python opens without FILE_SHARE_DELETE
+        threading.Timer(0.4, reader.close).start()
+
+        with state.registry_update_lock():
+            state.replace_registry(registry)
+
+        self.assertEqual("rotated.pem", json.loads(
+            self.config_path.read_text(encoding="utf-8"))["certificate"])
+        self.assertFalse(self.config_path.with_suffix(self.config_path.suffix + ".tmp").exists())
+
+    @unittest.skipUnless(os.name == "nt", "Windows delete-sharing semantics")
+    def test_registry_replace_held_past_the_bound_keeps_the_original(self):
+        state = GatewayState(self.config_path, None)
+        original = self.config_path.read_text(encoding="utf-8")
+        registry = json.loads(original)
+        registry["certificate"] = "lost.pem"
+
+        with self.config_path.open("rb"), mock.patch.object(wakeplay_gateway.time, "sleep"):
+            with self.assertRaises(PermissionError):
+                state.replace_registry(registry)
+
+        self.assertEqual(original, self.config_path.read_text(encoding="utf-8"))
+        self.assertFalse(self.config_path.with_suffix(self.config_path.suffix + ".tmp").exists())
+
+    def test_registry_replace_does_not_retry_other_errors(self):
+        state = GatewayState(self.config_path, None)
+        registry = json.loads(self.config_path.read_text(encoding="utf-8"))
+
+        with mock.patch.object(wakeplay_gateway.os, "replace",
+                               side_effect=PermissionError(13, "denied", None, 1)) as replace:
+            with self.assertRaises(PermissionError):
+                state.replace_registry(registry)
+
+        self.assertEqual(1, replace.call_count)
+
     def test_migration_never_replaces_registry_changed_while_starting(self):
         replacement = {
             "schema_version": wakeplay_gateway.GATEWAY_SCHEMA_VERSION,
