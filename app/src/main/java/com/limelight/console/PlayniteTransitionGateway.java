@@ -327,8 +327,7 @@ public final class PlayniteTransitionGateway {
         }
         // The owner returns the projection of this exact observation, never a newer one.
         SessionSnapshot accepted = projectionOwner.accept(observation, retained, now);
-        boolean fenced = (accepted != null || projectionOwner.admitsPermitEvidence(observation))
-                && permit != null
+        boolean permitted = permit != null
                 && !permit.operationId.isEmpty()
                 && permit.operationId.equals(observation.operationId)
                 && permit.generation > 0L
@@ -336,9 +335,16 @@ public final class PlayniteTransitionGateway {
                 && !permit.streamSessionId.isEmpty()
                 && permit.streamSessionId.equals(observation.streamSessionId)
                 && permit.actorLeaseEpoch == observation.actorLeaseEpoch;
-        if (fenced) {
-            return new Snapshot(accepted != null ? accepted
-                    : projectionOwner.current(retained, now), observation);
+        if (permitted && accepted != null) return new Snapshot(accepted, observation);
+        // A read that lost only the owner's ordering may still name the exact running
+        // process for the permit/token-checked stop. It never proves absence: a newer
+        // accepted observation may show the game running, so idle or unverified evidence
+        // from it would let the stop be skipped.
+        if (permitted && projectionOwner.admitsPermitEvidence(observation)
+                && observation.gameEvidence == HostGatewayClient.Evidence.VERIFIED
+                && observation.processEvidence == HostGatewayClient.Evidence.VERIFIED
+                && observation.processToken != null && !observation.processToken.isEmpty()) {
+            return new Snapshot(projectionOwner.current(retained, now), observation);
         }
         // Outside the caller's exact permit nothing proves the stop target: fail closed.
         return new Snapshot(false, false, "unknown", "", 0, false, "playnite", 0,

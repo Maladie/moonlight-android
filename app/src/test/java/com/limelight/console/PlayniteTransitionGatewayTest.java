@@ -176,6 +176,39 @@ public class PlayniteTransitionGatewayTest {
         SessionStateResolver.resetProjectionOwnersForTests();
     }
 
+    @Test public void rejectedIdleControlReadCannotLetFullQuitSkipTheStop() throws Exception {
+        // R011 P1: the full-quit read (idle, ordinal N) loses to a newer dashboard read that
+        // still shows the permit's game running (N+1). The rejected idle must not read as idle.
+        SessionStateResolver.resetProjectionOwnersForTests();
+        RecordingClient client = new RecordingClient();
+        client.operationId = "control-full-quit-1";
+        client.streamSessionId = "session-1";
+        client.controlGeneration = 2L;
+        client.actorLeaseEpoch = 3L;
+        client.idle = true;
+        PlayniteTransitionGateway termination = new PlayniteTransitionGateway(
+                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(
+                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        client.beforeReturn = () -> {
+            client.idle = false;
+            try {
+                dashboard.snapshot();
+            } catch (IOException error) {
+                throw new AssertionError(error);
+            }
+        };
+
+        PlayniteTransitionGateway.Snapshot fenced = termination.snapshotWithinControl(
+                permit("control-full-quit-1", "session-1", 2L, 3L));
+
+        assertEquals(2, client.parsedObservations);
+        assertFalse("idle".equalsIgnoreCase(fenced.gameState));
+        assertFalse(fenced.hasVerifiedProcessFor("steam:123"));
+        assertEquals("", fenced.processToken);
+        SessionStateResolver.resetProjectionOwnersForTests();
+    }
+
     @Test public void capturedContextSurvivesDeterministicActorRebindOrdering()
             throws Exception {
         RecordingClient trace = new RecordingClient();
@@ -313,6 +346,7 @@ public class PlayniteTransitionGatewayTest {
         long controlGeneration;
         long actorLeaseEpoch;
         Runnable beforeReturn;
+        boolean idle;
         String gameState = "running";
         String gameEvidence = "VERIFIED";
         String gameId = "steam:123";
@@ -363,14 +397,24 @@ public class PlayniteTransitionGatewayTest {
                             .put("provider", new JSONObject().put("state", gameState)
                                     .put("connector_evidence", "VERIFIED")
                                     .put("reason", "none"))
-                            .put("game", new JSONObject().put("state", gameState)
-                                    .put("evidence", gameEvidence).put("id", gameId))
-                            .put("process", new JSONObject().put("evidence", "VERIFIED")
-                                    .put("process_id", 42).put("process_token", PROCESS_TOKEN))
-                            .put("window", new JSONObject().put("evidence", "VERIFIED")
-                                    .put("ready", true).put("target_kind", "game")
-                                    .put("stable_samples", 3)
-                                    .put("reason", "target_window_ready"))
+                            .put("game", idle
+                                    ? new JSONObject().put("state", "idle")
+                                            .put("evidence", "ABSENT").put("id", "")
+                                    : new JSONObject().put("state", gameState)
+                                            .put("evidence", gameEvidence).put("id", gameId))
+                            .put("process", idle
+                                    ? new JSONObject().put("evidence", "ABSENT")
+                                            .put("process_id", 0).put("process_token", "")
+                                    : new JSONObject().put("evidence", "VERIFIED")
+                                            .put("process_id", 42).put("process_token", PROCESS_TOKEN))
+                            .put("window", idle
+                                    ? new JSONObject().put("evidence", "ABSENT")
+                                            .put("ready", false).put("target_kind", "game")
+                                            .put("stable_samples", 0).put("reason", "none")
+                                    : new JSONObject().put("evidence", "VERIFIED")
+                                            .put("ready", true).put("target_kind", "game")
+                                            .put("stable_samples", 3)
+                                            .put("reason", "target_window_ready"))
                             .put("capabilities", new JSONObject()
                                     .put("host_guide_allowed", false)
                                     .put("requires_connector", true)
