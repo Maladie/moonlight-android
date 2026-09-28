@@ -1591,6 +1591,7 @@ class BridgeState:
         self.running_process_probe: WindowProbe | None = None
         self._running_games: list[dict[str, Any]] = []
         self._running_scan_status = "unavailable"
+        self._minted_process_identities: dict[str, tuple[Any, ...]] = {}
         self._running_scan_revision = ""
         self._running_scan_at = 0.0
         # Host-owned Epic totals live in the existing profile library cache.
@@ -4156,19 +4157,38 @@ class BridgeState:
             self._publish_locked("library-updated", {
                 "count": len(self.library), "revision": self.library_revision})
 
+    MINTED_PROCESS_IDENTITY_LIMIT = 256
+
+    @staticmethod
+    def _process_identity_key(identity: dict[str, Any]) -> tuple[Any, ...]:
+        return (identity.get("process_id"), identity.get("process_started_filetime"),
+                identity.get("process_path"), identity.get("user_sid"), identity.get("session_id"))
+
     def _process_token(self, game_id: str, identity: dict[str, Any]) -> str:
-        """Exact process identity for one game: owner, session, PID, path and start time."""
-        return hashlib.sha256(compact_json([
+        """Exact process identity for one game: owner, session, PID, path and start time.
+
+        The captured process identity behind every minted token is kept (bounded), so a
+        later exact-target check never depends on the game still being in the catalog."""
+        token = hashlib.sha256(compact_json([
             self.profile_id, game_id, identity.get("user_sid"), identity.get("session_id"),
             identity.get("process_id"), identity.get("process_path"),
             identity.get("process_started_filetime")])).hexdigest()
+        with self.lock:
+            minted = self._minted_process_identities
+            minted.pop(token, None)
+            minted[token] = self._process_identity_key(identity)
+            while len(minted) > self.MINTED_PROCESS_IDENTITY_LIMIT:
+                minted.pop(next(iter(minted)))
+        return token
 
     def target_process_status(self, process_id: int, process_token: str) -> str:
-        """Exact status of one previously verified process, independent of catalog matching.
+        """Exact status of one previously verified process, independent of the catalog.
 
         ``gone``: no live process has the PID. ``reused``: a readable live process holds the
-        PID but no library game yields the token. ``alive``: the exact process still runs.
-        ``unknown``: the PID is live but unreadable, so the target cannot be retired.
+        PID with a different identity than the one captured when the token was minted.
+        ``alive``: the captured process still runs. ``unknown``: the PID is live but
+        unreadable, or the token was not minted by this provider boot, so it cannot be
+        compared and the target cannot be retired.
         """
         probe = self.running_process_probe
         if probe is None:
@@ -4176,12 +4196,13 @@ class BridgeState:
         status, identity = probe.process_identity_status(process_id, include_owner=True)
         if status != "alive":
             return status
-        value = {**identity,
-                 "process_path": self._normalized_process_path(identity.get("process_path"))}
         with self.lock:
-            game_ids = [str(game.get("id") or "") for game in self.library.values()]
-        return "alive" if any(self._process_token(game_id, value) == process_token
-                              for game_id in game_ids) else "reused"
+            captured = self._minted_process_identities.get(process_token)
+        if captured is None or captured[0] != process_id:
+            return "unknown"
+        live = self._process_identity_key({
+            **identity, "process_path": self._normalized_process_path(identity.get("process_path"))})
+        return "alive" if live == captured else "reused"
 
     def refresh_running_games(self) -> None:
         started = time.monotonic()

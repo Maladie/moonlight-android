@@ -198,6 +198,8 @@ class RunningGamesTest(unittest.TestCase):
         token = self.state._process_token("playnite:emu", {
             **emulator, "process_path": self.state._normalized_process_path(
                 emulator["process_path"])})
+        # R010: removing the game from the catalog must not turn the live process into "reused".
+        self.state.library.pop("playnite:emu")
         for probed, expected in (
                 (("unknown", None), "unknown"),
                 (("alive", emulator), "alive"),
@@ -207,6 +209,10 @@ class RunningGamesTest(unittest.TestCase):
                 self.probe.process_identity_status.return_value = probed
                 self.assertEqual(expected, self.state.target_process_status(55, token))
                 self.probe.process_identity_status.assert_called_with(55, include_owner=True)
+        # A token this provider boot never minted cannot be compared.
+        self.probe.process_identity_status.return_value = ("alive", emulator)
+        self.assertEqual("unknown", self.state.target_process_status(55, "c" * 64))
+        self.assertEqual("unknown", self.state.target_process_status(56, token))
 
     def test_scan_receives_the_image_names_of_exact_game_executables(self):
         self.state.library["steam:2"] = {"id": "steam:2", "provider": "steam",

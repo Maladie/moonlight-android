@@ -129,6 +129,23 @@ class SessionRecoveryTest(unittest.TestCase):
         self.assertEqual(pid, self.gateway.child_time_session["process_id"])
         return child_id
 
+    def test_catalog_removal_cannot_retire_a_live_retained_process(self):
+        # R010: the exact target check must not depend on the game staying in the catalog.
+        self.start_child("123")
+        session = self.gateway.child_time_session
+        token = session["process_token"]
+        self.bridge.set_library([{"id": "steam:456", "provider": "steam", "providerGameId": "456",
+                                  "name": "456", "installDir": "C:\\Games\\456", "exe": "game.exe"}])
+        self.bridge.state.refresh_running_games()
+        current = self.gateway._child_time_current_game("parent", session)
+        self.assertEqual("alive", current["target_status"])
+        self.assertNotEqual("idle", current["kind"])
+        self.assertFalse(self.gateway._child_time_process_absent(current, token))
+        self.processes.pop(session["process_id"])
+        current = self.gateway._child_time_current_game("parent", session)
+        self.assertEqual("gone", current["target_status"])
+        self.assertTrue(self.gateway._child_time_process_absent(current, token))
+
     def test_allowed_game_switch_uses_common_stop_and_reuses_retained_stream(self):
         first = self.start_child()
         status, result = self.gateway.child_time_session_end(self.client, "kid", first, "client_closed")
