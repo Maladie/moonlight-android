@@ -1121,8 +1121,9 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual(1, len(end_calls))
         self.assertFalse(results)
         release.set()
-        first.join(1.0)
-        second.join(1.0)
+        # Bounded but loaded-machine tolerant: the full host suite ran this 1 s join out once.
+        first.join(10.0)
+        second.join(10.0)
 
         self.assertFalse(first.is_alive())
         self.assertFalse(second.is_alive())
