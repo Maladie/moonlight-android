@@ -1438,12 +1438,33 @@ namespace MoonWaker.HostConfigurator
                     stream.Write(bytes, 0, bytes.Length);
                     stream.Flush(true);
                 }
-                File.Replace(temporary, ConfigPath, null);
+                ReplaceRegistryFile(temporary, ConfigPath);
             }
             finally
             {
                 Array.Clear(bytes, 0, bytes.Length);
                 try { if (File.Exists(temporary)) File.Delete(temporary); } catch { }
+            }
+        }
+
+        // Antivirus or indexing briefly opens the registry without delete sharing, and File.Replace
+        // then fails with a sharing violation (lab: setting the parent app PIN). The registry lock
+        // is held by the caller, so waiting a bounded time cannot interleave another writer.
+        internal static void ReplaceRegistryFile(string source, string destination)
+        {
+            const int sharingViolation = unchecked((int)0x80070020);
+            for (int attempt = 1; ; attempt++)
+            {
+                try
+                {
+                    File.Replace(source, destination, null);
+                    return;
+                }
+                catch (IOException error)
+                {
+                    if (Marshal.GetHRForException(error) != sharingViolation || attempt >= 30) throw;
+                }
+                Thread.Sleep(100);
             }
         }
 
@@ -4166,6 +4187,21 @@ namespace MoonWaker.HostConfigurator
                 Assert(managementWithoutPinBlocked,
                     "A parent without an app PIN accepted child-management access.");
                 store.SetAppPin("profile-a", sidA, "4826");
+                // A scanner-like reader without delete sharing must only delay the replacement.
+                FileStream scanner = new FileStream(config, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                ThreadPool.QueueUserWorkItem(delegate { Thread.Sleep(400); scanner.Dispose(); });
+                store.UpdateProfile("profile-a", sidA, "Scanned", true);
+                Assert(store.GetProfile("profile-a").DisplayName == "Scanned",
+                    "A briefly held registry file lost the profile write.");
+                bool heldTooLongFails = false;
+                using (new FileStream(config, FileMode.Open, FileAccess.Read, FileShare.ReadWrite))
+                {
+                    try { store.UpdateProfile("profile-a", sidA, "Lost", true); }
+                    catch (IOException) { heldTooLongFails = true; }
+                }
+                Assert(heldTooLongFails && store.GetProfile("profile-a").DisplayName == "Scanned",
+                    "A registry held past the retry bound was not reported or was partially written.");
+                store.UpdateProfile("profile-a", sidA, "Renamed", true);
                 ProfileRecord child = store.CreateChildProfile("profile-a", "Kid", "avatar-1");
                 Assert(child.Kind == "child" && child.ParentProfileId == "profile-a" &&
                     child.AllowedGameKeys.Count == 0 && child.Sid == "" && child.Root == "" &&
