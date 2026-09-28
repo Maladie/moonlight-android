@@ -472,6 +472,48 @@ public class SessionStateProjectionTest {
                 "session-next", "host", 42, "transition-next", 1L));
     }
 
+    @Test public void observationsBeforeTheLocalTerminationCannotPublishReadyAgain() {
+        Controller controller = new Controller();
+        RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",
+                "child", 42, "game");
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                controller, "session", 1L));
+        long first = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(ready("boot", first),
+                RetainedStreamSessionCoordinator.snapshot(), 0L));
+        assertEquals(SessionSnapshot.ObservationState.READY, owner.current(
+                RetainedStreamSessionCoordinator.snapshot(), 1L).observationState);
+        long inFlight = owner.nextRequestOrdinal();
+
+        assertTrue(RetainedStreamSessionCoordinator.markTerminating(
+                "session", "host", 42, "game"));
+        assertEquals(SessionSnapshot.ObservationState.PENDING, owner.current(
+                RetainedStreamSessionCoordinator.snapshot(), 2L).observationState);
+        clearRetainedTransport();
+        RetainedStreamSessionCoordinator.Snapshot ended = RetainedStreamSessionCoordinator.snapshot();
+
+        // The stale READY (observed before the verified stop) neither returns as the
+        // projection nor lets a request dispatched before the termination finish.
+        assertEquals(SessionSnapshot.ObservationState.PENDING,
+                owner.current(ended, 3L).observationState);
+        assertNull(owner.accept(ready("boot", 2L, inFlight), ended, 4L));
+        assertEquals(SessionSnapshot.ObservationState.PENDING,
+                owner.current(ended, 5L).observationState);
+
+        long afterwards = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(idle("boot", 3L, afterwards), ended, 6L));
+        assertEquals(SessionSnapshot.ObservationState.IDLE,
+                owner.current(ended, 7L).observationState);
+    }
+
+    private static HostGatewayClient.SessionObservation ready(
+            String boot, long revision, long ordinal) {
+        return observation(boot, revision, ordinal, "running-" + revision, "running",
+                HostGatewayClient.Evidence.VERIFIED, "game",
+                HostGatewayClient.Evidence.VERIFIED, 42, TOKEN,
+                HostGatewayClient.Evidence.VERIFIED, true, "target_window_ready");
+    }
+
     private static HostGatewayClient.SessionObservation pending(
             String boot, long revision, long ordinal, String episode) {
         return observation(boot, revision, ordinal, episode, "reconciling",

@@ -154,6 +154,7 @@ final class SessionStateResolver {
         private final Set<String> retiredBoots = new LinkedHashSet<>();
         private long nextRequestOrdinal;
         private long lastAcceptedOrdinal;
+        private boolean transportTerminating;
         private String producerBootId = "";
         private long producerRevision;
         private HostGatewayClient.SessionObservation observation;
@@ -196,6 +197,7 @@ final class SessionStateResolver {
         synchronized SessionSnapshot accept(HostGatewayClient.SessionObservation candidate,
                                     RetainedStreamSessionCoordinator.Snapshot retained,
                                     long nowMs) {
+            retireObservationAroundTermination(retained);
             if (candidate == null || candidate.requestOrdinal != nextRequestOrdinal
                     || candidate.requestOrdinal <= lastAcceptedOrdinal
                     || !actorProfileId.equals(candidate.actorProfileId)
@@ -238,6 +240,7 @@ final class SessionStateResolver {
         synchronized SessionSnapshot unavailable(
                 long failedOrdinal, RetainedStreamSessionCoordinator.Snapshot retained,
                 long nowMs, String reason) {
+            retireObservationAroundTermination(retained);
             if (failedOrdinal != nextRequestOrdinal || failedOrdinal <= lastAcceptedOrdinal) {
                 return project(retained, LocalFacts.NONE, nowMs, "");
             }
@@ -262,9 +265,32 @@ final class SessionStateResolver {
         synchronized SessionSnapshot current(
                 RetainedStreamSessionCoordinator.Snapshot retained, LocalFacts local,
                 long nowMs) {
+            retireObservationAroundTermination(retained);
             published = publish(project(retained, local == null ? LocalFacts.NONE : local,
                     nowMs, ""), nowMs);
             return published;
+        }
+
+        /**
+         * The local session termination (for example the game stop this client verifies) is
+         * a boundary for host observations: one gathered before it, or by a poll dispatched
+         * before it finished, describes a game that is going or gone. On both edges of
+         * TERMINATING drop the observation and reject every request dispatched so far, so only
+         * a later poll can publish READY or IDLE again.
+         */
+        private void retireObservationAroundTermination(
+                RetainedStreamSessionCoordinator.Snapshot retained) {
+            boolean terminating = retained != null
+                    && hostId.equals(SessionSnapshot.normalize(retained.hostId))
+                    && executionProfileId.equals(retained.executionProfileId)
+                    && retained.state == RetainedStreamSessionCoordinator.State.TERMINATING;
+            if (terminating == transportTerminating) return;
+            transportTerminating = terminating;
+            lastAcceptedOrdinal = nextRequestOrdinal;
+            observation = null;
+            episodeKey = "";
+            episodeDeadlineMs = 0L;
+            lastResolvedAtMs = -1L;
         }
 
         synchronized long diagnosticEventsForTests() { return diagnosticEvents; }
