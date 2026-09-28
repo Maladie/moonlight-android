@@ -160,6 +160,16 @@ try {
     }
     Microsoft.PowerShell.Management\Set-Content -LiteralPath $registryPath -Value "{" -Encoding UTF8
     if ((Get-ProfileAuthority) -ne "unreadable") { throw "A partial registry was not reported unreadable." }
+    [IO.File]::WriteAllText($registryPath, "")
+    $emptyStreak = @{ count = 0 }
+    foreach ($tick in 1..4) {
+        if (Test-ProfileAuthorityLost (Get-ProfileAuthority) $emptyStreak) {
+            throw "An empty registry read revoked the profile authority before the bound."
+        }
+    }
+    if (-not (Test-ProfileAuthorityLost (Get-ProfileAuthority) $emptyStreak)) {
+        throw "An empty registry for five ticks did not fail closed."
+    }
     Write-Registry $false
     if (-not (Test-ProfileAuthorityLost (Get-ProfileAuthority) @{ count = 0 })) {
         throw "A disabled profile did not revoke authority at once."

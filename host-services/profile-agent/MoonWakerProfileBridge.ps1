@@ -45,7 +45,10 @@ function Read-GatewayRegistry {
         [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
     try {
         $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
-        return $reader.ReadToEnd() | ConvertFrom-Json
+        $text = $reader.ReadToEnd()
+        # ConvertFrom-Json returns $null for empty text; that is missing content, not a registry.
+        if ([string]::IsNullOrWhiteSpace($text)) { throw [IO.InvalidDataException]::new("Registry is empty.") }
+        return $text | ConvertFrom-Json
     } finally { $stream.Dispose() }
 }
 
@@ -368,9 +371,11 @@ try {
         # Registry disable/tombstone/SID/root changes must stop all children even
         # when this user remains signed in. A validation error fails closed at once,
         # an unreadable registry after a bounded streak.
-        if (Test-ProfileAuthorityLost (Get-ProfileAuthority) $unreadableRegistry) {
+        $authority = Get-ProfileAuthority
+        if (Test-ProfileAuthorityLost $authority $unreadableRegistry) {
+            # status is the fixed class that ended authority: revoked or unreadable.
             Write-AgentDiagnosticEvent "profile_authority_revoked" @{
-                profile_id = $ProfileId; status = "stopping"
+                profile_id = $ProfileId; status = $authority
             }
             break
         }
