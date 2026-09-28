@@ -121,4 +121,50 @@ if ($deploySource -notmatch '/observation' -or
     $deploySource -match '/health|connector_connected|PlayniteBridge\.py|removeLegacyBridge') {
     throw "The Game Provider deploy path still uses a legacy health contract."
 }
+$authorityStart = $source.IndexOf("function Test-ExpectedProfileRoot")
+$authorityEnd = $source.IndexOf("`nfunction Initialize-AgentDiagnostics", $authorityStart)
+if ($authorityStart -lt 0 -or $authorityEnd -le $authorityStart -or
+    $source -notmatch 'FileShare\]::ReadWrite -bor \[IO\.FileShare\]::Delete') {
+    throw "The profile authority seam or its delete-sharing registry read is missing."
+}
+Invoke-Expression $source.Substring($authorityStart, $authorityEnd - $authorityStart)
+$authorityRoot = Join-Path ([IO.Path]::GetTempPath()) ("moonwaker-authority-" + [Guid]::NewGuid().ToString("N"))
+$script:ProfileId = "authority-profile"
+$script:ProfileRoot = Join-Path $authorityRoot "profiles\$ProfileId"
+New-Item -ItemType Directory -Path $ProfileRoot, (Join-Path $authorityRoot "gateway") -Force | Out-Null
+$registryPath = Join-Path $authorityRoot "gateway\gateway.json"
+function Write-Registry([bool]$Enabled) {
+    @{ profiles = @{ $ProfileId = @{ profile_root = $ProfileRoot; enabled = $Enabled
+        windows_account_sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value } } } |
+        ConvertTo-Json -Depth 5 | Microsoft.PowerShell.Management\Set-Content -LiteralPath $registryPath -Encoding UTF8
+}
+try {
+    Write-Registry $true
+    if ((Get-ProfileAuthority) -ne "authorized") { throw "A valid registry did not authorize the profile." }
+    $streak = @{ count = 0 }
+    $held = [IO.File]::Open($registryPath, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+    try {
+        if ((Get-ProfileAuthority) -ne "unreadable") { throw "A locked registry was not reported unreadable." }
+        foreach ($tick in 1..4) {
+            if (Test-ProfileAuthorityLost "unreadable" $streak) {
+                throw "A transient unreadable registry revoked the profile authority."
+            }
+        }
+    } finally { $held.Dispose() }
+    if ((Test-ProfileAuthorityLost (Get-ProfileAuthority) $streak) -or $streak.count -ne 0) {
+        throw "A readable registry did not end the unreadable streak."
+    }
+    foreach ($tick in 1..4) { [void](Test-ProfileAuthorityLost "unreadable" $streak) }
+    if (-not (Test-ProfileAuthorityLost "unreadable" $streak)) {
+        throw "A registry unreadable for five ticks did not fail closed."
+    }
+    Microsoft.PowerShell.Management\Set-Content -LiteralPath $registryPath -Value "{" -Encoding UTF8
+    if ((Get-ProfileAuthority) -ne "unreadable") { throw "A partial registry was not reported unreadable." }
+    Write-Registry $false
+    if (-not (Test-ProfileAuthorityLost (Get-ProfileAuthority) @{ count = 0 })) {
+        throw "A disabled profile did not revoke authority at once."
+    }
+} finally {
+    Remove-Item -LiteralPath $authorityRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 Write-Output "MoonWakerProfileBridge health restart test passed."

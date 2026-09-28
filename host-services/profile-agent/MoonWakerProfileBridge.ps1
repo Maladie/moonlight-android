@@ -37,12 +37,21 @@ function Test-ExpectedProfileRoot {
     } catch { return $false }
 }
 
-function Get-ExpectedProfileSid {
+function Read-GatewayRegistry {
+    # Delete sharing: this periodic reader must not block the registry's atomic replacement
+    # (a reader without it made the Configurator's File.Replace fail in the lab).
+    $installRoot = Split-Path -Parent (Split-Path -Parent $ProfileRoot)
+    $stream = [IO.File]::Open((Join-Path $installRoot "gateway\gateway.json"), [IO.FileMode]::Open,
+        [IO.FileAccess]::Read, [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete)
     try {
-        $installRoot = Split-Path -Parent (Split-Path -Parent $ProfileRoot)
-        $gateway = Get-Content -LiteralPath (Join-Path $installRoot "gateway\gateway.json") -Raw |
-            ConvertFrom-Json
-        $entry = $gateway.profiles.$ProfileId
+        $reader = [IO.StreamReader]::new($stream, [Text.Encoding]::UTF8, $true)
+        return $reader.ReadToEnd() | ConvertFrom-Json
+    } finally { $stream.Dispose() }
+}
+
+function Get-ExpectedProfileSid([object]$Gateway) {
+    try {
+        $entry = $Gateway.profiles.$ProfileId
         if ($null -eq $entry) { return "" }
         $registeredRoot = if ($null -ne $entry.PSObject.Properties["profile_root"]) {
             [string]$entry.profile_root
@@ -60,12 +69,9 @@ function Get-ExpectedProfileSid {
     } catch { return "" }
 }
 
-function Test-ExpectedProfileEnabled {
+function Test-ExpectedProfileEnabled([object]$Gateway) {
     try {
-        $installRoot = Split-Path -Parent (Split-Path -Parent $ProfileRoot)
-        $gateway = Get-Content -LiteralPath (Join-Path $installRoot "gateway\gateway.json") -Raw |
-            ConvertFrom-Json
-        $entry = $gateway.profiles.$ProfileId
+        $entry = $Gateway.profiles.$ProfileId
         if ($null -eq $entry) { return $false }
         if ($null -ne $entry.PSObject.Properties["deletion_tombstone"] -and
             $null -ne $entry.deletion_tombstone) { return $false }
@@ -76,18 +82,30 @@ function Test-ExpectedProfileEnabled {
     } catch { return $false }
 }
 
-function Test-AuthoritativeProfileRuntime {
+# "authorized" or "revoked" are decided from a registry that was read and parsed; "unreadable"
+# means it could not be read now (e.g. mid-replacement), which alone is not a revocation.
+function Get-ProfileAuthority {
+    try { $gateway = Read-GatewayRegistry } catch { return "unreadable" }
     try {
-        if (-not (Test-ExpectedProfileRoot) -or -not (Test-ExpectedProfileEnabled)) {
-            return $false
+        if (-not (Test-ExpectedProfileRoot) -or -not (Test-ExpectedProfileEnabled $gateway)) {
+            return "revoked"
         }
-        $expectedSid = Get-ExpectedProfileSid
+        $expectedSid = Get-ExpectedProfileSid $gateway
         $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
         $currentSid = if ($null -ne $identity.User) { $identity.User.Value } else { "" }
-        return -not [string]::IsNullOrWhiteSpace($expectedSid) -and
+        $authorized = -not [string]::IsNullOrWhiteSpace($expectedSid) -and
             -not [string]::IsNullOrWhiteSpace($currentSid) -and
             $expectedSid.Equals($currentSid, [StringComparison]::OrdinalIgnoreCase)
-    } catch { return $false }
+        if ($authorized) { return "authorized" } else { return "revoked" }
+    } catch { return "revoked" }
+}
+
+# Fail closed on a revocation, or once the registry stayed unreadable for this many ticks
+# (about 10 s at the 2 s loop); a single unreadable read no longer stops every component.
+function Test-ProfileAuthorityLost([string]$Authority, [hashtable]$Unreadable) {
+    if ($Authority -eq "unreadable") { $Unreadable.count = [int]$Unreadable.count + 1 }
+    else { $Unreadable.count = 0 }
+    return $Authority -eq "revoked" -or [int]$Unreadable.count -ge 5
 }
 
 function Initialize-AgentDiagnostics {
@@ -323,7 +341,7 @@ function Complete-ProfileBridge {
 
 if (-not (Test-ExpectedProfileRoot)) { exit 1 }
 Initialize-AgentDiagnostics
-if (-not (Test-AuthoritativeProfileRuntime)) {
+if ((Get-ProfileAuthority) -ne "authorized") {
     Write-AgentDiagnosticEvent "profile_authority_refused" @{ profile_id = $ProfileId; status = "refused" }
     Write-State "refused"
     exit 1
@@ -345,10 +363,12 @@ try {
     Write-State "running"
     $healthTick = 0
     $healthFailures = @{}
+    $unreadableRegistry = @{ count = 0 }
     while (-not (Test-Path -LiteralPath $stopPath)) {
         # Registry disable/tombstone/SID/root changes must stop all children even
-        # when this user remains signed in. Any read/validation error fails closed.
-        if (-not (Test-AuthoritativeProfileRuntime)) {
+        # when this user remains signed in. A validation error fails closed at once,
+        # an unreadable registry after a bounded streak.
+        if (Test-ProfileAuthorityLost (Get-ProfileAuthority) $unreadableRegistry) {
             Write-AgentDiagnosticEvent "profile_authority_revoked" @{
                 profile_id = $ProfileId; status = "stopping"
             }

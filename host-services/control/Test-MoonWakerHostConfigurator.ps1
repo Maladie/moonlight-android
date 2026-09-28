@@ -148,7 +148,7 @@ try {
 
     $profileAgent = Get-Content -LiteralPath (Join-Path (
         Split-Path -Parent $PSScriptRoot) "profile-agent\MoonWakerProfileBridge.ps1") -Raw
-    if ($profileAgent -notmatch 'Test-AuthoritativeProfileRuntime' -or
+    if ($profileAgent -notmatch 'Get-ProfileAuthority' -or
         $profileAgent -notmatch 'profile_authority_revoked' -or
         $profileAgent -notmatch 'windows_account_sid') {
         throw "Profile supervisor does not stop after its profile authority is revoked."
