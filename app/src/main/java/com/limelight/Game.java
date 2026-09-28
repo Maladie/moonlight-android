@@ -2159,6 +2159,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void onBackPressed() {
+        if (returnTimedOutRevealedStreamToDashboard()) return;
         if (returnRetainedObservationToDashboard()) return;
         if (connected && !streamHomeVisible && !isTransitionInputBlocked()) {
             openConsoleHome();
@@ -2173,14 +2174,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (isTransitionInputBlocked()) {
             // The loading view turns Back/B key-down into Cancel; decide first. Its key-up
             // consumption already swallows the matching release.
-            if (isBackKeyDown(event) && shouldReturnTimedOutRevealedStreamToDashboard(
-                    connected, streamHomeVisible, streamEverRevealed,
-                    transitionController == null ? null
-                            : transitionController.snapshot().state)) {
-                // The cover stays; the retained transport is not a launch to cancel.
-                openConsoleHome();
-                return true;
-            }
+            if (isBackKeyDown(event) && returnTimedOutRevealedStreamToDashboard()) return true;
             if (consoleLoadingView != null) {
                 consoleLoadingView.handleControllerKey(event);
             }
@@ -5723,6 +5717,16 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 transitionSpec == null ? null : transitionSpec.type,
                 transitionSpec == null ? "" : transitionSpec.playniteGameId,
                 retained.state, exactOwner);
+    }
+
+    /** The cover stays; a live retained transport is not a launch to cancel. */
+    private boolean returnTimedOutRevealedStreamToDashboard() {
+        if (!shouldReturnTimedOutRevealedStreamToDashboard(
+                connected, streamHomeVisible, streamEverRevealed,
+                transitionController == null ? null
+                        : transitionController.snapshot().state)) return false;
+        openConsoleHome();
+        return true;
     }
 
     private static boolean isBackKeyDown(KeyEvent event) {

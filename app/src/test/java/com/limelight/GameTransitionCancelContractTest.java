@@ -298,11 +298,20 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("if (isImeVisible", text.indexOf("public boolean handleKeyDown(")));
         // The loading view turns Back/B key-down into a Cancel click, so the decision must
         // precede its delegation; its key-up handling then consumes the matching release.
-        assertTrue(keyDown.indexOf("isBackKeyDown(event)")
-                < keyDown.indexOf("consoleLoadingView.handleControllerKey(event)"));
-        assertTrue(keyDown.indexOf("shouldReturnTimedOutRevealedStreamToDashboard(")
-                < keyDown.indexOf("consoleLoadingView.handleControllerKey(event)"));
-        assertTrue(keyDown.contains("openConsoleHome();"));
+        int backDown = keyDown.indexOf("isBackKeyDown(event)");
+        int decision = keyDown.indexOf("returnTimedOutRevealedStreamToDashboard()");
+        int delegation = keyDown.indexOf("consoleLoadingView.handleControllerKey(event)");
+        assertTrue(backDown >= 0 && decision > backDown && delegation > decision);
+        String back = text.substring(text.indexOf("public void onBackPressed()"),
+                text.indexOf("public boolean handleKeyDown("));
+        assertTrue(back.indexOf("returnTimedOutRevealedStreamToDashboard()") >= 0
+                && back.indexOf("returnTimedOutRevealedStreamToDashboard()")
+                < back.indexOf("returnRetainedObservationToDashboard()"));
+        String helper = text.substring(text.indexOf("private boolean returnTimedOutRevealedStreamToDashboard()"),
+                text.indexOf("private static boolean isBackKeyDown("));
+        assertTrue(helper.contains("shouldReturnTimedOutRevealedStreamToDashboard("));
+        assertTrue(helper.contains("openConsoleHome();"));
+        assertFalse(helper.contains("cancelTransition()"));
         assertFalse(keyDown.contains("cancelTransition()"));
         String keyUp = text.substring(text.indexOf("public boolean handleKeyUp("),
                 text.indexOf("if (isImeVisible", text.indexOf("public boolean handleKeyUp(")));
