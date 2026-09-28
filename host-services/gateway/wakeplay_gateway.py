@@ -5584,6 +5584,10 @@ class GatewayState:
                            reason: str, wall: datetime,
                            force: bool = False) -> tuple[int, dict[str, Any]]:
         terminal = str(reason or "").casefold() != "game_stopped"
+        DIAGNOSTICS.record("child-session-finishing", reason=str(reason or ""),
+                           state=str(session.get("phase") or ""),
+                           child_session_id=str(session.get("session_id") or ""),
+                           actor_profile_id=str(session.get("actor_profile_id") or ""))
         if terminal:
             with self.lock:
                 if not self.child_terminal_operation.reserve_terminal(session):
@@ -5614,6 +5618,10 @@ class GatewayState:
         """Close only child time accounting; provider and stream use common owners."""
         actor_id = str(session.get("actor_profile_id") or "")
         parent_id = str(session.get("execution_profile_id") or "")
+        DIAGNOSTICS.record("child-session-lease-releasing", reason=str(reason or ""),
+                           state=str(session.get("phase") or ""),
+                           child_session_id=str(session.get("session_id") or ""),
+                           actor_profile_id=actor_id)
         actor = self.config.get("profiles", {}).get(actor_id)
         actor = actor if isinstance(actor, dict) else {
             "id": actor_id, "policy_revision": 0}
@@ -7536,6 +7544,10 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "execution_profile_id": str(getattr(
                         self.state.request_context, "execution_profile_id", "")),
                 }
+                if isinstance(self._diagnostic_error, PermissionError):
+                    # Fixed denial codes (e.g. child_session_binding_mismatch) pass the token
+                    # filter; human-readable messages with spaces are dropped by record().
+                    fields["reason"] = str(self._diagnostic_error)
                 DIAGNOSTICS.record(
                     "request.failed" if failed else "request.completed",
                     level="ERROR" if self._diagnostic_unexpected else

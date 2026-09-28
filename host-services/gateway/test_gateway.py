@@ -2398,6 +2398,14 @@ class GatewayDiagnosticsTest(unittest.TestCase):
             self.assertIsNone(
                 recorder.record.call_args_list[-1].kwargs["http_status"])
 
+            recorder.reset_mock()
+            handler._begin_diagnostics("POST")
+            handler._diagnostic_error = PermissionError("child_session_binding_mismatch")
+            handler._response_status = 403
+            handler._finish_diagnostics()
+            self.assertEqual("child_session_binding_mismatch",
+                             recorder.record.call_args_list[-1].kwargs["reason"])
+
     def test_loopback_proxy_propagates_only_valid_request_id(self):
         with tempfile.TemporaryDirectory() as temporary:
             config_path = Path(temporary) / "gateway.json"
