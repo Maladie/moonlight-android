@@ -733,6 +733,26 @@ class ChildSessionsHttpTest(unittest.TestCase):
         self.assertEqual(stream, self.state.control_state["stream"])
         self.assertEqual("running", self.current["state"])
 
+    def test_child_suspend_without_a_game_id_has_no_host_effect(self):
+        # R011 P2: a missing or empty game id must not bypass the session game binding.
+        self.post("/api/v1/child/session/start", {
+            "game_id": "steam:123", "session_id": SESSION_ID,
+            "request_id": "start-suspend",
+        }, profile="kid", capability=True)
+        self.establish_child_transport_and_start_game()
+        session = self.state.child_time_session
+        for serial, game in enumerate(({}, {"playnite_game_id": ""},
+                                       {"playnite_game_id": "   "})):
+            with mock.patch.object(self.state, "suspend_session") as suspend:
+                status, result = self.post("/api/v1/system/suspend-session", {
+                    "suspend_id": "child-suspend", "sunshine_app_id": 7,
+                    "title": "Allowed", **game,
+                }, profile="kid", capability=True,
+                    request_id="child-suspend-empty-%d" % serial)
+            self.assertEqual(403, status, result)
+            suspend.assert_not_called()
+            self.assertIs(session, self.state.child_time_session)
+
     def test_child_install_uninstall_and_virtualhere_match_parent_capabilities(self):
         for action in ("install", "uninstall"):
             status, result = self.post(

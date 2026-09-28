@@ -2645,13 +2645,16 @@ class GatewayState:
                               body: dict[str, Any], request_id: str) -> tuple[int, Any]:
         actor_id = str(actor_profile_id or "")
         client_id = self.broker_client_id(client)
-        # Resolve the requested game through the provider before the fence; the
-        # comparison below requires the same session, so a handoff in between fails.
+        # A child suspend must name its session's game. Resolve it through the provider
+        # before the fence; the comparison below requires the same session object, so a
+        # handoff in between fails.
         resolved_for = self.child_time_session
+        if not isinstance(resolved_for, dict):
+            raise PermissionError("child_session_required")
+        if not str(body.get("playnite_game_id") or "").strip():
+            raise PermissionError("child_session_binding_mismatch")
         requested_game = self._child_request_game(
-            str(resolved_for.get("execution_profile_id") or ""),
-            body.get("playnite_game_id")) \
-            if body.get("playnite_game_id") and isinstance(resolved_for, dict) else ""
+            str(resolved_for.get("execution_profile_id") or ""), body.get("playnite_game_id"))
         # Hold the common state fence from exact actor/stream validation until
         # the sleep is scheduled and this time attachment is durably released.
         # A concurrent A->B handoff therefore happens wholly before or after
@@ -2663,8 +2666,8 @@ class GatewayState:
                         ("actor_profile_id", actor_id),
                         ("client_id", client_id))):
                 raise PermissionError("child_session_required")
-            if requested_game and (session is not resolved_for or requested_game !=
-                                   self._child_time_normalize_game_id(session.get("game_id"))):
+            if session is not resolved_for or requested_game != \
+                    self._child_time_normalize_game_id(session.get("game_id")):
                 raise PermissionError("child_session_binding_mismatch")
             stream = self.control_state.get("stream")
             exact_stream = isinstance(stream, dict) and all(
