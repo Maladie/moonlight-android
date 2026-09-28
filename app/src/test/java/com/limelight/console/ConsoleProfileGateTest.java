@@ -14,6 +14,21 @@ import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 public class ConsoleProfileGateTest {
+    @Test public void onlyAChildProfileIsReportedAsChild() {
+        HostGatewayClient.IntegrationProfile child = new HostGatewayClient.IntegrationProfile(
+                "kid", "Kid", false, false, false, false, false, false, false, true, false,
+                "active", "available", false, false, 0,
+                "child", "basia", "kid", "", true, 1L, 1L,
+                60L, 60L, "", "", "none", "");
+        java.util.List<HostGatewayClient.IntegrationProfile> profiles =
+                Arrays.asList(profile("basia"), child);
+
+        assertTrue(HostGatewayStore.isChild(profiles, "kid"));
+        assertFalse(HostGatewayStore.isChild(profiles, "basia"));
+        assertFalse(HostGatewayStore.isChild(profiles, "unknown"));
+        assertFalse(HostGatewayStore.isChild(profiles, null));
+    }
+
     @Test public void multipleProfilesWithoutAutomaticProfileShowGate() {
         HostGatewayStore.ProfileSelection selection = HostGatewayStore.projectProfiles(
                 Arrays.asList(profile("basia"), profile("gry")), "basia", "");

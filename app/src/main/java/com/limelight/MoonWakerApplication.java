@@ -106,8 +106,12 @@ public final class MoonWakerApplication extends Application implements
         if (activity == null) return;
         String selectedHost = consolePreferences.getString(
                 UsbMicrophoneService.SELECTED_HOST, "");
-        GatewayConnection connection = new HostGatewayStore(this)
-                .loadForHost(selectedHost, null);
+        HostGatewayStore store = new HostGatewayStore(this);
+        GatewayConnection connection = store.loadForHost(selectedHost, null);
+        // A child actor has no Discord route; polling it would only collect 404s.
+        if (connection != null && store.isChildProfile(selectedHost, connection.profileId())) {
+            connection = null;
+        }
         int gain = defaultPreferences.getInt(
                 DiscordAudioDownlink.GAIN_PREF, DiscordAudioDownlink.DEFAULT_GAIN);
         discordAudio.start(connection, gain, !(activity instanceof Game));
