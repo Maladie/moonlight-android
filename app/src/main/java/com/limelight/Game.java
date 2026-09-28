@@ -207,6 +207,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean providerStopInFlight;
     private boolean providerStopConfirmed;
     private boolean providerEndGameInFlight;
+    private boolean timedOutRevealedReturnInFlight;
     private boolean retainedDashboardReturnInFlight;
     private String providerStartRejectedTransitionId = "";
     private String retryTransitionId = "";
@@ -5719,14 +5720,39 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 retained.state, exactOwner);
     }
 
-    /** The cover stays; a live retained transport is not a launch to cancel. */
+    /**
+     * A live retained transport is not a launch to cancel. The timeout is published from the
+     * observer thread, so cover the stream before navigating and recheck at effect time.
+     */
     private boolean returnTimedOutRevealedStreamToDashboard() {
-        if (!shouldReturnTimedOutRevealedStreamToDashboard(
-                connected, streamHomeVisible, streamEverRevealed,
-                transitionController == null ? null
-                        : transitionController.snapshot().state)) return false;
-        openConsoleHome();
+        if (timedOutRevealedReturnInFlight) return true;
+        if (!isTimedOutRevealedStreamForeground()) return false;
+        String transitionId = transitionSpec.id;
+        timedOutRevealedReturnInFlight = true;
+        consoleLoadingView.showOpaque();
+        consoleLoadingView.doAfterNextFrame(() -> {
+            timedOutRevealedReturnInFlight = false;
+            if (isFinishing() || isDestroyed()) return;
+            if (shouldOpenTimedOutRevealedDashboard(transitionId,
+                    transitionSpec == null ? "" : transitionSpec.id,
+                    isTimedOutRevealedStreamForeground())) {
+                openConsoleHome();
+            }
+        });
         return true;
+    }
+
+    private boolean isTimedOutRevealedStreamForeground() {
+        return transitionSpec != null && consoleLoadingView != null
+                && shouldReturnTimedOutRevealedStreamToDashboard(
+                connected, streamHomeVisible, streamEverRevealed,
+                transitionController == null ? null : transitionController.snapshot().state);
+    }
+
+    static boolean shouldOpenTimedOutRevealedDashboard(
+            String scheduledTransitionId, String currentTransitionId, boolean stillEligible) {
+        return stillEligible && scheduledTransitionId != null
+                && scheduledTransitionId.equals(currentTransitionId);
     }
 
     private static boolean isBackKeyDown(KeyEvent event) {

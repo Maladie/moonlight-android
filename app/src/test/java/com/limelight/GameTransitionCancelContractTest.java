@@ -308,10 +308,22 @@ public class GameTransitionCancelContractTest {
                 && back.indexOf("returnTimedOutRevealedStreamToDashboard()")
                 < back.indexOf("returnRetainedObservationToDashboard()"));
         String helper = text.substring(text.indexOf("private boolean returnTimedOutRevealedStreamToDashboard()"),
-                text.indexOf("private static boolean isBackKeyDown("));
-        assertTrue(helper.contains("shouldReturnTimedOutRevealedStreamToDashboard("));
-        assertTrue(helper.contains("openConsoleHome();"));
+                text.indexOf("private boolean isTimedOutRevealedStreamForeground()"));
+        assertTrue(helper.contains("isTimedOutRevealedStreamForeground()"));
+        assertTrue(helper.contains("if (timedOutRevealedReturnInFlight) return true"));
+        // The timeout is published on the observer thread and covered on the UI thread later:
+        // cover first, navigate only after the frame, and recheck identity/state then.
+        int cover = helper.indexOf("consoleLoadingView.showOpaque()");
+        int frame = helper.indexOf("consoleLoadingView.doAfterNextFrame(");
+        int navigate = helper.indexOf("openConsoleHome();");
+        assertTrue(cover >= 0 && frame > cover && navigate > frame);
+        assertTrue(helper.contains("shouldOpenTimedOutRevealedDashboard("));
         assertFalse(helper.contains("cancelTransition()"));
+        assertFalse(helper.contains("stopProviderGame("));
+        assertTrue(Game.shouldOpenTimedOutRevealedDashboard("t-a", "t-a", true));
+        assertFalse(Game.shouldOpenTimedOutRevealedDashboard("t-a", "t-b", true));
+        assertFalse(Game.shouldOpenTimedOutRevealedDashboard("t-a", "t-a", false));
+        assertFalse(Game.shouldOpenTimedOutRevealedDashboard(null, "", true));
         assertFalse(keyDown.contains("cancelTransition()"));
         String keyUp = text.substring(text.indexOf("public boolean handleKeyUp("),
                 text.indexOf("if (isImeVisible", text.indexOf("public boolean handleKeyUp(")));
