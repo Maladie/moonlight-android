@@ -272,28 +272,40 @@ public final class PlayniteTransitionGateway {
                 new HostGatewayClient(), () -> System.nanoTime() / 1_000_000L);
     }
 
+    /** Reads that may lose the owner's dispatch ordering to a concurrent poll before giving up. */
+    static final int SNAPSHOT_DISPATCH_ATTEMPTS = 3;
+
     public Snapshot snapshot() throws IOException {
-        long ordinal = projectionOwner.nextRequestOrdinal();
-        com.limelight.stream.RetainedStreamSessionCoordinator.Snapshot retained =
-                com.limelight.stream.RetainedStreamSessionCoordinator.snapshot();
-        String transition = retained.hostId.equalsIgnoreCase(hostId)
-                && retained.executionProfileId.equals(actorContext.executionProfileId)
-                ? retained.transitionId : "";
-        long now = monotonicClock.getAsLong();
-        try {
-            HostGatewayClient.SessionObservation observation =
-                    client.getSessionObservation(connection,
-                            actorContext.executionProfileId, ordinal, transition);
-            SessionSnapshot accepted = projectionOwner.accept(observation, retained, now);
-            if (accepted == null) {
-                return new Snapshot(projectionOwner.current(retained, now), null, false);
+        for (int attempt = 1; ; attempt++) {
+            long ordinal = projectionOwner.nextRequestOrdinal();
+            com.limelight.stream.RetainedStreamSessionCoordinator.Snapshot retained =
+                    com.limelight.stream.RetainedStreamSessionCoordinator.snapshot();
+            String transition = retained.hostId.equalsIgnoreCase(hostId)
+                    && retained.executionProfileId.equals(actorContext.executionProfileId)
+                    ? retained.transitionId : "";
+            long now = monotonicClock.getAsLong();
+            try {
+                HostGatewayClient.SessionObservation observation =
+                        client.getSessionObservation(connection,
+                                actorContext.executionProfileId, ordinal, transition);
+                SessionSnapshot accepted = projectionOwner.accept(observation, retained, now);
+                if (accepted == null) {
+                    // The dashboard polls the same owner: a read that lost only the dispatch
+                    // ordering carries no evidence, so read again instead of deciding on the
+                    // owner's older projection (lab formal133: the retained switch failed).
+                    if (attempt < SNAPSHOT_DISPATCH_ATTEMPTS
+                            && projectionOwner.lostDispatchOrdering(observation)) {
+                        continue;
+                    }
+                    return new Snapshot(projectionOwner.current(retained, now), null, false);
+                }
+                boolean correlated = accepted.observationCorrelated;
+                return new Snapshot(accepted, correlated ? observation : null, correlated);
+            } catch (IOException unavailable) {
+                SessionSnapshot projected = projectionOwner.unavailable(
+                        ordinal, retained, now, unavailable.getMessage());
+                return new Snapshot(projected, null, false);
             }
-            boolean correlated = accepted.observationCorrelated;
-            return new Snapshot(accepted, correlated ? observation : null, correlated);
-        } catch (IOException unavailable) {
-            SessionSnapshot projected = projectionOwner.unavailable(
-                    ordinal, retained, now, unavailable.getMessage());
-            return new Snapshot(projected, null, false);
         }
     }
 

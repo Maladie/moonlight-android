@@ -92,6 +92,32 @@ public class PlayniteTransitionGatewayTest {
         SessionStateResolver.resetProjectionOwnersForTests();
     }
 
+    @Test public void snapshotReadsAgainWhenADashboardPollWinsTheDispatch() throws Exception {
+        // Lab formal133: the retained switch's read lost the owner's ordering to the dashboard
+        // poll and the switch decided on the owner's evidence-free projection.
+        SessionStateResolver.resetProjectionOwnersForTests();
+        RecordingClient client = new RecordingClient();
+        PlayniteTransitionGateway switching = new PlayniteTransitionGateway(
+                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        PlayniteTransitionGateway dashboard = new PlayniteTransitionGateway(
+                connection("parent"), PlayniteTransitionGateway.ActorContext.parent("parent"), client);
+        client.beforeReturn = () -> {
+            try {
+                dashboard.snapshot();
+            } catch (IOException error) {
+                throw new AssertionError(error);
+            }
+        };
+
+        PlayniteTransitionGateway.Snapshot snapshot = switching.snapshot();
+
+        assertEquals(3, client.parsedObservations);
+        assertEquals(3L, snapshot.sessionSnapshot.requestOrdinal);
+        assertTrue(snapshot.hasVerifiedProcessFor("steam:123"));
+        assertEquals(PROCESS_TOKEN, snapshot.processToken);
+        SessionStateResolver.resetProjectionOwnersForTests();
+    }
+
     private static com.limelight.gateway.ControlOperationClient.Permit permit(
             String operationId, String session, long generation, long epoch) throws Exception {
         java.lang.reflect.Constructor<com.limelight.gateway.ControlOperationClient.Permit> create =

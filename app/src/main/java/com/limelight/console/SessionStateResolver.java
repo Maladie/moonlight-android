@@ -197,6 +197,17 @@ final class SessionStateResolver {
                     && !retiredBoots.contains(candidate.producerBootId);
         }
 
+        /**
+         * Whether a rejected observation lost only the dispatch ordering: same scope and a live
+         * producer boot, but a newer request was dispatched or accepted meanwhile (the dashboard
+         * polls the same owner). A fresh read is expected to be admitted.
+         */
+        synchronized boolean lostDispatchOrdering(HostGatewayClient.SessionObservation candidate) {
+            return admitsPermitEvidence(candidate)
+                    && (candidate.requestOrdinal != nextRequestOrdinal
+                    || candidate.requestOrdinal <= lastAcceptedOrdinal);
+        }
+
         /** The projection published for this exact observation, or null when rejected. */
         synchronized SessionSnapshot accept(HostGatewayClient.SessionObservation candidate,
                                     RetainedStreamSessionCoordinator.Snapshot retained,
