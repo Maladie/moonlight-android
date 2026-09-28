@@ -238,6 +238,63 @@ class ChildTimeControlTest(unittest.TestCase):
                                              call[2]["action"] == "bind"]))
         return body["session_id"]
 
+    def test_playnite_session_survives_raw_guid_observation(self):
+        # Lab diag143a: the session holds canonical playnite:GUID while /observation and the
+        # running scan report the provider's raw library GUID. Housekeeping released the live
+        # session (child_session_expired) and focus/heartbeat/stop were then refused.
+        raw = "d8fc83d7-b7e4-424b-b532-aac6125b0202"
+        canonical = "playnite:" + raw
+        self.child()["allowed_game_keys"] = ["parent/" + canonical]
+        original_proxy_json = self.state.proxy_json
+
+        def playnite_records(name, path, body, **kwargs):
+            if name == "game_provider" and path == "/library/resolve":
+                return True, {"game_id": raw, "canonical_game_id": canonical,
+                              "revision": "rev-1"}
+            if name == "game_provider" and path == "/game/start":
+                self.streamer_active = True
+                self.current = {"id": raw, "state": "running", "processId": 42,
+                                "running_games": [{"game_id": raw, "process_id": 42,
+                                                   "process_token": TOKEN}]}
+                return True, {"accepted": True, "state": "starting"}
+            return original_proxy_json(name, path, body, **kwargs)
+
+        self.state.proxy_json = playnite_records
+        status, body = self.state.child_time_session_start(
+            self.client, "kid", raw, self.session_id())
+        self.assertEqual(202, status, body)
+        session = self.state.child_time_session
+        operation_id = "child-transport-" + body["session_id"]
+        status, permit = self.state._child_time_control_call(session, lambda:
+            self.state.control_operation_acquire(self.client, {
+                "operation_id": operation_id, "intent": "launch",
+                "stream_session_id": "stream-" + body["session_id"],
+                "sunshine_app_id": 7, "expected_generation": 0,
+                "observed_sunshine_app_id": 0, "child_session_id": body["session_id"],
+            }, operation_id))
+        self.assertEqual(200, status, permit)
+        self.state._child_time_control_call(session, lambda:
+            self.state.control_operation_complete(self.client, {
+                "operation_id": operation_id, "generation": permit["generation"],
+                "actor_lease_epoch": permit["actor_lease_epoch"], "succeeded": True,
+            }, operation_id))
+        self.state.request_context.request_id = "provider-" + body["session_id"]
+        status, started = self.state._child_time_control_call(session, lambda:
+            self.state.child_playnite_action(self.client, "kid", "game/start",
+                                             {"game_id": raw}))
+        self.assertEqual(200, status, started)
+
+        self.clock.advance(5)
+        self.state.child_time_housekeeping_tick()
+        self.assertIs(session, self.state.child_time_session)
+        status, beat = self.state.child_time_session_heartbeat(
+            self.client, "kid", body["session_id"])
+        self.assertEqual((200, "running"), (status, beat["phase"]), beat)
+        status, focus = self.state.child_playnite_action(self.client, "kid", "game/focus", {})
+        self.assertEqual(200, status, focus)
+        self.assertEqual(raw, self.state.control_state["stream"]["provider_game_id"])
+        self.assertEqual((canonical, raw), (session["game_id"], session["provider_game_id"]))
+
     def test_replacement_releases_only_time_attachment(self):
         session_id = self.start_running()
         generation = self.state.control_state["stream"]["generation"]

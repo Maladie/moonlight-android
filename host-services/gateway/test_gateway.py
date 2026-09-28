@@ -2406,6 +2406,13 @@ class GatewayDiagnosticsTest(unittest.TestCase):
             self.assertEqual("child_session_binding_mismatch",
                              recorder.record.call_args_list[-1].kwargs["reason"])
 
+            recorder.reset_mock()
+            handler._begin_diagnostics("POST")
+            handler._diagnostic_error = PermissionError("token-shaped-client-0123456789abcdef")
+            handler._response_status = 403
+            handler._finish_diagnostics()
+            self.assertNotIn("reason", recorder.record.call_args_list[-1].kwargs)
+
     def test_loopback_proxy_propagates_only_valid_request_id(self):
         with tempfile.TemporaryDirectory() as temporary:
             config_path = Path(temporary) / "gateway.json"
@@ -3059,7 +3066,7 @@ class ChildTimeHousekeepingTest(unittest.TestCase):
             "session_id": "01234567-89ab-cdef-0123-456789abcdef",
             "request_id": "housekeeping-test", "actor_profile_id": "kid",
             "execution_profile_id": "parent", "client_id": "tv-1",
-            "game_id": "steam:123",
+            "game_id": "steam:123", "provider_game_id": "steam:123",
             "vibepollo_client_uuid": "01234567-89ab-cdef-0123-456789abcdef",
             "phase": "running", "started_monotonic": 0.0,
             "last_monotonic": 0.0, "last_heartbeat_monotonic": 0.0,

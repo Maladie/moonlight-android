@@ -124,6 +124,13 @@ DIAGNOSTIC_MAX_BYTES = 2 * 1024 * 1024
 DIAGNOSTIC_BACKUP_COUNT = 9
 DIAGNOSTIC_QUEUE_SIZE = 512
 DIAGNOSTIC_RETENTION_SECONDS = 7 * 24 * 60 * 60
+# Only these fixed PermissionError codes may be logged as a denial reason; any other
+# message (human text, identifiers) is never persisted.
+DIAGNOSTIC_DENIAL_CODES = frozenset({
+    "child_session_binding_mismatch", "child_session_required", "stale_child_session",
+    "child_profile_required", "game_not_shared", "pairing_required",
+    "identity_proof_invalid", "identity_binding_conflict",
+})
 DIAGNOSTIC_FIELDS = {
     "method", "route", "request_id", "profile_id", "actor_profile_id",
     "execution_profile_id", "status",
@@ -2912,6 +2919,7 @@ class GatewayState:
                 self.child_time_completed[str(child.get("session_id") or "")] = {
                     "reason": "hard_reset",
                     "game_id": str(child.get("game_id") or ""),
+                    "provider_game_id": str(child.get("provider_game_id") or ""),
                     "actor_profile_id": actor_id,
                     "execution_profile_id": str(child.get("execution_profile_id") or ""),
                     "client_id": str(child.get("client_id") or ""),
@@ -2959,6 +2967,7 @@ class GatewayState:
                 reset_operation["child_terminal_result"] = {
                     "reason": "hard_reset",
                     "game_id": str(child.get("game_id") or ""),
+                    "provider_game_id": str(child.get("provider_game_id") or ""),
                     "actor_profile_id": str(child.get("actor_profile_id") or ""),
                     "execution_profile_id": str(
                         child.get("execution_profile_id") or ""),
@@ -3541,8 +3550,11 @@ class GatewayState:
         return key
 
     def _resolve_child_catalog_game(self, parent_profile_id: str,
-                                    game_id: Any) -> tuple[str, str, str]:
-        """Resolve a parent catalog member without trusting a child supplied alias."""
+                                    game_id: Any) -> tuple[str, str, str, str]:
+        """Resolve a parent catalog member without trusting a child supplied alias.
+
+        Returns the canonical id (policy keys, child requests), its game key, the catalog
+        revision and the provider's own library id, which is what /observation reports."""
         parent_id = str(parent_profile_id or "").strip()
         parent = self.config.get("profiles", {}).get(parent_id)
         if (not PROFILE_ID_PATTERN.fullmatch(parent_id) or
@@ -3566,14 +3578,20 @@ class GatewayState:
         if provider != provider.lower():
             raise PermissionError("The game is unavailable to this child.")
         catalog_revision = self._child_catalog_revision(result.get("revision"))
-        return canonical, self._child_game_key(parent_id, canonical), catalog_revision
+        try:
+            provider_game_id = self._playnite_game_id(result.get("game_id"))
+        except ValueError:
+            raise PermissionError("The game is unavailable to this child.") from None
+        return (canonical, self._child_game_key(parent_id, canonical), catalog_revision,
+                provider_game_id)
 
     def _child_request_game(self, parent_profile_id: str, requested: Any) -> str:
         """Normalized canonical id of a child request's game.
 
         A raw Playnite GUID can name a steam:/epic: record, so a request id is only
         comparable with a time session's canonical game after provider resolution."""
-        canonical, _key, _revision = self._resolve_child_catalog_game(parent_profile_id, requested)
+        canonical, _key, _revision, _provider = self._resolve_child_catalog_game(
+            parent_profile_id, requested)
         return self._child_time_normalize_game_id(canonical)
 
     def _child_policy_context(self, client: dict[str, Any], actor_profile_id: str,
@@ -3596,7 +3614,7 @@ class GatewayState:
         """Return actor, parent, canonical ID, parent and catalog metadata for one grant."""
         actor_id, parent_id, parent, actor = self._child_policy_context(
             client, actor_profile_id, permission)
-        canonical, key, catalog_revision = self._resolve_child_catalog_game(
+        canonical, key, catalog_revision, _provider = self._resolve_child_catalog_game(
             parent_id, game_id)
         allowed = actor.get("allowed_game_keys", [])
         if not isinstance(allowed, list) or key not in allowed:
@@ -3618,7 +3636,7 @@ class GatewayState:
         parent = self.config.get("profiles", {}).get(parent_id)
         if not self._is_standard_profile(parent):
             raise PermissionError("Child management is not authorized for this parent profile.")
-        canonical, game_key, catalog_revision = self._resolve_child_catalog_game(
+        canonical, game_key, catalog_revision, _provider = self._resolve_child_catalog_game(
             parent_id, game_id)
         children = []
         for child_id in sorted(self.config.get("profiles", {})):
@@ -3689,7 +3707,7 @@ class GatewayState:
         revision = self._child_parent_policy_revision(parent)
         if check_revision and expected != revision:
             raise RuntimeError("child_policy_revision_stale")
-        canonical, game_key, catalog_revision = self._resolve_child_catalog_game(
+        canonical, game_key, catalog_revision, _provider = self._resolve_child_catalog_game(
             parent_id, game_id)
         own_children = {
             str(child_id): child for child_id, child in self.config.get("profiles", {}).items()
@@ -4060,6 +4078,14 @@ class GatewayState:
         except ValueError:
             return str(value or "").strip().casefold()
 
+    @staticmethod
+    def _child_time_provider_game(session: Any) -> str:
+        """The provider library id of a child session's game, as /observation, running scans
+        and provider_game_id report it. session["game_id"] stays canonical (policy keys,
+        child requests); a raw Playnite GUID and playnite:GUID are the same record there."""
+        return GatewayState._child_time_normalize_game_id(
+            session.get("provider_game_id") if isinstance(session, dict) else "")
+
     def _child_time_current_game(self, parent_profile_id: str,
                                  target: Any = None) -> dict[str, Any]:
         """Provider state, with the exact status of a retained target when one is given.
@@ -4370,7 +4396,7 @@ class GatewayState:
                 and self.child_terminal_operation.in_progress(session):
             return False
         token = self._child_time_process_token(session)
-        game_id = self._child_time_normalize_game_id(session.get("game_id"))
+        game_id = self._child_time_provider_game(session)
         stream = self.control_state.get("stream")
         if not game_id:
             return False
@@ -4659,7 +4685,7 @@ class GatewayState:
                 child_game_matches = not child_session_id or (
                     isinstance(target_time, dict)
                     and target_time.get("session_id") == child_session_id
-                    and self._child_time_normalize_game_id(target_time.get("game_id"))
+                    and self._child_time_provider_game(target_time)
                     == self._child_time_normalize_game_id(current_game_id))
                 provider_idle = current.get("kind") == "idle"
                 stream_token = self._child_time_process_token(stream)
@@ -5098,7 +5124,7 @@ class GatewayState:
         """Persist only the exact process identity granted by this terminal permit."""
         if current.get("kind") != "active" or \
                 self._child_time_normalize_game_id(current.get("game_id")) != \
-                self._child_time_normalize_game_id(session.get("game_id")):
+                self._child_time_provider_game(session):
             return False
         token = self._child_time_process_token(permit)
         identity = current.get("identity")
@@ -5127,7 +5153,7 @@ class GatewayState:
                 and active.get("provider_game_id") \
                 and self._child_time_normalize_game_id(
                     active.get("provider_game_id")) == \
-                    self._child_time_normalize_game_id(session.get("game_id")) \
+                    self._child_time_provider_game(session) \
                 and self._child_time_process_token(active) == token \
                 and int(active.get("process_id") or 0) == process_id \
                 and all(active.get(key) == session.get(key) for key in (
@@ -5154,8 +5180,7 @@ class GatewayState:
                 stream_process_id = int(stream.get("process_id") or 0)
             except (TypeError, ValueError):
                 return False
-            if stream_game and stream_game != self._child_time_normalize_game_id(
-                    session.get("game_id")):
+            if stream_game and stream_game != self._child_time_provider_game(session):
                 return False
             if stream_token and stream_token != token:
                 return False
@@ -5200,7 +5225,7 @@ class GatewayState:
             stream_game = self._child_time_normalize_game_id(
                 stream.get("provider_game_id"))
             result_game = self._child_time_normalize_game_id(
-                child_result.get("game_id"))
+                child_result.get("provider_game_id"))
             token = self._child_time_process_token(active)
             try:
                 process_id = int(active.get("process_id") or 0)
@@ -5341,6 +5366,7 @@ class GatewayState:
                 "request_id": str(active.get("operation_id") or child_session_id),
                 "actor_profile_id": actor_id, "execution_profile_id": parent_id,
                 "client_id": client_id, "game_id": str(child_result.get("game_id") or ""),
+                "provider_game_id": str(child_result.get("provider_game_id") or ""),
                 "vibepollo_client_uuid": str(active.get("vibepollo_client_uuid") or ""),
                 "phase": "cleanup_required", "started_monotonic": _monotonic,
                 "last_monotonic": _monotonic, "last_heartbeat_monotonic": _monotonic,
@@ -5387,7 +5413,7 @@ class GatewayState:
             token = self._child_time_process_token(session)
         exact = (current.get("kind") == "active" and
                  self._child_time_normalize_game_id(current.get("game_id")) ==
-                 self._child_time_normalize_game_id(session.get("game_id")))
+                 self._child_time_provider_game(session))
         if not exact or not token or self._child_time_process_token(
                 current.get("identity")) != token:
             if self._child_time_process_absent(current, token):
@@ -5481,7 +5507,7 @@ class GatewayState:
                 and int(stream.get("process_id") or 0) == 0
             running_identity = isinstance(active, dict) \
                 and self._child_time_normalize_game_id(active.get("provider_game_id")) == \
-                    self._child_time_normalize_game_id(session.get("game_id")) \
+                    self._child_time_provider_game(session) \
                 and self._child_time_process_token(active) == \
                     self._child_time_process_token(session) \
                 and int(active.get("process_id") or 0) == \
@@ -5726,7 +5752,8 @@ class GatewayState:
                 if isinstance(active, dict) and active.get("operation_id") == permit["operation_id"]:
                     active["child_terminal_result"] = {
                         "reason": reason, **{key: str(session.get(key) or "") for key in (
-                            "game_id", "actor_profile_id", "execution_profile_id", "client_id")}}
+                            "game_id", "provider_game_id", "actor_profile_id",
+                            "execution_profile_id", "client_id")}}
                     self._control_save_locked()
         if permit is False:
             stopped, stop_reason = False, permit_reason
@@ -5794,7 +5821,8 @@ class GatewayState:
         self.refresh_registry_if_changed()
         actor_id, parent_id, parent, actor = self._child_policy_context(
             client, actor_profile_id)
-        canonical, game_key, _catalog = self._resolve_child_catalog_game(parent_id, game_id)
+        canonical, game_key, _catalog, _provider = self._resolve_child_catalog_game(
+            parent_id, game_id)
         _monotonic, wall = self._child_time_now(actor)
         try:
             policy = self._child_time_policy_snapshot(actor_id, actor, wall)
@@ -5844,7 +5872,8 @@ class GatewayState:
             return orphan
         actor_id, parent_id, parent, actor = self._child_policy_context(
             client, actor_profile_id)
-        canonical, _key, _catalog = self._resolve_child_catalog_game(parent_id, game_id)
+        canonical, _key, _catalog, provider_game_id = self._resolve_child_catalog_game(
+            parent_id, game_id)
         allowed = actor.get("allowed_game_keys")
         if not isinstance(allowed, list) or _key not in allowed:
             raise PermissionError("game_not_shared")
@@ -5986,7 +6015,7 @@ class GatewayState:
         current = self._child_time_current_game(parent_id, self.control_state.get("stream"))
         if current.get("kind") == "active" and \
                 self._child_time_normalize_game_id(current.get("game_id")) != \
-                self._child_time_normalize_game_id(canonical):
+                self._child_time_normalize_game_id(provider_game_id):
             return HTTPStatus.CONFLICT, {
                 "ok": False, "state": "blocked",
                 "reason": "active_game_replacement_required",
@@ -5997,12 +6026,13 @@ class GatewayState:
         current_identity = current.get("identity") \
             if current.get("kind") == "active" and \
             self._child_time_normalize_game_id(current.get("game_id")) == \
-            self._child_time_normalize_game_id(canonical) else None
+            self._child_time_normalize_game_id(provider_game_id) else None
         current_token = self._child_time_process_token(current_identity)
         session = {
             "session_id": session_id, "request_id": request_id,
             "actor_profile_id": actor_id, "execution_profile_id": parent_id,
             "client_id": client_id, "game_id": canonical,
+            "provider_game_id": provider_game_id,
             "vibepollo_client_uuid": client_uuid,
             "phase": "running" if current_token else "launch_pending",
             "started_monotonic": _monotonic, "last_monotonic": _monotonic,
@@ -6153,7 +6183,7 @@ class GatewayState:
             if isinstance(session, dict) else {"kind": "idle"}
         if (current.get("kind") != "active" or
                 self._child_time_normalize_game_id(current.get("game_id")) !=
-                self._child_time_normalize_game_id(session.get("game_id"))):
+                self._child_time_provider_game(session)):
             body.update({"ok": False, "state": "blocked", "reason": "child_session_expired"})
             return HTTPStatus.CONFLICT, body
         actor = self.config.get("profiles", {}).get(
@@ -6232,7 +6262,7 @@ class GatewayState:
         identity = current.get("identity") if current.get("kind") == "active" else None
         exact_current = (current.get("kind") == "active" and
                          self._child_time_normalize_game_id(current.get("game_id")) ==
-                         self._child_time_normalize_game_id(session.get("game_id")))
+                         self._child_time_provider_game(session))
         phase = str(session.get("phase") or "launch_pending")
         # Housekeeping also runs while /game/start is still waiting for the
         # launcher. An idle snapshot is expected until that launch is observed.
@@ -6392,8 +6422,7 @@ class GatewayState:
                           "remaining_daily_seconds": 0, "playable_now_seconds": 0}
             current = self._child_time_current_game(parent_id)
             if current.get("kind") == "active" and self._child_time_normalize_game_id(
-                    current.get("game_id")) == self._child_time_normalize_game_id(
-                    session.get("game_id")):
+                    current.get("game_id")) == self._child_time_provider_game(session):
                 current_token = self._child_time_process_token(current.get("identity"))
                 session_token = self._child_time_process_token(session)
                 if current_token and current_token == session_token:
@@ -7544,9 +7573,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                     "execution_profile_id": str(getattr(
                         self.state.request_context, "execution_profile_id", "")),
                 }
-                if isinstance(self._diagnostic_error, PermissionError):
-                    # Fixed denial codes (e.g. child_session_binding_mismatch) pass the token
-                    # filter; human-readable messages with spaces are dropped by record().
+                if isinstance(self._diagnostic_error, PermissionError) and \
+                        str(self._diagnostic_error) in DIAGNOSTIC_DENIAL_CODES:
                     fields["reason"] = str(self._diagnostic_error)
                 DIAGNOSTICS.record(
                     "request.failed" if failed else "request.completed",
