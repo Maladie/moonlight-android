@@ -106,12 +106,12 @@
     {
       "id": "lab-device-checks",
       "requirement": "T05 T06 T07 T25 T26 T50 S05 whole-quit/child-expiry S07-END-GAME-RELAUNCH",
-      "status": "NOT_RUN",
-      "command": null,
+      "status": "PARTIAL",
+      "command": "work/run_s07_diag_4.py / run_s07_diag_8.py --candidate 1",
       "exit_code": null,
       "expected": "PASS on owned lab",
-      "observed": null,
-      "evidence_artifact": null
+      "observed": "s07-diag-4a PASS 23/23; 01-23 complete in 5 runs; 8a unclassified freeze at 18; 24 blocked by current trigger; T07/child expiry/T08/physical TV not run",
+      "evidence_artifact": "runs/S07/device-evidence.json (R059 ACCEPTABLE_AS_LAB_EVIDENCE)"
     }
   ],
   "scenario_evidence": [
@@ -162,23 +162,18 @@
   ],
   "blockers": [],
   "device_gates_pending": [
-    "T05",
-    "T06",
-    "T07",
-    "T25",
-    "T26",
-    "T50",
-    "S05-whole-quit",
-    "S05-child-expiry",
-    "T08-headless-switch",
-    "T26-preparing-recreation",
-    "S07-END-GAME-RELAUNCH"
+    "T07 host picker",
+    "S05 child expiry",
+    "T08 headless switch",
+    "T26-preparing-recreation (+ converted game): blocked by current lab trigger",
+    "physical TV API 32 (all device topics)",
+    "8a unclassified decoded-picture freeze (s18 resume) to be explained or bounded"
   ],
   "risks": [
     "Physical TV (API 32) differs from lab AVD (API 36).",
     "Game remains large; presentation-side flows untouched beyond ownership migration."
   ],
-  "next_action": "Owned-lab device gate (MoonWaker-Lab VM + AVD MoonWaker_Lab_TV36): extend a versioned copy of the lab runner with T05/T06/T07/T25/T26(+preparing, converted-game)/T50/S05 whole-quit+child expiry/S07-END-GAME-RELAUNCH, build a paired candidate, run.",
+  "next_action": "Lab: add T07 host-picker and child-expiry checks; investigate the 8a frozen-picture failure with decoder counters; physical TV evidence requires owner authorization.",
   "checkpoint": {
     "usable_without_followup": "pending review and device evidence",
     "production_path_integrated": true,

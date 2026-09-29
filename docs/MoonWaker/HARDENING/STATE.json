@@ -104,7 +104,7 @@
       "review_report": "runs/S07/review.json",
       "design_review_report": "runs/S07/review-bridge/R053-review.md",
       "blockers": [
-        "Owned-lab device evidence pending (T05, T06, T07, T25, T26 incl. preparing/converted-game, T50, S05 whole-quit/child expiry, S07-END-GAME-RELAUNCH); physical TV (API 32) evidence pending."
+        "Device evidence partial (runs/S07/device-evidence.json, R059 ACCEPTABLE_AS_LAB_EVIDENCE): lab 01-23 PASS (s07-diag-4a); pending T07 host picker, child expiry, T08 headless switch, PREPARING recreation (blocked by current lab trigger), unclassified 8a freeze, physical TV (API 32)."
       ],
       "checkpoint_plan": "runs/S07/checkpoint-plan.json"
     },
