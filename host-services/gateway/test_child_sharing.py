@@ -235,6 +235,117 @@ class ChildSharingGatewayTest(unittest.TestCase):
             self.assertFalse(lock._is_owned())
             self.assertEqual(0, lock._depth)
 
+    def test_hold_before_a_condition_wait_is_reported_and_the_wait_is_not(self):
+        recorder = mock.Mock()
+        lock = wakeplay_gateway.TimedRLock()
+        condition = threading.Condition(lock)
+        with mock.patch.object(wakeplay_gateway, "DIAGNOSTICS", recorder),                 mock.patch.object(wakeplay_gateway, "LOCK_HELD_SLOW_MS", 50):
+            with condition:
+                time.sleep(0.08)          # work under the lock, then a wait
+                condition.wait(0.2)       # the wait itself must not be counted
+            held = [call for call in recorder.record.call_args_list
+                    if call.args and call.args[0] == "lock-held-slow"]
+            self.assertEqual(1, len(held))
+            self.assertRegex(
+                held[0].kwargs["reason"],
+                r"^holder-test_hold_before_a_condition_wait_is_reported_and_the_wait_is_not"
+                r"-L[0-9]+$")
+            self.assertGreaterEqual(held[0].kwargs["duration_ms"], 50)
+            self.assertLess(held[0].kwargs["duration_ms"], 200)
+        self.assertEqual(0, lock._depth)
+
+    def test_invalid_release_leaves_the_lock_bookkeeping_alone(self):
+        lock = wakeplay_gateway.TimedRLock()
+        with self.assertRaises(RuntimeError):
+            lock.release()
+        self.assertEqual(0, lock._depth)
+        with self.assertRaises(RuntimeError):
+            lock._release_save()
+        self.assertEqual(0, lock._depth)
+        with lock:
+            self.assertEqual(1, lock._depth)
+            other = []
+
+            def foreign_release():
+                try:
+                    lock.release()
+                except RuntimeError as error:
+                    other.append(error)
+            thread = threading.Thread(target=foreign_release)
+            thread.start()
+            thread.join()
+            self.assertEqual(1, len(other))
+            self.assertEqual(1, lock._depth)
+        self.assertEqual(0, lock._depth)
+
+    def _retained_stream(self):
+        return {"client_id": "tv", "execution_profile_id": "parent", "generation": 4,
+                "stream_session_id": "session-4", "actor_lease_epoch": 4}
+
+    def _idle_reconcile_setup(self, probe):
+        self.state.control_state["active"] = None
+        self.state.control_state["stream"] = self._retained_stream()
+        self.state.child_time_session = None
+        self.state.proxy = mock.Mock(side_effect=probe)
+        self.state._child_time_current_game = mock.Mock(return_value={"kind": "idle"})
+        self.state._control_save_locked = mock.Mock()
+
+    def test_housekeeping_reconciles_an_idle_stream_without_holding_the_lock(self):
+        # Lab formal134/diag160a: the 5 s tick probed the streamer under the Gateway lock,
+        # holding it for 0.5-1.5 s (up to the 8 s timeout) and stalling authentication and
+        # observation reads.
+        held = []
+
+        def probe(*args, **kwargs):
+            held.append(self.state.lock._is_owned())
+            return True, {"snapshot": "idle"}
+
+        self._idle_reconcile_setup(probe)
+        with mock.patch.object(wakeplay_gateway.ControlOperationPolicy, "streamer_idle",
+                               return_value=True):
+            self.state.child_time_housekeeping_tick()
+        self.assertEqual([False], held)
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertEqual("session-4", self.state.control_state["idle_stream"]["stream_session_id"])
+        self.state._control_save_locked.assert_called_once()
+
+    def test_reconcile_is_abandoned_when_an_operation_starts_during_the_probe(self):
+        def probe(*args, **kwargs):
+            with self.state.lock:
+                self.state.control_state["active"] = {"operation_id": "control-1"}
+            return True, {}
+
+        self._idle_reconcile_setup(probe)
+        with mock.patch.object(wakeplay_gateway.ControlOperationPolicy, "streamer_idle",
+                               return_value=True):
+            self.assertFalse(self.state._control_reconcile_idle())
+        self.assertEqual("session-4", self.state.control_state["stream"]["stream_session_id"])
+        self.state._control_save_locked.assert_not_called()
+
+    def test_reconcile_is_abandoned_when_the_stream_is_replaced_during_the_probe(self):
+        def probe(*args, **kwargs):
+            with self.state.lock:
+                self.state.control_state["stream"] = {
+                    **self._retained_stream(), "generation": 5,
+                    "stream_session_id": "session-5"}
+            return True, {}
+
+        self._idle_reconcile_setup(probe)
+        with mock.patch.object(wakeplay_gateway.ControlOperationPolicy, "streamer_idle",
+                               return_value=True):
+            self.assertFalse(self.state._control_reconcile_idle())
+        self.assertEqual("session-5", self.state.control_state["stream"]["stream_session_id"])
+        self.state._control_save_locked.assert_not_called()
+
+    def test_reconcile_keeps_a_stream_that_is_not_idle(self):
+        self._idle_reconcile_setup(lambda *a, **k: (True, {}))
+        with mock.patch.object(wakeplay_gateway.ControlOperationPolicy, "streamer_idle",
+                               return_value=False):
+            self.assertFalse(self.state._control_reconcile_idle())
+        self.state._child_time_current_game.assert_not_called()
+        self.assertIsNotNone(self.state.control_state["stream"])
+        self.state._control_save_locked.assert_not_called()
+
     def test_observation_in_flight_count_survives_a_failing_read(self):
         self.state.request_context.actor_profile_id = "kid"
         self.state.request_context.execution_profile_id = "parent"

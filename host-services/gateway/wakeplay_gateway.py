@@ -624,6 +624,9 @@ class TimedRLock:
         return acquired
 
     def release(self) -> None:
+        if not self._lock._is_owned():
+            self._lock.release()  # raises exactly as the native lock does; bookkeeping untouched
+            return
         self._depth -= 1
         held_ms = 0
         site = ""
@@ -631,6 +634,10 @@ class TimedRLock:
             held_ms = int((time.monotonic() - self._since) * 1000)
             site = self._site
         self._lock.release()
+        self._report(held_ms, site)
+
+    @staticmethod
+    def _report(held_ms: int, site: str) -> None:
         if held_ms >= LOCK_HELD_SLOW_MS:
             DIAGNOSTICS.record("lock-held-slow", level="WARN", duration_ms=held_ms,
                                reason="holder-" + site)
@@ -648,15 +655,22 @@ class TimedRLock:
         return self._lock._is_owned()
 
     def _release_save(self) -> Any:
-        saved = (self._depth, self._since, self._site)
+        if not self._lock._is_owned():
+            raise RuntimeError("cannot release un-acquired lock")
+        saved = (self._depth, self._site)
+        held_ms = int((time.monotonic() - self._since) * 1000)
         self._depth = 0
-        return (self._lock._release_save(), saved)
+        native = self._lock._release_save()
+        # The hold up to this wait is a hold like any other; the wait itself is not.
+        self._report(held_ms, saved[1])
+        return (native, saved)
 
     def _acquire_restore(self, state: Any) -> None:
-        inner, saved = state
-        self._lock._acquire_restore(inner)
-        self._depth, _, self._site = saved
+        native, saved = state
+        self._lock._acquire_restore(native)
+        self._depth, self._site = saved
         self._since = time.monotonic()
+
 
 # Antivirus or indexing can briefly hold the registry without delete sharing (the Configurator hit
 # this in the lab). os.replace (MoveFileEx) reports that as ERROR_ACCESS_DENIED (5), ReplaceFile as
@@ -5159,21 +5173,29 @@ class GatewayState:
                     "actor_profile_id", "execution_profile_id", "child_session_id",
                     "provider_game_id", "process_token", "process_id")}}
 
-    def _control_reconcile_idle_locked(self) -> bool:
-        """Recover a completed transport's stale ownership, never an in-flight permit."""
+    def _control_reconcile_idle_candidate_locked(self) -> dict[str, Any] | None:
+        """The retained stream that may be stale: no operation in flight, no child session."""
         stream = self.control_state.get("stream")
         if self.control_state.get("active") is not None or not isinstance(stream, dict) \
                 or self.child_time_session is not None:
-            return False
+            return None
+        return dict(stream)
+
+    def _control_stream_idle(self, stream: dict[str, Any]) -> bool:
+        """Streamer and provider both report the retained stream idle (network reads)."""
         try:
             ok, snapshot = self.proxy("vibepollo", "/snapshot?force=1", timeout=8.0,
                                       profile_id=stream["execution_profile_id"])
             if not ok or not ControlOperationPolicy.streamer_idle(snapshot):
                 return False
-            if self._child_time_current_game(
-                    stream["execution_profile_id"], stream).get("kind") != "idle":
-                return False
+            return self._child_time_current_game(
+                stream["execution_profile_id"], stream).get("kind") == "idle"
         except OSError:
+            return False
+
+    def _control_reconcile_idle_apply_locked(self, stream: dict[str, Any]) -> bool:
+        """Retire the stream that was probed, only if nothing changed since the probe."""
+        if self._control_reconcile_idle_candidate_locked() != stream:
             return False
         self.control_state["idle_stream"] = dict(stream)
         self.control_state["stream"] = None
@@ -5181,6 +5203,25 @@ class GatewayState:
         DIAGNOSTICS.record("control-stream-idle-reconciled", generation=stream["generation"],
                            stream_session_id=stream["stream_session_id"])
         return True
+
+    def _control_reconcile_idle_locked(self) -> bool:
+        """Recover a completed transport's stale ownership, never an in-flight permit."""
+        stream = self._control_reconcile_idle_candidate_locked()
+        return stream is not None and self._control_stream_idle(stream) \
+            and self._control_reconcile_idle_apply_locked(stream)
+
+    def _control_reconcile_idle(self) -> bool:
+        """The same reconcile without holding the Gateway lock across the network reads.
+
+        The housekeeping tick runs this every few seconds; probing under the lock stalled every
+        request (authentication, observations) for the length of the streamer snapshot.
+        """
+        with self.lock:
+            stream = self._control_reconcile_idle_candidate_locked()
+        if stream is None or not self._control_stream_idle(stream):
+            return False
+        with self.lock:
+            return self._control_reconcile_idle_apply_locked(stream)
 
     @staticmethod
     def _control_bridge_binding(permit: dict[str, Any]) -> dict[str, Any]:
@@ -6587,8 +6628,7 @@ class GatewayState:
                 orphan = self._child_time_recover_persisted_terminal_orphan()
                 if orphan is not None:
                     return orphan
-                with self.lock:
-                    self._control_reconcile_idle_locked()
+                self._control_reconcile_idle()
                 return None
             with self.lock:
                 session_id = str(session.get("session_id") or "")
