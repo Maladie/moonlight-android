@@ -90,9 +90,9 @@
       "review_report": "runs/S06/review-sol-no-compat-rereview.json",
       "design_review_report": "runs/S06/pre-edit-review.json",
       "blockers": [
-        "The independent Sol High final no-compat re-review accepted output fingerprint sha256:60915ff34598b96acbb7e9d85377baec3cff2a887aaa1ec3191606d874afdb50 with no remaining P0-P3 blocker in the bounded scope.",
-        "Candidate-bound S06 physical Windows/TV evidence was not authorized or executed, so code verification cannot produce CHECKPOINT_ACCEPTED.",
-        "S03-S05 remain formally CODE_VERIFIED_DEVICE_PENDING; the explicit S06 dependency override permits this implementation but does not accept or waive the predecessor chain."
+        "S06 closed by the user on 2026-09-29 on the defined formal gate: formal137 PASS, 3 consecutive complete 20/20 on candidate164 in the owned lab; independent review R048 READY (runs/S06/formal137-closure.json).",
+        "Candidate164 is not bound to output_fingerprint sha256:60915ff3... (the 20260914 source); the acceptance evidence is bound to product tree 9a1e82910e52d64f87a9bed7b33e26dfd4ef0984.",
+        "Formal CHECKPOINT_ACCEPTED under packet.py stays blocked: S03-S05 remain CODE_VERIFIED_DEVICE_PENDING and are not waived by the S06 dependency override."
       ],
       "checkpoint_plan": "runs/S06/checkpoint-plan.json"
     },
@@ -176,6 +176,13 @@
       "status": "USER_AUTHORIZED",
       "value": "Proceed with full S06 implementation on the exact cumulative input fingerprint sha256:5e78588cdd4512554e4c2ef1d047b7bb0beba87e2809759231ad86b2df38145e after the independent pre-edit design review. This does not accept S03, S04 or S05, waive their missing formal evidence, authorize S06 checkpoint acceptance without its own evidence, or authorize commit, push, APK installation, Gateway update or service restart.",
       "source": "User message: Nie preedit. Wykonaj w pełni. Znoszę blokadę"
+    },
+    {
+      "id": "S06-20260929-CLOSURE",
+      "decision": "S06_CLOSED_ON_FORMAL137_GATE",
+      "status": "USER_AUTHORIZED",
+      "value": "S06 is closed on formal137 PASS 3/3 and R048 READY for candidate164 in the owned lab. Recorded limits: repeated Gateway lock-held-slow in _child_time_stop_stream, Playnite setup flake, memory pressure. Does not accept S03-S05, promote a baseline, or authorize push, publication or real-device deployment.",
+      "source": "User message: Tak, zamykamy S06"
     }
   ],
   "workspace": {

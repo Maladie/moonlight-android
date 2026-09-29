@@ -1,0 +1,45 @@
+{
+  "kind": "S06_CLOSURE_EVIDENCE",
+  "closed_on": "2026-09-29",
+  "user_authorization": "User message 2026-09-29: \"Tak, zamykamy S06\"",
+  "scope": "Defined formal S06 gate on candidate164 in the owned lab (Hyper-V MoonWaker-Lab, AVD MoonWaker_Lab_TV36); not the physical host/TV.",
+  "candidate": {
+    "product_commit_at_build": "3cfc7292e6d8e9faae94237705e7e7c75d5e94ff",
+    "product_tree": "9a1e82910e52d64f87a9bed7b33e26dfd4ef0984",
+    "note": "codex/s06-integration history was rewritten after the build (same tree, e032ae44 lineage); evidence keeps the original hash.",
+    "host_sha256": "6ec1d62e03a4b75e8132730bd9d59d8b74193a6f6d4c1a2e5a3f0a3c2f753561",
+    "apk_sha256": "19628f7f1c779ece82a6d3ff819544d2b28a421f1ee26160592759e1aa83b862",
+    "candidate_manifest": "E:\\Documents\\ChatGPT\\MoonWaker\\outputs\\s06-formal-137\\candidate.json",
+    "candidate_manifest_sha256": "028984a8a1e06ea0efd616107a8494e850bc663010de603a8f85e8a320874256"
+  },
+  "formal_series": {
+    "id": "formal137",
+    "result": "PASS",
+    "consecutive_complete_passes": 3,
+    "checks_per_run": 20,
+    "harness_manifest_sha256": "586d8032b3bb09c1383d2c93ff2be42b1477f14208b9a3df2335f1de371444a2",
+    "harness": {
+      "lifecycle": "run_s06_lifecycle_141.py 70acb3ca54c681a046cb1f1188e1b30c32fbb471007f819d4765424b2c6fe97e",
+      "adapter": "lab_network_adapt_s06.py aecd2849eb27b84912f3253bb155f8412f9c5fe68b7a2c53ec6777cff3b66584",
+      "guest_script": "Adapt-LabNetwork-S06.ps1 653f557e5926a636b58700bf5f24709fff4a947170568d11ae6dad7fa47cf3b1"
+    },
+    "utc": "2026-09-29T09:01:38Z/10:05:42Z",
+    "terminal": "E:\\Documents\\ChatGPT\\MoonWaker\\outputs\\s06-formal-137\\terminal.json"
+  },
+  "history_not_combined": {
+    "formal132": "FAIL 0/3",
+    "formal133": "FAIL 0/3",
+    "formal134": "FAIL 1/3",
+    "formal135": "FAIL 0/3",
+    "formal136": "FAIL 0/3"
+  },
+  "independent_reviews": "work/s05-review-bridge/reviews/R023..R048 (Codex); final acceptance review R048 = READY",
+  "known_limits": [
+    "Gateway lock-held-slow at holder-_child_time_stop_stream-L5721 in all three trials (1264/1327/1375 ms); control_condition held across StreamerControlOperation.close; tracked separately, not fixed",
+    "Playnite connector setup flake, no root cause",
+    "Host memory pressure remained a confounder",
+    "Three passes are not a statistical bound on intermittent failures"
+  ],
+  "packet_status_note": "Not recorded as CHECKPOINT_ACCEPTED: packet.py requires S03-S05 accepted and fingerprint-bound reports for the 20260914 source; neither exists. STATE.json blockers updated instead.",
+  "not_authorized": "push, publish, deployment on real devices, baseline promotion"
+}
