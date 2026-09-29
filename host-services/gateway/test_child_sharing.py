@@ -2,6 +2,9 @@ import base64
 import hashlib
 import json
 import tempfile
+import re
+import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -162,28 +165,63 @@ class ChildSharingGatewayTest(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("child_policy_revision_stale", result["error"])
 
-    def test_slow_observation_records_lock_and_provider_timing(self):
+    def _slow_events(self, recorder):
+        return [call for call in recorder.record.call_args_list
+                if call.args and call.args[0] == "observation-slow"]
+
+    def test_slow_observation_records_every_phase_and_the_request_id(self):
         # Lab formal132/diag156a: an observation read that outlives the Android client's 5 s
         # timeout right after a game start; the Gateway now says where the time went.
-        self.state.proxy = mock.Mock(return_value=(True, {"game": {"state": "idle"}}))
         self.state.request_context.profile_id = "kid"
         self.state.request_context.actor_profile_id = "kid"
         self.state.request_context.execution_profile_id = "parent"
+        self.state.request_context.request_id = "request-9"
         recorder = mock.Mock()
-        with mock.patch.object(wakeplay_gateway, "DIAGNOSTICS", recorder):
-            with mock.patch.object(wakeplay_gateway, "OBSERVATION_SLOW_MS", 0):
-                status, _ = self.state.playnite_observation(1, "")
+        blocker_ready = threading.Event()
+
+        def slow_provider(*args, **kwargs):
+            # Another request holds the Gateway lock while the provider call returns, so the
+            # second lock acquisition is the slow phase.
+            def hold():
+                with self.state.lock:
+                    blocker_ready.set()
+                    time.sleep(0.3)
+            threading.Thread(target=hold).start()
+            blocker_ready.wait(2)
+            return True, {"game": {"state": "idle"}}
+
+        self.state.proxy = mock.Mock(side_effect=slow_provider)
+        with mock.patch.object(wakeplay_gateway, "DIAGNOSTICS", recorder),                 mock.patch.object(wakeplay_gateway, "OBSERVATION_SLOW_MS", 200):
+            status, _ = self.state.playnite_observation(1, "")
             self.assertEqual(200, status)
-            slow = [call for call in recorder.record.call_args_list
-                    if call.args and call.args[0] == "observation-slow"]
+            slow = self._slow_events(recorder)
             self.assertEqual(1, len(slow))
-            self.assertRegex(slow[0].kwargs["reason"],
-                             r"^lockwait-\d+-provider-\d+-inflight-1$")
+            match = re.fullmatch(r"lock1-(\d+)-provider-(\d+)-lock2-(\d+)-inflight-1",
+                                 slow[0].kwargs["reason"])
+            self.assertIsNotNone(match)
+            self.assertGreaterEqual(int(match.group(3)), 200)
+            self.assertLess(int(match.group(1)), 200)
+            self.assertEqual("request-9", slow[0].kwargs["request_id"])
+            self.assertGreaterEqual(slow[0].kwargs["duration_ms"], 200)
             recorder.reset_mock()
-            status, _ = self.state.playnite_observation(2, "")
-            self.assertEqual(200, status)
-            self.assertFalse([call for call in recorder.record.call_args_list
-                              if call.args and call.args[0] == "observation-slow"])
+            self.state.proxy = mock.Mock(return_value=(True, {"game": {"state": "idle"}}))
+            with mock.patch.object(wakeplay_gateway, "OBSERVATION_SLOW_MS", 60_000):
+                self.state.playnite_observation(2, "")
+            self.assertFalse(self._slow_events(recorder))
+        self.assertEqual(0, self.state.observation_inflight)
+
+    def test_observation_in_flight_count_survives_a_failing_read(self):
+        self.state.request_context.actor_profile_id = "kid"
+        self.state.request_context.execution_profile_id = "parent"
+        self.state.proxy = mock.Mock(return_value=(True, {"game": {"state": "idle"}}))
+        with mock.patch.object(self.state, "_observation_control_locked",
+                               side_effect=ValueError("malformed control record")):
+            with self.assertRaises(ValueError):
+                self.state.playnite_observation(1, "")
+        self.assertEqual(0, self.state.observation_inflight)
+        self.state.proxy = mock.Mock(side_effect=RuntimeError("provider failed"))
+        with self.assertRaises(RuntimeError):
+            self.state.playnite_observation(2, "")
         self.assertEqual(0, self.state.observation_inflight)
 
     def test_unshared_artwork_is_denied_but_common_observation_stays_visible(self):

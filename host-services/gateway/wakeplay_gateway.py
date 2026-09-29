@@ -6850,15 +6850,18 @@ class GatewayState:
         }
 
     def _record_slow_observation(self, started: float, locked: float, proxied: float,
-                                 in_flight: int) -> None:
-        """Timing of a slow observation read; the Android client gives up after 5 s."""
-        total_ms = int((time.monotonic() - started) * 1000)
+                                 relocked: float, in_flight: int) -> None:
+        """Phases of a slow observation read; the Android client gives up after 5 s."""
+        finished = time.monotonic()
+        total_ms = int((finished - started) * 1000)
         if total_ms < OBSERVATION_SLOW_MS:
             return
         DIAGNOSTICS.record(
             "observation-slow", level="WARN", duration_ms=total_ms,
-            reason="lockwait-%d-provider-%d-inflight-%d" % (
-                int((locked - started) * 1000), int((proxied - locked) * 1000), in_flight))
+            request_id=str(getattr(self.request_context, "request_id", "")),
+            reason="lock1-%d-provider-%d-lock2-%d-inflight-%d" % (
+                int((locked - started) * 1000), int((proxied - locked) * 1000),
+                int((relocked - proxied) * 1000), in_flight))
 
     def playnite_observation(self, request_ordinal: Any,
                              transition_id: Any) -> tuple[int, Any]:
@@ -6875,19 +6878,21 @@ class GatewayState:
         started = time.monotonic()
         with self.lock:
             locked = time.monotonic()
+            before = self._observation_control_locked()
             self.observation_inflight += 1
             in_flight = self.observation_inflight
-            before = self._observation_control_locked()
+        proxied = relocked = locked
         try:
             ok, provider = self.proxy("game_provider", "/observation", timeout=3.0,
                                       profile_id=execution_id)
             proxied = time.monotonic()
             with self.lock:
+                relocked = time.monotonic()
                 after = self._observation_control_locked()
         finally:
             with self.lock:
                 self.observation_inflight -= 1
-        self._record_slow_observation(started, locked, proxied, in_flight)
+            self._record_slow_observation(started, locked, proxied, relocked, in_flight)
         correlation = {**after, "caller_transition_id": transition,
                        "request_ordinal": ordinal}
         scope = {"actor_profile_id": actor_id,
@@ -7582,7 +7587,12 @@ class GatewayHandler(BaseHTTPRequestHandler):
         try:
             status = self._response_status
             failed = self._diagnostic_error is not None or status <= 0 or status >= 400
-            if self._diagnostic_method == "POST" or failed:
+            slow_observation = (
+                self._diagnostic_method == "GET" and not failed
+                and self._diagnostic_route == f"{API_PREFIX}/session/observation"
+                and int((time.monotonic() - self._diagnostic_started) * 1000)
+                >= OBSERVATION_SLOW_MS)
+            if self._diagnostic_method == "POST" or failed or slow_observation:
                 fields: dict[str, Any] = {
                     "method": self._diagnostic_method,
                     "route": self._diagnostic_route,

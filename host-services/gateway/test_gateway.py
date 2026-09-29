@@ -2413,6 +2413,39 @@ class GatewayDiagnosticsTest(unittest.TestCase):
             handler._finish_diagnostics()
             self.assertNotIn("reason", recorder.record.call_args_list[-1].kwargs)
 
+    def test_slow_successful_observation_get_is_logged_end_to_end(self):
+        state = SimpleNamespace(request_context=__import__("threading").local())
+        handler = object.__new__(GatewayHandler)
+        handler.server = SimpleNamespace(state=state)
+        handler.path = "/api/v1/session/observation?request_ordinal=3"
+        handler.headers = Message()
+        handler.headers["X-Request-Id"] = "request:77"
+        recorder = mock.Mock()
+        with mock.patch.object(wakeplay_gateway, "DIAGNOSTICS", recorder):
+            handler._begin_diagnostics("GET")
+            handler._response_status = 200
+            handler._diagnostic_started -= 6.0  # the read plus the response write took 6 s
+            handler._finish_diagnostics()
+            completed = recorder.record.call_args_list[-1]
+            self.assertEqual("request.completed", completed.args[0])
+            self.assertEqual("/api/v1/session/observation", completed.kwargs["route"])
+            self.assertEqual("request:77", completed.kwargs["request_id"])
+            self.assertGreaterEqual(completed.kwargs["duration_ms"], 6000)
+
+            recorder.reset_mock()
+            handler._begin_diagnostics("GET")
+            handler._response_status = 200
+            handler._finish_diagnostics()
+            self.assertFalse(recorder.record.called)  # a fast successful GET is still silent
+
+            recorder.reset_mock()
+            handler.path = "/api/v1/hello"
+            handler._begin_diagnostics("GET")
+            handler._response_status = 200
+            handler._diagnostic_started -= 6.0
+            handler._finish_diagnostics()
+            self.assertFalse(recorder.record.called)  # only the observation route is timed
+
     def test_loopback_proxy_propagates_only_valid_request_id(self):
         with tempfile.TemporaryDirectory() as temporary:
             config_path = Path(temporary) / "gateway.json"
