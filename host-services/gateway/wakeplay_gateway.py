@@ -6854,6 +6854,7 @@ class GatewayState:
         """Phases of a slow observation read; the Android client gives up after 5 s."""
         finished = time.monotonic()
         total_ms = int((finished - started) * 1000)
+        self.request_context.observation_ms = total_ms
         if total_ms < OBSERVATION_SLOW_MS:
             return
         DIAGNOSTICS.record(
@@ -7117,6 +7118,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self._response_status = int(status)
         body = compact_json(value)
         self._response_content_length = len(body)
+        sending = time.monotonic()
         self.send_response(int(status))
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
@@ -7125,6 +7127,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
         self._response_body_bytes_written = len(body)
+        self._phase_send_ms = int((time.monotonic() - sending) * 1000)
 
     def send_permission_error(self, error: PermissionError) -> None:
         self._diagnostic_error = error
@@ -7374,7 +7377,11 @@ class GatewayHandler(BaseHTTPRequestHandler):
     def authenticated_client(self) -> dict[str, Any] | None:
         header = self.headers.get("Authorization", "")
         token = header[7:] if header.startswith("Bearer ") else ""
-        return self.state.client_for_token(token) if token else None
+        started = time.monotonic()
+        try:
+            return self.state.client_for_token(token) if token else None
+        finally:
+            self._phase_auth_ms = int((time.monotonic() - started) * 1000)
 
     def require_auth(self) -> dict[str, Any] | None:
         client = self.authenticated_client()
@@ -7571,6 +7578,9 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self._response_status = 0
         self._response_content_length = 0
         self._response_body_bytes_written = 0
+        self._phase_auth_ms = 0
+        self._phase_send_ms = 0
+        self.state.request_context.observation_ms = 0
         for key in ("request_id", "profile_id", "actor_profile_id", "execution_profile_id"):
             if hasattr(self.state.request_context, key):
                 delattr(self.state.request_context, key)
@@ -7614,6 +7624,15 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 if isinstance(self._diagnostic_error, PermissionError) and \
                         str(self._diagnostic_error) in DIAGNOSTIC_DENIAL_CODES:
                     fields["reason"] = str(self._diagnostic_error)
+                if slow_observation:
+                    # Where the handler's time went: authentication (including the registry
+                    # check under the Gateway lock), the observation read, writing the
+                    # response, and everything else (routing, profile authorization).
+                    observed = int(getattr(self.state.request_context, "observation_ms", 0))
+                    rest = max(0, fields["duration_ms"] - self._phase_auth_ms
+                               - observed - self._phase_send_ms)
+                    fields["reason"] = "auth-%d-state-%d-send-%d-rest-%d" % (
+                        self._phase_auth_ms, observed, self._phase_send_ms, rest)
                 DIAGNOSTICS.record(
                     "request.failed" if failed else "request.completed",
                     level="ERROR" if self._diagnostic_unexpected else

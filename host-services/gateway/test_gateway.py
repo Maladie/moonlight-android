@@ -2431,6 +2431,16 @@ class GatewayDiagnosticsTest(unittest.TestCase):
             self.assertEqual("/api/v1/session/observation", completed.kwargs["route"])
             self.assertEqual("request:77", completed.kwargs["request_id"])
             self.assertGreaterEqual(completed.kwargs["duration_ms"], 6000)
+            # Nothing was measured inside, so the whole 6 s is "rest".
+            self.assertRegex(completed.kwargs["reason"],
+                             r"^auth-0-state-0-send-0-rest-[6-9][0-9]{3}$")
+            handler._phase_auth_ms = 2500
+            handler._phase_send_ms = 400
+            state.request_context.observation_ms = 1200
+            recorder.reset_mock()
+            handler._finish_diagnostics()
+            self.assertRegex(recorder.record.call_args_list[-1].kwargs["reason"],
+                             r"^auth-2500-state-1200-send-400-rest-[1-9][0-9]{3}$")
 
             recorder.reset_mock()
             handler._begin_diagnostics("GET")
