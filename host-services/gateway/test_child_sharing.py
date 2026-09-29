@@ -210,6 +210,31 @@ class ChildSharingGatewayTest(unittest.TestCase):
             self.assertFalse(self._slow_events(recorder))
         self.assertEqual(0, self.state.observation_inflight)
 
+    def test_lock_reports_a_long_outermost_hold_and_its_site(self):
+        recorder = mock.Mock()
+        lock = wakeplay_gateway.TimedRLock()
+        condition = threading.Condition(lock)
+        with mock.patch.object(wakeplay_gateway, "DIAGNOSTICS", recorder),                 mock.patch.object(wakeplay_gateway, "LOCK_HELD_SLOW_MS", 50):
+            with lock:
+                with lock:  # a nested hold is part of the outermost one
+                    time.sleep(0.08)
+            held = [call for call in recorder.record.call_args_list
+                    if call.args and call.args[0] == "lock-held-slow"]
+            self.assertEqual(1, len(held))
+            self.assertRegex(
+                held[0].kwargs["reason"],
+                r"^holder-test_lock_reports_a_long_outermost_hold_and_its_site-L[0-9]+$")
+            self.assertGreaterEqual(held[0].kwargs["duration_ms"], 50)
+            recorder.reset_mock()
+            with lock:  # fast hold: silent
+                pass
+            self.assertFalse(recorder.record.called)
+            # A Condition built on the lock still waits, notifies and stays balanced.
+            with condition:
+                self.assertFalse(condition.wait(0.01))
+            self.assertFalse(lock._is_owned())
+            self.assertEqual(0, lock._depth)
+
     def test_observation_in_flight_count_survives_a_failing_read(self):
         self.state.request_context.actor_profile_id = "kid"
         self.state.request_context.execution_profile_id = "parent"

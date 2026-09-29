@@ -19,6 +19,7 @@ import ssl
 import socket
 import struct
 import subprocess
+import sys
 import threading
 import time
 import traceback
@@ -585,6 +586,77 @@ class GatewayDiagnostics:
 
 DIAGNOSTICS = GatewayDiagnostics()
 OBSERVATION_SLOW_MS = 1500
+LOCK_HELD_SLOW_MS = 500
+
+
+class TimedRLock:
+    """Re-entrant lock that reports a long outermost hold and where it was taken.
+
+    Diagnostics only: a hold of LOCK_HELD_SLOW_MS or more records `lock-held-slow` with the
+    function and line that took it, so a request stalled behind the Gateway lock can be
+    matched to its holder. It also serves as the lock of a threading.Condition.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.RLock()
+        self._depth = 0
+        self._since = 0.0
+        self._site = ""
+
+    @staticmethod
+    def _caller(depth: int) -> str:
+        try:
+            frame = sys._getframe(depth)
+            while frame.f_back is not None and frame.f_code.co_filename.endswith(
+                    ("threading.py", "contextlib.py")):
+                frame = frame.f_back
+            return "%s-L%d" % (frame.f_code.co_name, frame.f_lineno)
+        except ValueError:
+            return "unknown"
+
+    def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+        acquired = self._lock.acquire(blocking, timeout)
+        if acquired:
+            if self._depth == 0:
+                self._since = time.monotonic()
+                self._site = self._caller(2)
+            self._depth += 1
+        return acquired
+
+    def release(self) -> None:
+        self._depth -= 1
+        held_ms = 0
+        site = ""
+        if self._depth == 0:
+            held_ms = int((time.monotonic() - self._since) * 1000)
+            site = self._site
+        self._lock.release()
+        if held_ms >= LOCK_HELD_SLOW_MS:
+            DIAGNOSTICS.record("lock-held-slow", level="WARN", duration_ms=held_ms,
+                               reason="holder-" + site)
+
+    def locked(self) -> bool:
+        return self._depth > 0
+
+    __enter__ = acquire
+
+    def __exit__(self, *exc: Any) -> None:
+        self.release()
+
+    # threading.Condition uses these to wait without leaving the depth count stale.
+    def _is_owned(self) -> bool:
+        return self._lock._is_owned()
+
+    def _release_save(self) -> Any:
+        saved = (self._depth, self._since, self._site)
+        self._depth = 0
+        return (self._lock._release_save(), saved)
+
+    def _acquire_restore(self, state: Any) -> None:
+        inner, saved = state
+        self._lock._acquire_restore(inner)
+        self._depth, _, self._site = saved
+        self._since = time.monotonic()
 
 # Antivirus or indexing can briefly hold the registry without delete sharing (the Configurator hit
 # this in the lab). os.replace (MoveFileEx) reports that as ERROR_ACCESS_DENIED (5), ReplaceFile as
@@ -814,7 +886,7 @@ class GatewayState:
         # disabled until the Gateway is restarted.
         self.child_profiles_api_enabled = (
             self.config.get("child_profiles_enabled") is True)
-        self.lock = threading.RLock()
+        self.lock = TimedRLock()
         self.observation_inflight = 0
         self.request_context = threading.local()
         self.child_usage_path = self.config_path.with_name(CHILD_TIME_USAGE_FILE)
