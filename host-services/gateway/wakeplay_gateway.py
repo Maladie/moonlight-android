@@ -902,6 +902,7 @@ class GatewayState:
             self.config.get("child_profiles_enabled") is True)
         self.lock = TimedRLock()
         self.observation_inflight = 0
+        self.discord_readiness_category = ""
         self.request_context = threading.local()
         self.child_usage_path = self.config_path.with_name(CHILD_TIME_USAGE_FILE)
         self.child_time_clock = None
@@ -3330,17 +3331,28 @@ class GatewayState:
         }
 
     def discord_ready(self) -> tuple[bool, str]:
+        ready, error, category = self._discord_readiness()
+        if category != self.discord_readiness_category:
+            self.discord_readiness_category = category
+            DIAGNOSTICS.record("discord-readiness", reason=category)
+        return ready, error
+
+    def _discord_readiness(self) -> tuple[bool, str, str]:
         status = self.discord_status()
         if not status["bridge_online"]:
-            return False, "Discord Bridge is offline on this host."
+            return False, "Discord Bridge is offline on this host.", "bridge-offline"
         if not status["rpc_connected"]:
             detail = str(status.get("error", "")).strip()
             if detail:
-                return False, detail
-            return False, "Discord client is not running in the Bridge user session."
+                # Bounded, token-safe form of the Bridge's own detail (it varies with the
+                # Bridge's RPC state), so a client's 409 text can be matched to its cause.
+                return False, detail, "rpc-detail-" + re.sub(
+                    r"[^A-Za-z0-9._:$-]+", "-", detail)[:96].strip("-")
+            return False, "Discord client is not running in the Bridge user session.", \
+                "client-not-running"
         if not status["authenticated"]:
-            return False, "Discord RPC authorization is required."
-        return True, ""
+            return False, "Discord RPC authorization is required.", "authorization-required"
+        return True, "", "ready"
 
     def discord_home(self, force: bool = False) -> tuple[int, Any]:
         ready, error = self.discord_ready()
@@ -5174,16 +5186,18 @@ class GatewayState:
                     "provider_game_id", "process_token", "process_id")}}
 
     def _control_reconcile_idle_candidate_locked(
-            self) -> tuple[dict[str, Any], tuple[int, int, int]] | None:
+            self) -> tuple[dict[str, Any], tuple[int, int, int, int]] | None:
         """The retained stream that may be stale (no operation in flight, no child session),
-        with the control counters an operation started meanwhile would advance."""
+        with the counters a control operation or a child-session change started meanwhile
+        would advance (start/stop, provider transition, child usage revision)."""
         stream = self.control_state.get("stream")
         if self.control_state.get("active") is not None or not isinstance(stream, dict) \
                 or self.child_time_session is not None:
             return None
         return dict(stream), (int(self.control_state.get("generation") or 0),
                               int(self.control_state.get("actor_lease_epoch") or 0),
-                              int(self.control_state.get("provider_sequence") or 0))
+                              int(self.control_state.get("provider_sequence") or 0),
+                              int(self.child_time_usage.get("usage_revision") or 0))
 
     def _control_stream_idle(self, stream: dict[str, Any]) -> bool:
         """Streamer and provider both report the retained stream idle (network reads)."""
@@ -5198,7 +5212,7 @@ class GatewayState:
             return False
 
     def _control_reconcile_idle_apply_locked(
-            self, candidate: tuple[dict[str, Any], tuple[int, int, int]]) -> bool:
+            self, candidate: tuple[dict[str, Any], tuple[int, int, int, int]]) -> bool:
         """Retire the stream that was probed, only if no control operation began since.
 
         An operation that started and finished during the probe leaves no active permit and

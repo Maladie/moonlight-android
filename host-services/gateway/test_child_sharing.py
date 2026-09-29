@@ -380,6 +380,45 @@ class ChildSharingGatewayTest(unittest.TestCase):
         self.assertIsNotNone(self.state.control_state["stream"])
         self.state._control_save_locked.assert_not_called()
 
+    def test_reconcile_is_abandoned_when_a_child_session_changed_during_the_probe(self):
+        def probe(*args, **kwargs):
+            with self.state.lock:
+                self.state.child_time_usage["usage_revision"] = int(
+                    self.state.child_time_usage.get("usage_revision") or 0) + 1
+            return True, {}
+
+        self._idle_reconcile_setup(probe)
+        with mock.patch.object(wakeplay_gateway.ControlOperationPolicy, "streamer_idle",
+                               return_value=True):
+            self.assertFalse(self.state._control_reconcile_idle())
+        self.assertIsNotNone(self.state.control_state["stream"])
+        self.state._control_save_locked.assert_not_called()
+
+    def test_discord_readiness_category_is_logged_when_it_changes(self):
+        recorder = mock.Mock()
+        statuses = [
+            {"bridge_online": False},
+            {"bridge_online": True, "rpc_connected": False, "error": "IPC pipe /x: not found!"},
+            {"bridge_online": True, "rpc_connected": False},
+            {"bridge_online": True, "rpc_connected": True, "authenticated": False},
+            {"bridge_online": True, "rpc_connected": True, "authenticated": False},
+            {"bridge_online": True, "rpc_connected": True, "authenticated": True},
+        ]
+        self.state.discord_status = mock.Mock(side_effect=statuses)
+        with mock.patch.object(wakeplay_gateway, "DIAGNOSTICS", recorder):
+            results = [self.state.discord_ready() for _ in statuses]
+        self.assertEqual(
+            ["Discord Bridge is offline on this host.", "IPC pipe /x: not found!",
+             "Discord client is not running in the Bridge user session.",
+             "Discord RPC authorization is required.",
+             "Discord RPC authorization is required.", ""],
+            [error for _ready, error in results])
+        self.assertEqual(
+            ["bridge-offline", "rpc-detail-IPC-pipe-x:-not-found",
+             "client-not-running", "authorization-required", "ready"],
+            [call.kwargs["reason"] for call in recorder.record.call_args_list
+             if call.args[0] == "discord-readiness"])
+
     def test_observation_in_flight_count_survives_a_failing_read(self):
         self.state.request_context.actor_profile_id = "kid"
         self.state.request_context.execution_profile_id = "parent"
