@@ -60,6 +60,16 @@ class PacketTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'invalid acceptance metadata'):
             packet.validate(self.bundle)
 
+    def test_owner_closure_needs_an_authorized_amendment_and_satisfies_dependencies(self):
+        self.bundle['state']['tasks']['S00']['status'] = 'CLOSED_BY_OWNER'
+        with self.assertRaisesRegex(ValueError, 'owner closure needs'):
+            packet.validate(self.bundle)
+        self.bundle['state']['contract_amendments'].append(
+            {'id': 'X', 'status': 'USER_AUTHORIZED', 'decision': 'd', 'value': 'v', 'source': 's'})
+        self.bundle['state']['tasks']['S00']['closure_decision'] = 'X'
+        packet.validate(self.bundle)
+        self.assertNotIn('S00', packet.pending_dependencies(self.bundle['tasks']['S01'], self.bundle))
+
     def test_reference_escape_rejected(self):
         with self.assertRaises(ValueError):
             packet.local_path('../../../../outside.json')

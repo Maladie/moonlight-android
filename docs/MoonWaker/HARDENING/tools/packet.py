@@ -14,6 +14,8 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 ACCEPTED = {'CHECKPOINT_ACCEPTED', 'ACCEPTED_NO_CHANGE'}
+OWNER_CLOSED = 'CLOSED_BY_OWNER'  # user-authorized closure; satisfies dependencies, claims no evidence
+SATISFIED = ACCEPTED | {OWNER_CLOSED}
 ACTIVE = {'IN_PROGRESS', 'DESIGN_REVIEW_PENDING', 'REVIEW_PENDING', 'CHANGES_REQUESTED', 'CODE_VERIFIED_DEVICE_PENDING'}
 
 
@@ -219,11 +221,17 @@ def validate(bundle: dict[str, Any]) -> dict[str, Any]:
         entry = states.get(task_id, {})
         if entry.get('status') not in bundle['manifest']['task_statuses']:
             errors.append(f'{task_id}: invalid state')
+        if entry.get('status') == OWNER_CLOSED:
+            amendment = next((a for a in bundle['state'].get('contract_amendments', [])
+                              if a.get('id') == entry.get('closure_decision')), None)
+            if not amendment or amendment.get('status') != 'USER_AUTHORIZED':
+                errors.append(f'{task_id}: owner closure needs a USER_AUTHORIZED closure_decision amendment')
         if entry.get('status') in ACCEPTED:
             for dep in task['depends_on']:
-                if states.get(dep, {}).get('status') not in ACCEPTED:
+                dep_status = states.get(dep, {}).get('status')
+                if dep_status not in SATISFIED:
                     errors.append(f'{task_id}: accepted before dependency {dep}')
-                elif entry.get('input_fingerprint') != states.get(dep,{}).get('output_fingerprint'):
+                elif dep_status in ACCEPTED and entry.get('input_fingerprint') != states.get(dep,{}).get('output_fingerprint'):
                     errors.append(f'{task_id}: input does not match the accepted predecessor source')
         errors.extend(accepted_evidence_errors(task_id, entry, bundle))
     marks: dict[str, int] = {}
@@ -259,7 +267,7 @@ def validate(bundle: dict[str, Any]) -> dict[str, Any]:
 
 
 def pending_dependencies(task: dict[str, Any], bundle: dict[str, Any]) -> list[str]:
-    return [d for d in task['depends_on'] if bundle['state']['tasks'][d]['status'] not in ACCEPTED]
+    return [d for d in task['depends_on'] if bundle['state']['tasks'][d]['status'] not in SATISFIED]
 
 
 def next_tasks(bundle: dict[str, Any]) -> dict[str, Any]:

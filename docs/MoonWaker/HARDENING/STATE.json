@@ -40,7 +40,7 @@
       "checkpoint_plan": "runs/S02/checkpoint-plan.json"
     },
     "S03": {
-      "status": "CODE_VERIFIED_DEVICE_PENDING",
+      "status": "CLOSED_BY_OWNER",
       "assigned_run": "S03-worker-20260909T1319Z",
       "input_fingerprint": "sha256:02e6f8918a8027db3cb7b1270a22b1ed4ac520345c1f368093d85b2f95ca31bd",
       "output_fingerprint": "sha256:a9190d904a6eb83d319672a81f4d3b7383c7fdb0bcc3371e2ad5aa8abea991c8",
@@ -48,13 +48,13 @@
       "review_report": "runs/S03/warmup-regression-fix-13/review.json",
       "design_review_report": null,
       "blockers": [
-        "The user reconfirms that all S03 physical Windows/TV scenarios pass on the cumulative installed candidate, recorded in runs/S03/final-operator-confirmation-20260914.json.",
-        "Mandatory S03-LAB-WINDOWS-SIGNIN still lacks an executed source/APK/device-bound deterministic plan and per-scenario machine-verifiable evidence; operator confirmation alone cannot accept the checkpoint under amendments S03-A01-DETERMINISTIC-LAB-RUNNER and S03-A02-DETERMINISTIC-LAB-SCENARIOS."
+        "Closed by the owner (amendment S03-S06-20260929-OWNER-CLOSURE); no formal CHECKPOINT_ACCEPTED evidence claimed."
       ],
-      "checkpoint_plan": "runs/S03/checkpoint-plan.json"
+      "checkpoint_plan": "runs/S03/checkpoint-plan.json",
+      "closure_decision": "S03-S06-20260929-OWNER-CLOSURE"
     },
     "S04": {
-      "status": "CODE_VERIFIED_DEVICE_PENDING",
+      "status": "CLOSED_BY_OWNER",
       "assigned_run": "S04-worker-20260910T0820Z",
       "input_fingerprint": "sha256:c3d825c397e9c7a38296c8a0d0409da5066f419174b6393ff61d89927dfb7800",
       "output_fingerprint": "sha256:dedbbd549d3fb7f24caa80154a1de701f6ceaacaa91f5225c6af000e30f623d8",
@@ -62,13 +62,13 @@
       "review_report": "runs/S04/review.json",
       "design_review_report": null,
       "blockers": [
-        "S04-LAB-NATIVE-STOP-RECONNECT now passes with operator confirmation and candidate-bound terminal-to-reconnect diagnostics in runs/S04/final-acceptance-20260914.json.",
-        "Formal S04 checkpoint acceptance is blocked by the still-unaccepted S03 predecessor."
+        "Closed by the owner (amendment S03-S06-20260929-OWNER-CLOSURE); no formal CHECKPOINT_ACCEPTED evidence claimed."
       ],
-      "checkpoint_plan": "runs/S04/checkpoint-plan.json"
+      "checkpoint_plan": "runs/S04/checkpoint-plan.json",
+      "closure_decision": "S03-S06-20260929-OWNER-CLOSURE"
     },
     "S05": {
-      "status": "CODE_VERIFIED_DEVICE_PENDING",
+      "status": "CLOSED_BY_OWNER",
       "assigned_run": "profile-takeover-overlay-correction-20260914",
       "input_fingerprint": "sha256:12f04b802510ad9e014166509d2e640254c3a2d5680f6fbe74c0074fb2d9105d",
       "output_fingerprint": "sha256:c1a7ee8942db045b33aed21f5b16abf69c95e812aa4ec119355c8c288de2e784",
@@ -76,13 +76,13 @@
       "review_report": "runs/S05/profile-takeover-overlay-correction-20260914/review.json",
       "design_review_report": null,
       "blockers": [
-        "All S05 physical Windows/TV scenarios pass; evidence is recorded in runs/S05/profile-takeover-overlay-correction-20260914/acceptance.json.",
-        "Formal S05 checkpoint acceptance is blocked by the packet DAG until S03 and then S04 are formally accepted."
+        "Closed by the owner (amendment S03-S06-20260929-OWNER-CLOSURE); no formal CHECKPOINT_ACCEPTED evidence claimed."
       ],
-      "checkpoint_plan": "runs/S05/profile-takeover-overlay-correction-20260914/checkpoint-plan.json"
+      "checkpoint_plan": "runs/S05/profile-takeover-overlay-correction-20260914/checkpoint-plan.json",
+      "closure_decision": "S03-S06-20260929-OWNER-CLOSURE"
     },
     "S06": {
-      "status": "CODE_VERIFIED_DEVICE_PENDING",
+      "status": "CLOSED_BY_OWNER",
       "assigned_run": "S06-worker-20260914",
       "input_fingerprint": "sha256:5e78588cdd4512554e4c2ef1d047b7bb0beba87e2809759231ad86b2df38145e",
       "output_fingerprint": "sha256:60915ff34598b96acbb7e9d85377baec3cff2a887aaa1ec3191606d874afdb50",
@@ -90,11 +90,10 @@
       "review_report": "runs/S06/review-sol-no-compat-rereview.json",
       "design_review_report": "runs/S06/pre-edit-review.json",
       "blockers": [
-        "S06 closed by the user on 2026-09-29 on the defined formal gate: formal137 PASS, 3 consecutive complete 20/20 on candidate164 in the owned lab; independent review R048 READY (runs/S06/formal137-closure.json).",
-        "Candidate164 is not bound to output_fingerprint sha256:60915ff3... (the 20260914 source); the acceptance evidence is bound to product tree 9a1e82910e52d64f87a9bed7b33e26dfd4ef0984.",
-        "Formal CHECKPOINT_ACCEPTED under packet.py stays blocked: S03-S05 remain CODE_VERIFIED_DEVICE_PENDING and are not waived by the S06 dependency override."
+        "Closed by the owner (amendment S03-S06-20260929-OWNER-CLOSURE); no formal CHECKPOINT_ACCEPTED evidence claimed."
       ],
-      "checkpoint_plan": "runs/S06/checkpoint-plan.json"
+      "checkpoint_plan": "runs/S06/checkpoint-plan.json",
+      "closure_decision": "S03-S06-20260929-OWNER-CLOSURE"
     },
     "S07": {
       "status": "NOT_STARTED",
@@ -183,6 +182,13 @@
       "status": "USER_AUTHORIZED",
       "value": "S06 is closed on formal137 PASS 3/3 and R048 READY for candidate164 in the owned lab. Recorded limits: repeated Gateway lock-held-slow in _child_time_stop_stream, Playnite setup flake, memory pressure. Does not accept S03-S05, promote a baseline, or authorize push, publication or real-device deployment.",
       "source": "User message: Tak, zamykamy S06"
+    },
+    {
+      "id": "S03-S06-20260929-OWNER-CLOSURE",
+      "decision": "CLOSE_S03_S06_WITHOUT_FORMAL_ACCEPTANCE",
+      "status": "USER_AUTHORIZED",
+      "value": "The owner closes S03, S04, S05 and S06 as CLOSED_BY_OWNER instead of pursuing formal CHECKPOINT_ACCEPTED on fingerprints of code that has since moved on. The recorded evidence stays as it is (S03 operator confirmation; S04 final-acceptance-20260914; S05 acceptance.json; S06 formal137 PASS 3/3 with review R048 READY, runs/S06/formal137-closure.json). It is not re-labelled as formal acceptance. S07 onward proceed on the current branch; S10 still requires the full release evidence on the exact final artifacts. Does not authorize push, publication, baseline promotion or real-device deployment.",
+      "source": "User message 2026-09-29: \"Wybieram B. Zamykamy i zapominamy o tym\""
     }
   ],
   "workspace": {

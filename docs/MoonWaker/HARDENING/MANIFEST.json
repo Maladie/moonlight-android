@@ -30,11 +30,13 @@
     "CODE_VERIFIED_DEVICE_PENDING",
     "CHECKPOINT_ACCEPTED",
     "ACCEPTED_NO_CHANGE",
+    "CLOSED_BY_OWNER",
     "BLOCKED"
   ],
   "dependency_satisfied_statuses": [
     "CHECKPOINT_ACCEPTED",
-    "ACCEPTED_NO_CHANGE"
+    "ACCEPTED_NO_CHANGE",
+    "CLOSED_BY_OWNER"
   ],
   "source_files": {
     "rules": "RULES.md",
