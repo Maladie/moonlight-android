@@ -5173,13 +5173,17 @@ class GatewayState:
                     "actor_profile_id", "execution_profile_id", "child_session_id",
                     "provider_game_id", "process_token", "process_id")}}
 
-    def _control_reconcile_idle_candidate_locked(self) -> dict[str, Any] | None:
-        """The retained stream that may be stale: no operation in flight, no child session."""
+    def _control_reconcile_idle_candidate_locked(
+            self) -> tuple[dict[str, Any], tuple[int, int, int]] | None:
+        """The retained stream that may be stale (no operation in flight, no child session),
+        with the control counters an operation started meanwhile would advance."""
         stream = self.control_state.get("stream")
         if self.control_state.get("active") is not None or not isinstance(stream, dict) \
                 or self.child_time_session is not None:
             return None
-        return dict(stream)
+        return dict(stream), (int(self.control_state.get("generation") or 0),
+                              int(self.control_state.get("actor_lease_epoch") or 0),
+                              int(self.control_state.get("provider_sequence") or 0))
 
     def _control_stream_idle(self, stream: dict[str, Any]) -> bool:
         """Streamer and provider both report the retained stream idle (network reads)."""
@@ -5193,10 +5197,17 @@ class GatewayState:
         except OSError:
             return False
 
-    def _control_reconcile_idle_apply_locked(self, stream: dict[str, Any]) -> bool:
-        """Retire the stream that was probed, only if nothing changed since the probe."""
-        if self._control_reconcile_idle_candidate_locked() != stream:
+    def _control_reconcile_idle_apply_locked(
+            self, candidate: tuple[dict[str, Any], tuple[int, int, int]]) -> bool:
+        """Retire the stream that was probed, only if no control operation began since.
+
+        An operation that started and finished during the probe leaves no active permit and
+        may leave an equal stream, but it advanced a control counter (every acquisition does),
+        so the idle proof it could have invalidated is discarded.
+        """
+        if self._control_reconcile_idle_candidate_locked() != candidate:
             return False
+        stream = candidate[0]
         self.control_state["idle_stream"] = dict(stream)
         self.control_state["stream"] = None
         self._control_save_locked()
@@ -5206,9 +5217,9 @@ class GatewayState:
 
     def _control_reconcile_idle_locked(self) -> bool:
         """Recover a completed transport's stale ownership, never an in-flight permit."""
-        stream = self._control_reconcile_idle_candidate_locked()
-        return stream is not None and self._control_stream_idle(stream) \
-            and self._control_reconcile_idle_apply_locked(stream)
+        candidate = self._control_reconcile_idle_candidate_locked()
+        return candidate is not None and self._control_stream_idle(candidate[0]) \
+            and self._control_reconcile_idle_apply_locked(candidate)
 
     def _control_reconcile_idle(self) -> bool:
         """The same reconcile without holding the Gateway lock across the network reads.
@@ -5217,11 +5228,11 @@ class GatewayState:
         request (authentication, observations) for the length of the streamer snapshot.
         """
         with self.lock:
-            stream = self._control_reconcile_idle_candidate_locked()
-        if stream is None or not self._control_stream_idle(stream):
+            candidate = self._control_reconcile_idle_candidate_locked()
+        if candidate is None or not self._control_stream_idle(candidate[0]):
             return False
         with self.lock:
-            return self._control_reconcile_idle_apply_locked(stream)
+            return self._control_reconcile_idle_apply_locked(candidate)
 
     @staticmethod
     def _control_bridge_binding(permit: dict[str, Any]) -> dict[str, Any]:

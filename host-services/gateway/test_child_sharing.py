@@ -322,6 +322,40 @@ class ChildSharingGatewayTest(unittest.TestCase):
         self.assertEqual("session-4", self.state.control_state["stream"]["stream_session_id"])
         self.state._control_save_locked.assert_not_called()
 
+    def test_reconcile_is_abandoned_when_an_operation_starts_and_finishes_during_the_probe(self):
+        # The permit is gone and the retained stream is equal again, but the operation advanced
+        # a control counter, so the pre-operation idle reading must not retire the stream.
+        def probe(*args, **kwargs):
+            with self.state.lock:
+                self.state.control_state["provider_sequence"] = int(
+                    self.state.control_state.get("provider_sequence") or 0) + 1
+                self.state.control_state["active"] = {"operation_id": "provider-1"}
+                self.state.control_state["active"] = None
+            return True, {}
+
+        self._idle_reconcile_setup(probe)
+        with mock.patch.object(wakeplay_gateway.ControlOperationPolicy, "streamer_idle",
+                               return_value=True):
+            self.assertFalse(self.state._control_reconcile_idle())
+        self.assertEqual("session-4", self.state.control_state["stream"]["stream_session_id"])
+        self.state._control_save_locked.assert_not_called()
+
+    def test_reconcile_is_abandoned_when_a_stop_or_start_advanced_the_lease(self):
+        def probe(*args, **kwargs):
+            with self.state.lock:
+                self.state.control_state["generation"] = int(
+                    self.state.control_state.get("generation") or 0) + 1
+                self.state.control_state["actor_lease_epoch"] = int(
+                    self.state.control_state.get("actor_lease_epoch") or 0) + 1
+            return True, {}
+
+        self._idle_reconcile_setup(probe)
+        with mock.patch.object(wakeplay_gateway.ControlOperationPolicy, "streamer_idle",
+                               return_value=True):
+            self.assertFalse(self.state._control_reconcile_idle())
+        self.assertIsNotNone(self.state.control_state["stream"])
+        self.state._control_save_locked.assert_not_called()
+
     def test_reconcile_is_abandoned_when_the_stream_is_replaced_during_the_probe(self):
         def probe(*args, **kwargs):
             with self.state.lock:
