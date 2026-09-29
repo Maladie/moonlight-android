@@ -12,24 +12,34 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class GameTransportStopContractTest {
-    @Test public void gameBindsOneOwnerToTheExactConnectionAndRoutesStopThroughIt()
+    @Test public void runtimeOwnsTheOneConnectionAndGameRoutesStopThroughIt()
             throws IOException {
         String game = source("app/src/main/java/com/limelight/Game.java");
-        String setup = between(game, "conn = new NvConnection(",
-                "keyboardTranslator = new KeyboardTranslator()");
+        String runtime = source("app/src/main/java/com/limelight/stream/StreamRuntime.java");
+        String android = source(
+                "app/src/main/java/com/limelight/stream/AndroidStreamRuntime.java");
         String stop = between(game, "private void stopConnection(Runnable afterStopped)",
                 "public void stageFailed(");
 
-        assertTrue(setup.contains("new TransportStopCoordinator(conn::stop"));
-        assertTrue(game.contains("transportStop.start(this::runOnUiThread"));
+        // S07: the physical transport, its stop completion, listener and locks leave Game.
+        assertTrue(runtime.contains("new TransportStopCoordinator(transport::stop,"));
+        assertTrue(runtime.contains("transport.start(this)"));
+        assertTrue(runtime.contains("stopCoordinator.fence("));
+        assertTrue(android.contains("connection.start(audio, video, listener)"));
+        assertTrue(android.contains("WIFI_MODE_FULL_HIGH_PERF"));
+        assertFalse(game.contains("private NvConnection conn"));
+        assertFalse(game.contains("TransportStopCoordinator transportStop"));
+        assertFalse(game.contains("WifiLock"));
+        assertFalse(game.contains("conn.stop()"));
+        assertFalse(game.contains("conn.start("));
+        assertFalse(game.contains("new TransportStopCoordinator("));
+        assertFalse(game.contains("RetainedStreamSessionCoordinator.Controller"));
+        assertTrue(game.contains("runtime.start();"));
         assertTrue(game.contains("@Override public void transportUnsafe()"));
         assertTrue(game.contains("completion.transportUnsafe()"));
-        assertTrue(stop.contains("TransportStopCoordinator captured = transportStop"));
-        assertTrue(stop.contains("private synchronized void stopConnectionResult("));
+        assertTrue(stop.contains("StreamRuntime captured = runtime"));
         assertTrue(stop.contains("captured.stop("));
         assertTrue(stop.contains("TransportStopCoordinator.completeSafely("));
-        assertTrue(stop.contains("captured.fence(result)"));
-        assertFalse(stop.contains("conn.stop()"));
         assertFalse(stop.contains("else if (afterStopped != null)"));
         assertFalse(stop.contains("new Thread()"));
     }
@@ -37,8 +47,9 @@ public class GameTransportStopContractTest {
     @Test public void retainedAndReplacementCompletionWaitForTheSharedStopResult()
             throws IOException {
         String game = source("app/src/main/java/com/limelight/Game.java");
-        String disconnect = between(game, "public void disconnectRetainedStream(",
-                "public void terminateRetainedSession(");
+        String runtime = source("app/src/main/java/com/limelight/stream/StreamRuntime.java");
+        String disconnect = between(runtime, "@Override public void disconnectRetainedStream(",
+                "@Override public void terminateRetainedSession(");
         String finish = between(game, "private void terminateWholeSessionVerified(",
                 "private void applyImmediateTerminalPrivacy(");
         String console = source(
@@ -47,7 +58,7 @@ public class GameTransportStopContractTest {
                 "private Boolean terminateLiveRetainedForReplacement(",
                 "private void beginInstallationSupportStream(");
 
-        assertTrue(disconnect.indexOf("stopConnectionResult(")
+        assertTrue(disconnect.indexOf("stop(result ->")
                 < disconnect.indexOf("completion.complete(stopped)"));
         assertTrue(disconnect.indexOf("completion.transportUnsafe()")
                 < disconnect.indexOf("completion.complete(stopped)"));

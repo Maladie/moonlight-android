@@ -96,15 +96,17 @@
       "closure_decision": "S03-S06-20260929-OWNER-CLOSURE"
     },
     "S07": {
-      "status": "NOT_STARTED",
-      "assigned_run": null,
-      "input_fingerprint": null,
-      "output_fingerprint": null,
-      "implementation_report": null,
-      "review_report": null,
-      "design_review_report": null,
-      "blockers": [],
-      "checkpoint_plan": null
+      "status": "CODE_VERIFIED_DEVICE_PENDING",
+      "assigned_run": "S07-worker-20260929",
+      "input_fingerprint": "sha256:eb5978f82809e316b87fffaae80001220e403d66dd409116cf9c87a91e75ea4f",
+      "output_fingerprint": "sha256:161d143ca5c77f6f62fcf9d23f9305b0b22d0732ba1e605a7624138c68fa1c6c",
+      "implementation_report": "runs/S07/implementation.json",
+      "review_report": "runs/S07/review.json",
+      "design_review_report": "runs/S07/review-bridge/R053-review.md",
+      "blockers": [
+        "Owned-lab device evidence pending (T05, T06, T07, T25, T26 incl. preparing/converted-game, T50, S05 whole-quit/child expiry, S07-END-GAME-RELAUNCH); physical TV (API 32) evidence pending."
+      ],
+      "checkpoint_plan": "runs/S07/checkpoint-plan.json"
     },
     "S08": {
       "status": "NOT_STARTED",

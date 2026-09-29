@@ -934,7 +934,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && RetainedStreamSessionCoordinator.clearIfMatches(
                 retained.streamSessionId)) {
             SessionResumeManager.clearIfMatches(this, retained.streamSessionId);
-            BackgroundStreamService.resumed(this, retained.streamSessionId);
+            BackgroundStreamService.dismiss(this, retained.streamSessionId);
             if (pending != null && pending.matches(retained.streamSessionId)) pending = null;
             boolean exactLocalRetained = retained.streamSessionId.equals(
                     retainedStreamSessionId)
@@ -1000,7 +1000,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             RetainedStreamSessionCoordinator.clearAfterAuthoritativeEndIfMatches(
                     endedStreamSessionId);
             SessionResumeManager.clearIfMatches(this, endedStreamSessionId);
-            BackgroundStreamService.resumed(this, endedStreamSessionId);
+            BackgroundStreamService.dismiss(this, endedStreamSessionId);
         }
     }
     private final ServiceConnection serviceConnection = new ServiceConnection() {
@@ -1035,6 +1035,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         super.onCreate(state);
         if (!retainedStreamHome
                 && RetainedStreamSessionCoordinator.canResumeInstantly()) {
+            if (!RetainedStreamSessionCoordinator.hasAttachedPresentation()) {
+                // The transport survived its Activity: reattach a presentation to it.
+                Intent attach = SessionResumeManager.buildResumeIntent(this,
+                        SessionResumeManager.pendingSession(this));
+                if (attach != null) startActivity(attach);
+            }
             finish();
             overridePendingTransition(0, 0);
             return;
@@ -7903,7 +7909,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (!streamSessionId.isEmpty()) {
                 RetainedStreamSessionCoordinator.clearIfMatches(streamSessionId);
                 SessionResumeManager.clearIfMatches(this, streamSessionId);
-                BackgroundStreamService.resumed(this, streamSessionId);
+                BackgroundStreamService.dismiss(this, streamSessionId);
             }
         }
         refreshSessionState(host.uuid);
@@ -8004,7 +8010,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         for (String streamSessionId : streamSessionIds) {
             SessionResumeManager.clearIfMatches(this, streamSessionId);
-            BackgroundStreamService.resumed(this, streamSessionId);
+            BackgroundStreamService.dismiss(this, streamSessionId);
         }
         if (host.uuid.equalsIgnoreCase(retainedStreamHostId)) {
             retainedStreamSessionId = "";
@@ -8085,7 +8091,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (stopped) {
             RetainedStreamSessionCoordinator.clearIfMatches(sessionId);
             SessionResumeManager.clearIfMatches(this, sessionId);
-            BackgroundStreamService.resumed(this, sessionId);
+            BackgroundStreamService.dismiss(this, sessionId);
         }
         return stopped;
     }
@@ -13699,6 +13705,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ConsoleActivity.this.returnToRetainedStream();
             }
 
+            @Override public void attachPresentationForSwitch(PlayIntent intent, NvApp target) {
+                ConsoleActivity.this.attachPresentationForSwitch(intent, target);
+            }
+
             @Override public void reconnectSavedSession() {
                 SessionResumeManager.PendingSession pending =
                         SessionResumeManager.pendingSession(ConsoleActivity.this);
@@ -13879,6 +13889,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         && !childMustCloseDisallowedGame) {
                     if (retained.appId == target.getAppId()
                             && canAttemptRetainedSwitch(intent)) {
+                        if (!RetainedStreamSessionCoordinator.hasAttachedPresentation()) {
+                            // No Activity presents the retained transport: the switch must
+                            // run inside an attaching Game, never against a headless runtime.
+                            return SessionOrchestrator.CloseResult.PRESENTATION_REQUIRED;
+                        }
                         try {
                             return switchRetainedProviderGame(intent, target, cancelled);
                         } catch (IOException error) {
@@ -14536,9 +14551,49 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return true;
     }
 
+    /** Starts the attaching Game with the selected target; it submits the switch itself. */
+    private void attachPresentationForSwitch(PlayIntent intent, NvApp target) {
+        if (isFinishing()) return;
+        SessionResumeManager.PendingSession pending =
+                SessionResumeManager.pendingSession(this);
+        Intent attach = SessionResumeManager.buildResumeIntent(this, pending);
+        if (attach == null) {
+            presentationLaunchFailed();
+            return;
+        }
+        attach.putExtra(Game.EXTRA_PENDING_SWITCH_HOST_ID, intent.hostId)
+                .putExtra(Game.EXTRA_PENDING_SWITCH_EXECUTION_PROFILE_ID,
+                        executionProfileId(intent.hostId, intent.profileId))
+                .putExtra(Game.EXTRA_PENDING_SWITCH_TARGET_PROFILE_ID, intent.profileId)
+                .putExtra(Game.EXTRA_PENDING_SWITCH_TARGET_CHILD, isChildIntent(intent))
+                .putExtra(Game.EXTRA_PENDING_SWITCH_APP_ID, target.getAppId())
+                .putExtra(Game.EXTRA_PENDING_SWITCH_GAME_ID, intent.playniteGameId)
+                .putExtra(Game.EXTRA_PENDING_SWITCH_GAME_NAME, intent.appName)
+                .putExtra(Game.EXTRA_PENDING_SWITCH_STREAM_TARGET, target.getAppName())
+                .putExtra(Game.EXTRA_PENDING_SWITCH_ARTWORK, cachedLoadingArtworkPath(
+                        intent.hostId, intent.profileId, intent.loadingArtworkGameId));
+        try {
+            startActivity(attach);
+        } catch (RuntimeException error) {
+            presentationLaunchFailed();
+            return;
+        }
+        if (retainedStreamHome) finish();
+        overridePendingTransition(0, android.R.anim.fade_out);
+    }
+
+    private void presentationLaunchFailed() {
+        MoonWakerDiagnostics.record("WARN", "android.console", "presentation_launch_failed");
+        if (streamLoadingView != null) {
+            streamLoadingView.showError(getString(R.string.applist_quit_fail),
+                    getString(R.string.console_previous_session_close_failed));
+        }
+    }
+
     private void returnToRetainedStream() {
         if (isFinishing()) return;
-        if (!RetainedStreamSessionCoordinator.canResumeInstantly()) {
+        if (!RetainedStreamSessionCoordinator.canResumeInstantly()
+                || !RetainedStreamSessionCoordinator.hasAttachedPresentation()) {
             SessionResumeManager.PendingSession pending =
                     SessionResumeManager.pendingSession(this);
             Intent resume = SessionResumeManager.buildResumeIntent(this, pending);
@@ -16036,7 +16091,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
             RetainedStreamSessionCoordinator.clearIfMatches(expectedStreamSessionId);
             SessionResumeManager.clearIfMatches(this, expectedStreamSessionId);
-            BackgroundStreamService.resumed(this, expectedStreamSessionId);
+            BackgroundStreamService.dismiss(this, expectedStreamSessionId);
             finishAffinity();
             Intent home = new Intent(Intent.ACTION_MAIN);
             home.addCategory(Intent.CATEGORY_HOME);

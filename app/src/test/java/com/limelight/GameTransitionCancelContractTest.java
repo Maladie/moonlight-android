@@ -32,11 +32,19 @@ public class GameTransitionCancelContractTest {
 
     @Test public void retainedStreamDisconnectDoesNotStopTheProviderGame() throws IOException {
         String text = source();
-        String disconnect = text.substring(text.indexOf("public void disconnectRetainedStream("),
-                text.indexOf("public void terminateRetainedSession("));
+        Path runtimePath = Paths.get("src/main/java/com/limelight/stream/StreamRuntime.java");
+        if (!Files.exists(runtimePath)) {
+            runtimePath = Paths.get("app/src/main/java/com/limelight/stream/StreamRuntime.java");
+        }
+        String runtime = new String(Files.readAllBytes(runtimePath), StandardCharsets.UTF_8)
+                .replace("\r\n", "\n");
+        String disconnect = runtime.substring(
+                runtime.indexOf("@Override public void disconnectRetainedStream("),
+                runtime.indexOf("@Override public void terminateRetainedSession("));
 
-        assertTrue(disconnect.contains("stopConnectionResult("));
-        assertTrue(disconnect.contains("SessionResumeManager.clearIfMatches("));
+        assertTrue(disconnect.contains("stop(result ->"));
+        assertTrue(disconnect.contains("platform.clearReconnectRecord("));
+        assertFalse(disconnect.contains("terminateHost("));
         assertFalse(disconnect.contains("terminateWholeSessionVerified("));
         assertFalse(disconnect.contains("stopProviderGame("));
         String cleanup = text.substring(text.indexOf(
@@ -44,6 +52,14 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("private boolean isFreshOwnedFailureCleanup("));
         assertTrue(cleanup.contains(
                 "if (userInitiatedDisconnect) return false"));
+    }
+
+    @Test public void reattachedWarmUpAdoptsOnlyAnAcceptedFrameOrRetainedWarmUp() {
+        assertTrue(Game.shouldResumeAcceptedWarmUp(true, true, false));
+        assertFalse("unaccepted preparing starts its own Home frame",
+                Game.shouldResumeAcceptedWarmUp(true, false, true));
+        assertTrue(Game.shouldResumeAcceptedWarmUp(false, false, true));
+        assertFalse(Game.shouldResumeAcceptedWarmUp(false, false, false));
     }
 
     @Test public void repeatedSnapshotsDoNotRecoverOverlayButReadinessRegressionDoes() {
@@ -351,14 +367,21 @@ public class GameTransitionCancelContractTest {
         Path source = Paths.get("src/main/java/com/limelight/Game.java");
         if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/Game.java");
         String text = new String(Files.readAllBytes(source), StandardCharsets.UTF_8).replace("\r\n", "\n");
-        String start = text.substring(text.indexOf("private void startConnectionIfReady("),
-                text.indexOf("public void surfaceCreated("));
+        Path runtimePath = Paths.get("src/main/java/com/limelight/stream/StreamRuntime.java");
+        if (!Files.exists(runtimePath)) {
+            runtimePath = Paths.get("app/src/main/java/com/limelight/stream/StreamRuntime.java");
+        }
+        String runtime = new String(Files.readAllBytes(runtimePath), StandardCharsets.UTF_8)
+                .replace("\r\n", "\n");
+        String start = runtime.substring(runtime.indexOf("public void start() {"),
+                runtime.indexOf("public void stop(TransportStopCoordinator.Completion"));
         String stop = text.substring(text.indexOf("private void stopConnection(Runnable"),
                 text.indexOf("public void stageFailed"));
 
-        assertTrue(start.indexOf("connecting = true") < start.indexOf("conn.start("));
-        assertTrue(stop.contains("boolean active = connecting || connected"));
-        assertTrue(text.contains("new TransportStopCoordinator(conn::stop"));
+        // The runtime marks CONNECTING before the native start, so a stop always reaches it.
+        assertTrue(start.indexOf("state = State.CONNECTING")
+                < start.indexOf("transport.start(this)"));
+        assertTrue(runtime.contains("new TransportStopCoordinator(transport::stop"));
         assertFalse(stop.contains("conn.stop()"));
         assertTrue(stop.contains("captured.stop("));
     }
@@ -595,7 +618,7 @@ public class GameTransitionCancelContractTest {
         String stop = text.substring(text.indexOf("private void endManagedGameKeepingStream()"),
                 text.indexOf("private void clearResumedSuspendedSession()"));
 
-        assertTrue(eligibility.contains("connected && streamEverRevealed"));
+        assertTrue(eligibility.contains("isTransportConnected() && streamEverRevealed"));
         assertTrue(eligibility.contains("EXTRA_NEUTRAL_STREAM_TARGET"));
         assertTrue(eligibility.contains("hasProviderGameTransition()"));
         assertTrue(eligibility.contains("retainedSwitch == null"));
@@ -675,14 +698,15 @@ public class GameTransitionCancelContractTest {
                         "private void settleNeutralRetainedStream(String hostId"),
                 text.indexOf("private void retainNeutralStreamAfterNaturalGameStop("));
         String parking = text.substring(text.indexOf("private boolean canParkBackgroundStream()"),
-                text.indexOf("public void terminateRetainedSession("));
+                text.indexOf("public boolean parkPreparingTransport("));
 
         assertTrue(neutral.contains("if (parked)"));
         assertTrue(neutral.contains("SessionResumeManager.save("));
         assertTrue(neutral.contains("SessionResumeManager.saveActive("));
         assertTrue(parking.contains("BackgroundStreamPreferences.readMinutes(this) == 0"));
-        assertTrue(parking.contains("int retentionMinutes = BackgroundStreamPreferences.readMinutes(this)"));
-        assertTrue(parking.contains("BackgroundStreamService.park("));
+        // Park goes through the runtime, which owns the service and the retention timer.
+        assertTrue(parking.contains("return runtime.park();"));
+        assertFalse(parking.contains("BackgroundStreamService."));
         assertFalse(neutral.contains("postDelayed"));
     }
 
@@ -771,7 +795,7 @@ public class GameTransitionCancelContractTest {
                         "@Override public void onProviderGameStartAccepted(")));
 
         assertTrue(helper.contains("RetainedStreamSessionCoordinator.updateOwnedSwitchGame("));
-        assertTrue(helper.contains("this, operation.request, expectedGameId, newGameId"));
+        assertTrue(helper.contains("runtime, operation.request, expectedGameId, newGameId"));
         assertFalse(helper.contains("newGameId.equalsIgnoreCase(retained.playniteGameId)"));
         assertTrue(callbacks.split("updateRetainedGame\\(", -1).length - 1 >= 3);
     }
@@ -1019,8 +1043,9 @@ public class GameTransitionCancelContractTest {
         assertTrue(cancel.contains("retainedSwitch.retryRequested = false;"));
         assertTrue(cancel.indexOf("retainedSwitch.retryRequested = false;")
                 < cancel.indexOf("requestRetainedSwitchCancellation(retainedSwitch)"));
-        assertTrue(destroy.contains("} else if (connecting || connected) {"));
-        assertTrue(destroy.contains("backgroundStreamParked = false;"));
-        assertTrue(destroy.contains("stopConnection();"));
+        // Destroy hands the transport to the runtime: survives only when retained and
+        // protected, otherwise the runtime stops it (StreamRuntimeTest).
+        assertTrue(destroy.contains("runtime.presentationLost(attachment, isFinishing())"));
+        assertFalse(destroy.contains("stopConnection"));
     }
 }

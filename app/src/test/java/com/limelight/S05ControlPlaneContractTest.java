@@ -104,8 +104,9 @@ public class S05ControlPlaneContractTest {
         String game = source("com/limelight/Game.java");
         String terminal = between(game, "private void finishChildSession(",
                 "private boolean childStateMatches(");
-        String disconnect = between(game, "public void disconnectRetainedStream(",
-                "public void terminateRetainedSession(");
+        String disconnect = between(source("com/limelight/stream/StreamRuntime.java"),
+                "@Override public void disconnectRetainedStream(",
+                "@Override public void terminateRetainedSession(");
         assertTrue(terminal.contains("terminateWholeSessionVerified(null)"));
         assertFalse(game.contains("terminateChildSession("));
         String awaitedEnd = between(game, "private ChildSessionClient.State endChildSessionAndWait(",
@@ -114,8 +115,8 @@ public class S05ControlPlaneContractTest {
         assertTrue(awaitedEnd.contains("client.status("));
         assertTrue(awaitedEnd.contains("SystemClock.elapsedRealtime() + 30_000L"));
         assertTrue(awaitedEnd.contains("!ChildSessionLifecycle.terminal(state)"));
-        assertTrue(disconnect.contains("stopConnectionResult("));
-        assertFalse(disconnect.contains("HostSessionTermination"));
+        assertTrue(disconnect.contains("stop(result ->"));
+        assertFalse(disconnect.contains("terminateHost("));
         assertTrue(source("com/limelight/console/ConsoleStreamTransitionCoordinator.java")
                 .contains("callbacks.controlTransportAuthorized()"));
         String lifecycle = source("com/limelight/console/ChildSessionLifecycle.java");

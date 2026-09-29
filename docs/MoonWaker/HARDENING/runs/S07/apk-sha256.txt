@@ -1,0 +1,2 @@
+63a28e682a712254a6f6d34f5203f260933515a235f010d17e0e5a5f688f7b75 *app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk
+8a97d4cea28941ec503b1211e4a3a7669f7220c51d5d5e4c69c15265f90e7c39 *app/build/outputs/apk/nonRoot/release/app-nonRoot-release-unsigned.apk

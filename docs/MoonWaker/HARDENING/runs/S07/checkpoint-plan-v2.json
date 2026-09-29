@@ -1,0 +1,169 @@
+{
+  "schema_version": 1,
+  "task_id": "S07",
+  "input_fingerprint": "sha256:eb5978f82809e316b87fffaae80001220e403d66dd409116cf9c87a91e75ea4f",
+  "input_head": "3913979f9e2b647f5d9bfbebdd86a73cbd39ae43",
+  "lineage_note": "History of codex/session-hardening was rewritten before S07; old tip b05f3e2c kept as local branch backup/session-hardening-b05f3e2c. STATE.workspace.base_head 00366fd9 belongs to the old lineage (ancestor of the backup, not of HEAD), so packet.py branch-check fails at merge-base --is-ancestor. Recorded, not repaired, per owner instruction. S03-S06 are CLOSED_BY_OWNER (S03-S06-20260929-OWNER-CLOSURE).",
+  "untracked_input_note": "Untracked root screenshots/XML, host-services/dist-*, .tmp/, work/ and the moonlight-common-c submodule pointer difference (7b026e7 vs recorded 1cc32cf6) are not S07 inputs; not staged, not deleted, submodule not changed.",
+  "approved_by_coordinator_run": "S07-coordinator-20260929",
+  "design_review": "R049 CHANGES_REQUIRED (answered in design.md v2); pending: work/s05-review-bridge/requests/R050.md",
+  "outcome": "Presentation/Activity replacement (recreation, Home, host picker) does not own or stop the retained transport; explicit quit and child expiry still end the runtime; process death is honestly reported and reconnects under current authorization.",
+  "target_platform": {
+    "target_sdk": 34,
+    "min_sdk": 21,
+    "lab_avd": "MoonWaker_Lab_TV36 emulator-5580 adb 5038, ro.build.version.sdk=36 (read 2026-09-29)",
+    "physical_target_tv_api_level": "36 - OWNER-DECLARED 2026-09-29 (\"Wersja powinna byc zgodna z ta na emulatorze\"); not device-read. Device named in saved install evidence: BRAVIA 4K VH22."
+  },
+  "production_path": [
+    "app/src/main/java/com/limelight/stream/StreamRuntime.java (new owner) + narrow seams",
+    "app/src/main/java/com/limelight/stream/RetainedStreamSessionCoordinator.java (strong runtime Controller reference; attached-presentation eligibility)",
+    "app/src/main/java/com/limelight/Game.java (presentation attach/detach adapter; remove conn/transportStop/Wi-Fi locks/listener/expiry receiver ownership)",
+    "app/src/main/java/com/limelight/stream/BackgroundStreamService.java (FGS started once on establishment; park/resume state only)",
+    "app/src/main/java/com/limelight/console/ConsoleActivity.java (instant resume launches an attaching Game when no presentation is attached)",
+    "app/src/main/java/com/limelight/MoonWakerApplication.java (ApplicationExitInfo recording; debug-only StrictMode)",
+    "app/src/main/java/com/limelight/stream/WholeSessionTermination.java / HostSessionTermination.java callers (quit orchestration moved from Game to runtime)",
+    "app/src/main/java/com/limelight/console/ConsoleStreamTransitionCoordinator.java (detachForRecreation/adoptRecreatedProviderOwnership)",
+    "app/src/main/java/com/limelight/stream/BackgroundStreamCorrelation.java (session+generation correlation)"
+  ],
+  "artifact_compatibility_matrix": [
+    {
+      "pairing": "lockstep",
+      "android_artifact": "S07 candidate APK (debug+release) from the S07 candidate source",
+      "host_artifact": "host services built from the same candidate source; no host source change planned in S07",
+      "behavior": "new/new only; no mixed-version support"
+    }
+  ],
+  "architecture_boundary": "Physical transport runtime (NvConnection, S04 stop completion, MoonBridge listener, audio renderer, SwitchableVideoDecoderRenderer, Wi-Fi locks, FGS lifetime, whole-quit transport/host effects) owned by StreamRuntime behind RetainedStreamSessionCoordinator. Game owns only presentation: surface/decoder attachment, ControllerHandler, UsbDriverService binding, touch/keyboard/mouse translation, transition UI. LaunchTransitionController stays the privacy/input gate.",
+  "required_checks": [
+    "characterization of current Activity-owned transport (runs/S07/characterization.md)",
+    "independent pre-edit design review R049 READY before product edits",
+    "JVM: no-presentation connectionTerminated -> RECONNECT_REQUIRED, service lost, stop, locks released",
+    "JVM: attach/detach identity fence for surface/audio/input; late surface after detach is inert",
+    "JVM: destroy vs stop vs new start interleavings with blocked stop (T25)",
+    "JVM: successor start waits for predecessor TransportStopCoordinator result; failed predecessor never starts native (item 4)",
+    "JVM: Wi-Fi locks held exactly for the transport lifetime",
+    "JVM: FGS started once on establishment, never from park",
+    "JVM: held controls released on detach",
+    "JVM: exit-reason recording allowlisted fields, new entries only, API<30 no-op; StrictMode debug-only",
+    "existing TransportStopCoordinator, RetainedStreamSessionCoordinator, WholeSessionTermination, SessionStateResolver tests pass unchanged",
+    "Game*/S05 source-contract tests migrated to the new owner without weakening",
+    "Android :app:testNonRootDebugUnitTest full suite",
+    "Android debug and release assembly (nonRoot)",
+    "independent post-edit behavioral + architecture review",
+    "lab device checks T05, T06, T07, T25, T26, T50 plus S05 whole-quit and child expiry",
+    "JVM: survival rule + every Game stop entrypoint mapped (design.md section 2); non-retained teardown, PREPARING cancellation, bitrate restart",
+    "JVM: headless same-game return, headless A->B, PREPARING headless switch, handoff after presentation loss, superseded/cancelled/stopped pending switch slot",
+    "JVM: FGS protocol - late connectionStarted after onStop, start refusal, missing/stale ack, park without ESTABLISHED performs honest shared stop",
+    "JVM: whole quit and child expiry detached with mandatory runtime privacy effects; late old-generation service callback inert",
+    "JVM: stale stageComplete after new generation; stale attachment during actor rebind",
+    "JVM: recreation during PREPARING/unrevealed launch keeps one provider owner, no provider stop, fresh readiness before reveal",
+    "source contract: Game holds no NvConnection/TransportStopCoordinator/WifiLock/listener/conn.stop"
+  ],
+  "device_checks_required": true,
+  "required_device_check_ids": [
+    "T05",
+    "T06",
+    "T07",
+    "T25",
+    "T26",
+    "T50",
+    "S05-whole-quit",
+    "S05-child-expiry",
+    "T08-headless-switch",
+    "T26-preparing-recreation"
+  ],
+  "protected_flows": [
+    {
+      "flow_id": "F01",
+      "check_ids": [
+        "cold-start-new-runtime",
+        "successor-waits-for-predecessor-stop"
+      ],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F02",
+      "check_ids": [
+        "game-only-stop-keeps-runtime-generation"
+      ],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F03",
+      "check_ids": [
+        "retained-switch-attached-presentation",
+        "headless-switch-attaches-opaque-presentation"
+      ],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F04",
+      "check_ids": [
+        "whole-quit-from-runtime",
+        "whole-quit-then-next-start"
+      ],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F05",
+      "check_ids": [
+        "home-resume-same-generation",
+        "recreation-attaches-same-runtime",
+        "process-death-reconnects"
+      ],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F06",
+      "check_ids": [
+        "warm-up-establishes-fgs-once",
+        "warm-up-park-without-fgs-start"
+      ],
+      "original_defects": []
+    },
+    {
+      "flow_id": "F07",
+      "check_ids": [
+        "child-expiry-ends-runtime",
+        "child-input-blocked-while-detached"
+      ],
+      "original_defects": []
+    }
+  ],
+  "target_regression_check_ids": [
+    "activity-destroy-does-not-stop-retained-transport",
+    "no-presentation-termination-reconnect-required",
+    "attachment-identity-fence",
+    "one-native-connection-per-process",
+    "wifi-locks-runtime-lifetime",
+    "fgs-not-started-from-background",
+    "held-controls-released-on-detach",
+    "exit-reason-recorded"
+  ],
+  "cumulative_fixed_path_check_ids": [
+    "android-nonroot-full"
+  ],
+  "build_and_package_check_ids": [
+    "android-nonroot-full",
+    "android-nonroot-debug",
+    "android-nonroot-release"
+  ],
+  "baseline_exception_evidence": [
+    "Known S06 residual (not S07 scope): Gateway _child_time_stop_stream holds the global lock across StreamerControlOperation.close (1.2-1.4 s lock-held-slow); owner said to leave it."
+  ],
+  "amendments": [],
+  "device_topic_bindings": [
+    {
+      "topic": "Home/host picker/Activity recreation continuity, decoder/audio/input restoration, process-death recovery",
+      "check_ids": [
+        "T05",
+        "T06",
+        "T07",
+        "T26",
+        "T50"
+      ],
+      "environment": "owned lab only (MoonWaker-Lab VM + AVD MoonWaker_Lab_TV36); physical TV evidence pending => CODE_VERIFIED_DEVICE_PENDING"
+    }
+  ],
+  "branch_check": "FAIL (recorded exception): merge-base --is-ancestor 00366fd9 3913979f exits 1 after the history rewrite; VALID_PACKET_METADATA is not a passing branch check."
+}

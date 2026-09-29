@@ -43,7 +43,6 @@ import com.limelight.nvstream.input.ControllerPacket;
 import com.limelight.nvstream.input.KeyboardPacket;
 import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.nvstream.jni.MoonBridge;
-import com.limelight.nvstream.jni.BackgroundStreamBridge;
 import com.limelight.preferences.AppPreferences;
 import com.limelight.preferences.GlPreferences;
 import com.limelight.preferences.PreferenceConfiguration;
@@ -63,6 +62,9 @@ import com.limelight.stream.RetainedStreamSessionCoordinator;
 import com.limelight.stream.RetainedControlHandoff;
 import com.limelight.stream.StreamingAutopilotCalibration;
 import com.limelight.stream.TransportStopCoordinator;
+import com.limelight.stream.AndroidStreamRuntime;
+import com.limelight.stream.StreamRuntime;
+import com.limelight.nvstream.StreamInput;
 import com.limelight.stream.HostSessionTermination;
 import com.limelight.stream.WholeSessionTermination;
 import com.limelight.console.ChildSessionLifecycle;
@@ -146,10 +148,10 @@ import java.util.concurrent.atomic.AtomicReference;
 
 
 public class Game extends Activity implements SurfaceHolder.Callback,
-        OnGenericMotionListener, OnTouchListener, NvConnectionListener, EvdevListener,
+        OnGenericMotionListener, OnTouchListener, EvdevListener,
         OnSystemUiVisibilityChangeListener, GameGestures, StreamView.InputCallbacks,
         PerfOverlayListener, UsbDriverService.UsbDriverStateListener, View.OnKeyListener,
-        RetainedStreamSessionCoordinator.Controller {
+        StreamRuntime.Presentation {
     private int lastButtonState = 0;
     // An overlay may hide synchronously from its first key-down. Keep that physical
     // device/key sequence out of the stream until its matching key-up arrives.
@@ -182,10 +184,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private PreferenceConfiguration prefConfig;
     private SharedPreferences tombstonePrefs;
 
-    private NvConnection conn;
-    private TransportStopCoordinator transportStop;
-    private AndroidAudioRenderer streamAudioRenderer;
-    private SwitchableVideoDecoderRenderer switchableVideoRenderer;
+    // The physical transport is owned by StreamRuntime; Game is its presentation adapter.
+    private StreamRuntime runtime;
+    private StreamRuntime.Attachment attachment;
+    private StreamInput input;
     private SpinnerDialog spinner;
     private ConsoleStreamLoadingView consoleLoadingView;
     private LaunchTransitionController transitionController;
@@ -227,8 +229,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private TextView childCountdownView;
     private RetainedSwitch retainedSwitch;
     private boolean displayedFailureDialog = false;
-    private boolean connecting = false;
-    private boolean connected = false;
     private boolean userInitiatedDisconnect = false;
     private boolean streamHomeVisible = false;
     private static final long RETAINED_RESTORE_IDR_RETRY_MS = 1_500L;
@@ -240,6 +240,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean autoEnterPip = false;
     private boolean surfaceCreated = false;
     private boolean attemptedConnection = false;
+    /** Attached to an already-running transport; resume it instead of connecting. */
+    private boolean reattachPending;
+    /** One undispatched switch target; replaced by a newer intent until submitted. */
+    private final PendingRetainedSwitch.Slot pendingRetainedSwitch =
+            new PendingRetainedSwitch.Slot();
     private long autoWarmUpAttempt;
     private boolean autoWarmUpConvertedToGame;
     private boolean autoWarmUpRetained;
@@ -298,9 +303,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private String decoderGlRenderer;
     private boolean reportedCrash;
 
-    private WifiManager.WifiLock highPerfWifiLock;
-    private WifiManager.WifiLock lowLatencyWifiLock;
-
     private boolean connectedToUsbDriverService = false;
     private ServiceConnection usbDriverServiceConnection = new ServiceConnection() {
         @Override
@@ -323,11 +325,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         public void onReceive(Context context, Intent intent) {
             if (ACTION_QUIT_APP.equals(intent.getAction())) {
                 closeStreamWithPrivacy(true);
-            } else if ((BackgroundStreamService.ACTION_EXPIRED.equals(intent.getAction())
-                    || BackgroundStreamService.ACTION_END_REQUESTED.equals(intent.getAction()))
-                    && streamSessionId.equals(intent.getStringExtra(
-                    BackgroundStreamService.EXTRA_STREAM_SESSION_ID))) {
-                endExpiredBackgroundStream();
             }
         }
     };
@@ -386,9 +383,23 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_TRANSITION_START_BEFORE_STREAM =
             "ConsoleTransitionStartBeforeStream";
     public static final String EXTRA_AUTO_WARM_UP_ATTEMPT = "AutoWarmUpAttempt";
+    /** The warm-up attempt was converted to a selected game before it completed. */
+    private static final String EXTRA_AUTO_WARM_UP_CONVERTED = "AutoWarmUpConvertedToGame";
     private static final String STATE_TRANSITION_REVEALED = "ConsoleTransitionRevealed";
     private static final String STATE_RETRY_TRANSITION_ID = "ConsoleRetryTransitionId";
     public static final String ACTION_QUIT_APP = "com.limelight.QUIT_STREAMING_APP";
+    // A retained switch selected while no presentation was attached; submitted after attach.
+    public static final String EXTRA_PENDING_SWITCH_HOST_ID = "PendingSwitchHostId";
+    public static final String EXTRA_PENDING_SWITCH_EXECUTION_PROFILE_ID =
+            "PendingSwitchExecutionProfileId";
+    public static final String EXTRA_PENDING_SWITCH_TARGET_PROFILE_ID =
+            "PendingSwitchTargetProfileId";
+    public static final String EXTRA_PENDING_SWITCH_TARGET_CHILD = "PendingSwitchTargetChild";
+    public static final String EXTRA_PENDING_SWITCH_APP_ID = "PendingSwitchAppId";
+    public static final String EXTRA_PENDING_SWITCH_GAME_ID = "PendingSwitchGameId";
+    public static final String EXTRA_PENDING_SWITCH_GAME_NAME = "PendingSwitchGameName";
+    public static final String EXTRA_PENDING_SWITCH_STREAM_TARGET = "PendingSwitchStreamTarget";
+    public static final String EXTRA_PENDING_SWITCH_ARTWORK = "PendingSwitchArtwork";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -409,6 +420,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         sourceSuspendPlayniteGameId = normalizeGameId(
                 getIntent().getStringExtra(EXTRA_SOURCE_SUSPEND_PLAYNITE_GAME_ID));
         autoWarmUpAttempt = getIntent().getLongExtra(EXTRA_AUTO_WARM_UP_ATTEMPT, 0L);
+        autoWarmUpConvertedToGame = autoWarmUpAttempt > 0L
+                && getIntent().getBooleanExtra(EXTRA_AUTO_WARM_UP_CONVERTED, false);
+        pendingRetainedSwitch.offer(PendingRetainedSwitch.from(getIntent()));
+        PendingRetainedSwitch.strip(getIntent());
 
         UiHelper.setLocale(this);
 
@@ -463,7 +478,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             boolean restoredRevealed = savedInstanceState != null
                     && savedInstanceState.getBoolean(STATE_TRANSITION_REVEALED, false);
             if (transitionSpec != null) {
-                if (hasAutoWarmUpTransportIdentity()) {
+                if (hasAutoWarmUpTransportIdentity() && !autoWarmUpConvertedToGame) {
                     LaunchTransitionType warmUpType = transitionSpec.playniteGameId.isEmpty()
                             ? LaunchTransitionType.GENERIC
                             : LaunchTransitionType.GAME_CONNECTION;
@@ -496,7 +511,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     getIntent().getStringExtra(EXTRA_CONSOLE_LOADING_MESSAGE),
                     launchStartedAtMillis,
                     getIntent().getBooleanExtra(EXTRA_CONSOLE_REDUCED_MOTION, false));
-            if (hasAutoWarmUpTransportIdentity()) {
+            if (hasAutoWarmUpTransportIdentity() && !autoWarmUpConvertedToGame) {
                 consoleLoadingView.showNeutralWarmUpAppearance();
             } else {
                 consoleLoadingView.setSplashArtwork(
@@ -647,24 +662,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             displayTransientMessage(getResources().getString(R.string.conn_metered));
         }
 
-        // Make sure Wi-Fi is fully powered up
-        WifiManager wifiMgr = (WifiManager) getApplicationContext().getSystemService(Context.WIFI_SERVICE);
-        try {
-            highPerfWifiLock = wifiMgr.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "Moonlight High Perf Lock");
-            highPerfWifiLock.setReferenceCounted(false);
-            highPerfWifiLock.acquire();
-
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-                lowLatencyWifiLock = wifiMgr.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, "Moonlight Low Latency Lock");
-                lowLatencyWifiLock.setReferenceCounted(false);
-                lowLatencyWifiLock.acquire();
-            }
-        } catch (SecurityException e) {
-            // Some Samsung Galaxy S10+/S10e devices throw a SecurityException from
-            // WifiLock.acquire() even though we have android.permission.WAKE_LOCK in our manifest.
-            e.printStackTrace();
-        }
-
         appName = Game.this.getIntent().getStringExtra(EXTRA_APP_NAME);
         pcName = Game.this.getIntent().getStringExtra(EXTRA_PC_NAME);
 
@@ -734,7 +731,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         decoderHdrRequested = willStreamHdr;
         decoderGlRenderer = glPrefs.glRenderer;
         decoderRenderer = createDecoderRenderer();
-        switchableVideoRenderer = new SwitchableVideoDecoderRenderer(decoderRenderer);
 
         // Don't stream HDR if the decoder can't support it
         if (willStreamHdr && !decoderRenderer.isHevcMain10Hdr10Supported() && !decoderRenderer.isAv1Main10Supported()) {
@@ -861,14 +857,52 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     streamSessionId, intent, expectedGeneration, childSessionId);
         }
 
-        // Initialize the connection
-        conn = new NvConnection(getApplicationContext(),
-                new ComputerDetails.AddressTuple(host, port),
-                httpsPort, uniqueId, config,
-                PlatformBinding.getCryptoProvider(this), serverCert, controlBinding);
-        transportStop = new TransportStopCoordinator(conn::stop,
-                action -> new Thread(action, "Moonlight-StopConnection").start());
-        controllerHandler = new ControllerHandler(this, conn, this, prefConfig);
+        // Attach to the live runtime of this stream session (Activity recreation, resume from
+        // Home or the notification) or register a new transport generation.
+        runtime = StreamRuntime.forSession(streamSessionId);
+        if (runtime != null) {
+            attemptedConnection = true;
+            backgroundStreamParked = true;
+            reattachPending = true;
+            MoonWakerDiagnostics.record("INFO", "android.stream", "runtime.reattached",
+                    "stream_session_id", streamSessionId, "generation", runtime.generation());
+        } else {
+            NvConnection connection = new NvConnection(getApplicationContext(),
+                    new ComputerDetails.AddressTuple(host, port),
+                    httpsPort, uniqueId, config,
+                    PlatformBinding.getCryptoProvider(this), serverCert, controlBinding);
+            runtime = AndroidStreamRuntime.create(this, getIntent(), streamSessionId,
+                    getExecutionProfileId(), connection,
+                    new AndroidAudioRenderer(getApplicationContext(), prefConfig.enableAudioFx),
+                    new SwitchableVideoDecoderRenderer(decoderRenderer));
+            if (runtime == null) {
+                MoonWakerDiagnostics.record("WARN", "android.stream", "runtime.busy",
+                        "stream_session_id", streamSessionId);
+                Toast.makeText(this, R.string.stream_runtime_busy, Toast.LENGTH_LONG).show();
+                finish();
+                return;
+            }
+        }
+        attachment = runtime.attach(this);
+        if (attachment == null) {
+            finish();
+            return;
+        }
+        input = attachment.input;
+        if (reattachPending && transitionCoordinator != null
+                && !transitionCoordinator.adoptRecreatedProviderOwnership()
+                && transitionCoordinator.startsProviderGame()) {
+            // The exact provider owner is gone; never start the game a second time.
+            MoonWakerDiagnostics.record("WARN", "android.stream", "provider.adoption_failed",
+                    "stream_session_id", streamSessionId);
+            transitionCoordinator.close();
+            transitionCoordinator = null;
+            if (transitionController != null && transitionSpec != null) {
+                transitionController.error(transitionSpec.id,
+                        getString(R.string.conn_error_msg));
+            }
+        }
+        controllerHandler = new ControllerHandler(this, input, this, prefConfig);
         updateGuidePolicyTransition();
         if (transitionController != null) {
             controllerHandler.setInputSuppressed(true);
@@ -885,10 +919,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // Initialize touch contexts
         for (int i = 0; i < touchContextMap.length; i++) {
             if (!prefConfig.touchscreenTrackpad) {
-                touchContextMap[i] = new AbsoluteTouchContext(conn, i, streamView);
+                touchContextMap[i] = new AbsoluteTouchContext(input, i, streamView);
             }
             else {
-                touchContextMap[i] = new RelativeTouchContext(conn, i,
+                touchContextMap[i] = new RelativeTouchContext(input, i,
                         REFERENCE_HORIZ_RES, REFERENCE_VERT_RES,
                         streamView, prefConfig);
             }
@@ -926,8 +960,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Register broadcast receiver to allow external control
         android.content.IntentFilter filter = new android.content.IntentFilter(ACTION_QUIT_APP);
-        filter.addAction(BackgroundStreamService.ACTION_EXPIRED);
-        filter.addAction(BackgroundStreamService.ACTION_END_REQUESTED);
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             registerReceiver(quitAppReceiver, filter, Context.RECEIVER_NOT_EXPORTED);
         } else {
@@ -943,14 +975,21 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // overlay frame. This preserves show -> frame -> operation ordering.
         if (transitionController != null && consoleLoadingView != null) {
             // Register immediately so we cannot miss an already-created Surface.
-            // surfaceChanged() still gates conn.start() on operationAuthorized.
+            // surfaceChanged() still gates runtime.start() on operationAuthorized.
             streamView.getHolder().addCallback(this);
             if (hasAutoWarmUpTransportIdentity()) {
-                if (!beginAutoWarmUpPreparing()) {
+                if (reattachPending && resumeAcceptedWarmUp()) {
+                    // A task restore recreates the Home above us; a resume intent does not. A
+                    // warm-up already converted to a game presents that game, not the Home.
+                    if (savedInstanceState == null && !autoWarmUpConvertedToGame) {
+                        openPreparingConsoleHome();
+                    }
+                } else if (!beginAutoWarmUpPreparing()) {
                     finish();
                     return;
+                } else {
+                    openPreparingConsoleHome();
                 }
-                openPreparingConsoleHome();
             } else {
                 consoleLoadingView.doAfterNextFrame(() -> {
                     if (isFinishing() || isDestroyed()) return;
@@ -1303,7 +1342,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
 
-        boolean autoEnter = connected && suppressPipRefCount == 0;
+        boolean autoEnter = isTransportConnected() && suppressPipRefCount == 0;
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             setPictureInPictureParams(getPictureInPictureParams(autoEnter));
@@ -1386,7 +1425,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         // With Android native pointer capture, capture is lost when focus is lost,
         // so it must be requested again when focus is regained.
         inputCaptureProvider.onWindowFocusChanged(hasFocus);
-        if (hasFocus && connected && !streamHomeVisible && streamView != null
+        if (hasFocus && isTransportConnected() && !streamHomeVisible && streamView != null
                 && (overlayMenuView == null || overlayMenuView.getVisibility() != View.VISIBLE)) {
             streamView.post(() -> {
                 boolean focused = streamView.requestFocus();
@@ -1700,44 +1739,26 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         MoonWakerDiagnostics.record("INFO", "android.stream", "activity.destroyed");
         stopChildMonitoring();
         cancelStreamingAutopilotCalibration();
-        boolean acceptedWithoutTransport = false;
         synchronized (autoWarmUpGateLock) {
-            if (!autoWarmUpHomeFrameAccepted.get()) {
-                cancelUnstartedAutoWarmUp(false);
-            } else if (!connecting && !connected
-                    && isExactAutoWarmUpPreparing(
-                    RetainedStreamSessionCoordinator.snapshot())) {
-                acceptedWithoutTransport = markAutoWarmUpReconnectRequired(
-                        "activity_destroyed_before_transport");
-            }
+            if (!autoWarmUpHomeFrameAccepted.get()) cancelUnstartedAutoWarmUp(false);
         }
-
-        if (acceptedWithoutTransport) {
-            SessionResumeManager.save(this, getIntent(), streamSessionId);
-            BackgroundStreamService.transportLost(this, streamSessionId);
-        }
-        if (hasOwnRetainedSession()
-                && (connecting || connected)) {
-            backgroundStreamParked = false;
-            SessionResumeManager.save(this, getIntent(), streamSessionId);
-            RetainedStreamSessionCoordinator.Snapshot retained =
-                    RetainedStreamSessionCoordinator.snapshot();
-            if (retained.state == RetainedStreamSessionCoordinator.State.PREPARING) {
-                markAutoWarmUpReconnectRequired("activity_destroyed");
-            } else {
-                RetainedStreamSessionCoordinator.markReconnectRequired(streamSessionId);
-            }
-            BackgroundStreamService.transportLost(this, streamSessionId);
-            stopConnection();
-        } else if (connecting || connected) {
-            // A parked transport without retained ownership cannot survive this
-            // Activity. Stop it so its successor cannot wait forever.
-            backgroundStreamParked = false;
-            stopConnection();
+        boolean runtimeSurvives = false;
+        if (runtime != null && attachment != null) {
+            AndroidStreamRuntime.publishLaunchRecord(runtime, getIntent());
+            runtime.presentationLost(attachment, isFinishing());
+            runtimeSurvives = !runtime.isStopping();
+            attachment = null;
+            input = null;
         }
         if (transitionCoordinator != null) {
-            if (!isChangingConfigurations()) cleanupUnrevealedProviderLaunch("activity-destroyed");
-            transitionCoordinator.close();
+            if (runtimeSurvives) {
+                transitionCoordinator.detachForRecreation();
+            } else {
+                if (!isChangingConfigurations()) {
+                    cleanupUnrevealedProviderLaunch("activity-destroyed");
+                }
+                transitionCoordinator.close();
+            }
             transitionCoordinator = null;
         }
         cancelPendingAutomaticReveal();
@@ -1772,13 +1793,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             inputManager.unregisterInputDeviceListener(keyboardTranslator);
         }
 
-        if (lowLatencyWifiLock != null) {
-            lowLatencyWifiLock.release();
-        }
-        if (highPerfWifiLock != null) {
-            highPerfWifiLock.release();
-        }
-
         if (connectedToUsbDriverService) {
             // Unbind from the discovery service
             unbindService(usbDriverServiceConnection);
@@ -1804,7 +1818,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             discordOverlayController.onActivityPaused();
         }
         PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-        if (!pm.isInteractive() && connected && !userInitiatedDisconnect) {
+        if (!pm.isInteractive() && isTransportConnected() && !userInitiatedDisconnect) {
             if (PreferenceConfiguration.readPreferences(this).autoResumeStream) {
                 android.util.Log.d("SessionResume", "onPause: screen going off, saving session");
                 SessionResumeManager.save(this, getIntent(), streamSessionId);
@@ -1813,7 +1827,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
         } else {
             android.util.Log.d("SessionResume", "onPause: not saving â€” isInteractive=" + pm.isInteractive()
-                    + " connected=" + connected + " userInitiatedDisconnect=" + userInitiatedDisconnect);
+                    + " connected=" + isTransportConnected() + " userInitiatedDisconnect=" + userInitiatedDisconnect);
         }
 
         if (isFinishing()) {
@@ -1850,8 +1864,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         boolean returningFromStreamHome = streamHomeVisible;
         if (streamHomeVisible) {
             streamHomeVisible = false;
-            if (streamAudioRenderer != null) {
-                streamAudioRenderer.setVolume(isOwnedHiddenAutoWarmUp() ? 0f : 1f);
+            if (runtime != null) {
+                runtime.setAudioVolume(attachment, isOwnedHiddenAutoWarmUp() ? 0f : 1f);
             }
             if (controllerHandler != null) {
                 if (isOwnedHiddenAutoWarmUp()) {
@@ -1859,7 +1873,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 }
                 else controllerHandler.enableSensors();
             }
-            if (connected) {
+            if (isTransportConnected()) {
                 hideSystemUi(50);
                 streamView.post(streamView::requestFocus);
             }
@@ -1885,13 +1899,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         if (streamHomeVisible) return;
-        if (canParkBackgroundStream()) {
-            parkBackgroundStream();
-            return;
-        }
+        if (canParkBackgroundStream() && parkBackgroundStream()) return;
         if (backgroundStreamParked) return;
 
-        if (conn != null && decoderRenderer != null) {
+        if (runtime != null && decoderRenderer != null) {
             int videoFormat = decoderRenderer.getActiveVideoFormat();
 
             displayedFailureDialog = true;
@@ -1949,7 +1960,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
         }
 
-        if (conn != null && decoderRenderer == null) stopConnection();
+        if (runtime != null && decoderRenderer == null) stopConnection();
         finish();
     }
 
@@ -2162,7 +2173,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public void onBackPressed() {
         if (returnTimedOutRevealedStreamToDashboard()) return;
         if (returnRetainedObservationToDashboard()) return;
-        if (connected && !streamHomeVisible && !isTransitionInputBlocked()) {
+        if (isTransportConnected() && !streamHomeVisible && !isTransitionInputBlocked()) {
             openConsoleHome();
             return;
         }
@@ -2224,7 +2235,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // are disabled. If they are enabled, handleMotionEvent() will take
             // care of this.
             if (!prefConfig.mouseNavButtons) {
-                conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
+                input.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
             }
 
             // Always return true, otherwise the back press will be propagated
@@ -2263,7 +2274,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 // UTF-8 events don't auto-repeat on the host side.
                 int unicodeChar = event.getUnicodeChar();
                 if ((unicodeChar & KeyCharacterMap.COMBINING_ACCENT) == 0 && (unicodeChar & KeyCharacterMap.COMBINING_ACCENT_MASK) != 0) {
-                    conn.sendUtf8Text(""+(char)unicodeChar);
+                    input.sendUtf8Text(""+(char)unicodeChar);
                     return true;
                 }
 
@@ -2275,7 +2286,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return true;
             }
 
-            conn.sendKeyboardInput(translated, KeyboardPacket.KEY_DOWN, getModifierState(event),
+            input.sendKeyboardInput(translated, KeyboardPacket.KEY_DOWN, getModifierState(event),
                     keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
         }
 
@@ -2344,7 +2355,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             // are disabled. If they are enabled, handleMotionEvent() will take
             // care of this.
             if (!prefConfig.mouseNavButtons) {
-                conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+                input.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
             }
 
             // Always return true, otherwise the back press will be propagated
@@ -2378,7 +2389,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return (unicodeChar & KeyCharacterMap.COMBINING_ACCENT) == 0 && (unicodeChar & KeyCharacterMap.COMBINING_ACCENT_MASK) != 0;
             }
 
-            conn.sendKeyboardInput(translated, KeyboardPacket.KEY_UP, getModifierState(event),
+            input.sendKeyboardInput(translated, KeyboardPacket.KEY_UP, getModifierState(event),
                     keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
         }
 
@@ -2404,7 +2415,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return false;
         }
 
-        conn.sendUtf8Text(event.getCharacters());
+        input.sendUtf8Text(event.getCharacters());
         return true;
     }
 
@@ -2430,8 +2441,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void onTextCommitted(String text) {
         if (isTransitionInputBlocked()) return;
-        if (conn != null && text != null) {
-            conn.sendUtf8Text(text);
+        if (input != null && text != null) {
+            input.sendUtf8Text(text);
         }
     }
 
@@ -2446,11 +2457,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void onImeKeyReceived(KeyEvent event) {
         if (isTransitionInputBlocked()) return;
-        if (conn != null) {
+        if (input != null) {
             short translated = keyboardTranslator.translate(event.getKeyCode(), event.getDeviceId());
             if (translated != 0) {
                 byte action = (event.getAction() == KeyEvent.ACTION_DOWN) ? KeyboardPacket.KEY_DOWN : KeyboardPacket.KEY_UP;
-                conn.sendKeyboardInput(translated, action, getModifierState(event),
+                input.sendKeyboardInput(translated, action, getModifierState(event),
                         keyboardTranslator.hasNormalizedMapping(event.getKeyCode(), event.getDeviceId()) ? 0 : MoonBridge.SS_KBE_FLAG_NON_NORMALIZED);
             }
         }
@@ -2633,7 +2644,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         float[] normalizedCoords = getStreamViewRelativeNormalizedXY(view, event, pointerIndex);
         float[] normalizedContactArea = getStreamViewNormalizedContactArea(event, pointerIndex);
-        return conn.sendPenEvent(eventType, toolType, penButtons,
+        return input.sendPenEvent(eventType, toolType, penButtons,
                 normalizedCoords[0], normalizedCoords[1],
                 getPressureOrDistance(event, pointerIndex),
                 normalizedContactArea[0], normalizedContactArea[1],
@@ -2680,7 +2691,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         else if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
             // Cancel impacts all active pointers
-            return conn.sendPenEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, MoonBridge.LI_TOOL_TYPE_UNKNOWN, (byte)0,
+            return input.sendPenEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, MoonBridge.LI_TOOL_TYPE_UNKNOWN, (byte)0,
                     0, 0, 0, 0, 0,
                     MoonBridge.LI_ROT_UNKNOWN, MoonBridge.LI_TILT_UNKNOWN) != MoonBridge.LI_ERR_UNSUPPORTED;
         }
@@ -2698,7 +2709,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean sendTouchEventForPointer(View view, MotionEvent event, byte eventType, int pointerIndex) {
         float[] normalizedCoords = getStreamViewRelativeNormalizedXY(view, event, pointerIndex);
         float[] normalizedContactArea = getStreamViewNormalizedContactArea(event, pointerIndex);
-        return conn.sendTouchEvent(eventType, event.getPointerId(pointerIndex),
+        return input.sendTouchEvent(eventType, event.getPointerId(pointerIndex),
                 normalizedCoords[0], normalizedCoords[1],
                 getPressureOrDistance(event, pointerIndex),
                 normalizedContactArea[0], normalizedContactArea[1],
@@ -2722,7 +2733,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         else if (event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
             // Cancel impacts all active pointers
-            return conn.sendTouchEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, 0,
+            return input.sendTouchEvent(MoonBridge.LI_TOUCH_EVENT_CANCEL_ALL, 0,
                     0, 0, 0, 0, 0,
                     MoonBridge.LI_ROT_UNKNOWN) != MoonBridge.LI_ERR_UNSUPPORTED;
         }
@@ -2811,10 +2822,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         if (prefConfig.absoluteMouseMode) {
                             // NB: view may be null, but we can unconditionally use streamView because we don't need to adjust
                             // relative axis deltas for the position of the streamView within the parent's coordinate system.
-                            conn.sendMouseMoveAsMousePosition(deltaX, deltaY, (short)streamView.getWidth(), (short)streamView.getHeight());
+                            input.sendMouseMoveAsMousePosition(deltaX, deltaY, (short)streamView.getWidth(), (short)streamView.getHeight());
                         }
                         else {
-                            conn.sendMouseMove(deltaX, deltaY);
+                            input.sendMouseMove(deltaX, deltaY);
                         }
                     }
                 }
@@ -2838,7 +2849,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                             // Touchpads must be smaller than (65535, 65535)
                             if (xMax <= Short.MAX_VALUE && yMax <= Short.MAX_VALUE) {
-                                conn.sendMousePosition((short)event.getX(), (short)event.getY(),
+                                input.sendMousePosition((short)event.getX(), (short)event.getY(),
                                                        (short)xMax, (short)yMax);
                             }
                         }
@@ -2855,55 +2866,55 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
                 if (event.getActionMasked() == MotionEvent.ACTION_SCROLL) {
                     // Send the vertical scroll packet
-                    conn.sendMouseHighResScroll((short)(event.getAxisValue(MotionEvent.AXIS_VSCROLL) * 120));
-                    conn.sendMouseHighResHScroll((short)(event.getAxisValue(MotionEvent.AXIS_HSCROLL) * 120));
+                    input.sendMouseHighResScroll((short)(event.getAxisValue(MotionEvent.AXIS_VSCROLL) * 120));
+                    input.sendMouseHighResHScroll((short)(event.getAxisValue(MotionEvent.AXIS_HSCROLL) * 120));
                 }
 
                 if ((changedButtons & MotionEvent.BUTTON_PRIMARY) != 0) {
                     if ((buttonState & MotionEvent.BUTTON_PRIMARY) != 0) {
-                        conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
+                        input.sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
                     }
                     else {
-                        conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+                        input.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
                     }
                 }
 
                 // Mouse secondary or stylus primary is right click (stylus down is left click)
                 if ((changedButtons & (MotionEvent.BUTTON_SECONDARY | MotionEvent.BUTTON_STYLUS_PRIMARY)) != 0) {
                     if ((buttonState & (MotionEvent.BUTTON_SECONDARY | MotionEvent.BUTTON_STYLUS_PRIMARY)) != 0) {
-                        conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
+                        input.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
                     }
                     else {
-                        conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+                        input.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
                     }
                 }
 
                 // Mouse tertiary or stylus secondary is middle click
                 if ((changedButtons & (MotionEvent.BUTTON_TERTIARY | MotionEvent.BUTTON_STYLUS_SECONDARY)) != 0) {
                     if ((buttonState & (MotionEvent.BUTTON_TERTIARY | MotionEvent.BUTTON_STYLUS_SECONDARY)) != 0) {
-                        conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_MIDDLE);
+                        input.sendMouseButtonDown(MouseButtonPacket.BUTTON_MIDDLE);
                     }
                     else {
-                        conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_MIDDLE);
+                        input.sendMouseButtonUp(MouseButtonPacket.BUTTON_MIDDLE);
                     }
                 }
 
                 if (prefConfig.mouseNavButtons) {
                     if ((changedButtons & MotionEvent.BUTTON_BACK) != 0) {
                         if ((buttonState & MotionEvent.BUTTON_BACK) != 0) {
-                            conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_X1);
+                            input.sendMouseButtonDown(MouseButtonPacket.BUTTON_X1);
                         }
                         else {
-                            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_X1);
+                            input.sendMouseButtonUp(MouseButtonPacket.BUTTON_X1);
                         }
                     }
 
                     if ((changedButtons & MotionEvent.BUTTON_FORWARD) != 0) {
                         if ((buttonState & MotionEvent.BUTTON_FORWARD) != 0) {
-                            conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_X2);
+                            input.sendMouseButtonDown(MouseButtonPacket.BUTTON_X2);
                         }
                         else {
-                            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_X2);
+                            input.sendMouseButtonUp(MouseButtonPacket.BUTTON_X2);
                         }
                     }
                 }
@@ -2917,14 +2928,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             lastAbsTouchDownY = event.getY(0);
 
                             // Stylus is left click
-                            conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
+                            input.sendMouseButtonDown(MouseButtonPacket.BUTTON_LEFT);
                         } else if (event.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER) {
                             lastAbsTouchDownTime = event.getEventTime();
                             lastAbsTouchDownX = event.getX(0);
                             lastAbsTouchDownY = event.getY(0);
 
                             // Eraser is right click
-                            conn.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
+                            input.sendMouseButtonDown(MouseButtonPacket.BUTTON_RIGHT);
                         }
                     }
                     else if (event.getActionMasked() == MotionEvent.ACTION_UP || event.getActionMasked() == MotionEvent.ACTION_CANCEL) {
@@ -2934,14 +2945,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                             lastAbsTouchUpY = event.getY(0);
 
                             // Stylus is left click
-                            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
+                            input.sendMouseButtonUp(MouseButtonPacket.BUTTON_LEFT);
                         } else if (event.getToolType(0) == MotionEvent.TOOL_TYPE_ERASER) {
                             lastAbsTouchUpTime = event.getEventTime();
                             lastAbsTouchUpX = event.getX(0);
                             lastAbsTouchUpY = event.getY(0);
 
                             // Eraser is right click
-                            conn.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
+                            input.sendMouseButtonUp(MouseButtonPacket.BUTTON_RIGHT);
                         }
                     }
                 }
@@ -3155,7 +3166,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         eventX = Math.min(Math.max(eventX, 0), streamView.getWidth());
         eventY = Math.min(Math.max(eventY, 0), streamView.getHeight());
 
-        conn.sendMousePosition((short)eventX, (short)eventY, (short)streamView.getWidth(), (short)streamView.getHeight());
+        input.sendMousePosition((short)eventX, (short)eventY, (short)streamView.getWidth(), (short)streamView.getHeight());
     }
 
     @Override
@@ -3207,12 +3218,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     public void stageComplete(String stage) {
-        long generation = conn == null ? 0L : conn.getControlGeneration();
+        long generation = runtime == null ? 0L : runtime.controlGeneration();
         if (generation <= 0L) return;
         getIntent().putExtra(EXTRA_CONTROL_GENERATION, generation);
-        RetainedStreamSessionCoordinator.bindControlGeneration(
-                this, streamSessionId, generation);
-        SessionResumeManager.saveActive(this, getIntent(), streamSessionId);
     }
 
     private void stopConnection() {
@@ -3220,7 +3228,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private boolean canParkBackgroundStream() {
-        if (BackgroundStreamPreferences.readMinutes(this) == 0 || !connected
+        if (BackgroundStreamPreferences.readMinutes(this) == 0 || !isTransportConnected()
                 || userInitiatedDisconnect || isFinishing()
                 || streamHomeVisible || backgroundStreamParked) {
             return false;
@@ -3228,36 +3236,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return Build.VERSION.SDK_INT < Build.VERSION_CODES.O || !isInPictureInPictureMode();
     }
 
-    private void parkBackgroundStream() {
-        if (backgroundStreamParked || switchableVideoRenderer == null) return;
-        MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.detaching");
-        backgroundStreamParked = true;
-        switchableVideoRenderer.detach();
-        decoderRenderer = null;
-        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(0f);
-        if (controllerHandler != null) controllerHandler.disableSensors();
-        setInputGrabState(false);
-        int retentionMinutes = BackgroundStreamPreferences.readMinutes(this);
-        SessionResumeManager.save(this, getIntent(), streamSessionId);
-        RetainedStreamSessionCoordinator.markParked(streamSessionId);
-        BackgroundStreamService.park(this, streamSessionId, retentionMinutes);
-        LimeLog.info("Background stream parked; retention minutes=" + retentionMinutes);
-    }
-
-    @Override
-    public boolean isRetainedTransportLive() {
-        return connected && !userInitiatedDisconnect && !isDestroyed();
-    }
-
-    @Override
-    public boolean parkRetainedTransport() {
+    /** Parks through the runtime; false means the runtime is honestly stopping instead. */
+    private boolean parkBackgroundStream() {
         if (backgroundStreamParked) return true;
-        if (!connected || userInitiatedDisconnect
-                || BackgroundStreamPreferences.readMinutes(this) == 0) {
-            return false;
-        }
-        parkBackgroundStream();
-        return backgroundStreamParked;
+        if (runtime == null || userInitiatedDisconnect) return false;
+        AndroidStreamRuntime.publishLaunchRecord(runtime, getIntent());
+        return runtime.park();
     }
 
     @Override
@@ -3275,10 +3259,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         if (!autoWarmUpTransportStopRequested.compareAndSet(false, true)) return true;
         boolean marked = markAutoWarmUpReconnectRequired("background_park_disabled");
-        if (marked) {
-            SessionResumeManager.save(this, getIntent(), streamSessionId);
-            BackgroundStreamService.transportLost(this, streamSessionId);
-        }
+        if (marked) SessionResumeManager.save(this, getIntent(), streamSessionId);
         stopConnection(() -> finish());
         return true;
     }
@@ -3296,7 +3277,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         boolean converted = autoWarmUpConvertedToGame;
         if (!markAutoWarmUpReconnectRequired("preparing_cancelled")) return false;
         SessionResumeManager.save(this, getIntent(), streamSessionId);
-        BackgroundStreamService.transportLost(this, streamSessionId);
         runOnUiThread(() -> {
             if (converted && transitionCoordinator != null) transitionCoordinator.cancel();
             stopConnection(() -> finish());
@@ -3320,26 +3300,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             startConnectionIfReady(streamView.getHolder());
             return true;
         }
-    }
-
-    @Override
-    public void disconnectRetainedStream(
-            RetainedStreamSessionCoordinator.TerminationCallback completion) {
-        runOnUiThread(() -> {
-            userInitiatedDisconnect = true;
-            backgroundStreamParked = false;
-            stopConnectionResult(result -> {
-                boolean stopped = result == TransportStopCoordinator.Result.STOPPED;
-                if (stopped) {
-                    SessionResumeManager.clearIfMatches(this, streamSessionId);
-                    BackgroundStreamService.resumed(this, streamSessionId);
-                    finish();
-                } else if (completion != null) {
-                    completion.transportUnsafe();
-                }
-                if (completion != null) completion.complete(stopped);
-            });
-        });
     }
 
     @Override
@@ -3367,7 +3327,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             RetainedStreamSessionCoordinator.SwitchCallback completion) {
         RetainedStreamSessionCoordinator.Snapshot retained =
                 RetainedStreamSessionCoordinator.snapshot();
-        boolean liveExact = retainedSwitch == null && connected
+        boolean liveExact = retainedSwitch == null && isTransportConnected()
                 && (retained.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
                 || retained.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE)
                 && streamSessionId.equals(request.streamSessionId)
@@ -3531,6 +3491,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         transitionController.begin(recovery);
         if (operation.request.preparing) {
             autoWarmUpConvertedToGame = false;
+            getIntent().removeExtra(EXTRA_AUTO_WARM_UP_CONVERTED);
         }
         transitionController.overlayRendered(recovery.id);
         if (surfaceCreated && streamView.getHolder().getSurface() != null
@@ -3541,7 +3502,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         operation.oldCoordinator.close();
         transitionCoordinator = recoveryCoordinator;
         transitionCoordinator.start();
-        if (connected) {
+        if (isTransportConnected()) {
             transitionController.streamConnected(recovery.id);
             transitionCoordinator.onStreamConnected();
         }
@@ -3591,9 +3552,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             abortStalePreparingSwitch(operation);
             return;
         }
-        final NvConnection transferConnection = conn;
-        final long previousControlGeneration = transferConnection == null
-                ? 0L : transferConnection.getControlGeneration();
+        final StreamRuntime transferRuntime = runtime;
+        final StreamRuntime.Attachment transferAttachment = attachment;
+        final long previousControlGeneration = transferRuntime == null
+                ? 0L : transferRuntime.controlGeneration();
         final Intent transferIntent = new Intent(getIntent());
         new Thread(() -> {
             ChildSessionClient.State allowance = null;
@@ -3612,12 +3574,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                 : null;
                 if (!isCurrentRetainedSwitch(operation)
                         || operation.request.cancelled.getAsBoolean()
-                        || conn != transferConnection
-                        || transferConnection == null
-                        || transferConnection.getControlGeneration() != previousControlGeneration
+                        || transferRuntime == null
+                        || runtime != transferRuntime
+                        || !transferRuntime.isCurrent(transferAttachment)
+                        || transferRuntime.controlGeneration() != previousControlGeneration
                         || (reuseRunningGame
                         && !RetainedStreamSessionCoordinator.ownsSwitchBeforeMutation(
-                        Game.this, operation.request, previousControlGeneration))
+                        runtime, operation.request, previousControlGeneration))
                         || (reuseRunningGame && (currentProviderIdentity == null
                         || !providerIdentity.processToken.equals(
                         currentProviderIdentity.processToken)
@@ -3675,34 +3638,35 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         providerTransferAuthorization = new AtomicReference<>();
                 runOnUiThread(() -> RetainedControlHandoff.finish(new RetainedControlHandoff.Actions() {
                     @Override public boolean current() {
-                        return isCurrentRetainedSwitch(operation) && connected && !userInitiatedDisconnect;
+                        return isCurrentRetainedSwitch(operation) && isTransportConnected() && !userInitiatedDisconnect;
                     }
                     @Override public boolean commitBinding() {
                         if (reuseRunningGame) {
                             RetainedStreamSessionCoordinator.ProviderTransferAuthorization proof =
                                     RetainedStreamSessionCoordinator.commitProviderTransferReauthorization(
-                                            Game.this, operation.request.streamSessionId,
+                                            runtime, operation.request.streamSessionId,
                                             operation.request.executionProfileId, next.profileId,
                                             operation.oldSpec.id, next.id, operation.request.hostId,
                                             operation.request.appId, operation.request.newGameId,
                                             providerIdentity.processToken, providerIdentity.processId,
                                             previousControlGeneration, authorization.generation,
                                             authorization.actorLeaseEpoch,
-                                            () -> conn == transferConnection
-                                                    && transferConnection != null
-                                                    && transferConnection.reauthorizeControlGeneration(
-                                                    previousControlGeneration,
+                                            () -> runtime == transferRuntime
+                                                    && transferRuntime != null
+                                                    && transferRuntime.reauthorizeControlGeneration(
+                                                    transferAttachment, previousControlGeneration,
                                                     authorization.generation));
                             providerTransferAuthorization.set(proof);
                             return proof != null;
                         }
                         return RetainedStreamSessionCoordinator.commitReauthorization(
-                                Game.this, operation.request.streamSessionId,
+                                runtime, operation.request.streamSessionId,
                                 operation.request.executionProfileId, next.profileId,
                                 previousControlGeneration, authorization.generation,
-                                () -> conn == transferConnection && transferConnection != null
-                                        && transferConnection.reauthorizeControlGeneration(
-                                                previousControlGeneration, authorization.generation));
+                                () -> runtime == transferRuntime && transferRuntime != null
+                                        && transferRuntime.reauthorizeControlGeneration(
+                                                transferAttachment, previousControlGeneration,
+                                                authorization.generation));
                     }
                     @Override public void publishBinding() {
                         clearChildAllowance();
@@ -3739,7 +3703,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     @Override public void compensate() {
                         compensateRetainedAuthorization(operation, next, accepted,
                                 authorizedGateway.gatewayConnection(), authorization,
-                                previousControlGeneration, transferConnection, transferIntent);
+                                previousControlGeneration, transferRuntime, transferIntent);
                     }
                 }));
             } catch (IOException | RuntimeException error) {
@@ -3803,7 +3767,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (!childSessionId.isEmpty()) startChildMonitoring();
         if (isChildSession() && childCountdownView == null) createChildCountdownView();
         replacement.start();
-        if (connected) {
+        if (isTransportConnected()) {
             transitionController.streamConnected(next.id);
             replacement.onStreamConnected();
         }
@@ -3814,15 +3778,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void compensateRetainedAuthorization(RetainedSwitch operation, LaunchTransitionSpec next,
             ChildSessionClient.State allowance, GatewayConnection targetGateway,
             ControlOperationClient.Permit authorization, long previousGeneration,
-            NvConnection transferConnection, Intent transferIntent) {
+            StreamRuntime transferRuntime, Intent transferIntent) {
         if (!operation.authorizationCompensated.compareAndSet(false, true)) return;
         // A failed commit must not leave an old-generation retained lease reusable.
-        long connectionGeneration = transferConnection == null ? 0L : transferConnection.getControlGeneration();
-        boolean discarded = conn == transferConnection
+        long connectionGeneration = transferRuntime == null ? 0L : transferRuntime.controlGeneration();
+        boolean discarded = runtime == transferRuntime
                 && (connectionGeneration == previousGeneration || connectionGeneration == authorization.generation)
                 && RetainedStreamSessionCoordinator.discardReauthorization(
-                        this, operation.request.streamSessionId, previousGeneration, authorization.generation);
-        if (discarded && conn == transferConnection) {
+                        runtime, operation.request.streamSessionId, previousGeneration, authorization.generation);
+        if (discarded && runtime == transferRuntime) {
             stopChildMonitoring();
             applyImmediateTerminalPrivacy();
             SessionResumeManager.clearIfMatches(this, operation.request.streamSessionId);
@@ -3902,7 +3866,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             if (isChildSession() && childCountdownView == null) createChildCountdownView();
             armNextVideoFrameForTransition(next.id, "retained-game-attempt");
             transitionCoordinator.start();
-            if (connected) {
+            if (isTransportConnected()) {
                 transitionController.streamConnected(next.id);
                 transitionCoordinator.onStreamConnected();
             }
@@ -3944,7 +3908,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         if (!operation.oldCoordinator.transferProviderOwnershipTo(replacement)) {
             boolean restored = RetainedStreamSessionCoordinator.updatePreparingSwitch(
-                    this, operation.request, next.id, operation.request.oldGameId,
+                    runtime, operation.request, next.id, operation.request.oldGameId,
                     operation.request.oldGameId, operation.request.transitionId);
             if (!restored) {
                 replacement.close();
@@ -3981,7 +3945,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         lastTransitionOverlayVisible = true;
         lastTransitionRevealAuthorized = false;
         transitionController.begin(next);
-        if (operation.request.preparing) autoWarmUpConvertedToGame = true;
+        if (operation.request.preparing) {
+            autoWarmUpConvertedToGame = true;
+            // Survives Activity recreation: the selected game keeps its launch semantics.
+            getIntent().putExtra(EXTRA_AUTO_WARM_UP_CONVERTED, true);
+        }
         else if (hasAutoWarmUpTransportIdentity()) clearAutoWarmUpIdentity();
         transitionController.overlayRendered(next.id);
         if (surfaceCreated && streamView.getHolder().getSurface() != null
@@ -4001,7 +3969,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 RetainedStreamSessionCoordinator.snapshot();
         if (!isExactAutoWarmUpPreparing(preparing)) return false;
         if (!RetainedStreamSessionCoordinator.updatePreparingSwitch(
-                this, operation.request, preparing.transitionId, expectedGameId,
+                runtime, operation.request, preparing.transitionId, expectedGameId,
                 newGameId, newTransitionId)) return false;
         return true;
     }
@@ -4054,7 +4022,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (!parked && controllerHandler != null) {
             transitionController.inputPipelineReady(neutral.id);
         }
-        if (connected) transitionController.streamConnected(neutral.id);
+        if (isTransportConnected()) transitionController.streamConnected(neutral.id);
         transitionController.returningToDashboard(neutral.id);
         transitionCoordinator = createTransitionCoordinator();
         if (parked) {
@@ -4075,7 +4043,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         if (!backgroundStreamParked) consoleLoadingView.showOpaque();
-        if (!connected || userInitiatedDisconnect
+        if (!isTransportConnected() || userInitiatedDisconnect
                 || !getIntent().getBooleanExtra(EXTRA_NEUTRAL_STREAM_TARGET, false)
                 || targetName == null || targetName.trim().isEmpty()) {
             LimeLog.warning("Neutral retain failed transition=" + transitionId
@@ -4099,14 +4067,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 return;
             }
             if (!RetainedStreamSessionCoordinator.retainNeutralAfterGameStopped(
-                    this, streamSessionId, transitionSpec.hostId,
+                    runtime, streamSessionId, transitionSpec.hostId,
                     transitionSpec.sunshineAppId, gameId)) {
                 LimeLog.warning("Neutral retain failed transition=" + transitionId
                         + " reason=retained_session");
                 closeStreamWithPrivacy(false);
                 return;
             }
-            RetainedStreamSessionCoordinator.bindActor(this, streamSessionId,
+            RetainedStreamSessionCoordinator.bindActor(runtime, streamSessionId,
                     currentProfileId(), getExecutionProfileId());
             settleNeutralRetainedStream(transitionSpec.hostId,
                     transitionSpec.sunshineAppId, targetName);
@@ -4151,7 +4119,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         operation.newCoordinator.close();
         transitionCoordinator = observer;
         transitionCoordinator.start();
-        if (connected) {
+        if (isTransportConnected()) {
             transitionController.streamConnected(observation.id);
             transitionCoordinator.onStreamConnected();
         }
@@ -4207,7 +4175,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && request.attempt == retained.attempt
                 && request.attempt == autoWarmUpAttempt
                 && RetainedStreamSessionCoordinator.isPreparing(
-                this, request.streamSessionId, request.hostId, request.appId,
+                runtime, request.streamSessionId, request.hostId, request.appId,
                 request.transitionId, request.attempt);
     }
 
@@ -4221,7 +4189,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     retained.transitionId);
         }
         return RetainedStreamSessionCoordinator.updateOwnedSwitchGame(
-                this, operation.request, expectedGameId, newGameId);
+                runtime, operation.request, expectedGameId, newGameId);
     }
 
     private void completeRetainedSwitch(RetainedSwitch operation,
@@ -4255,10 +4223,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             RetainedStreamSessionCoordinator.finishSwitch(
                     operation.request.streamSessionId,
                     operation.request.transitionId,
-                    operation.request.attempt, this);
+                    operation.request.attempt, runtime);
         } else {
             RetainedStreamSessionCoordinator.finishSwitch(
-                    operation.request.streamSessionId, this);
+                    operation.request.streamSessionId, runtime);
         }
     }
 
@@ -4374,7 +4342,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             RetainedStreamSessionCoordinator.DirectTermination directTermination =
                     completion == null && hostCorrelated
                             ? RetainedStreamSessionCoordinator.beginDirectTermination(
-                            this, expectedSessionId, expectedHostId,
+                            runtime, expectedSessionId, expectedHostId,
                             expectedAppId, expectedGameId) : null;
             boolean marked = hostCorrelated && (completion == null
                     ? directTermination != null
@@ -4420,7 +4388,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                                         directTermination);
                             } else {
                                 RetainedStreamSessionCoordinator.markTransportUnsafe(
-                                        this, expectedSessionId, expectedHostId, expectedAppId);
+                                        runtime, expectedSessionId, expectedHostId, expectedAppId);
                             }
                         } else {
                             if (!success) completion.transportUnsafe();
@@ -4435,7 +4403,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         backgroundStreamParked = false;
         stopChildMonitoring();
         if (overlayMenuView != null) overlayMenuView.closeMenu();
-        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(0f);
+        if (runtime != null) runtime.setAudioVolume(attachment, 0f);
         if (controllerHandler != null) {
             controllerHandler.setInputSuppressed(true);
             controllerHandler.disableSensors();
@@ -4446,7 +4414,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         if (consoleLoadingView != null) consoleLoadingView.showOpaque();
         SessionResumeManager.clearIfMatches(this, streamSessionId);
-        BackgroundStreamService.resumed(this, streamSessionId);
     }
 
     private void openTerminalConsoleHome() {
@@ -4468,7 +4435,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.restoring");
         MediaCodecDecoderRenderer replacement = createDecoderRenderer();
         replacement.setRenderTarget(holder);
-        if (!switchableVideoRenderer.attach(replacement)) {
+        if (!runtime.attachDecoder(attachment, replacement)) {
             MoonWakerDiagnostics.record("ERROR", "android.stream", "decoder.restore_failed",
                     "reason", "attach_failed");
             LimeLog.severe("Failed to attach a decoder to the parked stream");
@@ -4478,11 +4445,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         retainedRestoreAwaitingFrame = true;
         decoderRenderer = replacement;
         backgroundStreamParked = false;
-        BackgroundStreamService.resumed(this, streamSessionId);
-        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
+        runtime.resumed(attachment);
+        if (!isOwnedHiddenAutoWarmUp() && !streamHomeVisible
+                && (transitionController == null || streamEverRevealed)) {
+            runtime.setAudioVolume(attachment, 1f);
+        }
         if (controllerHandler != null) controllerHandler.enableSensors();
         setInputGrabState(true);
-        BackgroundStreamBridge.requestIdrFrame();
+        runtime.requestIdrFrame(attachment);
         scheduleRetainedRestoreWatchdog();
         MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.restored",
                 "status", "awaiting_frame");
@@ -4502,17 +4472,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         retainedRestoreIdrRetry = new Runnable() {
             @Override public void run() {
-                if (retainedRestoreAwaitingFrame && connected && !backgroundStreamParked) {
+                if (retainedRestoreAwaitingFrame && isTransportConnected() && !backgroundStreamParked) {
                     MoonWakerDiagnostics.record("WARN", "android.stream", "decoder.idr_retry");
                     LimeLog.warning("Retained stream has no frame yet; requesting another IDR");
-                    BackgroundStreamBridge.requestIdrFrame();
+                    runtime.requestIdrFrame(attachment);
                     transitionUiHandler.postDelayed(this, RETAINED_RESTORE_IDR_RETRY_MS);
                 }
             }
         };
         transitionUiHandler.postDelayed(retainedRestoreIdrRetry, RETAINED_RESTORE_IDR_RETRY_MS);
         retainedRestoreWatchdog = () -> {
-            if (retainedRestoreAwaitingFrame && connected && !backgroundStreamParked) {
+            if (retainedRestoreAwaitingFrame && isTransportConnected() && !backgroundStreamParked) {
                 MoonWakerDiagnostics.record("WARN", "android.stream", "decoder.restore_timeout");
                 LimeLog.warning("Retained stream restore timed out; reconnecting transport");
                 reconnectRetainedStream();
@@ -4531,7 +4501,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         userInitiatedDisconnect = true;
         SessionResumeManager.save(this, getIntent(), streamSessionId);
         RetainedStreamSessionCoordinator.markReconnectRequired(streamSessionId);
-        BackgroundStreamService.transportLost(this, streamSessionId);
         SessionResumeManager.PendingSession pending = SessionResumeManager.pendingSession(this);
         Intent resume = SessionResumeManager.buildResumeIntent(this, pending);
         stopConnection(() -> {
@@ -4540,17 +4509,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 transitionUiHandler.postDelayed(() -> startActivity(resume), 100L);
             }
         });
-    }
-
-    private void endExpiredBackgroundStream() {
-        if (!backgroundStreamParked) return;
-        LimeLog.info("Background stream retention expired");
-        backgroundStreamParked = false;
-        userInitiatedDisconnect = true;
-        RetainedStreamSessionCoordinator.clearIfMatches(streamSessionId);
-        SessionResumeManager.clearIfMatches(this, streamSessionId);
-        BackgroundStreamService.resumed(this, streamSessionId);
-        stopConnection(() -> finish());
     }
 
     private void closeStreamWithPrivacy(boolean quitApplication) {
@@ -4581,34 +4539,67 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         });
     }
 
-    private synchronized void stopConnectionResult(
-            TransportStopCoordinator.Completion completion) {
-        TransportStopCoordinator captured = transportStop;
-        if (captured == null
-                || (!connecting && !connected && !captured.hasWorkStarted())) {
+    private void stopConnectionResult(TransportStopCoordinator.Completion completion) {
+        StreamRuntime captured = runtime;
+        if (captured == null) {
             if (completion != null) {
                 runOnUiThread(() -> TransportStopCoordinator.completeSafely(completion,
                         TransportStopCoordinator.Result.STOPPED));
             }
             return;
         }
-        boolean active = connecting || connected;
-        captured.stop(active ? () -> {
-            connecting = connected = false;
+        captured.stop(result -> runOnUiThread(() -> {
+            if (result != TransportStopCoordinator.Result.STOPPED) {
+                LimeLog.warning("Transport stop generation=" + captured.generation()
+                        + " completed " + result);
+            }
+            TransportStopCoordinator.completeSafely(completion, result);
+        }));
+    }
+
+    @Override
+    public void onTransportStopping() {
+        runOnUiThread(() -> {
             updatePipAutoEnter();
-
             if (controllerHandler != null) controllerHandler.stop();
-
             // Update GameManager state to indicate we're no longer in game
             UiHelper.notifyStreamEnded(this);
-        } : null, result -> runOnUiThread(() -> {
-            TransportStopCoordinator.Result fenced = captured.fence(result);
-            if (fenced != TransportStopCoordinator.Result.STOPPED) {
-                LimeLog.warning("Transport stop generation=" + captured.generation()
-                        + " completed " + fenced);
-            }
-            TransportStopCoordinator.completeSafely(completion, fenced);
-        }));
+        });
+    }
+
+    @Override
+    public void onTransportParked() {
+        runOnUiThread(() -> {
+            if (isFinishing() || isDestroyed()) return;
+            MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.detaching");
+            backgroundStreamParked = true;
+            decoderRenderer = null;
+            if (controllerHandler != null) controllerHandler.disableSensors();
+            setInputGrabState(false);
+            AndroidStreamRuntime.publishLaunchRecord(runtime, getIntent());
+            SessionResumeManager.save(this, getIntent(), streamSessionId);
+            RetainedStreamSessionCoordinator.markParked(streamSessionId);
+            LimeLog.info("Background stream parked");
+        });
+    }
+
+    @Override
+    public void onRuntimeDisconnected() {
+        runOnUiThread(() -> {
+            userInitiatedDisconnect = true;
+            backgroundStreamParked = false;
+            finish();
+        });
+    }
+
+    private boolean isTransportConnected() {
+        StreamRuntime current = runtime;
+        return current != null && current.isConnected();
+    }
+
+    private boolean isTransportConnecting() {
+        StreamRuntime current = runtime;
+        return current != null && current.isConnecting();
     }
 
     @Override
@@ -4709,7 +4700,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 backgroundStreamParked = false;
                 SessionResumeManager.save(Game.this, getIntent(), streamSessionId);
                 RetainedStreamSessionCoordinator.markReconnectRequired(streamSessionId);
-                BackgroundStreamService.transportLost(Game.this, streamSessionId);
                 stopConnection(() -> finish());
             });
             return;
@@ -4840,7 +4830,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void connectionStarted() {
         final boolean warmUpConnection = hasAutoWarmUpTransportIdentity();
-        logLaunchMilestone("stream-connected");
+        logLaunchMilestone("stream-isTransportConnected()");
         runOnUiThread(new Runnable() {
             @Override
             public void run() {
@@ -4867,13 +4857,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }
                     return;
                 }
-                connected = true;
-                connecting = false;
                 // Register and prime pads before a cold provider launch without opening
                 // the input gate. Arrival packets alone carry capabilities, not input state.
                 controllerHandler.announceConnectedControllers();
                 SessionResumeManager.saveActive(Game.this, getIntent(), streamSessionId);
-                BackgroundStreamService.resumed(Game.this, streamSessionId);
+                AndroidStreamRuntime.publishLaunchRecord(runtime, getIntent());
                 if (!sourceSuspendId.isEmpty()) {
                     SuspendedSessionStore.markResumedForExecutionIfMatches(Game.this,
                             sourceSuspendId,
@@ -4960,7 +4948,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 (action, delayMs) -> transitionUiHandler.postDelayed(action, delayMs),
                 new ConsoleStreamTransitionCoordinator.Callbacks() {
                     @Override public boolean controlTransportAuthorized() {
-                        return conn != null && conn.getControlGeneration() > 0L;
+                        return runtime != null && runtime.controlGeneration() > 0L;
                     }
 
                     @Override public void onHostGuidePolicy(
@@ -5461,7 +5449,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         consoleLoadingView.revealStream(() -> {
             if (isFinishing() || isDestroyed()) return;
             manualRevealRequested = false;
-            if (streamAudioRenderer != null) streamAudioRenderer.setVolume(1f);
+            if (runtime != null) runtime.setAudioVolume(attachment, 1f);
             streamEverRevealed = true;
             maybeArmStreamingAutopilotCalibration();
             if (manualReveal) {
@@ -5507,7 +5495,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         getIntent().putExtra(EXTRA_TRANSITION_TYPE,
                 LaunchTransitionType.GAME_CONNECTION.name());
         getIntent().putExtra(EXTRA_TRANSITION_PLAYNITE_GAME_ID, "");
-        if (connected) SessionResumeManager.saveActive(this, getIntent(), streamSessionId);
+        if (isTransportConnected()) SessionResumeManager.saveActive(this, getIntent(), streamSessionId);
     }
 
     private String currentSessionGameId() {
@@ -5669,7 +5657,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         backgroundStreamParked = false;
         RetainedStreamSessionCoordinator.clearIfMatches(streamSessionId);
         SessionResumeManager.clearIfMatches(this, streamSessionId);
-        BackgroundStreamService.resumed(this, streamSessionId);
         if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
         if (transitionCoordinator == null || !transitionCoordinator.startsProviderGame()) {
             stopProviderGame(success -> {
@@ -5711,10 +5698,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 RetainedStreamSessionCoordinator.snapshot();
         boolean exactOwner = transitionSpec != null
                 && RetainedStreamSessionCoordinator.ownsLiveOrParkedSession(
-                this, streamSessionId, transitionSpec.hostId,
+                runtime, streamSessionId, transitionSpec.hostId,
                 transitionSpec.sunshineAppId, transitionSpec.playniteGameId);
         return isForegroundRetainedObservation(
-                connected, streamHomeVisible, backgroundStreamParked,
+                isTransportConnected(), streamHomeVisible, backgroundStreamParked,
                 transitionSpec == null ? null : transitionSpec.type,
                 transitionSpec == null ? "" : transitionSpec.playniteGameId,
                 retained.state, exactOwner);
@@ -5745,7 +5732,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean isTimedOutRevealedStreamForeground() {
         return transitionSpec != null && consoleLoadingView != null
                 && shouldReturnTimedOutRevealedStreamToDashboard(
-                connected, streamHomeVisible, streamEverRevealed,
+                isTransportConnected(), streamHomeVisible, streamEverRevealed,
                 transitionController == null ? null : transitionController.snapshot().state);
     }
 
@@ -5840,7 +5827,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
         if ((transitionSpec.type == LaunchTransitionType.GAME
                 || transitionSpec.type == LaunchTransitionType.GAME_CONNECTION)
-                && hasLiveRetainedTransport() && connected) {
+                && hasLiveRetainedTransport() && isTransportConnected()) {
             retryRetainedObservation();
             return;
         }
@@ -5932,7 +5919,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 transitionController.surfaceReady(next.id);
             }
             if (controllerHandler != null) transitionController.inputPipelineReady(next.id);
-            if (connected) {
+            if (isTransportConnected()) {
                 transitionController.streamConnected(next.id);
                 transitionCoordinator.start();
                 transitionCoordinator.onStreamConnected();
@@ -5981,9 +5968,6 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void setHdrMode(boolean enabled, byte[] hdrMetadata) {
         LimeLog.info("Display HDR mode: " + (enabled ? "enabled" : "disabled"));
-        if (switchableVideoRenderer != null) {
-            switchableVideoRenderer.setHdrMode(enabled, hdrMetadata);
-        }
     }
 
     @Override
@@ -6006,6 +5990,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void startConnectionIfReady(SurfaceHolder holder) {
+        if (reattachPending && !isFinishing() && !isDestroyed()
+                && (transitionController == null
+                || transitionController.snapshot().operationAuthorized)) {
+            reattachPending = false;
+            resumeAttachedTransport();
+            return;
+        }
         if ((isFinishing() || isDestroyed())
                 || attemptedConnection || !surfaceCreated || holder == null
                 || holder.getSurface() == null || !holder.getSurface().isValid()) {
@@ -6020,7 +6011,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 RetainedStreamSessionCoordinator.snapshot())) return;
         attemptedConnection = true;
 
-        // Update GameManager state to indicate we're "loading" while connecting
+        // Update GameManager state to indicate we're "loading" while isTransportConnecting()
         UiHelper.notifyStreamConnecting(Game.this);
 
         // Show stream configuration to user
@@ -6037,13 +6028,102 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         decoderRenderer.setRenderTarget(holder);
-        streamAudioRenderer = new AndroidAudioRenderer(Game.this, prefConfig.enableAudioFx);
-        if (isOwnedHiddenAutoWarmUp()) streamAudioRenderer.setVolume(0f);
-        transportStop.start(this::runOnUiThread, () -> {
-            connecting = true;
-            logLaunchMilestone("stream-start-requested");
-            conn.start(streamAudioRenderer, switchableVideoRenderer, Game.this);
-        });
+        if (isOwnedHiddenAutoWarmUp()) runtime.setAudioVolume(attachment, 0f);
+        logLaunchMilestone("stream-start-requested");
+        runtime.start();
+    }
+
+    /**
+     * Reattached to a warm-up whose Home frame the coordinator already accepted: adopt that
+     * acceptance instead of submitting a second Home frame or starting anything again.
+     */
+    private boolean resumeAcceptedWarmUp() {
+        RetainedStreamSessionCoordinator.Snapshot retained =
+                RetainedStreamSessionCoordinator.snapshot();
+        boolean exactPreparing = isExactAutoWarmUpPreparing(retained);
+        boolean accepted = exactPreparing
+                && RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                retained.streamSessionId, retained.hostId, retained.appId,
+                retained.playniteGameId, retained.transitionId, retained.attempt);
+        boolean retainedWarmUp = RetainedStreamSessionCoordinator.ownsLiveOrParkedSession(
+                runtime, streamSessionId, autoWarmUpHostId(), autoWarmUpAppId());
+        if (!shouldResumeAcceptedWarmUp(exactPreparing, accepted, retainedWarmUp)) return false;
+        synchronized (autoWarmUpGateLock) {
+            autoWarmUpHomeFrameAccepted.set(true);
+        }
+        if (!exactPreparing) autoWarmUpRetained = true;
+        MoonWakerDiagnostics.record("INFO", "android.stream", "warm_up.reattached",
+                "stream_session_id", streamSessionId, "state", retained.state.name());
+        transitionController.overlayRendered(transitionSpec.id);
+        if (transitionCoordinator != null) transitionCoordinator.start();
+        startConnectionIfReady(streamView.getHolder());
+        return true;
+    }
+
+    static boolean shouldResumeAcceptedWarmUp(boolean exactPreparing, boolean frameAccepted,
+                                              boolean retainedWarmUp) {
+        return exactPreparing ? frameAccepted : retainedWarmUp;
+    }
+
+    /** The transport is already established: announce it to this presentation only. */
+    private void resumeAttachedTransport() {
+        if (runtime == null || !runtime.isConnected()) return;
+        logLaunchMilestone("runtime-reattached");
+        if (hasAutoWarmUpTransportIdentity()
+                && isExactAutoWarmUpPreparing(RetainedStreamSessionCoordinator.snapshot())
+                && !completeAutoWarmUpPreparing()) {
+            // Mirrors connectionStarted: an attempt that can no longer complete is stopped.
+            if (autoWarmUpTransportStopRequested.compareAndSet(false, true)) {
+                stopConnection(() -> finish());
+            }
+            return;
+        }
+        if (transitionController != null && transitionSpec != null) {
+            transitionController.streamConnected(transitionSpec.id);
+        }
+        if (transitionCoordinator != null) transitionCoordinator.onStreamConnected();
+        if (controllerHandler != null) controllerHandler.announceConnectedControllers();
+        updatePipAutoEnter();
+        submitPendingRetainedSwitch();
+    }
+
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        PendingRetainedSwitch next = PendingRetainedSwitch.from(intent);
+        if (next == null) return;
+        if (!pendingRetainedSwitch.offer(next)) {
+            // One switch at a time; a later selection is not queued behind a running one.
+            Toast.makeText(this, R.string.console_stream_home_switch_blocked,
+                    Toast.LENGTH_LONG).show();
+            return;
+        }
+        if (!reattachPending) submitPendingRetainedSwitch();
+    }
+
+    private void submitPendingRetainedSwitch() {
+        if (runtime == null || !runtime.isConnected()) return;
+        PendingRetainedSwitch pending = pendingRetainedSwitch.take();
+        if (pending == null) return;
+        RetainedStreamSessionCoordinator.SwitchResult started =
+                RetainedStreamSessionCoordinator.switchGame(pending.hostId,
+                        pending.executionProfileId, pending.targetProfileId,
+                        pending.targetIsChild, pending.appId, pending.gameId,
+                        pending.gameName, pending.streamTarget, pending.artwork,
+                        () -> isFinishing() || isDestroyed(),
+                        (outcome, error) -> runOnUiThread(() -> {
+                            pendingRetainedSwitch.completed();
+                            if (outcome == RetainedStreamSessionCoordinator.SwitchOutcome.FAILED) {
+                                LimeLog.warning("Pending retained switch failed: " + error);
+                            }
+                        }));
+        if (started != RetainedStreamSessionCoordinator.SwitchResult.STARTED) {
+            pendingRetainedSwitch.completed();
+            MoonWakerDiagnostics.record("WARN", "android.stream",
+                    "pending_switch.not_eligible", "stream_session_id", streamSessionId);
+            Toast.makeText(this, R.string.console_stream_home_switch_blocked,
+                    Toast.LENGTH_LONG).show();
+        }
     }
 
     private void logLaunchMilestone(String milestone) {
@@ -6109,7 +6189,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         surfaceCreated = false;
         MoonWakerDiagnostics.record("INFO", "android.stream", "surface.destroyed",
                 "status", backgroundStreamParked ? "parked" : "active");
-        if (attemptedConnection && connected) {
+        if (attemptedConnection && isTransportConnected()) {
             if (hasOwnRetainedSession()) {
                 RetainedStreamSessionCoordinator.parkForBackground(streamSessionId);
             } else if (canParkBackgroundStream()) {
@@ -6124,7 +6204,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     public void mouseMove(int deltaX, int deltaY) {
         if (isTransitionInputBlocked()) return;
-        conn.sendMouseMove((short) deltaX, (short) deltaY);
+        input.sendMouseMove((short) deltaX, (short) deltaY);
     }
 
     @Override
@@ -6155,23 +6235,23 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }
 
         if (down) {
-            conn.sendMouseButtonDown(buttonIndex);
+            input.sendMouseButtonDown(buttonIndex);
         }
         else {
-            conn.sendMouseButtonUp(buttonIndex);
+            input.sendMouseButtonUp(buttonIndex);
         }
     }
 
     @Override
     public void mouseVScroll(byte amount) {
         if (isTransitionInputBlocked()) return;
-        conn.sendMouseScroll(amount);
+        input.sendMouseScroll(amount);
     }
 
     @Override
     public void mouseHScroll(byte amount) {
         if (isTransitionInputBlocked()) return;
-        conn.sendMouseHScroll(amount);
+        input.sendMouseHScroll(amount);
     }
 
     @Override
@@ -6185,18 +6265,18 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             if (buttonDown) {
-                conn.sendKeyboardInput(keyMap, KeyboardPacket.KEY_DOWN, getModifierState(), (byte)0);
+                input.sendKeyboardInput(keyMap, KeyboardPacket.KEY_DOWN, getModifierState(), (byte)0);
             }
             else {
-                conn.sendKeyboardInput(keyMap, KeyboardPacket.KEY_UP, getModifierState(), (byte)0);
+                input.sendKeyboardInput(keyMap, KeyboardPacket.KEY_UP, getModifierState(), (byte)0);
             }
         }
     }
 
     @Override
     public void onSystemUiVisibilityChange(int visibility) {
-        // Don't do anything if we're not connected
-        if (!connected) {
+        // Don't do anything if we're not isTransportConnected()
+        if (!isTransportConnected()) {
             return;
         }
 
@@ -6500,24 +6580,24 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 if (discordDmNotifications != null) {
                     discordDmNotifications.setPresentationBlocked(discordDmHostToken, false);
                 }
-                if (connected && !streamHomeVisible) streamView.post(streamView::requestFocus);
+                if (isTransportConnected() && !streamHomeVisible) streamView.post(streamView::requestFocus);
             }
         });
     }
 
     private void openConsoleHome() {
-        if (!connected || streamHomeVisible) return;
+        if (!isTransportConnected() || streamHomeVisible) return;
         overlayMenuView.closeMenu();
         String sessionGameId = currentSessionGameId();
         SessionResumeManager.save(this, getIntent(), streamSessionId);
-        RetainedStreamSessionCoordinator.enterHome(this, streamSessionId,
+        RetainedStreamSessionCoordinator.enterHome(runtime, streamSessionId,
                 getIntent().getStringExtra(EXTRA_PC_UUID),
                 currentProfileId(),
                 getIntent().getIntExtra(EXTRA_APP_ID, StreamConfiguration.INVALID_APP_ID),
                 sessionGameId);
-        RetainedStreamSessionCoordinator.bindControlGeneration(this, streamSessionId,
+        RetainedStreamSessionCoordinator.bindControlGeneration(runtime, streamSessionId,
                 getIntent().getLongExtra(EXTRA_CONTROL_GENERATION, 0L));
-        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(0f);
+        if (runtime != null) runtime.setAudioVolume(attachment, 0f);
         if (controllerHandler != null) controllerHandler.disableSensors();
 
         launchConsoleHome(sessionGameId, false);
@@ -6526,7 +6606,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void openPreparingConsoleHome() {
         if (streamHomeVisible) return;
         overlayMenuView.closeMenu();
-        if (streamAudioRenderer != null) streamAudioRenderer.setVolume(0f);
+        if (runtime != null) runtime.setAudioVolume(attachment, 0f);
         if (controllerHandler != null) {
             controllerHandler.setInputSuppressed(true);
             controllerHandler.disableSensors();
@@ -6623,7 +6703,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private boolean canEndManagedGame() {
-        return connected && streamEverRevealed && transitionSpec != null
+        return isTransportConnected() && streamEverRevealed && transitionSpec != null
                 && hasProviderGameTransition() && transitionCoordinator != null
                 && getIntent().getBooleanExtra(EXTRA_NEUTRAL_STREAM_TARGET, false)
                 && retainedSwitch == null && !providerEndGameInFlight
@@ -6892,39 +6972,39 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
         // Step 1: Send modifier keys DOWN first (to mimic human key press)
         if (keyCombination.isCtrl()) {
-            conn.sendKeyboardInput(VK_CONTROL, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            input.sendKeyboardInput(VK_CONTROL, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
         if (keyCombination.isAlt()) {
-            conn.sendKeyboardInput(VK_MENU, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            input.sendKeyboardInput(VK_MENU, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
         if (keyCombination.isShift()) {
-            conn.sendKeyboardInput(VK_SHIFT, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            input.sendKeyboardInput(VK_SHIFT, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
         if (keyCombination.isMeta()) {
-            conn.sendKeyboardInput(VK_LWIN, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
+            input.sendKeyboardInput(VK_LWIN, KeyboardPacket.KEY_DOWN, (byte) 0, (byte) 0);
         }
 
         // Step 2: Wait 50ms, then send main key DOWN (with modifier flags set)
         handler.postDelayed(() -> {
-            conn.sendKeyboardInput(translatedKeyCode, KeyboardPacket.KEY_DOWN, finalModifiers, (byte) 0);
+            input.sendKeyboardInput(translatedKeyCode, KeyboardPacket.KEY_DOWN, finalModifiers, (byte) 0);
 
             // Step 3: Wait 50ms, then send main key UP (with modifier flags set)
             handler.postDelayed(() -> {
-                conn.sendKeyboardInput(translatedKeyCode, KeyboardPacket.KEY_UP, finalModifiers, (byte) 0);
+                input.sendKeyboardInput(translatedKeyCode, KeyboardPacket.KEY_UP, finalModifiers, (byte) 0);
 
                 // Step 4: Wait 50ms, then send modifier keys UP (in reverse order)
                 handler.postDelayed(() -> {
                     if (keyCombination.isMeta()) {
-                        conn.sendKeyboardInput(VK_LWIN, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        input.sendKeyboardInput(VK_LWIN, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
                     if (keyCombination.isShift()) {
-                        conn.sendKeyboardInput(VK_SHIFT, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        input.sendKeyboardInput(VK_SHIFT, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
                     if (keyCombination.isAlt()) {
-                        conn.sendKeyboardInput(VK_MENU, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        input.sendKeyboardInput(VK_MENU, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
                     if (keyCombination.isCtrl()) {
-                        conn.sendKeyboardInput(VK_CONTROL, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
+                        input.sendKeyboardInput(VK_CONTROL, KeyboardPacket.KEY_UP, (byte) 0, (byte) 0);
                     }
 
                     if (onComplete != null) {
@@ -6993,6 +7073,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         autoWarmUpRetained = false;
         Intent intent = getIntent();
         intent.removeExtra(EXTRA_AUTO_WARM_UP_ATTEMPT);
+        intent.removeExtra(EXTRA_AUTO_WARM_UP_CONVERTED);
         intent.removeExtra(ConsoleActivity.EXTRA_WARM_UP_ATTEMPT);
         intent.removeExtra(ConsoleActivity.EXTRA_WARM_UP_TRANSITION_ID);
         intent.removeExtra(ConsoleActivity.EXTRA_WARM_UP_PENDING_GAME_ID);
@@ -7015,10 +7096,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         boolean claimed = exact;
         runOnUiThread(() -> {
             displayedFailureDialog = true;
-            if (claimed) {
-                SessionResumeManager.save(this, getIntent(), streamSessionId);
-                BackgroundStreamService.transportLost(this, streamSessionId);
-            }
+            if (claimed) SessionResumeManager.save(this, getIntent(), streamSessionId);
             stopConnection(() -> finish());
         });
         return true;
@@ -7027,7 +7105,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean beginAutoWarmUpPreparing() {
         if (!hasAutoWarmUpTransportIdentity()) return false;
         boolean begun = RetainedStreamSessionCoordinator.beginPreparing(
-                this, streamSessionId, autoWarmUpHostId(), currentProfileId(),
+                runtime, streamSessionId, autoWarmUpHostId(), currentProfileId(),
                 autoWarmUpAppId(),
                 transitionSpec.playniteGameId, transitionSpec.id, autoWarmUpAttempt);
         return begun;
@@ -7041,7 +7119,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     RetainedStreamSessionCoordinator.snapshot();
             boolean cancelled = isExactAutoWarmUpPreparing(preparing)
                     && RetainedStreamSessionCoordinator.cancelPreparing(
-                    this, preparing.streamSessionId, preparing.hostId, preparing.appId,
+                    runtime, preparing.streamSessionId, preparing.hostId, preparing.appId,
                     preparing.transitionId, preparing.attempt);
             if (cancelled && finishActivity) runOnUiThread(this::finish);
             return cancelled;
@@ -7053,7 +7131,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 RetainedStreamSessionCoordinator.snapshot();
         boolean completed = isExactAutoWarmUpPreparing(preparing)
                 && RetainedStreamSessionCoordinator.completePreparing(
-                this, preparing.streamSessionId, preparing.hostId, preparing.appId,
+                runtime, preparing.streamSessionId, preparing.hostId, preparing.appId,
                 preparing.transitionId, preparing.attempt);
         if (completed && autoWarmUpConvertedToGame) {
             clearAutoWarmUpIdentity();
@@ -7068,7 +7146,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 RetainedStreamSessionCoordinator.snapshot();
         boolean marked = isExactAutoWarmUpPreparing(preparing)
                 && RetainedStreamSessionCoordinator.markPreparingReconnectRequired(
-                this, preparing.streamSessionId, preparing.hostId, preparing.appId,
+                runtime, preparing.streamSessionId, preparing.hostId, preparing.appId,
                 preparing.transitionId, preparing.attempt);
         if (marked) {
             autoWarmUpRetained = false;
@@ -7084,7 +7162,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 RetainedStreamSessionCoordinator.snapshot())) return true;
         return autoWarmUpRetained
                 && RetainedStreamSessionCoordinator.ownsLiveOrParkedSession(
-                this, streamSessionId, autoWarmUpHostId(), autoWarmUpAppId(),
+                runtime, streamSessionId, autoWarmUpHostId(), autoWarmUpAppId(),
                 transitionSpec.playniteGameId);
     }
 
@@ -7098,7 +7176,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && autoWarmUpAppId() == preparing.appId
                 && autoWarmUpAttempt == preparing.attempt
                 && RetainedStreamSessionCoordinator.isPreparing(
-                this, preparing.streamSessionId, preparing.hostId, preparing.appId,
+                runtime, preparing.streamSessionId, preparing.hostId, preparing.appId,
                 preparing.transitionId, preparing.attempt);
     }
 
@@ -7120,7 +7198,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         return getIntent().getBooleanExtra(EXTRA_CHILD_PROFILE, !childSessionId.isEmpty());
     }
 
-    @Override public String getExecutionProfileId() {
+    private String getExecutionProfileId() {
         String origin = getIntent().getStringExtra(EXTRA_EXECUTION_PROFILE_ID);
         if (origin == null || origin.isEmpty()) origin = childExecutionProfileId;
         return origin == null || origin.isEmpty() ? currentProfileId()
@@ -7272,7 +7350,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             }
 
             @Override public boolean canRetainGameOnly() {
-                return connected && transitionSpec != null
+                return isTransportConnected() && transitionSpec != null
                         && !transitionSpec.playniteGameId.isEmpty();
             }
 

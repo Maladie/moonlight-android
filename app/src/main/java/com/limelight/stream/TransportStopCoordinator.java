@@ -119,6 +119,19 @@ public final class TransportStopCoordinator {
         }
     }
 
+    /** Observes this generation's terminal result without requesting a stop. */
+    public void whenStopped(Completion completion) {
+        Result completed;
+        synchronized (this) {
+            completed = terminalResult;
+            if (completed == null) {
+                completions.add(completion);
+                return;
+            }
+        }
+        completeSafely(completion, completed);
+    }
+
     private void runStart(Runnable startEffect) {
         boolean cancelled;
         synchronized (this) {

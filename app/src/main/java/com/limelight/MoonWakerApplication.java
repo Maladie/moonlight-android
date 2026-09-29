@@ -25,6 +25,8 @@ import java.io.File;
 public final class MoonWakerApplication extends Application implements
         Application.ActivityLifecycleCallbacks,
         SharedPreferences.OnSharedPreferenceChangeListener {
+    private static final java.util.concurrent.atomic.AtomicInteger STARTED_ACTIVITIES =
+            new java.util.concurrent.atomic.AtomicInteger();
     private Activity resumedActivity;
     private boolean audioPermissionRequested;
     private boolean notificationPermissionRequested;
@@ -40,6 +42,13 @@ public final class MoonWakerApplication extends Application implements
         MoonWakerDiagnostics.initialize(new File(getNoBackupFilesDir(), "diagnostics"));
         MoonWakerDiagnostics.installCrashHandler();
         MoonWakerDiagnostics.record("INFO", "app", "process.started");
+        com.limelight.diagnostics.ExitReasonRecorder.recordAtStart(this);
+        if (BuildConfig.DEBUG) {
+            android.os.StrictMode.setThreadPolicy(new android.os.StrictMode.ThreadPolicy.Builder()
+                    .detectAll().penaltyLog().build());
+            android.os.StrictMode.setVmPolicy(new android.os.StrictMode.VmPolicy.Builder()
+                    .detectAll().penaltyLog().build());
+        }
         registerActivityLifecycleCallbacks(this);
         defaultPreferences = PreferenceManager.getDefaultSharedPreferences(this);
         consolePreferences = getSharedPreferences(
@@ -155,8 +164,18 @@ public final class MoonWakerApplication extends Application implements
     }
 
     @Override public void onActivityCreated(Activity activity, Bundle state) { }
-    @Override public void onActivityStarted(Activity activity) { }
-    @Override public void onActivityStopped(Activity activity) { }
+    @Override public void onActivityStarted(Activity activity) {
+        STARTED_ACTIVITIES.incrementAndGet();
+    }
+
+    @Override public void onActivityStopped(Activity activity) {
+        STARTED_ACTIVITIES.decrementAndGet();
+    }
+
+    /** True while any MoonWaker Activity is started, i.e. the app may start a foreground service. */
+    public static boolean isAppForeground() {
+        return STARTED_ACTIVITIES.get() > 0;
+    }
     @Override public void onActivitySaveInstanceState(Activity activity, Bundle state) { }
     @Override public void onActivityDestroyed(Activity activity) { }
 }

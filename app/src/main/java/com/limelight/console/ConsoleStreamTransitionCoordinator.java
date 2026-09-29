@@ -229,6 +229,83 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         providerCleanupArmed = false;
     }
 
+    /**
+     * Activity recreation with a surviving transport: stop observing, keep the exact provider
+     * owner (STARTING or STARTED, cleanup not claimed) without a holder for the next presentation.
+     */
+    public void detachForRecreation() {
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+            if (owner != null && owner.matches(transitionSpec) && owner.holder == this) {
+                owner.holder = null;
+                owner.custodian = this;
+            }
+        }
+        // Stops observation and releases this presentation's observation pool; the owner entry
+        // (and this coordinator as its custodian) stays for the in-flight start or cleanup.
+        close();
+        logTimeline("provider-detached-for-recreation");
+    }
+
+    /** The recreated presentation adopts only the exact holderless owner of its spec. */
+    public boolean adoptRecreatedProviderOwnership() {
+        if (transitionSpec.playniteGameId.isEmpty()) return true;
+        boolean pendingAdopted;
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+            if (owner == null || !owner.matches(transitionSpec) || owner.holder != null
+                    || owner.cleanupClaimed || owner.cleanupAfterStart) return false;
+            owner.holder = this;
+            owner.custodian = this;
+            pendingAdopted = owner.pending;
+        }
+        synchronized (this) {
+            // A pending (queued, never invoked) start is started by this adopter exactly once.
+            providerStartInvoked = !pendingAdopted;
+        }
+        logTimeline("provider-adopted-after-recreation");
+        return true;
+    }
+
+    /**
+     * The retained transport ended with no presentation holding this host's provider owner:
+     * stop the exact started process, or defer until an in-flight start returns.
+     */
+    public static void endDetachedOwner(String hostId) {
+        ConsoleStreamTransitionCoordinator custodian;
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            ProviderOwner owner = PROVIDER_OWNERS.get(normalizeOwnerPart(hostId));
+            if (owner == null || owner.holder != null || owner.custodian == null
+                    || owner.cleanupClaimed) return;
+            // No presentation remains to observe: cleanup may bind the exact process from one
+            // authenticated snapshot of this attempt.
+            owner.bindOnCleanup = true;
+            if (owner.pending) {
+                PROVIDER_OWNERS.remove(normalizeOwnerPart(hostId));
+                return;
+            }
+            if (owner.starting) {
+                owner.cleanupAfterStart = true;
+                return;
+            }
+            custodian = owner.custodian;
+        }
+        custodian.scheduleDetachedCompensation(true);
+    }
+
+    private void scheduleDetachedCompensation(boolean bindFromSnapshot) {
+        synchronized (this) {
+            // A revealed (committed) launch is never stopped because its transport ended.
+            if (!providerCleanupArmed) return;
+        }
+        try {
+            providerExecutor.execute(() -> compensateProviderStart(bindFromSnapshot));
+        } catch (RuntimeException error) {
+            LimeLog.warning("Launch timeline transition=" + transitionSpec.id
+                    + " provider-stop-dispatch-failed: " + error.getMessage());
+        }
+    }
+
     /** Stops observation and releases only this exact provider attempt. */
     public boolean detachForSwitch() {
         synchronized (PROVIDER_OWNERS_LOCK) {
@@ -239,7 +316,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                     return false;
                 }
             } else {
-                if (!owner.matches(transitionSpec)) return false;
+                if (!owner.matches(transitionSpec) || owner.starting || owner.pending) return false;
                 PROVIDER_OWNERS.remove(key);
             }
         }
@@ -287,7 +364,9 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             String key = providerOwnerKey();
             ProviderOwner owner = PROVIDER_OWNERS.get(key);
             if (owner != null && !owner.matches(transitionSpec)) return false;
-            if (owner != null && owner.cleanupClaimed) return false;
+            if (owner != null && (owner.cleanupClaimed || owner.starting || owner.pending)) {
+                return false;
+            }
             if (owner == null && startsProviderGame()) return false;
             PROVIDER_OWNERS.put(key, owner == null
                     ? new ProviderOwner(replacement.transitionSpec)
@@ -312,6 +391,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         synchronized (PROVIDER_OWNERS_LOCK) {
             ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
             if (owner == null || !owner.matches(transitionSpec) || owner.cleanupClaimed
+                    || owner.starting || owner.pending
                     || owner.processToken.isEmpty() || owner.processId <= 0) return null;
             return new ProviderProcessIdentity(owner.processToken, owner.processId);
         }
@@ -424,12 +504,16 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                     || !callbacks.controlTransportAuthorized())) return;
             providerStartRequested = true;
         }
+        // Reserve the exact attempt before queueing, so a recreated presentation can adopt a
+        // start that was queued but never invoked.
+        if (!reservePendingStart(actionEpoch)) return;
         try {
             providerExecutor.execute(() -> runProviderGameStart(actionEpoch));
         } catch (RuntimeException error) {
             synchronized (this) {
                 providerStartRequested = false;
             }
+            releaseOwnPendingStart();
             if (isCurrent(actionEpoch)) {
                 requestProviderCleanup();
                 transitionController.error(
@@ -442,7 +526,8 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         synchronized (this) {
             if (!isCurrent(actionEpoch) || providerCleanupRequested) return;
         }
-        if (isOwnedByCurrentAttempt()) {
+        OwnerState ownerState = ownerState();
+        if (ownerState == OwnerState.STARTED) {
             synchronized (this) {
                 if (!isCurrent(actionEpoch) || providerCleanupRequested) return;
                 providerStartInvoked = true;
@@ -453,10 +538,18 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             startObservation(actionEpoch);
             return;
         }
-        synchronized (this) {
-            if (!isCurrent(actionEpoch) || providerCleanupRequested) return;
-            providerStartInvoked = true;
+        if (ownerState == OwnerState.STARTING) {
+            // Join the one in-flight start; its result is delivered to the current holder.
+            if (!holdStartingOwner()) return;
+            synchronized (this) {
+                if (!isCurrent(actionEpoch) || providerCleanupRequested) return;
+                providerStartInvoked = true;
+            }
+            logTimeline("provider-start-joined");
+            return;
         }
+        if (ownerState == OwnerState.PENDING ? !claimPendingStart(actionEpoch)
+                : !reserveProviderStart(actionEpoch)) return;
         logTimeline("provider-start-requested");
         Exception startError = null;
         try {
@@ -466,8 +559,13 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         }
         logTimeline(startError == null ? "provider-start-complete"
                 : "provider-start-failed reason=" + timelineReason(startError));
+        completeReservedStart(transitionSpec, startError);
+    }
+
+    /** Runs on the coordinator that holds the reservation when the one start returned. */
+    private void onReservedStartResult(Exception startError) {
+        long actionEpoch = currentEpoch();
         if (startError == null) {
-            if (!acceptProviderStart(actionEpoch)) return;
             callbacks.onProviderGameStartAccepted(
                     transitionSpec.id, transitionSpec.playniteGameId);
             if (isCurrent(actionEpoch)) {
@@ -494,6 +592,12 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
     }
 
     private void requestProviderCleanup() {
+        // Mark cleanup before releasing a pending reservation, so a concurrent reservation
+        // either observes the flag or is released here.
+        synchronized (this) {
+            providerCleanupRequested = true;
+        }
+        releaseOwnPendingStart();
         synchronized (this) {
             if (!providerCleanupArmed) {
                 providerCleanupRequested = true;
@@ -501,6 +605,15 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
                 completeProviderCleanup(true);
                 return;
             }
+        }
+        if (deferCleanupUntilStartCompletes()) {
+            synchronized (this) {
+                providerCleanupRequested = true;
+                providerCleanupScheduled = true;
+            }
+            stop();
+            logTimeline("provider-stop-deferred-until-start");
+            return;
         }
         boolean scheduleCleanup;
         boolean ownsProvider = isOwnedByCurrentAttempt();
@@ -519,7 +632,7 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
             return;
         }
         try {
-            providerExecutor.execute(this::compensateProviderStart);
+            providerExecutor.execute(() -> compensateProviderStart(false));
         } catch (RuntimeException error) {
             LimeLog.warning("Launch timeline transition=" + transitionSpec.id
                     + " provider-stop-dispatch-failed: " + error.getMessage());
@@ -527,10 +640,21 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         }
     }
 
-    private void compensateProviderStart() {
+    private void compensateProviderStart(boolean bindFromSnapshot) {
+        // An attached attempt stops only an identity bound by its own observation. A holderless
+        // owner (runtime ended, no presentation) may bind it from one authenticated snapshot.
+        // Without an exact identity the cleanup is reported unconfirmed, never as success.
         String ownedProcessToken = claimCurrentAttemptProcessToken();
+        if (ownedProcessToken.isEmpty() && bindFromSnapshot && gateway != null) {
+            try {
+                captureCurrentAttemptProcess(gateway.snapshot());
+            } catch (IOException | RuntimeException unavailable) {
+                // Stays unconfirmed below.
+            }
+            ownedProcessToken = claimCurrentAttemptProcessToken();
+        }
         if (ownedProcessToken.isEmpty()) {
-            logTimeline("provider-stop-skipped-newer-owner");
+            logTimeline("provider-stop-unconfirmed");
             completeProviderCleanup(false);
             return;
         }
@@ -904,22 +1028,148 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         return closed || stopped ? -1L : epoch;
     }
 
-    private boolean isOwnedByCurrentAttempt() {
+    /** PENDING: reserved, external start not yet invoked. STARTING: invoked, in flight. */
+    enum OwnerState { NONE, PENDING, STARTING, STARTED }
+
+    OwnerState ownerState() {
         synchronized (PROVIDER_OWNERS_LOCK) {
             ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
-            return owner != null && owner.matches(transitionSpec);
+            if (owner == null || !owner.matches(transitionSpec)) return OwnerState.NONE;
+            if (owner.pending) return OwnerState.PENDING;
+            return owner.starting ? OwnerState.STARTING : OwnerState.STARTED;
         }
     }
 
-    private boolean acceptProviderStart(long actionEpoch) {
+    /**
+     * Reserves a free slot as PENDING. Another attempt's entry is never replaced here: its
+     * cleanup must run first, so the worker decides at run time exactly as before.
+     */
+    boolean reservePendingStart(long actionEpoch) {
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            synchronized (this) {
+                // Atomic with the reservation: a cleanup that already won leaves no entry.
+                if (!isCurrent(actionEpoch) || providerCleanupRequested) return false;
+                ProviderOwner current = PROVIDER_OWNERS.get(providerOwnerKey());
+                if (current != null) return true;
+                ProviderOwner reserved = new ProviderOwner(transitionSpec);
+                reserved.pending = true;
+                reserved.holder = this;
+                reserved.custodian = this;
+                PROVIDER_OWNERS.put(providerOwnerKey(), reserved);
+                return true;
+            }
+        }
+    }
+
+    synchronized long currentEpochForTests() {
+        return currentEpoch();
+    }
+
+    /** Claims the one external start of a pending reservation this coordinator holds. */
+    private boolean claimPendingStart(long actionEpoch) {
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            synchronized (this) {
+                if (!isCurrent(actionEpoch) || providerCleanupRequested) return false;
+                ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+                if (owner == null || !owner.matches(transitionSpec) || !owner.pending
+                        || owner.holder != this || owner.cleanupClaimed) return false;
+                owner.pending = false;
+                owner.starting = true;
+                providerStartInvoked = true;
+                return true;
+            }
+        }
+    }
+
+    /** A never-invoked reservation needs no stop; it is simply released. */
+    private void releaseOwnPendingStart() {
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            String key = providerOwnerKey();
+            ProviderOwner owner = PROVIDER_OWNERS.get(key);
+            if (owner != null && owner.matches(transitionSpec) && owner.pending
+                    && (owner.holder == this || owner.custodian == this)) {
+                PROVIDER_OWNERS.remove(key);
+            }
+        }
+    }
+
+    private boolean isOwnedByCurrentAttempt() {
+        return ownerState() == OwnerState.STARTED;
+    }
+
+    private boolean holdStartingOwner() {
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+            if (owner == null || !owner.matches(transitionSpec) || !owner.starting
+                    || (owner.holder != null && owner.holder != this)) return false;
+            owner.holder = this;
+            owner.custodian = this;
+            return true;
+        }
+    }
+
+    /** Reserves the exact owner in STARTING before the one external start call. */
+    private boolean reserveProviderStart(long actionEpoch) {
         synchronized (PROVIDER_OWNERS_LOCK) {
             synchronized (this) {
                 if (!isCurrent(actionEpoch) || providerCleanupRequested) return false;
                 ProviderOwner current = PROVIDER_OWNERS.get(providerOwnerKey());
-                if (current != null && current.cleanupClaimed) return false;
-                PROVIDER_OWNERS.put(providerOwnerKey(), new ProviderOwner(transitionSpec));
+                if (current != null && (current.cleanupClaimed || current.starting
+                        || current.pending)) return false;
+                ProviderOwner reserved = new ProviderOwner(transitionSpec);
+                reserved.starting = true;
+                reserved.holder = this;
+                reserved.custodian = this;
+                PROVIDER_OWNERS.put(providerOwnerKey(), reserved);
+                providerStartInvoked = true;
                 return true;
             }
+        }
+    }
+
+    /** Settles the reservation by spec identity and delivers the result to its holder once. */
+    private static void completeReservedStart(LaunchTransitionSpec spec, Exception startError) {
+        ConsoleStreamTransitionCoordinator holder;
+        ConsoleStreamTransitionCoordinator compensate = null;
+        boolean bindFromSnapshot = false;
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            String key = normalizeOwnerPart(spec.hostId);
+            ProviderOwner owner = PROVIDER_OWNERS.get(key);
+            if (owner == null || !owner.matches(spec) || !owner.starting) return;
+            holder = owner.holder;
+            bindFromSnapshot = owner.bindOnCleanup;
+            if (startError == null) {
+                owner.starting = false;
+                if (owner.cleanupAfterStart) {
+                    owner.cleanupAfterStart = false;
+                    compensate = owner.custodian;
+                    holder = null;
+                }
+            } else {
+                PROVIDER_OWNERS.remove(key);
+                if (owner.cleanupAfterStart) {
+                    compensate = owner.custodian;
+                    holder = null;
+                }
+            }
+        }
+        if (compensate != null) {
+            if (startError == null) compensate.scheduleDetachedCompensation(bindFromSnapshot);
+            else compensate.completeProviderCleanup(true);
+        }
+        if (holder != null) holder.onReservedStartResult(startError);
+    }
+
+    /** True when our own in-flight start must finish before its exact process can be stopped. */
+    private boolean deferCleanupUntilStartCompletes() {
+        synchronized (PROVIDER_OWNERS_LOCK) {
+            ProviderOwner owner = PROVIDER_OWNERS.get(providerOwnerKey());
+            if (owner == null || !owner.matches(transitionSpec) || !owner.starting
+                    || (owner.holder != this && owner.custodian != this)) return false;
+            owner.cleanupAfterStart = true;
+            owner.holder = null;
+            owner.custodian = this;
+            return true;
         }
     }
 
@@ -1098,6 +1348,16 @@ public final class ConsoleStreamTransitionCoordinator implements AutoCloseable {
         String processToken;
         int processId;
         boolean cleanupClaimed;
+        /** Reserved before queueing; the external start has not been invoked. */
+        boolean pending;
+        /** The one external start call is in flight; not yet a started provider. */
+        boolean starting;
+        boolean cleanupAfterStart;
+        boolean bindOnCleanup;
+        /** Coordinator receiving the start result; null while detached for recreation. */
+        ConsoleStreamTransitionCoordinator holder;
+        /** Last holder, used to stop the exact process if no presentation adopts it. */
+        ConsoleStreamTransitionCoordinator custodian;
 
         ProviderOwner(LaunchTransitionSpec spec) {
             this(spec, "", 0);

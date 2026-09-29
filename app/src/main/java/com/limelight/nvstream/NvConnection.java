@@ -44,7 +44,7 @@ import com.limelight.nvstream.http.PairingManager;
 import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.nvstream.jni.MoonBridge;
 
-public class NvConnection {
+public class NvConnection implements StreamInput {
     // Context parameters
     private LimelightCryptoProvider cryptoProvider;
     private String uniqueId;

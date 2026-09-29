@@ -17,6 +17,6 @@ public class GameAudioRevealContractTest {
         int revealed = source.indexOf("streamEverRevealed = true;", reveal);
         assertTrue(reveal >= 0 && revealed > reveal);
         assertTrue(source.substring(reveal, revealed)
-                .contains("streamAudioRenderer.setVolume(1f)"));
+                .contains("runtime.setAudioVolume(attachment, 1f)"));
     }
 }

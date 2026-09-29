@@ -38,7 +38,7 @@ import com.limelight.R;
 import com.limelight.binding.input.driver.AbstractController;
 import com.limelight.binding.input.driver.UsbDriverListener;
 import com.limelight.binding.input.driver.UsbDriverService;
-import com.limelight.nvstream.NvConnection;
+import com.limelight.nvstream.StreamInput;
 import com.limelight.nvstream.input.ControllerPacket;
 import com.limelight.nvstream.input.MouseButtonPacket;
 import com.limelight.nvstream.jni.MoonBridge;
@@ -168,7 +168,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     private final SparseArray<InputDeviceContext> inputDeviceContexts = new SparseArray<>();
     private final SparseArray<UsbDeviceContext> usbDeviceContexts = new SparseArray<>();
 
-    private final NvConnection conn;
+    private final StreamInput conn;
     private final Activity activityContext;
     private final double stickDeadzone;
     private final InputDeviceContext defaultContext = new InputDeviceContext();
@@ -199,7 +199,7 @@ public class ControllerHandler implements InputManager.InputDeviceListener, UsbD
     private enum HoldAction { OVERLAY, HOME }
     private HoldAction pendingHoldAction = HoldAction.OVERLAY;
 
-    public ControllerHandler(Activity activityContext, NvConnection conn, GameGestures gestures, PreferenceConfiguration prefConfig) {
+    public ControllerHandler(Activity activityContext, StreamInput conn, GameGestures gestures, PreferenceConfiguration prefConfig) {
         this.activityContext = activityContext;
         this.conn = conn;
         this.gestures = gestures;

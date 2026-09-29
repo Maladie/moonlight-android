@@ -1,0 +1,61 @@
+{
+  "task_id": "S07",
+  "status": "REVIEW_PENDING",
+  "responsibilities": [
+    {
+      "responsibility": "Physical stream transport lifetime (one native connection generation)",
+      "old_owner": "Game (Activity): fields conn, transportStop, streamAudioRenderer, switchableVideoRenderer, highPerfWifiLock, lowLatencyWifiLock, connecting, connected",
+      "new_owner": "com.limelight.stream.StreamRuntime (plain Java), production seams in com.limelight.stream.AndroidStreamRuntime; held strongly by RetainedStreamSessionCoordinator as its Controller",
+      "state_moved": ["NvConnection", "TransportStopCoordinator (S04 stop completion, unchanged)", "AndroidAudioRenderer (application context)", "SwitchableVideoDecoderRenderer incl. HDR cache", "Wi-Fi high-perf/low-latency locks", "connecting/connected state", "parked flag", "foreground-service state per generation", "held-input record (controllers/keys/mouse/touch/pen)"],
+      "effects_moved": ["native start after predecessor stop", "shared native stop", "Wi-Fi lock acquire at start / release at stop completion", "foreground service establish/park/resume/end", "decoder detach/attach, IDR request, audio volume", "control-generation binding at stageComplete", "no-presentation termination -> RECONNECT_REQUIRED + service lost", "retention expiry/notification END -> runtime stop", "headless whole-session termination (mandatory mute/input fence/resume clear before host+local stop)"],
+      "callers_migrated": ["Game.onCreate (attach to live runtime or create generation)", "Game.startConnectionIfReady -> runtime.start()", "Game.stopConnectionResult -> runtime.stop()", "Game.onDestroy -> runtime.presentationLost(attachment, isFinishing())", "Game park/restore/audio/IDR paths", "Game actor handoff (transferRuntime/attachment fence)", "all RetainedStreamSessionCoordinator owner arguments (25 call sites) -> runtime", "BackgroundStreamService (ESTABLISH/PARK/RESUME/END_RUNTIME/TRANSPORT_LOST/END_REQUESTED/DISMISS)", "ConsoleActivity service calls resumed -> dismiss", "ControllerHandler/Absolute/RelativeTouchContext take StreamInput (gated)"],
+      "obsolete_paths_removed": ["Game implements RetainedStreamSessionCoordinator.Controller", "Game as MoonBridge NvConnectionListener (now runtime; Game is StreamRuntime.Presentation)", "Game.isRetainedTransportLive/parkRetainedTransport/disconnectRetainedStream", "Game Wi-Fi lock fields and onDestroy release", "Game ACTION_EXPIRED/ACTION_END_REQUESTED receiver and endExpiredBackgroundStream", "BackgroundStreamService.park/resumed/transportLost statics and startForegroundService from park", "coordinator WeakReference<Controller>"],
+      "production_wiring_evidence": "Game.java onCreate AndroidStreamRuntime.create/StreamRuntime.forSession + runtime.attach; AndroidStreamRuntime.AndroidTransport.start -> NvConnection.start(audio, video, runtime); GameTransportStopContractTest.runtimeOwnsTheOneConnectionAndGameRoutesStopThroughIt",
+      "packaging_evidence": "PENDING: assembleNonRootDebug/assembleNonRootRelease on the S07 candidate (work/s07 build logs)",
+      "lifetime_notes": "Survives Activity recreation only while retained (HOME_LIVE/PARKED_LIVE/PREPARING with accepted home frame), not finishing, connecting/connected and FGS ESTABLISHED or app foreground; otherwise honest stop with reconnect record. Process death loses it; SessionResumeManager record drives authorized reconnect."
+    },
+    {
+      "responsibility": "Presentation attachment and input fencing",
+      "old_owner": "Game sent input directly on NvConnection",
+      "new_owner": "StreamRuntime.Attachment + gated StreamInput; release barrier on the runtime input executor",
+      "state_moved": ["attachment serial/token", "input gate open serial", "release barrier DONE/PENDING/ABANDONED"],
+      "effects_moved": ["non-blocking detach", "neutral controller/key-up/mouse-up/touch+pen cancel release after in-flight sends drain", "new attachment input opens only after release DONE"],
+      "callers_migrated": ["all Game input.send* (was conn.send*)", "ControllerHandler, AbsoluteTouchContext, RelativeTouchContext"],
+      "obsolete_paths_removed": ["direct NvConnection input from Activity"],
+      "production_wiring_evidence": "Game.onCreate input = attachment.input; ControllerHandler(this, input, ...)",
+      "packaging_evidence": "same candidate build",
+      "lifetime_notes": "ControllerHandler and UsbDriverService binding are presentation-owned (need Activity); held input is released by the runtime on detach."
+    },
+    {
+      "responsibility": "Headless retained switch/resume routing",
+      "old_owner": "ConsoleActivity finished onto Game assuming it existed",
+      "new_owner": "SessionOrchestrator CloseResult.PRESENTATION_REQUIRED -> ConsoleActivity.attachPresentationForSwitch -> Game PendingRetainedSwitch.Slot submits the ordinary attached switch",
+      "state_moved": ["one undispatched pending switch target per Game"],
+      "effects_moved": ["attaching Game launch", "single submission of RetainedStreamSessionCoordinator.switchGame after reattach"],
+      "callers_migrated": ["ConsoleActivity.closePreviousSession", "ConsoleActivity.returnToRetainedStream", "ConsoleActivity.onCreate instant resume"],
+      "obsolete_paths_removed": [],
+      "production_wiring_evidence": "SessionOrchestratorTest.detachedRetainedSwitchAttachesPresentationWithoutLaunchOrReturn",
+      "packaging_evidence": "same candidate build",
+      "lifetime_notes": "Nothing is submitted to the coordinator before a presentation exists."
+    },
+    {
+      "responsibility": "Provider launch ownership across Activity recreation",
+      "old_owner": "ConsoleStreamTransitionCoordinator owner registry created after startGame returned; Game.onDestroy cleaned up unrevealed launches",
+      "new_owner": "Same registry with explicit STARTING/STARTED reservation, holder/custodian, detachForRecreation/adoptRecreatedProviderOwnership/endDetachedOwner",
+      "state_moved": ["starting", "cleanupAfterStart", "holder", "custodian"],
+      "effects_moved": ["reservation before the one startGame", "result delivery to current holder", "deferred compensation for holderless owners (revealed launches never stopped)"],
+      "callers_migrated": ["Game.onDestroy (surviving runtime)", "Game.onCreate reattach adoption", "AndroidStreamRuntime.runtimeEnded"],
+      "obsolete_paths_removed": ["acceptProviderStart (post-start owner creation)"],
+      "production_wiring_evidence": "ConsoleStreamTransitionCoordinatorTest.recreatedPresentationJoinsTheOneInFlightStartWithoutAccepting",
+      "packaging_evidence": "same candidate build",
+      "lifetime_notes": "Only an identity bound by the attempt's own observation may be stopped; otherwise cleanup is reported unconfirmed (stricter than design v5 section 7 snapshot binding, see implementation.json)."
+    }
+  ],
+  "remaining_monolith_responsibilities": [
+    "Game still owns the presentation-side transition/switch/child-monitoring UI flows (by design: presentation adapter).",
+    "Child countdown/heartbeat monitoring is presentation-owned; while detached, host-side child expiry (Gateway) ends the stream and the runtime reports RECONNECT_REQUIRED."
+  ],
+  "no_extraction_needed_justification": null,
+  "duplicate_authoritative_owners": [],
+  "review_evidence": "PENDING independent post-edit review"
+}

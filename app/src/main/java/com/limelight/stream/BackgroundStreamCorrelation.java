@@ -1,56 +1,79 @@
 package com.limelight.stream;
 
-/** Transient correlation owned by the running background service. */
+/** Transient correlation owned by the running foreground service: one session generation. */
 final class BackgroundStreamCorrelation {
     private String streamSessionId = "";
+    private long generation;
+    private boolean parked;
     private boolean reconnectRequired;
 
-    void park(String sessionId) {
+    void establish(String sessionId, long transportGeneration) {
         streamSessionId = normalize(sessionId);
+        generation = transportGeneration;
+        parked = false;
         reconnectRequired = false;
     }
 
-    boolean resume(String sessionId) {
-        return finishIfMatches(sessionId);
+    boolean park(String sessionId, long transportGeneration) {
+        if (!matches(sessionId, transportGeneration) || reconnectRequired) return false;
+        parked = true;
+        return true;
     }
 
-    boolean end(String sessionId) {
-        return finishIfMatches(sessionId);
+    boolean resume(String sessionId, long transportGeneration) {
+        if (!matches(sessionId, transportGeneration) || reconnectRequired) return false;
+        parked = false;
+        return true;
     }
 
-    boolean expire(String sessionId) {
-        return finishIfMatches(sessionId);
-    }
-
-    boolean transportLost(String sessionId) {
-        if (!matches(sessionId)) return false;
+    boolean transportLost(String sessionId, long transportGeneration) {
+        if (!matches(sessionId, transportGeneration)) return false;
+        parked = false;
         reconnectRequired = true;
         return true;
     }
 
-    boolean matches(String sessionId) {
+    /** Ends only the exact generation; a stale runtime cannot stop a newer service. */
+    boolean end(String sessionId, long transportGeneration) {
+        if (!matches(sessionId, transportGeneration)) return false;
+        clear();
+        return true;
+    }
+
+    /** Ends a lost-transport notification for this session once it is no longer pending. */
+    boolean dismiss(String sessionId) {
+        if (!matchesSession(sessionId)) return false;
+        clear();
+        return true;
+    }
+
+    boolean matches(String sessionId, long transportGeneration) {
+        return matchesSession(sessionId) && generation == transportGeneration;
+    }
+
+    boolean matchesSession(String sessionId) {
         String expected = normalize(sessionId);
         return !expected.isEmpty() && expected.equals(streamSessionId);
     }
 
-    boolean reconnectRequired() {
-        return reconnectRequired;
-    }
+    boolean parked() { return parked; }
 
-    String streamSessionId() {
-        return streamSessionId;
-    }
+    boolean reconnectRequired() { return reconnectRequired; }
 
-    static String intentIdentity(String action, String sessionId) {
+    String streamSessionId() { return streamSessionId; }
+
+    long generation() { return generation; }
+
+    static String intentIdentity(String action, String sessionId, long transportGeneration) {
         return "moonwaker://background-stream/" + normalize(action) + "/"
-                + normalize(sessionId);
+                + normalize(sessionId) + "/" + transportGeneration;
     }
 
-    private boolean finishIfMatches(String sessionId) {
-        if (!matches(sessionId)) return false;
+    private void clear() {
         streamSessionId = "";
+        generation = 0L;
+        parked = false;
         reconnectRequired = false;
-        return true;
     }
 
     private static String normalize(String value) {

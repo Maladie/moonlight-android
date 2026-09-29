@@ -51,10 +51,11 @@ public class BackgroundStreamPreferencesTest {
         String console = source("app/src/main/java/com/limelight/console/ConsoleActivity.java");
 
         assertTrue(service.contains("BackgroundStreamPreferences.DEFAULT_RETENTION_MINUTES"));
-        assertEquals(2, occurrences(service, "BackgroundStreamPreferences.readMinutes(this)"));
-        assertFalse(service.contains("startParking(pending.streamSessionId, 5)"));
+        String runtime = source("app/src/main/java/com/limelight/stream/AndroidStreamRuntime.java");
+        assertEquals(1, occurrences(service, "BackgroundStreamPreferences.readMinutes(this)"));
+        assertTrue(runtime.contains("return BackgroundStreamPreferences.readMinutes(app);"));
         assertTrue(game.contains("BackgroundStreamPreferences.readMinutes(this)"));
-        assertTrue(game.contains("BackgroundStreamService.park(this, streamSessionId, retentionMinutes)"));
+        assertFalse(game.contains("BackgroundStreamService.park("));
         assertTrue(console.contains("BackgroundStreamPreferences.writeMinutes(this, minutes)"));
         assertFalse(console.contains("putInt(BackgroundStreamPreferences.KEY_RETENTION_MINUTES"));
     }

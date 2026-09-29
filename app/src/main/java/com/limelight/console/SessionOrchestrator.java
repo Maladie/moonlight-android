@@ -14,7 +14,7 @@ import java.util.function.Consumer;
 /** Routes a user target from one fresh canonical session snapshot. */
 final class SessionOrchestrator implements AutoCloseable {
     enum Rejection { INITIALIZING, UNPAIRED, TERMINATING }
-    enum CloseResult { CLOSED, REUSED, CANCELLED, NEEDS_CONFIRMATION }
+    enum CloseResult { CLOSED, REUSED, CANCELLED, NEEDS_CONFIRMATION, PRESENTATION_REQUIRED }
 
     static final class PreparedWarmUp {
         final HostProfileKey profileKey;
@@ -64,6 +64,8 @@ final class SessionOrchestrator implements AutoCloseable {
         default SessionSnapshot resolve(HostProfileKey key) { return resolve(key.hostId); }
         default boolean canPrepareHost(String hostId) { return isPaired(hostId); }
         void returnToRetainedStream(); void reconnectSavedSession();
+        /** Starts the attaching stream presentation carrying the target; ends the request. */
+        void attachPresentationForSwitch(PlayIntent intent, NvApp target);
         default void reconnectSavedSession(PlayIntent intent) { reconnectSavedSession(); }
         void reject(Rejection reason);
         void confirmReplacement(Runnable accepted);
@@ -508,6 +510,11 @@ final class SessionOrchestrator implements AutoCloseable {
                 }
                 if (result == CloseResult.REUSED) {
                     returnToRetained(request, intent);
+                    return;
+                }
+                if (result == CloseResult.PRESENTATION_REQUIRED) {
+                    diagnostic("INFO", "orchestration.presentation_required", request, intent);
+                    effects.attachPresentationForSwitch(intent, preparedTarget);
                     return;
                 }
                 SessionSnapshot afterClose = effects.resolve(intent.profileKey);

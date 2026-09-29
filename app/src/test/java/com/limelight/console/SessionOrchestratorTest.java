@@ -496,6 +496,38 @@ public class SessionOrchestratorTest {
         assertEquals(0, effects.launches);
     }
 
+    @Test public void detachedRetainedSwitchAttachesPresentationWithoutLaunchOrReturn() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE,
+                42, "", true, "", false);
+        effects.canSwitch = true;
+        effects.closeResult = SessionOrchestrator.CloseResult.PRESENTATION_REQUIRED;
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.attachedForSwitch);
+        assertEquals(42, effects.attachedTarget.getAppId());
+        assertEquals(0, effects.returned);
+        assertEquals(0, effects.launches);
+        assertNull(effects.confirmation);
+    }
+
+    @Test public void stalePresentationRequiredResultDoesNothing() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE,
+                42, "", true, "", false);
+        effects.canSwitch = true;
+        effects.closeResult = SessionOrchestrator.CloseResult.PRESENTATION_REQUIRED;
+        effects.deferDispatch = true;
+        SessionOrchestrator orchestrator = orchestrator(effects);
+        orchestrator.play(game());
+        orchestrator.play(game());
+        effects.flushDispatch();
+
+        assertEquals(1, effects.attachedForSwitch);
+        assertEquals(0, effects.launches);
+    }
+
     @Test public void sharedSunshineAppWithDifferentGameStillRequiresReplacement() {
         Fake effects = new Fake();
         effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE, 42, "other");
@@ -773,7 +805,10 @@ public class SessionOrchestratorTest {
 
     private static SessionOrchestrator orchestrator(Fake effects) {
         Executor direct = Runnable::run;
-        return new SessionOrchestrator(effects, direct, Runnable::run);
+        return new SessionOrchestrator(effects, direct, action -> {
+            if (effects.deferDispatch) effects.dispatched.add(action);
+            else action.run();
+        });
     }
 
     private static PlayIntent game() {
@@ -798,6 +833,16 @@ public class SessionOrchestratorTest {
     }
 
     private static final class Fake implements SessionOrchestrator.Effects {
+        int attachedForSwitch;
+        NvApp attachedTarget;
+        boolean deferDispatch;
+        final java.util.ArrayDeque<Runnable> dispatched = new java.util.ArrayDeque<>();
+
+        void flushDispatch() {
+            Runnable next;
+            while ((next = dispatched.poll()) != null) next.run();
+        }
+
         boolean available = true;
         boolean paired = true;
         boolean knownPreparationPair;
@@ -854,6 +899,10 @@ public class SessionOrchestratorTest {
         }
         @Override public SessionSnapshot resolve(String hostId) { return snapshot; }
         @Override public void returnToRetainedStream() { returned++; }
+        @Override public void attachPresentationForSwitch(PlayIntent intent, NvApp target) {
+            attachedForSwitch++;
+            attachedTarget = target;
+        }
         @Override public void reconnectSavedSession() { reconnects++; }
         @Override public void reconnectSavedSession(PlayIntent intent) {
             reconnects++;

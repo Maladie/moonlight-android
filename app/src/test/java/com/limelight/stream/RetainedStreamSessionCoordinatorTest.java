@@ -855,6 +855,50 @@ public class RetainedStreamSessionCoordinatorTest {
                 staleOwner, SESSION_A, "host", 7, "transition-c", 4L));
     }
 
+    @Test public void preparingSwitchCarriesTheAcceptedHomeFrameToItsReplacementTransition() {
+        FakeController owner = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        assertTrue(RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(
+                RetainedStreamSessionCoordinator.snapshot()));
+        assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
+                RetainedStreamSessionCoordinator.switchGame(
+                        "host", 7, "old", "Old", "MoonWaker Stream", "",
+                        () -> false, null));
+        RetainedStreamSessionCoordinator.SwitchRequest request = owner.switchRequest;
+
+        assertTrue(RetainedStreamSessionCoordinator.updatePreparingSwitch(
+                owner, request, "transition-a", "old", "old", "transition-b"));
+
+        assertTrue("the same attempt keeps its accepted Home proof",
+                RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                        SESSION_A, "host", 7, "old", "transition-b", 3L));
+        assertFalse(RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "old", "transition-a", 3L));
+        assertFalse("a different attempt never inherits it",
+                RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                        SESSION_A, "host", 7, "old", "transition-b", 4L));
+        assertFalse("a second Home frame is not accepted for the same attempt",
+                RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(
+                        RetainedStreamSessionCoordinator.snapshot()));
+    }
+
+    @Test public void staleOwnerCannotMoveTheAcceptedHomeFrame() {
+        FakeController owner = new FakeController();
+        FakeController stale = new FakeController();
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
+        assertTrue(RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(
+                RetainedStreamSessionCoordinator.snapshot()));
+        RetainedStreamSessionCoordinator.switchGame(
+                "host", 7, "old", "Old", "MoonWaker Stream", "", () -> false, null);
+
+        assertFalse(RetainedStreamSessionCoordinator.updatePreparingSwitch(
+                stale, owner.switchRequest, "transition-a", "old", "old", "transition-b"));
+        assertTrue(RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "old", "transition-a", 3L));
+    }
+
     @Test public void repeatedTerminationDoesNotStartASecondRequest() {
         FakeController controller = new FakeController();
         controller.completeTermination = false;

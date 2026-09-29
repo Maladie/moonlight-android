@@ -17,7 +17,7 @@ public class DiscordAudioHomeContractTest {
         int start = source.indexOf("private void openConsoleHome()");
         int end = source.indexOf("private void openPreparingConsoleHome()", start);
         String method = source.substring(start, end);
-        assertTrue(method.contains("streamAudioRenderer.setVolume(0f)"));
+        assertTrue(method.contains("runtime.setAudioVolume(attachment, 0f)"));
         assertFalse(method.contains(".12f"));
     }
 }

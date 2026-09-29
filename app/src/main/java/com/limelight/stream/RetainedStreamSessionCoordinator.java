@@ -3,7 +3,6 @@ package com.limelight.stream;
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
 
-import java.lang.ref.WeakReference;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -24,6 +23,8 @@ public final class RetainedStreamSessionCoordinator {
     public interface Controller {
         boolean isRetainedTransportLive();
         default String getExecutionProfileId() { return null; }
+        /** False while the transport runs with no Activity presentation attached. */
+        default boolean hasAttachedPresentation() { return true; }
         boolean parkRetainedTransport();
         default boolean parkPreparingTransport(Snapshot preparing) { return false; }
         default boolean cancelPreparingTransport(Snapshot preparing) { return false; }
@@ -196,7 +197,7 @@ public final class RetainedStreamSessionCoordinator {
 
     private static State state = State.NONE;
     private static long terminationEpoch;
-    private static WeakReference<Controller> controller = new WeakReference<>(null);
+    private static Controller controller;
     private static String streamSessionId = "";
     private static String hostId = "";
     private static String profileId = GatewayConnection.DEFAULT_PROFILE_ID;
@@ -257,13 +258,13 @@ public final class RetainedStreamSessionCoordinator {
         if (sessionId.isEmpty()) throw new IllegalArgumentException("Stream session ID is required");
         establishTransportGenerationLocked(owner, sessionId);
         if (!sessionId.equals(streamSessionId)) controlGeneration = 0L;
-        if (!sessionId.equals(streamSessionId) || controller.get() != owner) {
+        if (!sessionId.equals(streamSessionId) || controller != owner) {
             switchOwner = null;
             switchSessionId = "";
             switchTransitionId = "";
             switchAttempt = 0L;
         }
-        controller = new WeakReference<>(owner);
+        controller = owner;
         streamSessionId = sessionId;
         hostId = retainedHostId == null ? "" : retainedHostId;
         profileId = GatewayConnection.normalizeProfileId(retainedProfileId);
@@ -310,7 +311,7 @@ public final class RetainedStreamSessionCoordinator {
         if (state != State.NONE && !exactReconnect) return false;
         if (!exactReconnect) establishTransportGenerationLocked(owner, sessionId);
         if (!sessionId.equals(streamSessionId)) controlGeneration = 0L;
-        controller = new WeakReference<>(owner);
+        controller = owner;
         streamSessionId = sessionId;
         hostId = host;
         profileId = profile;
@@ -371,7 +372,7 @@ public final class RetainedStreamSessionCoordinator {
                     || attempt != expected.attempt) {
                 return false;
             }
-            owner = controller.get();
+            owner = controller;
             if (owner == null) return false;
         }
         return owner.cancelPreparingTransport(expected);
@@ -381,7 +382,7 @@ public final class RetainedStreamSessionCoordinator {
         Controller owner;
         synchronized (RetainedStreamSessionCoordinator.class) {
             if (!matchesPreparingSnapshot(expected) || preparingHomeFrameClaimed) return false;
-            owner = controller.get();
+            owner = controller;
             if (owner == null) return false;
             preparingHomeFrameClaimed = true;
         }
@@ -389,12 +390,12 @@ public final class RetainedStreamSessionCoordinator {
         boolean committed = false;
         synchronized (RetainedStreamSessionCoordinator.class) {
             if (accepted && matchesPreparingIdentity(expected)
-                    && controller.get() == owner) {
+                    && controller == owner) {
                 acceptedHomeTransitionId = expected.transitionId;
                 acceptedHomeAttempt = expected.attempt;
                 committed = true;
             } else if (!accepted && matchesPreparingSnapshot(expected)
-                    && controller.get() == owner) {
+                    && controller == owner) {
                 preparingHomeFrameClaimed = false;
             }
         }
@@ -417,7 +418,7 @@ public final class RetainedStreamSessionCoordinator {
             int expectedAppId, String expectedTransitionId, long expectedAttempt) {
         if (!matchesPreparing(owner, expectedStreamSessionId, expectedHostId,
                 expectedAppId, expectedTransitionId, expectedAttempt)) return false;
-        controller.clear();
+        controller = null;
         switchOwner = null;
         switchSessionId = "";
         switchTransitionId = "";
@@ -438,7 +439,7 @@ public final class RetainedStreamSessionCoordinator {
 
     public static synchronized boolean bindControlGeneration(
             Controller expectedOwner, String expectedStreamSessionId, long generation) {
-        if (generation <= 0L || controller.get() != expectedOwner
+        if (generation <= 0L || controller != expectedOwner
                 || !matches(expectedStreamSessionId)) return false;
         controlGeneration = generation;
         return true;
@@ -449,7 +450,7 @@ public final class RetainedStreamSessionCoordinator {
             Controller owner, String sessionId, String origin, String actor,
             long expectedGeneration, long generation,
             java.util.function.BooleanSupplier commitConnection) {
-        if (controller.get() != owner || !matches(sessionId)
+        if (controller != owner || !matches(sessionId)
                 || (state != State.PREPARING && state != State.HOME_LIVE && state != State.PARKED_LIVE)
                 || !executionProfileId.equals(GatewayConnection.normalizeProfileId(origin))
                 || expectedGeneration <= 0L || controlGeneration != expectedGeneration
@@ -487,7 +488,7 @@ public final class RetainedStreamSessionCoordinator {
     public static synchronized boolean consumeProviderTransferAuthorization(
             ProviderTransferAuthorization authorization) {
         if (authorization == null || authorization.consumed
-                || controller.get() != authorization.owner
+                || controller != authorization.owner
                 || !matches(authorization.streamSessionId)
                 || (state != State.PREPARING && state != State.HOME_LIVE
                 && state != State.PARKED_LIVE)
@@ -508,7 +509,7 @@ public final class RetainedStreamSessionCoordinator {
     /** A failed local handoff must not advertise the obsolete generation as reusable. */
     public static synchronized boolean discardReauthorization(
             Controller owner, String sessionId, long previousGeneration, long generation) {
-        if (state == State.TERMINATING || controller.get() != owner || !matches(sessionId)
+        if (state == State.TERMINATING || controller != owner || !matches(sessionId)
                 || (controlGeneration != previousGeneration && controlGeneration != generation)) return false;
         clearLocked();
         return true;
@@ -544,6 +545,11 @@ public final class RetainedStreamSessionCoordinator {
         return state;
     }
 
+    /** True when the retained transport has an attached presentation to switch or resume into. */
+    public static synchronized boolean hasAttachedPresentation() {
+        return controller != null && controller.hasAttachedPresentation();
+    }
+
     public static synchronized boolean hasRetainedSession() {
         return state != State.NONE && state != State.TERMINATING;
     }
@@ -557,14 +563,14 @@ public final class RetainedStreamSessionCoordinator {
             if (switchOwner != null) return false;
             if (state == State.PARKED_LIVE) return true;
             if (state == State.PREPARING) {
-                owner = controller.get();
+                owner = controller;
                 if (owner == null) return false;
                 preparing = snapshot();
                 capturedId = streamSessionId;
             } else {
                 if (state != State.HOME_LIVE) return false;
                 capturedId = streamSessionId;
-                owner = controller.get();
+                owner = controller;
                 if (owner == null) {
                     setStateLocked(State.RECONNECT_REQUIRED);
                     return false;
@@ -576,7 +582,7 @@ public final class RetainedStreamSessionCoordinator {
         synchronized (RetainedStreamSessionCoordinator.class) {
             if (!matches(capturedId) || state != State.HOME_LIVE) return false;
             setStateLocked(parked ? State.PARKED_LIVE : State.RECONNECT_REQUIRED);
-            if (!parked) controller.clear();
+            if (!parked) controller = null;
         }
         return parked;
     }
@@ -593,7 +599,7 @@ public final class RetainedStreamSessionCoordinator {
         if (state == State.PREPARING) return;
         if (!matches(expectedStreamSessionId)) return;
         if (state != State.TERMINATING) setStateLocked(State.RECONNECT_REQUIRED);
-        controller.clear();
+        controller = null;
         switchOwner = null;
         switchSessionId = "";
         switchTransitionId = "";
@@ -624,8 +630,8 @@ public final class RetainedStreamSessionCoordinator {
             return false;
         }
         State previousState = state;
-        Controller previousOwner = controller.get();
-        controller.clear();
+        Controller previousOwner = controller;
+        controller = null;
         switchOwner = null;
         switchSessionId = "";
         switchTransitionId = "";
@@ -684,15 +690,15 @@ public final class RetainedStreamSessionCoordinator {
                     terminatingAppId, terminatingGameId);
         }
         String expected = normalize(expectedStreamSessionId);
-        if (expectedOwner == null || controller.get() != expectedOwner
+        if (expectedOwner == null || controller != expectedOwner
                 || !streamSessionId.equals(expected)
                 || !hostId.equalsIgnoreCase(normalize(terminatingHostId))
                 || appId != terminatingAppId
                 || !playniteGameId.equalsIgnoreCase(normalize(terminatingGameId))) {
             return null;
         }
-        Controller previousOwner = controller.get();
-        controller.clear();
+        Controller previousOwner = controller;
+        controller = null;
         switchOwner = null;
         switchSessionId = "";
         switchTransitionId = "";
@@ -740,7 +746,7 @@ public final class RetainedStreamSessionCoordinator {
                                                       String expectedProfileId,
                                                       int expectedAppId) {
         Controller owner = state == State.PREPARING
-                ? controller.get() : (state == State.HOME_LIVE || state == State.PARKED_LIVE) ? liveControllerLocked() : null;
+                ? controller : (state == State.HOME_LIVE || state == State.PARKED_LIVE) ? liveControllerLocked() : null;
         return owner != null && switchOwner == null
                 && appId == expectedAppId
                 && normalize(expectedHostId).equalsIgnoreCase(hostId)
@@ -759,7 +765,7 @@ public final class RetainedStreamSessionCoordinator {
 
     public static synchronized boolean bindActor(Controller owner, String sessionId,
                                                   String actor, String origin) {
-        if (controller.get() != owner || !streamSessionId.equals(sessionId)
+        if (controller != owner || !streamSessionId.equals(sessionId)
                 || !executionProfileId.equals(GatewayConnection.normalizeProfileId(origin))) return false;
         profileId = GatewayConnection.normalizeProfileId(actor);
         return true;
@@ -810,7 +816,7 @@ public final class RetainedStreamSessionCoordinator {
             if (!canSwitchOrigin(expectedHostId, expectedExecutionProfileId, expectedAppId)) {
                 return SwitchResult.NOT_ELIGIBLE;
             }
-            owner = controller.get();
+            owner = controller;
             request = new SwitchRequest(streamSessionId, hostId, profileId,
                     executionProfileId, targetProfileId, targetIsChild, appId,
                     playniteGameId, newGameId, newGameName, streamTargetName,
@@ -859,6 +865,12 @@ public final class RetainedStreamSessionCoordinator {
             return false;
         }
         playniteGameId = normalize(newGameId);
+        // The accepted Home frame belongs to this exact attempt; carry its proof forward with
+        // the replacement transition so a recreated presentation still recognizes it.
+        if (acceptedHomeAttempt == request.attempt
+                && acceptedHomeTransitionId.equals(currentTransition)) {
+            acceptedHomeTransitionId = nextTransition;
+        }
         transitionId = nextTransition;
         return true;
     }
@@ -902,7 +914,7 @@ public final class RetainedStreamSessionCoordinator {
             Controller expectedOwner, SwitchRequest request,
             String expectedOldGameId, String newGameId) {
         if (request == null || (state != State.HOME_LIVE && state != State.PARKED_LIVE)
-                || controller.get() != expectedOwner || switchOwner != expectedOwner
+                || controller != expectedOwner || switchOwner != expectedOwner
                 || !switchSessionId.equals(request.streamSessionId)
                 || !switchTransitionId.equals(request.transitionId)
                 || switchAttempt != request.attempt
@@ -921,7 +933,7 @@ public final class RetainedStreamSessionCoordinator {
         return request != null && !request.preparing
                 && expectedControlGeneration > 0L
                 && (state == State.HOME_LIVE || state == State.PARKED_LIVE)
-                && controller.get() == expectedOwner && switchOwner == expectedOwner
+                && controller == expectedOwner && switchOwner == expectedOwner
                 && streamSessionId.equals(request.streamSessionId)
                 && switchSessionId.equals(request.streamSessionId)
                 && hostId.equalsIgnoreCase(request.hostId)
@@ -954,7 +966,7 @@ public final class RetainedStreamSessionCoordinator {
             Controller expectedOwner, String expectedStreamSessionId,
             String expectedHostId, int expectedAppId) {
         return (state == State.HOME_LIVE || state == State.PARKED_LIVE)
-                && controller.get() == expectedOwner
+                && controller == expectedOwner
                 && switchOwner == null && matches(expectedStreamSessionId)
                 && appId == expectedAppId
                 && hostId.equalsIgnoreCase(normalize(expectedHostId));
@@ -980,12 +992,12 @@ public final class RetainedStreamSessionCoordinator {
     public static synchronized boolean markTransportUnsafe(
             Controller expectedOwner, String expectedStreamSessionId,
             String expectedHostId, int expectedAppId) {
-        if (expectedOwner == null || controller.get() != expectedOwner
+        if (expectedOwner == null || controller != expectedOwner
                 || !matches(expectedStreamSessionId)
                 || appId != expectedAppId
                 || !hostId.equalsIgnoreCase(normalize(expectedHostId))) return false;
         setStateLocked(State.RECONNECT_REQUIRED);
-        controller.clear();
+        controller = null;
         switchOwner = null;
         switchSessionId = "";
         switchTransitionId = "";
@@ -1015,7 +1027,7 @@ public final class RetainedStreamSessionCoordinator {
             if (expectedOwner == null || sessionId.isEmpty() || expectedHost.isEmpty()) {
                 return false;
             }
-            controller = new WeakReference<>(expectedOwner);
+            controller = expectedOwner;
             establishTransportGenerationLocked(expectedOwner, sessionId);
             streamSessionId = sessionId;
             hostId = expectedHost;
@@ -1026,7 +1038,7 @@ public final class RetainedStreamSessionCoordinator {
             return true;
         }
         if ((state == State.HOME_LIVE || state == State.PARKED_LIVE)
-                && controller.get() == expectedOwner && switchOwner == null
+                && controller == expectedOwner && switchOwner == null
                 && matches(sessionId) && appId == expectedAppId
                 && hostId.equalsIgnoreCase(expectedHost) && playniteGameId.isEmpty()) {
             return true;
@@ -1071,7 +1083,7 @@ public final class RetainedStreamSessionCoordinator {
                 capturedId = streamSessionId;
                 previousState = state;
                 owner = liveControllerLocked();
-                controller.clear();
+                controller = null;
                 if (owner == null) {
                     return TerminationResult.NO_CONTROLLER;
                 }
@@ -1110,10 +1122,10 @@ public final class RetainedStreamSessionCoordinator {
                             clearLocked();
                         } else if (capturedOperation.transportUnsafe) {
                             setStateLocked(State.RECONNECT_REQUIRED);
-                            controller.clear();
+                            controller = null;
                         } else {
                             setStateLocked(restoreState);
-                            controller = new WeakReference<>(capturedOwner);
+                            controller = capturedOwner;
                         }
                     }
                     if (terminationOperation == capturedOperation) {
@@ -1175,10 +1187,10 @@ public final class RetainedStreamSessionCoordinator {
                 clearLocked();
             } else if (transportUnsafe) {
                 setStateLocked(State.RECONNECT_REQUIRED);
-                controller.clear();
+                controller = null;
             } else {
                 setStateLocked(operation.previousState);
-                controller = new WeakReference<>(operation.previousOwner);
+                controller = operation.previousOwner;
             }
         }
         for (TerminationCallback completion : completions) {
@@ -1213,7 +1225,7 @@ public final class RetainedStreamSessionCoordinator {
             String expected = normalize(expectedHostId);
             if (expected.isEmpty() || !expected.equalsIgnoreCase(hostId)) return false;
             preparing = state == State.PREPARING ? snapshot() : null;
-            owner = preparing != null ? controller.get() : liveControllerLocked();
+            owner = preparing != null ? controller : liveControllerLocked();
             clearLocked();
         }
         if (owner != null) {
@@ -1234,7 +1246,7 @@ public final class RetainedStreamSessionCoordinator {
     private static void clearLocked() {
         setStateLocked(State.NONE);
         terminationOperation = null;
-        controller.clear();
+        controller = null;
         streamSessionId = "";
         hostId = "";
         profileId = GatewayConnection.DEFAULT_PROFILE_ID;
@@ -1262,17 +1274,17 @@ public final class RetainedStreamSessionCoordinator {
     private static void establishTransportGenerationLocked(Controller owner,
                                                             String sessionId) {
         if (transportGeneration > 0L && streamSessionId.equals(sessionId)
-                && controller.get() == owner) return;
+                && controller == owner) return;
         if (nextTransportGeneration == Long.MAX_VALUE) nextTransportGeneration = 0L;
         transportGeneration = ++nextTransportGeneration;
     }
 
     private static Controller liveControllerLocked() {
-        Controller owner = controller.get();
+        Controller owner = controller;
         if (owner != null && owner.isRetainedTransportLive()) return owner;
         if (state == State.HOME_LIVE || state == State.PARKED_LIVE) {
             setStateLocked(State.RECONNECT_REQUIRED);
-            controller.clear();
+            controller = null;
             switchOwner = null;
             switchSessionId = "";
             switchTransitionId = "";
@@ -1290,7 +1302,7 @@ public final class RetainedStreamSessionCoordinator {
             String expectedHostId, int expectedAppId,
             String expectedTransitionId, long expectedAttempt) {
         return state == State.PREPARING
-                && controller.get() == expectedOwner
+                && controller == expectedOwner
                 && matches(expectedStreamSessionId)
                 && hostId.equalsIgnoreCase(normalize(expectedHostId))
                 && appId == expectedAppId

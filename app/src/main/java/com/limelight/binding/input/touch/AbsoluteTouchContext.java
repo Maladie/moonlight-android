@@ -4,7 +4,7 @@ import android.os.Handler;
 import android.os.Looper;
 import android.view.View;
 
-import com.limelight.nvstream.NvConnection;
+import com.limelight.nvstream.StreamInput;
 import com.limelight.nvstream.input.MouseButtonPacket;
 
 public class AbsoluteTouchContext implements TouchContext {
@@ -43,7 +43,7 @@ public class AbsoluteTouchContext implements TouchContext {
         }
     };
 
-    private final NvConnection conn;
+    private final StreamInput conn;
     private final int actionIndex;
     private final View targetView;
     private final Handler handler;
@@ -66,7 +66,7 @@ public class AbsoluteTouchContext implements TouchContext {
     private static final int TOUCH_DOWN_DEAD_ZONE_TIME_THRESHOLD = 100;
     private static final int TOUCH_DOWN_DEAD_ZONE_DISTANCE_THRESHOLD = 20;
 
-    public AbsoluteTouchContext(NvConnection conn, int actionIndex, View view)
+    public AbsoluteTouchContext(StreamInput conn, int actionIndex, View view)
     {
         this.conn = conn;
         this.actionIndex = actionIndex;

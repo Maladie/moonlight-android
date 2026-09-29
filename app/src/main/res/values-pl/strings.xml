@@ -334,6 +334,8 @@
     <string name="background_stream_channel">Zaparkowany stream gry</string>
     <string name="background_stream_title">Stream gry jest gotowy do wznowienia</string>
     <string name="background_stream_summary_minutes">MoonWaker utrzyma połączenie przez maksymalnie %1$d min.</string>
+    <string name="stream_runtime_busy">Poprzedni stream jest jeszcze zamykany. Spróbuj ponownie za chwilę.</string>
+    <string name="background_stream_active_summary">MoonWaker streamuje. Połączenie zostanie zachowane, gdy przejdziesz do innych aplikacji.</string>
     <string name="background_stream_summary_never">MoonWaker utrzyma połączenie, dopóki Android go nie zatrzyma.</string>
     <string name="background_stream_reconnect_summary">Szybkie połączenie zostało zwolnione. Wznów przez zwykłe ponowne połączenie.</string>
     <string name="background_stream_resume">Wznów</string>
