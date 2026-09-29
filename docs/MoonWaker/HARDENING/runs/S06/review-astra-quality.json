@@ -1,0 +1,79 @@
+{
+  "schema_version": 1,
+  "task_id": "S06",
+  "stage": "ADDITIONAL_POST_EDIT_QUALITY_REVIEW",
+  "reviewer": {
+    "context": "/root/s06_astra_quality_review",
+    "model": "gpt-6-astra",
+    "reasoning_effort": "medium",
+    "independent": true,
+    "read_only": true
+  },
+  "scope": [
+    "code quality and functional regressions against HEAD b05f3e2cdbccdc6a04e8b800c00e26bf80f16110",
+    "home-use UX and stability",
+    "fresh Play, retained A-to-B switching, parent/child projection, temporary Gateway unavailability and recovery"
+  ],
+  "non_goals": [
+    "speculative edge cases",
+    "additional security architecture",
+    "new abstractions unrelated to an observed regression"
+  ],
+  "initial_verdict": "CHANGES_REQUIRED",
+  "findings": [
+    {
+      "id": "S06-ASTRA-Q01-FRESH-PLAY-READINESS",
+      "severity": "P1",
+      "status": "FIXED",
+      "finding": "A normal fresh stream had no retained-transport record, so verified process/window evidence could not reach READY and automatic reveal could remain closed.",
+      "correction": "READY accepts verified correlated provider evidence before a stream becomes retained, while a matching reconnect-required transport remains excluded.",
+      "regression": "SessionStateProjectionTest.freshStreamCanBecomeReadyBeforeItIsRetained"
+    },
+    {
+      "id": "S06-ASTRA-Q02-NEUTRAL-RETAINED-IDLE",
+      "severity": "P1",
+      "status": "FIXED",
+      "finding": "Verified idle game evidence on a healthy HOME_LIVE/PARKED_LIVE transport could age into RECOVERY_REQUIRED and block the next retained Play.",
+      "correction": "The game axis resolves to IDLE while the independently known-live neutral transport remains ACTIVE and reusable.",
+      "regression": "SessionStateProjectionTest.idleGameEvidenceKeepsNeutralRetainedTransportReusable"
+    },
+    {
+      "id": "S06-ASTRA-Q03-REJECTED-RAW-OBSERVATION",
+      "severity": "P1",
+      "status": "FIXED",
+      "finding": "A rejected delayed observation could still expose raw game state and trigger current-transition stop/focus/capture effects.",
+      "correction": "Rejected observations no longer populate the facade snapshot, and transition side effects require an accepted gateway observation.",
+      "regressions": [
+        "PlayniteTransitionGatewayTest.rejectedObservationDoesNotLeakRawStateToConsumers",
+        "ConsoleStreamTransitionCoordinatorTest.rejectedIdleSnapshotCannotStopCurrentGamePresentation"
+      ]
+    },
+    {
+      "id": "S06-ASTRA-Q04-FIRST-UNAVAILABLE-PROJECTION",
+      "severity": "P2",
+      "status": "FIXED",
+      "finding": "ConsoleActivity could bypass the canonical bounded UNAVAILABLE projection when the first observation attempt failed and no retained transport existed.",
+      "correction": "After the first observation attempt, Activity consumes the projection owner even before an observation is accepted.",
+      "regression": "SessionStateProjectionTest.unavailableAttemptIsCanonicalBeforeAnyAcceptedObservation"
+    },
+    {
+      "id": "S06-ASTRA-Q05-STALE-FIXTURE",
+      "severity": "P2",
+      "status": "FIXED",
+      "finding": "The first stale-revision fixture was internally inconsistent and exercised parser rejection instead of the accept-false path.",
+      "correction": "The fixture now returns a valid verified running observation with an older revision and a different game identity; the focused class passes through the intended branch."
+    }
+  ],
+  "review_recheck": "PASS for the three production corrections; they are minimal and no new UX/stability regression was found in the reviewed scope.",
+  "validation": [
+    "Focused three-class regression run: 86 tests, initial 4 expected failures before fixes, then PASS after corrections.",
+    "Broader Activity/Orchestrator/transition run: 202 tests PASS.",
+    "Full Android NonRoot unit gate: 115 suites, 1126 tests, 0 failures, 0 errors, 0 skipped.",
+    "NonRoot Debug and Release assembly: 99 tasks, PASS."
+  ],
+  "final_verdict": "ACCEPT",
+  "remaining_blockers": [
+    "Candidate-bound physical Windows/TV scenarios remain pending.",
+    "S03-S05 formal predecessor statuses remain unchanged."
+  ]
+}

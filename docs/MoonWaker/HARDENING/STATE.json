@@ -82,15 +82,19 @@
       "checkpoint_plan": "runs/S05/profile-takeover-overlay-correction-20260914/checkpoint-plan.json"
     },
     "S06": {
-      "status": "NOT_STARTED",
-      "assigned_run": null,
-      "input_fingerprint": null,
-      "output_fingerprint": null,
-      "implementation_report": null,
-      "review_report": null,
-      "design_review_report": null,
-      "blockers": [],
-      "checkpoint_plan": null
+      "status": "CODE_VERIFIED_DEVICE_PENDING",
+      "assigned_run": "S06-worker-20260914",
+      "input_fingerprint": "sha256:5e78588cdd4512554e4c2ef1d047b7bb0beba87e2809759231ad86b2df38145e",
+      "output_fingerprint": "sha256:60915ff34598b96acbb7e9d85377baec3cff2a887aaa1ec3191606d874afdb50",
+      "implementation_report": "runs/S06/implementation.json",
+      "review_report": "runs/S06/review-sol-no-compat-rereview.json",
+      "design_review_report": "runs/S06/pre-edit-review.json",
+      "blockers": [
+        "The independent Sol High final no-compat re-review accepted output fingerprint sha256:60915ff34598b96acbb7e9d85377baec3cff2a887aaa1ec3191606d874afdb50 with no remaining P0-P3 blocker in the bounded scope.",
+        "Candidate-bound S06 physical Windows/TV evidence was not authorized or executed, so code verification cannot produce CHECKPOINT_ACCEPTED.",
+        "S03-S05 remain formally CODE_VERIFIED_DEVICE_PENDING; the explicit S06 dependency override permits this implementation but does not accept or waive the predecessor chain."
+      ],
+      "checkpoint_plan": "runs/S06/checkpoint-plan.json"
     },
     "S07": {
       "status": "NOT_STARTED",
@@ -165,6 +169,13 @@
       "status": "USER_AUTHORIZED",
       "value": "All MoonWaker launch/resume/reconnect/replacement/warm-up/full-quit operations require one exclusive Gateway generation and actor-lease permit. Android's existing riKey/sessionUrl0 Sunshine bootstrap may execute directly only inside that exact permit; media remains direct. Concurrent legacy clients are unsupported; unmanaged, uncertain or uncorrelated sessions fail closed and are never globally cleaned up automatically.",
       "source": "User messages: Nie musimy gwarantować starszych klientów... Pasuje, rozpocznij"
+    },
+    {
+      "id": "S06-20260914-DEPENDENCY-OVERRIDE",
+      "decision": "PROCEED_WITH_FULL_S06_WHILE_S03_S05_FORMALLY_PENDING",
+      "status": "USER_AUTHORIZED",
+      "value": "Proceed with full S06 implementation on the exact cumulative input fingerprint sha256:5e78588cdd4512554e4c2ef1d047b7bb0beba87e2809759231ad86b2df38145e after the independent pre-edit design review. This does not accept S03, S04 or S05, waive their missing formal evidence, authorize S06 checkpoint acceptance without its own evidence, or authorize commit, push, APK installation, Gateway update or service restart.",
+      "source": "User message: Nie preedit. Wykonaj w pełni. Znoszę blokadę"
     }
   ],
   "workspace": {

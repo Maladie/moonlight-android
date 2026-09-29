@@ -1,0 +1,74 @@
+{
+  "schema_version": 1,
+  "task_id": "S06",
+  "run_id": "artifacts-0.7.118-20260921-provider-fix",
+  "status": "PROVIDER_SUPERVISOR_FIX_BUILT_HOST_NOT_DEPLOYED",
+  "source": {
+    "branch": "codex/session-hardening",
+    "head": "b05f3e2cdbccdc6a04e8b800c00e26bf80f16110",
+    "delivery_fingerprint": "sha256:e2977ad57075350a93ca839eed65967f9c7ed98107bb0acc4e64a9b8647f53c1",
+    "fix_files": [
+      "host-services/bridges/playnite/GameProviderBridge.py",
+      "host-services/bridges/playnite/test_session_observation.py",
+      "host-services/bridges/playnite/Deploy-PlayniteBridge.ps1",
+      "host-services/profile-agent/MoonWakerProfileBridge.ps1",
+      "host-services/profile-agent/Stop-MoonWakerProfileBridge.ps1",
+      "host-services/profile-agent/Test-MoonWakerProfileBridge.ps1"
+    ],
+    "dirty_checkout_preserved": true
+  },
+  "diagnosis": {
+    "symptom": "The installed Game Provider repeatedly changed boot identity and appeared not to start.",
+    "root_cause": "The profile supervisor still probed the removed Game Provider /health endpoint. The canonical /observation endpoint was healthy, but each failed legacy probe caused the supervisor to restart the process.",
+    "resolution": "Publish exact producer identity in /observation and use that single contract in supervisor, stop and deploy paths. Removed encountered Playnite aliases and legacy health-field handling."
+  },
+  "host_artifact": {
+    "version": "0.7.118",
+    "build": "2026.09.21",
+    "protocol_version": 6,
+    "path": "host-services/dist-s06-0.7.118-20260921-provider-fix/MoonWakerHostInstaller.exe",
+    "bytes": 9543680,
+    "sha256": "4558a6a26ea06d8ff2d045570658e88dde70c712fd479cded7f22c5ed61870fc",
+    "payload_files": 145,
+    "updater_files": 9,
+    "required_payload_paths_complete": true,
+    "updated_sources_match_embedded_payload": true,
+    "file_version": "0.7.118.0",
+    "product_version": "0.7.118+2026.09.21",
+    "deployed": false
+  },
+  "validation": {
+    "session_observation": "3/3 PASS",
+    "game_provider": "271/271 PASS",
+    "game_provider_stop_identity": "PASS",
+    "profile_supervisor_contract": "PASS",
+    "gateway": "313/313 PASS",
+    "gateway_service": "PASS",
+    "login_broker": "15/15 PASS",
+    "host_control": "PASS",
+    "credential_provider_static_and_protocol": "PASS",
+    "credential_provider_x64_build": "PASS",
+    "packet_metadata": "VALID_PACKET_METADATA",
+    "note": "One first build attempt saw a transient existing DPAPI path-with-spaces test failure. The targeted test passed three consecutive reruns, and the next full provider run passed 271/271. The fully tested build then reached only the network-gated Legendary fetch; final packaging reused that exact source with SkipTests and network access."
+  },
+  "supersedes": [
+    {
+      "path": "host-services/dist-s06-0.7.118-20260921-fixed/MoonWakerHostInstaller.exe",
+      "sha256": "8eb8a4f3b80713feca4cbeaac4eacefc8257032185ba5424d751659a05f0fadf",
+      "reason": "Contains the complete updater payload but restarts the healthy Game Provider because the supervisor still probes /health. Do not use."
+    },
+    {
+      "path": "host-services/dist-s06-0.7.118-20260921/MoonWakerHostInstaller.exe",
+      "sha256": "3aeb34f89826dc5dbd9c2c83c623a3c87bfa24c3fb608d1b52e7cf5b38e1a958",
+      "reason": "Incomplete payload omitted host-services/updater. Do not use."
+    }
+  ],
+  "not_performed": [
+    "Corrected host installer execution",
+    "Gateway or Bridge update with the corrected artifact",
+    "Windows service restart",
+    "Commit",
+    "Push"
+  ],
+  "formal_note": "S06 remains CODE_VERIFIED_DEVICE_PENDING. Building the corrected host artifact does not constitute Windows or TV acceptance."
+}

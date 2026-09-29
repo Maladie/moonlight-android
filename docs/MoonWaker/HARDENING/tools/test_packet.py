@@ -20,7 +20,7 @@ class PacketTests(unittest.TestCase):
     def test_metadata_valid(self):
         result = packet.validate(self.bundle)
         self.assertEqual(result['tasks'], 11)
-        self.assertEqual(result['scenarios'], 46)
+        self.assertEqual(result['scenarios'], 50)
         self.assertEqual(result['findings'], 11)
 
     def test_only_baseline_initially_dispatchable(self):

@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "task_id": "S06",
+  "stage": "POST_EDIT_REVIEW",
+  "run_id": "S06-worker-20260914",
+  "input_fingerprint": "sha256:5e78588cdd4512554e4c2ef1d047b7bb0beba87e2809759231ad86b2df38145e",
+  "output_fingerprint": "sha256:8778931df1f37606eb159154b88c175d7fe07289e2bf3c7adf2626ceb0a798cf",
+  "independent_context": "/root/s06_postedit_review",
+  "verdict": "ACCEPT",
+  "review_read_only": true,
+  "review_history": "review-v1.json",
+  "additional_quality_review": "review-astra-quality.json",
+  "resolved_findings": [
+    {
+      "id": "S06-R01-NON_RESETTING_DEADLINE",
+      "status": "PASS",
+      "evidence": "The original uncertain-episode deadline survives unavailable() and a return to the same producer episode; the controlled-clock regression reaches RECOVERY_REQUIRED at the original deadline."
+    },
+    {
+      "id": "S06-R02-CLOCK_SKEW",
+      "status": "PASS",
+      "evidence": "Producer wall time is limited to a broad 365-day sanity bound while freshness expires from local monotonic receipt time; the regression accepts six-hour skew and later expires locally."
+    },
+    {
+      "id": "S06-R03-RECOVERY_NEXT_PLAY",
+      "status": "PASS",
+      "evidence": "Production retained/projection owners prove no automatic live-transport close, exact captured-snapshot recovery fencing, stale token rejection and a next Play with new operation, transition and transport generation."
+    }
+  ],
+  "confirmed_contracts": [
+    "Game Provider emits one lock-serialized observation with schema, boot, revision, episode, time/freshness and explicit game/process/window evidence.",
+    "Gateway supplies one authenticated parent/child envelope with actor/execution and before/after control correlation fencing without a parent-health dependency.",
+    "Android uses one serialized projection owner with dispatch ordinals, retired boots, local monotonic freshness and bounded liveness.",
+    "Retained transport generation is independent of Gateway control generation, transition attempt and producer revision.",
+    "Known-live local transport survives unknown, malformed, mismatched and unavailable host game evidence.",
+    "Provider events cannot prove readiness; missing canonical game proof cannot be replaced with the expected game.",
+    "Dashboard, transition, stop, resume, presentation and termination consumers no longer use the obsolete multi-read Activity truth paths.",
+    "Mixed-version behavior fails closed for a new client on an old or unsupported host while legacy endpoints remain available to old clients."
+  ],
+  "executed_evidence": [
+    "Provider targeted 3/3 and full Bridge 270/270 PASS.",
+    "Gateway targeted 34/34 and full Gateway 312/312 PASS.",
+    "Additional correction-focused Android 202/202 PASS.",
+    "Final full Android 1126/1126 PASS.",
+    "Final NonRoot debug/release build PASS, 99 tasks.",
+    "branch-check, packet validate, py_compile, diff-check and prohibited-consumer scan PASS."
+  ],
+  "remaining_blockers": [
+    "Candidate-bound S06 physical Windows/TV scenarios were not authorized or executed.",
+    "S03-S05 remain formally CODE_VERIFIED_DEVICE_PENDING; the S06 dependency override permits implementation but does not accept the predecessor chain."
+  ],
+  "checkpoint_status_recommendation": "CODE_VERIFIED_DEVICE_PENDING"
+}

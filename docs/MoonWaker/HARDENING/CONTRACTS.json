@@ -104,8 +104,8 @@
     },
     {
       "id": "I21",
-      "name": "No security downgrade for compatibility",
-      "rule": "Unsupported host protocol returns an explicit restricted/unavailable path, never silent downgrade of child enforcement, correlation, permissions, TLS or readiness. Reuse existing version/capability machinery where feasible."
+      "name": "No security downgrade",
+      "rule": "An actually absent runtime capability returns an explicit restricted/unavailable path before effects, never a silent downgrade of child enforcement, correlation, permissions, TLS or readiness. Peers ship in lockstep (D06); there is no mixed-version support. Reuse existing capability machinery where feasible."
     },
     {
       "id": "I22",
@@ -249,9 +249,9 @@
   "decisions": [
     {
       "id": "D01",
-      "status": "PROVISIONAL_DEFAULT",
+      "status": "USER_AUTHORIZED",
       "topic": "Retention default",
-      "value": "Align absent-setting behavior in release/debug with the verified product retention policy and preserve explicit values including disabled. The inherited debug default of 5 minutes is only an interim migration candidate, NOT user approval of a new timeout. S00 must record a documented/user-authorized policy or leave D01 PRODUCT_POLICY_PENDING. S02 may implement the parity/migration seam and clearly retain the interim value without calling F05 release-accepted. Do not introduce time-based disconnection on app Home/host-picker merely to reuse the background-TV preference. S10 cannot certify F05 until its duration/policy is explicit and consistent with the user requirement."
+      "value": "Amendment D01-20260909-30MIN (user authorized, see STATE.json contract_amendments): for an absent stored preference, default background stream retention is 30 minutes in both debug and release. Every explicit stored value, including zero/off, is preserved. This timeout does not apply to app Home or host-picker retention; do not introduce time-based disconnection there merely to reuse the background-TV preference."
     },
     {
       "id": "D02",
@@ -280,8 +280,8 @@
     {
       "id": "D06",
       "status": "REQUIRED",
-      "topic": "Protocol evolution",
-      "value": "Prefer a minimal extension of existing capability/schema machinery over a new protocol framework. Older peers must not silently downgrade safety. Explain compatible paths and unsupported paths; never pretend older builds meet this release contract."
+      "topic": "Protocol evolution (lockstep)",
+      "value": "Extend existing capability/schema machinery minimally; no new protocol framework. Android APK and host artifacts are deployed together from one candidate build: no compatibility matrix, migration or legacy/old-shape detection. A capability that is actually absent at runtime is refused before effects, never silently downgraded (I21, D04). S10 verifies the installed APK and host artifacts come from the same candidate build."
     },
     {
       "id": "D07",

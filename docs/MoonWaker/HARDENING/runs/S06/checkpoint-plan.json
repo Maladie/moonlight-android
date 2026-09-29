@@ -1,0 +1,70 @@
+{
+  "schema_version": 1,
+  "task_id": "S06",
+  "input_fingerprint": "sha256:5e78588cdd4512554e4c2ef1d047b7bb0beba87e2809759231ad86b2df38145e",
+  "approved_by_coordinator_run": "root-s06-20260914",
+  "dependency_override": {
+    "source": "user",
+    "statement": "Nie preedit. Wykonaj w pelni. Znosze blokade",
+    "scope": "Proceed with full S06 implementation while S03-S05 remain formally pending; do not treat the override as checkpoint acceptance or evidence waiver."
+  },
+  "outcome": "One versioned, coherent host observation and one Android projection drive transition readiness, retained-session decisions, dashboard presentation and recovery without erasing known-live transport when remote game evidence is unknown.",
+  "production_path": [
+    "Game Provider emits one lock-serialized schema-1 snapshot with boot identity, monotonic revision, observation time, freshness and explicit provider/game/process/window evidence",
+    "Gateway authenticates the caller and adds actor, execution and control-operation correlation with a before/after fence around the provider proxy",
+    "HostGatewayClient strictly parses the envelope and rejects unsupported, expired, malformed or scope-mismatched observations",
+    "One process-wide serialized SessionStateResolver owner assigns dispatch ordinals, retires producer boots, accepts only fresh monotonic observations and combines them once with the separately authoritative retained transport snapshot",
+    "RetainedStreamSessionCoordinator exposes a distinct local transport generation that is never aliased to Gateway control generation, producer revision or transition attempt",
+    "ConsoleActivity, SessionOrchestrator, Game and ConsoleStreamTransitionCoordinator consume the same published projection instead of reconstructing or independently accepting alternate truth",
+    "Every unknown converges within a bound to READY, IDLE, RECOVERY_REQUIRED or UNAVAILABLE",
+    "Verified recovery clears the exact failed session/control operation and a subsequent newly authorized Play is exercised"
+  ],
+  "architecture_boundary": "Reuse Game Provider BridgeState.lock, GatewayState control ownership, HostGatewayClient, SessionStateResolver, RetainedStreamSessionCoordinator and LaunchTransitionController. Add no durable observation store, direct Bridge access, profile-specific lifecycle or alternate Activity/Game truth.",
+  "required_checks": [
+    "failing-before provider atomicity and Android delayed-A-after-B contracts",
+    "producer schema, boot, revision, time, freshness and explicit missing-evidence tests",
+    "Gateway parent/child scope and before/after correlation-fence tests without parent-only health dependency",
+    "Android strict parsing, echoed dispatch correlation, cross-boot retirement, schema compatibility, freshness and identity consistency tests",
+    "resolver tests preserving known-live retained transport across unknown/error/mismatch",
+    "bounded liveness tests for READY, IDLE, RECOVERY_REQUIRED and UNAVAILABLE",
+    "transition tests rejecting stale/wrong-transition/missing-game observations, preventing event-only readiness and preserving privacy",
+    "consumer migration contracts proving no health/current/readiness multi-read or alternate Activity/Game reconstruction remains",
+    "recovery then next authorized Play regression",
+    "Gateway full suite, Android full NonRoot unit suite, debug/release assembly, diff/schema/fingerprint checks and independent post-edit review"
+  ],
+  "protected_flows": [
+    {"flow_id":"F01","check_ids":["provider-atomic-observation","gateway-correlation-fence"],"original_defects":[]},
+    {"flow_id":"F02","check_ids":["parent-scope","child-scope-no-parent-health"],"original_defects":[]},
+    {"flow_id":"F03","check_ids":["retained-live-survives-unknown","local-generation-separate"],"original_defects":[]},
+    {"flow_id":"F04","check_ids":["delayed-a-rejected","boot-restart-accepted","retired-boot-rejected"],"original_defects":[]},
+    {"flow_id":"F05","check_ids":["bounded-ready","bounded-idle","bounded-recovery","bounded-unavailable"],"original_defects":[]},
+    {"flow_id":"F06","check_ids":["transition-privacy","exact-process-stop"],"original_defects":[]},
+    {"flow_id":"F07","check_ids":["recovery-full-close","next-authorized-play"],"original_defects":[]},
+    {"flow_id":"F08","check_ids":["dashboard-single-projection","game-single-observation"],"original_defects":[]}
+  ],
+  "target_regression_check_ids": [
+    "atomic-observation-never-mixes-game-and-window",
+    "delayed-observation-a-after-b-is-rejected-within-and-across-boots",
+    "known-live-transport-is-preserved-on-remote-unknown",
+    "unknown-liveness-converges",
+    "recovery-allows-next-authorized-play",
+    "event-cannot-prove-readiness",
+    "missing-game-cannot-prove-target",
+    "all-consumers-use-one-published-projection"
+  ],
+  "build_and_package_check_ids": [
+    "gateway-full",
+    "android-nonroot-full",
+    "android-nonroot-debug",
+    "android-nonroot-release"
+  ],
+  "device_checks_required": true,
+  "required_device_check_ids": [
+    "S06-LAB-PARENT-COHERENT-PLAY-RETURN",
+    "S06-LAB-CHILD-COHERENT-PLAY-RETURN",
+    "S06-LAB-GATEWAY-OUTAGE-RETAINED-SURVIVES",
+    "S06-LAB-RECOVERY-NEXT-PLAY"
+  ],
+  "device_execution_authorized": false,
+  "formal_blocker_after_code": "S06 cannot become CHECKPOINT_ACCEPTED without authorized physical device evidence and closure of the still-pending S03-S05 predecessor chain or a separate checkpoint-acceptance decision."
+}

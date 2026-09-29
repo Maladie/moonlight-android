@@ -6,7 +6,7 @@ Status: proposed product-test architecture. The packet ships a command/evidence 
 | Lane | System under test | Automatic oracle | When |
 |---|---|---|---|
 | L1 deterministic logic | Existing JVM owners/resolvers and Python host policies with controlled effects, clocks and queues | Exact effects/identities/order; forbidden calls; no sleep-based race proof | Narrow loop after edits; all affected suites at every checkpoint |
-| L2 component/contract | Real Gateway handler + production Bridge/consumer boundary, synthetic config/storage and transport adapters | Actual endpoint/auth/schema behavior, compatibility, producer coherence, process identity and persisted budget | Cross-component slices + cumulative checkpoint gate |
+| L2 component/contract | Real Gateway handler + production Bridge/consumer boundary, synthetic config/storage and transport adapters | Actual endpoint/auth/schema behavior, lockstep pairing, producer coherence, process identity and persisted budget | Cross-component slices + cumulative checkpoint gate |
 | L3 Android lifecycle/UI | Emulator or lab TV, AndroidX test + UI Automator, controlled host | Actual UI entrypoints, focus, Home/picker/overlay/pad equivalence and lifecycle outcomes | Targeted navigation/lifecycle slices; seven-flow protected smoke |
 | L4 real host/stream | Authorized Windows + real streamer + Android TV + allow-listed probe games | Real native connection identity/counters, OS process/session observation, frames and input acknowledgements | Mandatory for changed native/Windows/streaming contracts; full matrix/soak at S10 |
 

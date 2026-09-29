@@ -1,0 +1,325 @@
+{
+  "schema_version": 1,
+  "task_id": "S06",
+  "run_id": "S06-worker-20260914",
+  "role": "worker",
+  "actual_model": "gpt-5",
+  "status": "CODE_VERIFIED_DEVICE_PENDING",
+  "source": {
+    "repository": "Maladie/moonlight-android",
+    "branch": "codex/session-hardening",
+    "head_before": "b05f3e2cdbccdc6a04e8b800c00e26bf80f16110",
+    "head_after": "b05f3e2cdbccdc6a04e8b800c00e26bf80f16110",
+    "input_fingerprint": "sha256:5e78588cdd4512554e4c2ef1d047b7bb0beba87e2809759231ad86b2df38145e",
+    "output_fingerprint": "sha256:60915ff34598b96acbb7e9d85377baec3cff2a887aaa1ec3191606d874afdb50",
+    "dirty_baseline_preserved": true
+  },
+  "outcome": [
+    "The Playnite provider now emits one BridgeState.lock-serialized schema-1 observation with boot/revision/episode, canonical game, exact process identity, window evidence, readiness and explicit evidence states.",
+    "Gateway exposes one authenticated parent/child observation route with actor/execution identity plus request, transition, operation, control-generation and actor-lease fences captured before and after the provider read.",
+    "Android strictly parses the envelope and uses one process-wide projection owner per host/actor/execution to reject delayed ordinals, stale revisions and retired boots, enforce local freshness and a non-resetting liveness deadline, and preserve known-live local transport under unknown evidence.",
+    "RetainedStreamSessionCoordinator now owns an independent monotonic transportGeneration; dashboard, transition, stop, resume, presentation and termination consumers use the shared projection and exact verified process proof.",
+    "Provider events are refresh/notification triggers only and cannot prove game, process, window or reveal readiness; expected-game fallback and obsolete Activity activePlayniteGame truth were removed."
+  ],
+  "post_edit_review_corrections": [
+    {
+      "finding": "An unavailable read could replace the active uncertain episode key and let the same episode reset its 15-second deadline when observations resumed.",
+      "disposition": "Fixed in ProjectionOwner: unavailable preserves an unresolved PENDING episode deadline, including the first accepted observation after an initially unavailable read. A controlled-clock accept/unavailable/accept regression reaches RECOVERY_REQUIRED at the original deadline."
+    },
+    {
+      "finding": "Parser freshness incorrectly depended on Windows and Android wall clocks agreeing within fresh_for_ms.",
+      "disposition": "Fixed by treating producer wall time as diagnostic with only a 365-day absurd-timestamp bound. Freshness expires from the local monotonic acceptance clock; a six-hour skew plus local expiry regression passes."
+    },
+    {
+      "finding": "The required recovery-to-next-Play production wiring sequence lacked deterministic coverage.",
+      "disposition": "Added a production-owner regression proving RECOVERY_REQUIRED does not close the live transport, stale control fencing rejects recovery, exact captured session/control/transport fencing authorizes reset, the late token is rejected, and the next Play carries a new operation, transition and transport generation. ConsoleActivity reconnect recovery now uses the exact captured Snapshot overload."
+    }
+  ],
+  "additional_astra_quality_review": {
+    "report": "review-astra-quality.json",
+    "model": "gpt-6-astra",
+    "reasoning_effort": "medium",
+    "verdict": "ACCEPT_AFTER_CORRECTION",
+    "corrections": [
+      "Allow exact verified process/window evidence to reach READY for a fresh stream before it becomes retained.",
+      "Resolve verified idle game evidence as IDLE while preserving a healthy neutral retained transport as ACTIVE and reusable.",
+      "Do not expose rejected raw observations or permit them to trigger transition stop, focus or process-capture effects.",
+      "Use the canonical bounded projection after the first unavailable observation attempt even without retained transport."
+    ]
+  },
+  "additional_sol_no_compat_review": {
+    "report": "review-sol-no-compat-rereview.json",
+    "model": "gpt-5.6-sol",
+    "reasoning_effort": "high",
+    "verdict": "ACCEPT",
+    "summary": "All findings are closed. The final bounded R04 pass confirms canonical ABSENT+ABSENT+complete idle proof, ownership preservation for incomplete evidence, removal of Provider /health and its consumers, and removal of the encountered old-caller, gameId and string-field compatibility paths."
+  },
+  "changed_files": [
+    {
+      "path": "host-services/bridges/playnite/GameProviderBridge.py",
+      "reason": "Atomic schema-1 producer observation, boot/revision/episode and explicit evidence."
+    },
+    {
+      "path": "host-services/bridges/playnite/test_session_observation.py",
+      "reason": "Provider atomicity, monotonic identity and missing-proof regressions."
+    },
+    {
+      "path": "host-services/gateway/wakeplay_gateway.py",
+      "reason": "Authenticated scoped observation endpoint and before/after correlation fence."
+    },
+    {
+      "path": "host-services/gateway/test_child_sessions_http.py",
+      "reason": "Parent/child parity, no health dependency and mutation-during-read fail-close coverage."
+    },
+    {
+      "path": "host-services/gateway/test_child_time_control.py",
+      "reason": "Canonical absence, incomplete-evidence ownership preservation and lost-close recovery coverage."
+    },
+    {
+      "path": "host-services/gateway/test_control_operations.py",
+      "reason": "Canonical observation fixtures for idle reconciliation and exact active identity."
+    },
+    {
+      "path": "host-services/gateway/test_gateway.py",
+      "reason": "Capabilities and profile summaries prove observation-only Game Provider consumption."
+    },
+    {
+      "path": "host-services/bridges/playnite/test_playnite_bridge.py",
+      "reason": "Removed Provider health route returns 404 while the canonical observation route remains available."
+    },
+    {
+      "path": "host-services/gateway/README.md",
+      "reason": "Public host API documentation now describes the single observation endpoint only."
+    },
+    {
+      "path": "host-services/gateway/TRANSITION_CONTRACT.md",
+      "reason": "Transition readiness evidence is documented exclusively through the canonical observation."
+    },
+    {
+      "path": "host-services/bridges/playnite/README.md",
+      "reason": "Provider capability evidence is documented at /observation."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/console/HostGatewayClient.java",
+      "reason": "Strict schema-1 observation DTO/parser and evidence/correlation validation."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/console/PlayniteTransitionGateway.java",
+      "reason": "Single observation transport facade backed by the process-wide projection owner."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/console/SessionStateResolver.java",
+      "reason": "Serialized projection owner, dispatch ordinal/boot/revision fence, bounded liveness and safe transport projection."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/console/SessionSnapshot.java",
+      "reason": "Canonical actor/execution, host evidence, correlation and transport-generation projection fields."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/console/PlayniteSessionPresentation.java",
+      "reason": "RECOVERY_REQUIRED presentation mapping."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/stream/RetainedStreamSessionCoordinator.java",
+      "reason": "Independent monotonic local transport generation."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/console/ConsoleStreamTransitionCoordinator.java",
+      "reason": "Exact observation evidence only; events cannot drive readiness and missing game cannot be substituted."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/console/SessionOrchestrator.java",
+      "reason": "Recovery-required replacement/play decision guard."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/console/ConsoleActivity.java",
+      "reason": "Shared SessionSnapshot publication for dashboard/actions, exact-stop proof and removal of alternate activePlayniteGame state."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/Game.java",
+      "reason": "Exact verified process proof for stream stop/transfer decisions."
+    },
+    {
+      "path": "app/src/main/java/com/limelight/stream/HostSessionTermination.java",
+      "reason": "Exact verified process proof for termination."
+    },
+    {
+      "path": "app/src/test/java/com/limelight/console/HostGatewayClientTest.java",
+      "reason": "Strict observation parser and malformed/correlation regressions."
+    },
+    {
+      "path": "app/src/test/java/com/limelight/console/PlayniteTransitionGatewayTest.java",
+      "reason": "Single-read projection and verified observation facade regressions."
+    },
+    {
+      "path": "app/src/test/java/com/limelight/console/SessionStateProjectionTest.java",
+      "reason": "Controlled-clock delayed dispatch, retired boot, bounded unknown and exact-ready projection tests."
+    },
+    {
+      "path": "app/src/test/java/com/limelight/stream/RetainedStreamSessionCoordinatorTest.java",
+      "reason": "Independent transport-generation lifecycle tests."
+    },
+    {
+      "path": "app/src/test/java/com/limelight/console/ConsoleStreamTransitionCoordinatorTest.java",
+      "reason": "Event bypass, absent-game and exact-process transition regressions."
+    },
+    {
+      "path": "app/src/test/java/com/limelight/console/RunningGameInventoryTest.java",
+      "reason": "Structural contract forbidding old Activity truth maps and direct multi-read APIs."
+    },
+    {
+      "path": "app/src/test/java/com/limelight/console/ConsoleActivityEnsureContractTest.java",
+      "reason": "Dashboard/start/stop projection wiring contracts."
+    },
+    {
+      "path": "app/src/test/java/com/limelight/console/ConsoleActivityRequestedUiContractTest.java",
+      "reason": "Presentation and projection refresh wiring contracts."
+    },
+    {
+      "path": "app/src/test/java/com/limelight/console/ConsoleChildProfileUiContractTest.java",
+      "reason": "Child actor/execution projection contract update."
+    },
+    {
+      "path": "app/src/test/java/com/limelight/console/PlayniteSessionPresentationTest.java",
+      "reason": "Recovery-required presentation regression."
+    },
+    {
+      "path": "app/src/test/java/com/limelight/GameTransitionCancelContractTest.java",
+      "reason": "Stream consumer exact-proof contract update."
+    }
+  ],
+  "compatibility_notes": [
+    "The old provider and Gateway health/current/readiness reads, aliases and Android DTOs were removed; breaking clients must use the single versioned observation route.",
+    "Gateway remains the only LAN-facing host API; the provider Bridge remains loopback-only and parent/child callers use the same observation lifecycle.",
+    "No durable state store, child-owned transport lifecycle, generic proxy or Android-to-Bridge path was added.",
+    "Known-live retained transport remains locally authoritative and is not erased by malformed, mismatched, unavailable or stale remote evidence.",
+    "No commit, push, APK installation, host deployment, packaging or service restart was performed; unrelated dirty checkout content was preserved."
+  ],
+  "built_artifacts": [
+    {
+      "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+      "bytes": 46788127,
+      "sha256": "1db8fe9449f4095bc3805c50d5026a63be6320c7bfc203517b52ca1b6bb58f3d",
+      "deployed": false
+    },
+    {
+      "path": "app/build/outputs/apk/nonRoot/release/app-nonRoot-release-unsigned.apk",
+      "bytes": 42593330,
+      "sha256": "5e1db3c9ddabbee4f8678b4053293513af01f4eba5b8e13c0ed0c78987489024",
+      "deployed": false
+    }
+  ],
+  "task_checks": [
+    {
+      "id": "provider-targeted",
+      "status": "PASS",
+      "command": "python -m unittest -v test_session_observation.py",
+      "working_directory": "host-services/bridges/playnite",
+      "exit_code": 0,
+      "observed": "3 tests, 0 failures."
+    },
+    {
+      "id": "gateway-targeted",
+      "status": "PASS",
+      "command": "python -m unittest -v test_child_sessions_http.py",
+      "working_directory": "host-services/gateway",
+      "exit_code": 0,
+      "observed": "34 tests, 0 failures."
+    },
+    {
+      "id": "android-focused-projection-and-consumers",
+      "status": "PASS",
+      "command": ".\\gradlew.bat testNonRootDebugUnitTest --tests com.limelight.console.SessionStateProjectionTest --tests com.limelight.console.PlayniteTransitionGatewayTest --tests com.limelight.console.ConsoleStreamTransitionCoordinatorTest --tests com.limelight.console.SessionOrchestratorTest --tests com.limelight.console.ConsoleActivityEnsureContractTest --tests com.limelight.console.ConsoleActivityRequestedUiContractTest --tests com.limelight.console.PlayniteSessionPresentationTest --offline --no-daemon --console=plain",
+      "exit_code": 0,
+      "observed": "202 tests, 0 failures, 0 errors, 0 skipped; BUILD SUCCESSFUL in 21s."
+    },
+    {
+      "id": "gateway-full-suite",
+      "status": "PASS",
+      "command": "python -m unittest discover -v",
+      "working_directory": "host-services/gateway",
+      "exit_code": 0,
+      "observed": "313 tests, 0 failures; 41.509s."
+    },
+    {
+      "id": "playnite-bridge-full-suite",
+      "status": "PASS",
+      "command": "python -m unittest discover -v",
+      "working_directory": "host-services/bridges/playnite",
+      "exit_code": 0,
+      "observed": "271 tests, 0 failures; 3.647s."
+    },
+    {
+      "id": "python-compile",
+      "status": "PASS",
+      "command": "python -m py_compile host-services/bridges/playnite/GameProviderBridge.py host-services/gateway/wakeplay_gateway.py host-services/bridges/playnite/test_session_observation.py host-services/gateway/test_child_sessions_http.py",
+      "exit_code": 0
+    },
+    {
+      "id": "android-full-suite",
+      "status": "PASS",
+      "command": ".\\gradlew.bat testNonRootDebugUnitTest --offline --no-daemon --console=plain",
+      "exit_code": 0,
+      "observed": "1099 tests, 0 failures, 0 errors; BUILD SUCCESSFUL in 39s. Obsolete dual-resolver tests were removed with the deleted resolver."
+    },
+    {
+      "id": "android-build",
+      "status": "PASS",
+      "command": ".\\gradlew.bat assembleNonRootDebug assembleNonRootRelease --offline --no-daemon --console=plain",
+      "exit_code": 0,
+      "observed": "BUILD SUCCESSFUL in 2m 9s; 99 tasks. Existing Kotlin metadata diagnostics were non-fatal and lint/build completed."
+    },
+    {
+      "id": "consumer-architecture-contract",
+      "status": "PASS",
+      "command": "rg -n getPlaynite(CurrentGame|Health|Readiness)|activePlayniteGame|RunningGameObservation <S06 production consumers>",
+      "exit_code": 1,
+      "observed": "No prohibited production-consumer matches; ripgrep exit 1 denotes zero matches."
+    },
+    {
+      "id": "packet-branch-check",
+      "status": "PASS",
+      "command": "python docs/MoonWaker/HARDENING/tools/packet.py branch-check --repo .",
+      "exit_code": 0,
+      "observed": "PREPARED_WORK_BRANCH_VERIFIED; codex/session-hardening at b05f3e2cdbccdc6a04e8b800c00e26bf80f16110."
+    },
+    {
+      "id": "packet-validate",
+      "status": "PASS",
+      "command": "python docs/MoonWaker/HARDENING/tools/packet.py validate",
+      "exit_code": 0,
+      "observed": "VALID_PACKET_METADATA; 11 tasks, 11 findings, 46 scenarios, 28 invariants."
+    },
+    {
+      "id": "diff-check",
+      "status": "PASS",
+      "command": "git diff --check",
+      "exit_code": 0,
+      "observed": "No whitespace errors; only line-ending normalization warnings."
+    },
+    {
+      "id": "output-fingerprint",
+      "status": "PASS",
+      "command": "python docs/MoonWaker/HARDENING/tools/packet.py fingerprint --repo .",
+      "exit_code": 0,
+      "observed": "sha256:60915ff34598b96acbb7e9d85377baec3cff2a887aaa1ec3191606d874afdb50"
+    }
+  ],
+  "verification_notes": [
+    "The first post-correction full Android run executed 1121 tests and found one test-only production-wiring assertion that depended on CRLF line endings. The assertion was made whitespace-neutral, its focused class passed, and the complete 1121-test suite then passed.",
+    "The additional Astra quality review found three user-visible P1 regressions and one bounded-projection P2 gap. Four new regressions failed before correction and pass in the final 1126-test candidate.",
+    "After the 1126-test full pass, Astra found that the stale-revision test fixture was rejected by parsing before reaching the revision fence. The test-only fixture now uses a valid Playnite identity and asserts that both observations parsed; the affected PlayniteTransitionGatewayTest class passed 11/11. Production sources and APK bytes were unchanged by this refinement.",
+    "The final no-compat correction removed the Provider health endpoint and its Gateway consumers, required canonical absence before ownership cleanup, and updated old-shape test doubles. Fresh full host suites pass at Gateway 313/313 and Provider 271/271; Android production and APK bytes were unchanged."
+  ],
+  "blockers": [
+    "The additional Sol no-compat re-review accepted closure of all three P1 and two P2 findings; code acceptance still does not satisfy the physical checkpoint.",
+    "Candidate-bound physical Windows/TV scenarios and operator evidence remain pending. No installation, deployment or restart was authorized in this run.",
+    "S03-S05 formal packet statuses were intentionally left unchanged under the narrow S06 dependency override."
+  ],
+  "device_gates_pending": [
+    "Physical parent and child start/resume/retain/close/end-game validation on the exact built APK and matching host package.",
+    "Observed outage/mismatch/recovery-required behavior with a known-live transport and the next explicitly authorized Play attempt.",
+    "Candidate-bound artifact identity and host/TV evidence."
+  ],
+  "next_action": "Execute the separately authorized candidate-bound S06 device gate without changing predecessor statuses, installing or deploying before explicit authorization."
+}

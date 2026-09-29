@@ -1,0 +1,80 @@
+{
+  "schema_version": 1,
+  "task_id": "S06",
+  "run_id": "artifacts-0.7.118-20260921",
+  "status": "CORRECTED_HOST_BUILT_APK_INSTALLED_HOST_NOT_DEPLOYED",
+  "source": {
+    "branch": "codex/session-hardening",
+    "head": "b05f3e2cdbccdc6a04e8b800c00e26bf80f16110",
+    "reviewed_logic_fingerprint": "sha256:60915ff34598b96acbb7e9d85377baec3cff2a887aaa1ec3191606d874afdb50",
+    "delivery_fingerprint": "sha256:1ea4c5a565c287784b21d55319be66669c603c4c60bbc8e1dee70a2fb3458aee",
+    "post_review_delivery_changes": [
+      "host-services/version.json",
+      "host-services/installer/MoonWakerHostInstaller.cs",
+      "host-services/control/MoonWakerHostControl.cs",
+      "host-services/control/MoonWakerHostConfigurator.cs",
+      "Build-HostServices.ps1"
+    ],
+    "dirty_checkout_preserved": true
+  },
+  "host_artifact": {
+    "version": "0.7.118",
+    "build": "2026.09.21",
+    "protocol_version": 6,
+    "path": "host-services/dist-s06-0.7.118-20260921-fixed/MoonWakerHostInstaller.exe",
+    "bytes": 9543168,
+    "sha256": "8eb8a4f3b80713feca4cbeaac4eacefc8257032185ba5424d751659a05f0fadf",
+    "payload_files": 145,
+    "updater_files": 9,
+    "required_payload_paths_complete": true,
+    "file_version": "0.7.118.0",
+    "product_version": "0.7.118+2026.09.21",
+    "deployed": false
+  },
+  "android_artifact": {
+    "variant": "nonRootDebug",
+    "path": "app/build/outputs/apk/nonRoot/debug/app-nonRoot-debug.apk",
+    "bytes": 46788127,
+    "sha256": "1db8fe9449f4095bc3805c50d5026a63be6320c7bfc203517b52ca1b6bb58f3d",
+    "build_result": "BUILD SUCCESSFUL in 1m 10s",
+    "version_code": 344,
+    "version_name": "12.2.23"
+  },
+  "host_build_checks": {
+    "full_validation_command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Build-HostServices.ps1 -OutputDirectory .\\host-services\\dist-s06-0.7.118-20260921",
+    "full_validation_note": "All checks passed; the final EXE write alone was blocked because the earlier installer process still held the superseded output file open.",
+    "final_packaging_command": "powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\\Build-HostServices.ps1 -OutputDirectory .\\host-services\\dist-s06-0.7.118-20260921-fixed -SkipTests",
+    "evidence_reuse": "The final packaging used the exact source that had completed all checks immediately beforehand; SkipTests avoided repeating them after only changing the output path.",
+    "gateway": "313/313 PASS",
+    "game_provider": "271/271 PASS",
+    "gateway_service": "PASS",
+    "login_broker": "15/15 PASS",
+    "host_control": "PASS",
+    "credential_provider_static_and_protocol": "PASS",
+    "credential_provider_x64_build": "PASS"
+  },
+  "superseded_host_artifact": {
+    "path": "host-services/dist-s06-0.7.118-20260921/MoonWakerHostInstaller.exe",
+    "sha256": "3aeb34f89826dc5dbd9c2c83c623a3c87bfa24c3fb608d1b52e7cf5b38e1a958",
+    "reason": "Incomplete payload omitted host-services/updater; do not use. The file was left intact because its running installer process held it open."
+  },
+  "tv_installation": {
+    "target": "192.168.1.31:5555",
+    "manufacturer": "Sony",
+    "model": "BRAVIA 4K VH22",
+    "package": "com.limelight.debug",
+    "adb_result": "Success",
+    "last_update_time": "2026-09-21 09:05:12",
+    "installed_base_apk_sha256": "1db8fe9449f4095bc3805c50d5026a63be6320c7bfc203517b52ca1b6bb58f3d",
+    "binary_matches_local_apk": true
+  },
+  "not_performed": [
+    "Host installer execution",
+    "Gateway or Bridge update",
+    "Windows service restart",
+    "Application launch or physical scenario execution",
+    "Commit",
+    "Push"
+  ],
+  "formal_note": "S06 remains CODE_VERIFIED_DEVICE_PENDING. APK installation and binary identity do not constitute physical scenario acceptance. The host delivery fingerprint differs from the reviewed logic fingerprint because this artifact run aligned the four required host version declarations and corrected the host packager to include and validate the required updater payload."
+}

@@ -12,7 +12,11 @@
     "T43",
     "T44",
     "T45",
-    "T46"
+    "T46",
+    "T47",
+    "T48",
+    "T49",
+    "T50"
   ],
   "tests": [
     {
@@ -539,18 +543,18 @@
     },
     {
       "id": "T27",
-      "title": "Release/debug and preference migration",
-      "given": "Fresh release/debug installs; existing settings absent, explicitly disabled and explicitly enabled.",
-      "when": "Read/migrate retention policy and run Home resume.",
+      "title": "Release/debug retention default parity",
+      "given": "Fresh release/debug installs; stored retention preference absent, explicitly disabled and explicitly set to other values.",
+      "when": "Read the retention policy and run Home resume.",
       "must_observe": [
-        "Same absent-setting policy on release/debug; explicit values preserved.",
-        "Migration and configured retention boundaries tested."
+        "Absent preference yields the same 30 minute background retention on release and debug (D01).",
+        "Explicit stored values, including disabled, are preserved; configured retention boundaries tested."
       ],
       "must_not_observe": [
-        "Overwriting an explicit disabled choice or treating debug-only success as release evidence."
+        "Overwriting an explicit disabled choice, applying the background timeout to app Home/host-picker retention, or treating debug-only success as release evidence."
       ],
       "code_evidence": [
-        "unit: preferences/migration",
+        "unit: preference default/explicit-value semantics",
         "build: debug and release configuration verification"
       ],
       "device_evidence": [
@@ -773,18 +777,18 @@
     },
     {
       "id": "T39",
-      "title": "Mixed client/host protocol capability",
-      "given": "One peer lacks required fenced cleanup/coherent snapshot capability.",
-      "when": "Attempt affected operation including child gameplay/expiry.",
+      "title": "Runtime capability absence fails safe",
+      "given": "A required runtime capability is actually absent (for example the streamer lacks session-scoped termination, D04).",
+      "when": "Attempt the affected operation including child gameplay/expiry.",
       "must_observe": [
-        "Explicit supported safe path or declared capability blocker; local full quit still functions.",
-        "Compatibility behavior documented and tested."
+        "Explicit safe blocker before any effect; local full quit still functions.",
+        "Capability-absence behavior tested."
       ],
       "must_not_observe": [
         "Silent downgrade to unsafe global quit or unenforced child session."
       ],
       "code_evidence": [
-        "contract tests: version/capability matrix"
+        "contract tests: runtime capability absence"
       ],
       "device_evidence": [],
       "evidence_note": "Capture actual command/result or observed effects; this is an expected oracle, not a passed test."
@@ -892,12 +896,12 @@
     },
     {
       "id": "T45",
-      "title": "Extracted modules ship and upgrade coherently",
-      "given": "APK/host artifacts built from the candidate source.",
-      "when": "Build/package and verify import/registration plus declared mixed-version deployment order.",
+      "title": "Extracted modules ship in lockstep",
+      "given": "APK/host artifacts built from the same candidate source.",
+      "when": "Build/package and verify import/registration and that the installed APK and host artifacts pair as one candidate build.",
       "must_observe": [
         "Extracted Java classes and host modules are included and wired in produced artifacts.",
-        "Old/new capability combinations work or fail explicitly before any unsafe effect."
+        "APK and host artifacts come from the same candidate build (lockstep pairing verified)."
       ],
       "must_not_observe": [
         "Unit tests pass from repository files but deployed host lacks the extracted module."
@@ -927,6 +931,87 @@
       ],
       "device_evidence": [
         "Required where the changed responsibility depends on real Windows/TV/native effects; follow approved checkpoint plan."
+      ],
+      "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
+    },
+    {
+      "id": "T47",
+      "title": "Park/resume soak",
+      "given": "Live retained stream on the target TV with an authorized actor.",
+      "when": "Run 50 cycles of TV Home then return, plus several host sleep/wake cycles.",
+      "must_observe": [
+        "The same transport generation G survives every cycle.",
+        "Decoder, AudioTrack, thread and fd counts show no growth across cycles (measured values reported)."
+      ],
+      "must_not_observe": [
+        "Leaked decoder/AudioTrack/thread/fd resources, a silently replaced transport, or invented growth thresholds."
+      ],
+      "code_evidence": [
+        "behavioral regression + actual production wiring/integration + input-bound checkpoint report"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build: adb-sampled decoder/AudioTrack/thread/fd counters per cycle"
+      ],
+      "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
+    },
+    {
+      "id": "T48",
+      "title": "Long session resource stability",
+      "given": "One stream running 2 hours or longer on the target TV.",
+      "when": "Sample dumpsys meminfo, thread count and fd count at start and end.",
+      "must_observe": [
+        "Start and end measurements are recorded and reported as measured values.",
+        "The stream remains live and correctly attributed for the whole session."
+      ],
+      "must_not_observe": [
+        "Invented pass/fail thresholds or a claim without raw samples."
+      ],
+      "code_evidence": [
+        "behavioral regression + actual production wiring/integration + input-bound checkpoint report"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build: 2h+ stream with start/end meminfo, thread and fd samples"
+      ],
+      "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
+    },
+    {
+      "id": "T49",
+      "title": "Network disruption during a live stream",
+      "given": "Live retained stream on the target TV.",
+      "when": "Turn Wi-Fi off for 5-30 s, change the host IP, and restart the Gateway during the stream.",
+      "must_observe": [
+        "Honest state at each step (no false STREAM_READY).",
+        "Reconnect happens under the current authorization and time budget.",
+        "No operation is left stuck."
+      ],
+      "must_not_observe": [
+        "Stuck PREPARING/connecting state, stale-authorization reuse, or reconnect to an unverified host identity."
+      ],
+      "code_evidence": [
+        "behavioral regression + actual production wiring/integration + input-bound checkpoint report"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build: Wi-Fi off/on, host IP change, Gateway restart with observed states"
+      ],
+      "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
+    },
+    {
+      "id": "T50",
+      "title": "Exit-reason evidence",
+      "given": "A debug/candidate build after Activity recreation and after process kill (LMK, crash, ANR, am kill/force-stop).",
+      "when": "The app starts again.",
+      "must_observe": [
+        "ApplicationExitInfo (API 30+) is recorded into MoonWakerDiagnostics at app start so lab evidence distinguishes LMK/crash/ANR/process kill from Activity recreation (supports T26).",
+        "StrictMode is enabled in debug builds only."
+      ],
+      "must_not_observe": [
+        "Credentials or private desktop data in diagnostics, StrictMode in release builds, or process death reported as Activity recreation."
+      ],
+      "code_evidence": [
+        "behavioral regression + actual production wiring/integration + input-bound checkpoint report"
+      ],
+      "device_evidence": [
+        "authorized Windows host + target Android TV; candidate release build: forced recreation (Do not keep activities) and process kill with recorded exit reasons"
       ],
       "evidence_note": "Expected oracle only. No product test was run while preparing this packet."
     }
