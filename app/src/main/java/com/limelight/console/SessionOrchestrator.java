@@ -65,7 +65,7 @@ final class SessionOrchestrator implements AutoCloseable {
         default boolean canPrepareHost(String hostId) { return isPaired(hostId); }
         void returnToRetainedStream(); void reconnectSavedSession();
         /** Starts the attaching stream presentation carrying the target; ends the request. */
-        void attachPresentationForSwitch(PlayIntent intent, NvApp target);
+        void attachPresentationForSwitch(long orchestrationId, PlayIntent intent, NvApp target);
         default void reconnectSavedSession(PlayIntent intent) { reconnectSavedSession(); }
         void reject(Rejection reason);
         void confirmReplacement(Runnable accepted);
@@ -514,7 +514,7 @@ final class SessionOrchestrator implements AutoCloseable {
                 }
                 if (result == CloseResult.PRESENTATION_REQUIRED) {
                     diagnostic("INFO", "orchestration.presentation_required", request, intent);
-                    effects.attachPresentationForSwitch(intent, preparedTarget);
+                    effects.attachPresentationForSwitch(request, intent, preparedTarget);
                     return;
                 }
                 SessionSnapshot afterClose = effects.resolve(intent.profileKey);

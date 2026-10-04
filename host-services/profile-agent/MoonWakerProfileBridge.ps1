@@ -123,9 +123,13 @@ function Write-AgentDiagnosticEvent([string]$Event, [hashtable]$Fields = @{}, [E
     try {
         if ($Event -notmatch '^[A-Za-z0-9._:$-]{1,256}$') { return }
         $record = [ordered]@{ v = 1; ts = [DateTime]::UtcNow.ToString("o"); mono_ms = [long]$diagnosticClock.ElapsedMilliseconds; level = if ($Exception) { "ERROR" } else { "INFO" }; component = "host.profile-supervisor"; event = $Event; run_id = $diagnosticRunId }
-        foreach ($key in @("profile_id", "child_component", "pid", "exit_code", "restart_count", "status")) {
+        foreach ($key in @("profile_id", "child_component", "pid", "exit_code", "restart_count", "status", "stage", "error_line")) {
             $value = $Fields[$key]
-            if ($key -eq "child_component" -and $value -in @("discord", "vibepollo", "game-provider")) { $record[$key] = $value }
+            if ($key -eq "stage") {
+                if ($value -in @("startup", "start_components", "authority", "process_check", "health_check", "state_write", "loop_wait")) { $record[$key] = $value }
+            } elseif ($key -eq "error_line") {
+                if (($value -is [int] -or $value -is [long]) -and $value -gt 0 -and $value -le 1000000) { $record[$key] = $value }
+            } elseif ($key -eq "child_component" -and $value -in @("discord", "vibepollo", "game-provider")) { $record[$key] = $value }
             elseif ($key -ne "child_component" -and (($value -is [int] -or $value -is [long]) -or
                 (($value -is [string]) -and $value -match '^[A-Za-z0-9._:$-]{1,256}$'))) { $record[$key] = $value }
         }
@@ -350,6 +354,8 @@ if ((Get-ProfileAuthority) -ne "authorized") {
     exit 1
 }
 
+$loopStage = "startup"
+$loopComponent = ""
 try {
     try { $ownsMutex = $mutex.WaitOne(0, $false) } catch [Threading.AbandonedMutexException] { $ownsMutex = $true }
     if (-not $ownsMutex) { exit 0 }
@@ -360,17 +366,24 @@ try {
     }
     Remove-Item -LiteralPath $stopPath -Force -ErrorAction SilentlyContinue
     Write-AgentDiagnosticEvent "supervisor.started" @{ profile_id = $ProfileId; status = "running" }
+    $loopStage = "start_components"
     foreach ($name in @("discord", "vibepollo", "game-provider")) {
+        $loopComponent = $name
         try { $children[$name] = Start-Component $name } catch { Write-AgentDiagnosticEvent "component.start_failed" @{ profile_id = $ProfileId; child_component = $name; status = "failed" } $_.Exception }
     }
+    $loopStage = "state_write"
+    $loopComponent = ""
     Write-State "running"
     $healthTick = 0
     $healthFailures = @{}
     $unreadableRegistry = @{ count = 0 }
+    $loopStage = "loop_wait"
     while (-not (Test-Path -LiteralPath $stopPath)) {
         # Registry disable/tombstone/SID/root changes must stop all children even
         # when this user remains signed in. A validation error fails closed at once,
         # an unreadable registry after a bounded streak.
+        $loopStage = "authority"
+        $loopComponent = ""
         $authority = Get-ProfileAuthority
         if (Test-ProfileAuthorityLost $authority $unreadableRegistry) {
             # status is the fixed class that ended authority: revoked or unreadable.
@@ -379,7 +392,9 @@ try {
             }
             break
         }
+        $loopStage = "process_check"
         foreach ($name in @("discord", "vibepollo", "game-provider")) {
+            $loopComponent = $name
             $process = $children[$name]
             if ($null -ne $process -and $process.HasExited) {
                 $healthFailures[$name] = 0
@@ -394,7 +409,9 @@ try {
         $healthTick++
         if ($healthTick -ge 8) {
             $healthTick = 0
+            $loopStage = "health_check"
             foreach ($name in @("discord", "vibepollo", "game-provider")) {
+                $loopComponent = $name
                 $process = $children[$name]
                 # DiscordBridge deliberately handles AUTHORIZE synchronously while
                 # Discord displays its consent modal. It cannot answer /health in
@@ -410,12 +427,16 @@ try {
                 }
             }
         }
+        $loopStage = "state_write"
+        $loopComponent = ""
         Write-State "running"
+        $loopStage = "loop_wait"
         Start-Sleep -Seconds 2
     }
 } catch {
     Write-AgentDiagnosticEvent "supervisor.loop_failed" @{
-        profile_id = $ProfileId; status = "failed"
+        profile_id = $ProfileId; status = "failed"; stage = $loopStage
+        child_component = $loopComponent; error_line = $_.InvocationInfo.ScriptLineNumber
     } $_.Exception
     throw
 } finally {

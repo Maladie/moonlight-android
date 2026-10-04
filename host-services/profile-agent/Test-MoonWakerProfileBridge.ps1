@@ -177,4 +177,35 @@ try {
 } finally {
     Remove-Item -LiteralPath $authorityRoot -Recurse -Force -ErrorAction SilentlyContinue
 }
+$diagnosticStart = $source.IndexOf("function Write-AgentDiagnosticEvent")
+$diagnosticEnd = $source.IndexOf("`nfunction Start-HiddenProcess", $diagnosticStart)
+Invoke-Expression $source.Substring($diagnosticStart, $diagnosticEnd - $diagnosticStart)
+$diagnosticPath = Join-Path ([IO.Path]::GetTempPath()) ("moonwaker-error-location-" + [Guid]::NewGuid().ToString("N"))
+$diagnosticClock = [Diagnostics.Stopwatch]::StartNew()
+$diagnosticRunId = "test-diagnostic"
+$diagnosticMaxBytes = 2MB
+try {
+    try { throw [ArgumentException]::new("Bearer secret at C:/private/config.json") }
+    catch {
+        Write-AgentDiagnosticEvent "supervisor.loop_failed" @{
+            profile_id = "test-profile"; status = "failed"; stage = "state_write"
+            error_line = $_.InvocationInfo.ScriptLineNumber
+        } $_.Exception
+    }
+    Write-AgentDiagnosticEvent "supervisor.loop_failed" @{
+        stage = "token-shaped-secret"; error_line = "C:/private/config.json"
+    }
+    $entries = @(Get-Content -LiteralPath $diagnosticPath | ForEach-Object { $_ | ConvertFrom-Json })
+    if ($entries.Count -ne 2 -or $entries[0].stage -ne "state_write" -or
+        $entries[0].error_line -le 0 -or $entries[0].error_type -ne "System.ArgumentException") {
+        throw "Safe supervisor exception location was not recorded."
+    }
+    if ($null -ne $entries[1].PSObject.Properties["stage"] -or
+        $null -ne $entries[1].PSObject.Properties["error_line"] -or
+        (Get-Content -LiteralPath $diagnosticPath -Raw) -match 'secret|private|Bearer') {
+        throw "Supervisor diagnostics leaked non-allowlisted exception data."
+    }
+} finally {
+    Remove-Item -LiteralPath $diagnosticPath -Force -ErrorAction SilentlyContinue
+}
 Write-Output "MoonWakerProfileBridge health restart test passed."

@@ -33,6 +33,13 @@ class ChildTerminalOperation:
             self._condition.notify_all()
             return True
 
+    def release_terminal(self, session):
+        """Drop a reservation whose terminal effect will never reach run()."""
+        with self._condition:
+            if self._active is None and self._terminal_handoff is session:
+                self._terminal_handoff = None
+                self._condition.notify_all()
+
     def await_provider_stop(self, request):
         """Retain the caller's exact permit across the Bridge's 10 s grace."""
         deadline = self.clock() + 20.0

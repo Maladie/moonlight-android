@@ -507,6 +507,7 @@ public class SessionOrchestratorTest {
 
         assertEquals(1, effects.attachedForSwitch);
         assertEquals(42, effects.attachedTarget.getAppId());
+        assertEquals(1L, effects.attachedRequest);
         assertEquals(0, effects.returned);
         assertEquals(0, effects.launches);
         assertNull(effects.confirmation);
@@ -525,6 +526,7 @@ public class SessionOrchestratorTest {
         effects.flushDispatch();
 
         assertEquals(1, effects.attachedForSwitch);
+        assertEquals(2L, effects.attachedRequest);
         assertEquals(0, effects.launches);
     }
 
@@ -834,6 +836,7 @@ public class SessionOrchestratorTest {
 
     private static final class Fake implements SessionOrchestrator.Effects {
         int attachedForSwitch;
+        long attachedRequest;
         NvApp attachedTarget;
         boolean deferDispatch;
         final java.util.ArrayDeque<Runnable> dispatched = new java.util.ArrayDeque<>();
@@ -899,8 +902,10 @@ public class SessionOrchestratorTest {
         }
         @Override public SessionSnapshot resolve(String hostId) { return snapshot; }
         @Override public void returnToRetainedStream() { returned++; }
-        @Override public void attachPresentationForSwitch(PlayIntent intent, NvApp target) {
+        @Override public void attachPresentationForSwitch(
+                long orchestrationId, PlayIntent intent, NvApp target) {
             attachedForSwitch++;
+            attachedRequest = orchestrationId;
             attachedTarget = target;
         }
         @Override public void reconnectSavedSession() { reconnects++; }

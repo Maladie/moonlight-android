@@ -13,10 +13,11 @@ final class PendingRetainedSwitch {
     final String gameName;
     final String streamTarget;
     final String artwork;
+    final long orchestrationId;
 
     PendingRetainedSwitch(String hostId, String executionProfileId, String targetProfileId,
                           boolean targetIsChild, int appId, String gameId, String gameName,
-                          String streamTarget, String artwork) {
+                          String streamTarget, String artwork, long orchestrationId) {
         this.hostId = hostId;
         this.executionProfileId = executionProfileId;
         this.targetProfileId = targetProfileId;
@@ -26,6 +27,7 @@ final class PendingRetainedSwitch {
         this.gameName = gameName;
         this.streamTarget = streamTarget;
         this.artwork = artwork;
+        this.orchestrationId = orchestrationId;
     }
 
     static PendingRetainedSwitch from(Intent intent) {
@@ -40,7 +42,8 @@ final class PendingRetainedSwitch {
                 intent.getStringExtra(Game.EXTRA_PENDING_SWITCH_GAME_ID),
                 intent.getStringExtra(Game.EXTRA_PENDING_SWITCH_GAME_NAME),
                 intent.getStringExtra(Game.EXTRA_PENDING_SWITCH_STREAM_TARGET),
-                intent.getStringExtra(Game.EXTRA_PENDING_SWITCH_ARTWORK));
+                intent.getStringExtra(Game.EXTRA_PENDING_SWITCH_ARTWORK),
+                intent.getLongExtra(Game.EXTRA_PENDING_SWITCH_ORCHESTRATION_ID, 0L));
     }
 
     /** The target belongs to this one presentation; it is never persisted into a resume record. */
@@ -54,6 +57,7 @@ final class PendingRetainedSwitch {
         intent.removeExtra(Game.EXTRA_PENDING_SWITCH_GAME_NAME);
         intent.removeExtra(Game.EXTRA_PENDING_SWITCH_STREAM_TARGET);
         intent.removeExtra(Game.EXTRA_PENDING_SWITCH_ARTWORK);
+        intent.removeExtra(Game.EXTRA_PENDING_SWITCH_ORCHESTRATION_ID);
     }
 
     /** Latest undispatched target wins; once submitted, later targets are rejected. */

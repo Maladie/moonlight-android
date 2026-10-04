@@ -13705,8 +13705,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 ConsoleActivity.this.returnToRetainedStream();
             }
 
-            @Override public void attachPresentationForSwitch(PlayIntent intent, NvApp target) {
-                ConsoleActivity.this.attachPresentationForSwitch(intent, target);
+            @Override public void attachPresentationForSwitch(
+                    long orchestrationId, PlayIntent intent, NvApp target) {
+                ConsoleActivity.this.attachPresentationForSwitch(
+                        orchestrationId, intent, target);
             }
 
             @Override public void reconnectSavedSession() {
@@ -14552,12 +14554,25 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     /** Starts the attaching Game with the selected target; it submits the switch itself. */
-    private void attachPresentationForSwitch(PlayIntent intent, NvApp target) {
-        if (isFinishing()) return;
+    private void attachPresentationForSwitch(
+            long orchestrationId, PlayIntent intent, NvApp target) {
+        if (isFinishing()) {
+            MoonWakerDiagnostics.record("WARN", "android.console",
+                    "console.retained_switch.presentation",
+                    "orchestration_id", orchestrationId, "status", "ACTIVITY_FINISHING",
+                    "host_id", intent.hostId, "profile_id", intent.profileId,
+                    "app_id", target.getAppId(), "game_id", intent.playniteGameId);
+            return;
+        }
         SessionResumeManager.PendingSession pending =
                 SessionResumeManager.pendingSession(this);
         Intent attach = SessionResumeManager.buildResumeIntent(this, pending);
         if (attach == null) {
+            MoonWakerDiagnostics.record("WARN", "android.console",
+                    "console.retained_switch.presentation",
+                    "orchestration_id", orchestrationId, "status", "RESUME_INTENT_UNAVAILABLE",
+                    "host_id", intent.hostId, "profile_id", intent.profileId,
+                    "app_id", target.getAppId(), "game_id", intent.playniteGameId);
             presentationLaunchFailed();
             return;
         }
@@ -14571,13 +14586,25 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 .putExtra(Game.EXTRA_PENDING_SWITCH_GAME_NAME, intent.appName)
                 .putExtra(Game.EXTRA_PENDING_SWITCH_STREAM_TARGET, target.getAppName())
                 .putExtra(Game.EXTRA_PENDING_SWITCH_ARTWORK, cachedLoadingArtworkPath(
-                        intent.hostId, intent.profileId, intent.loadingArtworkGameId));
+                        intent.hostId, intent.profileId, intent.loadingArtworkGameId))
+                .putExtra(Game.EXTRA_PENDING_SWITCH_ORCHESTRATION_ID, orchestrationId);
         try {
             startActivity(attach);
         } catch (RuntimeException error) {
+            MoonWakerDiagnostics.record("WARN", "android.console",
+                    "console.retained_switch.presentation",
+                    "orchestration_id", orchestrationId, "status", "START_ACTIVITY_FAILED",
+                    "host_id", intent.hostId, "profile_id", intent.profileId,
+                    "app_id", target.getAppId(), "game_id", intent.playniteGameId);
             presentationLaunchFailed();
             return;
         }
+        MoonWakerDiagnostics.record("INFO", "android.console",
+                "console.retained_switch.presentation",
+                "orchestration_id", orchestrationId, "status", "START_ACTIVITY_DISPATCHED",
+                "stage", "activity_start", "host_id", intent.hostId,
+                "profile_id", intent.profileId, "app_id", target.getAppId(),
+                "game_id", intent.playniteGameId);
         if (retainedStreamHome) finish();
         overridePendingTransition(0, android.R.anim.fade_out);
     }

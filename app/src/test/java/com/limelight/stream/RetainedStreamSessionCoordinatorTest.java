@@ -370,6 +370,68 @@ public class RetainedStreamSessionCoordinatorTest {
                 SESSION_A, "host", 7, "game", "transition-a", 11L));
     }
 
+    @Test public void completedPreparingStateDuringFrameCallbackCommitsExactAttempt() {
+        FakeController owner = new FakeController() {
+            @Override public boolean preparingHomeFrameSubmitted(
+                    RetainedStreamSessionCoordinator.Snapshot preparing) {
+                assertTrue(RetainedStreamSessionCoordinator.completePreparing(
+                        this, SESSION_A, "host", 7, "transition-a", 11L));
+                return true;
+            }
+        };
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition-a", 11L));
+        RetainedStreamSessionCoordinator.Snapshot expected =
+                RetainedStreamSessionCoordinator.snapshot();
+
+        assertTrue(RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(expected));
+        assertEquals(RetainedStreamSessionCoordinator.State.HOME_LIVE,
+                RetainedStreamSessionCoordinator.state());
+        RetainedStreamSessionCoordinator.Snapshot completed =
+                RetainedStreamSessionCoordinator.snapshot();
+        assertEquals("", completed.transitionId);
+        assertEquals(0L, completed.attempt);
+        assertTrue(RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 11L));
+    }
+
+    @Test public void staleHomeFrameCannotCommitAfterSameOwnerStartsNewAttempt() {
+        FakeController owner = new FakeController() {
+            @Override public boolean preparingHomeFrameSubmitted(
+                    RetainedStreamSessionCoordinator.Snapshot preparing) {
+                if (preparing.attempt == 12L) {
+                    assertEquals("transition-b", preparing.transitionId);
+                    return true;
+                }
+                assertEquals(11L, preparing.attempt);
+                assertTrue(RetainedStreamSessionCoordinator.cancelPreparing(
+                        this, SESSION_A, "host", 7, "transition-a", 11L));
+                assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                        this, SESSION_A, "host", 7, "game", "transition-b", 12L));
+                RetainedStreamSessionCoordinator.Snapshot replacement =
+                        RetainedStreamSessionCoordinator.snapshot();
+                assertTrue(RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(
+                        replacement));
+                return true;
+            }
+        };
+        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(
+                owner, SESSION_A, "host", 7, "game", "transition-a", 11L));
+        RetainedStreamSessionCoordinator.Snapshot stale =
+                RetainedStreamSessionCoordinator.snapshot();
+
+        assertFalse(RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(stale));
+        RetainedStreamSessionCoordinator.Snapshot current =
+                RetainedStreamSessionCoordinator.snapshot();
+        assertEquals(RetainedStreamSessionCoordinator.State.PREPARING, current.state);
+        assertEquals("transition-b", current.transitionId);
+        assertEquals(12L, current.attempt);
+        assertFalse(RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-a", 11L));
+        assertTrue(RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                SESSION_A, "host", 7, "game", "transition-b", 12L));
+    }
+
     @Test public void cancelledFrameClaimCannotBecomeAccepted() {
         FakeController owner = new FakeController() {
             @Override public boolean preparingHomeFrameSubmitted(
@@ -861,11 +923,15 @@ public class RetainedStreamSessionCoordinatorTest {
                 owner, SESSION_A, "host", 7, "old", "transition-a", 3L));
         assertTrue(RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(
                 RetainedStreamSessionCoordinator.snapshot()));
+        RetainedStreamSessionCoordinator.Snapshot ownerIdentity =
+                RetainedStreamSessionCoordinator.snapshot();
         assertEquals(RetainedStreamSessionCoordinator.SwitchResult.STARTED,
                 RetainedStreamSessionCoordinator.switchGame(
-                        "host", 7, "old", "Old", "MoonWaker Stream", "",
+                        "host", ownerIdentity.executionProfileId, ownerIdentity.profileId,
+                        false, 7, "old", "Old", "MoonWaker Stream", "", 19L,
                         () -> false, null));
         RetainedStreamSessionCoordinator.SwitchRequest request = owner.switchRequest;
+        assertEquals(19L, request.orchestrationId);
 
         assertTrue(RetainedStreamSessionCoordinator.updatePreparingSwitch(
                 owner, request, "transition-a", "old", "old", "transition-b"));

@@ -2,6 +2,7 @@ package com.limelight;
 
 import org.junit.Test;
 
+import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertSame;
@@ -17,6 +18,7 @@ public class PendingRetainedSwitchTest {
         assertTrue("a newer selection before submit replaces the older one",
                 slot.offer(second));
         assertSame(second, slot.take());
+        assertEquals(9L, second.orchestrationId);
         assertNull("submitted exactly once", slot.take());
     }
 
@@ -40,6 +42,7 @@ public class PendingRetainedSwitchTest {
     }
 
     private static PendingRetainedSwitch target(String game) {
-        return new PendingRetainedSwitch("host", "p", "p", false, 7, game, game, "Desktop", "");
+        return new PendingRetainedSwitch("host", "p", "p", false, 7, game, game,
+                "Desktop", "", "b".equals(game) ? 9L : 7L);
     }
 }

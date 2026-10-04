@@ -243,10 +243,10 @@ function Wait-GatewayState([bool]$Running, [int]$TimeoutSeconds = 20,
     return $false
 }
 
-function Test-HttpHealth([string]$Endpoint) {
+function Test-HttpHealth([string]$Endpoint, [ValidateSet('/health', '/observation')][string]$Path = '/health') {
     if ([string]::IsNullOrWhiteSpace($Endpoint)) { return "disabled" }
     try {
-        $response = Invoke-RestMethod -Uri ($Endpoint.TrimEnd('/') + "/health") -TimeoutSec 1
+        $response = Invoke-RestMethod -Uri ($Endpoint.TrimEnd('/') + $Path) -TimeoutSec 1
         if ($response -is [string]) {
             return $(if ($response.TrimStart().StartsWith("ok", [StringComparison]::OrdinalIgnoreCase)) {
                 "online"
@@ -738,9 +738,6 @@ function Get-Status {
             $discordEndpoint = Get-ProfileEndpoint $entry "discord_bridge"
             $vibepolloEndpoint = Get-ProfileEndpoint $entry "vibepollo_bridge"
             $gameProviderEndpoint = Get-ProfileEndpoint $entry "game_provider_bridge"
-            if ([string]::IsNullOrWhiteSpace($gameProviderEndpoint)) {
-                $gameProviderEndpoint = Get-ProfileEndpoint $entry "playnite_bridge"
-            }
             $profiles += [ordered]@{
                 id = $id
                 name = if ($entry.PSObject.Properties["name"]) { [string]$entry.name } else { $id }
@@ -771,13 +768,9 @@ function Get-Status {
                 vibepollo = if ($manuallyStopped) { "manually_stopped" } else { Test-HttpHealth $vibepolloEndpoint }
                 vibepollo_pid = Get-ProfileProcessId $root "vibepollo"
                 game_provider = if ($manuallyStopped) { "manually_stopped" } else {
-                    Test-HttpHealth $gameProviderEndpoint
+                    Test-HttpHealth $gameProviderEndpoint '/observation'
                 }
                 game_provider_pid = Get-ProfileProcessId $root "game-provider"
-                playnite = if ($manuallyStopped) { "manually_stopped" } else {
-                    Test-HttpHealth $gameProviderEndpoint
-                }
-                playnite_pid = Get-ProfileProcessId $root "game-provider"
                 steam_web_api_configured = $steamConnected
                 steam_connected = $steamConnected
                 epic_connected = Test-LegendaryConnection $root

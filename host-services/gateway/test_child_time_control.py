@@ -2,6 +2,7 @@ import json
 import tempfile
 import threading
 import unittest
+from unittest.mock import patch
 from control_snapshot_fixture import control_evidence
 from provider_target_fixture import target_aware
 from datetime import datetime, timedelta, timezone
@@ -438,8 +439,102 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertIsNone(self.state.control_state["stream"])
         self.assertIn(("vibepollo", "/action/close-app", "parent"), self.proxy_calls)
 
+    def test_natural_expiry_failed_close_keeps_fences_and_logs_typed_reason_then_retries(self):
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        original_proxy = self.state.proxy
+        foreign = [True]
+        close_calls = []
+
+        def proxy(name, path, **kwargs):
+            if name == "vibepollo" and path == "/snapshot?force=1" and foreign[0]:
+                return True, {**control_evidence(1, True),
+                              "clients": [{"uuid": "foreign-client", "connected": True}],
+                              "apps": [{"app_id": 99, "running": True}],
+                              "private_payload": "Bearer secret"}
+            if name == "vibepollo" and path == "/action/close-app":
+                close_calls.append(True)
+            return original_proxy(name, path, **kwargs)
+
+        self.state.proxy = proxy
+        self.child()["schedule"]["weekdays"]["sat"]["daily_limit_seconds"] = 1
+        self.clock.advance(2)
+        log_dir = Path(self.temp_dir.name) / "diagnostics"
+        diagnostics = wakeplay_gateway.GatewayDiagnostics()
+        diagnostics.start(log_dir)
+        try:
+            with patch.object(wakeplay_gateway, "DIAGNOSTICS", diagnostics):
+                _status, body = self.state.child_time_housekeeping_tick()
+                self.assertTrue(body["cleanup_required"], body)
+                self.assertIs(session, self.state.child_time_session)
+                self.assertEqual("daily_limit_reached", session["terminal_reason"])
+                active = dict(self.state.control_state["active"])
+                self.assertEqual(("uncertain", "effect_result_uncertain"),
+                                 (active["state"], active["reason"]))
+                self.assertEqual(session_id, active["child_session_id"])
+                self.assertEqual([], close_calls)
+                foreign[0] = False
+                status, retried = self.state.child_time_housekeeping_tick()
+                self.assertEqual(200, status, retried)
+                self.assertFalse(retried["cleanup_required"])
+                terminal = self.state.control_state["completed"][active["operation_id"]]
+                for key in ("operation_id", "generation", "actor_lease_epoch", "stream_session_id"):
+                    self.assertEqual(active[key], terminal[key])
+                self.assertEqual("succeeded", terminal["state"])
+                self.assertEqual("daily_limit_reached", terminal["child_terminal_result"]["reason"])
+                self.assertIsNone(self.state.control_state["active"])
+                self.assertIsNone(self.state.control_state["stream"])
+                self.assertIsNone(self.state.child_time_session)
+                self.assertEqual([True], close_calls)
+        finally:
+            diagnostics.close()
+        entries = [json.loads(line) for path in log_dir.glob("gateway-diagnostics.jsonl*")
+                   for line in path.read_text(encoding="utf-8").splitlines()]
+        closes = [entry for entry in entries if entry["event"] == "child-terminal-streamer-close"]
+        self.assertEqual(2, len(closes))
+        self.assertEqual(("streamer_identity_unconfirmed", "identity_rejected", 7, 99, 0),
+                         tuple(closes[0][key] for key in ("reason", "close_stage", "expected_app_id",
+                                                       "observed_app_id", "observed_client_matches")))
+        self.assertEqual(session_id, closes[0]["child_session_id"])
+        self.assertEqual(("streamer_idle_after_close", "idle_confirmed", 0),
+                         tuple(closes[1][key] for key in ("reason", "close_stage", "snapshot_session_count")))
+        self.assertNotIn("Bearer secret", json.dumps(entries))
+        self.assertNotIn("foreign-client", json.dumps(entries))
+        self.assertNotIn(VIBE_UUID, json.dumps(entries))
+
+    def test_game_stopped_is_rejected_while_the_exact_game_still_runs(self):
+        session_id = self.start_running()
+        self.assertEqual("running", self.current["state"])
+        status, body = self.state.child_time_session_end(
+            self.client, "kid", session_id, "game_stopped")
+        self.assertEqual(409, status, body)
+        self.assertEqual("game_still_running", body["reason"])
+        self.assertFalse(body["ok"])
+        self.assertIsNotNone(self.state.child_time_session)
+        status, body = self.state.child_time_session_end(
+            self.client, "kid", session_id, "replacement")
+        self.assertEqual(200, status, body)  # running-game handoff to the parent
+        self.assertIsNone(self.state.child_time_session)
+
+    def test_game_stopped_is_rejected_when_provider_state_is_unverified(self):
+        session_id = self.start_running()
+        original = self.state._child_time_current_game
+        self.state._child_time_current_game = lambda *a, **k: {"kind": "unavailable"}
+        status, body = self.state.child_time_session_end(
+            self.client, "kid", session_id, "game_stopped")
+        self.state._child_time_current_game = original
+        self.assertEqual(409, status, body)
+        self.assertEqual("game_state_unverified", body["reason"])
+        self.assertIsNotNone(self.state.child_time_session)
+        self.current = {"id": "", "state": "idle", "running_games": []}
+        status, body = self.state.child_time_session_end(
+            self.client, "kid", session_id, "game_stopped")
+        self.assertEqual(200, status, body)
+        self.assertIsNone(self.state.child_time_session)
+
     def test_game_stopped_ends_allowance_but_retains_managed_stream(self):
         session_id = self.start_running()
+        self.current = {"id": "", "state": "idle", "running_games": []}
         generation = self.state.control_state["stream"]["generation"]
         self.proxy_calls.clear()
 
@@ -616,6 +711,7 @@ class ChildTimeControlTest(unittest.TestCase):
 
     def test_game_stop_release_never_calls_child_provider_lifecycle(self):
         session_id = self.start_running()
+        self.current = {"id": "", "state": "idle", "running_games": []}
         status, result = self.state.child_time_session_end(
             self.client, "kid", session_id, "game_stopped")
         self.assertEqual(200, status)
@@ -629,6 +725,7 @@ class ChildTimeControlTest(unittest.TestCase):
 
     def test_game_stop_release_has_no_dependency_on_removed_bridge_route(self):
         session_id = self.start_running()
+        self.current = {"id": "", "state": "idle", "running_games": []}
         original = self.state.proxy_json
         self.state.proxy_json = lambda name, path, body, **kwargs: (
             (False, {"error": "offline"}) if path == "/child/session"
@@ -641,6 +738,7 @@ class ChildTimeControlTest(unittest.TestCase):
 
     def test_released_time_attachment_stays_released_after_restart(self):
         session_id = self.start_running()
+        self.current = {"id": "", "state": "idle", "running_games": []}
         status, result = self.state.child_time_session_end(
             self.client, "kid", session_id, "game_stopped")
         self.assertEqual(200, status, result)
@@ -1002,6 +1100,171 @@ class ChildTimeControlTest(unittest.TestCase):
     def test_persisted_orphan_missing_terminal_reason_is_not_recovered(self):
         self._assert_persisted_orphan_rejected(
             lambda active: active["child_terminal_result"].pop("reason"))
+
+    def full_quit_current_child(self, session, operation_id="expiry-close", generation=None):
+        stream = dict(self.state.control_state["stream"])
+        request = {"operation_id": operation_id, "intent": "full_quit",
+                   "stream_session_id": stream["stream_session_id"], "sunshine_app_id": 7,
+                   "expected_generation": stream["generation"] if generation is None else generation,
+                   "observed_sunshine_app_id": 7, "child_session_id": session["session_id"]}
+        return self.state._child_time_control_call(session, lambda:
+            self.state.control_operation_acquire(self.client, request, operation_id, 0))
+
+    def test_full_quit_rechecks_expired_budget_before_next_housekeeping_tick(self):
+        self.child()["schedule"]["weekdays"]["sat"]["daily_limit_seconds"] = 1
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        last_heartbeat = session["last_heartbeat_monotonic"]
+        self.clock.advance(1.1)
+        status, result = self.full_quit_current_child(session)
+        self.assertEqual(200, status)
+        self.assertEqual("succeeded", result["state"])
+        terminal = self.state.control_state["completed"]["child-terminal:" + session_id]
+        self.assertEqual("daily_limit_reached", terminal["child_terminal_result"]["reason"])
+        self.assertEqual(TOKEN, terminal["process_token"])
+        self.assertEqual(42, terminal["process_id"])
+        self.assertEqual(last_heartbeat, session["last_heartbeat_monotonic"])
+        self.assertEqual(1, self.state.child_time_usage["days"]["kid"]["2026-01-03"])
+        self.assertIsNone(self.state.child_time_session)
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertEqual(1, len([c for c in self.bridge_calls if c[1] == "/game/stop-verified"]))
+        self.assertEqual(1, len([c for c in self.proxy_calls if c[1] == "/action/close-app"]))
+
+    def test_full_quit_rechecks_elapsed_schedule_before_next_tick(self):
+        self.clock.wall = self.clock.wall.replace(hour=19, minute=59, second=59)
+        session_id = self.start_running()
+        self.clock.advance(1.1)
+        status, _ = self.full_quit_current_child(self.state.child_time_session)
+        self.assertEqual(200, status)
+        terminal = self.state.control_state["completed"]["child-terminal:" + session_id]
+        self.assertEqual("outside_schedule", terminal["child_terminal_result"]["reason"])
+
+    def test_manual_full_quit_preserves_reason_with_fractional_allowance(self):
+        self.child()["schedule"]["weekdays"]["sat"]["daily_limit_seconds"] = 1
+        session_id = self.start_running()
+        self.clock.advance(0.75)
+        status, _ = self.full_quit_current_child(self.state.child_time_session)
+        self.assertEqual(200, status)
+        terminal = self.state.control_state["completed"]["child-terminal:" + session_id]
+        self.assertEqual("parent_terminated", terminal["child_terminal_result"]["reason"])
+        self.assertEqual(0.75, self.state.child_time_usage["days"]["kid"]["2026-01-03"])
+
+    def test_stale_full_quit_cannot_recheck_or_charge_another_generation(self):
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        old_usage = dict(self.state.child_time_usage["days"])
+        old_calls = len(self.proxy_calls)
+        self.clock.advance(1.1)
+        status, _ = self.full_quit_current_child(session, generation=0)
+        self.assertEqual(409, status)
+        self.assertEqual(old_calls, len(self.proxy_calls))
+        self.assertEqual(old_usage, self.state.child_time_usage["days"])
+        self.assertEqual(session_id, self.state.child_time_session["session_id"])
+        self.assertFalse(any(c[1] == "/game/stop-verified" for c in self.bridge_calls))
+
+    def test_full_quit_closes_shared_stream_when_provider_is_already_idle(self):
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        self.current = {"id": "", "state": "idle", "running_games": []}
+        status, result = self.full_quit_current_child(session)
+        self.assertEqual(200, status, result)
+        terminal = self.state.control_state["completed"]["child-terminal:" + session_id]
+        self.assertEqual("succeeded", terminal["state"])
+        self.assertEqual("parent_terminated", terminal["child_terminal_result"]["reason"])
+        self.assertIsNone(self.state.child_time_session)
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertFalse(self.state.child_terminal_operation.in_progress(session))
+        self.assertEqual(1, len([c for c in self.proxy_calls if c[1] == "/action/close-app"]))
+
+    def test_full_quit_rejects_replaced_session_after_policy_provider_read(self):
+        self.start_running()
+        session = self.state.child_time_session
+        replacement = dict(session)
+        replacement["session_id"] = self.session_id()
+        original = self.state._child_time_current_game
+        before_usage = json.dumps(self.state.child_time_usage["days"], sort_keys=True)
+        self.clock.advance(1)
+
+        def replace_after_read(parent_id):
+            current = original(parent_id)
+            with self.state.lock:
+                self.state.child_time_session = replacement
+                self.state.control_state["stream"]["child_session_id"] = replacement["session_id"]
+            return current
+
+        self.state._child_time_current_game = replace_after_read
+        with self.assertRaisesRegex(PermissionError, "stale_child_session"):
+            self.full_quit_current_child(session)
+        self.assertIs(replacement, self.state.child_time_session)
+        self.assertEqual(before_usage, json.dumps(self.state.child_time_usage["days"], sort_keys=True))
+        self.assertFalse(any(c[1] == "/game/stop-verified" for c in self.bridge_calls))
+        self.assertFalse(any(c[1] == "/action/close-app" for c in self.proxy_calls))
+        self.assertNotIn("expiry-close", self.state.control_state["completed"])
+
+    def test_full_quit_aliases_exact_terminal_completed_before_heartbeat_read(self):
+        self.child()["schedule"]["weekdays"]["sat"]["daily_limit_seconds"] = 1
+        session_id = self.start_running()
+        session = self.state.child_time_session
+        self.clock.advance(1.1)
+        original = self.state.child_time_session_heartbeat
+
+        def complete_before_read(*args, **kwargs):
+            status, body = original(*args, **kwargs)
+            self.assertEqual(200, status, body)
+            self.assertIsNone(self.state.child_time_session)
+            return original(*args, **kwargs)
+
+        self.state.child_time_session_heartbeat = complete_before_read
+        status, result = self.full_quit_current_child(session)
+        self.assertEqual(200, status, result)
+        self.assertEqual("succeeded", result["state"])
+        terminal = self.state.control_state["completed"]["child-terminal:" + session_id]
+        alias = self.state.control_state["completed"]["expiry-close"]
+        self.assertEqual("daily_limit_reached", terminal["child_terminal_result"]["reason"])
+        self.assertEqual(terminal["generation"], alias["generation"])
+        self.assertEqual(terminal["actor_lease_epoch"], alias["actor_lease_epoch"])
+        self.assertEqual(1, len([c for c in self.bridge_calls if c[1] == "/game/stop-verified"]))
+        self.assertEqual(1, len([c for c in self.proxy_calls if c[1] == "/action/close-app"]))
+        self.assertFalse(self.state.child_terminal_operation.in_progress(session))
+
+    def test_full_quit_rejects_completed_receipt_after_generation_advances(self):
+        self.child()["schedule"]["weekdays"]["sat"]["daily_limit_seconds"] = 1
+        self.start_running()
+        session = self.state.child_time_session
+        self.clock.advance(1.1)
+        original = self.state.child_time_session_heartbeat
+
+        def complete_then_advance(*args, **kwargs):
+            status, body = original(*args, **kwargs)
+            self.assertEqual(200, status, body)
+            with self.state.control_condition:
+                self.state.control_state["generation"] += 1
+            return original(*args, **kwargs)
+
+        self.state.child_time_session_heartbeat = complete_then_advance
+        with self.assertRaisesRegex(PermissionError, "child_session_binding_mismatch"):
+            self.full_quit_current_child(session)
+        self.assertNotIn("expiry-close", self.state.control_state["completed"])
+        self.assertEqual(1, len([c for c in self.bridge_calls if c[1] == "/game/stop-verified"]))
+        self.assertEqual(1, len([c for c in self.proxy_calls if c[1] == "/action/close-app"]))
+
+    def test_positive_fractional_allowance_never_serializes_as_expired(self):
+        self.child()["schedule"]["weekdays"]["sat"]["daily_limit_seconds"] = 1
+        session_id = self.start_running()
+        self.clock.advance(0.75)
+        status, body = self.state.child_time_session_heartbeat(self.client, "kid", session_id)
+        self.assertEqual(200, status)
+        self.assertEqual("running", body["state"])
+        self.assertEqual(1, body["playable_now_seconds"])
+        self.assertEqual(1, body["remaining_daily_seconds"])
+        dto = self.state._child_profile_public_dto(self.client, "kid", self.child())
+        self.assertEqual(1, dto["playable_now_seconds"])
+        self.assertEqual(1, dto["remaining_daily_seconds"])
+        self.clock.advance(0.25)
+        status, body = self.state.child_time_session_heartbeat(self.client, "kid", session_id)
+        self.assertEqual(200, status)
+        self.assertEqual("daily_limit_reached", body["reason"])
+        self.assertEqual(0, body["playable_now_seconds"])
 
     def test_parent_close_recovers_exact_child_cleanup_and_replays_receipt(self):
         session_id = self.start_running()
@@ -1511,9 +1774,21 @@ class ChildTimeControlTest(unittest.TestCase):
             self.assertFalse(stream.get("process_token"))
             self.assertEqual(0, int(stream.get("process_id") or 0))
 
+    def test_released_terminal_reservation_no_longer_blocks_replacement_session(self):
+        operation = self.state.child_terminal_operation
+        stale, replacement = object(), object()
+        self.assertTrue(operation.reserve_terminal(stale))
+        self.assertFalse(operation.reserve_terminal(replacement))
+        operation.release_terminal(replacement)  # not the owner: no effect
+        self.assertFalse(operation.reserve_terminal(replacement))
+        operation.release_terminal(stale)
+        self.assertFalse(operation.in_progress(stale))
+        self.assertTrue(operation.reserve_terminal(replacement))
+
     def test_terminal_close_reservation_blocks_all_nonterminal_releases(self):
         session_id = self.start_running()
         session = self.state.child_time_session
+        self.current = {"id": "", "state": "idle", "running_games": []}
         with self.state.lock:
             self.assertTrue(self.state.child_terminal_operation.reserve_terminal(session))
 
@@ -1665,8 +1940,8 @@ class ChildTimeControlTest(unittest.TestCase):
         original_close = wakeplay_gateway.StreamerControlOperation.close
         attempts = []
 
-        def transient_close(proxy, profile_id, stream):
-            del proxy, profile_id, stream
+        def transient_close(proxy, profile_id, stream, trace=None):
+            del proxy, profile_id, stream, trace
             attempts.append(True)
             return (False, "streamer_close_unconfirmed") if len(attempts) == 1 \
                 else (True, "streamer_idle_after_close")

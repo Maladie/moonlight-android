@@ -23,6 +23,7 @@ public final class ChildSessionLifecycle {
         void render(long remainingSeconds);
         void warning(long remainingMinutes);
         void requestHeartbeat(HeartbeatCallback callback);
+        void requestGameStopState(HeartbeatCallback callback);
         boolean canRetainGameOnly();
         void retainGameOnly();
         void terminate(String reason);
@@ -37,6 +38,7 @@ public final class ChildSessionLifecycle {
     private String sessionId = "";
     private boolean heartbeatInFlight;
     private boolean running;
+    private boolean gameStopInFlight;
     private long generation;
 
     private final Runnable countdownTick = new Runnable() {
@@ -46,7 +48,7 @@ public final class ChildSessionLifecycle {
             long remaining = countdown.remainingSeconds(now);
             listener.render(remaining);
             if (remaining <= 0L) {
-                running = false;
+                stop();
                 listener.terminate("time_expired");
                 return;
             }
@@ -108,6 +110,7 @@ public final class ChildSessionLifecycle {
     public void stop() {
         running = false;
         heartbeatInFlight = false;
+        gameStopInFlight = false;
         generation++;
         scheduler.remove(countdownTick);
         scheduler.remove(heartbeatTick);
@@ -116,9 +119,7 @@ public final class ChildSessionLifecycle {
     private void applyHeartbeat(ChildSessionClient.State state) {
         if (!running || !listener.active() || state == null
                 || !sessionId.equals(state.sessionId)) return;
-        String reason = reason(state);
         if (state.cleanupRequired || terminal(state)) {
-            running = false;
             handleTerminalState(state);
             return;
         }
@@ -126,21 +127,50 @@ public final class ChildSessionLifecycle {
         long now = clock.now();
         if (!countdown.update(sessionId, state.playableNowSeconds, now)
                 || countdown.isExpired(now)) {
-            running = false;
+            stop();
             listener.terminate("time_expired");
         }
     }
 
     public void handleTerminalState(ChildSessionClient.State state) {
-        running = false;
+        stop();
         String reason = reason(state);
-        if (state != null && ChildTerminalPolicy.action(
+        if (state != null && "game_stopped".equalsIgnoreCase(reason)
+                && (state.playableNowSeconds <= 0L
+                || (countdown != null && countdown.isExpired(clock.now())))) {
+            reason = "time_expired";
+        }
+        if (state != null && state.ok && ChildTerminalPolicy.action(
                 reason, state.cleanupRequired) == ChildTerminalPolicy.Action.RETAIN_GAME_ONLY
                 && listener.canRetainGameOnly()) {
             listener.retainGameOnly();
         } else {
             listener.terminate(reason);
         }
+    }
+
+    /** A provider exit must be classified before the child's allowance is cleared. */
+    public void providerGameStopped() {
+        if (!listener.active() || gameStopInFlight) return;
+        gameStopInFlight = true;
+        final long requestGeneration = generation;
+        listener.requestGameStopState(new HeartbeatCallback() {
+            @Override public void complete(ChildSessionClient.State state) {
+                if (requestGeneration != generation || !listener.active()) return;
+                if (state == null || !sessionId.equals(state.sessionId)
+                        || !terminal(state)) {
+                    unavailable();
+                    return;
+                }
+                handleTerminalState(state);
+            }
+
+            @Override public void unavailable() {
+                if (requestGeneration != generation || !listener.active()) return;
+                stop();
+                listener.terminate("child_session_unavailable");
+            }
+        });
     }
 
     public static boolean terminal(ChildSessionClient.State state) {

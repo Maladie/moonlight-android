@@ -69,6 +69,32 @@ class ProviderControlOperation:
 
 class StreamerControlOperation:
     @staticmethod
+    def _identity_trace(trace, observed, stream):
+        if trace is None:
+            return
+        clients = ControlOperationPolicy._snapshot_items(
+            observed.get("clients")) if isinstance(observed, dict) else None
+        apps = ControlOperationPolicy._snapshot_items(
+            observed.get("apps")) if isinstance(observed, dict) else None
+        connected = [item for item in clients if isinstance(item, dict)
+                     and item.get("connected") is True] if clients is not None else []
+        running = [item for item in apps if isinstance(item, dict)
+                   and item.get("running") is True] if apps is not None else []
+        observed_app = running[0].get("app_id") if len(running) == 1 else None
+        expected_app = stream.get("sunshine_app_id")
+        trace.update({
+            "expected_app_id": expected_app if type(expected_app) is int else None,
+            "observed_app_id": observed_app if type(observed_app) is int else None,
+            "expected_client_present": int(bool(stream.get("vibepollo_client_uuid"))),
+            "observed_client_matches": int(len(connected) == 1 and
+                bool(stream.get("vibepollo_client_uuid")) and str(
+                    connected[0].get("uuid") or "").casefold() == str(
+                    stream.get("vibepollo_client_uuid")).casefold()),
+            "snapshot_connected_clients": len(connected) if clients is not None else None,
+            "snapshot_running_apps": len(running) if apps is not None else None,
+        })
+
+    @staticmethod
     def _await_idle(proxy, profile_id, timeout=5.0, trace=None):
         deadline = time.monotonic() + timeout
         while True:
@@ -147,8 +173,13 @@ class StreamerControlOperation:
         return StreamerControlOperation._await_idle(proxy, profile_id, trace=trace)
 
     @staticmethod
-    def close(proxy, profile_id, stream):
+    def close(proxy, profile_id, stream, trace=None):
         """Caller holds the exact Gateway permit through observation and effect."""
+        def result(closed, reason, stage):
+            if trace is not None:
+                trace.update({"reason": reason, "close_stage": stage})
+            return closed, reason
+
         def snapshot(timeout=8.0):
             return proxy("vibepollo", "/snapshot?force=1", timeout=timeout,
                          profile_id=profile_id)
@@ -163,23 +194,34 @@ class StreamerControlOperation:
                     0.1, observation_deadline - time.monotonic())))
             except OSError:
                 ok, observed = False, None
+            if trace is not None:
+                session = observed.get("session") if isinstance(observed, dict) else None
+                unavailable = observed.get("control_unavailable_sources") \
+                    if isinstance(observed, dict) else None
+                trace.update({
+                    "snapshot_attempts": trace.get("snapshot_attempts", 0) + 1,
+                    "snapshot_http_ok": int(bool(ok)),
+                    "snapshot_control_fresh": int(isinstance(observed, dict) and
+                                                  observed.get("control_fresh") is True),
+                    "snapshot_unavailable_source_count": len(unavailable)
+                        if isinstance(unavailable, list) else None,
+                    "snapshot_session_count": session.get("count")
+                        if isinstance(session, dict) and
+                        type(session.get("count")) is int else None,
+                })
+                StreamerControlOperation._identity_trace(trace, observed, stream)
             if ok and ControlOperationPolicy.streamer_idle(observed):
-                return True, "streamer_already_idle"
+                return result(True, "streamer_already_idle", "idle_confirmed")
             if ok and ControlOperationPolicy.streamer_snapshot_authoritative(observed):
                 if not ControlOperationPolicy.streamer_close_allowed(observed, stream):
-                    return False, "streamer_identity_unconfirmed"
+                    return result(False, "streamer_identity_unconfirmed", "identity_rejected")
                 break
             if time.monotonic() >= observation_deadline:
-                return False, "streamer_snapshot_unavailable"
+                return result(False, "streamer_snapshot_unavailable", "observe_authority")
             time.sleep(0.25)
-        try:
-            proxy("vibepollo", "/action/close-app", timeout=8.0,
-                  profile_id=profile_id)
-        except OSError:
-            pass
         # An accepted close is asynchronous, and Vibepollo can also return HTTP
         # 500 after closing or lose the response.  In every case, keep the same
         # permit until fresh physical evidence confirms the postcondition.
-        if StreamerControlOperation._await_idle(proxy, profile_id):
-            return True, "streamer_idle_after_close"
-        return False, "streamer_close_unconfirmed"
+        if StreamerControlOperation.force_close(proxy, profile_id, trace=trace):
+            return result(True, "streamer_idle_after_close", "idle_confirmed")
+        return result(False, "streamer_close_unconfirmed", "observe_idle")

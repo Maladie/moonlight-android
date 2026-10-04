@@ -643,15 +643,20 @@ class ControlOperationTest(unittest.TestCase):
                 return True, {"ok": True}
             return True, active
 
+        trace = {}
         with patch("provider_control_operation.time.monotonic",
                    side_effect=lambda: clock[0]), \
                 patch("provider_control_operation.time.sleep",
                       side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
-            closed, reason = StreamerControlOperation.close(proxy, "parent", stream)
+            closed, reason = StreamerControlOperation.close(proxy, "parent", stream, trace)
         self.assertFalse(closed)
         self.assertEqual("streamer_close_unconfirmed", reason)
         self.assertEqual(1, calls.count("/action/close-app"))
         self.assertGreater(calls.count("/snapshot?force=1"), 1)
+        self.assertEqual("observe_idle", trace["close_stage"])
+        self.assertEqual(reason, trace["reason"])
+        self.assertEqual(1, trace["snapshot_session_count"])
+        self.assertEqual(1, trace["close_http_ok"])
 
     def test_streamer_close_ack_waits_until_physical_idle(self):
         stream = {"vibepollo_client_uuid": VIBE_UUID, "sunshine_app_id": 7}
@@ -667,13 +672,84 @@ class ControlOperationTest(unittest.TestCase):
                 return True, {"ok": True}
             return True, next(snapshots)
 
+        trace = {}
         with patch("provider_control_operation.time.monotonic",
                    side_effect=lambda: clock[0]), \
                 patch("provider_control_operation.time.sleep",
                       side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
-            closed, reason = StreamerControlOperation.close(proxy, "parent", stream)
+            closed, reason = StreamerControlOperation.close(proxy, "parent", stream, trace)
         self.assertTrue(closed)
         self.assertEqual("streamer_idle_after_close", reason)
+        self.assertEqual("idle_confirmed", trace["close_stage"])
+        self.assertEqual(0, trace["snapshot_session_count"])
+        self.assertEqual((7, 7, 1), (trace["expected_app_id"], trace["observed_app_id"],
+                                      trace["observed_client_matches"]))
+
+    def test_streamer_close_identity_rejection_never_calls_effect(self):
+        stream = {"vibepollo_client_uuid": VIBE_UUID, "sunshine_app_id": 7}
+        active = {**control_evidence(1, True),
+                  "clients": [{"uuid": VIBE_UUID, "connected": True}],
+                  "apps": [{"app_id": 7, "running": True}]}
+        for changes in (
+                {"apps": [{"app_id": 99, "running": True}]},
+                {"clients": [{"uuid": "foreign-client", "connected": True}]},
+                {"clients": [{"uuid": VIBE_UUID, "connected": True},
+                             {"uuid": "foreign-client", "connected": True}]},
+                {"apps": None},
+                {"session": {"active": True, "app_running": False, "count": 1}}):
+            with self.subTest(changes=changes):
+                calls, trace = [], {}
+                def proxy(_name, path, **_kwargs):
+                    calls.append(path)
+                    return True, {**active, **changes, "private_payload": "Bearer secret"}
+                closed, reason = StreamerControlOperation.close(proxy, "parent", stream, trace)
+                self.assertEqual((False, "streamer_identity_unconfirmed"), (closed, reason))
+                self.assertEqual(["/snapshot?force=1"], calls)
+                self.assertEqual("identity_rejected", trace["close_stage"])
+                self.assertNotIn("secret", json.dumps(trace))
+                self.assertNotIn(VIBE_UUID, json.dumps(trace))
+
+    def test_streamer_close_unavailable_observation_is_bounded_without_effect(self):
+        calls, trace, clock = [], {}, [0.0]
+        def proxy(_name, path, **_kwargs):
+            calls.append(path)
+            raise OSError("private transport payload")
+        with patch("provider_control_operation.time.monotonic", side_effect=lambda: clock[0]), \
+                patch("provider_control_operation.time.sleep",
+                      side_effect=lambda delay: clock.__setitem__(0, clock[0] + delay)):
+            closed, reason = StreamerControlOperation.close(proxy, "parent", {
+                "sunshine_app_id": 7, "vibepollo_client_uuid": VIBE_UUID}, trace)
+        self.assertEqual((False, "streamer_snapshot_unavailable"), (closed, reason))
+        self.assertNotIn("/action/close-app", calls)
+        self.assertEqual("observe_authority", trace["close_stage"])
+        self.assertEqual((0, 0), (trace["snapshot_http_ok"], trace["snapshot_control_fresh"]))
+        self.assertGreaterEqual(clock[0], 12)
+        self.assertNotIn("private", json.dumps(trace))
+
+    def test_streamer_close_lost_or_failed_response_requires_fresh_idle(self):
+        active = {**control_evidence(1, True),
+                  "clients": [{"uuid": VIBE_UUID, "connected": True}],
+                  "apps": [{"app_id": 7, "running": True}]}
+        idle = {**control_evidence(), "clients": [], "apps": []}
+        for lost in (False, True):
+            with self.subTest(lost=lost):
+                closed_effect, trace, calls = [False], {}, []
+                def proxy(_name, path, **_kwargs):
+                    calls.append(path)
+                    if path == "/action/close-app":
+                        closed_effect[0] = True
+                        if lost:
+                            raise OSError("response lost")
+                        return False, {"status": 500, "private_payload": "secret"}
+                    return True, idle if closed_effect[0] else active
+                result = StreamerControlOperation.close(proxy, "parent", {
+                    "sunshine_app_id": 7, "vibepollo_client_uuid": VIBE_UUID}, trace)
+                self.assertEqual((True, "streamer_idle_after_close"), result)
+                self.assertEqual(["/snapshot?force=1", "/action/close-app",
+                                  "/snapshot?force=1"], calls)
+                self.assertEqual(0 if lost else 500, trace["close_http_status"])
+                self.assertEqual(0, trace["snapshot_session_count"])
+                self.assertNotIn("secret", json.dumps(trace))
 
     def test_streamer_close_retries_unavailable_control_snapshot_before_effect(self):
         stream = {"vibepollo_client_uuid": VIBE_UUID, "sunshine_app_id": 7}

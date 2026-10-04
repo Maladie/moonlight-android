@@ -33,7 +33,7 @@ public final class MoonWakerDiagnostics {
     private static final long PROCESS_START_NANOS = System.nanoTime();
     private static final AtomicLong DROPPED = new AtomicLong();
     private static final Set<String> ALLOWED_FIELDS = new HashSet<>(Arrays.asList(
-            "transition_id", "stream_session_id", "request_id", "profile_id", "host_id",
+            "transition_id", "stream_session_id", "generation", "attachment", "attempt", "source_transition_id", "source_attempt", "preparing_state", "request_id", "profile_id", "host_id",
             "game_id", "operation", "state", "from", "to", "stage", "status", "reason",
             "duration_ms", "http_status", "route", "method", "error_type", "milestone",
             "response_content_length", "response_body_bytes_read",
@@ -192,6 +192,9 @@ public final class MoonWakerDiagnostics {
             if (!(fields[index] instanceof String)) continue;
             String key = (String) fields[index];
             if (!ALLOWED_FIELDS.contains(key)) continue;
+            if (("generation".equals(key) || "attachment".equals(key) || "attempt".equals(key) || "source_attempt".equals(key))
+                    && !(fields[index + 1] instanceof Byte || fields[index + 1] instanceof Short
+                    || fields[index + 1] instanceof Integer || fields[index + 1] instanceof Long)) continue;
             if (key.startsWith("audio_") && !(fields[index + 1] instanceof Number)) continue;
             Object value = safeValue(key, fields[index + 1]);
             if (value != null) record.put(key, value);

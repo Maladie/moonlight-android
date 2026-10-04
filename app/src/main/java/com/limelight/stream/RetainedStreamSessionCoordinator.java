@@ -62,6 +62,7 @@ public final class RetainedStreamSessionCoordinator {
         public final String transitionId;
         public final long attempt;
         public final boolean preparing;
+        public final long orchestrationId;
         public final java.util.function.BooleanSupplier cancelled;
 
         public SwitchRequest(String streamSessionId, String hostId, int appId,
@@ -80,8 +81,8 @@ public final class RetainedStreamSessionCoordinator {
                              String transitionId, long attempt, boolean preparing,
                              java.util.function.BooleanSupplier cancelled) {
             this(streamSessionId, hostId, profileId, profileId, profileId, false,
-                    appId, oldGameId, newGameId, newGameName, streamTargetName, artworkPath,
-                    transitionId, attempt, preparing, cancelled);
+                    appId, oldGameId, newGameId, newGameName, streamTargetName,
+                    artworkPath, transitionId, attempt, preparing, 0L, cancelled);
         }
 
         public SwitchRequest(String streamSessionId, String hostId, String profileId,
@@ -89,6 +90,18 @@ public final class RetainedStreamSessionCoordinator {
                              int appId, String oldGameId, String newGameId, String newGameName,
                              String streamTargetName, String artworkPath, String transitionId,
                              long attempt, boolean preparing,
+                             java.util.function.BooleanSupplier cancelled) {
+            this(streamSessionId, hostId, profileId, executionProfileId, targetProfileId,
+                    targetIsChild, appId, oldGameId, newGameId, newGameName,
+                    streamTargetName, artworkPath, transitionId, attempt, preparing, 0L,
+                    cancelled);
+        }
+
+        public SwitchRequest(String streamSessionId, String hostId, String profileId,
+                             String executionProfileId, String targetProfileId, boolean targetIsChild,
+                             int appId, String oldGameId, String newGameId, String newGameName,
+                             String streamTargetName, String artworkPath, String transitionId,
+                             long attempt, boolean preparing, long orchestrationId,
                              java.util.function.BooleanSupplier cancelled) {
             this.streamSessionId = normalize(streamSessionId);
             this.hostId = normalize(hostId);
@@ -105,6 +118,7 @@ public final class RetainedStreamSessionCoordinator {
             this.transitionId = normalize(transitionId);
             this.attempt = attempt;
             this.preparing = preparing;
+            this.orchestrationId = orchestrationId;
             this.cancelled = cancelled == null ? () -> false : cancelled;
         }
     }
@@ -209,7 +223,7 @@ public final class RetainedStreamSessionCoordinator {
     private static long controlGeneration;
     private static long transportGeneration;
     private static long nextTransportGeneration;
-    private static boolean preparingHomeFrameClaimed;
+    private static Snapshot preparingHomeFrameClaim;
     private static String acceptedHomeTransitionId = "";
     private static long acceptedHomeAttempt;
     private static Controller switchOwner;
@@ -273,7 +287,7 @@ public final class RetainedStreamSessionCoordinator {
         playniteGameId = retainedPlayniteGameId == null ? "" : retainedPlayniteGameId;
         transitionId = "";
         attempt = 0L;
-        preparingHomeFrameClaimed = false;
+        preparingHomeFrameClaim = null;
         acceptedHomeTransitionId = "";
         acceptedHomeAttempt = 0L;
         setStateLocked(State.HOME_LIVE);
@@ -320,7 +334,7 @@ public final class RetainedStreamSessionCoordinator {
         playniteGameId = normalize(preparingPlayniteGameId);
         transitionId = transition;
         attempt = preparingAttempt;
-        preparingHomeFrameClaimed = false;
+        preparingHomeFrameClaim = null;
         acceptedHomeTransitionId = "";
         acceptedHomeAttempt = 0L;
         switchOwner = null;
@@ -328,6 +342,12 @@ public final class RetainedStreamSessionCoordinator {
         switchTransitionId = "";
         switchAttempt = 0L;
         setStateLocked(State.PREPARING);
+        MoonWakerDiagnostics.record("INFO", "android.retained-stream",
+                "preparing.entered", "state", "PREPARING",
+                "stream_session_id", streamSessionId, "host_id", hostId,
+                "profile_id", profileId, "app_id", appId,
+                "game_id", playniteGameId, "transition_id", transitionId,
+                "attempt", attempt);
         return true;
     }
 
@@ -344,9 +364,14 @@ public final class RetainedStreamSessionCoordinator {
         if (!matchesPreparing(owner, expectedStreamSessionId, expectedHostId,
                 expectedAppId, expectedTransitionId, expectedAttempt)) return false;
         setStateLocked(State.HOME_LIVE);
+        MoonWakerDiagnostics.record("INFO", "android.retained-stream",
+                "preparing.completed", "from", "PREPARING", "to", "HOME_LIVE",
+                "stream_session_id", streamSessionId, "host_id", hostId,
+                "profile_id", profileId, "app_id", appId,
+                "game_id", playniteGameId, "transition_id", transitionId,
+                "attempt", attempt);
         transitionId = "";
         attempt = 0L;
-        preparingHomeFrameClaimed = false;
         return true;
     }
 
@@ -355,7 +380,20 @@ public final class RetainedStreamSessionCoordinator {
             int expectedAppId, String expectedTransitionId, long expectedAttempt) {
         if (!matchesPreparing(owner, expectedStreamSessionId, expectedHostId,
                 expectedAppId, expectedTransitionId, expectedAttempt)) return false;
+        String cancelledSessionId = streamSessionId;
+        String cancelledHostId = hostId;
+        String cancelledProfileId = profileId;
+        int cancelledAppId = appId;
+        String cancelledGameId = playniteGameId;
+        String cancelledTransitionId = transitionId;
+        long cancelledAttempt = attempt;
         clearLocked();
+        MoonWakerDiagnostics.record("INFO", "android.retained-stream",
+                "preparing.cancelled", "from", "PREPARING", "to", "NONE",
+                "stream_session_id", cancelledSessionId, "host_id", cancelledHostId,
+                "profile_id", cancelledProfileId, "app_id", cancelledAppId,
+                "game_id", cancelledGameId, "transition_id", cancelledTransitionId,
+                "attempt", cancelledAttempt);
         return true;
     }
 
@@ -381,23 +419,33 @@ public final class RetainedStreamSessionCoordinator {
     public static boolean preparingHomeFrameSubmitted(Snapshot expected) {
         Controller owner;
         synchronized (RetainedStreamSessionCoordinator.class) {
-            if (!matchesPreparingSnapshot(expected) || preparingHomeFrameClaimed) return false;
+            if (!matchesPreparingSnapshot(expected) || preparingHomeFrameClaim != null
+                    || (acceptedHomeTransitionId.equals(expected.transitionId)
+                    && acceptedHomeAttempt == expected.attempt)) return false;
             owner = controller;
             if (owner == null) return false;
-            preparingHomeFrameClaimed = true;
+            preparingHomeFrameClaim = expected;
         }
         boolean accepted = owner.preparingHomeFrameSubmitted(expected);
         boolean committed = false;
+        State committedState = State.NONE;
         synchronized (RetainedStreamSessionCoordinator.class) {
-            if (accepted && matchesPreparingIdentity(expected)
-                    && controller == owner) {
+            if (accepted && controller == owner
+                    && matchesPreparingHomeFrameClaim(expected)) {
                 acceptedHomeTransitionId = expected.transitionId;
                 acceptedHomeAttempt = expected.attempt;
                 committed = true;
-            } else if (!accepted && matchesPreparingSnapshot(expected)
-                    && controller == owner) {
-                preparingHomeFrameClaimed = false;
+                committedState = state;
             }
+            if (preparingHomeFrameClaim == expected) preparingHomeFrameClaim = null;
+        }
+        if (committed) {
+            MoonWakerDiagnostics.record("INFO", "android.retained-stream",
+                    "preparing.home_frame_accepted", "state", committedState.name(),
+                    "stream_session_id", expected.streamSessionId,
+                    "host_id", expected.hostId, "profile_id", expected.profileId,
+                    "app_id", expected.appId, "game_id", expected.playniteGameId,
+                    "transition_id", expected.transitionId, "attempt", expected.attempt);
         }
         return committed;
     }
@@ -426,7 +474,7 @@ public final class RetainedStreamSessionCoordinator {
         setStateLocked(State.RECONNECT_REQUIRED);
         transitionId = "";
         attempt = 0L;
-        preparingHomeFrameClaimed = false;
+        preparingHomeFrameClaim = null;
         acceptedHomeTransitionId = "";
         acceptedHomeAttempt = 0L;
         return true;
@@ -524,6 +572,18 @@ public final class RetainedStreamSessionCoordinator {
                 && playniteGameId.equalsIgnoreCase(expected.playniteGameId)
                 && transitionId.equals(expected.transitionId)
                 && attempt == expected.attempt;
+    }
+
+    private static boolean matchesPreparingHomeFrameClaim(Snapshot expected) {
+        if (expected == null || preparingHomeFrameClaim != expected) return false;
+        if (matchesPreparingSnapshot(expected)) return true;
+        return (state == State.HOME_LIVE || state == State.PARKED_LIVE)
+                && streamSessionId.equals(expected.streamSessionId)
+                && hostId.equalsIgnoreCase(expected.hostId)
+                && profileId.equals(expected.profileId)
+                && appId == expected.appId
+                && playniteGameId.equalsIgnoreCase(expected.playniteGameId)
+                && transitionId.isEmpty() && attempt == 0L;
     }
 
     private static boolean matchesPreparingIdentity(Snapshot expected) {
@@ -810,6 +870,18 @@ public final class RetainedStreamSessionCoordinator {
                                           String streamTargetName, String artworkPath,
                                           java.util.function.BooleanSupplier cancelled,
                                           SwitchCallback completion) {
+        return switchGame(expectedHostId, expectedExecutionProfileId, targetProfileId,
+                targetIsChild, expectedAppId, newGameId, newGameName, streamTargetName,
+                artworkPath, 0L, cancelled, completion);
+    }
+
+    public static SwitchResult switchGame(String expectedHostId, String expectedExecutionProfileId,
+                                          String targetProfileId, boolean targetIsChild,
+                                          int expectedAppId, String newGameId, String newGameName,
+                                          String streamTargetName, String artworkPath,
+                                          long orchestrationId,
+                                          java.util.function.BooleanSupplier cancelled,
+                                          SwitchCallback completion) {
         Controller owner;
         SwitchRequest request;
         synchronized (RetainedStreamSessionCoordinator.class) {
@@ -821,7 +893,7 @@ public final class RetainedStreamSessionCoordinator {
                     executionProfileId, targetProfileId, targetIsChild, appId,
                     playniteGameId, newGameId, newGameName, streamTargetName,
                     artworkPath, transitionId, attempt, state == State.PREPARING,
-                    cancelled);
+                    orchestrationId, cancelled);
             switchOwner = owner;
             switchSessionId = streamSessionId;
             switchTransitionId = transitionId;
@@ -872,6 +944,22 @@ public final class RetainedStreamSessionCoordinator {
             acceptedHomeTransitionId = nextTransition;
         }
         transitionId = nextTransition;
+        if (request.orchestrationId > 0L) {
+            MoonWakerDiagnostics.record("INFO", "android.retained-stream",
+                    "preparing.target_committed", "state", "PREPARING",
+                    "stream_session_id", streamSessionId, "host_id", hostId,
+                    "profile_id", profileId, "app_id", appId,
+                    "game_id", playniteGameId, "from", currentTransition,
+                    "transition_id", transitionId, "attempt", attempt,
+                    "orchestration_id", request.orchestrationId);
+        } else {
+            MoonWakerDiagnostics.record("INFO", "android.retained-stream",
+                    "preparing.target_committed", "state", "PREPARING",
+                    "stream_session_id", streamSessionId, "host_id", hostId,
+                    "profile_id", profileId, "app_id", appId,
+                    "game_id", playniteGameId, "from", currentTransition,
+                    "transition_id", transitionId, "attempt", attempt);
+        }
         return true;
     }
 
@@ -923,6 +1011,17 @@ public final class RetainedStreamSessionCoordinator {
                 || (!playniteGameId.equalsIgnoreCase(normalize(expectedOldGameId))
                 && !playniteGameId.equalsIgnoreCase(normalize(newGameId)))) return false;
         playniteGameId = normalize(newGameId);
+        if (request.orchestrationId > 0L && acceptedHomeAttempt > 0L
+                && !acceptedHomeTransitionId.isEmpty()) {
+            MoonWakerDiagnostics.record("INFO", "android.retained-stream",
+                    "home.target_committed", "state", state.name(),
+                    "stream_session_id", streamSessionId, "host_id", hostId,
+                    "profile_id", profileId, "app_id", appId,
+                    "game_id", playniteGameId,
+                    "source_transition_id", acceptedHomeTransitionId,
+                    "source_attempt", acceptedHomeAttempt,
+                    "orchestration_id", request.orchestrationId);
+        }
         return true;
     }
 
@@ -1257,7 +1356,7 @@ public final class RetainedStreamSessionCoordinator {
         attempt = 0L;
         controlGeneration = 0L;
         transportGeneration = 0L;
-        preparingHomeFrameClaimed = false;
+        preparingHomeFrameClaim = null;
         acceptedHomeTransitionId = "";
         acceptedHomeAttempt = 0L;
         switchOwner = null;

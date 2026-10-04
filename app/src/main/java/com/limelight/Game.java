@@ -400,6 +400,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     public static final String EXTRA_PENDING_SWITCH_GAME_NAME = "PendingSwitchGameName";
     public static final String EXTRA_PENDING_SWITCH_STREAM_TARGET = "PendingSwitchStreamTarget";
     public static final String EXTRA_PENDING_SWITCH_ARTWORK = "PendingSwitchArtwork";
+    public static final String EXTRA_PENDING_SWITCH_ORCHESTRATION_ID =
+            "PendingSwitchOrchestrationId";
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
@@ -422,7 +424,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         autoWarmUpAttempt = getIntent().getLongExtra(EXTRA_AUTO_WARM_UP_ATTEMPT, 0L);
         autoWarmUpConvertedToGame = autoWarmUpAttempt > 0L
                 && getIntent().getBooleanExtra(EXTRA_AUTO_WARM_UP_CONVERTED, false);
-        pendingRetainedSwitch.offer(PendingRetainedSwitch.from(getIntent()));
+        PendingRetainedSwitch createdPendingSwitch = PendingRetainedSwitch.from(getIntent());
+        if (pendingRetainedSwitch.offer(createdPendingSwitch)) {
+            recordPendingRetainedSwitch("console.retained_switch.received",
+                    "activity_create", createdPendingSwitch, "OFFERED");
+        }
         PendingRetainedSwitch.strip(getIntent());
 
         UiHelper.setLocale(this);
@@ -1733,10 +1739,97 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         super.onSaveInstanceState(outState);
     }
 
+    private void recordActivityIdentity(String event, String status, String sessionId,
+                                        StreamRuntime sourceRuntime,
+                                        StreamRuntime.Attachment sourceAttachment) {
+        RetainedStreamSessionCoordinator.Snapshot preparing =
+                RetainedStreamSessionCoordinator.snapshot();
+        recordActivityIdentity(event, status, sessionId, sourceRuntime, sourceAttachment,
+                preparing, isExactAutoWarmUpPreparing(preparing));
+    }
+
+    private void recordActivityIdentity(String event, String status, String sessionId,
+                                        StreamRuntime sourceRuntime,
+                                        StreamRuntime.Attachment sourceAttachment,
+                                        RetainedStreamSessionCoordinator.Snapshot preparing,
+                                        boolean exactPreparing) {
+        long generation = sourceRuntime == null ? 0L : sourceRuntime.generation();
+        String preparingState = preparing == null ? "IDENTITY_UNAVAILABLE"
+                : exactPreparing ? "PREPARING" : preparing.state.name();
+        if (sessionId == null || sessionId.isEmpty() || generation <= 0L
+                || sourceAttachment == null || sourceAttachment.serial <= 0L
+                || sourceAttachment.transportGeneration != generation) {
+            if (exactPreparing) {
+                MoonWakerDiagnostics.record("INFO", "android.stream", event,
+                        "state", "IDENTITY_UNAVAILABLE", "status", status,
+                        "preparing_state", preparingState,
+                        "stream_session_id", preparing.streamSessionId,
+                        "host_id", preparing.hostId, "profile_id", preparing.profileId,
+                        "app_id", preparing.appId, "game_id", preparing.playniteGameId,
+                        "transition_id", preparing.transitionId, "attempt", preparing.attempt);
+            } else {
+                MoonWakerDiagnostics.record("INFO", "android.stream", event,
+                        "state", "IDENTITY_UNAVAILABLE", "status", status,
+                        "preparing_state", preparingState);
+            }
+            return;
+        }
+        if (exactPreparing) {
+            MoonWakerDiagnostics.record("INFO", "android.stream", event,
+                    "state", "IDENTITY_AVAILABLE", "status", status,
+                    "stream_session_id", sessionId, "generation", generation,
+                    "attachment", sourceAttachment.serial,
+                    "preparing_state", preparingState,
+                    "host_id", preparing.hostId, "profile_id", preparing.profileId,
+                    "app_id", preparing.appId, "game_id", preparing.playniteGameId,
+                    "transition_id", preparing.transitionId, "attempt", preparing.attempt);
+        } else {
+            MoonWakerDiagnostics.record("INFO", "android.stream", event,
+                    "state", "IDENTITY_AVAILABLE", "status", status,
+                    "stream_session_id", sessionId, "generation", generation,
+                    "attachment", sourceAttachment.serial,
+                    "preparing_state", preparingState);
+        }
+    }
+
+    private void recordPendingRetainedSwitch(String event, String route,
+                                             PendingRetainedSwitch pending, String status) {
+        if (pending == null) return;
+        RetainedStreamSessionCoordinator.Snapshot retained =
+                RetainedStreamSessionCoordinator.snapshot();
+        if (pending.orchestrationId > 0L) {
+            MoonWakerDiagnostics.record("INFO", "android.stream", event,
+                    "stream_session_id", retained.streamSessionId,
+                    "state", retained.state.name(),
+                    "orchestration_id", pending.orchestrationId,
+                    "stage", route, "status", status,
+                    "host_id", pending.hostId, "execution_profile_id", pending.executionProfileId,
+                    "profile_id", pending.targetProfileId, "app_id", pending.appId,
+                    "game_id", pending.gameId);
+        } else {
+            MoonWakerDiagnostics.record("INFO", "android.stream", event,
+                    "stream_session_id", retained.streamSessionId,
+                    "state", retained.state.name(),
+                    "stage", route, "status", status,
+                    "host_id", pending.hostId, "execution_profile_id", pending.executionProfileId,
+                    "profile_id", pending.targetProfileId, "app_id", pending.appId,
+                    "game_id", pending.gameId);
+        }
+    }
+
     @Override
     protected void onDestroy() {
         StartupThreadWatchdog.stop();
-        MoonWakerDiagnostics.record("INFO", "android.stream", "activity.destroyed");
+        final StreamRuntime destroyedRuntime = runtime;
+        final StreamRuntime.Attachment destroyedAttachment = attachment;
+        final String destroyedSessionId = streamSessionId;
+        final RetainedStreamSessionCoordinator.Snapshot destroyedPreparing =
+                RetainedStreamSessionCoordinator.snapshot();
+        final boolean destroyedPreparingExact =
+                isExactAutoWarmUpPreparing(destroyedPreparing);
+        recordActivityIdentity("activity.destroyed", "ENTRY", destroyedSessionId,
+                destroyedRuntime, destroyedAttachment, destroyedPreparing,
+                destroyedPreparingExact);
         stopChildMonitoring();
         cancelStreamingAutopilotCalibration();
         synchronized (autoWarmUpGateLock) {
@@ -1750,6 +1843,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             attachment = null;
             input = null;
         }
+        recordActivityIdentity("activity.destroyed.outcome",
+                destroyedAttachment == null || destroyedRuntime == null ? "NOT_OBSERVED"
+                        : runtimeSurvives ? "NOT_STOPPING_AT_CALLBACK_RETURN"
+                        : "STOPPING_AT_CALLBACK_RETURN",
+                destroyedSessionId, destroyedRuntime, destroyedAttachment,
+                destroyedPreparing, destroyedPreparingExact);
         if (transitionCoordinator != null) {
             if (runtimeSurvives) {
                 transitionCoordinator.detachForRecreation();
@@ -3437,7 +3536,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 }
                 gateway.stopGame(exactGame, current.processToken);
             }
-            if (!childSessionId.isEmpty()) releaseChildTimeAttachmentAndWait();
+            if (!childSessionId.isEmpty()) releaseChildTimeAttachmentAndWait("game_stopped");
             runOnUiThread(() -> afterRetainedGameStopped(operation));
         } catch (IOException | RuntimeException error) {
             String reason = error.getMessage() == null ? "retained_switch_failed"
@@ -3587,9 +3686,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         || providerIdentity.processId != currentProviderIdentity.processId))) {
                     throw new IOException("retained_switch_context_changed");
                 }
+                // A running game handed to the parent is a replacement, not a stop.
                 if (!operation.request.targetIsChild && !childSessionId.isEmpty()) {
                     timeAttachmentMayHaveChanged = true;
-                    releaseChildTimeAttachmentAndWait();
+                    releaseChildTimeAttachmentAndWait(reuseRunningGame ? "replacement" : "game_stopped");
                 }
                 targetGateway = PlayniteTransitionGateway.connect(
                         this, next.hostId, getIntent().getStringExtra(EXTRA_HOST),
@@ -4043,6 +4143,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             return;
         }
         if (!backgroundStreamParked) consoleLoadingView.showOpaque();
+        if (!childSessionId.isEmpty()) {
+            if (childLifecycle == null) finishChildSession("child_session_unavailable");
+            else childLifecycle.providerGameStopped();
+            return;
+        }
         if (!isTransportConnected() || userInitiatedDisconnect
                 || !getIntent().getBooleanExtra(EXTRA_NEUTRAL_STREAM_TARGET, false)
                 || targetName == null || targetName.trim().isEmpty()) {
@@ -6052,8 +6157,17 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             autoWarmUpHomeFrameAccepted.set(true);
         }
         if (!exactPreparing) autoWarmUpRetained = true;
-        MoonWakerDiagnostics.record("INFO", "android.stream", "warm_up.reattached",
-                "stream_session_id", streamSessionId, "state", retained.state.name());
+        if (exactPreparing && attachment != null) {
+            MoonWakerDiagnostics.record("INFO", "android.stream", "warm_up.reattached",
+                    "stream_session_id", streamSessionId, "state", retained.state.name(),
+                    "generation", runtime.generation(), "attachment", attachment.serial,
+                    "host_id", retained.hostId, "profile_id", retained.profileId,
+                    "app_id", retained.appId, "game_id", retained.playniteGameId,
+                    "transition_id", retained.transitionId, "attempt", retained.attempt);
+        } else {
+            MoonWakerDiagnostics.record("INFO", "android.stream", "warm_up.reattached",
+                    "stream_session_id", streamSessionId, "state", retained.state.name());
+        }
         transitionController.overlayRendered(transitionSpec.id);
         if (transitionCoordinator != null) transitionCoordinator.start();
         startConnectionIfReady(streamView.getHolder());
@@ -6090,14 +6204,31 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
+        RetainedStreamSessionCoordinator.Snapshot intentPreparing =
+                RetainedStreamSessionCoordinator.snapshot();
+        boolean exactIntentPreparing = isExactAutoWarmUpPreparing(intentPreparing);
+        recordActivityIdentity("activity.new_intent.received", "DELIVERED",
+                streamSessionId, runtime, attachment, intentPreparing, exactIntentPreparing);
         PendingRetainedSwitch next = PendingRetainedSwitch.from(intent);
-        if (next == null) return;
+        if (next == null) {
+            recordActivityIdentity("activity.new_intent.disposition", "NO_PENDING_SWITCH_TARGET",
+                    streamSessionId, runtime, attachment, intentPreparing, exactIntentPreparing);
+            return;
+        }
         if (!pendingRetainedSwitch.offer(next)) {
+            recordPendingRetainedSwitch("console.retained_switch.received",
+                    "on_new_intent", next, "REJECTED_ALREADY_SUBMITTED");
+            recordActivityIdentity("activity.new_intent.disposition", "REJECTED_ALREADY_SUBMITTED",
+                    streamSessionId, runtime, attachment, intentPreparing, exactIntentPreparing);
             // One switch at a time; a later selection is not queued behind a running one.
             Toast.makeText(this, R.string.console_stream_home_switch_blocked,
                     Toast.LENGTH_LONG).show();
             return;
         }
+        recordPendingRetainedSwitch("console.retained_switch.received",
+                "on_new_intent", next, "OFFER_ACCEPTED");
+        recordActivityIdentity("activity.new_intent.disposition", "OFFER_ACCEPTED",
+                streamSessionId, runtime, attachment, intentPreparing, exactIntentPreparing);
         if (!reattachPending) submitPendingRetainedSwitch();
     }
 
@@ -6105,18 +6236,26 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (runtime == null || !runtime.isConnected()) return;
         PendingRetainedSwitch pending = pendingRetainedSwitch.take();
         if (pending == null) return;
+        recordPendingRetainedSwitch("console.retained_switch.submission",
+                "switch_submit", pending, "REQUESTED");
         RetainedStreamSessionCoordinator.SwitchResult started =
                 RetainedStreamSessionCoordinator.switchGame(pending.hostId,
                         pending.executionProfileId, pending.targetProfileId,
                         pending.targetIsChild, pending.appId, pending.gameId,
                         pending.gameName, pending.streamTarget, pending.artwork,
+                        pending.orchestrationId,
                         () -> isFinishing() || isDestroyed(),
                         (outcome, error) -> runOnUiThread(() -> {
+                            recordPendingRetainedSwitch(
+                                    "console.retained_switch.completed", "switch_callback",
+                                    pending, outcome.name());
                             pendingRetainedSwitch.completed();
                             if (outcome == RetainedStreamSessionCoordinator.SwitchOutcome.FAILED) {
                                 LimeLog.warning("Pending retained switch failed: " + error);
                             }
                         }));
+        recordPendingRetainedSwitch("console.retained_switch.submission_result",
+                "switch_submit", pending, started.name());
         if (started != RetainedStreamSessionCoordinator.SwitchResult.STARTED) {
             pendingRetainedSwitch.completed();
             MoonWakerDiagnostics.record("WARN", "android.stream",
@@ -6730,30 +6869,64 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         providerEndGameInFlight = true;
         consoleLoadingView.showOpaque();
         consoleLoadingView.doAfterNextFrame(() -> new Thread(() -> {
+            String stage = "connect";
+            String failureReason = "operation_failed";
+            MoonWakerDiagnostics.record("INFO", "android.stream", "end_game.started",
+                    "transition_id", expected.id, "game_id", expected.playniteGameId);
             try {
                 PlayniteTransitionGateway gateway = PlayniteTransitionGateway.connect(
                         Game.this, expected.hostId, getIntent().getStringExtra(EXTRA_HOST),
                         actorContext);
-                if (gateway == null) throw new IOException("gateway_unavailable");
+                if (gateway == null) {
+                    failureReason = "gateway_unavailable";
+                    throw new IOException("gateway_unavailable");
+                }
+                stage = "snapshot";
                 PlayniteTransitionGateway.Snapshot current = gateway.snapshot();
+                MoonWakerDiagnostics.record("INFO", "android.stream", "end_game.observed",
+                        "transition_id", expected.id, "game_id", current.gameId,
+                        "state", current.gameState, "observation_state", current.observationState,
+                        "game_evidence", current.gameEvidence,
+                        "process_evidence", current.processEvidence, "process_id", current.processId,
+                        "correlation_matches", current.gatewayReady,
+                        "transport_generation", current.transportGeneration,
+                        "status", current.processToken.isEmpty() ? "token_missing"
+                                : current.processToken.matches("[0-9a-f]{64}")
+                                ? "token_valid" : "token_invalid");
+                stage = "validate_game";
                 String exactGame = PlayniteIdentityResolutionPolicy.verifiedStopTarget(
                         expected.playniteGameId, current.gameState, current.gameId);
-                if (exactGame == null) throw new IOException("provider_game_not_exact");
+                if (exactGame == null) {
+                    failureReason = "provider_game_not_exact";
+                    throw new IOException("provider_game_not_exact");
+                }
                 if (!exactGame.isEmpty()) {
+                    stage = "validate_process";
                     if (!current.hasVerifiedProcessFor(exactGame)) {
+                        failureReason = "provider_process_not_exact";
                         throw new IOException("provider_process_not_exact");
                     }
+                    stage = "stop_game";
                     gateway.stopGame(exactGame, current.processToken);
                 }
-                if (!childSessionId.isEmpty()) releaseChildTimeAttachmentAndWait();
+                stage = "release_child";
+                if (!childSessionId.isEmpty()) releaseChildTimeAttachmentAndWait("game_stopped");
+                MoonWakerDiagnostics.record("INFO", "android.stream", "end_game.host_phase_completed",
+                        "transition_id", expected.id, "game_id", expected.playniteGameId);
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()
                             || !providerEndGameInFlight || transitionSpec != expected) return;
                     providerEndGameInFlight = false;
                     providerStopConfirmed = true;
+                    // The host phase already ended the child session; a second end would be
+                    // answered by a stale stub without playable time and read as time_expired.
+                    clearChildAllowance();
                     retainNeutralStreamAfterNaturalGameStop(expected.id, expected.playniteGameId);
                 });
             } catch (IOException | RuntimeException error) {
+                MoonWakerDiagnostics.record("WARN", "android.stream", "end_game.failed",
+                        "transition_id", expected.id, "stage", stage,
+                        "reason", failureReason, "error_type", error.getClass().getName());
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed()
                             || !providerEndGameInFlight || transitionSpec != expected) return;
@@ -7346,7 +7519,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
             @Override public void requestHeartbeat(
                     ChildSessionLifecycle.HeartbeatCallback callback) {
-                sendChildHeartbeat(callback);
+                sendChildState(callback, false);
+            }
+
+            @Override public void requestGameStopState(
+                    ChildSessionLifecycle.HeartbeatCallback callback) {
+                sendChildState(callback, true);
             }
 
             @Override public boolean canRetainGameOnly() {
@@ -7368,7 +7546,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         }, CHILD_COUNTDOWN_INTERVAL_MS, CHILD_HEARTBEAT_INTERVAL_MS);
     }
 
-    private void sendChildHeartbeat(ChildSessionLifecycle.HeartbeatCallback callback) {
+    private void sendChildState(ChildSessionLifecycle.HeartbeatCallback callback,
+                                boolean gameStopped) {
         if (childSessionId.isEmpty() || isDestroyed() || childSessionClient == null
                 || childGatewayConnection == null) {
             callback.unavailable();
@@ -7379,41 +7558,66 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         final String expectedSessionId = childSessionId;
         final String expectedGameId = childGameId;
         final String expectedTransitionId = transitionSpec == null ? "" : transitionSpec.id;
+        final StreamRuntime expectedRuntime = runtime;
+        final String expectedStreamSessionId = streamSessionId;
         final ChildSessionClient client = childSessionClient;
         final GatewayConnection connection = childGatewayConnection;
         new Thread(() -> {
             try {
-                ChildSessionClient.State state = client.heartbeat(connection, expectedSessionId);
+                ChildSessionClient.State state = gameStopped
+                        ? client.end(connection, expectedSessionId, "game_stopped")
+                        : client.heartbeat(connection, expectedSessionId);
                 runOnUiThread(() -> {
                     if (isFinishing() || isDestroyed() || retainedSwitch != null || providerEndGameInFlight
+                            || runtime != expectedRuntime
+                            || !expectedStreamSessionId.equals(streamSessionId)
                             || !childCorrelationMatches(expectedHostId, expectedActorId,
                             expectedSessionId, expectedGameId, expectedTransitionId,
                             childHostId(), childActorProfileId, childSessionId, childGameId,
-                            transitionSpec == null ? "" : transitionSpec.id)
-                            || !childStateMatches(state)) {
+                            transitionSpec == null ? "" : transitionSpec.id)) {
+                        if (!gameStopped) callback.unavailable();
+                        return;
+                    }
+                    if (!childStateMatches(state)) {
                         callback.unavailable();
                         return;
                     }
                     callback.complete(state);
                 });
             } catch (IOException | RuntimeException error) {
-                LimeLog.warning("Child session heartbeat unavailable: " + error.getClass().getSimpleName());
-                runOnUiThread(callback::unavailable);
+                LimeLog.warning("Child session state unavailable: " + error.getClass().getSimpleName());
+                runOnUiThread(() -> {
+                    if (gameStopped && (isFinishing() || isDestroyed()
+                            || retainedSwitch != null || providerEndGameInFlight
+                            || runtime != expectedRuntime
+                            || !expectedStreamSessionId.equals(streamSessionId)
+                            || !childCorrelationMatches(expectedHostId, expectedActorId,
+                            expectedSessionId, expectedGameId, expectedTransitionId,
+                            childHostId(), childActorProfileId, childSessionId, childGameId,
+                            transitionSpec == null ? "" : transitionSpec.id))) return;
+                    callback.unavailable();
+                });
             }
         }, "MoonWaker-ChildSessionHeartbeat").start();
     }
 
-    private void releaseChildTimeAttachmentAndWait() throws IOException {
+    private void releaseChildTimeAttachmentAndWait(String reason) throws IOException {
         final String sessionId = childSessionId;
         final GatewayConnection connection = childGatewayConnection;
         if (sessionId.isEmpty()) return;
         if (connection == null) throw new IOException("child_gateway_unavailable");
         ChildSessionClient.State state = endChildSessionAndWait(
                 new ChildSessionClient(new GatewayTransport()), connection,
-                sessionId, "game_stopped");
-        if (state.cleanupRequired || !ChildSessionLifecycle.terminal(state)) {
+                sessionId, reason);
+        // A rejected release (for example game_still_running) is terminal-looking but not ok.
+        if (!state.ok || state.cleanupRequired || !ChildSessionLifecycle.terminal(state)) {
             throw new IOException("child_session_cleanup_required");
         }
+    }
+
+    private static boolean gameStopNotYetObserved(ChildSessionClient.State state) {
+        return !state.ok && ("game_still_running".equals(state.reason)
+                || "game_state_unverified".equals(state.reason));
     }
 
     private ChildSessionClient.State endChildSessionAndWait(
@@ -7421,10 +7625,14 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             String sessionId, String reason) throws IOException {
         long deadline = SystemClock.elapsedRealtime() + 30_000L;
         ChildSessionClient.State state = client.end(connection, sessionId, reason);
-        while ((state.cleanupRequired || !ChildSessionLifecycle.terminal(state))
+        while ((state.cleanupRequired || !ChildSessionLifecycle.terminal(state)
+                || gameStopNotYetObserved(state))
                 && SystemClock.elapsedRealtime() < deadline) {
             SystemClock.sleep(1_000L);
-            state = client.status(connection, sessionId);
+            // The provider observation may lag a verified stop; ask again, never assume.
+            state = gameStopNotYetObserved(state)
+                    ? client.end(connection, sessionId, reason)
+                    : client.status(connection, sessionId);
         }
         return state;
     }

@@ -528,7 +528,7 @@ public class GameTransitionCancelContractTest {
         assertTrue(gate.indexOf("doAfterNextFrame") < gate.indexOf("detachForSwitch()"));
         assertTrue(provider.indexOf("gateway.snapshot()")
                 < provider.indexOf("if (!childSessionId.isEmpty())"));
-        assertTrue(provider.contains("releaseChildTimeAttachmentAndWait();"));
+        assertTrue(provider.contains("releaseChildTimeAttachmentAndWait(\"game_stopped\");"));
         assertTrue(provider.contains("if (!exactGame.isEmpty())"));
         assertTrue(stopped.contains("operation.oldSpec.id.equals(transitionId)"));
         assertTrue(stopped.contains("operation.cancelRequested"));
@@ -826,7 +826,7 @@ public class GameTransitionCancelContractTest {
         assertTrue(handoff.contains(
                 "if (!reuseRunningGame && transitionCoordinator != null)"));
         int resolve = handoff.indexOf("resolveRetainedProviderIdentity(operation)");
-        int release = handoff.indexOf("releaseChildTimeAttachmentAndWait()");
+        int release = handoff.indexOf("releaseChildTimeAttachmentAndWait(");
         assertTrue(resolve >= 0 && release > resolve);
         assertTrue(handoff.indexOf("ownsSwitchBeforeMutation(") < release);
         String recovery = text.substring(text.indexOf("private void recoverRetainedSwitch("),
@@ -850,7 +850,7 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("private void adoptAuthorizedRunningGame("));
         assertTrue(handoff.contains("boolean timeAttachmentMayHaveChanged = false"));
         assertTrue(handoff.contains("timeAttachmentMayHaveChanged = true;\n"
-                + "                    releaseChildTimeAttachmentAndWait();"));
+                + "                    releaseChildTimeAttachmentAndWait(reuseRunningGame ? \"replacement\" : \"game_stopped\");"));
         assertTrue(handoff.contains("timeAttachmentMayHaveChanged = allowance.ok"
                 + " || !childSessionId.isEmpty();"));
         assertTrue(handoff.contains("releaseUnusedAllowance("));

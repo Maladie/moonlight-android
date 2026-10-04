@@ -135,7 +135,9 @@ public class MoonWakerDiagnosticsTest {
                 "operation_authorized", true,
                 "reveal_authorized", false,
                 "manual_reveal_available", true,
-                "uncertain", false);
+                "uncertain", false,
+                "attempt", 123L, "source_transition_id", "source-transition",
+                "source_attempt", 456L);
         MoonWakerDiagnostics.record("WARN", "android.gateway", "request.rejected",
                 "reason", "unsafe\ntext",
                 "profile_id", "Bearer secret-token",
@@ -160,6 +162,9 @@ public class MoonWakerDiagnosticsTest {
         assertEquals(256, record.getString("reason").length());
         assertEquals("/api/v1/game/{id}", record.getString("route"));
         assertEquals("host-id:game:123:456:1", record.getString("transition_id"));
+        assertEquals(123L, record.getLong("attempt"));
+        assertEquals("source-transition", record.getString("source_transition_id"));
+        assertEquals(456L, record.getLong("source_attempt"));
         assertEquals("e2488e65-762c-4e64-8511-4de5fc655231",
                 record.getString("stream_session_id"));
         assertEquals("request:123", record.getString("request_id"));

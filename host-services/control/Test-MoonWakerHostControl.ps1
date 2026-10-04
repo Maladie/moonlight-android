@@ -27,6 +27,70 @@ $profileAgentSource = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $P
     "profile-agent\MoonWakerProfileBridge.ps1") -Raw
 $vibepolloBridgeSource = Get-Content -LiteralPath (Join-Path (Split-Path -Parent $PSScriptRoot) `
     "bridges\vibepollo\VibepolloBridge.ps1") -Raw
+
+function Test-ProviderStatusFixture {
+    # Execute the real status caller with all file/network/service effects replaced.
+    & {
+        param($source)
+        $ast = [Management.Automation.Language.Parser]::ParseInput($source, [ref]$null, [ref]$null)
+        foreach ($name in 'Test-HttpHealth','Test-ChildProfile','Get-ProfileEndpoint','Get-Status') {
+            $definition = $ast.FindAll({ param($node)
+                $node -is [Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
+            }, $true)
+            if (@($definition).Count -ne 1) { throw 'status_fixture_function_missing' }
+            Invoke-Expression $definition[0].Extent.Text
+        }
+        function Get-GatewayDirectory { 'fixture-gateway' }
+        function Ensure-BackgroundServices { }
+        function Get-MoonWakerVersion { [pscustomobject]@{ version='test'; build='test' } }
+        function Get-ProfileRoot { 'fixture-profile' }
+        function Test-SteamConnection { $false }
+        function Test-LegendaryConnection { $false }
+        function Test-PlayniteConnection { $false }
+        function Test-CurrentProfileOwner { $true }
+        function Get-SupervisorStatus { 'running' }
+        function Get-ProfileProcessId { 123 }
+        function Get-LegendaryExecutable { '' }
+        function Get-MicrophoneReadiness { [pscustomobject]@{ ready=$false } }
+        function Test-TcpPort { $false }
+        function Test-Path([string]$LiteralPath) {
+            $LiteralPath -eq 'fixture-gateway\gateway.json' -or
+                ($LiteralPath -eq 'fixture-profile\profile-bridge-manually-stopped' -and $manuallyStopped)
+        }
+        function Get-Content([string]$LiteralPath) {
+            if ($LiteralPath -ne 'fixture-gateway\gateway.json') { throw 'fixture_optional_file_absent' }
+            @{ listen_port=8785; clients=@(); profiles=@{ parent=@{
+                game_provider_bridge=$endpoint; playnite_bridge='http://127.0.0.1:45998'
+            } } } | ConvertTo-Json -Depth 5
+        }
+        function Invoke-RestMethod([string]$Uri) {
+            [void]$calls.Add($Uri)
+            if ($Uri -ne 'http://127.0.0.1:45999/observation') { throw 'removed_health_route_requested' }
+            if ($reply -eq 'offline') { throw 'fixture_transport_failure' }
+            [pscustomobject]@{ ok=($reply -ne 'error'); schema_version=1 }
+        }
+        $cases = @(
+            @{ endpoint='http://127.0.0.1:45999/'; reply='online'; stopped=$false; expected='online'; count=1 },
+            @{ endpoint='http://127.0.0.1:45999'; reply='error'; stopped=$false; expected='error'; count=1 },
+            @{ endpoint='http://127.0.0.1:45999'; reply='offline'; stopped=$false; expected='offline'; count=1 },
+            @{ endpoint=''; reply='online'; stopped=$false; expected='disabled'; count=0 },
+            @{ endpoint='http://127.0.0.1:45999'; reply='online'; stopped=$true; expected='manually_stopped'; count=0 }
+        )
+        foreach ($case in $cases) {
+            $endpoint=$case.endpoint; $reply=$case.reply; $manuallyStopped=$case.stopped
+            $calls = New-Object 'Collections.Generic.List[string]'
+            $status = Get-Status
+            $profileStatus = @($status.profiles)[0]
+            if ($profileStatus.game_provider -ne $case.expected -or $calls.Count -ne $case.count -or
+                $profileStatus.Contains('playnite') -or $profileStatus.Contains('playnite_pid')) {
+                throw 'provider_status_route_or_result_regressed'
+            }
+        }
+        Write-Output 'Host Control provider status: 5/5 isolated cases passed.'
+    } $hostControlSource
+}
+
+Test-ProviderStatusFixture
 if (-not $uiSource.Contains('vibepolloUrl.Text = vibepolloConfigured ? "" :')) {
     throw "The integrations dialog no longer preserves an existing Vibepollo base URL."
 }
@@ -550,7 +614,7 @@ print(json.dumps({"ok": True, "status": 200,
         throw "Host Control did not correlate profiles with their Windows owner."
     }
     if ($foreign.discord -ne "disabled" -or $foreign.vibepollo -ne "disabled" -or
-        $foreign.game_provider -ne "disabled" -or $foreign.playnite -ne "disabled") {
+        $foreign.game_provider -ne "disabled") {
         throw "Host Control did not tolerate missing optional standard profile endpoints."
     }
     if (-not $current.discord_configured -or -not $current.vibepollo_configured) {

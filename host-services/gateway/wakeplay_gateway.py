@@ -10,6 +10,7 @@ import hashlib
 import json
 import logging
 import logging.handlers
+import math
 import os
 import platform
 import queue
@@ -132,6 +133,13 @@ DIAGNOSTIC_DENIAL_CODES = frozenset({
     "child_profile_required", "game_not_shared", "pairing_required",
     "identity_proof_invalid", "identity_binding_conflict",
 })
+# Control response bodies are never logged; retain only fixed rejection codes.
+DIAGNOSTIC_CONTROL_REJECTION_CODES = frozenset({
+    "retained_process_unconfirmed", "unmanaged_stream", "managed_stream_conflict",
+    "child_session_unmanaged", "operation_id_reused", "stale_operation",
+    "operation_in_progress", "terminal_owner_required", "terminal_result_timeout",
+    "reconcile_required", "retained_owner_unconfirmed",
+})
 DIAGNOSTIC_FIELDS = {
     "method", "route", "request_id", "profile_id", "actor_profile_id",
     "execution_profile_id", "status",
@@ -142,6 +150,8 @@ DIAGNOSTIC_FIELDS = {
     "snapshot_unavailable_source_count", "snapshot_session_active",
     "snapshot_app_running", "snapshot_session_count",
     "snapshot_connected_clients", "snapshot_running_apps",
+    "close_stage", "expected_app_id", "observed_app_id",
+    "expected_client_present", "observed_client_matches",
     "operation_id", "generation", "actor_lease_epoch", "effect_sequence",
     "stream_session_id", "child_session_id", "intent", "state", "reason",
 }
@@ -3285,9 +3295,9 @@ class GatewayState:
             "pin_required": False,
             "policy_revision": self._child_profile_revision(
                 actor.get("policy_revision", 0)),
-            "remaining_daily_seconds": int(max(
+            "remaining_daily_seconds": math.ceil(max(
                 0.0, float(policy.get("remaining_daily_seconds", 0.0)))),
-            "playable_now_seconds": int(max(
+            "playable_now_seconds": math.ceil(max(
                 0.0, float(policy.get("playable_now_seconds", 0.0)))),
             "next_allowed_at": str(policy.get("next_allowed_at") or ""),
             "window_end": str(policy.get("window_end") or ""),
@@ -4293,9 +4303,9 @@ class GatewayState:
             "window_end": str(policy.get("window_end") or ""),
             "next_allowed_at": str(policy.get("next_allowed_at") or ""),
             "used_seconds": int(max(0.0, float(policy.get("used_seconds", 0.0)))),
-            "remaining_daily_seconds": int(max(
+            "remaining_daily_seconds": math.ceil(max(
                 0.0, float(policy.get("remaining_daily_seconds", 0.0)))),
-            "playable_now_seconds": int(playable),
+            "playable_now_seconds": math.ceil(playable),
             "deadline_epoch_ms": int((wall.timestamp() + playable) * 1000)
             if playable > 0 else 0,
             "server_time": wall.astimezone(timezone.utc).isoformat().replace(
@@ -4937,10 +4947,43 @@ class GatewayState:
             if not self.child_terminal_operation.reserve_terminal(session):
                 return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                              "reason": "child_cleanup_required"}
-        _monotonic, wall = self._child_time_now()
-        status, result = self._child_time_finish_retry(
-            client, session, "parent_terminated", wall)
-        if status != HTTPStatus.OK or result.get("cleanup_required"):
+        # The TV countdown can reach its deadline before the next housekeeping
+        # tick. Re-evaluate through the same host policy/time owner after the
+        # exact stream fences and terminal reservation, outside the control lock.
+        recheck_error = None
+        try:
+            status, result = self.child_time_session_heartbeat(
+                client, str(session["actor_profile_id"]), str(session["session_id"]),
+                update_client_heartbeat=False, expected_session=session)
+        except PermissionError as error:
+            if str(error) not in {"child_session_binding_mismatch", "stale_child_session"}:
+                self.child_terminal_operation.release_terminal(session)
+                raise
+            recheck_error = error
+            status, result = HTTPStatus.CONFLICT, {"cleanup_required": True}
+        with self.control_condition:
+            terminal = self.control_state.get("completed", {}).get(child_operation_id)
+            finished = (isinstance(terminal, dict) and terminal.get("state") == "succeeded"
+                        and terminal.get("generation") == self.control_state.get("generation")
+                        and terminal.get("actor_lease_epoch") == self.control_state.get("actor_lease_epoch")
+                        and terminal.get("expected_generation") == expected_generation
+                        and all(terminal.get(key) == proposed.get(key) for key in (
+                            "client_id", "execution_profile_id", "stream_session_id", "sunshine_app_id"))
+                        and self.control_state.get("active") is None
+                        and self.control_state.get("stream") is None)
+            if recheck_error is not None and not finished:
+                self.child_terminal_operation.release_terminal(session)
+                raise recheck_error
+            if not finished and self.child_time_session is not session:
+                self.child_terminal_operation.release_terminal(session)
+                return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                             "reason": "stale_session"}
+        if not finished:
+            actor = self.config.get("profiles", {}).get(str(session["actor_profile_id"]))
+            _monotonic, wall = self._child_time_now(actor)
+            status, result = self._child_time_finish_retry(
+                client, session, "parent_terminated", wall)
+        if not finished and (status != HTTPStatus.OK or result.get("cleanup_required")):
             return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                          "reason": "child_cleanup_required"}
         with self.control_condition:
@@ -4953,6 +4996,7 @@ class GatewayState:
                     terminal.get("generation") != self.control_state.get("generation") or \
                     terminal.get("actor_lease_epoch") != \
                         self.control_state.get("actor_lease_epoch"):
+                self.child_terminal_operation.release_terminal(session)
                 return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                              "reason": "stale_operation"}
             return self._control_alias_child_terminal_locked(proposed, terminal)
@@ -5729,8 +5773,18 @@ class GatewayState:
                     or not isinstance(stream, dict) \
                     or stream.get("child_session_id") != session.get("session_id"):
                 return False, "stale_session"
+            close_trace: dict[str, Any] = {}
             closed, close_reason = StreamerControlOperation.close(
-                self.proxy, str(session.get("execution_profile_id") or ""), stream)
+                self.proxy, str(session.get("execution_profile_id") or ""), stream,
+                trace=close_trace)
+            DIAGNOSTICS.record(
+                "child-terminal-streamer-close", level="INFO" if closed else "WARN",
+                operation_id=operation_id, generation=permit["generation"],
+                actor_lease_epoch=permit["actor_lease_epoch"],
+                child_session_id=str(session.get("session_id") or ""),
+                stream_session_id=str(stream.get("stream_session_id") or ""),
+                execution_profile_id=str(session.get("execution_profile_id") or ""),
+                **close_trace)
             terminal_status, terminal = self._child_time_control_call(session, lambda:
                 self.control_operation_complete(client, {
                     "operation_id": operation_id, "generation": permit["generation"],
@@ -6464,6 +6518,8 @@ class GatewayState:
             return self._child_time_finish(
                 client, session, "child_session_expired", wall)
         with self.lock:
+            if self.child_time_session is not session:
+                raise PermissionError("stale_child_session")
             if session.get("clock_rollback"):
                 rolled_back = True
             else:
@@ -6554,8 +6610,22 @@ class GatewayState:
                           self._child_time_day_name(wall.date()), "used_seconds": 0,
                           "remaining_daily_seconds": 0, "playable_now_seconds": 0}
             current = self._child_time_current_game(parent_id)
-            if current.get("kind") == "active" and self._child_time_normalize_game_id(
-                    current.get("game_id")) == self._child_time_provider_game(session):
+            game_running = current.get("kind") == "active" and                 self._child_time_normalize_game_id(
+                    current.get("game_id")) == self._child_time_provider_game(session)
+            if terminal_reason.casefold() == "game_stopped" and (
+                    game_running or current.get("kind") == "unavailable"):
+                # Releasing the allowance while the exact game may still run would let a
+                # child play unmetered; the client's observation does not decide this.
+                return HTTPStatus.CONFLICT, {
+                    "ok": False, "state": "blocked", "phase": "running",
+                    "cleanup_required": False,
+                    "reason": "game_still_running" if game_running else "game_state_unverified",
+                    "actor_profile_id": actor_id, "execution_profile_id": parent_id,
+                    "client_id": client_id,
+                    "game_id": str(session.get("game_id") or ""),
+                    "session_id": session_id,
+                }
+            if game_running:
                 current_token = self._child_time_process_token(current.get("identity"))
                 session_token = self._child_time_process_token(session)
                 if current_token and current_token == session_token:
@@ -7241,6 +7311,13 @@ class GatewayHandler(BaseHTTPRequestHandler):
 
     def send_json(self, status: int, value: Any) -> None:
         self._response_status = int(status)
+        if int(status) >= 400 and isinstance(value, dict) and \
+                getattr(self, "_diagnostic_route", "") in {
+                    f"{API_PREFIX}/control/operation/acquire",
+                    f"{API_PREFIX}/control/operation/reconcile"}:
+            reason = value.get("reason")
+            if isinstance(reason, str) and reason in DIAGNOSTIC_CONTROL_REJECTION_CODES:
+                self._diagnostic_control_reason = reason
         body = compact_json(value)
         self._response_content_length = len(body)
         sending = time.monotonic()
@@ -7700,6 +7777,7 @@ class GatewayHandler(BaseHTTPRequestHandler):
         self._diagnostic_started = time.monotonic()
         self._diagnostic_error: BaseException | None = None
         self._diagnostic_unexpected = False
+        self._diagnostic_control_reason = ""
         self._response_status = 0
         self._response_content_length = 0
         self._response_body_bytes_written = 0
@@ -7749,6 +7827,8 @@ class GatewayHandler(BaseHTTPRequestHandler):
                 if isinstance(self._diagnostic_error, PermissionError) and \
                         str(self._diagnostic_error) in DIAGNOSTIC_DENIAL_CODES:
                     fields["reason"] = str(self._diagnostic_error)
+                elif failed and self._diagnostic_control_reason:
+                    fields["reason"] = self._diagnostic_control_reason
                 if slow_observation:
                     # Where the handler's time went: authentication (including the registry
                     # check under the Gateway lock), the observation read, writing the

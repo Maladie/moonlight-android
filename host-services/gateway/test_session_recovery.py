@@ -417,7 +417,7 @@ class SessionRecoveryTest(unittest.TestCase):
     def test_c_late_child_cleanup_cannot_touch_reauthorized_parent(self):
         child_id = self.start_child()
         child = self.gateway.child_time_session
-        status, _ = self.gateway.child_time_session_end(self.client, "kid", child_id, "game_stopped")
+        status, _ = self.gateway.child_time_session_end(self.client, "kid", child_id, "replacement")
         self.assertEqual(200, status)
         status, parent = self.acquire("parent", "reauthorize")
         self.assertEqual(200, status, parent)
@@ -438,7 +438,7 @@ class SessionRecoveryTest(unittest.TestCase):
 
     def test_late_parent_handoff_compensation_rejects_newer_retained_generation(self):
         child_id = self.start_child()
-        self.gateway.child_time_session_end(self.client, "kid", child_id, "game_stopped")
+        self.gateway.child_time_session_end(self.client, "kid", child_id, "replacement")
         status, first = self.acquire("parent", "reauthorize")
         self.assertEqual(200, status, first)
         old_stream = dict(self.gateway.control_state["stream"])

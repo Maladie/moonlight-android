@@ -2456,6 +2456,40 @@ class GatewayDiagnosticsTest(unittest.TestCase):
             handler._finish_diagnostics()
             self.assertFalse(recorder.record.called)  # only the observation route is timed
 
+    def test_control_rejection_logs_only_fixed_codes_and_resets_between_requests(self):
+        state = SimpleNamespace(request_context=__import__("threading").local())
+        handler = object.__new__(GatewayHandler)
+        handler.server = SimpleNamespace(state=state)
+        handler.headers = Message()
+        handler.send_response = mock.Mock()
+        handler.send_header = mock.Mock()
+        handler.end_headers = mock.Mock()
+        handler.wfile = mock.Mock()
+        recorder = mock.Mock()
+        with mock.patch.object(wakeplay_gateway, "DIAGNOSTICS", recorder):
+            for route, reason, expected in (
+                    ("acquire", "retained_process_unconfirmed", True),
+                    ("reconcile", "stale_operation", True),
+                    ("acquire", "token-shaped-secret", False),
+                    ("acquire", ["stale_operation"], False),
+                    ("acquire", None, False)):
+                with self.subTest(route=route, reason=reason):
+                    handler.path = f"/api/v1/control/operation/{route}"
+                    handler._begin_diagnostics("POST")
+                    handler.send_json(409, {"ok": False, "reason": reason,
+                                            "secret": "private-response-body"})
+                    handler._finish_diagnostics()
+                    fields = recorder.record.call_args.kwargs
+                    self.assertEqual(expected, "reason" in fields)
+                    if expected:
+                        self.assertEqual(reason, fields["reason"])
+                    self.assertNotIn("private-response-body", str(fields))
+            handler.path = "/api/v1/library/refresh"
+            handler._begin_diagnostics("POST")
+            handler.send_json(409, {"reason": "stale_operation"})
+            handler._finish_diagnostics()
+            self.assertNotIn("reason", recorder.record.call_args.kwargs)
+
     def test_loopback_proxy_propagates_only_valid_request_id(self):
         with tempfile.TemporaryDirectory() as temporary:
             config_path = Path(temporary) / "gateway.json"
