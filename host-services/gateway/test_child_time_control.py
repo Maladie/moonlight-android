@@ -298,6 +298,7 @@ class ChildTimeControlTest(unittest.TestCase):
 
     def test_replacement_releases_only_time_attachment(self):
         session_id = self.start_running()
+        self.client["profile_grants"]["parent"] = ["use_profile"]  # running-game handoff needs the parent
         generation = self.state.control_state["stream"]["generation"]
         status, result = self.state.child_time_session_end(
             self.client, "kid", session_id, "replacement")
@@ -511,9 +512,15 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertEqual("game_still_running", body["reason"])
         self.assertFalse(body["ok"])
         self.assertIsNotNone(self.state.child_time_session)
+        for reason in ("replacement", "cancelled"):  # a child-only client cannot dodge it
+            status, body = self.state.child_time_session_end(
+                self.client, "kid", session_id, reason)
+            self.assertEqual(409, status, (reason, body))
+            self.assertEqual("game_still_running", body["reason"])
+        self.client["profile_grants"]["parent"] = ["use_profile"]
         status, body = self.state.child_time_session_end(
             self.client, "kid", session_id, "replacement")
-        self.assertEqual(200, status, body)  # running-game handoff to the parent
+        self.assertEqual(200, status, body)  # running-game handoff by a parent-holding client
         self.assertIsNone(self.state.child_time_session)
 
     def test_game_stopped_is_rejected_when_provider_state_is_unverified(self):

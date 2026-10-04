@@ -6550,6 +6550,15 @@ class GatewayState:
                 state="running", reason="none")
         return HTTPStatus.OK, body
 
+    def _child_time_client_holds_parent(self, client: dict[str, Any], parent_id: str) -> bool:
+        profile = self.config.get("profiles", {}).get(str(parent_id))
+        grants = client.get("profile_grants", {})
+        permissions = grants.get(str(parent_id), []) if isinstance(grants, dict) else []
+        return (isinstance(profile, dict) and profile.get("enabled") is True
+                and str(profile.get("kind") or STANDARD_PROFILE_KIND).strip().lower()
+                == STANDARD_PROFILE_KIND and not profile_deletion_pending(profile)
+                and isinstance(permissions, list) and "use_profile" in permissions)
+
     def child_time_session_end(self, client: dict[str, Any], actor_profile_id: str,
                                session_id: str, reason: str = "client_closed",
                                next_actor_profile_id: str = "") \
@@ -6612,10 +6621,15 @@ class GatewayState:
             current = self._child_time_current_game(parent_id)
             game_running = current.get("kind") == "active" and                 self._child_time_normalize_game_id(
                     current.get("game_id")) == self._child_time_provider_game(session)
-            if terminal_reason.casefold() == "game_stopped" and (
-                    game_running or current.get("kind") == "unavailable"):
-                # Releasing the allowance while the exact game may still run would let a
-                # child play unmetered; the client's observation does not decide this.
+            reason_key = terminal_reason.casefold()
+            running_or_unknown = game_running or current.get("kind") == "unavailable"
+            # Releasing the allowance while the exact game may still run would let a child
+            # play unmetered, so the client's claim does not decide it. Only a running-game
+            # handoff to the parent may do so, and only from a client that holds the parent
+            # profile itself (a TV paired for the child alone cannot).
+            handoff_allowed = reason_key in {"replacement", "cancelled"}                 and self._child_time_client_holds_parent(client, parent_id)
+            if running_or_unknown and reason_key in {
+                    "game_stopped", "replacement", "cancelled"} and not handoff_allowed:
                 return HTTPStatus.CONFLICT, {
                     "ok": False, "state": "blocked", "phase": "running",
                     "cleanup_required": False,
