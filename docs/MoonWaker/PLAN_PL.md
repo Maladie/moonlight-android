@@ -37,14 +37,14 @@ Pozycje są pisane tak, żeby dało się je przenieść jeden do jednego do trac
 | MW-01 | P0 | Osobne kody przyczyn dla błędów sesji | tak | — |
 | MW-02 | P0 | Zebranie i klasyfikacja awarii z fizycznego TV | tak | lepiej po MW-01 |
 | MW-03 | P0 | Zamknięcie S07 na fizycznym TV | trwa | — |
-| MW-04 | P1 | Projekt jednego modelu sesji i decyzja o regułach | tak (sam projekt) | MW-02 |
-| MW-05 | P1 | Implementacja modelu sesji (przeformułowane S08) | nie | MW-03, MW-04 |
+| MW-04 | P1 | Projekt jednego modelu sesji i decyzja o regułach | szkic v1 gotowy | MW-02 (dane), zgoda na zmianę reguł |
+| MW-05 | P1 | Implementacja modelu sesji w krokach K1–K5; K4 zastępuje S08 | K1 i K2 po MW-03 | MW-03, MW-04 |
 | MW-06 | P1 | Testy scenariuszowe zamiast tekstowych | nie | razem z MW-05 |
 | MW-07 | P1 | Budżet monolitów: zakaz wzrostu | tak | — |
 | MW-08 | P2 | Zaciągnięcie upstreamu v0.5.5 | tak (przygotowanie) | merge po MW-03 |
 | MW-09 | P2 | `Game.java` jako cienki adapter | nie | MW-05 |
 | MW-10 | P2 | Rozbiór UI `ConsoleActivity` ekran po ekranie | częściowo (MW-10a) | MW-05 |
-| MW-11 | P2 | S09 i S10 hardeningu | nie | MW-05 |
+| MW-11 | P2 | S09 i S10 hardeningu (S08 zastąpione przez K4) | nie | MW-05 |
 | MW-12 | P3 | Rozbiór monolitów hosta | nie | MW-11 |
 | MW-13 | P3 | Tracker zamiast plików stanu | tak | — |
 | MW-14 | P3 | Aktualizacja dokumentu architektury | tak | lepiej po MW-04 |
@@ -118,15 +118,28 @@ implementacją.
   koordynator jako fasadę i zakazują „nowego SessionManagera").
 - Plan migracji w krokach, z których każdy zostawia działającą aplikację.
 
-**Gotowe, gdy** właściciel zaakceptuje projekt i zmianę reguł.
+**Stan na 2026-10-05.** Szkic v1: [MW-04_MODEL_SESJI_PL.md](MW-04_MODEL_SESJI_PL.md).
+Rozstrzygnięte przez właściciela: przy obcej sesji na hoście tylko informacja; przy
+zmianie gry krótkie oczekiwanie na świeżą obserwację i pytanie tylko przy niepewności;
+K4 zastępuje S08. Otwarte: zmiana reguł (sekcja 11 projektu) i dane z MW-02.
 
-### MW-05 — Implementacja modelu sesji (przeformułowane S08)
+**Gotowe, gdy** właściciel zaakceptuje zmianę reguł, a projekt uwzględnia wyniki MW-02.
 
-**Po co.** S08 w obecnym kształcie przenosi logikę przygotowania i warm-upu za istniejącą
-fasadę. Ten sam zakres plików, ale cel to usunięcie globalnego stanu.
+### MW-05 — Implementacja modelu sesji (K1–K5; K4 zastępuje S08)
 
-**Zakres.** Według MW-04. Obejmuje pierwotne wymagania S08 (wspólne przygotowanie dla
-warm-upu i Play, brak automatycznego restartu po wyjściu, typowany etap przygotowania).
+**Po co.** S08 przenosiłoby logikę przygotowania i warm-upu za istniejącą fasadę, a model
+sesji przenosi ją ponownie. Decyzją właściciela z 2026-10-05 S08 nie jest wykonywane
+osobno; jego wymagania są scenariuszami akceptacyjnymi kroku K4.
+
+**Zakres.** Kroki z sekcji 8 projektu MW-04, każdy jako osobny punkt kontrolny:
+- K1: koordynator rozgłasza zmiany, ekrany subskrybują;
+- K2: Activity czytają wyłącznie rozgłoszony snapshot;
+- K3: stan koordynatora przechodzi do modelu (wymaga zmiany reguł);
+- K4: funkcja przejścia zastępuje `evaluate`, adaptery wychodzą z Activity; tu wchodzą
+  wymagania S08;
+- K5: usunięcie pozostałości.
+
+K1 i K2 nie wymagają zmiany reguł i mogą ruszyć zaraz po zamknięciu S07.
 
 **Gotowe, gdy**
 - `RetainedStreamSessionCoordinator` nie ma statycznych pól stanu;
@@ -211,8 +224,10 @@ Cel: `Game` to wersja upstreamowa (ok. 3,2 tys. linii) plus wywołania zaczepów
 
 ### MW-11 — S09 i S10 hardeningu
 
-S09 (bariera okładki i przekazanie prezentacji) zostaje w zakresie, ale po MW-05, bo
-korzysta z typowanego etapu przygotowania. S10 to kwalifikacja całości na fizycznym TV.
+S08 jest zastąpione przez krok K4 z MW-05; zamknięcie w `HARDENING/STATE.json` wpisuje
+koordynator hardeningu jako poprawkę kontraktu autoryzowaną przez właściciela. S09
+(bariera okładki i przekazanie prezentacji) zostaje w zakresie, ale po K4, bo korzysta
+z typowanego etapu przygotowania. S10 to kwalifikacja całości na fizycznym TV.
 
 ## P3
 
@@ -271,5 +286,8 @@ awaria na TV zasila MW-04 konkretnymi danymi.
 
 1. Teraz: tory A–D oraz MW-03.
 2. Po zamknięciu S07: merge upstreamu (MW-08).
-3. Po akceptacji projektu (MW-04): MW-05 z MW-06, potem MW-09 i MW-10.
-4. Na końcu: MW-11 (S09, S10), MW-12, MW-14.
+3. K1 i K2 z MW-05.
+4. Zmiana reguł hardeningu (MW-04, sekcja 11).
+5. K3, potem K4 (dawne S08) z testami scenariuszowymi (MW-06), potem K5.
+6. MW-09 i MW-10.
+7. S09, potem S10 (MW-11); na końcu MW-12 i MW-14.
