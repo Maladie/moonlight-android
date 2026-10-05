@@ -16020,9 +16020,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void hideSidePanel() {
-        Runnable finish = this::completeSidePanelDismissal;
-        if (reducedMotion || "discord.community".equals(currentPanelKey)) finish.run();
-        else sidePanelScroll.animate().translationX(dp(ConsolePanel.WIDTH_DP)).setDuration(150).withEndAction(finish).start();
+        if (reducedMotion || "discord.community".equals(currentPanelKey)) completeSidePanelDismissal();
+        else sidePanelScroll.animate().translationX(dp(ConsolePanel.WIDTH_DP)).setDuration(150).withEndAction(this::completeSidePanelDismissal).start();
     }
 
     private void hideSidePanelImmediately() {
@@ -16171,23 +16170,24 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void restoreContentFocus() {
-        View target = null;
-        if (lastContentFocus != null && lastContentFocus.isAttachedToWindow()
-                && lastContentFocus.isShown() && lastContentFocus.isFocusable()) {
-            target = lastContentFocus;
-        } else if (lastContentFocusTag != null) {
-            ViewGroup activeLayer = hostSelectionVisible && hostSelectionLayer != null
-                    ? hostSelectionLayer : homeLayer;
-            View tagged = activeLayer.findViewWithTag(lastContentFocusTag);
-            if (tagged != null && tagged.isShown() && tagged.isFocusable()) target = tagged;
-        }
-        if (target == null && hostSelectionVisible) {
-            requestHostSelectionFocus();
+        // A grid card may be removed or recycled by now, so the grid restores by position.
+        if (expandedLibraryMode && expandedGrid != null && lastContentFocusTag instanceof String
+                && ((String) lastContentFocusTag).startsWith("playnite:")) {
+            expandedGrid.restoreFocus();
             return;
         }
-        if (target == null) target = firstFocusableChild(appRow);
-        if (target == null) target = hostSelector;
+        View target = lastContentFocus != null && lastContentFocus.isAttachedToWindow()
+                && lastContentFocus.isShown() && lastContentFocus.isFocusable()
+                ? lastContentFocus : null;
+        if (target == null && lastContentFocusTag != null) {
+            View tagged = (hostSelectionVisible && hostSelectionLayer != null
+                    ? hostSelectionLayer : homeLayer).findViewWithTag(lastContentFocusTag);
+            if (tagged != null && tagged.isShown() && tagged.isFocusable()) target = tagged;
+        }
+        if (target == null && !hostSelectionVisible) target = firstFocusableChild(appRow);
+        if (target == null && !hostSelectionVisible) target = hostSelector;
         if (target != null) target.post(target::requestFocus);
+        else if (hostSelectionVisible) requestHostSelectionFocus();
     }
 
     private TextView actionView(ConsoleAction resolved) {

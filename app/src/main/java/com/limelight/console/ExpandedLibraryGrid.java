@@ -62,6 +62,7 @@ final class ExpandedLibraryGrid extends RecyclerView {
     private final float density;
     private List<PlayniteDashboardItem> items = Collections.emptyList();
     private int pendingFocus = NO_POSITION;
+    private int lastFocused = NO_POSITION;
     private long lastNavigationAt;
     private int scrollDirection = 1;
     private int prefetchStart = -1;
@@ -160,6 +161,7 @@ final class ExpandedLibraryGrid extends RecyclerView {
 
     void setItems(List<PlayniteDashboardItem> next) {
         List<PlayniteDashboardItem> previous = items;
+        int focused = focusedPosition();
         items = Collections.unmodifiableList(new ArrayList<>(next));
         prefetchStart = -1;
         prefetchEnd = -1;
@@ -187,6 +189,14 @@ final class ExpandedLibraryGrid extends RecyclerView {
                         items.get(newPosition)));
             }
         }, false).dispatchUpdatesTo(adapter);
+        if (focused != NO_POSITION && focusedPosition() == NO_POSITION) {
+            // The diff took the focused card away: the card now at its position takes over,
+            // before the layout drops the old one and the window hands focus elsewhere.
+            ViewHolder heir = findViewHolderForAdapterPosition(
+                    Math.min(focused, items.size() - 1));
+            if (heir != null) heir.itemView.requestFocus();
+            else if (items.isEmpty()) callbacks.onLeave();
+        }
         if (artworkReleased) {
             artworkReleased = false;
             rebindAll(PlayniteLibraryDiff.ARTWORK);
@@ -219,6 +229,15 @@ final class ExpandedLibraryGrid extends RecyclerView {
         }
         pendingFocus = target;
         showPosition(target);
+    }
+
+    /**
+     * Returns focus to the position focused last, for example after a side panel closes. A card
+     * removed meanwhile yields to the one now at its position; an empty grid is left.
+     */
+    void restoreFocus() {
+        if (items.isEmpty()) callbacks.onLeave();
+        else focusPosition(lastFocused);
     }
 
     int focusedPosition() {
@@ -310,6 +329,7 @@ final class ExpandedLibraryGrid extends RecyclerView {
         int position = getChildAdapterPosition(child);
         if (position == NO_POSITION) return;
         pendingFocus = NO_POSITION;
+        lastFocused = position;
         callbacks.onItemFocused(position, items.size());
     }
 
