@@ -27,11 +27,12 @@ public class ConsoleActivityLibraryPerformanceContractTest {
             throws IOException {
         String source = consoleActivitySource();
 
-        assertTrue(source.contains("EXPANDED_CACHE_ROWS_EACH_SIDE = 2"));
-        assertTrue(source.contains("EXPANDED_PREFETCH_ROWS_EACH_SIDE = 1"));
+        String grid = source("ExpandedLibraryGrid.java");
+        assertTrue(grid.contains("extends RecyclerView"));
+        assertTrue(grid.contains("PREFETCH_ROWS = 2"));
+        assertTrue(grid.contains("NAVIGATION_INTERVAL_MS = 70L"));
         assertTrue(source.contains("PLAYNITE_ARTWORK_PREFETCH_WORKERS = 2"));
-        assertTrue(source.contains("EXPANDED_NAVIGATION_INTERVAL_MS = 70L"));
-        assertTrue(source.contains("EXPANDED_FOCUS_TRANSITION_TIMEOUT_MS = 300L"));
+        assertFalse(source.contains("GridLayout"));
 
         String entrance = source.substring(source.indexOf(
                         "private void enterExpandedLibrary(boolean"),
@@ -63,6 +64,9 @@ public class ConsoleActivityLibraryPerformanceContractTest {
                 < backdrop.indexOf("decodeArtwork(file"));
         assertTrue(backdrop.contains("playniteBitmapCache.get(bitmapKey)"));
         assertTrue(backdrop.contains("playniteBitmapCache.put(bitmapKey, bitmap)"));
+        String heroDecode = source.substring(source.indexOf("private Bitmap decodeArtwork("),
+                source.indexOf("private Drawable cloneDrawable("));
+        assertTrue(heroDecode.contains("Bitmap.Config.RGB_565"));
 
         String launchTargets = source("PlayniteLaunchTargetStore.java");
         assertTrue(launchTargets.contains("preferences.getInt(key, 0) == appId"));
@@ -74,28 +78,46 @@ public class ConsoleActivityLibraryPerformanceContractTest {
 
         String render = source.substring(source.indexOf(
                         "private void renderExpandedLibrary("),
-                source.indexOf("private List<PlayniteDashboardItem> mergeArtworkWarmup("));
-        assertFalse(render.contains("expandedGrid.removeAllViews()"));
-        assertTrue(render.contains("expandedGrid.removeViewAt(childIndex)"));
-        assertTrue(render.contains("card.getParent() == expandedGrid"));
-        assertTrue(render.contains("expandedGrid.removeView(discarded)"));
+                source.indexOf("private ExpandedLibraryGrid createExpandedGrid("));
+        assertTrue(render.contains("expandedGrid.setItems(expandedItems)"));
+        assertTrue(render.contains("expandedGrid.rebindAll("));
+        assertTrue(grid.contains("DiffUtil.calculateDiff("));
+        assertTrue(grid.contains("getRecycledViewPool().putRecycledView("));
+        assertTrue(grid.contains("setHasFixedSize(true)"));
+        // The grid's row must not measure it with an unbounded height (all cards bound).
+        String body = source.substring(source.indexOf("LinearLayout body = new LinearLayout(this);"),
+                source.indexOf("LinearLayout details = new LinearLayout(this);"));
+        assertTrue(body.contains("body.setBaselineAligned(false)"));
+        // Focus must not relayout grid cards (title marquee) nor re-parse profile JSON.
+        String marquee = source.substring(source.indexOf("private void updateCarouselMarquee("),
+                source.indexOf("private boolean isQuickLaunch("));
+        assertTrue(marquee.indexOf("isDescendant(expandedGrid, title)")
+                < marquee.indexOf("title.setSingleLine(true)"));
+        assertTrue(source("HostGatewayStore.java").contains("parsed.raw.equals(raw)"));
+        // Session polls re-render the library under an open grid only on a visible change.
+        String gate = source.substring(source.indexOf("private void renderLibraryForSessionChange("),
+                source.indexOf("private void invalidateSessionProjectionRequest("));
+        assertTrue(gate.contains(".equals(renderedSessionPresentationKey)) return;"));
+        assertTrue(source.contains("renderLibraryForSessionChange(currentHost(expectedHostId))"));
+        assertTrue(grid.contains("grid.setItemPrefetchEnabled(false)"));
+        // Library resolve: per-game reuse, prepared off the main thread before renders.
+        String library = source.substring(source.indexOf("private void renderPlayniteLibrary("),
+                source.indexOf("private void requestPendingInitialGameFocus("));
+        assertTrue(library.contains("resolvePlayniteTarget(targets, game)"));
+        assertFalse(library.contains("PlayniteTargetResolver.resolve("));
+        assertTrue(source.contains(
+                "if (cached != null) prepareResolvedTargets(host, cached.games, currentSunshineApps);"));
+        assertTrue(grid.contains("callbacks.releaseCard(holder.itemView)"));
+        String applyPrefetched = source.substring(source.indexOf(
+                        "private void applyPrefetchedPlayniteArtwork("),
+                source.indexOf("private View directChildWithTag("));
+        assertFalse(applyPrefetched.contains("loadPlayniteBitmap("));
+        assertFalse(applyPrefetched.contains("cachedPlayniteArtwork("));
 
         String reset = source.substring(source.indexOf(
                         "private void renderExpandedLibraryFromStart("),
                 source.indexOf("private void renderPlayniteLibrary("));
-        assertTrue(reset.contains("removeCallbacks(expandedWindowWarmupRunnable)"));
-        assertTrue(reset.contains("expandedWindowWarmupPosted = false"));
-        assertTrue(reset.contains("pendingExpandedWindowWarmupIndex = -1"));
-        assertTrue(reset.contains("removeCallbacks(expandedFocusRestoreRunnable)"));
-        assertTrue(reset.contains("expandedGridWindowStartRow = 0"));
-        assertTrue(reset.contains("pendingExpandedFocusIndex = 0"));
-        assertTrue(reset.contains("requestExpandedFocusOnce(firstFocusableChild(expandedGrid))"));
-
-        String boundary = source.substring(source.indexOf(
-                        "private void scheduleExpandedBoundaryLoad("),
-                source.indexOf("private void scheduleExpandedWindowWarmup("));
-        assertTrue(boundary.contains("mainHandler.post(expandedWindowWarmupRunnable)"));
-        assertFalse(boundary.contains("postDelayed(expandedWindowWarmupRunnable, 70L)"));
+        assertTrue(reset.contains("expandedGrid.focusPosition(0)"));
 
         String focus = source.substring(source.indexOf(
                         "private void bindPlayniteCard("),

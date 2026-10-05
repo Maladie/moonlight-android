@@ -99,14 +99,16 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(source.contains(
                 "state.setVisibility(homeCarousel && ordinaryReady ? View.GONE : View.VISIBLE)"));
         assertTrue(source.contains("isDescendant(appRow, state)"));
-        assertTrue(binding.contains("colors.setSaturation(.25f)"));
+        assertTrue(binding.contains("saturationFilter(.25f)"));
         assertTrue(binding.contains("backdrop.setColorFilter(muted)"));
         assertTrue(stateStyle.contains("fill = 0xE014241B"));
         assertTrue(stateStyle.contains("state.setShadowLayer"));
         assertTrue(state.contains("CONSOLE_UI_V2 ? operation.progress + \"%\""));
         assertTrue(state.contains("CONSOLE_UI_V2 ? \"\""));
-        assertTrue(source.contains("params.height = dp(123)"));
-        assertTrue(source.contains("* 131)"));
+        String grid = source("src/main/java/com/limelight/console/ExpandedLibraryGrid.java",
+                "app/src/main/java/com/limelight/console/ExpandedLibraryGrid.java");
+        assertTrue(grid.contains("CELL_HEIGHT_DP = 123"));
+        assertTrue(grid.contains("CELL_MARGIN_DP = 4"));
         assertTrue(source.contains("homeContent.setPadding(dp(54), dp(14), dp(54), dp(24))"));
         assertTrue(source.contains("headerParams.bottomMargin = 0"));
         assertTrue(source.contains("titleParams.topMargin = dp(103)"));

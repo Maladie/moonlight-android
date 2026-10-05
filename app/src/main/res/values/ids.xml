@@ -3,4 +3,6 @@
     <item name="playnite_artwork_key" type="id" />
     <item name="carousel_marquee_start" type="id" />
     <item name="carousel_shine_runnable" type="id" />
+    <item name="playnite_card_views" type="id" />
+    <item name="playnite_chip_style" type="id" />
 </resources>
