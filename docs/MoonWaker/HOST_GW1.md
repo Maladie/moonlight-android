@@ -64,3 +64,28 @@ profile must not regress). If the root cause is the client, write it up precisel
 CODEX_WORKFLOW.md format: task, HEAD + delta, root cause per defect with file:line, the
 fix and why it preserves the contracts, tests added and their results, anything client-side,
 and what the owner must do (install) to verify on the real host.
+
+## Follow-up — a stream that retains no process identity was stuck on a partial scan
+
+A managed stream with no `process_token` and no `provider_game_id` (every freshly
+launched stream until a later resume adopts an identity: Desktop, but also a game) could be
+neither resumed, closed nor idle-reconciled: the stop branch, the resume/reconnect/warm_up
+branch and `_control_stream_idle` each required `_child_time_current_game` to return
+`idle`, which needs `running_scan_status == "complete"`. The Bridge reports the process
+PENDING with a "partial" scan while idle, so all three answered
+`retained_process_unconfirmed` (or never reconciled) until a hard reset.
+
+Fix: the three paths share `GatewayState._control_retained_process`. A stream that retains
+no identity is accepted, with an empty identity, when the provider answers well-formed
+with game evidence ABSENT, state idle, no current game id, no running identity and a
+scan that ran (`running_scan_status` "complete" or "partial"; "unavailable" still
+rejects). The record has no retained target whose absence could be proven. Open point
+for the owner: the record holds only an opaque `sunshine_app_id`, so a token-less *game*
+stream is not distinguishable from Desktop; if the provider reports idle under a partial
+scan while such a game still runs, its record is released or rebound. A stream that
+does carry a token or provider game id keeps the previous proof unchanged (complete scan,
+exact `target_status`). An unreachable provider or a malformed observation still rejects
+with `retained_process_unconfirmed`. Ownership checks, generation fencing, the rebind
+condition of Defect 1 and the child-entitlement gate are untouched; there is no new
+release path and no expiry. Tests: `test_control_operations.py`, the `tokenless` /
+`token_bearing` / `rejected_close` cases.
