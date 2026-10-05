@@ -532,6 +532,27 @@ public class SessionStateProjectionTest {
                 owner.current(ended, 7L).observationState);
     }
 
+    @Test public void verifiedCloseProjectsUncertainUntilAFreshIdlePollIsAccepted() {
+        // The snapshot SessionOrchestrator re-resolves right after a CLOSED result (MW-02).
+        Controller controller = new Controller();
+        RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",
+                "child", 42, "game");
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                controller, "session", 1L));
+        long first = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(ready("boot", first),
+                RetainedStreamSessionCoordinator.snapshot(), 0L));
+        assertTrue(RetainedStreamSessionCoordinator.markTerminating(
+                "session", "host", 42, "game"));
+        clearRetainedTransport();
+        RetainedStreamSessionCoordinator.Snapshot ended = RetainedStreamSessionCoordinator.snapshot();
+
+        assertEquals(SessionSnapshot.State.UNCERTAIN, owner.current(ended, 3L).state);
+        long afterwards = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(idle("boot", 3L, afterwards), ended, 6L));
+        assertEquals(SessionSnapshot.State.NONE, owner.current(ended, 7L).state);
+    }
+
     @Test public void responseCarryingASnapshotFromBeforeTheBoundaryIsRejected() {
         Controller controller = new Controller();
         RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",

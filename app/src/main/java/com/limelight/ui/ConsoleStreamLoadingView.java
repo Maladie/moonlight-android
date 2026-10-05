@@ -12,6 +12,9 @@ import android.graphics.drawable.GradientDrawable;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.SystemClock;
+import android.text.SpannableStringBuilder;
+import android.text.style.ForegroundColorSpan;
+import android.text.style.RelativeSizeSpan;
 import android.util.AttributeSet;
 import android.view.Gravity;
 import android.view.KeyEvent;
@@ -376,6 +379,22 @@ public final class ConsoleStreamLoadingView extends FrameLayout {
         renderSteps();
         if (!isVisibleAction(findFocus())) retryView.requestFocus();
         sendAccessibilityEvent(AccessibilityEvent.TYPE_ANNOUNCEMENT);
+    }
+
+    /** Error whose details end with a small, dim reason code for failure reports. */
+    public void showError(String title, String details, String reasonCode) {
+        if (Looper.myLooper() != Looper.getMainLooper()) {
+            handler.post(() -> showError(title, details, reasonCode));
+            return;
+        }
+        if (stopped || closingPresentation) return;
+        showError(title, details, false);
+        SpannableStringBuilder text = new SpannableStringBuilder(details).append('\n');
+        int start = text.length();
+        text.append(reasonCode);
+        text.setSpan(new RelativeSizeSpan(0.75f), start, text.length(), 0);
+        text.setSpan(new ForegroundColorSpan(0xFF8E99AA), start, text.length(), 0);
+        statusView.setText(text);
     }
 
     public void showLauncherInteraction(String title, String details, boolean allowReveal) {

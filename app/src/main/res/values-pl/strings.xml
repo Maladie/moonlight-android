@@ -1240,6 +1240,8 @@
     <string name="console_previous_session_close_failed">Nie udało się zamknąć poprzedniej sesji hosta. Spróbuj ponownie, gdy zniknie wskaźnik aktywnej sesji.</string>
     <string name="console_session_uncertain_title">Stan sesji jest jeszcze sprawdzany</string>
     <string name="console_session_uncertain_details">MoonWaker nie potwierdził jeszcze, która gra działa. Poczekaj chwilę i spróbuj ponownie. Żadna gra ani stream nie zostały uruchomione ani zatrzymane.</string>
+    <string name="console_presentation_launch_failed_title">Nie udało się wyświetlić streamu</string>
+    <string name="console_presentation_launch_failed_details">Ekran streamu się nie otworzył, więc gra nie została przełączona. Nic nie zostało zamknięte. Spróbuj ponownie.</string>
     <string name="console_terminate_session_title">Zamknąć grę i stream?</string>
     <string name="console_terminate_session_details">Spowoduje to zamknięcie działającej gry lub aplikacji na hoście oraz jej streamu MoonWaker. Niezapisany postęp może zostać utracony.</string>
     <string name="console_terminate_session_request">Zamykanie sesji hosta…</string>

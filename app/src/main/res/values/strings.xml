@@ -1324,6 +1324,8 @@
     <string name="console_previous_session_close_failed">The previous host session could not be closed. Try again after it disappears from the active session indicator.</string>
     <string name="console_session_uncertain_title">Session status is still being verified</string>
     <string name="console_session_uncertain_details">MoonWaker has not yet confirmed which game is running. Wait a moment and try again. No game or stream was started or stopped.</string>
+    <string name="console_presentation_launch_failed_title">Could not show the stream</string>
+    <string name="console_presentation_launch_failed_details">The stream screen did not open, so the game was not switched. Nothing was closed. Try again.</string>
     <string name="console_terminate_session_title">Close the game and stream?</string>
     <string name="console_terminate_session_details">This closes the running game or application on the host and its MoonWaker stream. Unsaved progress may be lost.</string>
     <string name="console_terminate_session_request">Ending the host session…</string>

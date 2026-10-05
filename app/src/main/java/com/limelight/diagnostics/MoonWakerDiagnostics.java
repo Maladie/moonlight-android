@@ -34,7 +34,7 @@ public final class MoonWakerDiagnostics {
     private static final AtomicLong DROPPED = new AtomicLong();
     private static final Set<String> ALLOWED_FIELDS = new HashSet<>(Arrays.asList(
             "transition_id", "stream_session_id", "generation", "attachment", "attempt", "source_transition_id", "source_attempt", "preparing_state", "request_id", "profile_id", "host_id",
-            "game_id", "operation", "state", "from", "to", "stage", "status", "reason",
+            "game_id", "operation", "state", "from", "to", "stage", "status", "reason", "detail",
             "duration_ms", "http_status", "route", "method", "error_type", "milestone",
             "response_content_length", "response_body_bytes_read",
             "kind", "dropped", "app_id", "overlay_visible", "input_blocked",
