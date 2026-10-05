@@ -25,6 +25,18 @@ public final class HostGatewayStore {
     private static final String PREFS = "host_gateway_connections";
     static final String DEFAULT_DISCORD_PROFILE_ID = "default";
     private final SharedPreferences preferences;
+    private final java.util.concurrent.ConcurrentHashMap<String, ParsedProfiles> parsedProfiles =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final class ParsedProfiles {
+        final String raw;
+        final HostGatewayClient.IntegrationProfiles profiles;
+
+        ParsedProfiles(String raw, HostGatewayClient.IntegrationProfiles profiles) {
+            this.raw = raw;
+            this.profiles = profiles;
+        }
+    }
     private final OfflineProfilePinStore offlineProfilePinStore;
 
     static final class DiscordChannelSelection {
@@ -268,8 +280,15 @@ public final class HostGatewayStore {
             return new HostGatewayClient.IntegrationProfiles(
                     Collections.emptyList(), "");
         }
+        // Card binds and focus changes ask for this many times per frame; parse only when
+        // the stored JSON changes (the parsed value is immutable).
+        ParsedProfiles parsed = parsedProfiles.get(hostUuid);
+        if (parsed != null && parsed.raw.equals(raw)) return parsed.profiles;
         try {
-            return HostGatewayClient.parseIntegrationProfiles(new JSONObject(raw));
+            HostGatewayClient.IntegrationProfiles profiles =
+                    HostGatewayClient.parseIntegrationProfiles(new JSONObject(raw));
+            parsedProfiles.put(hostUuid, new ParsedProfiles(raw, profiles));
+            return profiles;
         } catch (JSONException invalidCache) {
             return new HostGatewayClient.IntegrationProfiles(
                     Collections.emptyList(), "");

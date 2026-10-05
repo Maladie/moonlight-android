@@ -41,8 +41,8 @@ public class ConsoleActivityEnsureContractTest {
                 < fetch.indexOf("playniteArtworkCache.fetch("));
         assertTrue(fetch.indexOf("key.profileId.equals(connection.profileId())")
                 < fetch.indexOf("playniteArtworkCache.fetch("));
-        assertTrue(source.contains("currentPlayniteProjectionMatches(profileKey)\n"
-                + "                            && expectedTag.equals(expected)"));
+        assertTrue(poster.contains("if (!currentPlayniteProjectionMatches(profileKey)\n"
+                + "                    || !expectedTag.equals(poster.getTag(R.id.playnite_artwork_key)))"));
         assertTrue(source.contains("currentPlayniteProjectionMatches(key)) {\n"
                 + "            PlayniteLibraryGame current"));
         assertTrue(source.contains("cachedPlayniteArtwork(profileKey, hostUuid, item, spec)"));
