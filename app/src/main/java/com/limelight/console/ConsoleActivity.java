@@ -4354,13 +4354,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         detailsParams.rightMargin = dp(16);
         body.addView(details, detailsParams);
 
-        FrameLayout expandedGridFrame = new FrameLayout(this);
+        LinearLayout expandedGridFrame = new LinearLayout(this);
+        expandedGridFrame.setOrientation(LinearLayout.VERTICAL);
         expandedGridFrame.setClipChildren(true);
         expandedGridFrame.setClipToPadding(true);
 
         expandedGridScroll = new ScrollView(this);
         expandedGridScroll.setVerticalScrollBarEnabled(false);
-        expandedGridScroll.setFadingEdgeLength(dp(48));
+        expandedGridScroll.setFadingEdgeLength(dp(12));
         expandedGridScroll.setVerticalFadingEdgeEnabled(true);
         expandedGridScroll.setClipChildren(true);
         expandedGridScroll.setClipToPadding(true);
@@ -4374,11 +4375,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         expandedGrid.setUseDefaultMargins(false);
         expandedGrid.setClipChildren(false);
         expandedGrid.setClipToPadding(false);
-        expandedGrid.setPadding(dp(5), dp(14), dp(5), dp(70));
+        expandedGrid.setPadding(dp(5), dp(14), dp(5), dp(14));
         expandedGridScroll.addView(expandedGrid, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        expandedGridFrame.addView(expandedGridScroll, new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        expandedGridFrame.addView(expandedGridScroll, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
         expandedNavigationLegend = new LinearLayout(this);
         expandedNavigationLegend.setOrientation(LinearLayout.HORIZONTAL);
@@ -4390,9 +4391,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         legendBackground.setStroke(dp(1), 0x4D6E8291);
         expandedNavigationLegend.setBackground(legendBackground);
         rebuildExpandedNavigationLegend(Collections.emptyList());
-        FrameLayout.LayoutParams legendParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.END);
+        LinearLayout.LayoutParams legendParams = wrapLinear();
+        legendParams.gravity = Gravity.END;
         legendParams.setMargins(dp(8), dp(8), dp(14), dp(12));
         expandedGridFrame.addView(expandedNavigationLegend, legendParams);
 
@@ -10788,10 +10788,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         backdrop.setScaleType(ImageView.ScaleType.CENTER_CROP);
         backdrop.setAlpha(.42f);
         backdrop.setVisibility(View.GONE);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-            backdrop.setRenderEffect(android.graphics.RenderEffect.createBlurEffect(
-                    dp(10), dp(10), android.graphics.Shader.TileMode.CLAMP));
-        }
         artworkFrame.addView(backdrop, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         ImageView poster = new ImageView(this);
@@ -10882,6 +10878,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         name.setMaxLines(1);
         name.setEllipsize(android.text.TextUtils.TruncateAt.END);
         name.setShadowLayer(dp(2), 0, dp(1), 0xF0000000);
+        name.addOnLayoutChangeListener(CardTitleFit.ON_LAYOUT);
         LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f);
         nameParams.leftMargin = dp(CAROUSEL_CARD_GAP_DP);
@@ -11022,6 +11019,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 : playniteState(host.uuid, item);
         if ((payload & PlayniteLibraryDiff.TEXT) != 0) {
             name.setText(item.game.name);
+            CardTitleFit.apply(name);
             playtime.setText(playtimeText);
             String sourceKey = item.game.libraryKey.isEmpty()
                     ? item.game.source : item.game.libraryKey;
@@ -12045,8 +12043,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         if (scaled != decoded) decoded.recycle();
                         decoded = scaled;
                     }
+                    CardBackdropBlur.prepare(decoded);
+                    playniteBitmapCache.put(key, decoded);
                 }
-                if (decoded != null) playniteBitmapCache.put(key, decoded);
                 return decoded;
             }
         } finally {
@@ -12082,7 +12081,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 backdrop.setImageDrawable(null);
                 backdrop.setVisibility(View.GONE);
             } else {
-                backdrop.setImageDrawable(filteredBitmapDrawable(bitmap));
+                backdrop.setImageDrawable(filteredBitmapDrawable(
+                        CardBackdropBlur.get(bitmap)));
                 backdrop.setVisibility(View.VISIBLE);
             }
         }
