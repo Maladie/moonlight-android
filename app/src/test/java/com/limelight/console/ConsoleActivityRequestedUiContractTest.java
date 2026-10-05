@@ -27,7 +27,7 @@ public class ConsoleActivityRequestedUiContractTest {
         String selector = source.substring(source.indexOf("hostSelector = compactButton("),
                 source.indexOf("LinearLayout.LayoutParams selectorParams"));
         String menu = source.substring(source.indexOf("private void showHostSelectionOptions("),
-                source.indexOf("private TextView hostSelectionMenuAction("));
+                source.indexOf("static HostGatewayClient.IntegrationProfile activeAuthorizedProfile("));
 
         assertTrue(selector.contains("showHostSelectionOptions(host)"));
         assertTrue(menu.contains("R.string.console_close_stream"));
@@ -117,7 +117,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(source.contains("playniteLibraryStatus.setMinHeight(dp(18))"));
         assertTrue(source.contains("playniteLibraryStatus.setShadowLayer(dp(2)"));
         assertTrue(source.contains(
-                "hiddenBackgroundStatus ? View.INVISIBLE : View.VISIBLE"));
+                "playniteLibraryStatus.setVisibility(showStatus ? View.VISIBLE : View.GONE)"));
         assertFalse(source.contains(
                 "CONSOLE_UI_V2 && textId == R.string.playnite_data_current"));
         assertTrue(source.contains("hintParams.topMargin = dp(66)"));
@@ -285,7 +285,7 @@ public class ConsoleActivityRequestedUiContractTest {
     @Test public void hostMenuOwnsThePerHostAutomaticWarmUpToggle() throws IOException {
         String source = consoleActivitySource();
         String menu = source.substring(source.indexOf("private void showHostSelectionOptions("),
-                source.indexOf("private TextView hostSelectionMenuAction("));
+                source.indexOf("static HostGatewayClient.IntegrationProfile activeAuthorizedProfile("));
 
         assertTrue(menu.contains("HostAutoWarmUpPreferences.isEnabled(preferences, host.uuid)"));
         assertTrue(menu.contains("HostAutoWarmUpPreferences.setEnabled("));

@@ -43,4 +43,17 @@ public class ConsoleLibraryStatusTest {
                 ConsoleLibraryStatus.resolve(true, true, false,
                         PlayniteLibraryRepository.ErrorKind.SERVER, true));
     }
+
+    @Test
+    public void statusLineIsHiddenOnlyWhenTheLibraryIsCurrent() {
+        assertFalse(ConsoleLibraryStatus.visible(
+                ConsoleLibraryStatus.resolve(false, true, false, null, true)));
+        assertFalse(ConsoleLibraryStatus.visible(
+                ConsoleLibraryStatus.resolve(true, true, false, null, true)));
+        assertTrue(ConsoleLibraryStatus.visible(
+                ConsoleLibraryStatus.resolve(true, false, false, null, true)));
+        assertTrue(ConsoleLibraryStatus.visible(
+                ConsoleLibraryStatus.resolve(false, true, true, null, true)));
+        assertTrue(ConsoleLibraryStatus.visible(ConsoleLibraryStatus.State.TIMEOUT));
+    }
 }

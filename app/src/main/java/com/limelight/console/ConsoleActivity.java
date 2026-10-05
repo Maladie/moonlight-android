@@ -110,7 +110,6 @@ import com.limelight.stream.BackgroundStreamService;
 import com.limelight.stream.RetainedStreamSessionCoordinator;
 import com.limelight.stream.HostSessionTermination;
 import com.limelight.utils.CacheHelper;
-import com.limelight.utils.HelpLauncher;
 import com.limelight.utils.QuickLaunchManager;
 import com.limelight.utils.ServerHelper;
 import com.limelight.utils.SessionResumeManager;
@@ -143,7 +142,6 @@ import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Locale;
-import java.util.function.IntConsumer;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Set;
@@ -240,7 +238,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final long WINDOWS_PROFILE_SWITCH_TIMEOUT_MS = 2 * 60_000L;
     private static final long PIN_INVALID_FEEDBACK_MS = 1_200L;
     private static final String PREF_SCREEN_SAVER_SECONDS = "screen_saver_seconds";
-    private static final String PREF_SCREEN_SAVER_MINUTES_LEGACY = "screen_saver_minutes";
+    private static final String PREF_AUTOPILOT_LAST_RESULT = "streaming_autopilot_last_result";
+    private static final String PREF_AUTOPILOT_LAST_RESULT_AT =
+            "streaming_autopilot_last_result_at";
     private static final String PREF_LAST_CONFIRMED_HOST_STATE = "last_confirmed_host_state.";
     private static final int SCREEN_SAVER_NEVER = 0;
     private static final int SCREEN_SAVER_DEFAULT_SECONDS = 5 * 60;
@@ -640,6 +640,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private FrameLayout modalLayer;
     private LinearLayout sidePanel;
     private LockableScrollView sidePanelScroll;
+    private ConsolePanel consolePanel;
     private FrameLayout communityPanelHost;
     private android.app.Dialog sideDialog;
     private final CommunityDictationSession communityDictationSession = new CommunityDictationSession();
@@ -839,7 +840,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private int pendingConsoleUpdateChannels;
     private boolean consoleUpdatePosted;
     private long lastDirectionalAudioInputAt;
-    private long lastVolumeAxisAdjustmentAt;
     private final ViewTreeObserver.OnGlobalFocusChangeListener consoleFocusSoundListener =
             (oldFocus, newFocus) -> {
                 if (newFocus != null) newFocus.setSoundEffectsEnabled(false);
@@ -1058,11 +1058,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         menuMusicVolume = preferences.getInt("menu_music_volume", 16);
         effectsVolume = preferences.getInt("effects_volume", 40);
         backgroundStreamRetentionMinutes = BackgroundStreamPreferences.readMinutes(this);
-        screenSaverSeconds = preferences.contains(PREF_SCREEN_SAVER_SECONDS)
-                ? preferences.getInt(PREF_SCREEN_SAVER_SECONDS, SCREEN_SAVER_DEFAULT_SECONDS)
-                : preferences.contains(PREF_SCREEN_SAVER_MINUTES_LEGACY)
-                ? preferences.getInt(PREF_SCREEN_SAVER_MINUTES_LEGACY, 0) * 60
-                : SCREEN_SAVER_DEFAULT_SECONDS;
+        screenSaverSeconds = preferences.getInt(PREF_SCREEN_SAVER_SECONDS,
+                SCREEN_SAVER_DEFAULT_SECONDS);
         showCarouselGameDescription = preferences.getBoolean(
                 "show_carousel_game_description", true);
         selectedHostUuid = preferences.getString("selected_host", null);
@@ -1145,20 +1142,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         discordPanelController = new DiscordPanelController(this, mainHandler, executor,
                 new DiscordPanelController.Ui() {
                     @Override public TextView action(String label) {
-                        return panelAction(label);
+                        return consolePanel.action(label);
                     }
 
                     @Override public TextView back(String label) {
-                        TextView action = panelAction(label);
+                        TextView action = consolePanel.action(label);
                         action.setTag("panel.back");
                         action.setOnClickListener(view -> handlePanelBack());
                         return action;
                     }
 
                     @Override public TextView label(String label) {
-                        TextView view = text(label, 13, 0xFFBDC4D8, false);
-                        view.setPadding(dp(8), dp(7), dp(8), dp(7));
-                        return view;
+                        return consolePanel.note(label);
                     }
 
                     @Override public void show(String eyebrow, String title, String details,
@@ -1177,13 +1172,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         discordSocialPanelController = new DiscordSocialPanelController(this, mainHandler,
                 new DiscordSocialPanelController.Ui() {
                     @Override public TextView action(String label) {
-                        return panelAction(label);
+                        return consolePanel.action(label);
                     }
 
                     @Override public TextView label(String label) {
-                        TextView view = text(label, 13, 0xFFBDC4D8, false);
-                        view.setPadding(dp(8), dp(7), dp(8), dp(7));
-                        return view;
+                        return consolePanel.note(label);
                     }
 
                     @Override public void show(String eyebrow, String title, String details,
@@ -1569,7 +1562,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (expandedLibraryMode && expandedGrid != null && expandedGrid.handleKey(event)) {
             return true;
         }
-        if (handleVolumeAdjustment(event)) return true;
         if (handleManualFocusNavigation(event)) return true;
         return super.dispatchKeyEvent(event);
     }
@@ -1629,37 +1621,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         View target = focused.focusSearch(direction);
         if (target != null && target != focused) target.requestFocus(direction);
-        return true;
-    }
-
-    private boolean handleVolumeAdjustment(KeyEvent event) {
-        return handleVolumeAdjustment(event, getCurrentFocus());
-    }
-
-    private boolean handleVolumeAdjustment(KeyEvent event, View focused) {
-        if (event == null || event.getAction() != KeyEvent.ACTION_DOWN) return false;
-        int keyCode = event.getKeyCode();
-        if (keyCode != KeyEvent.KEYCODE_DPAD_LEFT
-                && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) return false;
-        if (focused == null || !(focused.getTag() instanceof VolumeControl)) return false;
-        VolumeControl control = (VolumeControl) focused.getTag();
-        int step = keyCode == KeyEvent.KEYCODE_DPAD_LEFT ? -2 : 2;
-        updateVolumeControl(control, control.progress.getProgress() + step, true);
-        return true;
-    }
-
-    private boolean handleVolumeMotion(VolumeControl control, MotionEvent event) {
-        if (control == null || event == null || event.getAction() != MotionEvent.ACTION_MOVE
-                || (event.getSource() & InputDevice.SOURCE_JOYSTICK) == 0) return false;
-        float axis = event.getAxisValue(MotionEvent.AXIS_HAT_X);
-        if (Math.abs(axis) < .35f) axis = event.getAxisValue(MotionEvent.AXIS_X);
-        if (Math.abs(axis) < .35f) return false;
-        long now = SystemClock.uptimeMillis();
-        if (now - lastVolumeAxisAdjustmentAt < 40L) return true;
-        lastVolumeAxisAdjustmentAt = now;
-        int step = Math.abs(axis) >= .75f ? 2 : 1;
-        if (axis < 0f) step = -step;
-        updateVolumeControl(control, control.progress.getProgress() + step, true);
         return true;
     }
 
@@ -1983,11 +1944,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             showHome();
         } else if (expandedLibraryMode) {
             exitExpandedLibrary();
-        } else if (RetainedStreamSessionCoordinator.hasRetainedSession()
+        } else if (hostSelectionVisible) {
+            requestExit();
+        } else {
+            leaveHost();
+        }
+    }
+
+    private void requestExit() {
+        if (RetainedStreamSessionCoordinator.hasRetainedSession()
                 || SessionResumeManager.hasPendingSession(this)) {
             showRetainedStreamExitConfirmation();
-        } else if (hostSelectionVisible) {
-            showExitConfirmation();
         } else {
             showExitConfirmation();
         }
@@ -4528,6 +4495,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         sidePanelScroll = new LockableScrollView(this);
         sidePanelScroll.setFillViewport(true);
         sidePanelScroll.setVerticalScrollBarEnabled(false);
+        // Rows below the fold fade out instead of being cut by the panel edge.
+        sidePanelScroll.setVerticalFadingEdgeEnabled(true);
+        sidePanelScroll.setFadingEdgeLength(dp(32));
         GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
                 new int[]{0xFC1A2028, 0xFC12171E, 0xFF090C10});
         background.setCornerRadii(new float[]{dp(24), dp(24), 0, 0, 0, 0, dp(24), dp(24)});
@@ -4536,10 +4506,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         sidePanelScroll.setElevation(dp(18));
         sidePanel = new LinearLayout(this);
         sidePanel.setOrientation(LinearLayout.VERTICAL);
-        sidePanel.setPadding(dp(34), dp(26), dp(34), dp(20));
+        sidePanel.setPadding(dp(20), dp(16), dp(20), dp(24));
         sidePanelScroll.addView(sidePanel, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        modalLayer.addView(sidePanelScroll, new FrameLayout.LayoutParams(dp(510),
+        consolePanel = new ConsolePanel(this, sidePanelScroll, reducedMotion);
+        modalLayer.addView(sidePanelScroll, new FrameLayout.LayoutParams(dp(ConsolePanel.WIDTH_DP),
                 ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
         // Community is a full-screen, bounded composition with its own feed/detail scrollers.
         // Keeping it out of the generic ScrollView prevents the modal root from stealing focus
@@ -4564,7 +4535,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     && discordSocialPanelController.handleCommunityKey(event)) {
                 return true;
             }
-            if (handleVolumeAdjustment(event, sideDialog.getCurrentFocus())) return true;
             if ((keyCode == KeyEvent.KEYCODE_BACK || ("discord.community".equals(currentPanelKey)
                     && keyCode == KeyEvent.KEYCODE_BUTTON_B)) && event.getAction() == KeyEvent.ACTION_UP) {
                 handlePanelBack();
@@ -4757,7 +4727,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         List<View> actions = new ArrayList<>();
         for (HostGatewayClient.IntegrationProfile profile : selection.profiles) {
             String name = profileDisplayName(profile);
-            TextView action = panelAction(name);
+            TextView action = consolePanel.action(name);
             action.setContentDescription(getString(
                     R.string.console_profile_selector_description, name));
             action.setOnClickListener(view -> {
@@ -4769,7 +4739,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         HostGatewayClient.IntegrationProfile selected = selectedProfile;
         HostGatewayClient.IntegrationProfile active = activeAuthorizedProfile(selection);
         if (active != null && !selected.isChild() && !profileWindowsMatch(selected, active)) {
-            TextView align = panelAction(getString(
+            TextView align = consolePanel.action(getString(
                     R.string.console_use_profile_in_moonwaker,
                     profileDisplayName(active)));
             align.setOnClickListener(view -> {
@@ -4782,7 +4752,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             boolean online = host.state == ComputerDetails.State.ONLINE;
             boolean gatewayAvailable = hostGatewayStore.loadForHost(host.uuid,
                     host.activeAddress == null ? null : host.activeAddress.address) != null;
-            TextView switchProfile = panelAction(getString(
+            TextView switchProfile = consolePanel.action(getString(
                     R.string.console_switch_windows_profile, profileDisplayName(selected)));
             switchProfile.setEnabled(online && gatewayAvailable
                     && windowsProfileSwitchAttempt == null);
@@ -4791,7 +4761,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         if (childManagementProfileAllowed(host, selected)
                 && childCapabilityAllowed(host, selected)) {
-            TextView children = panelAction(
+            TextView children = consolePanel.action(
                     getString(R.string.console_child_management_action));
             children.setOnClickListener(view -> beginChildManagement(host));
             actions.add(children);
@@ -5398,12 +5368,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return findAppName(host, snapshot.hostGameAppId);
     }
 
-    private TextView label(String value) {
-        TextView view = text(value, 13, 0xFFBDC4D8, false);
-        view.setPadding(dp(8), dp(7), dp(8), dp(7));
-        return view;
-    }
-
     private void addHost() {
         refreshHostsOnResume = true;
         Intent intent = new Intent(this, AddComputerManually.class);
@@ -5420,27 +5384,26 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         discovered.sort(Comparator.comparing(host -> host.name, String.CASE_INSENSITIVE_ORDER));
         if (discovered.isEmpty()) {
-            actions.add(label(getString(R.string.console_add_host_none_found)));
+            actions.add(consolePanel.note(getString(R.string.console_add_host_none_found)));
         } else {
             for (ComputerDetails host : discovered) {
-                TextView result = panelAction(getString(R.string.console_add_discovered_host,
+                TextView result = consolePanel.action(getString(R.string.console_add_discovered_host,
                         host.name, host.state == ComputerDetails.State.ONLINE
                                 ? getString(R.string.console_status_online)
                                 : getString(R.string.console_status_offline)));
                 result.setTag("host.discovered:" + host.uuid);
                 result.setEnabled(host.state == ComputerDetails.State.ONLINE);
-                result.setAlpha(result.isEnabled() ? 1f : .5f);
                 result.setOnClickListener(view -> activateHostFromSelection(host.uuid));
                 actions.add(result);
             }
         }
-        TextView refresh = panelAction(getString(R.string.console_add_host_refresh_results));
+        TextView refresh = consolePanel.action(getString(R.string.console_add_host_refresh_results));
         refresh.setOnClickListener(view -> {
             loadKnownHosts();
             ConsoleUiFeedback.makeText(this, R.string.console_add_host_searching, Toast.LENGTH_SHORT).show();
             mainHandler.postDelayed(this::showAddHostPanel, 900L);
         });
-        TextView manual = panelAction(getString(R.string.console_add_host_by_ip));
+        TextView manual = consolePanel.action(getString(R.string.console_add_host_by_ip));
         manual.setOnClickListener(view -> {
             hideSidePanel();
             addHost();
@@ -5493,50 +5456,50 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean gatewayAvailable = hostGatewayStore.loadForHost(
                 host.uuid, address, selectedProfileId(host.uuid)) != null;
         boolean canSleep = online && gatewayAvailable;
-        TextView wake = hostSelectionMenuAction(getString(R.string.console_wake_host),
+        TextView wake = consolePanel.action(getString(R.string.console_wake_host),
                 !terminating && ConsoleHostPresentation.canWake(host)
                         && !hostStateController.isWaking(host.uuid));
         wake.setOnClickListener(view -> {
             hideSidePanel();
             wakeHost(host);
         });
-        TextView desktop = hostSelectionMenuAction(
+        TextView desktop = consolePanel.action(
                 getString(R.string.console_launch_desktop), online && paired);
         desktop.setContentDescription(getString(R.string.console_launch_desktop_description));
         desktop.setOnClickListener(view -> {
             hideSidePanel();
             launchDesktopSession(host);
         });
-        LinearLayout warmUp = settingsToggle(
+        LinearLayout warmUp = consolePanel.toggle(
                 getString(R.string.console_auto_stream_warm_up), autoWarmUp);
         warmUp.setOnClickListener(view -> {
             boolean enabled = !HostAutoWarmUpPreferences.isEnabled(preferences, host.uuid);
             HostAutoWarmUpPreferences.setEnabled(preferences, host.uuid, enabled);
-            updateSettingsToggle(warmUp, enabled);
+            consolePanel.setChecked(warmUp, enabled);
             if (!enabled) cancelOwnedWarmUp(host.uuid, false);
         });
-        TextView unpair = hostSelectionMenuAction(getString(R.string.console_unpair_host),
+        TextView unpair = consolePanel.action(getString(R.string.console_unpair_host),
                 online && paired);
-        unpair.setTextColor(unpair.isEnabled() ? 0xFFFF9B92 : 0x88FF9B92);
+        consolePanel.destructive(unpair);
         unpair.setOnClickListener(view -> unpairHost(host));
-        TextView test = hostSelectionMenuAction(
+        TextView test = consolePanel.action(
                 getString(R.string.pcview_menu_test_network), true);
         test.setOnClickListener(view -> {
             hideSidePanel();
             ServerHelper.doNetworkTest(this);
         });
-        TextView sleep = hostSelectionMenuAction(getString(R.string.console_sleep_host),
+        TextView sleep = consolePanel.action(getString(R.string.console_sleep_host),
                 canSleep);
         sleep.setOnClickListener(view -> confirmSleepHost(host));
-        TextView terminate = hostSelectionMenuAction(
+        TextView terminate = consolePanel.action(
                 getString(R.string.console_close_stream),
                 online && paired && host.runningGameId != 0);
-        terminate.setTextColor(terminate.isEnabled() ? 0xFFFF9B92 : 0x88FF9B92);
+        consolePanel.destructive(terminate);
         terminate.setOnClickListener(view -> confirmCloseHostStream(host));
-        TextView hardTerminate = hostSelectionMenuAction(
+        TextView hardTerminate = consolePanel.action(
                 getString(R.string.console_hard_terminate_session),
                 online && paired && gatewayAvailable);
-        hardTerminate.setTextColor(hardTerminate.isEnabled() ? 0xFFFF6F61 : 0x88FF6F61);
+        consolePanel.destructive(hardTerminate);
         hardTerminate.setOnClickListener(view -> confirmHardTerminateSession(host));
         List<View> actions = new ArrayList<>();
         actions.add(wake);
@@ -5801,9 +5764,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void showChildManagementFailure(ComputerDetails host, int token) {
         if (host == null || !isCurrentChildContext(host.uuid,
                 selectedProfileId(host.uuid), token)) return;
-        TextView retry = panelAction(getString(R.string.console_child_management_refresh));
+        TextView retry = consolePanel.action(getString(R.string.console_child_management_refresh));
         retry.setOnClickListener(view -> loadChildProfiles(host, token, false));
-        TextView close = panelAction(getString(R.string.console_cancel));
+        TextView close = consolePanel.action(getString(R.string.console_cancel));
         close.setOnClickListener(view -> handlePanelBack());
         showSidePanel(getString(R.string.console_child_management_title), host.name,
                 getString(R.string.console_child_management_authorize_failed), retry, close);
@@ -5819,7 +5782,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             sidePanelTransient = true;
         }
         List<View> actions = new ArrayList<>();
-        TextView add = panelAction(getString(R.string.console_child_management_add));
+        TextView add = consolePanel.action(getString(R.string.console_child_management_add));
         add.setOnClickListener(view -> showChildEditor(host, null, profiles.revision, token));
         actions.add(add);
         if (profiles.children.isEmpty()) {
@@ -5832,7 +5795,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (child == null || !parentProfileId.equals(child.parentProfileId)) continue;
                 String name = child.name.isEmpty()
                         ? getString(R.string.console_child_profile_title) : child.name;
-                TextView edit = panelAction(name);
+                TextView edit = consolePanel.action(name);
                 edit.setContentDescription(getString(R.string.console_child_management_edit)
                         + ": " + name);
                 edit.setOnClickListener(view ->
@@ -5840,7 +5803,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 actions.add(edit);
             }
         }
-        TextView refresh = panelAction(getString(R.string.console_child_management_refresh));
+        TextView refresh = consolePanel.action(getString(R.string.console_child_management_refresh));
         refresh.setOnClickListener(view -> loadChildProfiles(host, token, false));
         actions.add(refresh);
         showSidePanel(getString(R.string.console_child_management_title), host.name,
@@ -5867,7 +5830,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String parentProfileId = selectedProfileId(host.uuid);
         if (!isCurrentChildContext(host.uuid, parentProfileId, token)) return;
         ConsoleChildProfileEditor editor = new ConsoleChildProfileEditor(this);
-        TextView refresh = panelAction(getString(R.string.console_child_management_refresh));
+        TextView refresh = consolePanel.action(getString(R.string.console_child_management_refresh));
         refresh.setVisibility(View.GONE);
         refresh.setOnClickListener(view -> loadChildProfiles(host, token, false));
         TextView delete = null;
@@ -5879,8 +5842,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         // owns identity, schedule, and Save/Cancel; management actions follow it.
         outerActions.add(editor);
         if (child != null) {
-            delete = panelAction(getString(R.string.console_child_management_delete));
-            delete.setTextColor(0xFFFF9B92);
+            delete = consolePanel.action(getString(R.string.console_child_management_delete));
+            consolePanel.destructive(delete);
             delete.setOnClickListener(view -> confirmDeleteChild(host, child,
                     expectedRevision, token));
             outerActions.add(delete);
@@ -6119,14 +6082,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void showChildSharingFailure(ComputerDetails host, PlayniteDashboardItem item,
                                          int token) {
-        TextView retry = panelAction(getString(R.string.console_child_management_refresh));
+        TextView retry = consolePanel.action(getString(R.string.console_child_management_refresh));
         retry.setOnClickListener(view -> {
             ChildManagementLease lease = currentChildLease(host, selectedProfileId(host.uuid));
             if (lease != null) loadChildSharing(host, item, lease, token);
             else reauthorizeChildManagementFor(host, token,
                     (fresh, freshToken) -> loadChildSharing(host, item, fresh, freshToken), null);
         });
-        TextView close = panelAction(getString(R.string.console_cancel));
+        TextView close = consolePanel.action(getString(R.string.console_cancel));
         close.setOnClickListener(view -> handlePanelBack());
         showSidePanel(getString(R.string.console_child_sharing_title), item.game.name,
                 getString(R.string.console_child_management_authorize_failed), retry, close);
@@ -6252,10 +6215,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void confirmWindowsProfileSwitch(ComputerDetails host,
                                              HostGatewayClient.IntegrationProfile profile) {
-        TextView cancel = panelAction(getString(R.string.console_cancel));
-        TextView switchProfile = panelAction(getString(
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
+        TextView switchProfile = consolePanel.action(getString(
                 R.string.console_switch_windows_profile_confirm, profile.name));
-        switchProfile.setTextColor(0xFFFFB74D);
+        consolePanel.destructive(switchProfile);
         cancel.setOnClickListener(view -> handlePanelBack());
         switchProfile.setOnClickListener(view -> {
             hideSidePanel();
@@ -6281,7 +6244,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 host.uuid, profile.id, "android-switch-" + UUID.randomUUID(), connection);
         windowsProfileSwitchAttempt = attempt;
 
-        TextView cancel = panelAction(getString(R.string.console_cancel));
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
         cancel.setOnClickListener(view -> {
             hideSidePanel();
             cancelWindowsProfileSwitch(true);
@@ -6432,13 +6395,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
     }
 
-    private TextView hostSelectionMenuAction(String label, boolean enabled) {
-        TextView action = panelAction(label);
-        action.setEnabled(enabled);
-        action.setAlpha(enabled ? 1f : .42f);
-        return action;
-    }
-
     private void refreshDashboard() {
         if (managerBinder == null) {
             ConsoleUiFeedback.makeText(this, R.string.error_manager_not_running, Toast.LENGTH_LONG).show();
@@ -6496,13 +6452,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void showQuickLaunchPanel() {
         List<QuickLaunchManager.QuickLaunchItem> items = quickLaunchManager.getAllQuickLaunchItems();
         List<View> actions = new ArrayList<>();
-        TextView add = panelAction(getString(R.string.console_quick_launch_add));
+        TextView add = consolePanel.action(getString(R.string.console_quick_launch_add));
         add.setTag("quick.add");
         add.setOnClickListener(view -> showQuickLaunchAddPanel());
         actions.add(add);
-        if (items.isEmpty()) actions.add(label(getString(R.string.console_quick_launch_empty)));
+        if (items.isEmpty()) actions.add(consolePanel.note(getString(R.string.console_quick_launch_empty)));
         for (QuickLaunchManager.QuickLaunchItem item : items) {
-            TextView action = panelAction(getString(R.string.console_quick_launch_item,
+            TextView action = consolePanel.action(getString(R.string.console_quick_launch_item,
                     item.getDisplayName(), item.computerName));
             action.setOnClickListener(view -> launchQuickItem(item));
             action.setOnLongClickListener(view -> {
@@ -6533,7 +6489,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         for (ComputerDetails host : availableHosts) {
             for (NvApp app : loadApps(host, true)) {
                 if (isQuickLaunch(host.uuid, app.getAppId())) continue;
-                TextView add = panelAction(getString(R.string.console_quick_launch_add_item,
+                TextView add = consolePanel.action(getString(R.string.console_quick_launch_add_item,
                         app.getAppName(), host.name));
                 add.setTag("quick.add:" + host.uuid + ":" + app.getAppId());
                 add.setOnClickListener(view -> {
@@ -6548,7 +6504,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
         }
         if (actions.isEmpty()) {
-            actions.add(label(getString(R.string.console_quick_launch_add_empty)));
+            actions.add(consolePanel.note(getString(R.string.console_quick_launch_add_empty)));
         }
         showSidePanel(getString(R.string.console_quick_launch_eyebrow),
                 getString(R.string.console_quick_launch_add_title),
@@ -6588,9 +6544,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         List<View> actions = new ArrayList<>();
-        TextView launch = panelAction(getString(R.string.console_play));
+        TextView launch = consolePanel.action(getString(R.string.console_play));
         launch.setOnClickListener(view -> launchQuickItem(item));
-        TextView settings = panelAction(getString(R.string.quick_launch_settings));
+        TextView settings = consolePanel.action(getString(R.string.quick_launch_settings));
         settings.setOnClickListener(view -> {
             hideSidePanel();
             Intent intent = new Intent(this, AppStreamSettings.class);
@@ -6599,7 +6555,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     "Quick Launch: " + item.getDisplayNameLong());
             startActivity(intent);
         });
-        TextView rename = panelAction(getString(R.string.quick_launch_rename));
+        TextView rename = consolePanel.action(getString(R.string.quick_launch_rename));
         rename.setOnClickListener(view -> renameQuickLaunchItem(item));
         actions.add(launch);
         actions.add(settings);
@@ -6610,7 +6566,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (item.key.equals(items.get(index).key)) { position = index; break; }
         }
         if (position > 0) {
-            TextView left = panelAction(getString(R.string.quick_launch_move_left));
+            TextView left = consolePanel.action(getString(R.string.quick_launch_move_left));
             left.setOnClickListener(view -> {
                 quickLaunchManager.moveQuickLaunchItemLeft(item.key);
                 showQuickLaunchPanel();
@@ -6618,7 +6574,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             actions.add(left);
         }
         if (position >= 0 && position < items.size() - 1) {
-            TextView right = panelAction(getString(R.string.quick_launch_move_right));
+            TextView right = consolePanel.action(getString(R.string.quick_launch_move_right));
             right.setOnClickListener(view -> {
                 quickLaunchManager.moveQuickLaunchItemRight(item.key);
                 showQuickLaunchPanel();
@@ -6626,16 +6582,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             actions.add(right);
         }
         if (host != null && host.runningGameId == item.appId) {
-            TextView quit = panelAction(getString(R.string.applist_menu_quit));
-            quit.setTextColor(0xFFFF9B92);
+            TextView quit = consolePanel.action(getString(R.string.applist_menu_quit));
+            consolePanel.destructive(quit);
             quit.setOnClickListener(view -> confirmQuitAction(() -> {
                 hideSidePanel();
                 requestTerminateSession(host);
             }));
             actions.add(quit);
         }
-        TextView remove = panelAction(getString(R.string.quick_launch_delete));
-        remove.setTextColor(0xFFFF9B92);
+        TextView remove = consolePanel.action(getString(R.string.quick_launch_delete));
+        consolePanel.destructive(remove);
         remove.setOnClickListener(view -> confirmRemoveQuickLaunchItem(item));
         actions.add(remove);
         showSidePanel(getString(R.string.console_quick_launch_eyebrow), item.getDisplayName(),
@@ -6659,10 +6615,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void confirmRemoveQuickLaunchItem(QuickLaunchManager.QuickLaunchItem item) {
-        TextView cancel = panelAction(getString(R.string.console_cancel));
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
         cancel.setOnClickListener(view -> handlePanelBack());
-        TextView remove = panelAction(getString(R.string.quick_launch_delete));
-        remove.setTextColor(0xFFFF9B92);
+        TextView remove = consolePanel.action(getString(R.string.quick_launch_delete));
+        consolePanel.destructive(remove);
         remove.setOnClickListener(view -> {
             quickLaunchManager.removeQuickLaunchItem(item.key);
             ConsoleUiFeedback.makeText(this, R.string.quick_launch_removed, Toast.LENGTH_SHORT).show();
@@ -6682,19 +6638,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean enabled = prefs.getBoolean(OverridesView.PREF_OVERRIDES_ENABLED, false);
         int bitrate = OverridesView.getBitrateOverride(this);
         int stats = prefs.getInt(OverridesView.PREF_PERF_OVERLAY_OVERRIDE, 0);
-        TextView toggle = panelAction(getString(R.string.console_overrides_toggle,
-                enabled ? getString(R.string.console_on) : getString(R.string.console_off)));
+        LinearLayout toggle = consolePanel.toggle(
+                getString(R.string.console_overrides_toggle), enabled);
         toggle.setOnClickListener(view -> {
             prefs.edit().putBoolean(OverridesView.PREF_OVERRIDES_ENABLED, !enabled).apply();
             showOverridesPanel();
         });
-        TextView bitrateDown = panelAction(getString(R.string.console_overrides_bitrate_down));
-        TextView bitrateUp = panelAction(getString(R.string.console_overrides_bitrate_up));
-        TextView bitrateDefault = panelAction(getString(R.string.console_overrides_bitrate_default));
-        TextView statsToggle = panelAction(getString(R.string.console_overrides_stats,
+        TextView bitrateDown = consolePanel.action(getString(R.string.console_overrides_bitrate_down));
+        TextView bitrateUp = consolePanel.action(getString(R.string.console_overrides_bitrate_up));
+        TextView bitrateDefault = consolePanel.action(getString(R.string.console_overrides_bitrate_default));
+        LinearLayout statsToggle = consolePanel.value(
+                getString(R.string.console_overrides_stats),
                 getString(stats == 1 ? R.string.console_override_force_on
                         : stats == 2 ? R.string.console_override_force_off
-                        : R.string.console_override_use_default)));
+                        : R.string.console_override_use_default));
         bitrateDown.setOnClickListener(view -> {
             prefs.edit().putInt(OverridesView.PREF_BITRATE_OVERRIDE,
                     Math.max(0, bitrate - 5000)).apply();
@@ -7041,7 +6998,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean enabled = PreferenceManager.getDefaultSharedPreferences(this)
                 .getBoolean(UsbMicrophoneService.PREF_ENABLED, false);
         if (enabled) {
-            TextView stop = panelAction(getString(R.string.console_usb_microphone_stop));
+            TextView stop = consolePanel.action(getString(R.string.console_usb_microphone_stop));
             stop.setOnClickListener(view -> {
                 UsbMicrophoneService.disableWithState(
                         this, UsbMicrophoneService.STATE_OFF);
@@ -7049,7 +7006,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             });
             actions.add(stop);
             if (shouldShowMicrophoneRetry(state)) {
-                TextView retry = panelAction(getString(R.string.console_usb_microphone_retry));
+                TextView retry = consolePanel.action(getString(R.string.console_usb_microphone_retry));
                 retry.setOnClickListener(view -> {
                     UsbMicrophoneService.retryFromVisibleActivity(this);
                     hideSidePanel();
@@ -7057,7 +7014,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 actions.add(retry);
             }
         }
-        TextView settings = panelAction(getString(R.string.console_usb_microphone_settings));
+        TextView settings = consolePanel.action(getString(R.string.console_usb_microphone_settings));
         settings.setOnClickListener(view ->
                 startActivity(new Intent(this, StreamSettings.class)));
         actions.add(settings);
@@ -7295,7 +7252,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                              HostGatewayClient.Pairing pairing) {
         List<View> actions = new ArrayList<>();
         for (HostGatewayClient.IntegrationProfile profile : pairing.profiles.profiles) {
-            TextView action = panelAction(profile.name);
+            TextView action = consolePanel.action(profile.name);
             action.setOnClickListener(view -> {
                 GatewayConnection connection = pairing.connection.forProfile(profile.id);
                 hostGatewayStore.save(host.uuid, connection);
@@ -7655,9 +7612,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     Toast.LENGTH_LONG).show();
             return;
         }
-        TextView cancel = panelAction(getString(R.string.console_cancel));
-        TextView sleep = panelAction(getString(R.string.console_sleep));
-        sleep.setTextColor(0xFFFFB74D);
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
+        TextView sleep = consolePanel.action(getString(R.string.console_sleep));
+        consolePanel.destructive(sleep);
         cancel.setOnClickListener(view -> handlePanelBack());
         sleep.setOnClickListener(view -> {
             hideSidePanel();
@@ -7800,9 +7757,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 || (resolveSessionSnapshot(host).state != SessionSnapshot.State.ACTIVE
                 && host.runningGameId == 0)
                 || managerBinder == null) return;
-        TextView cancel = panelAction(getString(R.string.console_cancel));
-        TextView terminate = panelAction(getString(R.string.overlay_menu_quit_session));
-        terminate.setTextColor(0xFFFF8A80);
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
+        TextView terminate = consolePanel.action(getString(R.string.overlay_menu_quit_session));
+        consolePanel.destructive(terminate);
         cancel.setOnClickListener(view -> handlePanelBack());
         terminate.setOnClickListener(view -> {
             hideSidePanel();
@@ -7890,9 +7847,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void confirmCloseHostStream(ComputerDetails host) {
         if (host == null || host.state != ComputerDetails.State.ONLINE
                 || host.runningGameId == 0 || managerBinder == null) return;
-        TextView cancel = panelAction(getString(R.string.console_cancel));
-        TextView close = panelAction(getString(R.string.console_close_stream));
-        close.setTextColor(0xFFFF8A80);
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
+        TextView close = consolePanel.action(getString(R.string.console_close_stream));
+        consolePanel.destructive(close);
         cancel.setOnClickListener(view -> handlePanelBack());
         close.setOnClickListener(view -> {
             hideSidePanel();
@@ -7955,9 +7912,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         HostProfileKey profileKey = selectedProfileKey(host.uuid);
         String address = host.activeAddress == null ? null : host.activeAddress.address;
         if (hostGatewayStore.loadForHost(host.uuid, address, profileKey.profileId) == null) return;
-        TextView cancel = panelAction(getString(R.string.console_cancel));
-        TextView terminate = panelAction(getString(R.string.console_hard_terminate_session));
-        terminate.setTextColor(0xFFFF6F61);
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
+        TextView terminate = consolePanel.action(getString(R.string.console_hard_terminate_session));
+        consolePanel.destructive(terminate);
         cancel.setOnClickListener(view -> handlePanelBack());
         terminate.setOnClickListener(view -> {
             hideSidePanel();
@@ -8189,9 +8146,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void confirmRemoveHost(ComputerDetails host) {
-        TextView cancel = panelAction(getString(R.string.console_cancel));
-        TextView remove = panelAction(getString(R.string.console_remove));
-        remove.setTextColor(0xFFFF8A80);
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
+        TextView remove = consolePanel.action(getString(R.string.console_remove));
+        consolePanel.destructive(remove);
         cancel.setOnClickListener(view -> handlePanelBack());
         remove.setOnClickListener(view -> {
             hideSidePanel();
@@ -8777,29 +8734,25 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 break;
             case CURRENT:
             default:
-                textId = R.string.playnite_data_current;
+                textId = 0;
                 break;
         }
-        CharSequence status = textId == R.string.playnite_cached_library
+        boolean showStatus = !playniteInitialLoadPending
+                && ConsoleLibraryStatus.visible(libraryStatus);
+        CharSequence status = !showStatus ? ""
+                : textId == R.string.playnite_cached_library
                 ? cachedLibraryStatusText() : getText(textId);
-        boolean hiddenBackgroundStatus = playniteInitialLoadPending
-                || libraryStatus == ConsoleLibraryStatus.State.REFRESHING;
-        playniteLibraryStatus.setText(hiddenBackgroundStatus ? "" : status);
-        playniteLibraryStatus.setVisibility(
-                hiddenBackgroundStatus ? View.INVISIBLE : View.VISIBLE);
+        playniteLibraryStatus.setText(status);
+        playniteLibraryStatus.setVisibility(showStatus ? View.VISIBLE : View.GONE);
         updateLibraryActionVisibility();
         int color = ConsoleLibraryStatus.isError(libraryStatus)
                 ? 0xFFFFB74D : libraryStatus == ConsoleLibraryStatus.State.CACHED
                 ? 0xFFB8C9DC : 0xFFC8D2DC;
         playniteLibraryStatus.setTextColor(color);
         if (expandedCacheStatus != null) {
-            boolean showExpandedStatus = !playniteInitialLoadPending
-                    && (libraryStatus == ConsoleLibraryStatus.State.CACHED
-                    || ConsoleLibraryStatus.isError(libraryStatus));
-            expandedCacheStatus.setText(showExpandedStatus ? status : "");
+            expandedCacheStatus.setText(status);
             expandedCacheStatus.setTextColor(color);
-            expandedCacheStatus.setVisibility(
-                    showExpandedStatus ? View.VISIBLE : View.GONE);
+            expandedCacheStatus.setVisibility(showStatus ? View.VISIBLE : View.GONE);
         }
     }
 
@@ -8844,7 +8797,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 : hostGatewayStore.playniteLibraryFilter(host.uuid);
         boolean activeFilter = filter != PlayniteLibraryFilter.ALL;
         int label = playniteFilterLabel(filter);
-        button.setText(label);
+        button.setText(getString(R.string.playnite_filter_button, getString(label)));
         button.setContentDescription(getString(
                 R.string.playnite_filter_description,
                 getString(label)));
@@ -8869,7 +8822,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String label = activeFilter
                 ? getString(R.string.playnite_sources_selected,
                 selected.size(), available.size())
-                : getString(R.string.playnite_sources_all);
+                : getString(R.string.playnite_sources_button_all);
         expandedSourceFilterButton.setText(label);
         expandedSourceFilterButton.setContentDescription(getString(
                 R.string.playnite_sources_filter_description, label));
@@ -8886,7 +8839,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         ComputerDetails host = hosts.get(selectedHostUuid);
         PlayniteLibrarySort sort = host == null ? PlayniteLibrarySort.RECENT
                 : hostGatewayStore.playniteLibrarySort(host.uuid);
-        expandedSortButton.setText(playniteSortLabel(sort));
+        expandedSortButton.setText(getString(R.string.playnite_sort_button,
+                getString(playniteSortLabel(sort))));
         styleExpandedHeaderControl(expandedSortButton, focused,
                 sort != PlayniteLibrarySort.RECENT);
     }
@@ -11951,32 +11905,31 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean exactActiveGame = isFreshExactRunningManagedGame(host, item);
 
         if (item.game.installed) {
-            TextView launch = panelAction(getString(R.string.console_play));
+            TextView launch = consolePanel.action(getString(R.string.console_play));
             launch.setEnabled(item.game.canLaunch && !operation.launchBlocked);
-            launch.setAlpha(!item.game.canLaunch || operation.launchBlocked ? .42f : 1f);
             launch.setOnClickListener(view -> {
                 hideSidePanel();
                 activatePlayniteItem(host.uuid, item);
             });
             actions.add(launch);
             if (item.game.canUninstall) {
-                TextView uninstall = panelAction(getString(R.string.playnite_uninstall));
-                uninstall.setTextColor(0xFFFF9B92);
+                TextView uninstall = consolePanel.action(getString(R.string.playnite_uninstall));
+                consolePanel.destructive(uninstall);
                 uninstall.setOnClickListener(view -> confirmPlayniteUninstall(host, item));
                 actions.add(uninstall);
             }
             if (exactActiveGame) {
-                TextView endGame = panelAction(getString(R.string.overlay_menu_end_game));
-                endGame.setTextColor(0xFFFFB08A);
+                TextView endGame = consolePanel.action(getString(R.string.overlay_menu_end_game));
+                consolePanel.destructive(endGame);
                 endGame.setOnClickListener(view -> confirmEndPlayniteGame(host, item));
                 actions.add(endGame);
             }
             if (session.state == SessionSnapshot.State.ACTIVE
                     && SessionSnapshot.normalize(item.stableId()).equals(
                     session.playniteGameId)) {
-                TextView terminate = panelAction(
+                TextView terminate = consolePanel.action(
                         getString(R.string.overlay_menu_quit_session));
-                terminate.setTextColor(0xFFFF9B92);
+                consolePanel.destructive(terminate);
                 terminate.setOnClickListener(view ->
                         confirmTerminateSession(host, item.stableId()));
                 actions.add(terminate);
@@ -11984,7 +11937,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         } else if (installing) {
             if (operation.attentionRequired) {
                 boolean localOnly = "secure_desktop".equals(operation.attentionReason);
-                TextView finish = panelAction(getString(localOnly
+                TextView finish = consolePanel.action(getString(localOnly
                         ? R.string.playnite_install_confirm_on_pc
                         : R.string.playnite_install_continue));
                 finish.setOnClickListener(view -> {
@@ -11993,13 +11946,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 });
                 actions.add(finish);
             } else {
-                TextView status = panelAction(getString(R.string.playnite_installing));
+                TextView status = consolePanel.action(getString(R.string.playnite_installing));
                 status.setEnabled(false);
-                status.setAlpha(.52f);
                 actions.add(status);
             }
         } else if (item.game.canInstall) {
-            TextView install = panelAction(getString(R.string.playnite_install_action_short));
+            TextView install = consolePanel.action(getString(R.string.playnite_install_action_short));
             install.setOnClickListener(view -> {
                 hideSidePanel();
                 startPlayniteInstallation(host, item);
@@ -12007,7 +11959,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             actions.add(install);
         }
 
-        TextView streamSettings = panelAction(getString(R.string.playnite_stream_settings));
+        TextView streamSettings = consolePanel.action(getString(R.string.playnite_stream_settings));
         streamSettings.setOnClickListener(view -> {
             hideSidePanel();
             Intent intent = new Intent(this, AppStreamSettings.class);
@@ -12026,16 +11978,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && childManagementProfileAllowed(host, selectedProfile)
                 && childCapabilityAllowed(host, selectedProfile)
                 && hasOwnChildren(host, selectedProfile)) {
-            TextView share = panelAction(getString(R.string.console_child_sharing_action));
+            TextView share = consolePanel.action(getString(R.string.console_child_sharing_action));
             share.setOnClickListener(view -> beginChildSharing(host, item));
             actions.add(share);
         }
 
-        TextView autopilot = panelAction(getString(R.string.console_streaming_autopilot_game));
+        TextView autopilot = consolePanel.action(getString(R.string.console_streaming_autopilot_game));
         boolean autopilotAvailable = ConsoleActionCatalog.isOnline(host)
                 && ConsoleActionCatalog.isPaired(host);
         autopilot.setEnabled(autopilotAvailable);
-        autopilot.setAlpha(autopilotAvailable ? 1f : .42f);
         autopilot.setOnClickListener(view -> {
             NvApp target = PlayniteTargetResolver.findById(
                     currentSunshineApps, item.sunshineAppId);
@@ -12054,7 +12005,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
         boolean locallyHidden = locallyHiddenPlayniteGames(host.uuid)
                 .contains(item.game.playniteGameId);
-        TextView visibility = panelAction(getString(locallyHidden
+        TextView visibility = consolePanel.action(getString(locallyHidden
                 ? R.string.console_show_app : R.string.applist_menu_hide_app));
         visibility.setOnClickListener(view -> {
             hideSidePanel();
@@ -12064,7 +12015,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
         actions.add(visibility);
 
-        TextView details = panelAction(getString(R.string.applist_menu_details));
+        TextView details = consolePanel.action(getString(R.string.applist_menu_details));
         details.setOnClickListener(view -> showPlayniteGameDetails(item));
         actions.add(details);
 
@@ -12087,9 +12038,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                         PlayniteDashboardItem item) {
         HostProfileKey confirmedKey = selectedProfileKey(host.uuid);
         if (!isFreshExactRunningManagedGame(host, item)) return;
-        TextView cancel = panelAction(getString(R.string.console_cancel));
-        TextView endGame = panelAction(getString(R.string.overlay_menu_end_game_confirm));
-        endGame.setTextColor(0xFFFF9B92);
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
+        TextView endGame = consolePanel.action(getString(R.string.overlay_menu_end_game_confirm));
+        consolePanel.destructive(endGame);
         cancel.setOnClickListener(view -> handlePanelBack());
         endGame.setOnClickListener(view -> {
             hideSidePanel();
@@ -12188,7 +12139,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         : getString(R.string.playnite_uninstalled),
                 formatLastActivity(item.game.lastActivity),
                 formatPlayniteTime(item.game.playtimeSeconds), source, genres, description);
-        TextView back = panelAction(getString(R.string.console_back_close));
+        TextView back = consolePanel.action(getString(R.string.console_back_close));
         back.setTag("panel.back");
         back.setOnClickListener(view -> handlePanelBack());
         showScrollableDetailsSidePanel(getString(R.string.playnite_game_details), item.game.name,
@@ -12390,9 +12341,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void confirmPlayniteUninstall(ComputerDetails host,
                                           PlayniteDashboardItem item) {
-        TextView cancel = panelAction(getString(R.string.console_cancel));
-        TextView uninstall = panelAction(getString(R.string.playnite_uninstall));
-        uninstall.setTextColor(0xFFFF8A80);
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
+        TextView uninstall = consolePanel.action(getString(R.string.playnite_uninstall));
+        consolePanel.destructive(uninstall);
         cancel.setOnClickListener(view -> handlePanelBack());
         uninstall.setOnClickListener(view -> {
             hideSidePanel();
@@ -14929,18 +14880,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void showControllerMenu(int player, ControllerInfo controller) {
         List<View> actions = new ArrayList<>();
         if (ControllerActions.canIdentify(controller.deviceId)) {
-            TextView identify = panelAction(getString(R.string.console_controller_identify));
+            TextView identify = consolePanel.action(getString(R.string.console_controller_identify));
             identify.setOnClickListener(view -> ControllerActions.identify(
                     controller.deviceId, mainHandler, (success, message) -> mainHandler.post(() ->
                             ConsoleUiFeedback.makeText(this, message, Toast.LENGTH_LONG).show())));
             actions.add(identify);
         }
-        TextView powerOff = panelAction(getString(R.string.console_controller_power_off));
+        TextView powerOff = consolePanel.action(getString(R.string.console_controller_power_off));
         powerOff.setOnClickListener(view ->
                 confirmBluetoothAction(controller, BluetoothAction.POWER_OFF));
         actions.add(powerOff);
-        TextView unpair = panelAction(getString(R.string.console_controller_unpair));
-        unpair.setTextColor(0xFFFF9B92);
+        TextView unpair = consolePanel.action(getString(R.string.console_controller_unpair));
+        consolePanel.destructive(unpair);
         unpair.setOnClickListener(view ->
                 confirmBluetoothAction(controller, BluetoothAction.UNPAIR));
         actions.add(unpair);
@@ -15052,11 +15003,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         if (gateway != null && isAutopilotNetworkMetered()) {
-            TextView fallback = panelAction(
+            TextView fallback = consolePanel.action(
                     getString(R.string.console_autopilot_skip_network_test));
             fallback.setOnClickListener(view -> beginStreamingAutopilot(
                     host, appKey, inheritedAppKey, targetName, calibrationIntent, null));
-            TextView measure = panelAction(getString(R.string.console_autopilot_measure));
+            TextView measure = consolePanel.action(getString(R.string.console_autopilot_measure));
             measure.setOnClickListener(view -> beginStreamingAutopilot(
                     host, appKey, inheritedAppKey, targetName, calibrationIntent, gateway));
             showSidePanel(getString(R.string.console_options_section_streaming),
@@ -15102,7 +15053,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         Display display = getWindowManager().getDefaultDisplay();
         String glRenderer = GlPreferences.readPreferences(this).glRenderer;
 
-        TextView cancel = panelAction(getString(R.string.console_cancel));
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
         cancel.setOnClickListener(view -> {
             cancelStreamingAutopilot(true);
             hideSidePanel();
@@ -15134,6 +15085,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     if (generation != streamingAutopilotGeneration.get()) return;
                     streamingAutopilotTask = null;
                     if (!isStreamingAutopilotRequestCurrent(generation, hostUuid)) return;
+                    recordGlobalAutopilotResult(appKey, calibrationIntent,
+                            getString(R.string.console_autopilot_error_title));
                     showStreamingAutopilotError(error);
                 });
             }
@@ -15152,7 +15105,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                                PlayIntent calibrationIntent,
                                                StreamingAutopilotController.Analysis analysis) {
         if (!analysis.recommendation.isPresent()) {
-            TextView close = panelAction(getString(R.string.console_close));
+            recordGlobalAutopilotResult(appKey, calibrationIntent,
+                    getString(R.string.console_autopilot_no_recommendation_title));
+            TextView close = consolePanel.action(getString(R.string.console_close));
             close.setOnClickListener(view -> hideSidePanel());
             showSidePanel(getString(R.string.console_options_section_streaming),
                     getString(R.string.console_autopilot_no_recommendation_title),
@@ -15177,14 +15132,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         String recommendedSummary = getString(R.string.console_autopilot_stream_format,
                 recommendation.width, recommendation.height, recommendation.fps,
                 recommendation.bitrateKbps / 1000d);
+        recordGlobalAutopilotResult(appKey, calibrationIntent, getString(
+                R.string.console_autopilot_result_recommended, recommendedSummary));
         String confidence = getString(recommendation.confidence
                 == com.limelight.stream.StreamingAutopilot.Confidence.HIGH
                 ? R.string.console_autopilot_confidence_high
                 : R.string.console_autopilot_confidence_low);
 
-        TextView cancel = panelAction(getString(R.string.console_cancel));
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
         cancel.setOnClickListener(view -> hideSidePanel());
-        TextView apply = panelAction(getString(calibrationIntent != null
+        TextView apply = consolePanel.action(getString(calibrationIntent != null
                 ? R.string.console_autopilot_start_calibration : appKey == null
                 ? R.string.console_autopilot_apply_global
                 : R.string.console_autopilot_apply_game));
@@ -15208,6 +15165,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     return;
                 } else if (appKey == null) {
                     StreamingAutopilotController.applyGlobal(this, analysis);
+                    recordGlobalAutopilotResult(null, null, getString(
+                            R.string.console_autopilot_result_applied, recommendedSummary));
                 } else {
                     StreamingAutopilotController.applyForApp(this, appKey, analysis);
                 }
@@ -15249,7 +15208,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void showStreamingAutopilotError(Throwable error) {
         String detail = error == null || TextUtils.isEmpty(error.getMessage())
                 ? getString(R.string.console_autopilot_error_unknown) : error.getMessage();
-        TextView close = panelAction(getString(R.string.console_close));
+        TextView close = consolePanel.action(getString(R.string.console_close));
         close.setOnClickListener(view -> hideSidePanel());
         showSidePanel(getString(R.string.console_options_section_streaming),
                 getString(R.string.console_autopilot_error_title),
@@ -15268,11 +15227,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showOptionsPanel() {
-        LinearLayout sounds = settingsToggle(
+        LinearLayout sounds = consolePanel.toggle(
                 getString(R.string.console_ui_sounds_label), uiSoundsEnabled);
-        LinearLayout ambient = settingsToggle(
+        LinearLayout ambient = consolePanel.toggle(
                 getString(R.string.console_ambient_sounds_label), ambientSoundsEnabled);
-        LinearLayout hostMusic = settingsVolume(
+        LinearLayout hostMusic = consolePanel.stepper(
                 getString(R.string.console_host_music_volume_label), hostMusicVolume,
                 value -> {
                     hostMusicVolume = value;
@@ -15281,7 +15240,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         consoleAudioEngine.setHostSelectionVolume(value / 100f);
                     }
                 });
-        LinearLayout menuMusic = settingsVolume(
+        LinearLayout menuMusic = consolePanel.stepper(
                 getString(R.string.console_menu_music_volume_label), menuMusicVolume,
                 value -> {
                     menuMusicVolume = value;
@@ -15290,7 +15249,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         consoleAudioEngine.setMenuVolume(value / 100f);
                     }
                 });
-        LinearLayout effects = settingsVolume(
+        LinearLayout effects = consolePanel.stepper(
                 getString(R.string.console_effects_volume_label), effectsVolume,
                 value -> {
                     effectsVolume = value;
@@ -15299,42 +15258,40 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         consoleAudioEngine.setEffectsVolume(value / 100f);
                     }
                 });
-        LinearLayout motion = settingsToggle(
+        LinearLayout motion = consolePanel.toggle(
                 getString(R.string.console_reduced_motion_label), reducedMotion);
-        LinearLayout carouselDescription = settingsToggle(getString(
+        LinearLayout carouselDescription = consolePanel.toggle(getString(
                 R.string.console_carousel_game_description_label),
                 showCarouselGameDescription);
-        LinearLayout hiddenApps = settingsToggle(
+        LinearLayout hiddenApps = consolePanel.toggle(
                 getString(R.string.console_hidden_apps_label), showHiddenApps);
-        TextView autoLogin = panelAction(getString(R.string.console_auto_login_host,
-                autoLoginHostLabel()));
+        LinearLayout autoLogin = consolePanel.value(
+                getString(R.string.console_auto_login_host), autoLoginHostLabel());
         autoLogin.setTag("options.auto_login_host");
-        TextView backgroundStream = panelAction(getString(
-                R.string.console_background_stream_retention,
-                backgroundStreamRetentionLabel()));
+        LinearLayout backgroundStream = consolePanel.value(
+                getString(R.string.console_background_stream_retention),
+                backgroundStreamRetentionLabel());
         backgroundStream.setTag("options.background_stream_retention");
-        TextView screenSaver = panelAction(getString(
-                R.string.console_screen_saver_timeout, screenSaverTimeoutLabel()));
+        LinearLayout screenSaver = consolePanel.value(
+                getString(R.string.console_screen_saver_timeout), screenSaverTimeoutLabel());
         screenSaver.setTag("options.screen_saver_timeout");
-        TextView settings = panelAction(getString(R.string.console_streaming_settings));
-        TextView autopilot = panelAction(getString(R.string.console_streaming_autopilot_global));
-        TextView overrides = panelAction(getString(R.string.console_options_overrides));
-        TextView integrations = panelAction(getString(R.string.console_host_integrations));
-        ComputerDetails selectedHost = hosts.get(selectedHostUuid);
-        integrations.setEnabled(selectedHost != null);
-        integrations.setAlpha(selectedHost != null ? 1f : .45f);
-        boolean autopilotAvailable = ConsoleActionCatalog.isOnline(selectedHost)
-                && ConsoleActionCatalog.isPaired(selectedHost);
-        autopilot.setEnabled(autopilotAvailable);
-        autopilot.setAlpha(autopilotAvailable ? 1f : .45f);
-        TextView readme = panelAction(getString(R.string.console_options_readme));
+        TextView settings = consolePanel.navigation(getString(R.string.console_streaming_settings));
+        TextView autopilot = consolePanel.navigation(
+                getString(R.string.console_streaming_autopilot_global));
+        TextView overrides = consolePanel.navigation(getString(R.string.console_options_overrides));
+        TextView integrations = consolePanel.navigation(
+                getString(R.string.console_host_integrations));
+        integrations.setEnabled(hosts.get(selectedHostUuid) != null);
+        TextView help = consolePanel.navigation(getString(R.string.console_options_help));
+        TextView exit = consolePanel.destructive(consolePanel.action(
+                getString(R.string.console_exit)));
         sounds.setOnClickListener(v -> {
             uiSoundsEnabled = !uiSoundsEnabled;
             preferences.edit().putBoolean("ui_sounds", uiSoundsEnabled).apply();
             if (consoleAudioEngine != null) {
                 consoleAudioEngine.setEffectsEnabled(uiSoundsEnabled);
             }
-            updateSettingsToggle(sounds, uiSoundsEnabled);
+            consolePanel.setChecked(sounds, uiSoundsEnabled);
         });
         ambient.setOnClickListener(v -> {
             ambientSoundsEnabled = !ambientSoundsEnabled;
@@ -15342,39 +15299,38 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (consoleAudioEngine != null) {
                 consoleAudioEngine.setAmbientEnabled(ambientSoundsEnabled);
             }
-            updateSettingsToggle(ambient, ambientSoundsEnabled);
+            consolePanel.setChecked(ambient, ambientSoundsEnabled);
         });
         motion.setOnClickListener(v -> {
             reducedMotion = !reducedMotion;
             preferences.edit().putBoolean(ConsoleReducedMotion.KEY, reducedMotion).apply();
             if (consoleFeedback != null) consoleFeedback.setReducedMotion(reducedMotion);
             if (discordDmToastView != null) discordDmToastView.setReducedMotion(reducedMotion);
+            consolePanel.setReducedMotion(reducedMotion);
             if (libraryTransitionCoordinator != null) {
                 libraryTransitionCoordinator.setReducedMotion(reducedMotion);
             }
-            updateSettingsToggle(motion, reducedMotion);
+            consolePanel.setChecked(motion, reducedMotion);
         });
         carouselDescription.setOnClickListener(v -> {
             showCarouselGameDescription = !showCarouselGameDescription;
             preferences.edit().putBoolean("show_carousel_game_description",
                     showCarouselGameDescription).apply();
             applyCarouselDescriptionVisibility();
-            updateSettingsToggle(carouselDescription, showCarouselGameDescription);
+            consolePanel.setChecked(carouselDescription, showCarouselGameDescription);
         });
         autoLogin.setOnClickListener(v -> showAutoLoginHostPanel());
         backgroundStream.setOnClickListener(v -> showBackgroundStreamRetentionPanel());
         screenSaver.setOnClickListener(v -> showScreenSaverTimeoutPanel());
         hiddenApps.setOnClickListener(v -> {
             toggleHiddenApps();
-            updateSettingsToggle(hiddenApps, showHiddenApps);
+            consolePanel.setChecked(hiddenApps, showHiddenApps);
         });
         settings.setOnClickListener(v -> {
             hideSidePanel();
             startActivity(new Intent(this, StreamSettings.class));
         });
-        autopilot.setOnClickListener(v -> requestStreamingAutopilot(
-                currentHost(selectedHostUuid), null, null,
-                getString(R.string.console_autopilot_global_target), null));
+        autopilot.setOnClickListener(v -> showStreamingAutopilotPanel());
         overrides.setOnClickListener(v -> showOverridesPanel());
         integrations.setOnClickListener(v -> {
             ComputerDetails host = hosts.get(selectedHostUuid);
@@ -15382,21 +15338,59 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             String address = host.activeAddress != null ? host.activeAddress.address : null;
             discordPanelController.showHostIntegrations(host.uuid, address, host.name);
         });
-        readme.setOnClickListener(v -> {
-            hideSidePanel();
-            HelpLauncher.launchSetupGuide(this);
-        });
+        help.setOnClickListener(v -> showHelpPanel());
+        exit.setOnClickListener(v -> requestExit());
         showSidePanel(getString(R.string.console_title), getString(R.string.console_options_title),
                 getString(R.string.console_options_details),
-                settingsSectionHeader(R.string.console_options_section_interface),
+                consolePanel.section(getString(R.string.console_options_section_interface)),
                 sounds, ambient, hostMusic, menuMusic, effects,
                 motion, carouselDescription, hiddenApps,
-                settingsSectionHeader(R.string.console_options_section_host),
+                consolePanel.section(getString(R.string.console_options_section_host)),
                 autoLogin, integrations,
-                settingsSectionHeader(R.string.console_options_section_streaming),
+                consolePanel.section(getString(R.string.console_options_section_streaming)),
                 backgroundStream, autopilot, settings, overrides,
-                settingsSectionHeader(R.string.console_options_section_tv), screenSaver,
-                settingsSectionHeader(R.string.console_options_section_help), readme);
+                consolePanel.section(getString(R.string.console_options_section_tv)), screenSaver,
+                consolePanel.section(getString(R.string.console_options_section_help)), help,
+                exit);
+    }
+
+    /** Shows the last global result; the analysis starts only from the explicit action. */
+    private void showStreamingAutopilotPanel() {
+        ComputerDetails selectedHost = hosts.get(selectedHostUuid);
+        TextView run = consolePanel.action(getString(R.string.console_autopilot_run),
+                ConsoleActionCatalog.isOnline(selectedHost)
+                        && ConsoleActionCatalog.isPaired(selectedHost));
+        run.setOnClickListener(v -> requestStreamingAutopilot(
+                currentHost(selectedHostUuid), null, null,
+                getString(R.string.console_autopilot_global_target), null));
+        String result = preferences.getString(PREF_AUTOPILOT_LAST_RESULT, "");
+        long at = preferences.getLong(PREF_AUTOPILOT_LAST_RESULT_AT, 0L);
+        String state = result.isEmpty() || at <= 0L
+                ? getString(R.string.console_autopilot_never_run)
+                : getString(R.string.console_autopilot_last_result, result,
+                DateUtils.getRelativeTimeSpanString(Math.min(at, System.currentTimeMillis()),
+                        System.currentTimeMillis(), DateUtils.MINUTE_IN_MILLIS,
+                        DateUtils.FORMAT_ABBREV_RELATIVE));
+        showSidePanel(getString(R.string.console_options_section_streaming),
+                getString(R.string.console_streaming_autopilot_global),
+                getString(R.string.console_autopilot_panel_details, state), run);
+    }
+
+    /** Only the global target has a "last result"; per-game runs leave it untouched. */
+    private void recordGlobalAutopilotResult(String appKey, PlayIntent calibrationIntent,
+                                             String result) {
+        if (appKey != null || calibrationIntent != null) return;
+        preferences.edit().putString(PREF_AUTOPILOT_LAST_RESULT, result)
+                .putLong(PREF_AUTOPILOT_LAST_RESULT_AT, System.currentTimeMillis()).apply();
+    }
+
+    private void showHelpPanel() {
+        TextView close = consolePanel.action(getString(R.string.console_close));
+        close.setOnClickListener(view -> handlePanelBack());
+        showScrollableDetailsSidePanel(getString(R.string.console_title),
+                getString(R.string.console_help_title),
+                TextUtils.replace(getText(R.string.console_help_body), new String[]{"%1$s"},
+                        new CharSequence[]{BuildConfig.VERSION_NAME}), close);
     }
 
     private void resetScreenSaverTimer() {
@@ -15612,7 +15606,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     ? getString(R.string.console_screen_saver_seconds, value)
                     : getString(R.string.console_screen_saver_minutes, value / 60);
             if (value == screenSaverSeconds) label += getString(R.string.console_selected_suffix);
-            TextView choice = panelAction(label);
+            TextView choice = consolePanel.action(label);
             choice.setTag("screen_saver_timeout:" + value);
             choice.setOnClickListener(view -> setScreenSaverMinutes(value));
             actions.add(choice);
@@ -15625,8 +15619,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void setScreenSaverMinutes(int seconds) {
         screenSaverSeconds = seconds;
-        preferences.edit().putInt(PREF_SCREEN_SAVER_SECONDS, seconds)
-                .remove(PREF_SCREEN_SAVER_MINUTES_LEGACY).apply();
+        preferences.edit().putInt(PREF_SCREEN_SAVER_SECONDS, seconds).apply();
         updateScreenSaverWakePolicy();
         resetScreenSaverTimer();
         showOptionsPanel();
@@ -15661,7 +15654,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (value == backgroundStreamRetentionMinutes) {
                 label += getString(R.string.console_selected_suffix);
             }
-            TextView choice = panelAction(label);
+            TextView choice = consolePanel.action(label);
             choice.setTag("background_stream_retention:" + value);
             choice.setOnClickListener(view -> setBackgroundStreamRetention(value));
             actions.add(choice);
@@ -15680,7 +15673,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void showAutoLoginHostPanel() {
         List<View> actions = new ArrayList<>();
-        TextView none = panelAction(getString(R.string.console_auto_login_none));
+        TextView none = consolePanel.action(getString(R.string.console_auto_login_none));
         none.setTag("auto_login:");
         none.setOnClickListener(view -> setAutoLoginHost(""));
         actions.add(none);
@@ -15689,7 +15682,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         for (ComputerDetails host : sorted) {
             String suffix = host.uuid.equals(autoLoginHostUuid)
                     ? getString(R.string.console_selected_suffix) : "";
-            TextView choice = panelAction(host.name + suffix);
+            TextView choice = consolePanel.action(host.name + suffix);
             choice.setTag("auto_login:" + host.uuid);
             choice.setOnClickListener(view -> setAutoLoginHost(host.uuid));
             actions.add(choice);
@@ -15710,10 +15703,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         mainHandler.post(() -> {
             View action = sidePanel != null
                     ? sidePanel.findViewWithTag("options.auto_login_host") : null;
-            if (action instanceof TextView) {
-                ((TextView) action).setText(getString(
-                        R.string.console_auto_login_host, autoLoginHostLabel()));
-            }
+            if (action != null) ConsolePanel.setValue(action, autoLoginHostLabel());
         });
     }
 
@@ -15732,9 +15722,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showExitConfirmation() {
-        TextView cancel = panelAction(getString(R.string.console_cancel));
-        TextView exit = panelAction(getString(R.string.console_exit));
-        exit.setTextColor(0xFFFF8A80);
+        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
+        TextView exit = consolePanel.action(getString(R.string.console_exit));
+        consolePanel.destructive(exit);
         cancel.setOnClickListener(view -> handlePanelBack());
         exit.setOnClickListener(view -> {
             hideSidePanel();
@@ -15814,7 +15804,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showUncertainSessionMessage() {
-        TextView close = panelAction(getString(R.string.console_cancel));
+        TextView close = consolePanel.action(getString(R.string.console_cancel));
         close.setOnClickListener(view -> hideSidePanel());
         SessionFailure reason = SessionFailure.LAUNCH_TARGET_UNRESOLVED;
         showSidePanel(getString(R.string.console_apps_eyebrow), getString(reason.title),
@@ -15822,7 +15812,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showSidePanel(String eyebrow, String title, String details, View... actions) {
-        showSidePanelInternal(eyebrow, title, details, false, false, actions);
+        showSidePanelInternal(eyebrow, title, details, false, actions);
     }
 
     private void showCommunityPanel(View shell) {
@@ -15875,10 +15865,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showRetainedStreamExitConfirmation() {
-        TextView leave = panelAction(getString(R.string.console_leave_keep_stream));
-        TextView returnToGame = panelAction(getString(R.string.console_return_to_game));
-        TextView close = panelAction(getString(R.string.console_close_game_and_moonwaker));
-        close.setTextColor(0xFFFF8A80);
+        TextView leave = consolePanel.action(getString(R.string.console_leave_keep_stream));
+        TextView returnToGame = consolePanel.action(getString(R.string.console_return_to_game));
+        TextView close = consolePanel.action(getString(R.string.console_close_game_and_moonwaker));
+        consolePanel.destructive(close);
         leave.setOnClickListener(view -> {
             hideSidePanelImmediately();
             leaveMoonWakerKeepingStream();
@@ -15989,14 +15979,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 SessionResumeManager.pendingSession(this);
         return pending == null || pending.matches(expectedStreamSessionId);
     }
-    private void showScrollableDetailsSidePanel(String eyebrow, String title, String details,
-                                                View... actions) {
-        showSidePanelInternal(eyebrow, title, details, true, false, actions);
+    private void showScrollableDetailsSidePanel(String eyebrow, String title,
+                                                CharSequence details, View... actions) {
+        showSidePanelInternal(eyebrow, title, details, true, actions);
     }
 
-    private void showSidePanelInternal(String eyebrow, String title, String details,
-                                       boolean scrollableDetails, boolean communityShell,
-                                       View... actions) {
+    private void showSidePanelInternal(String eyebrow, String title, CharSequence details,
+                                       boolean scrollableDetails, View... actions) {
         if (communityPanelHost != null && communityPanelHost.getVisibility() == View.VISIBLE) {
             communityPanelHost.removeAllViews();
             communityPanelHost.setVisibility(View.GONE);
@@ -16007,8 +15996,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(sidePanelBusyBanner);
             sidePanelBusyBanner = null;
         }
-        applySidePanelFrame(communityShell);
-        String nextKey = communityShell ? "discord.community" : eyebrow + "\n" + title;
+        applySidePanelFrame(false);
+        String nextKey = eyebrow + "\n" + title;
         boolean alreadyShowing = sideDialog != null && sideDialog.isShowing();
         boolean samePanel = alreadyShowing && nextKey.equals(currentPanelKey);
         if (alreadyShowing && !samePanel) prepareChildSharingForDeparture();
@@ -16041,47 +16030,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (snapshot != null) panelHistory.push(snapshot);
         }
         sidePanelTransient = false;
-        sidePanel.removeAllViews();
-        if (communityShell) {
-            sidePanel.addView(actions[0], new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        } else {
-            sidePanel.addView(text(eyebrow, 12, 0xFFAFA4C9, true), wrapLinear());
-            TextView titleView = text(title, 29, Color.WHITE, true);
-            sidePanel.addView(titleView, sectionWithTop(10));
-            TextView detailView = text(details, 14, 0xFFC1C5D6, false);
-            if (scrollableDetails) {
-                detailView.setId(View.generateViewId());
-                detailView.setTag("panel.scrollable.details");
-                detailView.setFocusable(true);
-                detailView.setPadding(dp(6), dp(4), dp(6), dp(4));
-                detailView.setOnFocusChangeListener((view, focused) ->
-                        detailView.setTextColor(focused ? Color.WHITE : 0xFFC1C5D6));
-                detailView.setOnKeyListener((view, keyCode, event) -> {
-                    if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
-                    int direction;
-                    if (keyCode == KeyEvent.KEYCODE_DPAD_DOWN) direction = 1;
-                    else if (keyCode == KeyEvent.KEYCODE_DPAD_UP) direction = -1;
-                    else return false;
-                    if (!sidePanelScroll.canScrollVertically(direction)) return false;
-                    sidePanelScroll.smoothScrollBy(0, direction * dp(124));
-                    return true;
-                });
-            }
-            LinearLayout.LayoutParams detailParams = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-            detailParams.topMargin = dp(10);
-            detailParams.bottomMargin = dp(16);
-            sidePanel.addView(detailView, detailParams);
-            for (View action : actions) {
-                LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                        ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-                params.bottomMargin = dp(7);
-                sidePanel.addView(action, params);
-            }
-            TextView hint = text(getString(R.string.console_back_close), 11, 0x8FFFFFFF, true);
-            sidePanel.addView(hint, sectionWithTop(12));
-        }
+        consolePanel.render(sidePanel, eyebrow, title, details, scrollableDetails, actions);
         currentPanelKey = nextKey;
         if (!alreadyShowing) {
             sideDialog.show();
@@ -16090,11 +16039,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT);
         }
         if (!alreadyShowing) {
-            sidePanelScroll.setTranslationX(communityShell || reducedMotion ? 0 : dp(510));
-            if (communityShell && !reducedMotion) {
-                sidePanelScroll.setAlpha(0f);
-                sidePanelScroll.animate().alpha(1f).setDuration(180).start();
-            } else if (!reducedMotion) {
+            sidePanelScroll.setTranslationX(reducedMotion ? 0 : dp(ConsolePanel.WIDTH_DP));
+            if (!reducedMotion) {
                 sidePanelScroll.animate().translationX(0).setDuration(180).start();
             }
         } else {
@@ -16147,7 +16093,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             sidePanel.setLayoutParams(content);
             return;
         }
-        frame.width = dp(510);
+        frame.width = dp(ConsolePanel.WIDTH_DP);
         frame.height = ViewGroup.LayoutParams.MATCH_PARENT;
         frame.gravity = Gravity.END;
         frame.leftMargin = 0;
@@ -16159,7 +16105,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         background.setCornerRadii(new float[]{dp(24), dp(24), 0, 0, 0, 0, dp(24), dp(24)});
         background.setStroke(dp(1), 0x704A6677);
         sidePanelScroll.setBackground(background);
-        sidePanel.setPadding(dp(34), dp(26), dp(34), dp(20));
+        sidePanel.setPadding(dp(20), dp(16), dp(20), dp(24));
         ViewGroup.LayoutParams content = sidePanel.getLayoutParams();
         content.height = ViewGroup.LayoutParams.WRAP_CONTENT;
         sidePanel.setLayoutParams(content);
@@ -16168,9 +16114,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void showSidePanelBusy(String eyebrow, String title, String details) {
         boolean alreadyShowing = sideDialog != null && sideDialog.isShowing();
         if (!alreadyShowing) {
-            TextView waiting = text(getString(R.string.console_loading), 13, 0xFF8DDCFF, false);
-            waiting.setFocusable(false);
-            showSidePanel(eyebrow, title, details, waiting);
+            showSidePanel(eyebrow, title, details,
+                    consolePanel.note(getString(R.string.console_loading)));
             sidePanelTransient = true;
             return;
         }
@@ -16178,8 +16123,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             ViewParent parent = sidePanelBusyBanner.getParent();
             if (parent instanceof ViewGroup) ((ViewGroup) parent).removeView(sidePanelBusyBanner);
         }
-        TextView banner = text("\u21BB  " + details, 12, 0xFF8DDCFF, false);
-        banner.setFocusable(false);
+        TextView banner = consolePanel.note("\u21BB  " + details);
         banner.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -16191,7 +16135,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void hideSidePanel() {
         Runnable finish = this::completeSidePanelDismissal;
         if (reducedMotion || "discord.community".equals(currentPanelKey)) finish.run();
-        else sidePanelScroll.animate().translationX(dp(510)).setDuration(150).withEndAction(finish).start();
+        else sidePanelScroll.animate().translationX(dp(ConsolePanel.WIDTH_DP)).setDuration(150).withEndAction(finish).start();
     }
 
     private void hideSidePanelImmediately() {
@@ -16261,11 +16205,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (!reducedMotion) {
                 sidePanelScroll.animate().cancel();
                 sidePanelScroll.setAlpha(.55f);
-                sidePanelScroll.setScaleX(.97f);
-                sidePanelScroll.setScaleY(.97f);
                 sidePanelScroll.setTranslationX(dp(18));
-                sidePanelScroll.animate().alpha(1f).scaleX(1f).scaleY(1f)
-                        .translationX(0f).setDuration(170L).start();
+                sidePanelScroll.animate().alpha(1f).translationX(0f).setDuration(170L).start();
             }
             wireModalFocusTrap(false);
             View restore = snapshot.focusedTag != null
@@ -16362,194 +16303,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (target != null) target.post(target::requestFocus);
     }
 
-    private TextView panelAction(String label) {
-        TextView action = text(label, 14, 0xFFF0E9FF, true);
-        action.setId(View.generateViewId());
-        action.setFocusable(true);
-        action.setClickable(true);
-        action.setTag("panel.action:" + label);
-        action.setMinHeight(dp(46));
-        action.setPadding(dp(16), dp(7), dp(16), dp(7));
-        action.setOnFocusChangeListener((view, focused) -> {
-            if (DiscordPanelViews.isTile(action)) DiscordPanelViews.styleTile(action, focused);
-            else styleCompactButton(action, focused);
-            if (focused) revealSidePanelFocus(action);
-        });
-        styleCompactButton(action, false);
-        return action;
-    }
-
-    private TextView settingsSectionHeader(int label) {
-        TextView header = text(getString(label).toUpperCase(Locale.ROOT),
-                10, 0xFF83CAE9, true);
-        header.setPadding(dp(5), dp(8), dp(5), dp(2));
-        header.setFocusable(false);
-        return header;
-    }
-
-    private LinearLayout settingsToggle(String label, boolean checked) {
-        LinearLayout row = new LinearLayout(this);
-        row.setId(View.generateViewId());
-        row.setOrientation(LinearLayout.HORIZONTAL);
-        row.setGravity(Gravity.CENTER_VERTICAL);
-        row.setFocusable(true);
-        row.setClickable(true);
-        row.setSoundEffectsEnabled(false);
-        row.setMinimumHeight(dp(48));
-        row.setPadding(dp(16), dp(6), dp(12), dp(6));
-        row.setTag("settings.toggle:" + label);
-        TextView title = text(label, 14, 0xFFF0E9FF, true);
-        title.setTag("settings.toggle.label");
-        title.setSingleLine(true);
-        title.setEllipsize(TextUtils.TruncateAt.END);
-        row.addView(title, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView state = text("", 9, Color.WHITE, true);
-        state.setTag("settings.toggle.state");
-        state.setGravity(Gravity.CENTER);
-        row.addView(state, new LinearLayout.LayoutParams(dp(48), dp(26)));
-        row.setOnFocusChangeListener((view, focused) -> {
-            styleSettingsToggle(row, focused);
-            if (focused) revealSidePanelFocus(row);
-        });
-        styleSettingsToggle(row, false);
-        updateSettingsToggle(row, checked);
-        return row;
-    }
-
-    private LinearLayout settingsVolume(String label, int initialValue,
-            IntConsumer onChanged) {
-        LinearLayout row = new LinearLayout(this);
-        row.setId(View.generateViewId());
-        row.setOrientation(LinearLayout.VERTICAL);
-        row.setFocusable(true);
-        row.setClickable(true);
-        row.setSoundEffectsEnabled(false);
-        row.setMinimumHeight(dp(62));
-        row.setPadding(dp(16), dp(8), dp(16), dp(8));
-
-        LinearLayout heading = new LinearLayout(this);
-        heading.setGravity(Gravity.CENTER_VERTICAL);
-        TextView title = text(label, 13, 0xFFF0E9FF, true);
-        title.setSingleLine(true);
-        title.setEllipsize(TextUtils.TruncateAt.END);
-        heading.addView(title, new LinearLayout.LayoutParams(
-                0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        TextView value = text("", 11, 0xFF8DDCFF, true);
-        value.setGravity(Gravity.END);
-        heading.addView(value, new LinearLayout.LayoutParams(
-                dp(54), ViewGroup.LayoutParams.WRAP_CONTENT));
-        row.addView(heading, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        ProgressBar progress = new ProgressBar(this, null,
-                android.R.attr.progressBarStyleHorizontal);
-        progress.setMax(100);
-        progress.setProgressTintList(android.content.res.ColorStateList.valueOf(
-                getResources().getColor(R.color.console_accent)));
-        progress.setProgressBackgroundTintList(android.content.res.ColorStateList.valueOf(
-                0x504B5963));
-        LinearLayout.LayoutParams progressParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(5));
-        progressParams.topMargin = dp(6);
-        row.addView(progress, progressParams);
-
-        VolumeControl control = new VolumeControl(progress, value, onChanged);
-        row.setTag(control);
-        row.setOnKeyListener((view, keyCode, event) ->
-                handleVolumeAdjustment(event, view));
-        row.setOnGenericMotionListener((view, event) ->
-                handleVolumeMotion(control, event));
-        row.setOnFocusChangeListener((view, focused) -> {
-            styleSettingsToggle(row, focused);
-            if (focused) revealSidePanelFocus(row);
-        });
-        row.setOnClickListener(view -> updateVolumeControl(control,
-                control.progress.getProgress() >= 100 ? 0
-                        : control.progress.getProgress() + 10, true));
-        styleSettingsToggle(row, false);
-        updateVolumeControl(control, initialValue, false);
-        return row;
-    }
-
-    private void updateVolumeControl(VolumeControl control, int value, boolean notify) {
-        int safeValue = Math.max(0, Math.min(100, value));
-        control.progress.setProgress(safeValue);
-        control.value.setText(safeValue + "%");
-        if (notify) control.onChanged.accept(safeValue);
-    }
-
-    private static final class VolumeControl {
-        final ProgressBar progress;
-        final TextView value;
-        final IntConsumer onChanged;
-
-        VolumeControl(ProgressBar progress, TextView value, IntConsumer onChanged) {
-            this.progress = progress;
-            this.value = value;
-            this.onChanged = onChanged;
-        }
-    }
-
-    private void updateSettingsToggle(LinearLayout row, boolean checked) {
-        if (row == null) return;
-        TextView title = (TextView) findTaggedChild(row, "settings.toggle.label");
-        TextView state = (TextView) findTaggedChild(row, "settings.toggle.state");
-        if (state == null) return;
-        String value = getString(checked ? R.string.console_on : R.string.console_off);
-        state.setText(value);
-        GradientDrawable track = gradient(
-                checked ? 0xFF2383A5 : 0xFF343B42,
-                checked ? 0xFF176782 : 0xFF252B30, 13);
-        track.setStroke(dp(1), checked ? 0xFF73D7FF : 0xFF58626B);
-        state.setBackground(track);
-        if (title != null) row.setContentDescription(title.getText() + ". " + value);
-    }
-
-    private void styleSettingsToggle(View row, boolean focused) {
-        GradientDrawable background = gradient(
-                focused ? 0xFF24343F : 0x26242B32,
-                focused ? 0xFF18242C : 0x4813181D, 10);
-        background.setStroke(dp(1), focused
-                ? getResources().getColor(R.color.console_accent) : 0x384C5962);
-        row.setBackground(background);
-        row.setElevation(dp(focused ? 4 : 0));
-    }
-
-    private void revealSidePanelFocus(View view) {
-        if (sidePanelScroll == null || view == null) return;
-        view.post(() -> {
-            if (sideDialog == null || !sideDialog.isShowing()
-                    || !view.isAttachedToWindow()) return;
-            Rect bounds = new Rect();
-            view.getDrawingRect(bounds);
-            sidePanelScroll.offsetDescendantRectToMyCoords(view, bounds);
-            int margin = dp(16);
-            int viewportTop = sidePanelScroll.getScrollY() + margin;
-            int viewportBottom = sidePanelScroll.getScrollY()
-                    + sidePanelScroll.getHeight() - margin;
-            int target = sidePanelScroll.getScrollY();
-            if (bounds.bottom > viewportBottom) {
-                target += bounds.bottom - viewportBottom;
-            } else if (bounds.top < viewportTop) {
-                target -= viewportTop - bounds.top;
-            }
-            target = Math.max(0, target);
-            if (target != sidePanelScroll.getScrollY()) {
-                if (reducedMotion) sidePanelScroll.scrollTo(0, target);
-                else sidePanelScroll.smoothScrollTo(0, target);
-            }
-        });
-    }
-
     private TextView actionView(ConsoleAction resolved) {
-        String label = resolved.unavailableReason == null ? resolved.label.toString()
-                : resolved.label + "\n" + resolved.unavailableReason;
-        TextView action = panelAction(label);
+        TextView action = consolePanel.action(resolved.unavailableReason == null
+                ? resolved.label : consolePanel.withDetail(resolved.label.toString(),
+                resolved.unavailableReason.toString()), resolved.enabled);
         action.setTag(resolved.id);
-        action.setEnabled(resolved.enabled);
-        action.setAlpha(resolved.enabled ? 1f : .55f);
-        if (resolved.destructive) action.setTextColor(0xFFFF9B92);
+        if (resolved.destructive) consolePanel.destructive(action);
         if (resolved.enabled) action.setOnClickListener(view -> resolved.handler.run());
         if (resolved.unavailableReason != null) {
             action.setContentDescription(resolved.label + ". " + resolved.unavailableReason);
@@ -16558,8 +16317,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private TextView compactButton(String label) {
-        TextView button = panelAction(label);
+        TextView button = text(label, 14, 0xFFF0E9FF, true);
+        button.setId(View.generateViewId());
+        button.setFocusable(true);
+        button.setClickable(true);
+        button.setMinHeight(dp(46));
+        button.setPadding(dp(16), dp(7), dp(16), dp(7));
         button.setGravity(Gravity.CENTER);
+        button.setOnFocusChangeListener((view, focused) -> styleCompactButton(button, focused));
+        styleCompactButton(button, false);
         return button;
     }
 
