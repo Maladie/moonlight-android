@@ -78,7 +78,8 @@ C. id: S07-20261005-8A-TIMEBOX
 D. id: S07-20261005-PHYSICAL-TV-SESSION
    decision: AUTHORIZE_ONE_BOUNDED_PHYSICAL_TV_SESSION
    value: One session on <date and time>, operated by <owner / named person>, on the
-   BRAVIA 4K VH22 (API 32) and the owner's Windows host <host name>. Permitted: record
+   BRAVIA 4K VH22 (API 31, read from ro.build.version.sdk on 2026-10-05; the S07
+   records say API 32 and need correcting) and the owner's Windows host <host name>. Permitted: record
    the currently installed APK and host versions; install the frozen candidate APK by adb
    and the host installer built from the same commit; run the scenarios listed in the
    procedure, including the wake, Windows sign-in and sleep steps that those scenarios

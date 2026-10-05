@@ -88,7 +88,8 @@ wiedzieć, które ścieżki faktycznie dominują.
 ### MW-03 — Zamknięcie S07 na fizycznym TV
 
 **Po co.** S07 ma status `CODE_VERIFIED_DEVICE_PENDING`. Dowody pochodzą z emulatora
-(API 36), a docelowy telewizor (API 32) nie był uruchamiany.
+(API 36), a docelowy telewizor nie był uruchamiany. Telewizor to BRAVIA 4K VH22 z API 31
+(Android 12; odczyt `ro.build.version.sdk` z 2026-10-05), a nie API 32, jak podają zapisy S07.
 
 **Zakres.** Otwarte punkty z `STATE.json`: wybór hosta (T07), wygaśnięcie czasu dziecka,
 przełączenie gry bez podpiętego ekranu (T08), odtworzenie Activity w stanie PREPARING,
