@@ -526,7 +526,11 @@ final class SessionOrchestrator implements AutoCloseable {
                 }
                 SessionSnapshot afterClose = effects.resolve(intent.profileKey);
                 if (!current(request)) return;
-                if (afterClose.state == SessionSnapshot.State.NONE) {
+                // The verified close is authoritative. UNCERTAIN here only means that no
+                // host observation newer than the close has been accepted yet; every
+                // local fact already shows nothing left to close.
+                if (afterClose.state == SessionSnapshot.State.NONE
+                        || afterClose.state == SessionSnapshot.State.UNCERTAIN) {
                     launch(request, intent, preparedTarget, freshType(intent), "",
                             afterClose.hostGameAppId == 0);
                 } else if (intent.matches(afterClose)) {

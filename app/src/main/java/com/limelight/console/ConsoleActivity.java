@@ -13976,7 +13976,17 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         }
                     }
                 }
-                if (closed) return SessionOrchestrator.CloseResult.CLOSED;
+                if (closed) {
+                    // The host session is gone, and with it whatever was suspended in it.
+                    SuspendedSessionStore.Session suspended =
+                            suspendedSession(host.uuid, intent.profileId);
+                    if (suspended != null && suspended.resumedAt == 0L) {
+                        SuspendedSessionStore.markSessionEndedForExecutionIfMatches(
+                                ConsoleActivity.this, host.uuid, suspended.executionProfileId,
+                                suspended.suspendId);
+                    }
+                    return SessionOrchestrator.CloseResult.CLOSED;
+                }
                 if (cancelled.getAsBoolean()) {
                     return SessionOrchestrator.CloseResult.CANCELLED;
                 }

@@ -677,11 +677,22 @@ public class SessionOrchestratorTest {
                 SessionFailure.CLOSE_UNEXPECTED_ERROR), effects.failures);
     }
 
-    @Test public void closedButNotYetIdleSnapshotReportsItsOwnCode() {
+    @Test public void verifiedCloseLaunchesBeforeAFreshHostObservationArrives() {
         // UNCERTAIN is what the projection publishes until a poll after the close is accepted.
+        Fake effects = competing();
+        effects.afterClose = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+        orchestrator(effects).play(game());
+
+        effects.confirmation.run();
+
+        assertEquals(1, effects.closes);
+        assertEquals(1, effects.launches);
+        assertTrue(effects.failures.isEmpty());
+    }
+
+    @Test public void closedButLocallyNotIdleSnapshotReportsItsOwnCode() {
         for (SessionSnapshot afterClose : new SessionSnapshot[] {
                 snapshot(SessionSnapshot.State.ACTIVE, 7, "other"),
-                snapshot(SessionSnapshot.State.UNCERTAIN, 0, ""),
                 snapshot(SessionSnapshot.State.SUSPENDED, 7, "other")}) {
             Fake effects = competing();
             effects.afterClose = afterClose;

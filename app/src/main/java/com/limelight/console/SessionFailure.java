@@ -37,7 +37,8 @@ enum SessionFailure {
     // Any other exception escaping closePreviousSession.
     CLOSE_UNEXPECTED_ERROR("close.unexpected_error",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
-    // SessionOrchestrator: close returned CLOSED, the next snapshot is neither idle nor the target.
+    // SessionOrchestrator: close returned CLOSED, but local facts still show another session
+    // (live transport, suspended or reconnect record). A missing host observation is not this.
     CLOSE_SNAPSHOT_NOT_IDLE("close.snapshot_not_idle_after_close",
             R.string.applist_quit_fail, R.string.console_previous_session_close_failed),
 

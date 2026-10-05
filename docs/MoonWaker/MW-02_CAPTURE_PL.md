@@ -87,14 +87,17 @@ Pola w `session.failed`:
 | `app_id`, `game_id` | aplikacja Sunshine i gra, które **widział** snapshot w chwili błędu (nie ta, którą próbowałeś uruchomić) |
 | `detail` | tylko dla `switch.*`: powód zgłoszony przez ekran gry, np. `retained_switch_owner_changed` |
 
-### Na co patrzeć przy hipotezie „zamknięto, a pokazano błąd”
+### Na co patrzeć po `close.snapshot_not_idle_after_close`
 
-Jeżeli w wycinku widać kolejno `orchestration.close_completed` ze `status` = `CLOSED`,
-a zaraz potem `session.failed` z `reason` = `close.snapshot_not_idle_after_close`,
-`state` = `UNCERTAIN` i `observation_state` = `PENDING`, to poprzednia sesja **została**
-zamknięta. Błąd wziął się stąd, że aplikacja nie zdążyła jeszcze ponownie odpytać hosta.
-Zapisz wtedy w kolumnie „Co naprawdę działało”, czy na PC rzeczywiście nic już nie
-działało. To jest dokładnie to, co MW-02 ma potwierdzić albo obalić.
+Od wersji z poprawką z 2026-10-05 udane zamknięcie nie czeka już na ponowne odpytanie
+hosta: stan `UNCERTAIN` po `CLOSED` prowadzi prosto do uruchomienia gry. Ten kod oznacza
+więc teraz, że mimo udanego zamknięcia aplikacja lokalnie nadal widziała inną sesję.
+Zapisz `state` z tego zdarzenia (`ACTIVE`, `SUSPENDED`, `RECONNECT_REQUIRED`,
+`TERMINATING` albo `PREPARING`) oraz to, czy na PC rzeczywiście coś jeszcze działało.
+
+Jeżeli po `orchestration.close_completed` ze `status` = `CLOSED` gra się uruchamia,
+a mimo to coś idzie źle dalej (błąd na ekranie gry, stary obraz), zanotuj to jako osobny
+przypadek z dopiskiem „po zamknięciu".
 
 ## 4. Kody przyczyn
 
@@ -119,7 +122,7 @@ gotowości.” + „Żaden port streamingu nie odpowiedział w ciągu 90 sekund�
 | `close.reconnect_fallback_not_closed` | Awaryjne zamknięcie przez host (dla streamu czekającego na ponowne połączenie) nie zostało potwierdzone. | `closePreviousSession`, ścieżka `reconnect-fallback` → `terminateKnownControlPlane` | A |
 | `close.direct_not_closed` | Zamknięcie sesji bezpośrednio na hoście (bez streamu w tle) nie zostało potwierdzone. | `closePreviousSession`, ścieżka `direct-nonretained` → `terminateKnownControlPlane` | A |
 | `close.unexpected_error` | Zamykanie przerwał nieoczekiwany wyjątek; jego klasa jest w `orchestration.close_failed` (`error_type`). | `SessionOrchestrator.closeCompetingSession` | A |
-| `close.snapshot_not_idle_after_close` | Zamknięcie zwróciło sukces, ale stan odczytany zaraz potem nie był ani pusty, ani wybraną grą. | `SessionOrchestrator.closeCompetingSession` po `CLOSED` | A |
+| `close.snapshot_not_idle_after_close` | Zamknięcie zwróciło sukces, ale aplikacja lokalnie nadal widziała inną sesję (żywy stream, zapis zawieszenia lub ponownego połączenia). | `SessionOrchestrator.closeCompetingSession` po `CLOSED` | A |
 | `switch.not_eligible` | Przełączenie gry w żywym streamie nie mogło się zacząć, a zgoda na zamknięcie była już udzielona. | `switchRetainedProviderGame` | A |
 | `switch.refused_not_eligible` | Ekran gry odrzucił przełączenie jako niedozwolone po jego rozpoczęciu, a zgoda na zamknięcie była już udzielona. | `switchRetainedProviderGame`, powód z `Game` | A |
 | `switch.interrupted` | Oczekiwanie na wynik przełączenia gry zostało przerwane. | `switchRetainedProviderGame` | A |
