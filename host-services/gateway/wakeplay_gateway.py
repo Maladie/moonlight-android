@@ -6608,6 +6608,16 @@ class GatewayState:
                     }
         actor_id = str(session.get("actor_profile_id") or "")
         parent_id = str(session.get("execution_profile_id") or "")
+        if terminal_reason.casefold() == "actor_replaced"                 and not self._child_time_client_holds_parent(client, parent_id):
+            # Handing the stream to the parent is the one release that outlives the child's time,
+            # so a client that cannot act as the parent may not request it.
+            return HTTPStatus.CONFLICT, {
+                "ok": False, "state": "blocked", "phase": str(session.get("phase") or ""),
+                "cleanup_required": False, "reason": "parent_grant_required",
+                "actor_profile_id": actor_id, "execution_profile_id": parent_id,
+                "client_id": client_id, "game_id": str(session.get("game_id") or ""),
+                "session_id": session_id,
+            }
         actor = self.config.get("profiles", {}).get(actor_id)
         actor = actor if isinstance(actor, dict) else {"id": actor_id, "policy_revision": 0}
         _monotonic, wall = self._child_time_now(actor)

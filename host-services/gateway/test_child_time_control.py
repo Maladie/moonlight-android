@@ -503,6 +503,15 @@ class ChildTimeControlTest(unittest.TestCase):
         self.assertNotIn("foreign-client", json.dumps(entries))
         self.assertNotIn(VIBE_UUID, json.dumps(entries))
 
+    def test_actor_replaced_requires_the_parent_grant_even_with_the_game_running(self):
+        session_id = self.start_running()
+        status, body = self.state.child_time_session_end(
+            self.client, "kid", session_id, "actor_replaced", "parent")
+        self.assertEqual(409, status, body)
+        self.assertEqual("parent_grant_required", body["reason"])
+        self.assertIsNotNone(self.state.child_time_session)
+        self.assertEqual("kid", self.state.control_state["stream"]["actor_profile_id"])
+
     def test_game_stopped_is_rejected_while_the_exact_game_still_runs(self):
         session_id = self.start_running()
         self.assertEqual("running", self.current["state"])
@@ -1794,6 +1803,7 @@ class ChildTimeControlTest(unittest.TestCase):
 
     def test_terminal_close_reservation_blocks_all_nonterminal_releases(self):
         session_id = self.start_running()
+        self.client["profile_grants"]["parent"] = ["use_profile"]  # actor_replaced needs the parent grant
         session = self.state.child_time_session
         self.current = {"id": "", "state": "idle", "running_games": []}
         with self.state.lock:
