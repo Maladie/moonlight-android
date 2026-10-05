@@ -50,6 +50,8 @@ final class ConsolePanel {
     static final int ROW_INSET_DP = 14;
     static final float FOCUS_SCALE = 1.03f;
     static final int STEPS = 10;
+    /** One menu backdrop for side panels and settings: text and art underneath stay unreadable. */
+    static final int SCRIM = 0xF2000000;
 
     private enum Kind { DESTRUCTIVE, STEPPER }
 
@@ -197,7 +199,7 @@ final class ConsolePanel {
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         int[] step = {stepFromPercent(percent)};
         Runnable show = () -> {
-            valueView.setText("‹  " + step[0] + "/" + STEPS + "  ›");
+            valueView.setText(stepperText(step[0]));
             row.setContentDescription(label + ". " + step[0] + "/" + STEPS);
         };
         IntConsumer set = next -> {
@@ -211,9 +213,10 @@ final class ConsolePanel {
             if (keyCode != KeyEvent.KEYCODE_DPAD_LEFT && keyCode != KeyEvent.KEYCODE_DPAD_RIGHT) {
                 return false;
             }
-            if (event.getAction() == KeyEvent.ACTION_DOWN) {
-                set.accept(step[0] + (keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1));
-            }
+            int direction = keyCode == KeyEvent.KEYCODE_DPAD_RIGHT ? 1 : -1;
+            // At the end of the range the key is ordinary navigation (e.g. back to a column).
+            if (!canStep(step[0], direction)) return false;
+            if (event.getAction() == KeyEvent.ACTION_DOWN) set.accept(step[0] + direction);
             return true;
         });
         row.setOnClickListener(view -> set.accept(step[0] >= STEPS ? 0 : step[0] + 1));
@@ -234,6 +237,17 @@ final class ConsolePanel {
         note.setPadding(dp(ROW_INSET_DP), dp(8), dp(ROW_INSET_DP), dp(8));
         note.setFocusable(false);
         return note;
+    }
+
+    static boolean canStep(int step, int direction) {
+        int next = step + direction;
+        return next >= 0 && next <= STEPS;
+    }
+
+    /** "6/10" with a "‹" or "›" only on the sides where a step is still possible. */
+    static String stepperText(int step) {
+        return (canStep(step, -1) ? "‹  " : "") + step + "/" + STEPS
+                + (canStep(step, 1) ? "  ›" : "");
     }
 
     static int stepFromPercent(int percent) {

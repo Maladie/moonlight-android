@@ -31,20 +31,14 @@ public class ConsoleChildProfileUiContractTest {
         String activity = source("src/main/java/com/limelight/console/ConsoleActivity.java");
         String menu = between(activity, "private void showHostSelectionOptions(",
                 "static HostGatewayClient.IntegrationProfile activeAuthorizedProfile(");
-        assertTrue(menu.contains("actions.add(wake)"));
-        assertTrue(menu.contains("actions.add(desktop)"));
-        assertFalse(menu.contains("!childProfile"));
-        assertTrue(menu.contains("actions.add(warmUp)"));
-        assertTrue(menu.contains("actions.add(terminate)"));
-        assertTrue(menu.contains("actions.add(hardTerminate)"));
-        assertTrue(menu.contains("actions.add(unpair)"));
-        assertTrue(menu.contains("actions.add(test)"));
-        assertTrue(menu.contains("actions.add(sleep)"));
-        assertFalse(menu.contains("warmUp.setEnabled(!childProfile)"));
-        assertFalse(menu.contains("getString(R.string.pcview_menu_test_network), !childProfile"));
-        assertTrue(menu.contains("online && paired && gatewayAvailable"));
-        assertFalse(menu.contains("online && paired && gatewayAvailable && !childProfile"));
-        assertFalse(menu.contains("canSleep && !childProfile"));
+        String panel = source("src/main/java/com/limelight/console/ConsoleHostPanel.java");
+        for (String action : new String[]{"WAKE", "DESKTOP", "CLOSE_STREAM", "HARD_TERMINATE",
+                "UNPAIR", "TEST_CONNECTION", "SLEEP"}) {
+            assertTrue(menu.contains("case " + action + ":"));
+        }
+        assertFalse(menu.contains("childProfile"));
+        assertFalse(panel.contains("childProfile"));
+        assertTrue(panel.contains("facts.online && facts.paired && facts.gatewayAvailable"));
         String desktop = between(activity, "private void launchDesktopSession(",
                 "private void renderApps(");
         assertFalse(desktop.contains("selectedProfileIsChild"));

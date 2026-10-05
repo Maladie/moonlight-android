@@ -27,6 +27,15 @@ public class ConsolePanelTest {
         assertEquals(100, ConsolePanel.percentFromStep(12));
     }
 
+    @Test public void stepperHintsOnlyTheDirectionsThatCanStillStep() {
+        assertEquals("0/10  ›", ConsolePanel.stepperText(0));
+        assertEquals("‹  6/10  ›", ConsolePanel.stepperText(6));
+        assertEquals("‹  10/10", ConsolePanel.stepperText(10));
+        assertEquals(false, ConsolePanel.canStep(0, -1));
+        assertEquals(true, ConsolePanel.canStep(0, 1));
+        assertEquals(false, ConsolePanel.canStep(10, 1));
+    }
+
     @Test public void destructiveRowsMoveLastKeepingRelativeOrder() {
         assertEquals(Arrays.asList("wake", "desktop", "test", "!close", "!unpair"),
                 ConsolePanel.destructiveLast(
