@@ -4703,6 +4703,7 @@ class GatewayState:
                 self.control_condition.wait(remaining)
             stream = self.control_state.get("stream")
             idle_restart = False
+            rebound = None
             if direction == "start" and observed_app_id == 0 and intent != "reauthorize":
                 idle_restart = self._control_reconcile_idle_locked()
                 stream = self.control_state.get("stream")
@@ -4812,6 +4813,23 @@ class GatewayState:
                 same_owner = all(stream.get(key) == proposed.get(key) for key in (
                     "client_id", "actor_profile_id", "execution_profile_id",
                     "stream_session_id", "sunshine_app_id"))
+                # The owner's transport ended without a stop (client abort while connecting;
+                # the streamer keeps the app paused). Only the same TV, actor, execution
+                # profile, child attachment and app may rebind it to a new transport, and
+                # only while the streamer proves no transport is live. The new generation
+                # fences every effect still bound to the dead one.
+                # ponytail: snapshot read under the Gateway lock, like the idle reconcile
+                # above; move it outside the lock if this path ever becomes frequent.
+                if not same_owner and intent in {"resume", "reconnect", "warm_up"} \
+                        and all(stream.get(key) == proposed.get(key) for key in (
+                            "client_id", "actor_profile_id", "execution_profile_id",
+                            "sunshine_app_id", "child_session_id")) \
+                        and observed_app_id == int(stream.get("sunshine_app_id") or 0) \
+                        and self._control_stream_transport_gone(stream):
+                    same_owner = True
+                    rebound = {"generation": stream.get("generation"),
+                               "stream_session_id": stream.get("stream_session_id"),
+                               "operation_id": operation_id}
                 if intent not in {"resume", "reconnect", "warm_up",
                                   "provider_transition"} or not same_owner:
                     same_replacement_transport = intent == "replacement" and \
@@ -4885,6 +4903,8 @@ class GatewayState:
                     "operation_id", "intent", "generation", "actor_lease_epoch",
                     "effect_sequence", "stream_session_id", "child_session_id",
                     "actor_profile_id", "execution_profile_id")})
+            if rebound:
+                DIAGNOSTICS.record("control-stream-transport-rebound", **rebound)
             if intent == "reauthorize":
                 retired, _result = self.provider_control_operation.retire(operation)
                 if retired:
@@ -5242,6 +5262,15 @@ class GatewayState:
                 stream["execution_profile_id"], stream).get("kind") == "idle"
         except OSError:
             return False
+
+    def _control_stream_transport_gone(self, stream: dict[str, Any]) -> bool:
+        """The streamer authoritatively reports no live transport (network read)."""
+        try:
+            ok, snapshot = self.proxy("vibepollo", "/snapshot?force=1", timeout=8.0,
+                                      profile_id=stream["execution_profile_id"])
+        except OSError:
+            return False
+        return ok and ControlOperationPolicy.streamer_transport_gone(snapshot)
 
     def _control_reconcile_idle_apply_locked(
             self, candidate: tuple[dict[str, Any], tuple[int, int, int, int]]) -> bool:

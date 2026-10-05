@@ -77,17 +77,24 @@ class ControlOperationPolicy:
         return session
 
     @staticmethod
-    def streamer_idle(snapshot: Any) -> bool:
+    def streamer_transport_gone(snapshot: Any) -> bool:
+        """No live transport: zero sessions and no connected client. The app may stay paused."""
         session = ControlOperationPolicy._authoritative_session(snapshot)
-        if session is None or session["active"] or session["app_running"] or session["count"] != 0:
+        if session is None or session["count"] != 0:
             return False
         clients = ControlOperationPolicy._snapshot_items(snapshot.get("clients"))
+        return clients is not None and not any(
+            not isinstance(item, dict) or item.get("connected") is not False
+            for item in clients)
+
+    @staticmethod
+    def streamer_idle(snapshot: Any) -> bool:
+        if not ControlOperationPolicy.streamer_transport_gone(snapshot) \
+                or snapshot["session"]["app_running"]:
+            return False
         apps = ControlOperationPolicy._snapshot_items(snapshot.get("apps"))
-        return clients is not None and apps is not None \
-            and not any(not isinstance(item, dict) or item.get("connected") is not False
-                        for item in clients) \
-            and not any(not isinstance(item, dict) or item.get("running") is not False
-                        for item in apps)
+        return apps is not None and not any(
+            not isinstance(item, dict) or item.get("running") is not False for item in apps)
 
     @staticmethod
     def streamer_snapshot_authoritative(snapshot: Any) -> bool:

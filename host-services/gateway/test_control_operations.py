@@ -887,6 +887,71 @@ class ControlOperationTest(unittest.TestCase):
         self.assertGreater(result["generation"], launch["generation"])
         self.assertEqual(2, len(calls))
 
+    def observe_paused_app(self, connected_count=0):
+        """Sunshine after a client abort: the app stays paused (resumable), transport ended."""
+        def proxy(name, path, **_kwargs):
+            if name == "vibepollo" and path == "/snapshot?force=1":
+                return True, {**control_evidence(connected_count, app_running=True),
+                              "clients": [{"uuid": VIBE_UUID,
+                                           "connected": connected_count > 0}],
+                              "apps": [{"app_id": 7, "running": True}]}
+            if name == "game_provider" and path == "/observation":
+                return True, {"game": {"state": "idle", "id": "", "evidence": "ABSENT"},
+                              "process": {"evidence": "ABSENT", "running_games": [],
+                                          "running_scan_status": "complete"}}
+            return False, {"error": "fixture_offline"}
+        self.state.proxy = target_aware(proxy)
+
+    def test_aborted_transport_rebinds_to_same_owner_resume(self):
+        # A1: launch permitted and completed, then the client aborts in CONNECTING_STREAM
+        # without a stop; Sunshine ends the session but keeps the app paused.
+        _status, a1 = self.acquire(self.request("a1-launch"))
+        self.complete(a1)
+        self.observe_paused_app()
+
+        # A2: the same TV resumes the paused app on a new transport.
+        status, a2 = self.acquire(self.request(
+            "a2-resume", "resume", session="stream-2"), 0)
+        self.assertEqual(200, status, a2)
+        self.assertEqual("permitted", a2["state"])
+        self.assertGreater(a2["generation"], a1["generation"])
+        self.assertEqual(200, self.complete(a2)[0])
+        self.assertEqual("stream-2", self.state.control_state["stream"]["stream_session_id"])
+
+        # The dead transport's binding is fenced: a late stop for it cannot act.
+        status, stale = self.acquire(self.request(
+            "a1-late-stop", "full_quit", expected_generation=a1["generation"]), 0)
+        self.assertEqual(409, status)
+        self.assertEqual("unmanaged_stream", stale["reason"])
+
+    def test_live_or_foreign_or_unproven_stream_still_conflicts(self):
+        for case in ("live_transport", "foreign_tv", "foreign_actor", "child_attached",
+                     "snapshot_unavailable", "launch"):
+            with self.subTest(case=case):
+                self.state.control_state.update({"active": None, "stream": None})
+                _status, owner = self.acquire(self.request("owner-" + case))
+                self.complete(owner)
+                if case == "foreign_tv":
+                    self.state.control_state["stream"]["client_id"] = "other-tv"
+                if case == "foreign_actor":
+                    self.state.control_state["stream"]["actor_profile_id"] = "other-actor"
+                if case == "child_attached":
+                    self.state.control_state["stream"]["child_session_id"] = "child-1"
+                if case == "snapshot_unavailable":
+                    self.state.proxy = lambda *_a, **_k: (False, {"error": "offline"})
+                else:
+                    self.observe_paused_app(1 if case == "live_transport" else 0)
+                intent = "launch" if case == "launch" else "resume"
+
+                status, result = self.acquire(self.request(
+                    "next-" + case, intent, session="stream-next", observed_app_id=7), 0)
+
+                self.assertEqual(409, status)
+                self.assertEqual("managed_stream_conflict", result["reason"])
+                stream = self.state.control_state["stream"]
+                self.assertEqual(("stream-1", owner["generation"]),
+                                 (stream["stream_session_id"], stream["generation"]))
+
 
 if __name__ == "__main__":
     unittest.main()
