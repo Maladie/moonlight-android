@@ -56,3 +56,15 @@ app/.externalNativeBuild/
 /host-services/control/dist/
 __pycache__/
 *.py[cod]
+
+# Local scratch: UI dumps and screenshots in the repository root, agent work
+# directories, and archived host builds (Build-HostServices.ps1 -OutputPath ...)
+/*.png
+/*.xml
+/work/
+/.tmp/
+/host-services/dist-*/
+/host-services/**/dist-*/
+
+# Gateway runtime state written next to the source by local runs
+/host-services/gateway/child-time-usage.json
