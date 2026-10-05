@@ -354,12 +354,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private boolean serviceBound;
     private boolean polling;
     private boolean active;
-    private boolean retainedStreamHome;
-    private String retainedStreamSessionId = "";
-    private String retainedStreamHostId = "";
-    private String retainedStreamProfileId = GatewayConnection.DEFAULT_PROFILE_ID;
-    private int retainedStreamAppId = StreamConfiguration.INVALID_APP_ID;
-    private String retainedStreamPlayniteGameId = "";
     private long warmUpClientAttempt;
     private String warmUpClientHostId = "";
     private int warmUpStatus;
@@ -818,7 +812,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String renderedCarouselSessionSignature = "";
     private String renderedExpandedSessionSignature = "";
     private final Map<String, SessionSnapshot> publishedSessionSnapshots =
-            new LinkedHashMap<>();
+            new ConcurrentHashMap<>();
     private final ConsoleSessionSubscriber sessionSubscriber =
             new ConsoleSessionSubscriber(this::queueConsoleUpdates);
     private final Map<String, Long> sessionProjectionRequestedAt = new LinkedHashMap<>();
@@ -892,8 +886,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (previous == null && initialHostsLoaded) newlyDiscoveredHosts.add(copy.uuid);
             hosts.put(copy.uuid, copy);
             if (fresh && active && copy.uuid.equals(selectedHostUuid)) {
-                refreshSessionProjection(copy,
-                        resolveSessionSnapshot(copy).state != SessionSnapshot.State.TERMINATING);
+                refreshSessionProjection(copy, null);
             }
             queueConsoleUpdates(ConsoleUpdateChannels.diff(
                     previous, copy, selectedHostUuid));
@@ -920,8 +913,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void reconcileAuthoritativeSession(ComputerDetails host) {
-        Integer previousRunningAppId = lastFreshRunningAppIds.put(
-                host.uuid, host.runningGameId);
+        int runningAppId = resolveSessionSnapshot(host).hostRunningAppId;
+        Integer previousRunningAppId = lastFreshRunningAppIds.put(host.uuid, runningAppId);
         SessionResumeManager.PendingSession pending =
                 SessionResumeManager.pendingSession(this);
         String previousStreamSessionId = lastFreshStreamSessionIds.get(host.uuid);
@@ -930,7 +923,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         RetainedStreamSessionCoordinator.Snapshot retained =
                 RetainedStreamSessionCoordinator.snapshot();
         boolean lostRetainedTransport = AuthoritativeSessionTransition.lostRetainedTransport(
-                host.state == ComputerDetails.State.ONLINE, host.runningGameId,
+                host.state == ComputerDetails.State.ONLINE, runningAppId,
                 host.uuid.equalsIgnoreCase(retained.hostId), retained.state);
         if (lostRetainedTransport && !retained.streamSessionId.isEmpty()
                 && RetainedStreamSessionCoordinator.clearIfMatches(
@@ -938,16 +931,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             SessionResumeManager.clearIfMatches(this, retained.streamSessionId);
             BackgroundStreamService.dismiss(this, retained.streamSessionId);
             if (pending != null && pending.matches(retained.streamSessionId)) pending = null;
-            boolean exactLocalRetained = retained.streamSessionId.equals(
-                    retainedStreamSessionId)
-                    && retained.hostId.equalsIgnoreCase(retainedStreamHostId);
-            if (exactLocalRetained) {
-                retainedStreamSessionId = "";
-                retainedStreamHostId = "";
-                retainedStreamAppId = StreamConfiguration.INVALID_APP_ID;
-                retainedStreamPlayniteGameId = "";
-                if (retainedStreamHome) finish();
-            }
+            if (isStreamHome() && retained.streamSessionId.equals(
+                    launchedExtra(EXTRA_RETAINED_STREAM_SESSION_ID))
+                    && retained.hostId.equalsIgnoreCase(
+                    launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID))) finish();
         }
         boolean retainedLive = host.uuid.equalsIgnoreCase(retained.hostId)
                 && (retained.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
@@ -958,21 +945,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && !retained.playniteGameId.isEmpty()
                 && !explicitSuspended.playniteGameId.equals(retained.playniteGameId)));
         if (explicitSuspended != null && explicitSuspended.resumedAt == 0L
-                && ((host.runningGameId != 0
-                && explicitSuspended.sunshineAppId != host.runningGameId)
+                && ((runningAppId != 0
+                && explicitSuspended.sunshineAppId != runningAppId)
                 || retainedReplacedSuspended)) {
             SuspendedSessionStore.markSessionEndedIfMatches(
                     this, host.uuid, explicitSuspended.profileId,
                     explicitSuspended.suspendId);
         }
-        if (host.runningGameId != 0) {
+        if (runningAppId != 0) {
             if (host.uuid.equalsIgnoreCase(retained.hostId)
-                    && retained.appId == host.runningGameId
+                    && retained.appId == runningAppId
                     && !retained.streamSessionId.isEmpty()) {
                 lastFreshStreamSessionIds.put(host.uuid, retained.streamSessionId);
             } else {
                 if (pending != null && host.uuid.equalsIgnoreCase(pending.hostUuid)
-                        && pending.appId == host.runningGameId) {
+                        && pending.appId == runningAppId) {
                     lastFreshStreamSessionIds.put(host.uuid, pending.streamSessionId);
                 }
             }
@@ -980,9 +967,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             lastFreshStreamSessionIds.remove(host.uuid);
         }
         if (!AuthoritativeSessionTransition.ended(
-                previousRunningAppId, host.runningGameId)) return;
+                previousRunningAppId, runningAppId)) return;
         String endedStreamSessionId = AuthoritativeSessionTransition.endedSessionId(
-                previousRunningAppId, host.runningGameId, previousStreamSessionId);
+                previousRunningAppId, runningAppId, previousStreamSessionId);
         invalidateSessionProjectionRequest(host.uuid);
         if (host.uuid.equalsIgnoreCase(selectedHostUuid)) {
             refreshSelectedApplications();
@@ -1029,14 +1016,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     @Override
     protected void onCreate(Bundle state) {
-        retainedStreamHome = this instanceof StreamHomeActivity
-                || getIntent().getBooleanExtra(EXTRA_RETAINED_STREAM_HOME, false);
-        if (retainedStreamHome) setTheme(useTransparentWarmUpStartingWindow()
+        if (isStreamHome()) setTheme(useTransparentWarmUpStartingWindow()
                 ? R.style.ConsoleStreamHomeWarmUpTheme
                 : R.style.ConsoleStreamHomeTheme);
         super.onCreate(state);
-        if (!retainedStreamHome
-                && RetainedStreamSessionCoordinator.canResumeInstantly()) {
+        if (!isStreamHome() && RetainedStreamSessionCoordinator.canResumeInstantly()) {
             if (!RetainedStreamSessionCoordinator.hasAttachedPresentation()) {
                 // The transport survived its Activity: reattach a presentation to it.
                 Intent attach = SessionResumeManager.buildResumeIntent(this,
@@ -1047,18 +1031,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             overridePendingTransition(0, 0);
             return;
         }
-        retainedStreamSessionId = normalizeId(getIntent().getStringExtra(
-                EXTRA_RETAINED_STREAM_SESSION_ID));
-        retainedStreamHostId = normalizeId(getIntent().getStringExtra(
-                EXTRA_RETAINED_STREAM_HOST_ID));
-        retainedStreamProfileId = GatewayConnection.normalizeProfileId(
-                getIntent().getStringExtra(EXTRA_RETAINED_STREAM_PROFILE_ID));
-        retainedStreamAppId = getIntent().getIntExtra(EXTRA_RETAINED_STREAM_APP_ID,
-                StreamConfiguration.INVALID_APP_ID);
-        retainedStreamPlayniteGameId = normalizeId(getIntent().getStringExtra(
-                EXTRA_RETAINED_STREAM_PLAYNITE_GAME_ID));
         warmUpClientAttempt = getIntent().getLongExtra(EXTRA_WARM_UP_ATTEMPT, 0L);
-        warmUpClientHostId = warmUpClientAttempt > 0L ? retainedStreamHostId : "";
+        warmUpClientHostId = warmUpClientAttempt > 0L
+                ? launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID) : "";
         preferences = getSharedPreferences(PREFS, MODE_PRIVATE);
         microphoneStatePreferences = getSharedPreferences(
                 UsbMicrophoneService.STATE_PREFS, MODE_PRIVATE);
@@ -1080,8 +1055,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         showCarouselGameDescription = preferences.getBoolean(
                 "show_carousel_game_description", true);
         selectedHostUuid = preferences.getString("selected_host", null);
-        if (retainedStreamHome && !retainedStreamHostId.isEmpty()) {
-            selectedHostUuid = retainedStreamHostId;
+        if (isStreamHome() && !launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID).isEmpty()) {
+            selectedHostUuid = launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID);
             hostSelectionVisible = false;
         }
         autoLoginHostUuid = preferences.getString("auto_login_host", "");
@@ -1103,7 +1078,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         playniteLaunchTargetStore = new PlayniteLaunchTargetStore(this);
         quickLaunchManager = QuickLaunchManager.getInstance(this);
         shortcutHelper = new ShortcutHelper(this);
-        getWindow().setFormat(retainedStreamHome
+        getWindow().setFormat(isStreamHome()
                 ? PixelFormat.TRANSLUCENT : PixelFormat.OPAQUE);
         root = buildUi();
         setContentView(root);
@@ -1376,7 +1351,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         // The retained stream Home always belongs to the host backing the live stream.
         // A stale "return to hosts" request from an earlier suspend flow must not move it
         // away from that host's carousel.
-        if (!retainedStreamHome) {
+        if (!isStreamHome()) {
             String returnToHosts = SuspendedSessionStore.consumeHostSelectionRequest(this);
             if (!returnToHosts.isEmpty()) showHostSelection(returnToHosts);
         }
@@ -1794,6 +1769,26 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     protected boolean useTransparentWarmUpStartingWindow() {
         return false;
+    }
+
+    /** True for the Home placed over a retained stream ({@link StreamHomeActivity}). */
+    protected boolean isStreamHome() {
+        return false;
+    }
+
+    /** The retained stream this Home was launched for: its launch request, not live state. */
+    private String launchedExtra(String name) {
+        return normalizeId(getIntent().getStringExtra(name));
+    }
+
+    private String launchedProfileId() {
+        return GatewayConnection.normalizeProfileId(
+                getIntent().getStringExtra(EXTRA_RETAINED_STREAM_PROFILE_ID));
+    }
+
+    private int launchedAppId() {
+        return getIntent().getIntExtra(EXTRA_RETAINED_STREAM_APP_ID,
+                StreamConfiguration.INVALID_APP_ID);
     }
 
     protected final boolean hasResolvedInitialHostSelection() {
@@ -2469,7 +2464,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 Gravity.TOP | Gravity.END);
         toastParams.setMargins(dp(18), dp(18), dp(18), 0);
         container.addView(discordDmToastView, toastParams);
-        if (retainedStreamHome) deferSecondaryLayersAfterFirstLayout(container);
+        if (isStreamHome()) deferSecondaryLayersAfterFirstLayout(container);
         else buildSecondaryLayers(container);
         return container;
     }
@@ -2633,8 +2628,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void resolveInitialHostSelection() {
         if (!active || initialHostSelectionResolved) return;
         initialHostSelectionResolved = true;
-        if (retainedStreamHome) {
-            ComputerDetails retainedHost = hosts.get(retainedStreamHostId);
+        if (isStreamHome()) {
+            ComputerDetails retainedHost = hosts.get(
+                    launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID));
             if (retainedHost != null) {
                 selectHost(retainedHost, true);
                 return;
@@ -4115,7 +4111,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void armPendingWarmUpRelay() {
-        if (!retainedStreamHome || warmUpRelayDispatched || warmUpClientAttempt <= 0L) return;
+        if (!isStreamHome() || warmUpRelayDispatched || warmUpClientAttempt <= 0L) return;
         String gameId = normalizeId(getIntent().getStringExtra(
                 EXTRA_WARM_UP_PENDING_GAME_ID));
         String gameName = getIntent().getStringExtra(EXTRA_WARM_UP_PENDING_GAME_NAME);
@@ -4126,8 +4122,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && getIntent().hasExtra(EXTRA_WARM_UP_PENDING_NEUTRAL_STREAM)
                 && getIntent().hasExtra(EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM)) {
             pendingWarmUpRelay = PlayIntent.playniteGame(
-                    retainedStreamHostId, retainedStreamProfileId,
-                    retainedStreamAppId, gameName, false, gameId,
+                    launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID), launchedProfileId(),
+                    launchedAppId(), gameName, false, gameId,
                     artworkId, quickLaunchId,
                     getIntent().getBooleanExtra(
                             EXTRA_WARM_UP_PENDING_REQUIRES_CONNECTOR, true),
@@ -4136,8 +4132,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                             EXTRA_WARM_UP_PENDING_START_BEFORE_STREAM, false));
         } else {
             pendingWarmUpRelay = providerGameIntent(
-                    retainedStreamHostId, retainedStreamProfileId,
-                    retainedStreamAppId, gameName, false, gameId,
+                    launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID), launchedProfileId(),
+                    launchedAppId(), gameName, false, gameId,
                     artworkId, quickLaunchId);
         }
     }
@@ -4145,11 +4141,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     protected final void acceptPreparingHomeFrame() {
         warmUpHomeFrameAccepted = true;
         if (pendingWarmUpRelay == null) return;
-        ComputerDetails host = currentHost(retainedStreamHostId);
-        showLoading(host == null ? retainedStreamHostId : host.name,
+        ComputerDetails host = currentHost(pendingWarmUpRelay.hostId);
+        showLoading(host == null ? pendingWarmUpRelay.hostId : host.name,
                 pendingWarmUpRelay.appName,
                 LaunchTransitionType.GAME,
-                cachedLoadingArtworkPath(retainedStreamHostId,
+                cachedLoadingArtworkPath(pendingWarmUpRelay.hostId,
                         pendingWarmUpRelay.profileId,
                         pendingWarmUpRelay.loadingArtworkGameId));
         dispatchPendingWarmUpRelay();
@@ -4170,9 +4166,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && !preparing.transitionId.isEmpty()
                 && preparing.transitionId.equals(normalizeId(getIntent().getStringExtra(
                 EXTRA_WARM_UP_TRANSITION_ID)))
-                && preparing.streamSessionId.equals(retainedStreamSessionId)
-                && preparing.hostId.equalsIgnoreCase(retainedStreamHostId)
-                && preparing.appId == retainedStreamAppId;
+                && preparing.streamSessionId.equals(
+                launchedExtra(EXTRA_RETAINED_STREAM_SESSION_ID))
+                && preparing.hostId.equalsIgnoreCase(launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID))
+                && preparing.appId == launchedAppId();
         if (!exact) {
             clearPendingWarmUpRelay();
             warmUpStatus = WARM_UP_ERROR;
@@ -4188,7 +4185,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private boolean isPendingWarmUpRelayOwnedOrCompleted(String gameId) {
         if (RetainedStreamSessionCoordinator.isPreparingSwitchOwned(
-                retainedStreamSessionId, retainedStreamHostId, retainedStreamAppId,
+                launchedExtra(EXTRA_RETAINED_STREAM_SESSION_ID),
+                launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID), launchedAppId(),
                 normalizeId(getIntent().getStringExtra(EXTRA_WARM_UP_TRANSITION_ID)),
                 warmUpClientAttempt)) {
             return true;
@@ -4198,9 +4196,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return (retained.state == RetainedStreamSessionCoordinator.State.PREPARING
                 || retained.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
                 || retained.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE)
-                && retained.streamSessionId.equals(retainedStreamSessionId)
-                && retained.hostId.equalsIgnoreCase(retainedStreamHostId)
-                && retained.appId == retainedStreamAppId
+                && retained.streamSessionId.equals(launchedExtra(EXTRA_RETAINED_STREAM_SESSION_ID))
+                && retained.hostId.equalsIgnoreCase(launchedExtra(EXTRA_RETAINED_STREAM_HOST_ID))
+                && retained.appId == launchedAppId()
                 && retained.playniteGameId.equalsIgnoreCase(normalizeId(gameId));
     }
 
@@ -4837,7 +4835,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         refreshDiscordIndicator();
         refreshUsbMicrophoneIndicator();
         loadPlayniteForHost(host);
-        refreshSessionProjection(host, host.runningGameId != 0);
+        refreshSessionProjection(host, null);
     }
 
     private boolean changeSelectedProfile(ComputerDetails host, String profileId) {
@@ -5036,18 +5034,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && ConsoleActionCatalog.isPaired(host) && snapshot.hasActiveSession();
         boolean visible = activeSession && !CONSOLE_UI_V2;
         if (CONSOLE_UI_V2 && host != null) {
-            PlayniteIdentityResolutionPolicy.Action resolutionAction =
-                    PlayniteIdentityResolutionPolicy.decide(
-                            ConsoleActionCatalog.isOnline(host),
-                            ConsoleActionCatalog.isPaired(host),
-                            snapshot.state);
-            if (resolutionAction == PlayniteIdentityResolutionPolicy.Action.REQUEST) {
-                refreshSessionProjection(host, true);
-            } else if (resolutionAction == PlayniteIdentityResolutionPolicy.Action.CLEAR) {
-                refreshSessionProjection(host, false);
-            } else if (ConsoleActionCatalog.isOnline(host)
-                    && ConsoleActionCatalog.isPaired(host)) {
-                refreshSessionProjection(host, activeSession);
+            boolean ready = ConsoleActionCatalog.isOnline(host)
+                    && ConsoleActionCatalog.isPaired(host);
+            if (ready || PlayniteIdentityResolutionPolicy.decide(ConsoleActionCatalog.isOnline(
+                    host), ConsoleActionCatalog.isPaired(host), snapshot.state)
+                    != PlayniteIdentityResolutionPolicy.Action.PRESERVE) {
+                refreshSessionProjection(host, null);
             }
         }
         boolean restoreFocus = quickResumeButton.hasFocus() && !visible;
@@ -5070,20 +5062,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         wireHomeFocusNavigation();
     }
 
-    private void refreshSessionProjection(ComputerDetails host, boolean activeSession) {
-        if (host == null) return;
-        refreshSessionProjection(host, selectedProfileKey(host.uuid), activeSession, null);
-    }
-
-    private void refreshSessionProjection(ComputerDetails host, boolean activeSession,
+    private void refreshSessionProjection(ComputerDetails host,
                                            Consumer<Boolean> completion) {
         if (host == null) return;
-        refreshSessionProjection(host, selectedProfileKey(host.uuid), activeSession,
-                completion);
+        refreshSessionProjection(host, selectedProfileKey(host.uuid), completion);
     }
 
     private void refreshSessionProjection(ComputerDetails host, HostProfileKey requestKey,
-                                           boolean activeSession,
                                            Consumer<Boolean> completion) {
         if (host == null) return;
         String stateKey = requestKey.cacheKey();
@@ -5187,14 +5172,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private SessionSnapshot projectSession(ComputerDetails host, String profileId, boolean render) {
-        if (host == null) {
+        RetainedStreamSessionCoordinator.Snapshot retained = render
+                ? sessionSubscriber.snapshot() : RetainedStreamSessionCoordinator.snapshot();
+        if (host == null || retained == null) { // Nothing is delivered before the first onStart.
             return SessionSnapshot.pending("", GatewayConnection.DEFAULT_PROFILE_ID,
                     GatewayConnection.DEFAULT_PROFILE_ID);
         }
         HostProfileKey profileKey = new HostProfileKey(host.uuid, profileId);
         String stateKey = profileKey.cacheKey();
-        RetainedStreamSessionCoordinator.Snapshot retained = render
-                ? sessionSubscriber.snapshot() : RetainedStreamSessionCoordinator.snapshot();
         String executionProfileId = executionProfileId(host.uuid, profileKey.profileId);
         SuspendedSessionStore.Session suspended = suspendedSession(
                 host.uuid, profileKey.profileId);
@@ -5203,15 +5188,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         HostSleepStateStore.State sleep = HostSleepStateStore.load(this, host.uuid);
         SessionResumeManager.PendingSession pending =
                 SessionResumeManager.pendingSession(this);
-        boolean pendingMatchesRunningSession = pending != null
-                && host.uuid.equalsIgnoreCase(pending.hostUuid)
-                && executionProfileId.equals(pending.executionProfileId)
-                && host.runningGameId != 0
-                && host.runningGameId == pending.appId;
-        boolean pendingReconnect = pending != null
-                && (pending.autoResume || pendingMatchesRunningSession)
-                && PlayniteIdentityResolutionPolicy.allowsPendingReconnect(
-                        "unknown", pending.playniteGameId);
         int sessionAppId = retained.hostId.equalsIgnoreCase(host.uuid)
                 && retained.executionProfileId.equals(executionProfileId)
                 && retained.appId != 0 ? retained.appId
@@ -5227,11 +5203,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             neutralStreamTarget = PlayniteTargetResolver.isNeutralStream(
                     PlayniteTargetResolver.findById(loadApps(host, true), sessionAppId));
         }
-        SessionStateResolver.LocalFacts local = new SessionStateResolver.LocalFacts(
-                suspended, SuspendedSessionStore.recentlyEndedForExecution(
-                this, host.uuid, executionProfileId), pendingReconnect, pending,
-                sleep != null, sleep != null && sleep.sleepObservedAt > 0L,
-                neutralStreamTarget);
+        SessionStateResolver.LocalFacts local = SessionStateResolver.LocalFacts.forHost(
+                host, executionProfileId, suspended,
+                SuspendedSessionStore.recentlyEndedForExecution(this, host.uuid,
+                executionProfileId), pending, sleep != null,
+                sleep != null && sleep.sleepObservedAt > 0L, neutralStreamTarget);
         if (render) return projectionOwner.rendered(retained, local, SystemClock.uptimeMillis());
         SessionSnapshot canonical = projectionOwner.current(
                 retained, local, SystemClock.uptimeMillis());
@@ -5450,8 +5426,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showHostSelectionOptions(ComputerDetails host) {
-        boolean terminating = resolveSessionSnapshot(host).state
-                == SessionSnapshot.State.TERMINATING;
+        SessionSnapshot session = renderedSessionSnapshot(host);
+        boolean terminating = session.state == SessionSnapshot.State.TERMINATING;
         boolean online = host.state == ComputerDetails.State.ONLINE && !terminating;
         boolean paired = host.pairState == PairingManager.PairState.PAIRED;
         boolean autoWarmUp = HostAutoWarmUpPreferences.isEnabled(preferences, host.uuid);
@@ -5496,7 +5472,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         sleep.setOnClickListener(view -> confirmSleepHost(host));
         TextView terminate = hostSelectionMenuAction(
                 getString(R.string.console_close_stream),
-                online && paired && host.runningGameId != 0);
+                online && paired && session.hostRunningAppId != 0);
         terminate.setTextColor(terminate.isEnabled() ? 0xFFFF9B92 : 0x88FF9B92);
         terminate.setOnClickListener(view -> confirmCloseHostStream(host));
         TextView hardTerminate = hostSelectionMenuAction(
@@ -6546,8 +6522,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void showQuickLaunchItemActions(QuickLaunchManager.QuickLaunchItem item) {
         ComputerDetails host = hosts.get(item.computerUuid);
-        if (host != null && resolveSessionSnapshot(host).state
-                == SessionSnapshot.State.TERMINATING) {
+        SessionSnapshot session = renderedSessionSnapshot(host);
+        if (session.state == SessionSnapshot.State.TERMINATING) {
             showSidePanelBusy(getString(R.string.console_quick_launch_eyebrow),
                     item.getDisplayNameLong(),
                     getString(R.string.console_status_closing_stream));
@@ -6591,7 +6567,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             });
             actions.add(right);
         }
-        if (host != null && host.runningGameId == item.appId) {
+        if (host != null && session.hostRunningAppId == item.appId) {
             TextView quit = panelAction(getString(R.string.applist_menu_quit));
             quit.setTextColor(0xFFFF9B92);
             quit.setOnClickListener(view -> confirmQuitAction(() -> {
@@ -7540,7 +7516,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     } else if (state == PairingManager.PairState.ALREADY_IN_PROGRESS) {
                         message = getString(R.string.pair_already_in_progress);
                     } else {
-                        message = getString(host.runningGameId != 0
+                        message = getString(resolveSessionSnapshot(host).hostRunningAppId != 0
                                 ? R.string.pair_pc_ingame : R.string.pair_fail);
                     }
                 }
@@ -7639,15 +7615,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                                   GatewayConnection connection) {
         final SuspendedSessionStore.Session suspendedRequest;
         final HostSleepStateStore.State sleepRequest;
-        if (host.runningGameId != 0) {
-            String gameId = uniquePlayniteGameIdForRunningApp(host, host.runningGameId);
+        int runningAppId = resolveSessionSnapshot(host).hostRunningAppId;
+        if (runningAppId != 0) {
+            String gameId = uniquePlayniteGameIdForRunningApp(host, runningAppId);
             if (gameId.isEmpty()) {
                 gameId = preferences.getString("selected_playnite." + host.uuid, "");
             }
-            String title = findAppName(host, host.runningGameId);
+            String title = findAppName(host, runningAppId);
             suspendedRequest = new SuspendedSessionStore.Session(
                     UUID.randomUUID().toString(), host.uuid, selectedProfileId(host.uuid),
-                    host.runningGameId, gameId,
+                    runningAppId, gameId,
                     title == null ? getString(R.string.console_game) : title,
                     "", System.currentTimeMillis(),
                     executionProfileId(host.uuid, selectedProfileId(host.uuid)));
@@ -7762,9 +7739,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void confirmTerminateSession(ComputerDetails host, String providerGameId) {
+        SessionSnapshot session = renderedSessionSnapshot(host);
         if (host == null || host.state != ComputerDetails.State.ONLINE
-                || (resolveSessionSnapshot(host).state != SessionSnapshot.State.ACTIVE
-                && host.runningGameId == 0)
+                || (session.state != SessionSnapshot.State.ACTIVE
+                && session.hostRunningAppId == 0)
                 || managerBinder == null) return;
         TextView cancel = panelAction(getString(R.string.console_cancel));
         TextView terminate = panelAction(getString(R.string.overlay_menu_quit_session));
@@ -7855,7 +7833,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void confirmCloseHostStream(ComputerDetails host) {
         if (host == null || host.state != ComputerDetails.State.ONLINE
-                || host.runningGameId == 0 || managerBinder == null) return;
+                || renderedSessionSnapshot(host).hostRunningAppId == 0
+                || managerBinder == null) return;
         TextView cancel = panelAction(getString(R.string.console_cancel));
         TextView close = panelAction(getString(R.string.console_close_stream));
         close.setTextColor(0xFFFF8A80);
@@ -8006,12 +7985,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         for (String streamSessionId : streamSessionIds) {
             SessionResumeManager.clearIfMatches(this, streamSessionId);
             BackgroundStreamService.dismiss(this, streamSessionId);
-        }
-        if (host.uuid.equalsIgnoreCase(retainedStreamHostId)) {
-            retainedStreamSessionId = "";
-            retainedStreamHostId = "";
-            retainedStreamAppId = StreamConfiguration.INVALID_APP_ID;
-            retainedStreamPlayniteGameId = "";
         }
         publishedSessionSnapshots.remove(stateKey);
         lastFreshRunningAppIds.remove(host.uuid);
@@ -12331,7 +12304,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     renderPlayniteLibrary(currentHost(host.uuid), currentSunshineApps);
                     refreshSessionState(host.uuid);
                 }
-                refreshSessionProjection(host, host.runningGameId != 0, ignored -> { });
+                refreshSessionProjection(host, ignored -> { });
                 ConsoleUiFeedback.makeText(this, stopped
                                 ? R.string.playnite_end_game_success
                                 : R.string.overlay_menu_end_game_failed,
@@ -12709,7 +12682,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (selectedProfileIsChild(host == null ? null : host.uuid)) {
             apps = Collections.emptyList();
         }
-        String signature = appRenderSignature(host, apps);
+        int runningAppId = renderedSessionSnapshot(host).hostRunningAppId;
+        String signature = appRenderSignature(host, apps, runningAppId);
         Object firstTag = appRow.getChildCount() > 0 ? appRow.getChildAt(0).getTag() : null;
         if (signature.equals(renderedAppsSignature) && firstTag instanceof String &&
                 ((String) firstTag).startsWith("app:")) return;
@@ -12736,7 +12710,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     15, 0xFFFFB74D, false), new LinearLayout.LayoutParams(
                     dp(700), ViewGroup.LayoutParams.MATCH_PARENT));
         } else {
-            for (NvApp app : apps) appRow.addView(appCard(host, app), cardSpacing());
+            for (NvApp app : apps) {
+                appRow.addView(appCard(host, app, runningAppId), cardSpacing());
+            }
         }
         if (portraitLayout) {
             appVerticalScroll.post(() -> appVerticalScroll.scrollTo(0, restored));
@@ -12760,7 +12736,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         wireHomeFocusNavigation();
     }
 
-    private View appCard(ComputerDetails host, NvApp app) {
+    private View appCard(ComputerDetails host, NvApp app, int runningAppId) {
         boolean debugCarousel = CONSOLE_UI_V2 && !portraitLayout;
         LinearLayout card = cardBase(dp(portraitLayout ? 220 : debugCarousel ? 84 : 205),
                 dp(portraitLayout ? 225 : debugCarousel ? 150 : 225));
@@ -12795,7 +12771,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         copy.addView(name, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         long playedAt = preferences.getLong(appHistoryKey(host.uuid, app.getAppId()), 0L);
-        boolean running = host.runningGameId == app.getAppId();
+        boolean running = runningAppId == app.getAppId();
         boolean hostReady = ConsoleActionCatalog.isOnline(host)
                 && ConsoleActionCatalog.isPaired(host);
         boolean customSettings = !AppPreferences.getAppSettings(this,
@@ -12885,10 +12861,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return false;
     }
 
-    private String appRenderSignature(ComputerDetails host, List<NvApp> apps) {
+    private String appRenderSignature(ComputerDetails host, List<NvApp> apps,
+                                      int runningAppId) {
         StringBuilder value = new StringBuilder(host.uuid).append('|')
                 .append(host.state).append('|').append(host.pairState).append('|')
-                .append(host.runningGameId).append('|').append(showHiddenApps);
+                .append(runningAppId).append('|').append(showHiddenApps);
         for (NvApp app : apps) {
             String appKey = host.uuid + ":" + app.getAppId();
             value.append(';').append(app.getAppId()).append(':').append(app.getAppName())
@@ -12982,15 +12959,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void showAppActions(ComputerDetails host, NvApp app, ImageView poster) {
         if (host == null || app == null || selectedProfileIsChild(host.uuid)) return;
-        if (resolveSessionSnapshot(host).state == SessionSnapshot.State.TERMINATING) {
+        SessionSnapshot session = renderedSessionSnapshot(host);
+        if (session.state == SessionSnapshot.State.TERMINATING) {
             showSidePanelBusy(getString(R.string.console_apps_eyebrow), app.getAppName(),
                     getString(R.string.console_status_closing_stream));
             return;
         }
         boolean online = ConsoleActionCatalog.isOnline(host);
         boolean paired = ConsoleActionCatalog.isPaired(host);
-        boolean thisAppRunning = host.runningGameId == app.getAppId();
-        boolean anotherAppRunning = host.runningGameId != 0 && !thisAppRunning;
+        boolean thisAppRunning = session.hostRunningAppId == app.getAppId();
+        boolean anotherAppRunning = session.hostRunningAppId != 0 && !thisAppRunning;
         Set<String> hidden = new HashSet<>(getSharedPreferences(
                 AppView.HIDDEN_APPS_PREF_FILENAME, MODE_PRIVATE)
                 .getStringSet(host.uuid, Collections.emptySet()));
@@ -13697,7 +13675,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (ConsoleActionCatalog.isOnline(host)
                         && ConsoleActionCatalog.isPaired(host)
                         && profileKey.equals(selectedProfileKey(hostId))) {
-                    refreshSessionProjection(host, profileKey, true, null);
+                    refreshSessionProjection(host, profileKey, null);
                 }
                 return resolveSessionSnapshot(host, profileKey.profileId);
             }
@@ -13786,7 +13764,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         == RetainedStreamSessionCoordinator.State.HOME_LIVE
                         || retained.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE)
                         && host != null
-                        && (preparing || host.runningGameId == retained.appId)
+                        && (preparing || resolveSessionSnapshot(host, intent.profileId)
+                        .hostRunningAppId == retained.appId)
                         && retained.hostId.equalsIgnoreCase(intent.hostId)
                         && retained.executionProfileId.equals(executionProfileId(intent.hostId, intent.profileId))
                         && (preparing || !retained.profileId.equals(intent.profileId)
@@ -13832,7 +13811,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     completion.accept(false);
                     return;
                 }
-                refreshSessionProjection(host, intent.profileKey, true, accepted -> {
+                refreshSessionProjection(host, intent.profileKey, accepted -> {
                     if (!cancelled.getAsBoolean()) completion.accept(accepted);
                 });
             }
@@ -13878,6 +13857,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (host == null) throw SessionFailure.CLOSE_HOST_UNAVAILABLE.raise();
                 RetainedStreamSessionCoordinator.Snapshot retained =
                         RetainedStreamSessionCoordinator.snapshot();
+                int runningAppId = resolveSessionSnapshot(host, intent.profileId)
+                        .hostRunningAppId;
                 boolean childMustCloseDisallowedGame = isChildIntent(intent)
                         && retained.hostId.equalsIgnoreCase(intent.hostId)
                         && retained.executionProfileId.equals(executionProfileId(
@@ -13919,7 +13900,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         && retained.hostId.equalsIgnoreCase(intent.hostId)
                         && retained.executionProfileId.equals(executionProfileId(
                         intent.hostId, intent.profileId))
-                        && retained.appId == host.runningGameId;
+                        && retained.appId == runningAppId;
                 RetainedStreamSessionCoordinator.DirectTermination reconnectTermination = null;
                 if (exactRetained) {
                     Boolean terminated = terminateLiveRetainedForReplacement(
@@ -13950,7 +13931,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                 } else {
                     LimeLog.info("Destructive close path=direct-nonretained host="
-                            + intent.hostId + " app=" + host.runningGameId);
+                            + intent.hostId + " app=" + runningAppId);
                 }
                 boolean closed = false;
                 try {
@@ -14132,8 +14113,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     setWarmUpStatus(intent.hostId, request, WARM_UP_ERROR);
                     return null;
                 }
-                if (ready.runningGameId != 0
-                        && ready.runningGameId != result.target.getAppId()) {
+                int readyAppId = resolveSessionSnapshot(ready, intent.profileId)
+                        .hostRunningAppId;
+                if (readyAppId != 0 && readyAppId != result.target.getAppId()) {
                     setWarmUpStatus(intent.hostId, request, WARM_UP_ERROR);
                     return null;
                 }
@@ -14141,7 +14123,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return new SessionOrchestrator.PreparedWarmUp(
                         result.target, freshBridge.gameId, ready,
                         intent.profileKey,
-                        ready.runningGameId == 0);
+                        readyAppId == 0);
             }
 
             @Override public void launchPreparedHost(
@@ -14284,8 +14266,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
                 }
             }
-            if (ready != null && ready.runningGameId != 0
-                    && ready.runningGameId != app.getAppId()
+            int readyAppId = resolveSessionSnapshot(ready, transitionProfileId)
+                    .hostRunningAppId;
+            if (ready != null && readyAppId != 0 && readyAppId != app.getAppId()
                     && !terminateKnownControlPlane(ready, transitionProfileId,
                     knownProviderGameId(ready))) {
                 mainHandler.post(() -> {
@@ -14533,12 +14516,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private boolean handleRetainedStreamLaunch(ComputerDetails host, NvApp app,
                                                 String playniteGameId) {
-        if (!retainedStreamHome) return false;
-        boolean sameHost = host != null && retainedStreamHostId.equalsIgnoreCase(host.uuid);
-        boolean sameApp = app != null && app.getAppId() == retainedStreamAppId;
-        boolean sameGame = !retainedStreamPlayniteGameId.isEmpty()
-                && retainedStreamPlayniteGameId.equalsIgnoreCase(normalizeId(playniteGameId));
-        if (sameHost && (sameApp || sameGame)) {
+        if (!isStreamHome()) return false;
+        if (host != null && sessionSubscriber.holdsTarget(host.uuid,
+                app == null ? StreamConfiguration.INVALID_APP_ID : app.getAppId(),
+                playniteGameId)) {
             returnToRetainedStream();
         } else {
             ConsoleUiFeedback.makeText(this, R.string.console_stream_home_switch_blocked,
@@ -14601,7 +14582,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 "stage", "activity_start", "host_id", intent.hostId,
                 "profile_id", intent.profileId, "app_id", target.getAppId(),
                 "game_id", intent.playniteGameId);
-        if (retainedStreamHome) finish();
+        if (isStreamHome()) finish();
         overridePendingTransition(0, android.R.anim.fade_out);
     }
 
@@ -14614,7 +14595,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             Intent resume = SessionResumeManager.buildResumeIntent(this, pending);
             if (resume != null) startActivity(resume);
         }
-        if (retainedStreamHome) finish();
+        if (isStreamHome()) finish();
         overridePendingTransition(0, android.R.anim.fade_out);
     }
 
@@ -16091,7 +16072,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void terminateRetainedSessionAndExit() {
         final String expectedStreamSessionId = currentRetainedStreamSessionId();
-        if (expectedStreamSessionId.isEmpty()) return;
+        if (expectedStreamSessionId.isEmpty()) {
+            exitMoonWaker();
+            return;
+        }
         AtomicInteger failureMessage = new AtomicInteger(
                 R.string.console_terminate_session_failed);
         RetainedStreamSessionCoordinator.TerminationCallback complete = success ->
@@ -16106,11 +16090,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             RetainedStreamSessionCoordinator.clearIfMatches(expectedStreamSessionId);
             SessionResumeManager.clearIfMatches(this, expectedStreamSessionId);
             BackgroundStreamService.dismiss(this, expectedStreamSessionId);
-            finishAffinity();
-            Intent home = new Intent(Intent.ACTION_MAIN);
-            home.addCategory(Intent.CATEGORY_HOME);
-            home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(home);
+            exitMoonWaker();
         });
         RetainedStreamSessionCoordinator.TerminationResult result =
                 RetainedStreamSessionCoordinator.terminate(
@@ -16123,20 +16103,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         if (result == RetainedStreamSessionCoordinator.TerminationResult.IN_PROGRESS) return;
 
-        ComputerDetails host = hosts.get(!retainedStreamHostId.isEmpty()
-                ? retainedStreamHostId : selectedHostUuid);
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
-        String providerGameId = HostGatewayClient.isPlayniteId(retained.playniteGameId)
-                ? retained.playniteGameId : retainedStreamPlayniteGameId;
+        SessionResumeManager.PendingSession record = SessionResumeManager.pendingSession(this);
+        if (record != null && !record.matches(expectedStreamSessionId)) record = null;
+        RetainedCloseTarget target = RetainedCloseTarget.of(
+                RetainedStreamSessionCoordinator.snapshot(),
+                record == null ? null : record.hostUuid,
+                record == null ? null : record.profileId,
+                record == null ? null : record.playniteGameId);
+        ComputerDetails host = target == null ? null : hosts.get(target.hostId);
+        String providerGameId = target == null ? "" : target.providerGameId;
         if (host == null || managerBinder == null) {
             complete.complete(providerGameId.isEmpty());
             return;
         }
-        String terminationProfileId = !retained.profileId.isEmpty()
-                ? retained.profileId
-                : !retainedStreamProfileId.isEmpty()
-                ? retainedStreamProfileId : selectedProfileId(host.uuid);
+        String terminationProfileId = target.profileId;
 
         showSidePanelBusy(getString(R.string.console_title),
                 getString(R.string.console_close_game_and_moonwaker),
@@ -16157,13 +16137,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
     }
 
+    private void exitMoonWaker() {
+        finishAffinity();
+        Intent home = new Intent(Intent.ACTION_MAIN);
+        home.addCategory(Intent.CATEGORY_HOME);
+        home.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+        startActivity(home);
+    }
+
     private String currentRetainedStreamSessionId() {
         RetainedStreamSessionCoordinator.Snapshot retained =
                 RetainedStreamSessionCoordinator.snapshot();
         if (!retained.streamSessionId.isEmpty()) return retained.streamSessionId;
         SessionResumeManager.PendingSession pending =
                 SessionResumeManager.pendingSession(this);
-        return pending == null ? retainedStreamSessionId : pending.streamSessionId;
+        return pending == null ? "" : pending.streamSessionId;
     }
 
     private boolean mayCompleteTermination(String expectedStreamSessionId) {

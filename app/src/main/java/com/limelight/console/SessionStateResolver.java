@@ -2,6 +2,7 @@ package com.limelight.console;
 
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
+import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.stream.RetainedStreamSessionCoordinator;
 import com.limelight.utils.SessionResumeManager;
 
@@ -123,7 +124,7 @@ final class SessionStateResolver {
 
     static final class LocalFacts {
         static final LocalFacts NONE = new LocalFacts(null, false, false, null,
-                false, false, false);
+                false, false, false, 0);
 
         final SuspendedSessionStore.Session suspended;
         final boolean recentlyEnded;
@@ -132,11 +133,12 @@ final class SessionStateResolver {
         final boolean hostSleepRequested;
         final boolean hostSleepObserved;
         final boolean neutralStreamTarget;
+        final int hostRunningAppId;
 
         LocalFacts(SuspendedSessionStore.Session suspended, boolean recentlyEnded,
                    boolean pendingReconnect, SessionResumeManager.PendingSession pending,
                    boolean hostSleepRequested, boolean hostSleepObserved,
-                   boolean neutralStreamTarget) {
+                   boolean neutralStreamTarget, int hostRunningAppId) {
             this.suspended = suspended;
             this.recentlyEnded = recentlyEnded;
             this.pendingReconnect = pendingReconnect;
@@ -144,6 +146,31 @@ final class SessionStateResolver {
             this.hostSleepRequested = hostSleepRequested;
             this.hostSleepObserved = hostSleepObserved;
             this.neutralStreamTarget = neutralStreamTarget;
+            this.hostRunningAppId = hostRunningAppId;
+        }
+
+        /**
+         * Local facts beside {@code host}'s latest poll. A pending reconnect record counts when
+         * it auto-resumes or names the app that poll sees running for its execution profile.
+         */
+        static LocalFacts forHost(ComputerDetails host, String executionProfileId,
+                                  SuspendedSessionStore.Session suspended,
+                                  boolean recentlyEnded,
+                                  SessionResumeManager.PendingSession pending,
+                                  boolean hostSleepRequested, boolean hostSleepObserved,
+                                  boolean neutralStreamTarget) {
+            boolean pendingMatchesRunningSession = pending != null
+                    && host.uuid.equalsIgnoreCase(pending.hostUuid)
+                    && executionProfileId.equals(pending.executionProfileId)
+                    && host.runningGameId != 0
+                    && host.runningGameId == pending.appId;
+            boolean pendingReconnect = pending != null
+                    && (pending.autoResume || pendingMatchesRunningSession)
+                    && PlayniteIdentityResolutionPolicy.allowsPendingReconnect(
+                            "unknown", pending.playniteGameId);
+            return new LocalFacts(suspended, recentlyEnded, pendingReconnect, pending,
+                    hostSleepRequested, hostSleepObserved, neutralStreamTarget,
+                    host.runningGameId);
         }
     }
 
@@ -516,7 +543,7 @@ final class SessionStateResolver {
                     evidence == null ? 0 : evidence.processId,
                     evidence == null ? "" : evidence.processToken,
                     evidence == null ? "UNAVAILABLE" : evidence.windowEvidence.name(),
-                    reason);
+                    reason, local.hostRunningAppId);
         }
     }
 }

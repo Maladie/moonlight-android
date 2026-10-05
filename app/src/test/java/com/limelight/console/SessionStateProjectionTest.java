@@ -69,7 +69,7 @@ public class SessionStateProjectionTest {
                 "suspend-a", "host", "child", 42, "game", "Game", "", 1L,
                 "parent");
         SessionStateResolver.LocalFacts local = new SessionStateResolver.LocalFacts(
-                suspended, false, false, null, false, false, false);
+                suspended, false, false, null, false, false, false, 0);
 
         SessionSnapshot snapshot = owner.current(
                 RetainedStreamSessionCoordinator.snapshot(), local, 0L);
@@ -637,6 +637,22 @@ public class SessionStateProjectionTest {
         assertEquals(SessionSnapshot.ObservationState.PENDING,
                 owner.current(rolledBack, 3L).observationState);
         assertNull(owner.accept(ready("boot", 2L, inFlight), rolledBack, 4L));
+    }
+
+    @Test public void projectionCarriesTheRunningAppOfTheHostPollItWasGiven() {
+        com.limelight.nvstream.http.ComputerDetails host =
+                new com.limelight.nvstream.http.ComputerDetails();
+        host.uuid = "host";
+        host.runningGameId = 42;
+        SessionStateResolver.LocalFacts local = SessionStateResolver.LocalFacts.forHost(
+                host, "parent", null, false, null, false, false, false);
+
+        assertEquals(42, owner.current(RetainedStreamSessionCoordinator.snapshot(), local, 0L)
+                .hostRunningAppId);
+        assertEquals(42, owner.rendered(RetainedStreamSessionCoordinator.snapshot(), local, 1L)
+                .hostRunningAppId);
+        assertEquals(0, owner.current(RetainedStreamSessionCoordinator.snapshot(), 2L)
+                .hostRunningAppId);
     }
 
     @Test public void renderedProjectionOfAnOlderSnapshotPublishesNothing() {

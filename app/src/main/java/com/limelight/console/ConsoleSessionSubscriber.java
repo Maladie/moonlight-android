@@ -11,10 +11,7 @@ import java.util.function.IntConsumer;
  */
 final class ConsoleSessionSubscriber implements RetainedStreamSessionCoordinator.Listener {
     private final IntConsumer render;
-    /**
-     * Set by the first {@link #start()}. Session rendering needs a known host, and hosts are
-     * only loaded by callbacks that run after the screen's first onStart.
-     */
+    /** Null until the first {@link #start()}; every reader treats that as nothing delivered. */
     private RetainedStreamSessionCoordinator.Snapshot delivered;
 
     /** {@code render} receives the console update channels a session change invalidates. */
@@ -44,14 +41,27 @@ final class ConsoleSessionSubscriber implements RetainedStreamSessionCoordinator
                 | ConsoleUpdateChannels.SELECTED_HOST | ConsoleUpdateChannels.SESSION);
     }
 
+    /**
+     * Whether the delivered retained stream on {@code hostId} already runs {@code appId} or
+     * Playnite game {@code gameId}. False before the first delivery.
+     */
+    boolean holdsTarget(String hostId, int appId, String gameId) {
+        if (delivered == null || delivered.hostId.isEmpty()
+                || !delivered.hostId.equalsIgnoreCase(hostId)) return false;
+        String game = gameId == null ? "" : gameId.trim();
+        return (appId > 0 && delivered.appId == appId) || (!delivered.playniteGameId.isEmpty()
+                && delivered.playniteGameId.equalsIgnoreCase(game));
+    }
+
     boolean reconnectRequired(String hostId) {
-        return delivered.state == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED
+        return delivered != null
+                && delivered.state == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED
                 && delivered.hostId.equalsIgnoreCase(hostId);
     }
 
     /** Warm-up status string for {@code hostId}, or 0 when the retained stream says nothing. */
     int warmUpStatus(String hostId, boolean neutralStreamTarget) {
-        if (!delivered.hostId.equalsIgnoreCase(hostId)) return 0;
+        if (delivered == null || !delivered.hostId.equalsIgnoreCase(hostId)) return 0;
         if (delivered.state == RetainedStreamSessionCoordinator.State.PREPARING) {
             return R.string.console_warm_up_preparing;
         }

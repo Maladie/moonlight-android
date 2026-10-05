@@ -186,7 +186,7 @@ public class PlayniteSessionPresentationTest {
                 state == SessionSnapshot.State.ACTIVE, false, false, false, false,
                 "", neutralStreamTarget, SessionSnapshot.ObservationState.PENDING, false,
                 "", 0L, 0L, 0L, 0L, 0L, "", "", "",
-                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test");
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0);
     }
 
     private static PlayniteDashboardItem item(String gameId, int appId) {

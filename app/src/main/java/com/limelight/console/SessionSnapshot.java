@@ -50,6 +50,12 @@ final class SessionSnapshot {
     final String processToken;
     final String windowEvidence;
     final String observationReason;
+    /**
+     * Sunshine's running app from the host poll this projection was given; 0 when none or not
+     * supplied (gateway-path projections carry no poll). Not part of the projection identity
+     * ({@link #equals}, {@link #signature}), so a gateway projection still compares equal.
+     */
+    final int hostRunningAppId;
 
     SessionSnapshot(String hostId, String profileId, String executionProfileId,
                     State state, int hostGameAppId, String playniteGameId,
@@ -62,7 +68,8 @@ final class SessionSnapshot {
                     long transportGeneration, long controlGeneration,
                     long actorLeaseEpoch, String operationId, String transitionId,
                     String streamSessionId, String processEvidence, int processId,
-                    String processToken, String windowEvidence, String observationReason) {
+                    String processToken, String windowEvidence, String observationReason,
+                    int hostRunningAppId) {
         this.hostId = normalize(hostId);
         this.profileId = GatewayConnection.normalizeProfileId(profileId);
         this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);
@@ -98,6 +105,7 @@ final class SessionSnapshot {
         this.processToken = processToken == null ? "" : processToken;
         this.windowEvidence = windowEvidence == null ? "UNAVAILABLE" : windowEvidence;
         this.observationReason = observationReason == null ? "" : observationReason;
+        this.hostRunningAppId = hostRunningAppId;
     }
 
     static SessionSnapshot pending(String hostId, String actorProfileId,
@@ -106,7 +114,7 @@ final class SessionSnapshot {
                 State.UNCERTAIN, 0, "", false, false, false,
                 false, false, "", false, ObservationState.PENDING, false,
                 "", 0L, 0L, 0L, 0L, 0L, "", "", "",
-                "UNAVAILABLE", 0, "", "UNAVAILABLE", "observation_pending");
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "observation_pending", 0);
     }
 
     boolean hasActiveSession() { return state == State.ACTIVE; }
