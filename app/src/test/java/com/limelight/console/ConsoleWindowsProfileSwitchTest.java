@@ -101,7 +101,7 @@ public class ConsoleWindowsProfileSwitchTest {
                 "private void showQuickLaunchPanel()");
         String profileRefresh = between(source,
                 "private void refreshWindowsProfileStatus(",
-                "private TextView hostSelectionMenuAction(");
+                "private void refreshDashboard()");
 
         assertFalse(refresh.contains("switchWindowsSession("));
         assertFalse(profileRefresh.contains("switchWindowsSession("));

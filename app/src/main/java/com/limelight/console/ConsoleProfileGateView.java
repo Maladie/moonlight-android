@@ -461,8 +461,11 @@ final class ConsoleProfileGateView extends FrameLayout {
         return "";
     }
 
-    private int remainingMinutes(long seconds) {
-        return (int) Math.max(1L, (seconds + 59L) / 60L);
+    private String remainingMinutes(long seconds) {
+        return PlaynitePlaytimeFormatter.minutes(Math.max(1L, (seconds + 59L) / 60L),
+                new PlaynitePlaytimeFormatter.Labels("",
+                        getContext().getString(R.string.playnite_hours_short),
+                        getContext().getString(R.string.playnite_minutes_short)));
     }
 
     private TextView label(String text, float size, int color, boolean bold) {

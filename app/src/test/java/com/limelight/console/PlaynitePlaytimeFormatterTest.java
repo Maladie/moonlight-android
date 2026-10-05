@@ -22,6 +22,13 @@ public class PlaynitePlaytimeFormatterTest {
         assertEquals("12 godz. 30 min", PlaynitePlaytimeFormatter.format(45_000L, PL));
     }
 
+    @Test public void formatsRemainingChildMinutesAsHoursAndMinutes() {
+        assertEquals("23 godz. 1 min", PlaynitePlaytimeFormatter.minutes(1381, PL));
+        assertEquals("45 min", PlaynitePlaytimeFormatter.minutes(45, PL));
+        assertEquals("2 godz.", PlaynitePlaytimeFormatter.minutes(120, PL));
+        assertEquals("1 min", PlaynitePlaytimeFormatter.minutes(1, PL));
+    }
+
     @Test public void largeValuesDoNotOverflowOrExposeSeconds() {
         assertEquals("100000 hr", PlaynitePlaytimeFormatter.format(360_000_000L, EN));
     }

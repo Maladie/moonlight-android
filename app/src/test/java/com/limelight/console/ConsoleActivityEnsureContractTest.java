@@ -256,7 +256,7 @@ public class ConsoleActivityEnsureContractTest {
             throws IOException {
         String source = consoleActivitySource();
         String host = source.substring(source.indexOf("private void showHostSelectionOptions("),
-                source.indexOf("private TextView hostSelectionMenuAction("));
+                source.indexOf("static HostGatewayClient.IntegrationProfile activeAuthorizedProfile("));
         String playnite = source.substring(source.indexOf("private void showPlayniteGameActions("),
                 source.indexOf("private void confirmPlayniteUninstall("));
         String sunshine = source.substring(source.indexOf("private void showAppActions("),

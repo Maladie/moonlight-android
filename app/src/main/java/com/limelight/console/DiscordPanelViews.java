@@ -44,6 +44,7 @@ final class DiscordPanelViews {
         tile.setId(View.generateViewId());
         if (tag != null) tile.setTag(tag);
         tile.setMinHeight((int) (54 * tile.getResources().getDisplayMetrics().density + .5f));
+        tile.setTextSize(ConsolePanel.SECONDARY_SP);
         tile.setGravity(Gravity.CENTER_VERTICAL);
         tile.setMaxLines(3);
         tile.setEllipsize(TextUtils.TruncateAt.END);
