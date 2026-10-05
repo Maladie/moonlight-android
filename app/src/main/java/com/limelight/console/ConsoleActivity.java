@@ -136,6 +136,7 @@ import java.text.ParsePosition;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
 import java.util.ArrayDeque;
+import java.util.Arrays;
 import java.util.Collections;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -641,6 +642,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private LinearLayout sidePanel;
     private LockableScrollView sidePanelScroll;
     private ConsolePanel consolePanel;
+    private ConsoleSettingsScreen settingsScreen;
     private FrameLayout communityPanelHost;
     private android.app.Dialog sideDialog;
     private final CommunityDictationSession communityDictationSession = new CommunityDictationSession();
@@ -1917,6 +1919,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         if (playniteFilterPopup != null) playniteFilterPopup.dismiss();
         if (sideDialog != null) sideDialog.dismiss();
+        if (settingsScreen != null) settingsScreen.dismiss();
         if (serviceBound) unbindService(serviceConnection);
         cancelPlayniteRequest();
         cancelPlayniteArtworkPrefetch();
@@ -4488,7 +4491,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         modalLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
         modalLayer.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
         View dim = new View(this);
-        dim.setBackgroundColor(0xA005060A);
+        dim.setBackgroundColor(ConsolePanel.SCRIM);
         dim.setClickable(true);
         dim.setOnClickListener(v -> hideSidePanel());
         modalLayer.addView(dim, match());
@@ -4510,6 +4513,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         sidePanelScroll.addView(sidePanel, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         consolePanel = new ConsolePanel(this, sidePanelScroll, reducedMotion);
+        settingsScreen = new ConsoleSettingsScreen(this, reducedMotion);
         modalLayer.addView(sidePanelScroll, new FrameLayout.LayoutParams(dp(ConsolePanel.WIDTH_DP),
                 ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
         // Community is a full-screen, bounded composition with its own feed/detail scrollers.
@@ -5449,72 +5453,35 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void showHostSelectionOptions(ComputerDetails host) {
         boolean terminating = resolveSessionSnapshot(host).state
                 == SessionSnapshot.State.TERMINATING;
-        boolean online = host.state == ComputerDetails.State.ONLINE && !terminating;
-        boolean paired = host.pairState == PairingManager.PairState.PAIRED;
-        boolean autoWarmUp = HostAutoWarmUpPreferences.isEnabled(preferences, host.uuid);
         String address = host.activeAddress != null ? host.activeAddress.address : null;
-        boolean gatewayAvailable = hostGatewayStore.loadForHost(
+        ConsoleHostPanel.Facts facts = new ConsoleHostPanel.Facts();
+        facts.reachable = host.state == ComputerDetails.State.ONLINE;
+        facts.online = facts.reachable && !terminating;
+        facts.paired = host.pairState == PairingManager.PairState.PAIRED;
+        facts.gatewayAvailable = hostGatewayStore.loadForHost(
                 host.uuid, address, selectedProfileId(host.uuid)) != null;
-        boolean canSleep = online && gatewayAvailable;
-        TextView wake = consolePanel.action(getString(R.string.console_wake_host),
-                !terminating && ConsoleHostPresentation.canWake(host)
-                        && !hostStateController.isWaking(host.uuid));
-        wake.setOnClickListener(view -> {
-            hideSidePanel();
-            wakeHost(host);
-        });
-        TextView desktop = consolePanel.action(
-                getString(R.string.console_launch_desktop), online && paired);
-        desktop.setContentDescription(getString(R.string.console_launch_desktop_description));
-        desktop.setOnClickListener(view -> {
-            hideSidePanel();
-            launchDesktopSession(host);
-        });
-        LinearLayout warmUp = consolePanel.toggle(
-                getString(R.string.console_auto_stream_warm_up), autoWarmUp);
-        warmUp.setOnClickListener(view -> {
-            boolean enabled = !HostAutoWarmUpPreferences.isEnabled(preferences, host.uuid);
-            HostAutoWarmUpPreferences.setEnabled(preferences, host.uuid, enabled);
-            consolePanel.setChecked(warmUp, enabled);
-            if (!enabled) cancelOwnedWarmUp(host.uuid, false);
-        });
-        TextView unpair = consolePanel.action(getString(R.string.console_unpair_host),
-                online && paired);
-        consolePanel.destructive(unpair);
-        unpair.setOnClickListener(view -> unpairHost(host));
-        TextView test = consolePanel.action(
-                getString(R.string.pcview_menu_test_network), true);
-        test.setOnClickListener(view -> {
-            hideSidePanel();
-            ServerHelper.doNetworkTest(this);
-        });
-        TextView sleep = consolePanel.action(getString(R.string.console_sleep_host),
-                canSleep);
-        sleep.setOnClickListener(view -> confirmSleepHost(host));
-        TextView terminate = consolePanel.action(
-                getString(R.string.console_close_stream),
-                online && paired && host.runningGameId != 0);
-        consolePanel.destructive(terminate);
-        terminate.setOnClickListener(view -> confirmCloseHostStream(host));
-        TextView hardTerminate = consolePanel.action(
-                getString(R.string.console_hard_terminate_session),
-                online && paired && gatewayAvailable);
-        consolePanel.destructive(hardTerminate);
-        hardTerminate.setOnClickListener(view -> confirmHardTerminateSession(host));
-        List<View> actions = new ArrayList<>();
-        actions.add(wake);
-        actions.add(desktop);
-        actions.add(warmUp);
-        actions.add(terminate);
-        actions.add(hardTerminate);
-        actions.add(unpair);
-        actions.add(test);
-        actions.add(sleep);
-        showSidePanel(getString(R.string.console_host_eyebrow), host.name,
-                getString(online ? R.string.console_host_online_details
-                        : R.string.console_host_offline_details)
-                        + "\n\n" + getString(R.string.console_auto_stream_warm_up_description),
-                actions.toArray(new View[0]));
+        facts.canWake = !terminating && ConsoleHostPresentation.canWake(host)
+                && !hostStateController.isWaking(host.uuid);
+        facts.streamRunning = host.runningGameId != 0;
+        HostGatewayClient.IntegrationProfile profile =
+                hostGatewayStore.profileSelection(host.uuid).selected;
+        String state = getString(terminating ? R.string.console_status_closing_stream
+                : facts.reachable ? R.string.console_status_online
+                : R.string.console_status_offline);
+        showSidePanel(getString(R.string.console_host_eyebrow), host.name, profile == null ? state
+                        : state + " \u00B7 " + getString(R.string.console_host_panel_profile,
+                        profileDisplayName(profile)),
+                ConsoleHostPanel.menu(facts).rows(this, consolePanel, action -> {
+                    switch (action) {
+                        case DESKTOP: hideSidePanel(); launchDesktopSession(host); break;
+                        case WAKE: hideSidePanel(); wakeHost(host); break;
+                        case SLEEP: confirmSleepHost(host); break;
+                        case CLOSE_STREAM: confirmCloseHostStream(host); break;
+                        case TEST_CONNECTION: hideSidePanel(); ServerHelper.doNetworkTest(this); break;
+                        case HARD_TERMINATE: confirmHardTerminateSession(host); break;
+                        case UNPAIR: unpairHost(host); break;
+                    }
+                }));
     }
 
     static HostGatewayClient.IntegrationProfile activeAuthorizedProfile(
@@ -6695,7 +6662,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         addQuickAction(globalAction("global.refresh", R.string.console_action_refresh,
                 R.drawable.ic_console_refresh, this::refreshDashboard));
         addQuickAction(globalAction("global.settings", R.string.console_action_stream_settings,
-                R.drawable.ic_console_settings, this::showOptionsPanel));
+                R.drawable.ic_console_settings, this::showSettings));
         profileSelector = profileQuickAction();
         discordActionButton = addQuickAction(globalAction("global.discord",
                 R.string.console_action_discord, R.drawable.ic_console_discord,
@@ -11898,140 +11865,95 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     getString(R.string.console_status_closing_stream));
             return;
         }
-        List<View> actions = new ArrayList<>();
         GameOperationsController.Presentation operation =
                 gameOperationsController.presentation(host.uuid, item.game);
-        boolean installing = operation.installActive;
-        boolean exactActiveGame = isFreshExactRunningManagedGame(host, item);
-
-        if (item.game.installed) {
-            TextView launch = consolePanel.action(getString(R.string.console_play));
-            launch.setEnabled(item.game.canLaunch && !operation.launchBlocked);
-            launch.setOnClickListener(view -> {
-                hideSidePanel();
-                activatePlayniteItem(host.uuid, item);
-            });
-            actions.add(launch);
-            if (item.game.canUninstall) {
-                TextView uninstall = consolePanel.action(getString(R.string.playnite_uninstall));
-                consolePanel.destructive(uninstall);
-                uninstall.setOnClickListener(view -> confirmPlayniteUninstall(host, item));
-                actions.add(uninstall);
-            }
-            if (exactActiveGame) {
-                TextView endGame = consolePanel.action(getString(R.string.overlay_menu_end_game));
-                consolePanel.destructive(endGame);
-                endGame.setOnClickListener(view -> confirmEndPlayniteGame(host, item));
-                actions.add(endGame);
-            }
-            if (session.state == SessionSnapshot.State.ACTIVE
-                    && SessionSnapshot.normalize(item.stableId()).equals(
-                    session.playniteGameId)) {
-                TextView terminate = consolePanel.action(
-                        getString(R.string.overlay_menu_quit_session));
-                consolePanel.destructive(terminate);
-                terminate.setOnClickListener(view ->
-                        confirmTerminateSession(host, item.stableId()));
-                actions.add(terminate);
-            }
-        } else if (installing) {
-            if (operation.attentionRequired) {
-                boolean localOnly = "secure_desktop".equals(operation.attentionReason);
-                TextView finish = consolePanel.action(getString(localOnly
-                        ? R.string.playnite_install_confirm_on_pc
-                        : R.string.playnite_install_continue));
-                finish.setOnClickListener(view -> {
-                    hideSidePanel();
-                    continuePlayniteInstallation(host, item);
-                });
-                actions.add(finish);
-            } else {
-                TextView status = consolePanel.action(getString(R.string.playnite_installing));
-                status.setEnabled(false);
-                actions.add(status);
-            }
-        } else if (item.game.canInstall) {
-            TextView install = consolePanel.action(getString(R.string.playnite_install_action_short));
-            install.setOnClickListener(view -> {
-                hideSidePanel();
-                startPlayniteInstallation(host, item);
-            });
-            actions.add(install);
-        }
-
-        TextView streamSettings = consolePanel.action(getString(R.string.playnite_stream_settings));
-        streamSettings.setOnClickListener(view -> {
-            hideSidePanel();
-            Intent intent = new Intent(this, AppStreamSettings.class);
-            intent.putExtra(AppStreamSettings.EXTRA_APP_KEY,
-                    playniteStreamSettingsKey(host.uuid, item.stableId()));
-            intent.putExtra(AppStreamSettings.EXTRA_APP_NAME, item.game.name);
-            intent.putExtra(AppStreamSettings.EXTRA_INHERIT_APP_SETTINGS, true);
-            startActivity(intent);
-        });
-        actions.add(streamSettings);
-
-        HostGatewayStore.ProfileSelection profileSelection =
-                hostGatewayStore.profileSelection(host.uuid);
-        HostGatewayClient.IntegrationProfile selectedProfile = profileSelection.selected;
-        if (HostGatewayClient.isPlayniteId(item.game.playniteGameId)
+        HostGatewayClient.IntegrationProfile selectedProfile =
+                hostGatewayStore.profileSelection(host.uuid).selected;
+        ConsoleGameCard.Facts facts = new ConsoleGameCard.Facts();
+        facts.installed = item.game.installed;
+        facts.canLaunch = item.game.canLaunch && !operation.launchBlocked;
+        facts.canInstall = item.game.canInstall;
+        facts.canUninstall = item.game.canUninstall;
+        facts.installing = operation.installActive;
+        facts.installNeedsAttention = operation.attentionRequired;
+        facts.attentionOnPc = "secure_desktop".equals(operation.attentionReason);
+        facts.gameRunning = isFreshExactRunningManagedGame(host, item);
+        facts.sessionActive = session.state == SessionSnapshot.State.ACTIVE
+                && SessionSnapshot.normalize(item.stableId()).equals(session.playniteGameId);
+        facts.childSharing = HostGatewayClient.isPlayniteId(item.game.playniteGameId)
                 && childManagementProfileAllowed(host, selectedProfile)
                 && childCapabilityAllowed(host, selectedProfile)
-                && hasOwnChildren(host, selectedProfile)) {
-            TextView share = consolePanel.action(getString(R.string.console_child_sharing_action));
-            share.setOnClickListener(view -> beginChildSharing(host, item));
-            actions.add(share);
-        }
-
-        TextView autopilot = consolePanel.action(getString(R.string.console_streaming_autopilot_game));
-        boolean autopilotAvailable = ConsoleActionCatalog.isOnline(host)
+                && hasOwnChildren(host, selectedProfile);
+        facts.autopilotAvailable = ConsoleActionCatalog.isOnline(host)
                 && ConsoleActionCatalog.isPaired(host);
-        autopilot.setEnabled(autopilotAvailable);
-        autopilot.setOnClickListener(view -> {
-            NvApp target = PlayniteTargetResolver.findById(
-                    currentSunshineApps, item.sunshineAppId);
-            requestStreamingAutopilot(host,
-                    playniteStreamSettingsKey(host.uuid, item.stableId()),
-                    item.sunshineAppId == null ? null
-                            : host.uuid + ":" + item.sunshineAppId,
-                    item.game.name, PlayIntent.providerGame(host.uuid,
-                            selectedProfileId(host.uuid),
-                            item.sunshineAppId == null ? 0 : item.sunshineAppId,
-                            item.game.name, target != null && target.isHdrSupported(),
-                            item.game, playniteStreamSettingsKey(
-                                    host.uuid, item.stableId())));
-        });
-        actions.add(autopilot);
-
-        boolean locallyHidden = locallyHiddenPlayniteGames(host.uuid)
-                .contains(item.game.playniteGameId);
-        TextView visibility = consolePanel.action(getString(locallyHidden
-                ? R.string.console_show_app : R.string.applist_menu_hide_app));
-        visibility.setOnClickListener(view -> {
-            hideSidePanel();
-            setPlayniteGameHidden(host.uuid, item.game.playniteGameId, !locallyHidden);
-            ComputerDetails current = currentHost(host.uuid);
-            if (current != null) renderPlayniteLibrary(current, currentSunshineApps);
-        });
-        actions.add(visibility);
-
-        TextView details = consolePanel.action(getString(R.string.applist_menu_details));
-        details.setOnClickListener(view -> showPlayniteGameDetails(item));
-        actions.add(details);
-
-        String panelDetails = getString(R.string.playnite_game_actions_details);
+        facts.hidden = locallyHiddenPlayniteGames(host.uuid).contains(item.game.playniteGameId);
+        String panelDetails = formatPlayniteTime(item.game.playtimeSeconds) + " \u00B7 "
+                + getString(R.string.playnite_last_played_pill,
+                formatLastActivity(item.game.lastActivity))
+                + (item.game.source.isEmpty() ? "" : " \u00B7 " + item.game.source);
         if (operation.attentionRequired) {
             String prompt = !operation.attentionWindowTitle.isEmpty()
                     ? operation.attentionWindowTitle : operation.attentionLauncher;
-            panelDetails = getString("secure_desktop".equals(
-                            operation.attentionReason)
+            panelDetails = getString(facts.attentionOnPc
                             ? R.string.playnite_install_attention_details_pc
                             : R.string.playnite_install_attention_details,
-                    prompt.isEmpty() ? item.game.name : prompt);
+                    prompt.isEmpty() ? item.game.name : prompt) + "\n" + panelDetails;
         }
-        showSidePanel(getString(R.string.playnite_game_options), item.game.name,
-                panelDetails,
-                actions.toArray(new View[0]));
+        String streamSettingsKey = playniteStreamSettingsKey(host.uuid, item.stableId());
+        showSidePanel(getString(R.string.playnite_game_options), item.game.name, panelDetails,
+                ConsoleGameCard.menu(facts).rows(this, consolePanel, action -> {
+                    switch (action) {
+                        case LAUNCH:
+                        case RESUME:
+                            hideSidePanel();
+                            activatePlayniteItem(host.uuid, item);
+                            break;
+                        case CONTINUE_INSTALL:
+                            hideSidePanel();
+                            continuePlayniteInstallation(host, item);
+                            break;
+                        case INSTALL:
+                            hideSidePanel();
+                            startPlayniteInstallation(host, item);
+                            break;
+                        case END_GAME: confirmEndPlayniteGame(host, item); break;
+                        case CLOSE_GAME_AND_STREAM:
+                            confirmTerminateSession(host, item.stableId());
+                            break;
+                        case STREAM_SETTINGS:
+                            hideSidePanel();
+                            startActivity(new Intent(this, AppStreamSettings.class)
+                                    .putExtra(AppStreamSettings.EXTRA_APP_KEY, streamSettingsKey)
+                                    .putExtra(AppStreamSettings.EXTRA_APP_NAME, item.game.name)
+                                    .putExtra(AppStreamSettings.EXTRA_INHERIT_APP_SETTINGS, true));
+                            break;
+                        case OPTIMIZE_STREAMING:
+                            NvApp target = PlayniteTargetResolver.findById(
+                                    currentSunshineApps, item.sunshineAppId);
+                            requestStreamingAutopilot(host, streamSettingsKey,
+                                    item.sunshineAppId == null ? null
+                                            : host.uuid + ":" + item.sunshineAppId,
+                                    item.game.name, PlayIntent.providerGame(host.uuid,
+                                            selectedProfileId(host.uuid),
+                                            item.sunshineAppId == null ? 0 : item.sunshineAppId,
+                                            item.game.name,
+                                            target != null && target.isHdrSupported(),
+                                            item.game, streamSettingsKey));
+                            break;
+                        case SHARE_WITH_CHILD: beginChildSharing(host, item); break;
+                        case HIDE:
+                        case SHOW:
+                            hideSidePanel();
+                            setPlayniteGameHidden(host.uuid, item.game.playniteGameId,
+                                    action == ConsoleGameCard.Action.HIDE);
+                            ComputerDetails current = currentHost(host.uuid);
+                            if (current != null) renderPlayniteLibrary(current, currentSunshineApps);
+                            break;
+                        case DETAILS: showPlayniteGameDetails(item); break;
+                        case UNINSTALL: confirmPlayniteUninstall(host, item); break;
+                        case INSTALLING: break;
+                    }
+                }));
     }
 
     private void confirmEndPlayniteGame(ComputerDetails host,
@@ -15226,135 +15148,142 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
-    private void showOptionsPanel() {
-        LinearLayout sounds = consolePanel.toggle(
-                getString(R.string.console_ui_sounds_label), uiSoundsEnabled);
-        LinearLayout ambient = consolePanel.toggle(
-                getString(R.string.console_ambient_sounds_label), ambientSoundsEnabled);
-        LinearLayout hostMusic = consolePanel.stepper(
-                getString(R.string.console_host_music_volume_label), hostMusicVolume,
-                value -> {
-                    hostMusicVolume = value;
-                    preferences.edit().putInt("host_music_volume", value).apply();
+    private void showSettings() {
+        settingsScreen.show(Arrays.asList(
+                new ConsoleSettingsScreen.Category(
+                        getString(R.string.console_settings_appearance), this::appearanceSettings),
+                new ConsoleSettingsScreen.Category(getString(R.string.console_settings_library),
+                        panel -> new View[]{settingsToggle(panel, R.string.console_hidden_apps_label,
+                                () -> showHiddenApps, this::toggleHiddenApps)}),
+                new ConsoleSettingsScreen.Category(
+                        getString(R.string.console_options_section_streaming),
+                        this::streamingSettings),
+                new ConsoleSettingsScreen.Category(getString(R.string.console_settings_hosts),
+                        this::hostSettings),
+                new ConsoleSettingsScreen.Category(getString(R.string.console_settings_about),
+                        this::aboutSettings)));
+    }
+
+    private View[] appearanceSettings(ConsolePanel panel) {
+        LinearLayout screenSaver = panel.value(getString(R.string.console_screen_saver_timeout),
+                screenSaverLabel(screenSaverSeconds));
+        screenSaver.setOnClickListener(v -> chooseScreenSaverTimeout());
+        return new View[]{
+                panel.section(getString(R.string.console_settings_section_sound)),
+                settingsToggle(panel, R.string.console_ui_sounds_label, () -> uiSoundsEnabled, () -> {
+                    uiSoundsEnabled = !uiSoundsEnabled;
+                    preferences.edit().putBoolean("ui_sounds", uiSoundsEnabled).apply();
+                    if (consoleAudioEngine != null) consoleAudioEngine.setEffectsEnabled(uiSoundsEnabled);
+                }),
+                settingsToggle(panel, R.string.console_ambient_sounds_label,
+                        () -> ambientSoundsEnabled, () -> {
+                    ambientSoundsEnabled = !ambientSoundsEnabled;
+                    preferences.edit().putBoolean("ambient_sounds", ambientSoundsEnabled).apply();
                     if (consoleAudioEngine != null) {
-                        consoleAudioEngine.setHostSelectionVolume(value / 100f);
+                        consoleAudioEngine.setAmbientEnabled(ambientSoundsEnabled);
                     }
-                });
-        LinearLayout menuMusic = consolePanel.stepper(
-                getString(R.string.console_menu_music_volume_label), menuMusicVolume,
-                value -> {
-                    menuMusicVolume = value;
-                    preferences.edit().putInt("menu_music_volume", value).apply();
-                    if (consoleAudioEngine != null) {
-                        consoleAudioEngine.setMenuVolume(value / 100f);
+                }),
+                panel.stepper(getString(R.string.console_host_music_volume_label), hostMusicVolume,
+                        value -> {
+                            hostMusicVolume = value;
+                            preferences.edit().putInt("host_music_volume", value).apply();
+                            if (consoleAudioEngine != null) {
+                                consoleAudioEngine.setHostSelectionVolume(value / 100f);
+                            }
+                        }),
+                panel.stepper(getString(R.string.console_menu_music_volume_label), menuMusicVolume,
+                        value -> {
+                            menuMusicVolume = value;
+                            preferences.edit().putInt("menu_music_volume", value).apply();
+                            if (consoleAudioEngine != null) consoleAudioEngine.setMenuVolume(value / 100f);
+                        }),
+                panel.stepper(getString(R.string.console_effects_volume_label), effectsVolume,
+                        value -> {
+                            effectsVolume = value;
+                            preferences.edit().putInt("effects_volume", value).apply();
+                            if (consoleAudioEngine != null) {
+                                consoleAudioEngine.setEffectsVolume(value / 100f);
+                            }
+                        }),
+                panel.section(getString(R.string.console_settings_section_display)),
+                settingsToggle(panel, R.string.console_reduced_motion_label, () -> reducedMotion, () -> {
+                    reducedMotion = !reducedMotion;
+                    preferences.edit().putBoolean(ConsoleReducedMotion.KEY, reducedMotion).apply();
+                    if (consoleFeedback != null) consoleFeedback.setReducedMotion(reducedMotion);
+                    if (discordDmToastView != null) discordDmToastView.setReducedMotion(reducedMotion);
+                    consolePanel.setReducedMotion(reducedMotion);
+                    settingsScreen.setReducedMotion(reducedMotion);
+                    if (libraryTransitionCoordinator != null) {
+                        libraryTransitionCoordinator.setReducedMotion(reducedMotion);
                     }
-                });
-        LinearLayout effects = consolePanel.stepper(
-                getString(R.string.console_effects_volume_label), effectsVolume,
-                value -> {
-                    effectsVolume = value;
-                    preferences.edit().putInt("effects_volume", value).apply();
-                    if (consoleAudioEngine != null) {
-                        consoleAudioEngine.setEffectsVolume(value / 100f);
-                    }
-                });
-        LinearLayout motion = consolePanel.toggle(
-                getString(R.string.console_reduced_motion_label), reducedMotion);
-        LinearLayout carouselDescription = consolePanel.toggle(getString(
-                R.string.console_carousel_game_description_label),
-                showCarouselGameDescription);
-        LinearLayout hiddenApps = consolePanel.toggle(
-                getString(R.string.console_hidden_apps_label), showHiddenApps);
-        LinearLayout autoLogin = consolePanel.value(
-                getString(R.string.console_auto_login_host), autoLoginHostLabel());
-        autoLogin.setTag("options.auto_login_host");
-        LinearLayout backgroundStream = consolePanel.value(
-                getString(R.string.console_background_stream_retention),
-                backgroundStreamRetentionLabel());
-        backgroundStream.setTag("options.background_stream_retention");
-        LinearLayout screenSaver = consolePanel.value(
-                getString(R.string.console_screen_saver_timeout), screenSaverTimeoutLabel());
-        screenSaver.setTag("options.screen_saver_timeout");
-        TextView settings = consolePanel.navigation(getString(R.string.console_streaming_settings));
-        TextView autopilot = consolePanel.navigation(
-                getString(R.string.console_streaming_autopilot_global));
-        TextView overrides = consolePanel.navigation(getString(R.string.console_options_overrides));
-        TextView integrations = consolePanel.navigation(
-                getString(R.string.console_host_integrations));
-        integrations.setEnabled(hosts.get(selectedHostUuid) != null);
-        TextView help = consolePanel.navigation(getString(R.string.console_options_help));
-        TextView exit = consolePanel.destructive(consolePanel.action(
-                getString(R.string.console_exit)));
-        sounds.setOnClickListener(v -> {
-            uiSoundsEnabled = !uiSoundsEnabled;
-            preferences.edit().putBoolean("ui_sounds", uiSoundsEnabled).apply();
-            if (consoleAudioEngine != null) {
-                consoleAudioEngine.setEffectsEnabled(uiSoundsEnabled);
-            }
-            consolePanel.setChecked(sounds, uiSoundsEnabled);
-        });
-        ambient.setOnClickListener(v -> {
-            ambientSoundsEnabled = !ambientSoundsEnabled;
-            preferences.edit().putBoolean("ambient_sounds", ambientSoundsEnabled).apply();
-            if (consoleAudioEngine != null) {
-                consoleAudioEngine.setAmbientEnabled(ambientSoundsEnabled);
-            }
-            consolePanel.setChecked(ambient, ambientSoundsEnabled);
-        });
-        motion.setOnClickListener(v -> {
-            reducedMotion = !reducedMotion;
-            preferences.edit().putBoolean(ConsoleReducedMotion.KEY, reducedMotion).apply();
-            if (consoleFeedback != null) consoleFeedback.setReducedMotion(reducedMotion);
-            if (discordDmToastView != null) discordDmToastView.setReducedMotion(reducedMotion);
-            consolePanel.setReducedMotion(reducedMotion);
-            if (libraryTransitionCoordinator != null) {
-                libraryTransitionCoordinator.setReducedMotion(reducedMotion);
-            }
-            consolePanel.setChecked(motion, reducedMotion);
-        });
-        carouselDescription.setOnClickListener(v -> {
-            showCarouselGameDescription = !showCarouselGameDescription;
-            preferences.edit().putBoolean("show_carousel_game_description",
-                    showCarouselGameDescription).apply();
-            applyCarouselDescriptionVisibility();
-            consolePanel.setChecked(carouselDescription, showCarouselGameDescription);
-        });
-        autoLogin.setOnClickListener(v -> showAutoLoginHostPanel());
-        backgroundStream.setOnClickListener(v -> showBackgroundStreamRetentionPanel());
-        screenSaver.setOnClickListener(v -> showScreenSaverTimeoutPanel());
-        hiddenApps.setOnClickListener(v -> {
-            toggleHiddenApps();
-            consolePanel.setChecked(hiddenApps, showHiddenApps);
-        });
-        settings.setOnClickListener(v -> {
-            hideSidePanel();
-            startActivity(new Intent(this, StreamSettings.class));
-        });
+                }),
+                settingsToggle(panel, R.string.console_carousel_game_description_label,
+                        () -> showCarouselGameDescription, () -> {
+                    showCarouselGameDescription = !showCarouselGameDescription;
+                    preferences.edit().putBoolean("show_carousel_game_description",
+                            showCarouselGameDescription).apply();
+                    applyCarouselDescriptionVisibility();
+                }),
+                screenSaver};
+    }
+
+    private View[] streamingSettings(ConsolePanel panel) {
+        TextView settings = panel.navigation(getString(R.string.console_streaming_settings));
+        settings.setOnClickListener(v -> startActivity(new Intent(this, StreamSettings.class)));
+        TextView autopilot = panel.navigation(getString(R.string.console_streaming_autopilot_global));
         autopilot.setOnClickListener(v -> showStreamingAutopilotPanel());
+        TextView overrides = panel.navigation(getString(R.string.console_options_overrides));
         overrides.setOnClickListener(v -> showOverridesPanel());
+        LinearLayout backgroundStream = panel.value(
+                getString(R.string.console_background_stream_retention),
+                backgroundStreamLabel(backgroundStreamRetentionMinutes));
+        backgroundStream.setOnClickListener(v -> chooseBackgroundStreamRetention());
+        return new View[]{settings, autopilot, overrides, backgroundStream};
+    }
+
+    private View[] hostSettings(ConsolePanel panel) {
+        LinearLayout autoLogin = panel.value(getString(R.string.console_auto_login_host),
+                autoLoginHostLabel());
+        autoLogin.setOnClickListener(v -> chooseAutoLoginHost());
+        TextView integrations = panel.navigation(getString(R.string.console_host_integrations));
+        integrations.setEnabled(hosts.get(selectedHostUuid) != null);
         integrations.setOnClickListener(v -> {
             ComputerDetails host = hosts.get(selectedHostUuid);
             if (host == null) return;
             String address = host.activeAddress != null ? host.activeAddress.address : null;
             discordPanelController.showHostIntegrations(host.uuid, address, host.name);
         });
-        help.setOnClickListener(v -> showHelpPanel());
-        exit.setOnClickListener(v -> requestExit());
-        showSidePanel(getString(R.string.console_title), getString(R.string.console_options_title),
-                getString(R.string.console_options_details),
-                consolePanel.section(getString(R.string.console_options_section_interface)),
-                sounds, ambient, hostMusic, menuMusic, effects,
-                motion, carouselDescription, hiddenApps,
-                consolePanel.section(getString(R.string.console_options_section_host)),
-                autoLogin, integrations,
-                consolePanel.section(getString(R.string.console_options_section_streaming)),
-                backgroundStream, autopilot, settings, overrides,
-                consolePanel.section(getString(R.string.console_options_section_tv)), screenSaver,
-                consolePanel.section(getString(R.string.console_options_section_help)), help,
-                exit);
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host == null) return new View[]{autoLogin, integrations};
+        LinearLayout warmUp = settingsToggle(panel, R.string.console_auto_stream_warm_up,
+                () -> HostAutoWarmUpPreferences.isEnabled(preferences, host.uuid), () -> {
+                    boolean enabled = !HostAutoWarmUpPreferences.isEnabled(preferences, host.uuid);
+                    HostAutoWarmUpPreferences.setEnabled(preferences, host.uuid, enabled);
+                    if (!enabled) cancelOwnedWarmUp(host.uuid, false);
+                });
+        return new View[]{autoLogin, integrations, warmUp,
+                panel.note(getString(R.string.console_auto_stream_warm_up_description))};
     }
 
-    /** Shows the last global result; the analysis starts only from the explicit action. */
+    private View[] aboutSettings(ConsolePanel panel) {
+        TextView help = panel.navigation(getString(R.string.console_options_help));
+        help.setOnClickListener(v -> showHelpPanel());
+        TextView exit = panel.destructive(panel.action(getString(R.string.console_exit)));
+        exit.setOnClickListener(v -> requestExit());
+        return new View[]{help, panel.note(getString(R.string.console_settings_version,
+                BuildConfig.VERSION_NAME)), exit};
+    }
+
+    private LinearLayout settingsToggle(ConsolePanel panel, int label, BooleanSupplier value,
+                                        Runnable flip) {
+        LinearLayout row = panel.toggle(getString(label), value.getAsBoolean());
+        row.setOnClickListener(v -> {
+            flip.run();
+            panel.setChecked(row, value.getAsBoolean());
+        });
+        return row;
+    }
+
     private void showStreamingAutopilotPanel() {
         ComputerDetails selectedHost = hosts.get(selectedHostUuid);
         TextView run = consolePanel.action(getString(R.string.console_autopilot_run),
@@ -15412,6 +15341,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (!active || screenSaverSeconds == SCREEN_SAVER_NEVER
                 || loadingLayer != null && loadingLayer.getVisibility() == View.VISIBLE
                 || sideDialog != null && sideDialog.isShowing()
+                || settingsScreen != null && settingsScreen.isShowing()
                 || libraryTransitionRunning) {
             resetScreenSaverTimer();
             return;
@@ -15587,42 +15517,30 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return (event.getSource() & InputDevice.SOURCE_CLASS_POINTER) != 0;
     }
 
-    private String screenSaverTimeoutLabel() {
-        if (screenSaverSeconds == SCREEN_SAVER_NEVER) {
-            return getString(R.string.console_screen_saver_never);
-        }
-        return screenSaverSeconds < 60
-                ? getString(R.string.console_screen_saver_seconds, screenSaverSeconds)
-                : getString(R.string.console_screen_saver_minutes, screenSaverSeconds / 60);
+    private String screenSaverLabel(int seconds) {
+        if (seconds == SCREEN_SAVER_NEVER) return getString(R.string.console_screen_saver_never);
+        return seconds < 60 ? getString(R.string.console_screen_saver_seconds, seconds)
+                : getString(R.string.console_screen_saver_minutes, seconds / 60);
     }
 
-    private void showScreenSaverTimeoutPanel() {
+    private void chooseScreenSaverTimeout() {
         int[] values = {SCREEN_SAVER_NEVER, 30, 5 * 60, 10 * 60, 30 * 60, 60 * 60};
-        List<View> actions = new ArrayList<>();
-        for (int value : values) {
-            String label = value == SCREEN_SAVER_NEVER
-                    ? getString(R.string.console_screen_saver_never)
-                    : value < 60
-                    ? getString(R.string.console_screen_saver_seconds, value)
-                    : getString(R.string.console_screen_saver_minutes, value / 60);
-            if (value == screenSaverSeconds) label += getString(R.string.console_selected_suffix);
-            TextView choice = consolePanel.action(label);
-            choice.setTag("screen_saver_timeout:" + value);
-            choice.setOnClickListener(view -> setScreenSaverMinutes(value));
-            actions.add(choice);
+        CharSequence[] labels = new CharSequence[values.length];
+        int current = -1;
+        for (int index = 0; index < values.length; index++) {
+            labels[index] = screenSaverLabel(values[index]);
+            if (values[index] == screenSaverSeconds) current = index;
         }
-        showSidePanel(getString(R.string.console_title),
-                getString(R.string.console_screen_saver_timeout_title),
-                getString(R.string.console_screen_saver_timeout_details),
-                actions.toArray(new View[0]));
+        settingsScreen.showChoices(getString(R.string.console_screen_saver_timeout_title),
+                getString(R.string.console_screen_saver_timeout_details), labels, current,
+                index -> setScreenSaverSeconds(values[index]));
     }
 
-    private void setScreenSaverMinutes(int seconds) {
+    private void setScreenSaverSeconds(int seconds) {
         screenSaverSeconds = seconds;
         preferences.edit().putInt(PREF_SCREEN_SAVER_SECONDS, seconds).apply();
         updateScreenSaverWakePolicy();
         resetScreenSaverTimer();
-        showOptionsPanel();
     }
 
     private String autoLoginHostLabel() {
@@ -15631,80 +15549,49 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return host == null ? getString(R.string.console_auto_login_none) : host.name;
     }
 
-    private String backgroundStreamRetentionLabel() {
-        if (backgroundStreamRetentionMinutes == BackgroundStreamPreferences.NEVER) {
+    private String backgroundStreamLabel(int minutes) {
+        if (minutes == BackgroundStreamPreferences.NEVER) {
             return getString(R.string.console_background_stream_never);
         }
-        if (backgroundStreamRetentionMinutes <= 0) {
-            return getString(R.string.console_background_stream_off);
+        return minutes <= 0 ? getString(R.string.console_background_stream_off)
+                : getString(R.string.console_background_stream_minutes, minutes);
+    }
+
+    private void chooseBackgroundStreamRetention() {
+        int[] values = {0, 5, 10, 30, 60, BackgroundStreamPreferences.NEVER};
+        CharSequence[] labels = new CharSequence[values.length];
+        int current = -1;
+        for (int index = 0; index < values.length; index++) {
+            labels[index] = backgroundStreamLabel(values[index]);
+            if (values[index] == backgroundStreamRetentionMinutes) current = index;
         }
-        return getString(R.string.console_background_stream_minutes,
-                backgroundStreamRetentionMinutes);
+        settingsScreen.showChoices(getString(R.string.console_background_stream_retention_title),
+                getString(R.string.console_background_stream_retention_details), labels, current,
+                index -> {
+                    int minutes = values[index];
+                    backgroundStreamRetentionMinutes = minutes;
+                    BackgroundStreamPreferences.writeMinutes(this, minutes);
+                });
     }
 
-    private void showBackgroundStreamRetentionPanel() {
-        int[] values = { 0, 5, 10, 30, 60, BackgroundStreamPreferences.NEVER };
-        List<View> actions = new ArrayList<>();
-        for (int value : values) {
-            String label = value == BackgroundStreamPreferences.NEVER
-                    ? getString(R.string.console_background_stream_never)
-                    : value == 0
-                    ? getString(R.string.console_background_stream_off)
-                    : getString(R.string.console_background_stream_minutes, value);
-            if (value == backgroundStreamRetentionMinutes) {
-                label += getString(R.string.console_selected_suffix);
-            }
-            TextView choice = consolePanel.action(label);
-            choice.setTag("background_stream_retention:" + value);
-            choice.setOnClickListener(view -> setBackgroundStreamRetention(value));
-            actions.add(choice);
-        }
-        showSidePanel(getString(R.string.console_title),
-                getString(R.string.console_background_stream_retention_title),
-                getString(R.string.console_background_stream_retention_details),
-                actions.toArray(new View[0]));
-    }
-
-    private void setBackgroundStreamRetention(int minutes) {
-        backgroundStreamRetentionMinutes = minutes;
-        BackgroundStreamPreferences.writeMinutes(this, minutes);
-        showOptionsPanel();
-    }
-
-    private void showAutoLoginHostPanel() {
-        List<View> actions = new ArrayList<>();
-        TextView none = consolePanel.action(getString(R.string.console_auto_login_none));
-        none.setTag("auto_login:");
-        none.setOnClickListener(view -> setAutoLoginHost(""));
-        actions.add(none);
+    private void chooseAutoLoginHost() {
         List<ComputerDetails> sorted = new ArrayList<>(hosts.values());
         sorted.sort(Comparator.comparing(host -> host.name, String.CASE_INSENSITIVE_ORDER));
-        for (ComputerDetails host : sorted) {
-            String suffix = host.uuid.equals(autoLoginHostUuid)
-                    ? getString(R.string.console_selected_suffix) : "";
-            TextView choice = consolePanel.action(host.name + suffix);
-            choice.setTag("auto_login:" + host.uuid);
-            choice.setOnClickListener(view -> setAutoLoginHost(host.uuid));
-            actions.add(choice);
+        CharSequence[] labels = new CharSequence[sorted.size() + 1];
+        labels[0] = getString(R.string.console_auto_login_none);
+        int current = 0;
+        for (int index = 0; index < sorted.size(); index++) {
+            labels[index + 1] = sorted.get(index).name;
+            if (sorted.get(index).uuid.equals(autoLoginHostUuid)) current = index + 1;
         }
-        showSidePanel(getString(R.string.console_title),
-                getString(R.string.console_auto_login_title),
-                getString(R.string.console_auto_login_details),
-                actions.toArray(new View[0]));
-    }
-
-    private void setAutoLoginHost(String uuid) {
-        autoLoginHostUuid = uuid == null ? "" : uuid;
-        SharedPreferences.Editor editor = preferences.edit();
-        if (autoLoginHostUuid.isEmpty()) editor.remove("auto_login_host");
-        else editor.putString("auto_login_host", autoLoginHostUuid);
-        editor.apply();
-        handlePanelBack();
-        mainHandler.post(() -> {
-            View action = sidePanel != null
-                    ? sidePanel.findViewWithTag("options.auto_login_host") : null;
-            if (action != null) ConsolePanel.setValue(action, autoLoginHostLabel());
-        });
+        settingsScreen.showChoices(getString(R.string.console_auto_login_title),
+                getString(R.string.console_auto_login_details), labels, current, index -> {
+                    autoLoginHostUuid = index == 0 ? "" : sorted.get(index - 1).uuid;
+                    SharedPreferences.Editor editor = preferences.edit();
+                    if (autoLoginHostUuid.isEmpty()) editor.remove("auto_login_host");
+                    else editor.putString("auto_login_host", autoLoginHostUuid);
+                    editor.apply();
+                });
     }
 
     private void applyCarouselDescriptionVisibility() {

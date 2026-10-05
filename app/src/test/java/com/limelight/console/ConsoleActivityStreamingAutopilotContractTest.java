@@ -14,7 +14,7 @@ public class ConsoleActivityStreamingAutopilotContractTest {
     @Test public void globalAndBothGameMenusExposeAutopilotWithoutSilentApply()
             throws IOException {
         String source = consoleActivitySource();
-        String options = between(source, "private void showOptionsPanel()",
+        String options = between(source, "private void showSettings()",
                 "private void resetScreenSaverTimer()");
         String playnite = between(source, "private void showPlayniteGameActions(",
                 "private void confirmEndPlayniteGame(");
@@ -25,7 +25,8 @@ public class ConsoleActivityStreamingAutopilotContractTest {
 
         assertTrue(options.contains("R.string.console_streaming_autopilot_global"));
         assertTrue(options.contains("requestStreamingAutopilot("));
-        assertTrue(playnite.contains("R.string.console_streaming_autopilot_game"));
+        assertTrue(consoleSource("ConsoleGameCard.java")
+                .contains("R.string.console_streaming_autopilot_game"));
         assertTrue(playnite.contains("playniteStreamSettingsKey(host.uuid, item.stableId())"));
         assertTrue(playnite.contains("PlayIntent.providerGame"));
         assertTrue(classic.contains("\"app.streaming_autopilot\""));
@@ -42,7 +43,7 @@ public class ConsoleActivityStreamingAutopilotContractTest {
             throws IOException {
         String source = consoleActivitySource();
         String request = between(source, "private void requestStreamingAutopilot(",
-                "private void showOptionsPanel()");
+                "private void showSettings()");
         String destroy = between(source, "protected void onDestroy()",
                 "public void onBackPressed()");
         String selectHost = between(source, "private void selectHost(",
@@ -59,6 +60,12 @@ public class ConsoleActivityStreamingAutopilotContractTest {
 
     private static String between(String source, String start, String end) {
         return source.substring(source.indexOf(start), source.indexOf(end, source.indexOf(start)));
+    }
+
+    private static String consoleSource(String file) throws IOException {
+        Path source = Paths.get("src/main/java/com/limelight/console/" + file);
+        if (!Files.exists(source)) source = Paths.get("app/src/main/java/com/limelight/console/" + file);
+        return new String(Files.readAllBytes(source), StandardCharsets.UTF_8);
     }
 
     private static String consoleActivitySource() throws IOException {

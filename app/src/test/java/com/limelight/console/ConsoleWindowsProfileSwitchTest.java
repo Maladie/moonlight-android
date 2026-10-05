@@ -116,7 +116,10 @@ public class ConsoleWindowsProfileSwitchTest {
                 "@Override public SessionOrchestrator.CloseResult closePreviousSession(",
                 "@Override public void launch(PlayIntent intent");
         assertFalse(menu.contains("boolean childProfile"));
-        assertTrue(menu.contains("getString(R.string.console_launch_desktop), online && paired"));
+        assertTrue(new String(Files.readAllBytes(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleHostPanel.java")),
+                StandardCharsets.UTF_8).contains(
+                "Action.DESKTOP, R.string.console_launch_desktop, facts.online && facts.paired"));
         assertFalse(menu.contains("warmUp.setEnabled(!childProfile)"));
         assertFalse(menu.contains("online && paired && !childProfile);\n"
                 + "        unpair.setTextColor"));

@@ -501,7 +501,6 @@
     <string name="console_no_hosts">No hosts</string>
     <string name="console_no_hosts_details">No saved hosts were found. Add a host manually or wait while discovery continues.</string>
     <string name="console_host_choice">%1$s\n%2$s%3$s</string>
-    <string name="console_selected_suffix"> · selected</string>
     <string name="console_new_host_suffix"> · new</string>
     <string name="console_hosts_eyebrow">HOSTS</string>
     <string name="console_hosts_title">Choose a host</string>
@@ -576,7 +575,6 @@
     <string name="console_quick_resume_app">Resume session (%1$s)</string>
     <string name="console_quick_resume_description">Resume active session: %1$s</string>
     <string name="console_launch_desktop">Desktop</string>
-    <string name="console_launch_desktop_description">Start a streaming session with the host desktop</string>
     <string name="console_launch_desktop_unavailable">The host does not provide a Desktop streaming app</string>
     <string name="playnite_install_confirmation_done">Done — verify installation</string>
     <string name="playnite_uninstall">Uninstall</string>
@@ -639,8 +637,6 @@
     <string name="console_host_eyebrow">HOST</string>
     <string name="console_select_host">Select this host</string>
     <string name="console_sleep_host">Sleep host</string>
-    <string name="console_host_online_details">This host is online. Select a connection or management action.</string>
-    <string name="console_host_offline_details">This host is offline but remains available for Wake-on-LAN and management.</string>
     <string name="console_auto_stream_warm_up">Automatic stream preparation</string>
     <string name="console_auto_stream_warm_up_description">After you select this host, MoonWaker can wake it and prepare a stream in the background. This increases network and host resource usage.</string>
     <string name="console_pair_success">Host paired</string>
@@ -951,8 +947,6 @@
     <string name="discord_unusable_response">The host did not return a usable response.</string>
     <string name="discord_working_title">Discord</string>
     <string name="console_options_action">Console options  ›</string>
-    <string name="console_options_title">Options</string>
-    <string name="console_options_details">Tune the console interface or open the existing MoonWaker preferences.</string>
     <string name="console_ui_sounds">UI sounds · %1$s</string>
     <string name="console_reduced_motion">Reduced motion · %1$s</string>
     <string name="console_carousel_game_description">Show game description (Carousel) · %1$s</string>
@@ -973,11 +967,20 @@
     <string name="console_reduced_motion_label">Reduced motion</string>
     <string name="console_carousel_game_description_label">Show game description (Carousel)</string>
     <string name="console_hidden_apps_label">Show hidden applications</string>
-    <string name="console_options_section_interface">Interface</string>
-    <string name="console_options_section_host">Host</string>
     <string name="console_options_section_streaming">Streaming</string>
-    <string name="console_options_section_tv">TV</string>
-    <string name="console_options_section_help">Help</string>
+    <string name="console_settings_title">Settings</string>
+    <string name="console_settings_appearance">Appearance and sound</string>
+    <string name="console_settings_library">Library</string>
+    <string name="console_settings_hosts">Hosts and profiles</string>
+    <string name="console_settings_about">About</string>
+    <string name="console_settings_section_sound">Sound</string>
+    <string name="console_settings_section_display">Display</string>
+    <string name="console_settings_version">App version: %1$s</string>
+    <string name="console_section_more">More</string>
+    <string name="console_section_session">Session</string>
+    <string name="console_section_family">Family</string>
+    <string name="console_game_launch">Play</string>
+    <string name="console_host_panel_profile">Windows profile: %1$s</string>
     <string name="console_screen_saver_timeout">Start screen saver after</string>
     <string name="console_screen_saver_timeout_title">Screen saver</string>
     <string name="console_screen_saver_timeout_details">Displays full-screen artwork from your game library while MoonWaker is idle.</string>
@@ -1220,7 +1223,6 @@
     <string name="playnite_install_attention_overlay">Installation of “%1$s” requires confirmation. Return to the library and select Finish installation.</string>
     <string name="playnite_install_action_short">Install</string>
     <string name="playnite_game_options">Game options</string>
-    <string name="playnite_game_actions_details">Choose what you want to do with this game.</string>
     <string name="playnite_choose_launch_method">Choose launch method</string>
     <string name="playnite_game_details">Game details</string>
     <string name="playnite_metadata_unknown">Unknown</string>
