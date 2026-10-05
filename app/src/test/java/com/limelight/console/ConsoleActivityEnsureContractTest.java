@@ -485,7 +485,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(failure.contains("console_warm_up_fallback_details"));
         assertFalse(failure.contains("console_host_timeout"));
         assertFalse(failure.contains("Toast"));
-        assertTrue(status.contains("retained.hostId.equalsIgnoreCase(host.uuid)"));
+        assertTrue(status.contains("sessionSubscriber.reconnectRequired(host.uuid)"));
         assertTrue(status.contains("sessionOrchestrator.hasPreparationForHost(host.uuid)"));
         assertTrue(status.indexOf("SessionSnapshot.State.TERMINATING")
                 < status.indexOf("warmUpStatus == WARM_UP_ERROR"));

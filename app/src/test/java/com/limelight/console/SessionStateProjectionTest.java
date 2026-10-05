@@ -639,6 +639,54 @@ public class SessionStateProjectionTest {
         assertNull(owner.accept(ready("boot", 2L, inFlight), rolledBack, 4L));
     }
 
+    @Test public void renderedProjectionOfAnOlderSnapshotPublishesNothing() {
+        Controller controller = new Controller();
+        RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",
+                "child", 42, "game");
+        RetainedStreamSessionCoordinator.Snapshot delivered =
+                RetainedStreamSessionCoordinator.snapshot();
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                controller, "session", 1L));
+        recordInto();
+        long ordinal = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(ready("boot-ready", ordinal),
+                RetainedStreamSessionCoordinator.snapshot(), 0L));
+        int records = recorded.size();
+        long events = owner.diagnosticEventsForTests();
+
+        SessionSnapshot rendered = owner.rendered(
+                delivered, SessionStateResolver.LocalFacts.NONE, 10L);
+
+        assertEquals(SessionSnapshot.ObservationState.PENDING, rendered.observationState);
+        assertEquals("observation_correlation_mismatch", rendered.observationReason);
+        assertEquals(records, recorded.size());
+        assertEquals(events, owner.diagnosticEventsForTests());
+        SessionSnapshot live = owner.current(RetainedStreamSessionCoordinator.snapshot(), 20L);
+        assertEquals(SessionSnapshot.ObservationState.READY, live.observationState);
+        assertEquals(events, owner.diagnosticEventsForTests());
+    }
+
+    @Test public void renderedProjectionHidesAnObservationAcrossATerminationBoundary() {
+        Controller controller = new Controller();
+        RetainedStreamSessionCoordinator.enterHome(controller, "session", "host",
+                "child", 42, "game");
+        assertTrue(RetainedStreamSessionCoordinator.bindControlGeneration(
+                controller, "session", 1L));
+        long ordinal = owner.nextRequestOrdinal();
+        assertNotNull(owner.accept(ready("boot", ordinal),
+                RetainedStreamSessionCoordinator.snapshot(), 0L));
+
+        assertTrue(RetainedStreamSessionCoordinator.markTerminating(
+                "session", "host", 42, "game"));
+        clearRetainedTransport();
+        SessionSnapshot rendered = owner.rendered(RetainedStreamSessionCoordinator.snapshot(),
+                SessionStateResolver.LocalFacts.NONE, 3L);
+
+        assertEquals(SessionSnapshot.ObservationState.PENDING, rendered.observationState);
+        assertEquals("UNAVAILABLE", rendered.processEvidence);
+        assertEquals("", rendered.playniteGameId);
+    }
+
     private static HostGatewayClient.SessionObservation ready(
             String boot, long revision, long ordinal) {
         return observation(boot, revision, ordinal, "running-" + revision, "running",

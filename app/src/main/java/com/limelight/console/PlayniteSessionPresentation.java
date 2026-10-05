@@ -15,7 +15,7 @@ final class PlayniteSessionPresentation {
     static final class Projection {
         final String resumeGameId;
         final String suspendedGameId;
-        private final SessionSnapshot snapshot;
+        final SessionSnapshot snapshot;
         private final String selectedGameId;
 
         private Projection(SessionSnapshot snapshot, String selectedGameId) {

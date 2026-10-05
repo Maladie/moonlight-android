@@ -819,6 +819,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String renderedExpandedSessionSignature = "";
     private final Map<String, SessionSnapshot> publishedSessionSnapshots =
             new LinkedHashMap<>();
+    private final ConsoleSessionSubscriber sessionSubscriber =
+            new ConsoleSessionSubscriber(this::queueConsoleUpdates);
     private final Map<String, Long> sessionProjectionRequestedAt = new LinkedHashMap<>();
     private final Map<String, Integer> sessionProjectionRequestGenerations =
             new LinkedHashMap<>();
@@ -1353,6 +1355,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         serviceBound = bindService(new Intent(this, ComputerManagerService.class),
                 serviceConnection, Service.BIND_AUTO_CREATE);
     }
+
+    @Override protected void onStart() { super.onStart(); sessionSubscriber.start(); }
 
     @Override
     protected void onResume() {
@@ -1925,6 +1929,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         super.onPause();
     }
+
+    @Override protected void onStop() { sessionSubscriber.stop(); super.onStop(); }
 
     @Override
     public void onTrimMemory(int level) {
@@ -2846,7 +2852,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private void updateHostSelectionTile(ComputerDetails host) {
         HostSelectionTile tile = hostSelectionTiles.get(host.uuid);
         if (tile == null) return;
-        SessionSnapshot snapshot = resolveSessionSnapshot(host);
+        SessionSnapshot snapshot = renderedSessionSnapshot(host);
         ConsoleHostPresentation.State state = consoleHostState(host, snapshot);
         String status = hostStatus(host, snapshot);
         tile.status.setText(status);
@@ -4992,7 +4998,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (hostSelector == null) return;
         ComputerDetails host = hosts.get(selectedHostUuid);
         if (host == null) return;
-        SessionSnapshot snapshot = resolveSessionSnapshot(host);
+        SessionSnapshot snapshot = renderedSessionSnapshot(host);
         ConsoleHostPresentation.State state = consoleHostState(host, snapshot);
         int stateColor = ConsoleHostPresentation.color(state);
         Drawable hostIcon = getResources().getDrawable(
@@ -5006,7 +5012,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private String compactHostStatus(ComputerDetails host) {
-        SessionSnapshot snapshot = resolveSessionSnapshot(host);
+        SessionSnapshot snapshot = renderedSessionSnapshot(host);
         if (snapshot.isSuspended()) {
             SuspendedSessionStore.Session suspended =
                     suspendedSession(host.uuid, selectedProfileId(host.uuid));
@@ -5025,7 +5031,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void updateQuickResumeButton(ComputerDetails host) {
         if (quickResumeButton == null) return;
-        SessionSnapshot snapshot = resolveSessionSnapshot(host);
+        SessionSnapshot snapshot = renderedSessionSnapshot(host);
         boolean activeSession = host != null && ConsoleActionCatalog.isOnline(host)
                 && ConsoleActionCatalog.isPaired(host) && snapshot.hasActiveSession();
         boolean visible = activeSession && !CONSOLE_UI_V2;
@@ -5168,19 +5174,27 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private SessionSnapshot resolveSessionSnapshot(ComputerDetails host) {
-        return resolveSessionSnapshot(host, host == null
-                ? GatewayConnection.DEFAULT_PROFILE_ID : selectedProfileId(host.uuid));
+        return projectSession(host, host == null ? null : selectedProfileId(host.uuid), false);
+    }
+
+    /** Render-only projection of the delivered snapshot; publishes nothing to the owner. */
+    private SessionSnapshot renderedSessionSnapshot(ComputerDetails host) {
+        return projectSession(host, host == null ? null : selectedProfileId(host.uuid), true);
     }
 
     private SessionSnapshot resolveSessionSnapshot(ComputerDetails host, String profileId) {
+        return projectSession(host, profileId, false);
+    }
+
+    private SessionSnapshot projectSession(ComputerDetails host, String profileId, boolean render) {
         if (host == null) {
             return SessionSnapshot.pending("", GatewayConnection.DEFAULT_PROFILE_ID,
                     GatewayConnection.DEFAULT_PROFILE_ID);
         }
         HostProfileKey profileKey = new HostProfileKey(host.uuid, profileId);
         String stateKey = profileKey.cacheKey();
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
+        RetainedStreamSessionCoordinator.Snapshot retained = render
+                ? sessionSubscriber.snapshot() : RetainedStreamSessionCoordinator.snapshot();
         String executionProfileId = executionProfileId(host.uuid, profileKey.profileId);
         SuspendedSessionStore.Session suspended = suspendedSession(
                 host.uuid, profileKey.profileId);
@@ -5218,6 +5232,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 this, host.uuid, executionProfileId), pendingReconnect, pending,
                 sleep != null, sleep != null && sleep.sleepObservedAt > 0L,
                 neutralStreamTarget);
+        if (render) return projectionOwner.rendered(retained, local, SystemClock.uptimeMillis());
         SessionSnapshot canonical = projectionOwner.current(
                 retained, local, SystemClock.uptimeMillis());
         publishedSessionSnapshots.put(stateKey, canonical);
@@ -5229,24 +5244,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return SuspendedSessionStore.loadForExecutionProfile(
                 this, hostId, executionProfileId(hostId, actorProfileId));
     }
-    private String hostStatus(ComputerDetails host) {
-        return hostStatus(host, resolveSessionSnapshot(host));
-    }
-
     private String hostStatus(ComputerDetails host, SessionSnapshot snapshot) {
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
-        if (retained.hostId.equalsIgnoreCase(host.uuid)) {
-            if (retained.state == RetainedStreamSessionCoordinator.State.PREPARING) {
-                return getString(R.string.console_warm_up_preparing);
-            }
-            if ((retained.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
-                    || retained.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE)
-                    && retained.playniteGameId.isEmpty()
-                    && snapshot.neutralStreamTarget) {
-                return getString(R.string.console_warm_up_ready);
-            }
-        }
+        int warmUp = sessionSubscriber.warmUpStatus(host.uuid, snapshot.neutralStreamTarget);
+        if (warmUp != 0) return getString(warmUp);
         if (snapshot.state == SessionSnapshot.State.TERMINATING) {
             return getString(R.string.console_status_closing_stream);
         }
@@ -5291,8 +5291,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         if (localWarmUp
                 && warmUpStatus == WARM_UP_PREPARING
-                && retained.state == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED
-                && retained.hostId.equalsIgnoreCase(host.uuid)
+                && sessionSubscriber.reconnectRequired(host.uuid)
                 && !preparingHost) {
             return getString(R.string.console_warm_up_error);
         }
@@ -5315,10 +5314,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             default:
                 return getString(R.string.console_status_online);
         }
-    }
-
-    private ConsoleHostPresentation.State consoleHostState(ComputerDetails host) {
-        return consoleHostState(host, resolveSessionSnapshot(host));
     }
 
     private ConsoleHostPresentation.State consoleHostState(
@@ -9307,7 +9302,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             resolvedById.put(item.stableId(), item);
             localActivity.put(item.stableId(), playActivityEpoch(host.uuid, item));
         }
-        SessionSnapshot sessionSnapshot = resolveSessionSnapshot(host);
+        SessionSnapshot sessionSnapshot = renderedSessionSnapshot(host);
         playniteSessionProjection = PlayniteSessionPresentation.project(
                 sessionSnapshot, unfilteredItems, preferences.getString(
                         "selected_playnite." + host.uuid, ""));
@@ -10952,9 +10947,12 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private boolean isFreshExactRunningManagedGame(ComputerDetails host,
                                                     PlayniteDashboardItem item) {
-        if (host == null || item == null) return false;
-        SessionSnapshot snapshot = resolveSessionSnapshot(host);
-        return host.uuid.equalsIgnoreCase(selectedHostUuid)
+        return host != null && isExactRunningManagedGame(host, item, resolveSessionSnapshot(host));
+    }
+
+    private boolean isExactRunningManagedGame(ComputerDetails host, PlayniteDashboardItem item,
+                                              SessionSnapshot snapshot) {
+        return item != null && host.uuid.equalsIgnoreCase(selectedHostUuid)
                 && "VERIFIED".equals(snapshot.processEvidence)
                 && snapshot.processId > 0
                 && !snapshot.processToken.isEmpty()
@@ -10980,7 +10978,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         PlayniteSessionPresentation.State sessionState = playniteSessionState(item);
         boolean resumeSession = sessionState
                 == PlayniteSessionPresentation.State.RESUME_ACTIVE;
-        boolean runningSession = isFreshExactRunningManagedGame(host, item);
+        boolean runningSession = playniteSessionProjection != null && isExactRunningManagedGame(
+                host, item, playniteSessionProjection.snapshot);
         boolean suspendedSession = sessionState
                 == PlayniteSessionPresentation.State.RESUME_SUSPENDED;
         stylePlayniteSessionCard(card, card.hasFocus(), resumeSession || suspendedSession);
