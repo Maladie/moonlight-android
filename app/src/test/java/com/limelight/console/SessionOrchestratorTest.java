@@ -447,7 +447,7 @@ public class SessionOrchestratorTest {
         assertEquals(1, effects.returned);
         assertEquals(0, effects.launches);
         assertEquals(0, effects.refreshes);
-        assertEquals(0, effects.uncertainFailures);
+        assertTrue(effects.failures.isEmpty());
     }
 
     @Test public void preparingObservedGameStillRequiresFreshExactBridgeState() {
@@ -623,15 +623,184 @@ public class SessionOrchestratorTest {
         assertEquals(0, effects.closes);
     }
 
-    @Test public void previousCloseFailurePreservesProviderReason() {
+    @Test public void closeFailureDeliversTheCodeOfTheFailedClosePath() {
+        for (SessionFailure reason : new SessionFailure[] {
+                SessionFailure.CLOSE_HOST_UNAVAILABLE,
+                SessionFailure.CLOSE_RETAINED_NOT_CLOSED,
+                SessionFailure.CLOSE_RETAINED_TERMINATION_UNAVAILABLE,
+                SessionFailure.CLOSE_RETAINED_INTERRUPTED,
+                SessionFailure.CLOSE_RETAINED_TIMEOUT,
+                SessionFailure.CLOSE_RETAINED_CHANGED,
+                SessionFailure.CLOSE_RECONNECT_FALLBACK_NOT_CLOSED,
+                SessionFailure.CLOSE_DIRECT_NOT_CLOSED,
+                SessionFailure.SWITCH_NOT_ELIGIBLE,
+                SessionFailure.SWITCH_INTERRUPTED,
+                SessionFailure.SWITCH_TIMEOUT}) {
+            Fake effects = competing();
+            effects.closeFailure = reason.raise();
+            orchestrator(effects).play(game());
+
+            effects.confirmation.run();
+
+            assertEquals(java.util.Collections.singletonList(reason), effects.failures);
+            assertEquals(0, effects.launches);
+        }
+    }
+
+    @Test public void retainedSwitchFailureIsClassifiedOnceFromTheStreamReason() {
         Fake effects = competing();
-        effects.closeFailure = new RuntimeException("game_stop_timeout");
+        effects.canSwitch = true;
+        effects.closeFailure = SessionFailure.switchFailed("Gateway: game_stop_timeout");
+        orchestrator(effects).play(game());
+
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.SWITCH_PROVIDER_STOP_TIMEOUT), effects.failures);
+        assertEquals(com.limelight.R.string.console_provider_stop_waiting_for_process,
+                SessionFailure.SWITCH_PROVIDER_STOP_TIMEOUT.details);
+        assertEquals(SessionFailure.SWITCH_REFUSED,
+                SessionFailure.switchFailed("retained_switch_not_eligible").reason);
+        assertEquals(SessionFailure.SWITCH_FAILED,
+                SessionFailure.switchFailed("retained_switch_owner_changed").reason);
+        assertEquals("retained_switch_owner_changed",
+                SessionFailure.switchFailed("retained_switch_owner_changed").detail);
+        assertEquals(SessionFailure.SWITCH_FAILED, SessionFailure.switchFailed("").reason);
+    }
+
+    @Test public void unexpectedCloseExceptionHasItsOwnCode() {
+        Fake effects = competing();
+        effects.closeFailure = new IllegalStateException("game_stop_timeout");
         orchestrator(effects).play(game());
 
         effects.confirmation.run();
 
-        assertEquals("game_stop_timeout", effects.lastCloseFailure);
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.CLOSE_UNEXPECTED_ERROR), effects.failures);
+    }
+
+    @Test public void verifiedCloseLaunchesBeforeAFreshHostObservationArrives() {
+        // UNCERTAIN is what the projection publishes until a poll after the close is accepted.
+        Fake effects = competing();
+        effects.afterClose = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+        orchestrator(effects).play(game());
+
+        effects.confirmation.run();
+
+        assertEquals(1, effects.closes);
+        assertEquals(1, effects.launches);
+        assertTrue(effects.failures.isEmpty());
+    }
+
+    @Test public void closedButLocallyNotIdleSnapshotReportsItsOwnCode() {
+        for (SessionSnapshot afterClose : new SessionSnapshot[] {
+                snapshot(SessionSnapshot.State.ACTIVE, 7, "other"),
+                snapshot(SessionSnapshot.State.SUSPENDED, 7, "other")}) {
+            Fake effects = competing();
+            effects.afterClose = afterClose;
+            orchestrator(effects).play(game());
+
+            effects.confirmation.run();
+
+            assertEquals(1, effects.closes);
+            assertEquals(java.util.Collections.singletonList(
+                    SessionFailure.CLOSE_SNAPSHOT_NOT_IDLE), effects.failures);
+            assertEquals(0, effects.launches);
+        }
+    }
+
+    @Test public void recoveryRequiredObservationReportsItsOwnCode() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.ACTIVE, 7, "other",
+                SessionSnapshot.ObservationState.RECOVERY_REQUIRED);
+
+        orchestrator(effects).play(game());
+
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.UNCERTAIN_RECOVERY_REQUIRED), effects.failures);
+        assertEquals(0, effects.loadings);
+    }
+
+    @Test public void preparingWarmUpBranchesReportDistinctCodes() {
+        Fake ineligible = new Fake();
+        ineligible.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "");
+        orchestrator(ineligible).play(game());
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.UNCERTAIN_PREPARING_NOT_SWITCHABLE), ineligible.failures);
+
+        Fake refreshFailed = new Fake();
+        refreshFailed.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "old");
+        refreshFailed.canSwitch = true;
+        refreshFailed.refreshSuccess = false;
+        orchestrator(refreshFailed).play(game());
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.UNCERTAIN_PREPARING_REFRESH_FAILED), refreshFailed.failures);
+
+        Fake ineligibleAfterRefresh = new Fake();
+        ineligibleAfterRefresh.snapshot = snapshot(SessionSnapshot.State.PREPARING, 42, "old");
+        orchestrator(ineligibleAfterRefresh).play(game());
+        assertEquals(1, ineligibleAfterRefresh.refreshes);
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.UNCERTAIN_PREPARING_NOT_SWITCHABLE_AFTER_REFRESH),
+                ineligibleAfterRefresh.failures);
+    }
+
+    @Test public void refreshThatStillCannotResolveReportsItsOwnCode() {
+        Fake effects = new Fake();
+        effects.snapshot = snapshot(SessionSnapshot.State.UNCERTAIN, 0, "");
+
+        orchestrator(effects).play(game());
+
+        assertEquals(1, effects.refreshes);
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.UNCERTAIN_AFTER_REFRESH), effects.failures);
+        assertEquals(0, effects.readiness);
+    }
+
+    @Test public void evaluationLoopLimitReportsItsOwnCode() {
+        Fake effects = new Fake();
+        effects.snapshots.add(snapshot(SessionSnapshot.State.NONE, 0, ""));
+        effects.snapshots.add(snapshot(SessionSnapshot.State.NONE, 0, ""));
+        for (int pass = 2; pass <= 8; pass++) {
+            effects.snapshots.add(snapshot(SessionSnapshot.State.NONE, 0, ""));
+            effects.snapshots.add(snapshot(SessionSnapshot.State.ACTIVE, 7, "other"));
+        }
+
+        orchestrator(effects).play(PlayIntent.sunshineApp("host", 42, "App", false, ""));
+
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.ORCHESTRATION_PASS_LIMIT), effects.failures);
         assertEquals(0, effects.launches);
+    }
+
+    @Test public void rejectedWorkerReportsItsOwnCode() {
+        Fake effects = new Fake();
+        SessionOrchestrator orchestrator = new SessionOrchestrator(effects, action -> {
+            throw new java.util.concurrent.RejectedExecutionException();
+        }, Runnable::run);
+
+        orchestrator.play(PlayIntent.sunshineApp("host", 42, "App", false, ""));
+
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.ORCHESTRATION_EXECUTOR_REJECTED), effects.failures);
+        assertEquals(0, effects.readiness);
+    }
+
+    @Test public void reasonCodesAreUniqueStableTokensAndAttachIsNotACloseFailure() {
+        java.util.Set<String> codes = new java.util.HashSet<>();
+        for (SessionFailure reason : SessionFailure.values()) {
+            assertTrue(reason.code, reason.code.matches("[a-z_]+\\.[a-z_]+"));
+            assertTrue(reason.code, codes.add(reason.code));
+        }
+        for (SessionFailure attach : new SessionFailure[] {
+                SessionFailure.ATTACH_RESUME_INTENT_MISSING,
+                SessionFailure.ATTACH_START_ACTIVITY_FAILED}) {
+            assertFalse(attach.details
+                    == com.limelight.R.string.console_previous_session_close_failed);
+            assertFalse(attach.title == com.limelight.R.string.applist_quit_fail);
+        }
+        assertEquals("retained_switch_failed",
+                SessionFailure.safeDetail("retained_switch_failed"));
+        assertEquals("", SessionFailure.safeDetail("Bearer abc123"));
+        assertEquals("", SessionFailure.safeDetail("0123456789abcdef"));
     }
 
     @Test public void acceptingStaleConfirmationDoesNothing() {
@@ -724,7 +893,8 @@ public class SessionOrchestratorTest {
         SessionOrchestrator orchestrator = orchestrator(effects);
 
         orchestrator.play(game());
-        assertEquals(1, effects.uncertainFailures);
+        assertEquals(java.util.Collections.singletonList(
+                SessionFailure.UNCERTAIN_REFRESH_FAILED), effects.failures);
         assertEquals(0, effects.readiness);
         assertEquals(0, effects.launches);
 
@@ -750,7 +920,7 @@ public class SessionOrchestratorTest {
 
         assertEquals(0, effects.readiness);
         assertEquals(0, effects.launches);
-        assertEquals(0, effects.uncertainFailures);
+        assertTrue(effects.failures.isEmpty());
     }
 
     @Test public void manualSunshineTargetIsNotBlockedByUnknownBridge() {
@@ -826,10 +996,25 @@ public class SessionOrchestratorTest {
                                             int appId, String gameId,
                                             boolean retained, String suspendId,
                                             boolean neutral) {
+        return snapshot(state, appId, gameId, retained, suspendId, neutral,
+                SessionSnapshot.ObservationState.PENDING);
+    }
+
+    private static SessionSnapshot snapshot(SessionSnapshot.State state, int appId,
+                                            String gameId,
+                                            SessionSnapshot.ObservationState observation) {
+        return snapshot(state, appId, gameId, false, "", false, observation);
+    }
+
+    private static SessionSnapshot snapshot(SessionSnapshot.State state,
+                                            int appId, String gameId,
+                                            boolean retained, String suspendId,
+                                            boolean neutral,
+                                            SessionSnapshot.ObservationState observation) {
         boolean suspended = state == SessionSnapshot.State.SUSPENDED;
         return new SessionSnapshot("host", "default", "default", state, appId, gameId,
                 retained, suspended, false, false, false, suspendId, neutral,
-                SessionSnapshot.ObservationState.PENDING, false,
+                observation, false,
                 "", 0L, 0L, 0L, 0L, 0L, "", "", "",
                 "UNAVAILABLE", 0, "", "UNAVAILABLE", "test");
     }
@@ -850,11 +1035,14 @@ public class SessionOrchestratorTest {
         boolean paired = true;
         boolean knownPreparationPair;
         SessionSnapshot snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
+        final Queue<SessionSnapshot> snapshots = new ArrayDeque<>();
+        SessionSnapshot afterClose = snapshot(SessionSnapshot.State.NONE, 0, "");
+        final java.util.List<SessionFailure> failures = new java.util.ArrayList<>();
         SessionOrchestrator.Rejection rejection;
         Runnable confirmation;
         Runnable onReadiness;
         Runnable onClose;
-        RuntimeException closeFailure;
+        Exception closeFailure;
         SessionOrchestrator.CloseResult closeResult =
                 SessionOrchestrator.CloseResult.CLOSED;
         final Queue<SessionOrchestrator.CloseResult> closeResults = new ArrayDeque<>();
@@ -866,7 +1054,6 @@ public class SessionOrchestratorTest {
         Consumer<Boolean> deferredRefresh;
         Boolean firstAllowDestructiveCloseSeen;
         Boolean allowDestructiveCloseSeen;
-        String lastCloseFailure;
         boolean deferLoading;
         final Queue<Runnable> opaqueCallbacks = new ArrayDeque<>();
         SessionOrchestrator.PreparedWarmUp preparedWarmUp =
@@ -886,7 +1073,6 @@ public class SessionOrchestratorTest {
         int readiness;
         int loadings;
         int refreshes;
-        int uncertainFailures;
 
         int closes;
         int launches;
@@ -900,7 +1086,9 @@ public class SessionOrchestratorTest {
         @Override public boolean canPrepareHost(String hostId) {
             return paired || knownPreparationPair;
         }
-        @Override public SessionSnapshot resolve(String hostId) { return snapshot; }
+        @Override public SessionSnapshot resolve(String hostId) {
+            return snapshots.isEmpty() ? snapshot : snapshots.remove();
+        }
         @Override public void returnToRetainedStream() { returned++; }
         @Override public void attachPresentationForSwitch(
                 long orchestrationId, PlayIntent intent, NvApp target) {
@@ -967,7 +1155,7 @@ public class SessionOrchestratorTest {
         }
         @Override public SessionOrchestrator.CloseResult closePreviousSession(
                 PlayIntent intent, NvApp target, boolean allowDestructiveClose,
-                BooleanSupplier cancelled) {
+                BooleanSupplier cancelled) throws Exception {
             closes++;
             if (firstAllowDestructiveCloseSeen == null) {
                 firstAllowDestructiveCloseSeen = allowDestructiveClose;
@@ -977,9 +1165,7 @@ public class SessionOrchestratorTest {
             if (closeFailure != null) throw closeFailure;
             SessionOrchestrator.CloseResult result = closeResults.isEmpty()
                     ? closeResult : closeResults.remove();
-            if (result == SessionOrchestrator.CloseResult.CLOSED) {
-                snapshot = snapshot(SessionSnapshot.State.NONE, 0, "");
-            }
+            if (result == SessionOrchestrator.CloseResult.CLOSED) snapshot = afterClose;
             return result;
         }
         @Override public void launch(PlayIntent intent, NvApp target,
@@ -992,11 +1178,7 @@ public class SessionOrchestratorTest {
             launchedOwnsFreshSunshineSession = ownsFreshSunshineSession;
         }
         @Override public void preflightFailed(HostLaunchPreflight.Failure failure) { }
-        @Override public void orchestrationFailed() { }
-        @Override public void uncertainSessionFailed() { uncertainFailures++; }
-        @Override public void previousSessionCloseFailed(String reason) {
-            lastCloseFailure = reason;
-        }
+        @Override public void sessionFailed(SessionFailure reason) { failures.add(reason); }
     }
 
     private static final class QueuedExecutor implements Executor {

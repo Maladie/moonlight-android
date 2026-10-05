@@ -340,7 +340,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(orchestration.contains(
                 "refreshSessionProjection(host, intent.profileKey, true, accepted ->"));
         assertTrue(orchestration.contains("console_session_uncertain_title"));
-        assertTrue(orchestration.contains("console_session_uncertain_details"));
+        assertTrue(orchestration.contains("@Override public void sessionFailed("));
         assertTrue(resolver.contains("invalidateSessionProjectionRequest(host.uuid)"));
         assertTrue(resolver.contains("completion.accept(false)"));
         assertTrue(resolver.contains(

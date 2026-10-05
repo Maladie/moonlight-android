@@ -81,9 +81,9 @@ final class SessionOrchestrator implements AutoCloseable {
                                          BooleanSupplier cancelled) throws Exception;
         void launch(PlayIntent intent, NvApp target, LaunchTransitionType type,
                     String sourceSuspendId, boolean ownsFreshSunshineSession);
-        void preflightFailed(HostLaunchPreflight.Failure failure); void orchestrationFailed();
-        void uncertainSessionFailed();
-        void previousSessionCloseFailed(String reason);
+        void preflightFailed(HostLaunchPreflight.Failure failure);
+        /** Shows the failure screen for this exact path; the orchestrator recorded it. */
+        void sessionFailed(SessionFailure reason);
         PreparedWarmUp prepareHost(PlayIntent intent, long request,
                                    BooleanSupplier cancelled);
         void launchPreparedHost(PreparedWarmUp prepared,
@@ -262,18 +262,15 @@ final class SessionOrchestrator implements AutoCloseable {
                           NvApp preparedTarget, int pass) {
         if (!current(request)) return;
         if (pass > 8) {
-            diagnostic("ERROR", "orchestration.failed", request, intent,
-                    "reason", "pass_limit");
-            effects.orchestrationFailed(); return;
+            fail(request, intent, SessionFailure.ORCHESTRATION_PASS_LIMIT, "");
+            return;
         }
 
         SessionSnapshot snapshot = effects.resolve(intent.profileKey);
         if (!current(request)) return;
         if (snapshot.observationState == SessionSnapshot.ObservationState.RECOVERY_REQUIRED
                 && !intent.matches(snapshot)) {
-            diagnostic("WARN", "orchestration.rejected", request, intent,
-                    "reason", "RECOVERY_REQUIRED");
-            effects.uncertainSessionFailed();
+            fail(request, intent, SessionFailure.UNCERTAIN_RECOVERY_REQUIRED, "");
             return;
         }
         if (snapshot.state == SessionSnapshot.State.TERMINATING) {
@@ -289,7 +286,7 @@ final class SessionOrchestrator implements AutoCloseable {
                         replacementAuthorized, reuseOnly, preparedTarget, pass);
             } else if (!reuseOnly && snapshot.playniteGameId.isEmpty()) {
                 if (!effects.canAttemptRetainedSwitch(intent)) {
-                    effects.uncertainSessionFailed();
+                    fail(request, intent, SessionFailure.UNCERTAIN_PREPARING_NOT_SWITCHABLE, "");
                     return;
                 }
                 evaluate(request, intent, false, true,
@@ -298,8 +295,14 @@ final class SessionOrchestrator implements AutoCloseable {
                 effects.refreshSession(intent, () -> !current(request), success ->
                         dispatcher.post(() -> {
                             if (!current(request)) return;
-                            if (!success || !effects.canAttemptRetainedSwitch(intent)) {
-                                effects.uncertainSessionFailed();
+                            if (!success) {
+                                fail(request, intent,
+                                        SessionFailure.UNCERTAIN_PREPARING_REFRESH_FAILED, "");
+                                return;
+                            }
+                            if (!effects.canAttemptRetainedSwitch(intent)) {
+                                fail(request, intent, SessionFailure
+                                        .UNCERTAIN_PREPARING_NOT_SWITCHABLE_AFTER_REFRESH, "");
                                 return;
                             }
                             evaluate(request, intent, false, true,
@@ -456,11 +459,13 @@ final class SessionOrchestrator implements AutoCloseable {
         effects.refreshSession(intent, () -> !current(request), success ->
                 dispatcher.post(() -> {
                     if (!current(request)) return;
-                    if (!success || effects.resolve(intent.profileKey).state
+                    if (!success) {
+                        fail(request, intent, SessionFailure.UNCERTAIN_REFRESH_FAILED, "");
+                        return;
+                    }
+                    if (effects.resolve(intent.profileKey).state
                             == SessionSnapshot.State.UNCERTAIN) {
-                        diagnostic("WARN", "orchestration.refresh_uncertain", request, intent,
-                                "status", success ? "UNCERTAIN" : "FAILED");
-                        effects.uncertainSessionFailed();
+                        fail(request, intent, SessionFailure.UNCERTAIN_AFTER_REFRESH, "");
                         return;
                     }
                     evaluate(request, intent, replacementAuthorized, reuseOnly,
@@ -481,14 +486,16 @@ final class SessionOrchestrator implements AutoCloseable {
         }
         execute(request, intent, () -> {
             CloseResult closeResult;
-            String closeFailure = "";
+            SessionFailure.Raised closeFailure = null;
             diagnostic("INFO", "orchestration.close_started", request, intent);
             try { closeResult = effects.closePreviousSession(
                     intent, preparedTarget, replacementAuthorized,
                     () -> !current(request)); }
             catch (Exception error) {
                 closeResult = null;
-                closeFailure = error.getMessage() == null ? "" : error.getMessage();
+                closeFailure = error instanceof SessionFailure.Raised
+                        ? (SessionFailure.Raised) error
+                        : SessionFailure.CLOSE_UNEXPECTED_ERROR.raise();
                 diagnostic("ERROR", "orchestration.close_failed", request, intent,
                         "error_type", error.getClass().getName());
             }
@@ -496,10 +503,10 @@ final class SessionOrchestrator implements AutoCloseable {
                     "orchestration.close_completed", request, intent,
                     "status", closeResult.name());
             CloseResult result = closeResult;
-            String failureReason = closeFailure;
+            SessionFailure.Raised failure = closeFailure;
             dispatcher.post(() -> {
                 if (!current(request)) return;
-                if (result == null) { effects.previousSessionCloseFailed(failureReason); return; }
+                if (result == null) { fail(request, intent, failure.reason, failure.detail); return; }
                 if (result == CloseResult.CANCELLED) return;
                 if (result == CloseResult.NEEDS_CONFIRMATION) {
                     effects.confirmReplacement(() -> {
@@ -519,13 +526,17 @@ final class SessionOrchestrator implements AutoCloseable {
                 }
                 SessionSnapshot afterClose = effects.resolve(intent.profileKey);
                 if (!current(request)) return;
-                if (afterClose.state == SessionSnapshot.State.NONE) {
+                // The verified close is authoritative. UNCERTAIN here only means that no
+                // host observation newer than the close has been accepted yet; every
+                // local fact already shows nothing left to close.
+                if (afterClose.state == SessionSnapshot.State.NONE
+                        || afterClose.state == SessionSnapshot.State.UNCERTAIN) {
                     launch(request, intent, preparedTarget, freshType(intent), "",
                             afterClose.hostGameAppId == 0);
                 } else if (intent.matches(afterClose)) {
                     evaluate(request, intent, true, false,
                             true, preparedTarget, pass + 1);
-                } else effects.previousSessionCloseFailed("");
+                } else fail(request, intent, SessionFailure.CLOSE_SNAPSHOT_NOT_IDLE, "");
             });
         });
     }
@@ -535,8 +546,17 @@ final class SessionOrchestrator implements AutoCloseable {
         catch (RuntimeException error) {
             diagnostic("ERROR", "orchestration.execution_failed", request, intent,
                     "error_type", error.getClass().getName());
-            if (current(request)) effects.orchestrationFailed();
+            if (current(request)) {
+                fail(request, intent, SessionFailure.ORCHESTRATION_EXECUTOR_REJECTED, "");
+            }
         }
+    }
+
+    /** Records the failure with the snapshot at this moment, then shows its screen. */
+    private void fail(long request, PlayIntent intent, SessionFailure reason, String detail) {
+        reason.record(request, intent.hostId, intent.profileId,
+                effects.resolve(intent.profileKey), detail);
+        effects.sessionFailed(reason);
     }
 
     private void returnToRetained(long request, PlayIntent intent) {
