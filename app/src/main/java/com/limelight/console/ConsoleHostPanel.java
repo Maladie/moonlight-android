@@ -8,7 +8,19 @@ import com.limelight.R;
  * facts from its stores and performs the chosen action.
  */
 final class ConsoleHostPanel {
-    enum Action { DESKTOP, WAKE, SLEEP, CLOSE_STREAM, TEST_CONNECTION, HARD_TERMINATE, UNPAIR }
+    enum Action {
+        DESKTOP(R.drawable.ic_console_monitor), WAKE(R.drawable.ic_console_sun),
+        SLEEP(R.drawable.ic_console_moon), CLOSE_STREAM(R.drawable.ic_console_close),
+        TEST_CONNECTION(R.drawable.ic_console_pulse), HARD_TERMINATE(R.drawable.ic_console_power),
+        UNPAIR(R.drawable.ic_console_unlink);
+
+        /** Line icon of the row (section 4.7). */
+        final int icon;
+
+        Action(int icon) {
+            this.icon = icon;
+        }
+    }
 
     static final class Facts {
         /** The host reports ONLINE; power then offers sleep instead of wake. */

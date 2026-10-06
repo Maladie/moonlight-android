@@ -9,11 +9,22 @@ import com.limelight.R;
  */
 final class ConsoleGameCard {
     enum Action {
-        LAUNCH, RESUME, CONTINUE_INSTALL, INSTALLING, INSTALL,
-        END_GAME, CLOSE_GAME_AND_STREAM,
-        STREAM_SETTINGS, OPTIMIZE_STREAMING,
-        SHARE_WITH_CHILD,
-        HIDE, SHOW, DETAILS, UNINSTALL
+        LAUNCH(R.drawable.ic_console_play), RESUME(R.drawable.ic_console_play),
+        CONTINUE_INSTALL(R.drawable.ic_console_download),
+        INSTALLING(R.drawable.ic_console_download), INSTALL(R.drawable.ic_console_download),
+        END_GAME(R.drawable.ic_console_stop), CLOSE_GAME_AND_STREAM(R.drawable.ic_console_stop),
+        STREAM_SETTINGS(R.drawable.ic_console_sliders),
+        OPTIMIZE_STREAMING(R.drawable.ic_console_pulse),
+        SHARE_WITH_CHILD(R.drawable.ic_console_person),
+        HIDE(R.drawable.ic_console_eye), SHOW(R.drawable.ic_console_eye),
+        DETAILS(R.drawable.ic_console_info), UNINSTALL(R.drawable.ic_console_trash);
+
+        /** Line icon of the row (section 4.7). */
+        final int icon;
+
+        Action(int icon) {
+            this.icon = icon;
+        }
     }
 
     static final class Facts {

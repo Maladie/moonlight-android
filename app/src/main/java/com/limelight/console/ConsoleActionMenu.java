@@ -7,6 +7,7 @@ import android.widget.TextView;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.function.Consumer;
+import java.util.function.ToIntFunction;
 
 /**
  * A grouped action list (UX_MENU_PL.md sections 3.3 and 3.4) as plain data, so the grouping
@@ -63,7 +64,7 @@ final class ConsoleActionMenu<A> {
         return actions;
     }
 
-    View[] rows(Context context, ConsolePanel panel, Consumer<A> onAction) {
+    View[] rows(Context context, ConsolePanel panel, ToIntFunction<A> icon, Consumer<A> onAction) {
         List<View> rows = new ArrayList<>();
         for (Item<A> item : items) {
             if (item.section != 0) {
@@ -72,6 +73,7 @@ final class ConsoleActionMenu<A> {
             }
             TextView row = panel.action(context.getString(item.label), item.enabled);
             if (item.destructive) panel.destructive(row);
+            panel.icon(row, icon.applyAsInt(item.action));
             row.setOnClickListener(view -> onAction.accept(item.action));
             rows.add(row);
         }
