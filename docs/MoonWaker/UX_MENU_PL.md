@@ -1,68 +1,93 @@
 # Menu, filtry i opcje — propozycja przegrupowania i wyglądu (styl PS5)
 
-Status: propozycja do decyzji właściciela, 2026-10-05. Oparta na przeglądzie aplikacji
-na BRAVII VH22 (profil BASIA) przez adb: zrzuty ekranów, zrzuty drzewa widoków i kod
-`ConsoleActivity`. Nie zawiera zmian w kodzie.
+Status: propozycja do decyzji właściciela, 2026-10-05; uzupełniona decyzjami
+właściciela z 2026-10-06 (struktura ekranu głównego, szybkie menu pod Guide, język
+wizualny v4, nowa kolejność prac). Oparta na przeglądzie aplikacji na BRAVII VH22
+(profil BASIA) przez adb: zrzuty ekranów, zrzuty drzewa widoków i kod `ConsoleActivity`.
+Ten dokument nie zmienia kodu. Kroki 1–4 z sekcji 6 są już zaimplementowane na tej gałęzi.
+
+Makiety wizualne v4 (poza repozytorium, niewersjonowane):
+`D:\Maladie\moonlight-android\.claude\handoffs\mockups\` (`*-v4.png`, skrypt
+`make_mockups.py`). Liczby w sekcji 4 są podane w px przy 1080p; w makietach 2 px = 1 dp.
 
 ## 1. Co jest dziś
 
 | Miejsce | Jak się otwiera | Zawartość |
 | --- | --- | --- |
-| Pasek narzędzi (ekran główny) | D-pad w górę | Odśwież · Opcje · Profil Windows (przełącz) · Discord lub Mikrofon USB · Opuść host |
-| Panel hosta | OK na tytule hosta; MENU na kaflu hosta na ekranie wyboru | Obudź hosta · Pulpit · Automatyczne przygotowanie streamu · Zamknij stream · Twarde zamknięcie · Odparuj hosta · Test połączenia · (Uśpij hosta) |
-| Opcje | ikona zębatki | **Interfejs:** dźwięki, ambient, 3 suwaki głośności, ograniczenie animacji, opis gry w karuzeli, ukryte aplikacje · **Host:** automatyczne logowanie na hosta, integracje hosta · **Streaming:** utrzymuj stream po wyjściu, Autopilot, ustawienia streamingu (ekran z upstreamu), nadpisania · **TV:** wygaszacz · **Pomoc:** README |
-| Akcje gry | MENU / długie OK na kaflu | Uruchom · Zainstaluj lub Odinstaluj · Zakończ grę · Zamknij grę i stream · Ustawienia streamingu gry · Zoptymalizuj streaming · Udostępnij grę dziecku · Ukryj/Pokaż · Szczegóły |
+| Pasek narzędzi (ekran główny) | D-pad w górę | Odśwież stan i bibliotekę · Ustawienia · Profil Windows (przełącz) · Discord lub Mikrofon USB · Opuść host |
+| Panel hosta (`ConsoleHostPanel`) | OK na tytule hosta; MENU na kaflu hosta na ekranie wyboru | Pulpit · Obudź lub Uśpij · Zamknij stream; sekcja „Więcej": Test połączenia; na końcu czerwone: Twarde zamknięcie · Odparuj hosta |
+| Ustawienia (`ConsoleSettingsScreen`) | ikona zębatki | pełny ekran: kategorie po lewej (m.in. Wygląd i dźwięk, Biblioteka, Hosty i profile, Informacje), treść po prawej |
+| Karta gry (`ConsoleGameCard` + `ConsoleActionMenu`) | MENU / długie OK na kaflu | akcja główna, potem grupy pokazywane tylko gdy mają sens (sekcja 3.4) |
 | Pasek filtrów (siatka) | D-pad w górę z siatki | Filtr (Wszystkie, Zainstalowane, Niezainstalowane, Ostatnio grane, Najczęściej uruchamiane, Nigdy nie uruchamiane) · Platformy (wielokrotny wybór) · Sortowanie (Ostatnio grane, Nazwa, Biblioteka, Gatunek, Czas gry, Najczęściej uruchamiane) · Wyszukaj (okno tekstowe) |
 | Legenda | stała, dół ekranu | w siatce: Filtry · Resetuj · Szukaj · Wróć; na ekranie profili: Wybierz · Wstecz |
 | Kontroler | ikona kontrolera | Zidentyfikuj · Wyłącz · Rozparuj · Ustawienia Bluetooth |
-| Wyjście | Wstecz na ekranie głównym | okno „Zamknąć MoonWaker?" |
+| Wyjście | z panelu Ustawienia | Wstecz na ekranie głównym opuszcza host (nie zamyka aplikacji); zamknięcie aplikacji tylko z menu |
 
-## 2. Co przeszkadza
+Wspólny komponent panelu (`ConsolePanel`) obsługuje wszystkie panele. Pasek filtrów
+i pasek ikon na ekranie głównym są w dawnej postaci.
 
-1. **Jedno „Opcje" miesza trzy poziomy:** ustawienia aplikacji (dźwięki), ustawienia hosta (integracje, logowanie) i doraźne regulacje streamu (nadpisania bitrate'u).
-2. **Akcje hosta są w dwóch miejscach** (tytuł hosta i ekran wyboru hosta) z tą samą listą, w której sąsiadują „Pulpit" i „Odparuj hosta".
-3. **Panel akcji gry ma dziewięć pozycji bez grup**: uruchamianie, instalacja, sesja, streaming, profil dziecka i widoczność w jednej liście.
+## 2. Co przeszkadzało
+
+Kroki 1–4 (sekcja 6) zajęły się punktami 1–3 i 5–8; otwarty zostaje punkt 4 (filtry).
+
+1. **Jedno „Opcje" mieszało trzy poziomy:** ustawienia aplikacji (dźwięki), ustawienia hosta (integracje, logowanie) i doraźne regulacje streamu (nadpisania bitrate'u).
+2. **Akcje hosta były w dwóch miejscach** (tytuł hosta i ekran wyboru hosta) z tą samą listą, w której sąsiadują „Pulpit" i „Odparuj hosta".
+3. **Panel akcji gry miał dziewięć pozycji bez grup**: uruchamianie, instalacja, sesja, streaming, profil dziecka i widoczność w jednej liście.
 4. **Pasek filtrów nie mówi, czym jest.** „Ostatnio grane" to sortowanie, ale nic na to nie wskazuje; „Wszystkie gry" i „Wszystkie platformy" wyglądają identycznie, choć jedno to pojedynczy wybór, a drugie wielokrotny. Prawy drążek tylko przenosi fokus na pasek.
-5. **Autopilot uruchamia analizę od razu po wejściu** w pozycję menu, zamiast pokazać stan i przycisk.
-6. **README otwiera stronę GitHuba** z przyciskiem „Sign in"; na telewizorze nie da się jej użyć.
-7. **Wstecz na ekranie głównym otwiera pytanie o zamknięcie aplikacji**, co łatwo wywołać przypadkiem; przy zdalnym sterowaniu zatrzymało to cały przebieg testu.
+5. **Autopilot uruchamiał analizę od razu po wejściu** w pozycję menu, zamiast pokazać stan i przycisk.
+6. **README otwierało stronę GitHuba** z przyciskiem „Sign in"; na telewizorze nie da się jej użyć.
+7. **Wstecz na ekranie głównym otwierało pytanie o zamknięcie aplikacji**, co łatwo wywołać przypadkiem; przy zdalnym sterowaniu zatrzymało to cały przebieg testu.
 8. **Drobne:** „Pozostało dziś: 1381 min" zamiast „23 godz. 1 min"; stały napis „Biblioteka gier jest aktualna"; suwaki w procentach bez widocznego kroku; przełączniki „WŁ./WYŁ." jako pigułki o innym stylu niż reszta.
 
-## 3. Docelowa struktura (cztery warstwy, jak na PS5)
+## 3. Docelowa struktura
 
-### 3.1 Szybkie menu (Control Center)
+### 3.1 Ekran główny: odchudzony pasek górny i Szukaj
 
-Długie przytrzymanie MENU/OPTIONS w dowolnym miejscu konsoli otwiera dolny pasek kafli,
-przyciemniając tło. Zastępuje ikony paska narzędzi i okno „Zamknąć MoonWaker?".
+Pasek górny zostaje, ale jest odchudzony; dawny pasek ikon z pięcioma przyciskami znika.
 
-```text
-[ Host: Komputer Mariusza · Online ] [ Stream: brak ] [ Profil: Basia ] [ Discord ] [ Kontrolery ] [ Ustawienia ] [ Zamknij MoonWaker ]
-```
-
-- Kafel hosta: Obudź lub Uśpij, Pulpit, Zmień hosta.
-- Kafel streamu: Wróć do streamu, Zamknij stream, Zamknij grę i stream (tylko gdy coś działa).
-- Kafel profilu: Zmień profil MoonWaker, Przełącz użytkownika Windows (z wyraźnym ostrzeżeniem).
+- **Lewa strona: stan hosta**, bez ramki w spoczynku: glif monitora, nazwa hosta, linia
+  stanu z kolorową kropką („● Online"; z sesją: „● Stream · Pulpit · 12 min", zielona
+  kropka). OK na nim otwiera panel hosta (3.3). Osobna pigułka „Pulpit"/stream znika.
+- **Prawa strona: gołe ikony** Szukaj, Profil (awatar), Ustawienia oraz warunkowe ikony
+  stanu: Discord (gdy zalogowany; plakietka nieprzeczytanych) i Mikrofon USB (gdy włączony
+  i dozwolony dla profilu; plakietka stanu). Etykieta pojawia się tylko pod ikoną z fokusem.
+- **Usunięte z paska:**
+  - *Odśwież stan i bibliotekę.* Stan hosta podąża sam po K1 (migawka sesji z koordynatora).
+    Sprawdzone w kodzie: przycisk woła `refreshDashboard()`, który poza stanem hostów
+    odpytuje listę aplikacji (`appListPoller.pollNow`) i odświeża bibliotekę Playnite
+    (`requestPlayniteRefresh`), więc to także synchronizacja biblioteki. Ta funkcja
+    przechodzi do Ustawienia → Biblioteka jako „Odśwież bibliotekę"; sam stan hosta
+    nie potrzebuje przycisku.
+  - *Opuść host* → panel hosta, pozycja „Zmień hosta".
+  - *Pełne sterowanie Discordem i mikrofonem* → szybkie menu (3.6) i Ustawienia.
+- **Szukaj z ekranu głównego** otwiera pełną bibliotekę z klawiaturą ekranową nad
+  siatką; wyniki filtrują siatkę na żywo po tytule (gry Playnite i aplikacje Sunshine);
+  OK na wyniku = OK na kaflu.
 
 ### 3.2 Ustawienia (pełny ekran, lista kategorii po lewej, treść po prawej)
 
 | Kategoria | Zawartość |
 | --- | --- |
 | Wygląd i dźwięk | dźwięki interfejsu, ambient, muzyka (wybór hosta / menu), efekty, ograniczenie animacji, wygaszacz ekranu, opis gry w karuzeli |
-| Biblioteka | ukryte aplikacje, domyślne sortowanie i filtr, widoczne platformy |
+| Biblioteka | „Odśwież bibliotekę" (lista aplikacji + Playnite), ukryte aplikacje, domyślne sortowanie i filtr, widoczne platformy |
 | Streaming | rozdzielczość, odświeżanie, bitrate, tempo klatek (dzisiejsze „Ustawienia streamingu"), nadpisania, Autopilot jako stan plus przycisk „Uruchom analizę" |
 | Hosty i profile | host otwierany automatycznie, lista hostów; wybrany host otwiera: integracje, parowanie Gatewaya, test połączenia, odparuj |
 | Kontrolery i akcesoria | kontrolery (identyfikuj, wyłącz, rozparuj), mikrofon USB, Bluetooth |
 | Discord | logowanie, powiadomienia, dźwięki DM |
 | Informacje | wersja aplikacji i hosta, eksport diagnostyki, pomoc dostępna offline |
 
-Wszystkie pozycje z dzisiejszego „Opcje" mają tu swoje miejsce; żadna nie znika.
+Wszystkie pozycje z dawnego „Opcje" mają tu swoje miejsce; żadna nie znika.
 
 ### 3.3 Panel hosta (z tytułu hosta i z ekranu wyboru)
 
 Nagłówek: nazwa, stan, aktywny profil Windows, wersja hosta. Trzy akcje główne:
-**Pulpit**, **Obudź/Uśpij**, **Zamknij stream**. Poniżej sekcja „Więcej" z pozycjami
-„Test połączenia", a na końcu, oddzielone i na czerwono, „Twarde zamknięcie" i „Odparuj
-hosta". „Automatyczne przygotowanie streamu" przechodzi do Ustawienia → Hosty i profile.
+**Pulpit**, **Obudź/Uśpij**, **Zamknij stream**. Poniżej sekcja „WIĘCEJ" z pozycjami
+„Test połączenia" i „Zmień hosta", a na końcu, oddzielone i na czerwono, „Twarde
+zamknięcie" i „Odparuj hosta". „Automatyczne przygotowanie streamu" przechodzi do
+Ustawienia → Hosty i profile.
+
+**Z aktywną sesją** pierwsze wiersze to „Wróć do streamu" i „Zamknij stream", dalej
+„Uśpij hosta", potem sekcja WIĘCEJ; pozycje niszczące zawsze na końcu.
 
 ### 3.4 Karta gry (MENU lub długie OK na kaflu)
 
@@ -77,57 +102,172 @@ pokazywane tylko wtedy, gdy mają sens:
 
 ### 3.5 Biblioteka: filtry i sortowanie
 
+Zawartość bez zmian względem poprzedniej wersji; doprecyzowany wygląd:
+
 - Prawy drążek lub L2 otwiera **jeden panel „Filtry"** z trzema sekcjami: Stan
   (pojedynczy wybór), Platformy (wielokrotny), Sortuj (pojedynczy) oraz przyciskiem
   „Wyczyść filtry".
-- Pasek nad siatką pokazuje **chipy aktywnych filtrów** z etykietą typu, np.
-  „Stan: Zainstalowane", „Sortuj: Czas gry", „Platformy: Steam, Epic"; chip „Wszystkie"
-  znika, gdy filtr jest nieaktywny.
+- Nad siatką jeden rząd: **chipy tylko aktywnych filtrów** z etykietą typu, np.
+  „Stan: Zainstalowane", „Sortuj: Czas gry", „Platformy: Steam, Epic" (chip „Wszystkie"
+  znika, gdy filtr jest nieaktywny); przycisk **„Filtry"** z plakietką liczby aktywnych
+  filtrów; po prawej **„Wyszukaj"**.
 - Wyszukiwanie pod Y otwiera klawiaturę ekranową MoonWakera nad siatką, a wyniki
   filtrują siatkę na żywo; nie ma osobnego okna tekstowego.
 - Pozycja „34 / 309" i opis gry zostają po lewej.
+- **Górna krawędź siatki musi ucinać**, tak by pod nagłówkiem nie było widać paska
+  poprzedniego rzędu. Pionowa zanikająca krawędź została usunięta 2026-10-06
+  (commit 416a3dc3), więc przycięcie robi przycięcie widoku (clip), nie gradient.
 
-## 4. Język wizualny
+### 3.6 Szybkie menu (pod Guide/PS)
 
-- **Jeden komponent panelu** dla wszystkich list: eyebrow, tytuł, opis; wiersze 72 dp;
-  etykieta po lewej, wartość po prawej (przełącznik, wartość z chevronem albo nic);
-  nagłówki sekcji wersalikami z 24 dp odstępu nad; stopka z legendą.
-- **Fokus:** obrys 2 dp w kolorze akcentu i powiększenie 1,03; bez poświaty i cieni.
+Otwierane **krótkim naciśnięciem Guide/PS** (oczekiwany `KEYCODE_BUTTON_MODE`;
+**przed implementacją sprawdzić na telewizorze z padem właściciela**, bo HOME nie da się
+przechwycić). MENU/Options zostaje kontekstowe (karta gry na kaflu, panel hosta na
+hoście); długie MENU nie jest używane. Podczas streamu Guide trafia do PC (nakładka
+Steam/Xbox), więc szybkie menu dotyczy tylko konsoli.
+
+- **Układ:** treść ekranu głównego rozmyta w tle; zegar w prawym górnym rogu; rząd dużych
+  kart (Stream — tylko gdy jest sesja, Host, Discord z nieprzeczytanymi) z podpowiedzią
+  „☰ Opcje" pod kartą z fokusem.
+- **Karta Stream:** OK = „Wróć do streamu"; Opcje na niej = pływające menu: „Wróć do
+  streamu", „Zamknij stream", czerwone „Zamknij grę i stream". Karta pulpitu nie ma
+  okładki: wygenerowana grafika z gradientem (fiolet → morski), glif monitora w szklanym
+  kółku, znacznik „NA ŻYWO" z czerwoną kropką. Bez przechwytu ani rozmycia prawdziwego
+  pulpitu (bramka prywatności).
+- **Dół:** wyśrodkowany rząd gołych ikon z plakietkami stanu: Stream, Host, Profil,
+  Discord, Mikrofon, Kontrolery, Ustawienia, przerwa, Zasilanie/Zamknij MoonWaker.
+  Ikona z fokusem dostaje matowe kółko i swoją etykietę.
+- **Zawartość dawnych kafli:** Host — Obudź/Uśpij, Pulpit, Zmień hosta; Stream — Wróć do
+  streamu, Zamknij stream, Zamknij grę i stream (tylko gdy coś działa); Profil — Zmień
+  profil MoonWaker, Przełącz użytkownika Windows (z wyraźnym ostrzeżeniem).
+- **Konflikt:** opcja wyzwalacza nakładki DM Discorda „guide" (`DiscordDmShortcutHandler`)
+  koliduje z tym skrótem; trzeba ją usunąć albo ograniczyć do streamu.
+- Karta Stream czyta migawkę sesji, więc implementacja po MW-05 K3.
+
+## 4. Język wizualny (v4)
+
+Źródła: wytyczne Android TV / Compose for TV (układ, system fokusu, kolory, immersive
+list, kształty), Apple HIG tvOS (układ, fokus i zaznaczenie, typografia, materiały /
+Liquid Glass); odniesienia: PS5, Xbox, Steam Big Picture, Switch 2.
+
+### 4.1 Układ i panel
+
+- **Bezpieczny obszar:** ok. 5 % = 96 px po bokach i 54 px u góry i dołu przy 1080p
+  (48/27 dp).
+- **Jeden komponent panelu** dla wszystkich list: eyebrow, tytuł, opis; etykieta po
+  lewej, wartość po prawej (przełącznik, wartość z chevronem albo nic); nagłówki sekcji
+  wersalikami z dużym odstępem nad; stopka z legendą.
 - **Akcje niszczące:** zawsze na końcu listy, oddzielone, czerwony tekst, potwierdzenie
   z nazwą obiektu („Odparować Komputer Mariusza?").
-- **Typografia:** trzy rozmiary (tytuł 40 sp, etykieta 26 sp, pomocniczy 20 sp); bez
-  wersalików w treści poza nagłówkami sekcji.
 - **Wartości:** zamiast suwaków w procentach stopnie 0–10 z widoczną wartością
   i zmianą lewo/prawo; przełączniki jako jednolity komponent z dwoma stanami.
 - **Legenda:** jeden styl, najwyżej cztery pozycje, nigdy nad treścią (rezerwowany
   dolny margines).
-- **Tło:** w menu zawsze przyciemnione i rozmyte raz (statyczna bitmapa), bez
-  czytelnego tekstu z grafik gier pod listami.
-- **Jeden kolor akcentu** w całej aplikacji; zielony/żółty/czerwony wyłącznie dla stanu
-  hosta i akcji niszczących.
+- **Kolor:** jeden akcent w całej aplikacji; zielony/żółty/czerwony wyłącznie dla stanu
+  i akcji niszczących.
+
+### 4.2 Fokus: trzy sposoby wg typu elementu
+
+1. **Obrazy i karty:** cienki biały pierścień 3 px z odstępem 4–5 px, miękka poświata
+   w kolorze okładki, cień, skala 1,03–1,1 zależnie od rozmiaru (domyślna `Card` z Compose
+   TV: 1,1 i obrys 3 dp).
+2. **Kontrolki tekstowe** (stan hosta, wiersze menu i paneli): jasne wypełnienie
+   (prawie białe) z ciemnym tekstem, kształt pigułki lub zaokrąglony.
+3. **Gołe ikony:** matowe kółko za ikoną i etykieta pod nią.
+
+Na pierścień i poświatę zostaje ok. 12 px zapasu (padding albo wyłączone przycinanie).
+Koniec z grubymi cyjanowymi obrysami.
+
+### 4.3 Materiały: rozmycie zamiast ciemnienia
+
+- **Duże menu przykrywające część ekranu** (panele hosta, filtrów, karty gry,
+  ustawień oraz szybkie menu): treść pod spodem jest **rozmyta**, nie mocno
+  przyciemniona. Rozmycie tła: promień 32 px przy 1080p (16 dp), liczone raz na
+  zrzucie w ćwierć rozdzielczości w chwili otwarcia menu; tint rgb(6,8,12) 30 %
+  (szybkie menu: rośnie do 50 % ku dołowi pod rząd ikon).
+- **Same panele są szkłem:** własne rozmycie 40 px, tint rgb(16,18,26) 50 %, nasycenie
+  ×1,3, biały woal 7 %, kontur 1,5 px jaśniejszy u góry, promień narożników 36 px,
+  panel pływa z marginesami (np. x 1196–1896, y 24–1056 przy 1080p).
+- **Małe pływające menu** (Opcje) mają lżejszą drugą warstwę (rozmycie 10 px, tint 15 %),
+  żeby karty za nimi pozostały rozpoznawalne.
+- **Nad zaparkowanym streamem** (SurfaceView) rozmycie jest niemożliwe: tylko
+  przyciemnienie.
+
+### 4.4 Kolor otoczenia
+
+Tło tonowane kolorem okładki gry z fokusem (Palette lub Material Color Utilities na
+bitmapie ok. 32 px, cache na grę); lewa i dolna część przyciemniona gradientem pod tekstem;
+poświata fokusu w tym samym kolorze.
+
+### 4.5 Kształty
+
+Okładki promień 20 px, karty 32 px, panele 36 px; skala kształtów Material 4/8/12/16/28 dp.
+
+### 4.6 Typografia (px przy 1080p)
+
+| Element | Rozmiar |
+| --- | --- |
+| tytuł gry | 46 Semibold |
+| tytuł panelu | 44 Semibold |
+| tytuł karty | 32 Semibold |
+| treść, wiersze | 28–30 |
+| podtytuł | 26 |
+| podpisy, nagłówki sekcji | 24 (nagłówki: wersaliki z rozstrzeleniem, szare) |
+
+Nic poniżej 24 px: plakietki rysowane dziś w 16–22 px trzeba powiększyć. Czcionka na
+urządzeniu: Roboto / Google Sans. Bez wersalików w treści poza nagłówkami sekcji.
+
+**Centrowanie tekstu w pigułkach, chipach i plakietkach:** centrować na polu glifów, nie
+na metrykach czcionki; na Androidzie `includeFontPadding=false` i jawna linia bazowa
+(`firstBaselineToTopHeight`) albo własne rysowanie.
+
+### 4.7 Ikony
+
+Jeden zestaw ikon liniowych, kreska ok. 2,6 px, zaokrąglone końce; plakietki stanu
+wycięte w ikonie; liczniki w małych pigułkach.
+
+### 4.8 Koszt na Android TV API 31 (Sony BRAVIA)
+
+- Rozmycie przez `RenderEffect` na zmniejszonym zrzucie (ok. 0,5 MB dla 480×270); karty
+  ze szkła przycinają tę samą rozmytą bitmapę zamiast rozmywać osobno; żadnego
+  rozmycia na żywo co klatkę.
+- Poświaty i cienie jako bitmapy z cache albo 9-patch na kolor (unikać wielu
+  `setShadowLayer` i elevation).
+- Animacja fokusu = skala + alfa na GPU.
 
 ## 5. Poprawki niezależne od przeprojektowania
 
-Da się je zrobić od razu, bez czekania na nową strukturę:
-
-1. Wstecz na ekranie głównym wraca do wyboru profilu lub hosta; zamknięcie aplikacji
-   tylko z menu.
-2. Autopilot: stan i przycisk „Uruchom analizę" zamiast automatycznego startu.
-3. Pomoc dostępna offline (krótka strona w aplikacji) zamiast GitHuba.
-4. „Pozostało dziś" w godzinach i minutach.
-5. Napis o bibliotece tylko w stanach „odświeżam" i „nieaktualna".
-6. Etykiety typu na przyciskach filtrów („Sortuj: …").
+Zrobione w krokach 1–2 (sekcja 6): Wstecz na ekranie głównym nie zamyka aplikacji,
+Autopilot jako stan i przycisk, pomoc offline, „Pozostało dziś" w godzinach i minutach,
+napis o bibliotece tylko w stanach „odświeżam" i „nieaktualna", etykiety typu na
+przyciskach filtrów.
 
 ## 6. Kolejność prac
 
-1. Poprawki z sekcji 5 (jeden mały pakiet).
-2. Wspólny komponent panelu i listy (sekcja 4) jako osobna klasa widoku; przepięcie
-   istniejących paneli na niego bez zmiany zawartości.
-3. Ustawienia pełnoekranowe (3.2) i przeniesienie pozycji z „Opcje".
-4. Karta gry (3.4) i panel hosta (3.3).
-5. Panel filtrów i chipy (3.5), razem z nową siatką z pakietu P2.
-6. Szybkie menu (3.1) i usunięcie paska ikon.
+Zrobione na tej gałęzi (siatka z pakietu P2 też już jest w użyciu):
 
-Każdy krok jest niezależnie używalny i nie dotyka kodu sesji, więc może iść
-równolegle z hardeningiem; ryzykiem są tylko konflikty w `ConsoleActivity`, dlatego nowe
-komponenty powstają jako osobne klasy, a Activity tylko je podpina.
+1. Poprawki z sekcji 5.
+2. Wspólny komponent panelu (`ConsolePanel`) jako osobna klasa widoku; przepięcie
+   istniejących paneli bez zmiany zawartości.
+3. Ustawienia pełnoekranowe (3.2) i przeniesienie pozycji z „Opcje".
+4. Karta gry (3.4) i panel hosta (3.3) w obecnej postaci.
+
+Dalej:
+
+- **5a. Wspólna warstwa wizualna:** panel ze szkła, zrzut tła z rozmyciem, trzy sposoby
+  fokusu, centrowanie tekstu, zestaw ikon (sekcja 4), zastosowane do istniejących
+  paneli (host, karta gry, ustawienia, menu akcji) jako osobne klasy widoków;
+  `ConsoleActivity` tylko je podpina. Przy okazji sprawdzić rozmiary tekstu z kroków 1–2
+  względem tabeli 4.6.
+- **5b. Panel filtrów i chipy (3.5)** wraz z przycięciem górnej krawędzi siatki.
+- **6a. Pasek górny (3.1):** kafel stanu hosta, warunkowe ikony Discord i mikrofon,
+  Szukaj z klawiaturą nad siatką; przeniesienie „Odśwież bibliotekę" do Ustawienia →
+  Biblioteka; „Zmień hosta" do panelu hosta; wariant panelu hosta z sesją.
+- **6b. Szybkie menu pod Guide (3.6):** najpierw weryfikacja kodu klawisza na
+  telewizorze, rozstrzygnięcie opcji „guide" w `DiscordDmShortcutHandler`; po MW-05 K3,
+  bo karta Stream czyta migawkę sesji.
+
+Każdy krok: build → zrzuty z telewizora → akceptacja właściciela → commit. Każdy jest
+niezależnie używalny i nie dotyka kodu sesji, więc może iść równolegle z hardeningiem
+(6b czeka na K3); ryzykiem są tylko konflikty w `ConsoleActivity`, dlatego nowe
+komponenty powstają jako osobne klasy, a Activity tylko je podpina i nie może urosnąć netto.
