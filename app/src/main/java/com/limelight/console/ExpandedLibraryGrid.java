@@ -142,8 +142,6 @@ final class ExpandedLibraryGrid extends RecyclerView {
         setClipChildren(false);
         setClipToPadding(false);
         setVerticalScrollBarEnabled(false);
-        setFadingEdgeLength(px(12));
-        setVerticalFadingEdgeEnabled(true);
         setPadding(px(5), px(14), px(5), px(14));
         addOnScrollListener(new OnScrollListener() {
             @Override
