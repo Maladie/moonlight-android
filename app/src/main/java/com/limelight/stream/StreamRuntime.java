@@ -475,13 +475,9 @@ public final class StreamRuntime implements NvConnectionListener,
         });
     }
 
+    /** One owner-scoped report; the model decides from its own state what the loss means. */
     private void markReconnectRequired() {
-        SessionModel model = platform.sessionModel();
-        SessionModel.Snapshot retained = model.snapshot();
-        if (!retained.streamSessionId.equals(streamSessionId)) return;
-        model.post(retained.state == SessionModel.State.PREPARING
-                ? new SessionEvent.PreparingTransportLost(this, retained)
-                : new SessionEvent.TransportLost(streamSessionId));
+        platform.sessionModel().post(new SessionEvent.TransportLost(this, streamSessionId));
     }
 
     /**

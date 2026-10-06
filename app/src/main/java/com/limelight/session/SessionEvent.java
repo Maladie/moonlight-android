@@ -74,16 +74,21 @@ public abstract class SessionEvent<R> {
         }
     }
 
-    /** The retained transport is gone; the session needs a reconnect. */
+    /**
+     * The owner's transport is gone; the session needs a reconnect. A preparing attempt is
+     * ended only for its own transport owner.
+     */
     public static final class TransportLost extends SessionEvent<Void> {
+        private final Controller owner;
         private final String sessionId;
 
-        public TransportLost(String sessionId) {
+        public TransportLost(Controller owner, String sessionId) {
+            this.owner = owner;
             this.sessionId = sessionId;
         }
 
         @Override void apply(SessionModel m, Reply<Void> reply) {
-            m.markReconnectRequired(sessionId);
+            m.transportLost(owner, sessionId);
             reply.accept(null);
         }
     }
@@ -142,13 +147,25 @@ public abstract class SessionEvent<R> {
         private final String sessionId;
         private final long presentationEpoch;
 
+        private final Controller owner;
+
         public ParkRequested(String sessionId, long presentationEpoch) {
+            this(null, sessionId, presentationEpoch);
+        }
+
+        private ParkRequested(Controller owner, String sessionId, long presentationEpoch) {
+            this.owner = owner;
             this.sessionId = sessionId;
             this.presentationEpoch = presentationEpoch;
         }
 
+        /** The owner's own presentation leaves the screen: scoped to the owner, not an epoch. */
+        public static ParkRequested byOwner(Controller owner, String sessionId) {
+            return new ParkRequested(owner, sessionId, -1L);
+        }
+
         @Override void apply(SessionModel m, Reply<Boolean> reply) {
-            m.parkForBackground(sessionId, presentationEpoch, reply);
+            m.parkForBackground(owner, sessionId, presentationEpoch, reply);
         }
     }
 

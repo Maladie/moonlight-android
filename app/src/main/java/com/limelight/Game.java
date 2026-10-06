@@ -4662,8 +4662,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 && (transitionController == null || streamEverRevealed)) {
             runtime.setAudioVolume(attachment, 1f);
         }
-        if (controllerHandler != null) controllerHandler.enableSensors();
-        setInputGrabState(true);
+        // Under the stream Home, sensors and input stay with the Home until it closes.
+        if (!streamHomeVisible) {
+            if (controllerHandler != null) controllerHandler.enableSensors();
+            setInputGrabState(true);
+        }
         runtime.requestIdrFrame(attachment);
         scheduleRetainedRestoreWatchdog();
         MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.restored",
@@ -4722,7 +4725,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 }
             });
         });
-        sessionModel.post(new SessionEvent.TransportLost(streamSessionId));
+        sessionModel.post(new SessionEvent.TransportLost(runtime, streamSessionId));
     }
 
     private void closeStreamWithPrivacy(boolean quitApplication) {
@@ -4935,7 +4938,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 backgroundStreamParked = false;
                 decoderDetachedBySurfaceLoss = false;
                 saveReconnect(true);
-                sessionModel.post(new SessionEvent.TransportLost(streamSessionId));
+                sessionModel.post(new SessionEvent.TransportLost(runtime, streamSessionId));
                 stopConnection(() -> finish());
             });
             return;
@@ -6469,15 +6472,15 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 if (runtime.surfaceLost(attachment)) decoderDetachedBySurfaceLoss = true;
                 // A rejected park keeps the live transport as before K3; the next surface
                 // reattaches the decoder through restoreParkedStream.
-                sessionModel.dispatch(new SessionEvent.ParkRequested(streamSessionId,
-                        sessionModel.snapshot().presentationEpoch), parked -> {
+                sessionModel.dispatch(SessionEvent.ParkRequested.byOwner(runtime,
+                        streamSessionId), parked -> {
                     if (!parked) MoonWakerDiagnostics.record("INFO", "android.stream",
                             "surface_loss.park_rejected", "stream_session_id", streamSessionId);
                 });
             } else if (canParkBackgroundStream()) {
                 parkBackgroundStream();
             } else if (!backgroundStreamParked) {
-                decoderRenderer.prepareForStop();
+                if (decoderRenderer != null) decoderRenderer.prepareForStop();
                 stopConnection();
             }
         }

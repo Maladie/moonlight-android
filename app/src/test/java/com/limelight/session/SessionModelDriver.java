@@ -209,7 +209,7 @@ public final class SessionModelDriver {
     }
     public void markParked(String sessionId) { call(new SessionEvent.Parked(sessionId)); }
     public void markReconnectRequired(String sessionId) {
-        call(new SessionEvent.TransportLost(sessionId));
+        call(new SessionEvent.TransportLost(null, sessionId));
     }
     public boolean markTerminating(String sessionId, String hostId, int appId, String gameId) {
         return call(new SessionEvent.TerminatingMarked(sessionId, hostId, appId, gameId));

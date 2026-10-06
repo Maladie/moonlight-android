@@ -1062,7 +1062,7 @@ public class GameTransitionCancelContractTest {
                 text.indexOf("private void scheduleRetainedRestoreWatchdog("));
 
         assertTrue(destroyed.indexOf("runtime.surfaceLost(attachment)")
-                < destroyed.indexOf("new SessionEvent.ParkRequested("));
+                < destroyed.indexOf("SessionEvent.ParkRequested.byOwner("));
         assertTrue(destroyed.contains("decoderDetachedBySurfaceLoss = true"));
         assertTrue(created.contains("backgroundStreamParked || decoderDetachedBySurfaceLoss"));
         assertTrue(restore.contains("decoderDetachedBySurfaceLoss = false"));
@@ -1071,6 +1071,10 @@ public class GameTransitionCancelContractTest {
                 < restore.indexOf("runtime.attachDecoder("));
         assertTrue(text.split("decoderDetachedBySurfaceLoss = false", -1).length - 1 >= 6);
         assertTrue(text.contains("public boolean canPark()"));
+        assertTrue(restore.indexOf("if (!streamHomeVisible)")
+                < restore.indexOf("setInputGrabState(true)"));
+        assertTrue(destroyed.contains("SessionEvent.ParkRequested.byOwner(runtime,"));
+        assertTrue(destroyed.contains("if (decoderRenderer != null) decoderRenderer.prepareForStop()"));
         assertTrue(restore.contains("new SessionEvent.PresentationRestored(runtime, streamSessionId)"));
         String create = text.substring(text.indexOf("beginAutoWarmUpPreparing(begun -> {"));
         create = create.substring(0, create.indexOf("});"));

@@ -141,7 +141,7 @@ public class SessionModelAsyncTest {
         assertEquals("parent", model.snapshot().profileId);
 
         // A newer transition lands between the effect request and its result.
-        model.post(new SessionEvent.TransportLost("s"));
+        model.post(new SessionEvent.TransportLost(owner, "s"));
         driver.drain();
 
         assertEquals(5, connection.get());          // the transport side committed
@@ -381,5 +381,28 @@ public class SessionModelAsyncTest {
         assertFalse(driver.parkForBackground("s"));
         assertEquals(SessionModel.State.HOME_LIVE, driver.state());
         assertTrue(driver.canResumeInstantly());
+    }
+
+    @Test public void ownersOwnParkIsScopedToTheOwnerNotToAnEpochItMayNotHaveSeen() {
+        Owner owner = liveHome("s");
+        driver.post(new SessionEvent.PresentationRestored(owner, "s"));   // epoch advanced
+        assertFalse(driver.call(SessionEvent.ParkRequested.byOwner(new Owner(), "s")));
+        assertTrue(trace.isEmpty());
+        assertTrue(driver.call(SessionEvent.ParkRequested.byOwner(owner, "s")));
+        assertEquals(java.util.List.of("owner.park"), trace);
+    }
+
+    @Test public void transportLossIsDecidedByTheModelFromItsOwnState() {
+        Owner owner = new Owner();
+        assertTrue(driver.beginPreparing(owner, "s", "host", "parent", 7, "", "t", 1L));
+        driver.post(new SessionEvent.TransportLost(new Owner(), "s"));     // not its owner
+        assertEquals(SessionModel.State.PREPARING, driver.state());
+        driver.post(new SessionEvent.TransportLost(owner, "s"));
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED, driver.state());
+
+        Owner live = liveHome("s2");
+        driver.post(new SessionEvent.TransportLost(live, "s2"));
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED, driver.state());
+        assertFalse(driver.canResumeInstantly());
     }
 }

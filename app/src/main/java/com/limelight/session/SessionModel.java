@@ -950,10 +950,12 @@ public final class SessionModel {
         return true;
     }
 
-    void parkForBackground(String expectedStreamSessionId, long expectedPresentationEpoch,
-                           Reply<Boolean> reply) {
+    void parkForBackground(Controller presenterOwner, String expectedStreamSessionId,
+                           long expectedPresentationEpoch, Reply<Boolean> reply) {
+        boolean currentPresenter = presenterOwner != null ? presenterOwner == controller
+                : expectedPresentationEpoch == presentationEpoch;
         if (!matches(streamSessionId, expectedStreamSessionId) || switchOwner != null
-                || expectedPresentationEpoch != presentationEpoch) {
+                || !currentPresenter) {
             reply.accept(false);
             return;
         }
@@ -1025,6 +1027,17 @@ public final class SessionModel {
     void markParked(String expectedStreamSessionId) {
         if (state == State.PREPARING || !matches(streamSessionId, expectedStreamSessionId)) return;
         if (state == State.HOME_LIVE || state == State.PARKED_LIVE) setState(State.PARKED_LIVE);
+    }
+
+    void transportLost(Controller owner, String expectedStreamSessionId) {
+        if (state == State.PREPARING) {
+            if (owner != null && controller == owner) {
+                markPreparingReconnectRequired(owner, streamSessionId, hostId, appId,
+                        transitionId, attempt);
+            }
+            return;
+        }
+        markReconnectRequired(expectedStreamSessionId);
     }
 
     void markReconnectRequired(String expectedStreamSessionId) {
