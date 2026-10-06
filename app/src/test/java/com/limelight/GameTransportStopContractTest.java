@@ -22,7 +22,7 @@ public class GameTransportStopContractTest {
                 "public void stageFailed(");
 
         // S07: the physical transport, its stop completion, listener and locks leave Game.
-        assertTrue(runtime.contains("new TransportStopCoordinator(transport::stop,"));
+        assertTrue(runtime.contains("new TransportStopCoordinator(this::stopNative,"));
         assertTrue(runtime.contains("transport.start(this)"));
         assertTrue(runtime.contains("stopCoordinator.fence("));
         assertTrue(android.contains("connection.start(audio, video, listener)"));

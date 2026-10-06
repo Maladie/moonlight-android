@@ -136,8 +136,26 @@ public final class StreamRuntime implements NvConnectionListener,
         this.executionProfileId = executionProfileId;
         this.transport = transport;
         this.platform = platform;
-        this.stopCoordinator = new TransportStopCoordinator(transport::stop,
+        this.stopCoordinator = new TransportStopCoordinator(this::stopNative,
                 platform.stopExecutor());
+    }
+
+    /**
+     * The native stop waits for every in-flight native call of this generation and runs alone:
+     * the core holds one connection per process and aborts on a call after its teardown.
+     */
+    private void stopNative() {
+        inputLock.writeLock().lock();
+        try {
+            transport.stop();
+        } finally {
+            inputLock.writeLock().unlock();
+        }
+    }
+
+    /** A native control call is legal only on this connected generation before its stop. */
+    private synchronized boolean controlAllowed(Attachment attachment) {
+        return isCurrent(attachment) && !stopRequested && state == State.CONNECTED;
     }
 
     /**
@@ -406,13 +424,23 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     public void requestIdrFrame(Attachment attachment) {
-        if (isCurrent(attachment)) transport.requestIdrFrame();
+        inputLock.readLock().lock();
+        try {
+            if (controlAllowed(attachment)) transport.requestIdrFrame();
+        } finally {
+            inputLock.readLock().unlock();
+        }
     }
 
     public boolean reauthorizeControlGeneration(Attachment attachment, long expected,
                                                 long generation) {
-        return isCurrent(attachment)
-                && transport.reauthorizeControlGeneration(expected, generation);
+        inputLock.readLock().lock();
+        try {
+            return controlAllowed(attachment)
+                    && transport.reauthorizeControlGeneration(expected, generation);
+        } finally {
+            inputLock.readLock().unlock();
+        }
     }
 
     /** Parks the transport for background retention; false means it was not parked. */

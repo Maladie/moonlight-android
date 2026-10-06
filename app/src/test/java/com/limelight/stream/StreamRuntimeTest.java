@@ -358,6 +358,53 @@ public class StreamRuntimeTest {
         assertEquals(0f, transport.volume, 0f);
     }
 
+    @Test public void idrReachesTheCoreOnlyWhileThisGenerationIsConnected() {
+        FakeTransport transport = new FakeTransport();
+        StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
+        StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
+        runtime.requestIdrFrame(attachment);                 // connecting: no native control yet
+        assertEquals(0, transport.idrRequests.get());
+
+        runtime.start();
+        runtime.connectionStarted();
+        runtime.requestIdrFrame(attachment);
+        assertEquals(1, transport.idrRequests.get());
+
+        runtime.stop(result -> { });                          // after the stop: never again
+        runtime.requestIdrFrame(attachment);
+        assertFalse(runtime.reauthorizeControlGeneration(attachment, 1L, 2L));
+        assertEquals(1, transport.idrRequests.get());
+    }
+
+    @Test public void nativeStopWaitsForAnInFlightControlCall() throws Exception {
+        FakeTransport transport = new FakeTransport();
+        java.util.concurrent.ExecutorService stopThread =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        platform.stopExecutor = stopThread::execute;
+        try {
+            StreamRuntime runtime = connected("s1", transport);
+            StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
+            transport.idrEntered = new CountDownLatch(1);
+            transport.idrRelease = new CountDownLatch(1);
+            Thread idr = new Thread(() -> runtime.requestIdrFrame(attachment));
+            idr.start();
+            assertTrue(transport.idrEntered.await(5, TimeUnit.SECONDS));
+
+            CountDownLatch stopped = new CountDownLatch(1);
+            runtime.stop(result -> stopped.countDown());
+            assertFalse("the core stop ran during a native call",
+                    stopped.await(200, TimeUnit.MILLISECONDS));
+            assertEquals(0, transport.stops.get());
+
+            transport.idrRelease.countDown();
+            assertTrue(stopped.await(5, TimeUnit.SECONDS));
+            assertEquals(1, transport.stops.get());
+            idr.join(5_000L);
+        } finally {
+            stopThread.shutdownNow();
+        }
+    }
+
     @Test public void abandonedPreparingStopsWithoutSavingReconnectMaterial() {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
@@ -636,7 +683,18 @@ public class StreamRuntimeTest {
         }
         @Override public long controlGeneration() { return 0L; }
         @Override public boolean reauthorizeControlGeneration(long expected, long generation) { return true; }
-        @Override public void requestIdrFrame() { }
+        final AtomicInteger idrRequests = new AtomicInteger();
+        volatile CountDownLatch idrEntered;
+        volatile CountDownLatch idrRelease;
+        @Override public void requestIdrFrame() {
+            idrRequests.incrementAndGet();
+            if (idrEntered != null) idrEntered.countDown();
+            try {
+                if (idrRelease != null) idrRelease.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
+        }
         @Override public boolean attachDecoder(VideoDecoderRenderer decoder) { return true; }
         @Override public void detachDecoder() { decoderDetaches.incrementAndGet(); }
         @Override public void setAudioVolume(float volume) { this.volume = volume; }

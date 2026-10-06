@@ -380,7 +380,7 @@ public class GameTransitionCancelContractTest {
         // The runtime marks CONNECTING before the native start, so a stop always reaches it.
         assertTrue(start.indexOf("state = State.CONNECTING")
                 < start.indexOf("transport.start(this)"));
-        assertTrue(runtime.contains("new TransportStopCoordinator(transport::stop"));
+        assertTrue(runtime.contains("new TransportStopCoordinator(this::stopNative"));
         assertFalse(stop.contains("conn.stop()"));
         assertTrue(stop.contains("captured.stop("));
     }
