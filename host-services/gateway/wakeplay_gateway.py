@@ -4251,7 +4251,9 @@ class GatewayState:
             return {"kind": "idle", "game_id": "", "identity": None,
                     "running_games": [], "running_scan_status": running_scan_status,
                     **exact, "snapshot": result}
-        return {"kind": "unavailable", **exact, "snapshot": result}
+        return {"kind": "unavailable", **exact, "snapshot": result,
+                "game_absent": game_evidence == "ABSENT" and current_state == "idle"
+                and not current_id and running_scan_status in {"complete", "partial"}}
 
     @staticmethod
     def _child_time_session_matches(session: dict[str, Any], actor_id: str,
@@ -4703,6 +4705,7 @@ class GatewayState:
                 self.control_condition.wait(remaining)
             stream = self.control_state.get("stream")
             idle_restart = False
+            rebound = None
             if direction == "start" and observed_app_id == 0 and intent != "reauthorize":
                 idle_restart = self._control_reconcile_idle_locked()
                 stream = self.control_state.get("stream")
@@ -4729,38 +4732,13 @@ class GatewayState:
                 if observed_app_id not in {0, int(stream.get("sunshine_app_id") or 0)}:
                     return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                                  "reason": "unmanaged_stream"}
-                current = self._child_time_current_game(execution_id, stream)
-                current_game_id = str(current.get("game_id") or "")
-                current_identity = current.get("identity")
-                current_token = self._child_time_process_token(current_identity)
-                expected_token = self._child_time_process_token(stream)
-                expected_game = self._child_time_normalize_game_id(
-                    stream.get("provider_game_id"))
-                provider_idle = current.get("kind") == "idle"
-                provider_active = current.get("kind") == "active" \
-                    and bool(current_game_id) and bool(current_token) \
-                    and (not expected_token or current_token == expected_token) \
-                    and (not expected_game or self._child_time_normalize_game_id(
-                        current_game_id) == expected_game)
-                retired_child_process = intent == "child_terminal" \
-                    and self._child_time_process_absent(current, expected_token)
-                if not (provider_idle or provider_active or retired_child_process):
+                retained = self._control_retained_process(execution_id, stream, intent)
+                if retained is None:
                     return HTTPStatus.CONFLICT, {
                         "ok": False, "state": "blocked",
                         "reason": "retained_process_unconfirmed",
                     }
-                proposed.update({
-                    "provider_game_id": (self._child_time_normalize_game_id(
-                        current_game_id) if provider_active else
-                        expected_game if retired_child_process else ""),
-                    "process_token": (current_token if provider_active else
-                                      expected_token if retired_child_process else ""),
-                    "process_id": (int((current_identity or {}).get(
-                        "process_id") or 0) if provider_active else
-                        int(stream.get("process_id") or 0)
-                        if retired_child_process else 0),
-                    "provider_idle_confirmed": provider_idle,
-                })
+                proposed.update(retained)
             elif intent == "reauthorize":
                 exact = isinstance(stream, dict) and expected_generation == stream.get("generation") \
                     and observed_app_id == stream.get("sunshine_app_id") \
@@ -4812,6 +4790,23 @@ class GatewayState:
                 same_owner = all(stream.get(key) == proposed.get(key) for key in (
                     "client_id", "actor_profile_id", "execution_profile_id",
                     "stream_session_id", "sunshine_app_id"))
+                # The owner's transport ended without a stop (client abort while connecting;
+                # the streamer keeps the app paused). Only the same TV, actor, execution
+                # profile, child attachment and app may rebind it to a new transport, and
+                # only while the streamer proves no transport is live. The new generation
+                # fences every effect still bound to the dead one.
+                # ponytail: snapshot read under the Gateway lock, like the idle reconcile
+                # above; move it outside the lock if this path ever becomes frequent.
+                if not same_owner and intent in {"resume", "reconnect", "warm_up"} \
+                        and all(stream.get(key) == proposed.get(key) for key in (
+                            "client_id", "actor_profile_id", "execution_profile_id",
+                            "sunshine_app_id", "child_session_id")) \
+                        and observed_app_id == int(stream.get("sunshine_app_id") or 0) \
+                        and self._control_stream_transport_gone(stream):
+                    same_owner = True
+                    rebound = {"generation": stream.get("generation"),
+                               "stream_session_id": stream.get("stream_session_id"),
+                               "operation_id": operation_id}
                 if intent not in {"resume", "reconnect", "warm_up",
                                   "provider_transition"} or not same_owner:
                     same_replacement_transport = intent == "replacement" and \
@@ -4825,31 +4820,14 @@ class GatewayState:
                     return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                                  "reason": "unmanaged_stream"}
                 if intent in {"resume", "reconnect", "warm_up"}:
-                    current = self._child_time_current_game(execution_id, stream)
-                    current_game_id = str(current.get("game_id") or "")
-                    current_identity = current.get("identity")
-                    current_token = self._child_time_process_token(current_identity)
-                    expected_token = self._child_time_process_token(stream)
-                    expected_game = self._child_time_normalize_game_id(
-                        stream.get("provider_game_id"))
-                    provider_idle = current.get("kind") == "idle"
-                    provider_active = current.get("kind") == "active" \
-                        and bool(current_game_id) and bool(current_token) \
-                        and (not expected_token or current_token == expected_token) \
-                        and (not expected_game or self._child_time_normalize_game_id(
-                            current_game_id) == expected_game)
-                    if not (provider_idle or provider_active):
+                    retained = self._control_retained_process(execution_id, stream, intent)
+                    if retained is None:
                         return HTTPStatus.CONFLICT, {
                             "ok": False, "state": "blocked",
                             "reason": "retained_process_unconfirmed",
                         }
-                    proposed.update({
-                        "provider_game_id": self._child_time_normalize_game_id(
-                            current_game_id) if provider_active else "",
-                        "process_token": current_token if provider_active else "",
-                        "process_id": int((current_identity or {}).get(
-                            "process_id") or 0) if provider_active else 0,
-                    })
+                    del retained["provider_idle_confirmed"]
+                    proposed.update(retained)
             elif intent in {"resume", "reconnect"} and not idle_restart:
                 return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
                                              "reason": "unmanaged_stream"}
@@ -4885,6 +4863,8 @@ class GatewayState:
                     "operation_id", "intent", "generation", "actor_lease_epoch",
                     "effect_sequence", "stream_session_id", "child_session_id",
                     "actor_profile_id", "execution_profile_id")})
+            if rebound:
+                DIAGNOSTICS.record("control-stream-transport-rebound", **rebound)
             if intent == "reauthorize":
                 retired, _result = self.provider_control_operation.retire(operation)
                 if retired:
@@ -5238,10 +5218,52 @@ class GatewayState:
                                       profile_id=stream["execution_profile_id"])
             if not ok or not ControlOperationPolicy.streamer_idle(snapshot):
                 return False
-            return self._child_time_current_game(
-                stream["execution_profile_id"], stream).get("kind") == "idle"
+            return (self._control_retained_process(stream["execution_profile_id"], stream)
+                    or {}).get("provider_idle_confirmed") is True
+        except (OSError, TypeError, ValueError):
+            return False
+
+    def _control_retained_process(self, execution_id: str, stream: dict[str, Any],
+                                  intent: str = "") -> dict[str, Any] | None:
+        """The process identity a retained stream may carry on, or None when unproven.
+
+        A stream that retains an identity needs the provider's exact proof (complete scan,
+        target status). One that retains neither a process token nor a provider game id has
+        no target to prove gone, so a scan that ran (complete or partial) with the provider's
+        game absent and idle is enough for it.
+        """
+        current = self._child_time_current_game(execution_id, stream)
+        game_id = str(current.get("game_id") or "")
+        identity = current.get("identity")
+        token = self._child_time_process_token(identity)
+        expected_token = self._child_time_process_token(stream)
+        expected_game = self._child_time_normalize_game_id(stream.get("provider_game_id"))
+        idle = current.get("kind") == "idle" or (
+            not expected_token and not expected_game and current.get("game_absent") is True)
+        if current.get("kind") == "active" and game_id and token \
+                and (not expected_token or token == expected_token) \
+                and (not expected_game
+                     or self._child_time_normalize_game_id(game_id) == expected_game):
+            return {"provider_game_id": self._child_time_normalize_game_id(game_id),
+                    "process_token": token,
+                    "process_id": int((identity or {}).get("process_id") or 0),
+                    "provider_idle_confirmed": False}
+        if intent == "child_terminal" \
+                and self._child_time_process_absent(current, expected_token):
+            return {"provider_game_id": expected_game, "process_token": expected_token,
+                    "process_id": int(stream.get("process_id") or 0),
+                    "provider_idle_confirmed": idle}
+        return {"provider_game_id": "", "process_token": "", "process_id": 0,
+                "provider_idle_confirmed": True} if idle else None
+
+    def _control_stream_transport_gone(self, stream: dict[str, Any]) -> bool:
+        """The streamer authoritatively reports no live transport (network read)."""
+        try:
+            ok, snapshot = self.proxy("vibepollo", "/snapshot?force=1", timeout=8.0,
+                                      profile_id=stream["execution_profile_id"])
         except OSError:
             return False
+        return ok and ControlOperationPolicy.streamer_transport_gone(snapshot)
 
     def _control_reconcile_idle_apply_locked(
             self, candidate: tuple[dict[str, Any], tuple[int, int, int, int]]) -> bool:

@@ -887,6 +887,205 @@ class ControlOperationTest(unittest.TestCase):
         self.assertGreater(result["generation"], launch["generation"])
         self.assertEqual(2, len(calls))
 
+    def observe_paused_app(self, connected_count=0):
+        """Sunshine after a client abort: the app stays paused (resumable), transport ended."""
+        def proxy(name, path, **_kwargs):
+            if name == "vibepollo" and path == "/snapshot?force=1":
+                return True, {**control_evidence(connected_count, app_running=True),
+                              "clients": [{"uuid": VIBE_UUID,
+                                           "connected": connected_count > 0}],
+                              "apps": [{"app_id": 7, "running": True}]}
+            if name == "game_provider" and path == "/observation":
+                return True, {"game": {"state": "idle", "id": "", "evidence": "ABSENT"},
+                              "process": {"evidence": "ABSENT", "running_games": [],
+                                          "running_scan_status": "complete"}}
+            return False, {"error": "fixture_offline"}
+        self.state.proxy = target_aware(proxy)
+
+    def test_aborted_transport_rebinds_to_same_owner_resume(self):
+        # A1: launch permitted and completed, then the client aborts in CONNECTING_STREAM
+        # without a stop; Sunshine ends the session but keeps the app paused.
+        _status, a1 = self.acquire(self.request("a1-launch"))
+        self.complete(a1)
+        self.observe_paused_app()
+
+        # A2: the same TV resumes the paused app on a new transport.
+        status, a2 = self.acquire(self.request(
+            "a2-resume", "resume", session="stream-2"), 0)
+        self.assertEqual(200, status, a2)
+        self.assertEqual("permitted", a2["state"])
+        self.assertGreater(a2["generation"], a1["generation"])
+        self.assertEqual(200, self.complete(a2)[0])
+        self.assertEqual("stream-2", self.state.control_state["stream"]["stream_session_id"])
+
+        # The dead transport's binding is fenced: a late stop for it cannot act.
+        status, stale = self.acquire(self.request(
+            "a1-late-stop", "full_quit", expected_generation=a1["generation"]), 0)
+        self.assertEqual(409, status)
+        self.assertEqual("unmanaged_stream", stale["reason"])
+
+    def observe_partial_scan(self, connected_count=0, app_running=True, provider_ok=True,
+                             scan="partial", game=None, running=()):
+        """The Bridge while idle: game ABSENT, process PENDING, running scan partial."""
+        def proxy(name, path, **_kwargs):
+            if name == "vibepollo" and path == "/snapshot?force=1":
+                return True, {**control_evidence(connected_count, app_running=app_running),
+                              "clients": [{"uuid": VIBE_UUID,
+                                           "connected": connected_count > 0}],
+                              "apps": [{"app_id": 7, "running": app_running}]}
+            if name == "game_provider" and path == "/observation" and provider_ok:
+                return True, {"game": dict(game or {"state": "idle", "id": "",
+                                                    "evidence": "ABSENT"}),
+                              "process": {"evidence": "PENDING",
+                                          "running_games": [dict(item) for item in running],
+                                          "running_scan_status": scan}}
+            return False, {"error": "fixture_offline"}
+        self.state.proxy = target_aware(proxy)
+
+    def assert_unconfirmed(self, generation):
+        for body in (self.request("a1-resume", "resume"),
+                     self.request("a1-quit", "full_quit", expected_generation=generation)):
+            with self.subTest(intent=body["intent"]):
+                status, result = self.acquire(body, 0)
+                self.assertEqual(409, status)
+                self.assertEqual("retained_process_unconfirmed", result["reason"])
+        self.assertFalse(self.state._control_reconcile_idle())
+        self.assertEqual(generation, self.state.control_state["stream"]["generation"])
+
+    def launched_stream(self, token=""):
+        _status, launch = self.acquire(self.request("a1-launch"))
+        self.complete(launch)
+        if token:
+            self.state.control_state["stream"].update({
+                "provider_game_id": "steam:7", "process_token": token, "process_id": 77})
+        return launch
+
+    def test_tokenless_stream_rebinds_when_running_scan_partial(self):
+        a1 = self.launched_stream()
+        self.observe_partial_scan()
+        with patch.object(wakeplay_gateway.DIAGNOSTICS, "record") as record:
+            status, a2 = self.acquire(self.request(
+                "a2-resume", "resume", session="stream-2"), 0)
+        self.assertEqual(200, status, a2)
+        self.assertEqual("permitted", a2["state"])
+        self.assertGreater(a2["generation"], a1["generation"])
+        events = [call.args[0] for call in record.call_args_list]
+        self.assertIn("control-operation-permitted", events)
+        self.assertIn("control-stream-transport-rebound", events)
+        self.assertEqual(200, self.complete(a2)[0])
+        stream = self.state.control_state["stream"]
+        self.assertEqual(("stream-2", "", 0), (
+            stream["stream_session_id"], stream["process_token"], stream["process_id"]))
+
+    def test_tokenless_stream_full_quit_permitted_when_running_scan_partial(self):
+        a1 = self.launched_stream()
+        self.observe_partial_scan()
+        status, close = self.acquire(self.request(
+            "a1-quit", "full_quit", expected_generation=a1["generation"]), 0)
+        self.assertEqual(200, status, close)
+        self.assertEqual("permitted", close["state"])
+        self.assertEqual(("", ""), (close["provider_game_id"], close["process_token"]))
+        self.assertEqual(200, self.complete(close)[0])
+        self.assertIsNone(self.state.control_state["stream"])
+
+    def test_token_bearing_stream_still_unconfirmed_when_scan_partial(self):
+        a1 = self.launched_stream(token="a" * 64)
+        self.observe_partial_scan(app_running=False)
+        self.assert_unconfirmed(a1["generation"])
+
+    def test_game_id_only_stream_still_unconfirmed_when_scan_partial(self):
+        a1 = self.launched_stream()
+        self.state.control_state["stream"]["provider_game_id"] = "steam:7"
+        self.observe_partial_scan(app_running=False)
+        self.assert_unconfirmed(a1["generation"])
+
+    def test_tokenless_stream_unconfirmed_when_scan_unavailable(self):
+        a1 = self.launched_stream()
+        self.observe_partial_scan(app_running=False, scan="unavailable")
+        self.assert_unconfirmed(a1["generation"])
+
+    def test_tokenless_stream_unconfirmed_when_game_starting(self):
+        a1 = self.launched_stream()
+        self.observe_partial_scan(app_running=False, game={
+            "state": "starting", "id": "", "evidence": "PENDING"})
+        self.assert_unconfirmed(a1["generation"])
+
+    def test_tokenless_stream_adopts_running_identity_when_scan_partial(self):
+        self.launched_stream()
+        token = "b" * 64
+        self.observe_partial_scan(app_running=False, running=[
+            {"game_id": "steam:7", "process_id": 77, "process_token": token}])
+        self.assertFalse(self.state._control_reconcile_idle())
+        status, resume = self.acquire(self.request("a1-resume", "resume"), 0)
+        self.assertEqual(200, status, resume)
+        self.assertEqual(("steam:7", token, 77), (
+            resume["provider_game_id"], resume["process_token"], resume["process_id"]))
+
+    def test_tokenless_stream_unconfirmed_when_provider_unavailable(self):
+        a1 = self.launched_stream()
+        self.observe_partial_scan(app_running=False, provider_ok=False)
+        self.assert_unconfirmed(a1["generation"])
+        self.state.proxy = target_aware(lambda name, path, **_kwargs: (
+            (True, {"game": {"state": "idle", "id": "", "evidence": "ABSENT"}})
+            if name == "game_provider" else (False, {"error": "fixture_offline"})))
+        status, result = self.acquire(self.request("a1-resume-malformed", "resume"), 0)
+        self.assertEqual(409, status)
+        self.assertEqual("retained_process_unconfirmed", result["reason"])
+
+    def test_idle_reconcile_retires_tokenless_stream_when_scan_partial_and_streamer_idle(self):
+        a1 = self.launched_stream()
+        self.observe_partial_scan(app_running=False)
+        self.assertTrue(self.state._control_reconcile_idle())
+        self.assertIsNone(self.state.control_state["stream"])
+        self.assertEqual(a1["generation"],
+                         self.state.control_state["idle_stream"]["generation"])
+
+    def test_rejected_close_leaves_no_active_operation(self):
+        a1 = self.launched_stream(token="a" * 64)
+        self.observe_partial_scan()
+        status, result = self.acquire(self.request(
+            "a1-quit", "full_quit", expected_generation=a1["generation"]), 0)
+        self.assertEqual(409, status)
+        self.assertEqual("retained_process_unconfirmed", result["reason"])
+        self.assertIsNone(self.state.control_state["active"])
+        self.authorize()
+        status, reconcile = self.state.control_operation_reconcile(
+            self.client, {"operation_id": "a1-quit", "observed_sunshine_app_id": 7},
+            "a1-quit")
+        self.assertEqual(409, status)
+        self.assertEqual("stale_operation", reconcile["reason"])
+        stream = self.state.control_state["stream"]
+        self.assertEqual(("stream-1", a1["generation"], "a" * 64), (
+            stream["stream_session_id"], stream["generation"], stream["process_token"]))
+
+    def test_live_or_foreign_or_unproven_stream_still_conflicts(self):
+        for case in ("live_transport", "foreign_tv", "foreign_actor", "child_attached",
+                     "snapshot_unavailable", "launch"):
+            with self.subTest(case=case):
+                self.state.control_state.update({"active": None, "stream": None})
+                _status, owner = self.acquire(self.request("owner-" + case))
+                self.complete(owner)
+                if case == "foreign_tv":
+                    self.state.control_state["stream"]["client_id"] = "other-tv"
+                if case == "foreign_actor":
+                    self.state.control_state["stream"]["actor_profile_id"] = "other-actor"
+                if case == "child_attached":
+                    self.state.control_state["stream"]["child_session_id"] = "child-1"
+                if case == "snapshot_unavailable":
+                    self.state.proxy = lambda *_a, **_k: (False, {"error": "offline"})
+                else:
+                    self.observe_paused_app(1 if case == "live_transport" else 0)
+                intent = "launch" if case == "launch" else "resume"
+
+                status, result = self.acquire(self.request(
+                    "next-" + case, intent, session="stream-next", observed_app_id=7), 0)
+
+                self.assertEqual(409, status)
+                self.assertEqual("managed_stream_conflict", result["reason"])
+                stream = self.state.control_state["stream"]
+                self.assertEqual(("stream-1", owner["generation"]),
+                                 (stream["stream_session_id"], stream["generation"]))
+
 
 if __name__ == "__main__":
     unittest.main()
