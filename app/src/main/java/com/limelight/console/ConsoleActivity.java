@@ -1336,7 +1336,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         // away from that host's carousel.
         if (!isStreamHome()) {
             String returnToHosts = SuspendedSessionStore.consumeHostSelectionRequest(this);
-            if (!returnToHosts.isEmpty()) showHostSelection(returnToHosts);
+            if (!returnToHosts.isEmpty()) {
+                ProfileAuthorization.revoke();
+                showHostSelection(returnToHosts);
+            }
         }
         if (consoleAudioEngine != null) {
             consoleAudioEngine.setMenuVisible(loadingLayer == null
@@ -2615,7 +2618,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = null;
-        ProfileAuthorization.revoke();
         if (profileGateView != null) profileGateView.setVisibility(View.GONE);
         hostSelectionVisible = true;
         if (consoleAudioEngine != null) {
@@ -2926,7 +2928,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         HostGatewayStore.ProfileSelection selection =
                 hostGatewayStore.profileSelection(host.uuid);
         profileGateHostUuid = host.uuid;
-        ProfileAuthorization.revoke();
         hostSelectionVisible = false;
         hostSelectionFocusUuid = host.uuid;
         if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.GONE);
@@ -3743,7 +3744,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = host.uuid;
-        ProfileAuthorization.revoke();
         pinProfileId = profile.id;
         pinFocusApps = focusApps;
         pinPrepareHost = prepareHost;
@@ -4036,6 +4036,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void closeProfileGate() {
         String hostId = profileGateHostUuid;
+        ProfileAuthorization.revoke();
         clearPinEntry();
         showHostSelection(hostId);
     }
@@ -4784,7 +4785,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 profileForGate(host == null ? null : host.uuid, profileId);
         if (profile == null) return;
         if (profile.pinRequired) {
-            profileGateHostUuid = host.uuid;
+            ProfileAuthorization.revoke();
             showPinEntry(host, profile, true, false, false);
             return;
         }
@@ -4897,6 +4898,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (childWasInvalidated) {
                     hostGatewayStore.setAutomaticIntegrationProfileId(hostId, "");
                     ComputerDetails current = currentHost(hostId);
+                    ProfileAuthorization.revoke();
                     if (current != null) showProfileGate(current, true, false);
                     return;
                 }
@@ -6668,6 +6670,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void leaveHost() {
+        ProfileAuthorization.revoke();
         ComputerDetails host = hosts.get(selectedHostUuid);
         if (host != null && hostGatewayStore.profileSelection(host.uuid).showSelector) {
             showProfileGate(host, true, false);
@@ -8069,21 +8072,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (!hostStateController.finishWaking(hostUuid, token)) return;
         renderHostSelection();
         if (hostUuid.equals(selectedHostUuid)) updateHostSelector();
-    }
-
-    private void confirmRemoveHost(ComputerDetails host) {
-        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
-        TextView remove = consolePanel.action(getString(R.string.console_remove));
-        consolePanel.destructive(remove);
-        cancel.setOnClickListener(view -> handlePanelBack());
-        remove.setOnClickListener(view -> {
-            hideSidePanel();
-            removeHost(host);
-        });
-        showSidePanel(getString(R.string.console_host_eyebrow),
-                getString(R.string.console_remove_host_title, host.name),
-                getString(R.string.console_remove_host_details),
-                cancel, remove);
     }
 
     private void removeHost(ComputerDetails host) {
