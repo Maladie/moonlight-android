@@ -1,6 +1,6 @@
 package com.limelight.console;
 
-/** Formats Playnite seconds with labels supplied by localized Android resources. */
+/** Formats durations as hours and minutes with labels from localized Android resources. */
 final class PlaynitePlaytimeFormatter {
     static final class Labels {
         final String neverPlayed;
@@ -16,7 +16,11 @@ final class PlaynitePlaytimeFormatter {
 
     static String format(long seconds, Labels labels) {
         if (seconds <= 0L) return labels.neverPlayed;
-        long totalMinutes = Math.max(1L, seconds / 60L);
+        return minutes(Math.max(1L, seconds / 60L), labels);
+    }
+
+    /** "23 godz. 1 min", "45 min", "2 godz." for a non-negative minute count. */
+    static String minutes(long totalMinutes, Labels labels) {
         long hours = totalMinutes / 60L;
         long minutes = totalMinutes % 60L;
         if (hours == 0L) return totalMinutes + " " + labels.minutes;

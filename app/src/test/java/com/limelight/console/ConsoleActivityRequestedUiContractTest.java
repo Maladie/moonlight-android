@@ -27,16 +27,17 @@ public class ConsoleActivityRequestedUiContractTest {
         String selector = source.substring(source.indexOf("hostSelector = compactButton("),
                 source.indexOf("LinearLayout.LayoutParams selectorParams"));
         String menu = source.substring(source.indexOf("private void showHostSelectionOptions("),
-                source.indexOf("private TextView hostSelectionMenuAction("));
+                source.indexOf("static HostGatewayClient.IntegrationProfile activeAuthorizedProfile("));
 
         assertTrue(selector.contains("showHostSelectionOptions(host)"));
-        assertTrue(menu.contains("R.string.console_close_stream"));
+        String panel = hostPanelSource();
+        assertTrue(panel.contains("R.string.console_close_stream"));
         assertTrue(menu.contains("confirmCloseHostStream(host)"));
         assertFalse(menu.contains("confirmTerminateSession(host)"));
-        assertTrue(menu.contains("R.string.console_hard_terminate_session"));
+        assertTrue(panel.contains("R.string.console_hard_terminate_session"));
         assertTrue(menu.contains("confirmHardTerminateSession(host)"));
-        assertTrue(menu.contains("online && paired && gatewayAvailable"));
-        assertTrue(menu.contains("R.string.console_launch_desktop"));
+        assertTrue(panel.contains("facts.online && facts.paired && facts.gatewayAvailable"));
+        assertTrue(panel.contains("R.string.console_launch_desktop"));
         assertTrue(menu.contains("launchDesktopSession(host)"));
     }
 
@@ -99,14 +100,16 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(source.contains(
                 "state.setVisibility(homeCarousel && ordinaryReady ? View.GONE : View.VISIBLE)"));
         assertTrue(source.contains("isDescendant(appRow, state)"));
-        assertTrue(binding.contains("colors.setSaturation(.25f)"));
+        assertTrue(binding.contains("saturationFilter(.25f)"));
         assertTrue(binding.contains("backdrop.setColorFilter(muted)"));
         assertTrue(stateStyle.contains("fill = 0xE014241B"));
         assertTrue(stateStyle.contains("state.setShadowLayer"));
         assertTrue(state.contains("CONSOLE_UI_V2 ? operation.progress + \"%\""));
         assertTrue(state.contains("CONSOLE_UI_V2 ? \"\""));
-        assertTrue(source.contains("params.height = dp(123)"));
-        assertTrue(source.contains("* 131)"));
+        String grid = source("src/main/java/com/limelight/console/ExpandedLibraryGrid.java",
+                "app/src/main/java/com/limelight/console/ExpandedLibraryGrid.java");
+        assertTrue(grid.contains("CELL_HEIGHT_DP = 123"));
+        assertTrue(grid.contains("CELL_MARGIN_DP = 4"));
         assertTrue(source.contains("homeContent.setPadding(dp(54), dp(14), dp(54), dp(24))"));
         assertTrue(source.contains("headerParams.bottomMargin = 0"));
         assertTrue(source.contains("titleParams.topMargin = dp(103)"));
@@ -115,7 +118,7 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(source.contains("playniteLibraryStatus.setMinHeight(dp(18))"));
         assertTrue(source.contains("playniteLibraryStatus.setShadowLayer(dp(2)"));
         assertTrue(source.contains(
-                "hiddenBackgroundStatus ? View.INVISIBLE : View.VISIBLE"));
+                "playniteLibraryStatus.setVisibility(showStatus ? View.VISIBLE : View.GONE)"));
         assertFalse(source.contains(
                 "CONSOLE_UI_V2 && textId == R.string.playnite_data_current"));
         assertTrue(source.contains("hintParams.topMargin = dp(66)"));
@@ -280,10 +283,10 @@ public class ConsoleActivityRequestedUiContractTest {
         assertFalse(focus.contains("selected_playnite."));
     }
 
-    @Test public void hostMenuOwnsThePerHostAutomaticWarmUpToggle() throws IOException {
+    @Test public void hostSettingsOwnThePerHostAutomaticWarmUpToggle() throws IOException {
         String source = consoleActivitySource();
-        String menu = source.substring(source.indexOf("private void showHostSelectionOptions("),
-                source.indexOf("private TextView hostSelectionMenuAction("));
+        String menu = source.substring(source.indexOf("private View[] hostSettings("),
+                source.indexOf("private View[] aboutSettings("));
 
         assertTrue(menu.contains("HostAutoWarmUpPreferences.isEnabled(preferences, host.uuid)"));
         assertTrue(menu.contains("HostAutoWarmUpPreferences.setEnabled("));
@@ -416,7 +419,7 @@ public class ConsoleActivityRequestedUiContractTest {
         String launch = source.substring(source.indexOf("private void playPlayniteGame("),
                 source.indexOf("private ComputerDetails currentHost("));
 
-        assertTrue(menu.contains("R.string.playnite_stream_settings"));
+        assertTrue(gameCardSource().contains("R.string.playnite_stream_settings"));
         assertTrue(menu.contains("AppStreamSettings.EXTRA_INHERIT_APP_SETTINGS"));
         assertTrue(menu.contains("playniteStreamSettingsKey(host.uuid, item.stableId())"));
         assertTrue(launch.contains(
@@ -443,8 +446,9 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(binding.contains("R.string.playnite_running_badge_description"));
         assertTrue(source.contains("private boolean isFreshExactRunningManagedGame("));
         assertTrue(menu.contains("isFreshExactRunningManagedGame(host, item)"));
-        assertTrue(menu.indexOf("R.string.overlay_menu_end_game")
-                < menu.indexOf("R.string.overlay_menu_quit_session"));
+        String gameCard = gameCardSource();
+        assertTrue(gameCard.indexOf("R.string.overlay_menu_end_game")
+                < gameCard.indexOf("R.string.overlay_menu_quit_session"));
         assertTrue(menu.contains("confirmTerminateSession(host, item.stableId())"));
         assertTrue(stop.contains("stopActiveProviderGame(host, expectedGameId, true, confirmedKey.profileId)"));
         assertTrue(stop.contains("refreshSessionState(host.uuid)"));
@@ -477,6 +481,16 @@ public class ConsoleActivityRequestedUiContractTest {
     private static String consoleActivitySource() throws IOException {
         return source("src/main/java/com/limelight/console/ConsoleActivity.java",
                 "app/src/main/java/com/limelight/console/ConsoleActivity.java");
+    }
+
+    private static String gameCardSource() throws IOException {
+        return source("src/main/java/com/limelight/console/ConsoleGameCard.java",
+                "app/src/main/java/com/limelight/console/ConsoleGameCard.java");
+    }
+
+    private static String hostPanelSource() throws IOException {
+        return source("src/main/java/com/limelight/console/ConsoleHostPanel.java",
+                "app/src/main/java/com/limelight/console/ConsoleHostPanel.java");
     }
 
     private static String resource(String relative) throws IOException {

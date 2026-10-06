@@ -36,6 +36,15 @@ final class ConsoleLibraryStatus {
         return State.CURRENT;
     }
 
+    /**
+     * The status line is shown only while a refresh has nothing to show yet, for a stale cache
+     * and for errors; a current library (also during its periodic background refresh) shows
+     * nothing and reserves no space.
+     */
+    static boolean visible(State state) {
+        return state != State.CURRENT;
+    }
+
     static boolean isError(State state) {
         return state != State.REFRESHING && state != State.CACHED && state != State.CURRENT;
     }

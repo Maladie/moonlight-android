@@ -41,8 +41,8 @@ public class ConsoleActivityEnsureContractTest {
                 < fetch.indexOf("playniteArtworkCache.fetch("));
         assertTrue(fetch.indexOf("key.profileId.equals(connection.profileId())")
                 < fetch.indexOf("playniteArtworkCache.fetch("));
-        assertTrue(source.contains("currentPlayniteProjectionMatches(profileKey)\n"
-                + "                            && expectedTag.equals(expected)"));
+        assertTrue(poster.contains("if (!currentPlayniteProjectionMatches(profileKey)\n"
+                + "                    || !expectedTag.equals(poster.getTag(R.id.playnite_artwork_key)))"));
         assertTrue(source.contains("currentPlayniteProjectionMatches(key)) {\n"
                 + "            PlayniteLibraryGame current"));
         assertTrue(source.contains("cachedPlayniteArtwork(profileKey, hostUuid, item, spec)"));
@@ -256,7 +256,7 @@ public class ConsoleActivityEnsureContractTest {
             throws IOException {
         String source = consoleActivitySource();
         String host = source.substring(source.indexOf("private void showHostSelectionOptions("),
-                source.indexOf("private TextView hostSelectionMenuAction("));
+                source.indexOf("static HostGatewayClient.IntegrationProfile activeAuthorizedProfile("));
         String playnite = source.substring(source.indexOf("private void showPlayniteGameActions("),
                 source.indexOf("private void confirmPlayniteUninstall("));
         String sunshine = source.substring(source.indexOf("private void showAppActions("),
