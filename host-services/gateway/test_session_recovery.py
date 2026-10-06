@@ -39,7 +39,7 @@ class SessionRecoveryTest(unittest.TestCase):
         probe = mock.Mock()
         probe.process_identity.side_effect = lambda pid, **kw: (
             own if pid == os.getpid() else self.processes.get(pid))
-        probe.scan_running_processes.side_effect = lambda _images: (list(self.processes.values()), "complete")
+        probe.scan_running_processes.side_effect = lambda _images, _catalog: (list(self.processes.values()), "complete")
         probe.process_identity_status.side_effect = lambda pid, **kw: (
             ("alive", own) if pid == os.getpid() else
             ("alive", self.processes[pid]) if pid in self.processes else ("gone", None))

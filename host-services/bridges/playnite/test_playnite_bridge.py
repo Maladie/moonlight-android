@@ -46,7 +46,8 @@ class RunningScanCompletenessTest(unittest.TestCase):
     OWN = {"process_id": 100, "process_path": "C:/Games/A/a.exe",
            "process_started_filetime": 5, "user_sid": "own", "session_id": 1}
 
-    def scan(self, statuses, visible, images=frozenset(), names=None):
+    def scan(self, statuses, visible, images=frozenset(), names=None, paths=None,
+             catalog=r"C:\Games"):
         probe = object.__new__(WindowProbe)
         probe.kernel32 = mock.Mock()
         pids = [100] + sorted(statuses)
@@ -82,10 +83,15 @@ class RunningScanCompletenessTest(unittest.TestCase):
         probe.user32 = User32()
         probe.process_identity = mock.Mock(side_effect=lambda pid, include_owner=False: (
             self.OWN if pid in (100, os.getpid()) else None))
+        # Without the owner, a live process still exposes its image path (elevated case).
         probe.process_identity_status = mock.Mock(side_effect=lambda pid, include_owner=False: (
-            ("alive", self.OWN) if pid == 100 else (statuses[pid], None)))
+            ("alive", self.OWN) if pid == 100 else (statuses[pid], {
+                "process_id": pid, "process_path": (paths or {})[pid],
+                "process_started_filetime": 7} if statuses[pid] == "alive" else None)))
         with mock.patch.object(ctypes, "get_last_error", return_value=18, create=True):
-            return probe.scan_running_processes(set(images))
+            return probe.scan_running_processes(
+                set(images), lambda path: WindowProbe.belongs_to_install_directory(
+                    path.casefold(), catalog.casefold()))
 
     def test_unreadable_processes_without_a_window_keep_the_scan_complete(self):
         result, status = self.scan({600: "unknown", 700: "unknown"}, visible=[100])
@@ -104,6 +110,26 @@ class RunningScanCompletenessTest(unittest.TestCase):
     def test_process_that_exited_during_the_scan_is_absent_not_partial(self):
         _result, status = self.scan({600: "gone"}, visible=[600],
                                     images={"svc.exe"})
+        self.assertEqual("complete", status)
+
+    def test_owner_unreadable_window_outside_the_catalog_keeps_the_scan_complete(self):
+        # An elevated desktop app: its owner token is unreadable to a Medium Bridge.
+        result, status = self.scan({700: "alive"}, visible=[100, 700],
+                                   paths={700: r"C:\Program Files\Admin Tool\tool.exe"})
+        self.assertEqual("complete", status)
+        self.assertEqual([100], [item["process_id"] for item in result])
+
+    def test_owner_unreadable_window_inside_a_catalog_install_dir_makes_the_scan_partial(self):
+        result, status = self.scan({700: "alive"}, visible=[100, 700],
+                                   paths={700: r"C:\Games\HK\hollow_knight.exe"})
+        self.assertEqual("partial", status)
+        self.assertEqual([100], [item["process_id"] for item in result])
+
+    def test_owner_unreadable_game_image_outside_the_catalog_keeps_the_scan_complete(self):
+        _result, status = self.scan({700: "alive"}, visible=[100],
+                                    images={"hollow_knight.exe"},
+                                    names={700: "hollow_knight.exe"},
+                                    paths={700: r"D:\Copies\hollow_knight.exe"})
         self.assertEqual("complete", status)
 
 
