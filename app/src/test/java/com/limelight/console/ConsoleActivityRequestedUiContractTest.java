@@ -143,7 +143,6 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(source.contains("CAROUSEL_PREVIOUS_CARD_COUNT"));
         assertTrue(source.contains("shine.postDelayed(this, 7_000L)"));
         assertTrue(source.contains("shine.postDelayed(animation, 2_200L)"));
-        assertTrue(source.contains("setPadding(dp(16), dp(6), dp(16), dp(6))"));
         assertTrue(source.contains("selectedGameSource = new ImageView(this)"));
         assertTrue(source.contains("new LinearLayout.LayoutParams(dp(22), dp(22))"));
         assertTrue(source.contains("View carousel = carouselStage != null ? carouselStage"));
@@ -196,30 +195,20 @@ public class ConsoleActivityRequestedUiContractTest {
         assertTrue(expanded.contains("expandedGameDescription.setPadding(0, 0, 0, dp(20))"));
     }
 
-    @Test public void appliedLibraryFiltersFocusFirstCardWhileCancelReturnsToAnchor()
-            throws IOException {
+    @Test public void libraryFiltersRestartTheGridAndSearchTypesOverIt() throws IOException {
         String source = consoleActivitySource();
-        String sourceFilter = source.substring(source.indexOf(
-                        "private void showPlayniteSourceSelector("),
-                source.indexOf("private void showPlayniteSortSelector("));
-        String filter = source.substring(source.indexOf("private void applyPlayniteFilter("),
-                source.indexOf("private void renderPlayniteLibrary("));
-        String sort = source.substring(source.indexOf("private void showPlayniteSortSelector("),
-                source.indexOf("private void showPlayniteSearchDialog("));
-        String search = source.substring(source.indexOf("private void applyExpandedSearch("),
-                source.indexOf("private LinearLayout popupMenu("));
+        String host = source.substring(source.indexOf("private LibraryFiltersPanel.Host libraryFiltersHost("),
+                source.indexOf("private ExpandedLibraryGrid createExpandedGrid("));
+        String search = source.substring(source.indexOf("private void searchLibrary("),
+                source.indexOf("protected boolean useTransparentWarmUpStartingWindow("));
 
-        assertTrue(sourceFilter.contains("if (!applied[0])"));
-        assertTrue(sourceFilter.contains("anchor.post(anchor::requestFocus)"));
-        assertTrue(sourceFilter.contains("renderFilteredPlayniteLibraryFromStart(host)"));
-        assertTrue(sourceFilter.contains("stylePlayniteFilterOption(done, false, focused)"));
-        assertFalse(sourceFilter.contains("styleSourceFilterOption(done, false, focused)"));
-        assertTrue(filter.contains("renderFilteredPlayniteLibraryFromStart(host)"));
-        assertTrue(filter.contains("renderPlayniteLibrary(host, currentSunshineApps)"));
-        assertTrue(sort.contains("renderExpandedLibraryFromStart(host)"));
-        assertTrue(search.contains("renderExpandedLibraryFromStart(host)"));
-        assertTrue(source.contains("if (!applied[0] && expandedSearchButton != null)"));
-        assertFalse(sort.contains("expandedSortButton.post(expandedSortButton::requestFocus)"));
+        assertTrue(host.contains("if (sortOnly) renderExpandedLibraryFromStart(host);"));
+        assertTrue(host.contains("else renderFilteredPlayniteLibraryFromStart(host);"));
+        // Typing filters the grid without moving focus off the keyboard.
+        assertTrue(search.contains("expandedGrid.showPosition(0)"));
+        assertFalse(search.contains("focusPosition("));
+        assertTrue(source.contains("librarySearch.handleKey(event)"));
+        assertFalse(source.contains("consoleFeedback.showInput(getString(R.string.playnite_search"));
     }
 
     @Test public void resumeChipAndSmallEmulatorArtworkKeepTvFriendlyGeometry()

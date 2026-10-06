@@ -228,6 +228,23 @@ final class ConsolePanel {
         return row;
     }
 
+    /**
+     * A choice row with its mark on the right: a radio for a single choice, a check box for one
+     * of several. A chosen check keeps its accent fill on the focus fill.
+     */
+    TextView choice(CharSequence label, boolean chosen, boolean multiple) {
+        TextView row = action(label);
+        int mark = multiple ? chosen ? R.drawable.ic_console_check_on : R.drawable.ic_console_check_off
+                : chosen ? R.drawable.ic_console_radio_on : R.drawable.ic_console_radio_off;
+        // A chosen radio is accent at rest and ink on the focus fill.
+        row.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null, multiple && chosen
+                ? context.getDrawable(mark)
+                : tinted(mark, chosen ? stepperColors : row.getTextColors()), null);
+        // Read as "selected" by TalkBack; the row colours do not depend on it.
+        row.setSelected(chosen);
+        return row;
+    }
+
     /** Puts a line icon before the label, tinted like the label in every state. */
     <T extends TextView> T icon(T row, int icon) {
         Drawable[] current = row.getCompoundDrawablesRelative();

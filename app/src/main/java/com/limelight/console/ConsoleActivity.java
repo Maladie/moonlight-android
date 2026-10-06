@@ -67,7 +67,6 @@ import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
 import android.widget.ImageButton;
 import android.widget.LinearLayout;
-import android.widget.PopupWindow;
 import android.widget.ProgressBar;
 import android.widget.ScrollView;
 import android.widget.TextView;
@@ -680,19 +679,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private TextView selectedGamePlaytimePill;
     private TextView selectedGameDescription;
     private LinearLayout expandedLibrary;
-    private LinearLayout expandedLibraryHeader;
+    private LibraryFilterBar libraryFilterBar;
+    private LibraryFiltersPanel libraryFiltersPanel;
+    private LibrarySearchKeyboard librarySearch;
     private ExpandedLibraryGrid expandedGrid;
     private TextView expandedGameTitle;
     private TextView expandedGameFacts;
     private TextView expandedGameDescription;
-    private TextView expandedFilterButton;
-    private TextView expandedSourceFilterButton;
-    private TextView expandedSortButton;
-    private TextView expandedSearchButton;
     private TextView expandedPageIndicator;
     private TextView expandedCacheStatus;
     private LinearLayout expandedNavigationLegend;
-    private PopupWindow playniteFilterPopup;
     private ScrollView expandedDescriptionScroll;
     private int expandedDescriptionScrollGeneration;
     private boolean expandedLibraryMode;
@@ -1457,6 +1453,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return true;
         }
         if (discordDmShortcut != null && discordDmShortcut.handle(event)) return true;
+        if (librarySearch != null && librarySearch.isOpen() && event != null
+                && librarySearch.handleKey(event)) return true;
         if (libraryTransitionRunning && event != null
                 && (isDirectionalNavigationKey(event.getKeyCode())
                 || event.getKeyCode() == KeyEvent.KEYCODE_ENTER
@@ -1503,13 +1501,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 showPlayniteGameActions(host, item);
                 return true;
             }
-        }
-        if (playniteFilterPopup != null && playniteFilterPopup.isShowing()
-                && event != null && event.getAction() == KeyEvent.ACTION_UP
-                && (event.getKeyCode() == KeyEvent.KEYCODE_BACK
-                || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_B)) {
-            playniteFilterPopup.dismiss();
-            return true;
         }
         if (expandedLibraryMode && event != null
                 && event.getAction() == KeyEvent.ACTION_UP
@@ -1680,43 +1671,77 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private boolean handleExpandedLibraryShortcut(int keyCode) {
         switch (keyCode) {
             case KeyEvent.KEYCODE_BUTTON_THUMBR:
-                dismissPlaynitePopup();
-                if (expandedFilterButton != null) {
-                    expandedFilterButton.post(expandedFilterButton::requestFocus);
-                }
+            case KeyEvent.KEYCODE_BUTTON_L2:
+                showLibraryFilters();
                 return true;
-            case KeyEvent.KEYCODE_BUTTON_THUMBL:
-                resetExpandedLibraryFilters();
+            case KeyEvent.KEYCODE_BUTTON_X:
+                ComputerDetails host = hosts.get(selectedHostUuid);
+                if (host == null) return true;
+                clearLibraryFilters(host);
+                ConsoleUiFeedback.makeText(this, R.string.playnite_filters_reset,
+                        Toast.LENGTH_SHORT).show();
                 return true;
             case KeyEvent.KEYCODE_BUTTON_Y:
-                dismissPlaynitePopup();
-                showPlayniteSearchDialog();
+                openLibrarySearch();
                 return true;
             default:
                 return false;
         }
     }
 
-    private void resetExpandedLibraryFilters() {
-        ComputerDetails host = hosts.get(selectedHostUuid);
-        if (host == null) return;
-        dismissPlaynitePopup();
+    /** Filters, platforms, sort and search back to their defaults; the grid restarts at 0. */
+    private void clearLibraryFilters(ComputerDetails host) {
         hostGatewayStore.setPlayniteLibraryFilter(host.uuid, PlayniteLibraryFilter.ALL);
         hostGatewayStore.clearPlayniteLibrarySources(host.uuid);
         hostGatewayStore.setPlayniteLibrarySort(host.uuid, PlayniteLibrarySort.RECENT);
         expandedSearchQuery = "";
         libraryViewStateStore.saveSearch(host.uuid, "");
-        renderPlayniteLibrary(host, currentSunshineApps);
-        if (expandedGrid != null) expandedGrid.showPosition(0);
-        styleFilterButton(expandedFilterButton, true);
-        styleSourceFilterButton(false);
-        styleSortButton(false);
-        styleSearchButton(false);
-        if (expandedFilterButton != null) {
-            expandedFilterButton.post(expandedFilterButton::requestFocus);
+        renderFilteredPlayniteLibraryFromStart(host);
+    }
+
+    private void showLibraryFilters() {
+        if (expandedLibraryMode && selectedHostUuid != null) {
+            libraryFiltersPanel.open(selectedHostUuid);
         }
-        ConsoleUiFeedback.makeText(this, R.string.playnite_filters_reset,
-                Toast.LENGTH_SHORT).show();
+    }
+
+    /**
+     * Opens the full library with the on-screen keyboard over the grid, filtering it live by
+     * title (UX_MENU_PL.md 3.1, 3.5). The single search entry: Y, "Wyszukaj" and the top bar.
+     */
+    public void openLibrarySearch() {
+        if (!expandedLibraryMode) enterExpandedLibrary();
+        if (!expandedLibraryMode || librarySearch.isOpen()) return;
+        expandedNavigationLegend.setVisibility(View.GONE);
+        librarySearch.open(expandedSearchQuery);
+    }
+
+    private void closeLibrarySearch() {
+        if (selectedHostUuid != null) {
+            libraryViewStateStore.saveSearch(selectedHostUuid, expandedSearchQuery);
+        }
+        // Focus moves to the first result before the keyboard holding it is hidden.
+        expandedGrid.focusPosition(0);
+        librarySearch.close();
+        expandedNavigationLegend.setVisibility(View.VISIBLE);
+    }
+
+    private void searchLibrary(String query) {
+        expandedSearchQuery = query.trim();
+        ComputerDetails host = hosts.get(selectedHostUuid);
+        if (host == null) return;
+        renderExpandedLibrary(host);
+        expandedGrid.showPosition(0);
+        // No card has focus while typing: the details follow the first result instead.
+        List<PlayniteDashboardItem> results = expandedLibraryItems(host);
+        if (results.isEmpty()) {
+            expandedGameTitle.setText("");
+            expandedGameFacts.setText("");
+            expandedGameDescription.setText("");
+        } else {
+            showGameMetadataHeader(results.get(0));
+            showGameMetadataDescription(results.get(0));
+        }
     }
 
     protected boolean useTransparentWarmUpStartingWindow() {
@@ -1806,7 +1831,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private static boolean isExpandedLibraryShortcutKey(int keyCode) {
         return keyCode == KeyEvent.KEYCODE_BUTTON_THUMBR
-                || keyCode == KeyEvent.KEYCODE_BUTTON_THUMBL
+                || keyCode == KeyEvent.KEYCODE_BUTTON_L2
+                || keyCode == KeyEvent.KEYCODE_BUTTON_X
                 || keyCode == KeyEvent.KEYCODE_BUTTON_Y;
     }
 
@@ -1919,7 +1945,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             discordDmNotifications.unregisterHost(discordDmHostToken);
             discordDmHostToken = null;
         }
-        if (playniteFilterPopup != null) playniteFilterPopup.dismiss();
         if (sideDialog != null) sideDialog.dismiss();
         if (settingsScreen != null) settingsScreen.dismiss();
         if (serviceBound) unbindService(serviceConnection);
@@ -2230,13 +2255,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         installedFilterButton.setCompoundDrawablesWithIntrinsicBounds(
                 R.drawable.ic_console_filter, 0, 0, 0);
         installedFilterButton.setCompoundDrawablePadding(dp(7));
-        installedFilterButton.setOnClickListener(view -> {
-            if (CONSOLE_UI_V2) showPlayniteFilterSelector(installedFilterButton);
-            else togglePlayniteInstalledFilter();
-        });
-        installedFilterButton.setOnFocusChangeListener((view, focused) ->
-                styleInstalledFilter(focused));
-        styleInstalledFilter(false);
+        installedFilterButton.setOnClickListener(view -> showLibraryFilters());
         LinearLayout.LayoutParams filterParams = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, dp(48));
         filterParams.leftMargin = dp(8);
@@ -4188,12 +4207,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         expandedLibrary.setClipChildren(false);
         expandedLibrary.setClipToPadding(false);
 
-        expandedLibraryHeader = new LinearLayout(this);
-        expandedLibraryHeader.setOrientation(LinearLayout.HORIZONTAL);
-        expandedLibraryHeader.setGravity(Gravity.CENTER_VERTICAL);
-        expandedLibraryHeader.setClipChildren(false);
-        expandedLibraryHeader.setClipToPadding(false);
-        expandedLibrary.addView(expandedLibraryHeader, new LinearLayout.LayoutParams(
+        libraryFilterBar = new LibraryFilterBar(this, this::showLibraryFilters,
+                this::openLibrarySearch, this::stopExpandedDescriptionAutoScroll);
+        expandedLibrary.addView(libraryFilterBar, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(48)));
 
         LinearLayout body = new LinearLayout(this);
@@ -4243,83 +4259,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         details.addView(expandedDescriptionScroll,
                 new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
 
-        expandedFilterButton = text(getString(R.string.playnite_installed),
-                11, 0xFFD7E4EA, true);
-        expandedFilterButton.setId(View.generateViewId());
-        expandedFilterButton.setFocusable(true);
-        expandedFilterButton.setClickable(true);
-        expandedFilterButton.setGravity(Gravity.CENTER);
-        expandedFilterButton.setMinHeight(dp(42));
-        expandedFilterButton.setPadding(dp(16), dp(6), dp(16), dp(6));
-        expandedFilterButton.setCompoundDrawablesWithIntrinsicBounds(
-                R.drawable.ic_console_filter, 0, 0, 0);
-        expandedFilterButton.setCompoundDrawablePadding(dp(9));
-        expandedFilterButton.setOnClickListener(view ->
-                showPlayniteFilterSelector(expandedFilterButton));
-        expandedFilterButton.setOnFocusChangeListener((view, focused) ->
-        {
-            styleFilterButton(expandedFilterButton, focused);
-            if (focused) stopExpandedDescriptionAutoScroll();
-        });
-        LinearLayout.LayoutParams expandedFilterParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        expandedFilterParams.rightMargin = dp(10);
-        expandedLibraryHeader.addView(expandedFilterButton, expandedFilterParams);
-
-        expandedSourceFilterButton = text(getString(R.string.playnite_sources_all),
-                11, 0xFFD7E4EA, true);
-        expandedSourceFilterButton.setId(View.generateViewId());
-        expandedSourceFilterButton.setFocusable(true);
-        expandedSourceFilterButton.setClickable(true);
-        expandedSourceFilterButton.setGravity(Gravity.CENTER);
-        expandedSourceFilterButton.setMinHeight(dp(42));
-        expandedSourceFilterButton.setPadding(dp(16), dp(6), dp(16), dp(6));
-        expandedSourceFilterButton.setCompoundDrawablesWithIntrinsicBounds(
-                R.drawable.ic_console_platforms, 0, 0, 0);
-        expandedSourceFilterButton.setCompoundDrawablePadding(dp(9));
-        expandedSourceFilterButton.setOnClickListener(view ->
-                showPlayniteSourceSelector(expandedSourceFilterButton));
-        expandedSourceFilterButton.setOnFocusChangeListener((view, focused) -> {
-            styleSourceFilterButton(focused);
-            if (focused) stopExpandedDescriptionAutoScroll();
-        });
-        LinearLayout.LayoutParams expandedSourceParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        expandedSourceParams.rightMargin = dp(10);
-        expandedLibraryHeader.addView(expandedSourceFilterButton, expandedSourceParams);
-
-        expandedSortButton = expandedHeaderButton(getString(R.string.playnite_sort_recent),
-                R.drawable.ic_console_sort);
-        expandedSortButton.setOnClickListener(view -> showPlayniteSortSelector(
-                expandedSortButton));
-        expandedSortButton.setOnFocusChangeListener((view, focused) -> {
-            styleSortButton(focused);
-            if (focused) stopExpandedDescriptionAutoScroll();
-        });
-        LinearLayout.LayoutParams sortParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        sortParams.rightMargin = dp(10);
-        expandedLibraryHeader.addView(expandedSortButton, sortParams);
-
-        expandedSearchButton = expandedHeaderButton(getString(R.string.playnite_search),
-                R.drawable.ic_console_search);
-        expandedSearchButton.setOnClickListener(view -> showPlayniteSearchDialog());
-        expandedSearchButton.setOnFocusChangeListener((view, focused) ->
-                styleSearchButton(focused));
-        expandedLibraryHeader.addView(expandedSearchButton, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42)));
-        // Down from the bar enters the grid at its first fully visible card (ExpandedLibraryGrid).
-        expandedFilterButton.setNextFocusUpId(expandedFilterButton.getId());
-        expandedFilterButton.setNextFocusLeftId(expandedFilterButton.getId());
-        expandedFilterButton.setNextFocusRightId(expandedSourceFilterButton.getId());
-        expandedSourceFilterButton.setNextFocusUpId(expandedFilterButton.getId());
-        expandedSourceFilterButton.setNextFocusLeftId(expandedFilterButton.getId());
-        expandedSourceFilterButton.setNextFocusRightId(expandedSortButton.getId());
-        expandedSortButton.setNextFocusLeftId(expandedSourceFilterButton.getId());
-        expandedSortButton.setNextFocusRightId(expandedSearchButton.getId());
-        expandedSearchButton.setNextFocusLeftId(expandedSortButton.getId());
-        expandedSearchButton.setNextFocusRightId(expandedSearchButton.getId());
-
         expandedPageIndicator = text("", 9, 0xFF8F9AAF, false);
         expandedPageIndicator.setGravity(Gravity.CENTER_HORIZONTAL);
         expandedPageIndicator.setFocusable(false);
@@ -4348,6 +4287,15 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         expandedGrid = createExpandedGrid();
         expandedGridFrame.addView(expandedGrid, new LinearLayout.LayoutParams(
                 expandedGrid.preferredWidth(), 0, 1f));
+        librarySearch = new LibrarySearchKeyboard(this, new LibrarySearchKeyboard.Listener() {
+            @Override public void onQueryChanged(String query) { searchLibrary(query); }
+
+            @Override public void onDone() { closeLibrarySearch(); }
+        });
+        LinearLayout.LayoutParams searchParams = new LinearLayout.LayoutParams(
+                expandedGrid.preferredWidth(), ViewGroup.LayoutParams.WRAP_CONTENT);
+        searchParams.setMargins(0, dp(6), 0, dp(12));
+        expandedGridFrame.addView(librarySearch, searchParams);
 
         expandedNavigationLegend = new LinearLayout(this);
         expandedNavigationLegend.setOrientation(LinearLayout.HORIZONTAL);
@@ -4366,6 +4314,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
         body.addView(expandedGridFrame, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
+        // The filter row spans exactly the covers: Filtry starts at the first column's left
+        // edge and Wyszukaj ends at the last column's right edge.
+        LinearLayout.LayoutParams barParams =
+                (LinearLayout.LayoutParams) libraryFilterBar.getLayoutParams();
+        barParams.width = expandedGrid.preferredWidth() - 2 * expandedGrid.coverInset();
+        barParams.leftMargin = detailsParams.width + detailsParams.rightMargin
+                + expandedGrid.coverInset();
     }
 
     private void rebuildExpandedNavigationLegend(List<ControllerInfo> controllers) {
@@ -4376,7 +4331,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         playStation, ControllerGlyphs.Button.RIGHT_STICK),
                 getString(R.string.playnite_legend_filters));
         addNavigationLegendItem(ControllerGlyphs.text(
-                        playStation, ControllerGlyphs.Button.LEFT_STICK),
+                        playStation, ControllerGlyphs.Button.WEST),
                 getString(R.string.playnite_legend_reset));
         addNavigationLegendItem(ControllerGlyphs.text(
                         playStation, ControllerGlyphs.Button.NORTH),
@@ -4472,20 +4427,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         container.addView(description, descriptionParams);
     }
 
-    private TextView expandedHeaderButton(String label, int icon) {
-        TextView button = text(label, 11, 0xFFD7E4EA, true);
-        button.setId(View.generateViewId());
-        button.setFocusable(true);
-        button.setClickable(true);
-        button.setSoundEffectsEnabled(false);
-        button.setGravity(Gravity.CENTER);
-        button.setMinHeight(dp(42));
-        button.setPadding(dp(16), dp(6), dp(16), dp(6));
-        button.setCompoundDrawablesWithIntrinsicBounds(icon, 0, 0, 0);
-        button.setCompoundDrawablePadding(dp(9));
-        return button;
-    }
-
     private void buildLoadingLayer(FrameLayout container) {
         loadingLayer = new FrameLayout(this);
         loadingLayer.setVisibility(View.GONE);
@@ -4512,6 +4453,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         sidePanelScroll.addView(sidePanel, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         consolePanel = new ConsolePanel(this, sidePanelScroll, menuBackdrop, reducedMotion);
+        libraryFiltersPanel = new LibraryFiltersPanel(this, consolePanel, hostGatewayStore,
+                libraryFiltersHost());
         settingsScreen = new ConsoleSettingsScreen(this, reducedMotion, isStreamHome());
         modalLayer.addView(sidePanelScroll, new FrameLayout.LayoutParams(dp(ConsolePanel.WIDTH_DP),
                 ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
@@ -8684,454 +8627,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return getString(R.string.playnite_cached_library_age, age);
     }
 
-    private void togglePlayniteInstalledFilter() {
-        ComputerDetails host = hosts.get(selectedHostUuid);
-        if (host == null) return;
-        PlayniteLibraryFilter current = hostGatewayStore.playniteLibraryFilter(host.uuid);
-        hostGatewayStore.setPlayniteLibraryFilter(host.uuid,
-                current == PlayniteLibraryFilter.INSTALLED
-                        ? PlayniteLibraryFilter.ALL : PlayniteLibraryFilter.INSTALLED);
-        renderPlayniteLibrary(host, currentSunshineApps);
-        styleInstalledFilter(true);
-        TextView target = expandedLibraryMode && expandedFilterButton != null
-                ? expandedFilterButton : installedFilterButton;
-        if (target != null) target.requestFocus();
-    }
-
-    private void styleInstalledFilter(boolean focused) {
-        styleFilterButton(installedFilterButton,
-                installedFilterButton != null && installedFilterButton.hasFocus()
-                        || focused && !expandedLibraryMode);
-        styleFilterButton(expandedFilterButton,
-                expandedFilterButton != null && expandedFilterButton.hasFocus()
-                        || focused && expandedLibraryMode);
-        styleSourceFilterButton(expandedSourceFilterButton != null
-                && expandedSourceFilterButton.hasFocus());
-    }
-
-    private void styleFilterButton(TextView button, boolean focused) {
-        if (button == null) return;
-        ComputerDetails host = hosts.get(selectedHostUuid);
-        PlayniteLibraryFilter filter = host == null ? PlayniteLibraryFilter.ALL
-                : hostGatewayStore.playniteLibraryFilter(host.uuid);
-        boolean activeFilter = filter != PlayniteLibraryFilter.ALL;
-        int label = playniteFilterLabel(filter);
-        button.setText(getString(R.string.playnite_filter_button, getString(label)));
-        button.setContentDescription(getString(
-                R.string.playnite_filter_description,
-                getString(label)));
-        int top = focused ? 0xD024343F : activeFilter ? 0x55314755 : 0x26242B32;
-        int bottom = focused ? 0xD018242C : activeFilter ? 0x55314755 : 0x4813181D;
-        GradientDrawable background = gradient(top, bottom, 10);
-        background.setStroke(dp(1), focused ? 0xB073D7FF
-                : activeFilter ? 0x8873D7FF : 0x384C5962);
-        button.setBackground(background);
-    }
-
-    private void styleSourceFilterButton(boolean focused) {
-        if (expandedSourceFilterButton == null) return;
-        ComputerDetails host = hosts.get(selectedHostUuid);
-        Set<String> selected = host == null ? null
-                : hostGatewayStore.playniteLibrarySources(host.uuid);
-        Map<String, String> available = PlayniteLibrarySources.available(
-                currentPlayniteGames,
-                getResources().getConfiguration().getLocales().get(0));
-        boolean activeFilter = selected != null
-                && !selected.equals(available.keySet());
-        String label = activeFilter
-                ? getString(R.string.playnite_sources_selected,
-                selected.size(), available.size())
-                : getString(R.string.playnite_sources_button_all);
-        expandedSourceFilterButton.setText(label);
-        expandedSourceFilterButton.setContentDescription(getString(
-                R.string.playnite_sources_filter_description, label));
-        int top = focused ? 0xD024343F : activeFilter ? 0x55314755 : 0x26242B32;
-        int bottom = focused ? 0xD018242C : activeFilter ? 0x55314755 : 0x4813181D;
-        GradientDrawable background = gradient(top, bottom, 10);
-        background.setStroke(dp(1), focused ? 0xB073D7FF
-                : activeFilter ? 0x8873D7FF : 0x384C5962);
-        expandedSourceFilterButton.setBackground(background);
-    }
-
-    private void styleSortButton(boolean focused) {
-        if (expandedSortButton == null) return;
-        ComputerDetails host = hosts.get(selectedHostUuid);
-        PlayniteLibrarySort sort = host == null ? PlayniteLibrarySort.RECENT
-                : hostGatewayStore.playniteLibrarySort(host.uuid);
-        expandedSortButton.setText(getString(R.string.playnite_sort_button,
-                getString(playniteSortLabel(sort))));
-        styleExpandedHeaderControl(expandedSortButton, focused,
-                sort != PlayniteLibrarySort.RECENT);
-    }
-
-    private void styleSearchButton(boolean focused) {
-        if (expandedSearchButton == null) return;
-        expandedSearchButton.setText(expandedSearchQuery.isEmpty()
-                ? getString(R.string.playnite_search)
-                : getString(R.string.playnite_search_active, expandedSearchQuery));
-        styleExpandedHeaderControl(expandedSearchButton, focused,
-                !expandedSearchQuery.isEmpty());
-    }
-
-    private void styleExpandedHeaderControl(TextView button, boolean focused,
-                                            boolean activeControl) {
-        int top = focused ? 0xD024343F : activeControl ? 0x55314755 : 0x26242B32;
-        int bottom = focused ? 0xD018242C : activeControl ? 0x55314755 : 0x4813181D;
-        GradientDrawable background = gradient(top, bottom, 10);
-        background.setStroke(dp(1), focused ? 0xB073D7FF
-                : activeControl ? 0x8873D7FF : 0x384C5962);
-        button.setBackground(background);
-    }
-
-    private int playniteSortLabel(PlayniteLibrarySort sort) {
-        switch (sort) {
-            case NAME: return R.string.playnite_sort_name;
-            case LIBRARY: return R.string.playnite_sort_library;
-            case GENRE: return R.string.playnite_sort_genre;
-            case PLAYTIME: return R.string.playnite_sort_playtime;
-            case MOST_LAUNCHED: return R.string.playnite_sort_most_launched;
-            case RECENT:
-            default: return R.string.playnite_sort_recent;
-        }
-    }
-
-    private int playniteFilterLabel(PlayniteLibraryFilter filter) {
-        switch (filter) {
-            case INSTALLED:
-                return R.string.playnite_installed;
-            case RECENTLY_PLAYED:
-                return R.string.playnite_recently_played;
-            case UNINSTALLED:
-                return R.string.playnite_uninstalled;
-            case MOST_LAUNCHED:
-                return R.string.playnite_most_launched;
-            case NEVER_LAUNCHED:
-                return R.string.playnite_never_launched;
-            case ALL:
-            default:
-                return R.string.playnite_all_games;
-        }
-    }
-
-    private void showPlayniteFilterSelector(TextView anchor) {
-        ComputerDetails host = hosts.get(selectedHostUuid);
-        if (host == null || anchor == null) return;
-        if (playniteFilterPopup != null && playniteFilterPopup.isShowing()) {
-            playniteFilterPopup.dismiss();
-        }
-
-        PlayniteLibraryFilter selected = hostGatewayStore.playniteLibraryFilter(host.uuid);
-        LinearLayout menu = new LinearLayout(this);
-        menu.setOrientation(LinearLayout.VERTICAL);
-        menu.setPadding(dp(7), dp(7), dp(7), dp(7));
-        GradientDrawable panel = gradient(0xFC182129, 0xFC0C1116, 12);
-        panel.setStroke(dp(1), 0x886E8291);
-        menu.setBackground(panel);
-
-        final TextView[] selectedOption = new TextView[1];
-        for (PlayniteLibraryFilter option : PlayniteLibraryFilter.values()) {
-            TextView item = text(getString(playniteFilterLabel(option)), 15, Color.WHITE, false);
-            item.setId(View.generateViewId());
-            item.setFocusable(true);
-            item.setClickable(true);
-            item.setSingleLine(true);
-            item.setGravity(Gravity.CENTER_VERTICAL);
-            item.setMinHeight(dp(42));
-            item.setPadding(dp(14), 0, dp(14), 0);
-            item.setCompoundDrawablePadding(dp(8));
-            stylePlayniteFilterOption(item, option == selected, false);
-            item.setOnFocusChangeListener((view, focused) ->
-                    stylePlayniteFilterOption((TextView) view,
-                            option == selected, focused));
-            item.setOnClickListener(view -> applyPlayniteFilter(host, option, anchor));
-            LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
-            if (menu.getChildCount() > 0) params.topMargin = dp(3);
-            menu.addView(item, params);
-            if (option == selected) selectedOption[0] = item;
-        }
-
-        trapPopupFocus(menu);
-        playniteFilterPopup = new PopupWindow(menu, dp(244),
-                ViewGroup.LayoutParams.WRAP_CONTENT, true);
-        playniteFilterPopup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        playniteFilterPopup.setOutsideTouchable(true);
-        playniteFilterPopup.setClippingEnabled(true);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            playniteFilterPopup.setElevation(dp(12));
-        }
-        int[] location = new int[2];
-        anchor.getLocationOnScreen(location);
-        int menuHeight = dp(7 + 7 + 6 * 42 + 5 * 3);
-        int x = Math.max(dp(12), location[0]);
-        int y = expandedLibraryMode ? location[1] + anchor.getHeight() + dp(5)
-                : Math.max(dp(12), location[1] - menuHeight - dp(6));
-        playniteFilterPopup.showAtLocation(homeLayer, Gravity.NO_GRAVITY, x, y);
-        if (selectedOption[0] != null) {
-            selectedOption[0].post(selectedOption[0]::requestFocus);
-        }
-    }
-
-    private void showPlayniteSourceSelector(TextView anchor) {
-        ComputerDetails host = hosts.get(selectedHostUuid);
-        if (!expandedLibraryMode || host == null || anchor == null) return;
-        if (playniteFilterPopup != null && playniteFilterPopup.isShowing()) {
-            playniteFilterPopup.dismiss();
-        }
-        Locale locale = getResources().getConfiguration().getLocales().get(0);
-        Map<String, String> available = PlayniteLibrarySources.available(
-                currentPlayniteGames, locale);
-        Set<String> stored = hostGatewayStore.playniteLibrarySources(host.uuid);
-        Set<String> selected = new LinkedHashSet<>(stored == null
-                ? available.keySet() : stored);
-        selected.retainAll(available.keySet());
-
-        LinearLayout menu = new LinearLayout(this);
-        menu.setOrientation(LinearLayout.VERTICAL);
-        menu.setPadding(dp(7), dp(7), dp(7), dp(7));
-        GradientDrawable panel = gradient(0xFC182129, 0xFC0C1116, 12);
-        panel.setStroke(dp(1), 0x886E8291);
-        menu.setBackground(panel);
-
-        Map<String, TextView> sourceItems = new LinkedHashMap<>();
-        TextView all = sourceFilterOption(getString(R.string.playnite_sources_all));
-        menu.addView(all, sourceFilterOptionParams(menu));
-        for (Map.Entry<String, String> source : available.entrySet()) {
-            TextView item = sourceFilterOption(source.getValue());
-            sourceItems.put(source.getKey(), item);
-            menu.addView(item, sourceFilterOptionParams(menu));
-        }
-        Runnable refreshStyles = () -> {
-            styleSourceFilterOption(all,
-                    selected.size() == available.size(), all.hasFocus());
-            for (Map.Entry<String, TextView> source : sourceItems.entrySet()) {
-                TextView item = source.getValue();
-                styleSourceFilterOption(item, selected.contains(source.getKey()),
-                        item.hasFocus());
-            }
-        };
-        all.setOnClickListener(view -> {
-            if (selected.size() == available.size()) selected.clear();
-            else {
-                selected.clear();
-                selected.addAll(available.keySet());
-            }
-            refreshStyles.run();
-        });
-        all.setOnFocusChangeListener((view, focused) -> refreshStyles.run());
-        for (Map.Entry<String, TextView> source : sourceItems.entrySet()) {
-            source.getValue().setOnClickListener(view -> {
-                if (!selected.add(source.getKey())) selected.remove(source.getKey());
-                refreshStyles.run();
-            });
-            source.getValue().setOnFocusChangeListener((view, focused) ->
-                    refreshStyles.run());
-        }
-        final boolean[] applied = {false};
-        TextView done = sourceFilterOption(getString(R.string.playnite_sources_done));
-        done.setOnClickListener(view -> {
-            applied[0] = true;
-            playniteFilterPopup.dismiss();
-        });
-        done.setOnFocusChangeListener((view, focused) ->
-                stylePlayniteFilterOption(done, false, focused));
-        menu.addView(done, sourceFilterOptionParams(menu));
-        refreshStyles.run();
-
-        trapPopupFocus(menu);
-        playniteFilterPopup = new PopupWindow(menu, dp(270),
-                ViewGroup.LayoutParams.WRAP_CONTENT, true);
-        playniteFilterPopup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        playniteFilterPopup.setOutsideTouchable(true);
-        playniteFilterPopup.setClippingEnabled(true);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            playniteFilterPopup.setElevation(dp(12));
-        }
-        playniteFilterPopup.setOnDismissListener(() -> {
-            if (!applied[0]) {
-                anchor.post(anchor::requestFocus);
-                return;
-            }
-            hostGatewayStore.setPlayniteLibrarySources(host.uuid, selected);
-            renderFilteredPlayniteLibraryFromStart(host);
-        });
-        int[] location = new int[2];
-        anchor.getLocationOnScreen(location);
-        int optionCount = available.size() + 2;
-        int menuHeight = dp(14 + optionCount * 42
-                + Math.max(0, optionCount - 1) * 3);
-        int x = Math.max(dp(12), location[0]);
-        int y = location[1] + anchor.getHeight() + dp(5);
-        playniteFilterPopup.showAtLocation(homeLayer, Gravity.NO_GRAVITY, x, y);
-        all.post(all::requestFocus);
-    }
-
-    private void showPlayniteSortSelector(TextView anchor) {
-        ComputerDetails host = hosts.get(selectedHostUuid);
-        if (!expandedLibraryMode || host == null || anchor == null) return;
-        dismissPlaynitePopup();
-        PlayniteLibrarySort selected = hostGatewayStore.playniteLibrarySort(host.uuid);
-        LinearLayout menu = popupMenu();
-        TextView selectedView = null;
-        for (PlayniteLibrarySort option : PlayniteLibrarySort.values()) {
-            TextView item = sourceFilterOption(getString(playniteSortLabel(option)));
-            stylePlayniteFilterOption(item, option == selected, false);
-            item.setOnFocusChangeListener((view, focused) ->
-                    stylePlayniteFilterOption((TextView) view,
-                            option == selected, focused));
-            item.setOnClickListener(view -> {
-                hostGatewayStore.setPlayniteLibrarySort(host.uuid, option);
-                dismissPlaynitePopup();
-                renderExpandedLibraryFromStart(host);
-            });
-            menu.addView(item, sourceFilterOptionParams(menu));
-            if (option == selected) selectedView = item;
-        }
-        showExpandedPopup(menu, anchor, dp(260));
-        TextView focus = selectedView != null ? selectedView : (TextView) menu.getChildAt(0);
-        focus.post(focus::requestFocus);
-    }
-
-    private void showPlayniteSearchDialog() {
-        if (!expandedLibraryMode) return;
-        final boolean[] applied = {false};
-        consoleFeedback.showInput(getString(R.string.playnite_search_title), null,
-                expandedSearchQuery, getString(R.string.playnite_search_hint),
-                InputType.TYPE_CLASS_TEXT, 120,
-                getString(android.R.string.cancel),
-                getString(R.string.playnite_search_clear), value -> {
-                    applied[0] = true;
-                    applyExpandedSearch("");
-                    return null;
-                }, getString(android.R.string.ok), value -> {
-                    applied[0] = true;
-                    applyExpandedSearch(value);
-                    return null;
-                }, () -> {
-                    if (!applied[0] && expandedSearchButton != null) {
-                        expandedSearchButton.post(expandedSearchButton::requestFocus);
-                    }
-                });
-    }
-
-    private void applyExpandedSearch(String query) {
-        expandedSearchQuery = query == null ? "" : query.trim();
-        if (selectedHostUuid != null) {
-            libraryViewStateStore.saveSearch(selectedHostUuid, expandedSearchQuery);
-        }
-        ComputerDetails host = hosts.get(selectedHostUuid);
-        if (host != null) renderExpandedLibraryFromStart(host);
-        styleSearchButton(true);
-    }
-
-    private LinearLayout popupMenu() {
-        LinearLayout menu = new LinearLayout(this);
-        menu.setOrientation(LinearLayout.VERTICAL);
-        menu.setPadding(dp(7), dp(7), dp(7), dp(7));
-        GradientDrawable panel = gradient(0xFC182129, 0xFC0C1116, 12);
-        panel.setStroke(dp(1), 0x886E8291);
-        menu.setBackground(panel);
-        return menu;
-    }
-
-    private void dismissPlaynitePopup() {
-        if (playniteFilterPopup != null && playniteFilterPopup.isShowing()) {
-            playniteFilterPopup.dismiss();
-        }
-    }
-
-    private void showExpandedPopup(LinearLayout menu, View anchor, int width) {
-        trapPopupFocus(menu);
-        playniteFilterPopup = new PopupWindow(menu, width,
-                ViewGroup.LayoutParams.WRAP_CONTENT, true);
-        playniteFilterPopup.setBackgroundDrawable(new ColorDrawable(Color.TRANSPARENT));
-        playniteFilterPopup.setOutsideTouchable(true);
-        playniteFilterPopup.setClippingEnabled(true);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.LOLLIPOP) {
-            playniteFilterPopup.setElevation(dp(12));
-        }
-        int[] location = new int[2];
-        anchor.getLocationOnScreen(location);
-        playniteFilterPopup.showAtLocation(homeLayer, Gravity.NO_GRAVITY,
-                Math.max(dp(12), location[0]), location[1] + anchor.getHeight() + dp(5));
-    }
-
-    private void trapPopupFocus(LinearLayout menu) {
-        List<View> focusable = new ArrayList<>();
-        for (int index = 0; index < menu.getChildCount(); index++) {
-            View child = menu.getChildAt(index);
-            if (child.isFocusable()) focusable.add(child);
-        }
-        for (int index = 0; index < focusable.size(); index++) {
-            View child = focusable.get(index);
-            child.setNextFocusLeftId(child.getId());
-            child.setNextFocusRightId(child.getId());
-            child.setNextFocusUpId(index == 0 ? child.getId()
-                    : focusable.get(index - 1).getId());
-            child.setNextFocusDownId(index + 1 == focusable.size() ? child.getId()
-                    : focusable.get(index + 1).getId());
-        }
-    }
-
-    private TextView sourceFilterOption(String label) {
-        TextView item = text(label, 15, Color.WHITE, false);
-        item.setId(View.generateViewId());
-        item.setFocusable(true);
-        item.setClickable(true);
-        item.setSingleLine(true);
-        item.setGravity(Gravity.CENTER_VERTICAL);
-        item.setMinHeight(dp(42));
-        item.setPadding(dp(14), 0, dp(14), 0);
-        item.setCompoundDrawablePadding(dp(8));
-        return item;
-    }
-
-    private LinearLayout.LayoutParams sourceFilterOptionParams(LinearLayout menu) {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(42));
-        if (menu.getChildCount() > 0) params.topMargin = dp(3);
-        return params;
-    }
-
-    private void styleSourceFilterOption(TextView item, boolean selected,
-                                         boolean focused) {
-        GradientDrawable background = gradient(
-                focused ? 0xFF334653 : selected ? 0xAA294252 : 0x00182129,
-                focused ? 0xFF1E2C35 : selected ? 0xAA1B303D : 0x000C1116, 8);
-        background.setStroke(dp(1),
-                focused ? 0xFF8DDCFF : selected ? 0x8873D7FF : 0x223F4C54);
-        item.setBackground(background);
-        item.setTextColor(focused || selected ? Color.WHITE : 0xFFCFD8DE);
-        item.setCompoundDrawablesWithIntrinsicBounds(
-                selected ? android.R.drawable.checkbox_on_background
-                        : android.R.drawable.checkbox_off_background, 0, 0, 0);
-    }
-
-    private void stylePlayniteFilterOption(TextView item, boolean selected, boolean focused) {
-        GradientDrawable background = gradient(
-                focused ? 0xFF334653 : selected ? 0xAA294252 : 0x00182129,
-                focused ? 0xFF1E2C35 : selected ? 0xAA1B303D : 0x000C1116, 8);
-        background.setStroke(dp(1),
-                focused ? 0xFF8DDCFF : selected ? 0x8873D7FF : 0x223F4C54);
-        item.setBackground(background);
-        item.setTextColor(focused || selected ? Color.WHITE : 0xFFCFD8DE);
-        item.setCompoundDrawablesWithIntrinsicBounds(
-                selected ? android.R.drawable.checkbox_on_background : 0, 0, 0, 0);
-    }
-
-    private void applyPlayniteFilter(ComputerDetails host, PlayniteLibraryFilter filter,
-                                     TextView anchor) {
-        hostGatewayStore.setPlayniteLibraryFilter(host.uuid, filter);
-        if (playniteFilterPopup != null) playniteFilterPopup.dismiss();
-        if (expandedLibraryMode) {
-            renderFilteredPlayniteLibraryFromStart(host);
-        } else {
-            renderPlayniteLibrary(host, currentSunshineApps);
-            TextView target = installedFilterButton != null ? installedFilterButton : anchor;
-            if (target != null) target.post(target::requestFocus);
-        }
-    }
-
     private void updateLibraryActionVisibility() {
         if (debugLibraryActions == null) return;
         boolean resumeVisible = quickResumeButton != null
@@ -9188,19 +8683,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 visibleLibraryGames.add(game);
             }
         }
-        Set<String> storedSources = hostGatewayStore.playniteLibrarySources(host.uuid);
-        Map<String, String> availableSources = PlayniteLibrarySources.available(
-                visibleLibraryGames,
-                getResources().getConfiguration().getLocales().get(0));
-        Set<String> selectedSources = PlayniteLibrarySources.migrateSelection(
-                storedSources, availableSources);
-        if (storedSources != null && selectedSources == null) {
-            hostGatewayStore.clearPlayniteLibrarySources(host.uuid);
-        } else if (selectedSources != null && !selectedSources.equals(storedSources)) {
-            hostGatewayStore.setPlayniteLibrarySources(host.uuid, selectedSources);
-        }
         List<PlayniteLibraryGame> sourceFiltered = PlayniteLibrarySources.filter(
-                visibleLibraryGames, selectedSources);
+                visibleLibraryGames, hostGatewayStore.playniteLibrarySources(host.uuid));
         boolean appListAuthoritative = ConsoleActionCatalog.isOnline(host);
         Map<String, PlayniteDashboardItem> resolvedById = new LinkedHashMap<>();
         Map<String, Long> localActivity = new LinkedHashMap<>();
@@ -9608,6 +9092,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
         }
         expandedLibraryMode = false;
+        librarySearch.close();
+        expandedNavigationLegend.setVisibility(View.VISIBLE);
         if (selectedHostUuid != null) {
             libraryViewStateStore.saveExpandedMode(selectedHostUuid, false);
         }
@@ -9865,7 +9351,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void focusExpandedLibrary() {
-        if (expandedGrid == null) return;
+        // Search opened from Home keeps focus on its keyboard through the entrance.
+        if (expandedGrid == null || librarySearch.isOpen()) return;
         expandedGrid.focusPosition(Math.max(0,
                 expandedLibraryQuery.indexOf(libraryTransitionGameId)));
     }
@@ -9881,10 +9368,45 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             expandedGrid.rebindAll(PlayniteLibraryDiff.TEXT | PlayniteLibraryDiff.LAUNCH);
         }
         updateExpandedPositionIndicator(expandedGrid.focusedPosition(), expandedItems.size());
-        styleFilterButton(expandedFilterButton, expandedFilterButton.hasFocus());
-        styleSourceFilterButton(expandedSourceFilterButton.hasFocus());
-        styleSortButton(expandedSortButton.hasFocus());
-        styleSearchButton(expandedSearchButton.hasFocus());
+        libraryFilterBar.show(LibraryFiltersPanel.summary(hostGatewayStore, host.uuid,
+                librarySources()), expandedSearchQuery);
+    }
+
+    private Map<String, String> librarySources() {
+        return PlayniteLibrarySources.available(currentPlayniteGames,
+                getResources().getConfiguration().getLocales().get(0));
+    }
+
+    private LibraryFiltersPanel.Host libraryFiltersHost() {
+        return new LibraryFiltersPanel.Host() {
+            @Override public void showPanel(String eyebrow, String title, String details,
+                                            View... rows) {
+                showSidePanel(eyebrow, title, details, rows);
+            }
+
+            @Override public void panelBack() { handlePanelBack(); }
+
+            @Override public void filtersChanged(boolean sortOnly) {
+                ComputerDetails host = hosts.get(selectedHostUuid);
+                if (host == null) return;
+                if (sortOnly) renderExpandedLibraryFromStart(host);
+                else renderFilteredPlayniteLibraryFromStart(host);
+            }
+
+            @Override public void clearFilters() {
+                ComputerDetails host = hosts.get(selectedHostUuid);
+                if (host != null) clearLibraryFilters(host);
+            }
+
+            @Override public Map<String, String> sources() { return librarySources(); }
+
+            @Override public int shownCount() {
+                ComputerDetails host = hosts.get(selectedHostUuid);
+                return host == null ? 0 : expandedLibraryItems(host).size();
+            }
+
+            @Override public int totalCount() { return unfilteredPlayniteItems.size(); }
+        };
     }
 
     private ExpandedLibraryGrid createExpandedGrid() {
@@ -9930,7 +9452,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     }
 
                     @Override public void onLeave() {
-                        expandedFilterButton.requestFocus();
+                        libraryFilterBar.focusFilters();
                     }
 
                     @Override public void prefetchArtwork(List<PlayniteDashboardItem> items) {
@@ -10103,8 +9625,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 return;
             }
             if (appRow.getChildCount() == 0) {
-                TextView empty = text(getString(hostGatewayStore.isPlayniteInstalledOnly(host.uuid)
-                                ? R.string.playnite_no_installed_games : R.string.playnite_library_empty),
+                TextView empty = text(getString(hostGatewayStore.playniteLibraryFilter(host.uuid)
+                                == PlayniteLibraryFilter.INSTALLED ? R.string.playnite_no_installed_games : R.string.playnite_library_empty),
                         15, 0xFFFFB74D, false);
                 empty.setTag("playnite.empty");
                 appRow.addView(empty, new LinearLayout.LayoutParams(
@@ -15861,7 +15383,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean alreadyShowing = sideDialog != null && sideDialog.isShowing();
         boolean samePanel = alreadyShowing && nextKey.equals(currentPanelKey);
         if (alreadyShowing && !samePanel) prepareChildSharingForDeparture();
-        View previousPanelFocus = samePanel ? getCurrentFocus() : null;
+        // The panel is the dialog's window: its focus, not the Activity's, is the focused row.
+        View previousPanelFocus = samePanel ? sideDialog.getCurrentFocus() : null;
         if (previousPanelFocus != null && !isDescendant(sidePanel, previousPanelFocus)) {
             previousPanelFocus = null;
         }
