@@ -57,7 +57,11 @@ public final class HostSessionTermination {
                 return reconciled.succeeded();
             }
             if (permit.succeeded()) return true;
-            if (!providerAlreadyStopped) {
+            // The Gateway grants a full_quit only with the provider idle or its exact game
+            // verified, under the lock that fences provider transitions. A permit without a
+            // provider game is that idle proof; a re-read can only lose its dispatch ordering
+            // to the dashboard poll and fail closed, rejecting the quit before /cancel.
+            if (!providerAlreadyStopped && !permit.providerGameId.isEmpty()) {
                 PlayniteTransitionGateway provider = PlayniteTransitionGateway.connect(
                         context, hostId, activeHost, actor);
                 if (provider == null) throw new IllegalStateException("gateway_unavailable");
