@@ -223,22 +223,19 @@ public final class PlayniteTransitionGateway {
     private final GatewayConnection connection;
     private final ActorContext actorContext;
     private final String hostId;
+    private final com.limelight.session.SessionModel model;
     private final SessionStateResolver.ProjectionOwner projectionOwner;
     private final java.util.function.LongSupplier monotonicClock;
 
-    private PlayniteTransitionGateway(GatewayConnection connection,
-                                      ActorContext actorContext) {
-        this(connection.endpoint(), connection, actorContext, new HostGatewayClient(),
-                () -> System.nanoTime() / 1_000_000L);
-    }
-
-    PlayniteTransitionGateway(GatewayConnection connection, ActorContext actorContext,
+    PlayniteTransitionGateway(com.limelight.session.SessionModel model,
+                              GatewayConnection connection, ActorContext actorContext,
                               HostGatewayClient client) {
-        this(connection.endpoint(), connection, actorContext, client,
+        this(model, connection.endpoint(), connection, actorContext, client,
                 () -> System.nanoTime() / 1_000_000L);
     }
 
-    PlayniteTransitionGateway(String hostId, GatewayConnection connection,
+    PlayniteTransitionGateway(com.limelight.session.SessionModel model, String hostId,
+                              GatewayConnection connection,
                               ActorContext actorContext, HostGatewayClient client,
                               java.util.function.LongSupplier monotonicClock) {
         if (connection == null || actorContext == null || client == null) {
@@ -252,7 +249,8 @@ public final class PlayniteTransitionGateway {
         this.client = client;
         this.hostId = hostId == null ? connection.endpoint() : hostId;
         this.monotonicClock = monotonicClock;
-        this.projectionOwner = SessionStateResolver.owner(this.hostId,
+        this.model = model;
+        this.projectionOwner = SessionStateResolver.owner(model, this.hostId,
                 actorContext.actorProfileId, actorContext.executionProfileId);
     }
 
@@ -268,7 +266,8 @@ public final class PlayniteTransitionGateway {
                     "reason", "connection_missing");
             return null;
         }
-        return new PlayniteTransitionGateway(hostId, connection, actorContext,
+        return new PlayniteTransitionGateway(com.limelight.session.SessionModel.of(context),
+                hostId, connection, actorContext,
                 new HostGatewayClient(), () -> System.nanoTime() / 1_000_000L);
     }
 
@@ -278,8 +277,7 @@ public final class PlayniteTransitionGateway {
     public Snapshot snapshot() throws IOException {
         for (int attempt = 1; ; attempt++) {
             long ordinal = projectionOwner.nextRequestOrdinal();
-            com.limelight.stream.RetainedStreamSessionCoordinator.Snapshot retained =
-                    com.limelight.stream.RetainedStreamSessionCoordinator.snapshot();
+            com.limelight.session.SessionModel.Snapshot retained = model.snapshot();
             String transition = retained.hostId.equalsIgnoreCase(hostId)
                     && retained.executionProfileId.equals(actorContext.executionProfileId)
                     ? retained.transitionId : "";
@@ -323,8 +321,7 @@ public final class PlayniteTransitionGateway {
      */
     public Snapshot snapshotWithinControl(ControlOperationClient.Permit permit) throws IOException {
         long ordinal = projectionOwner.nextRequestOrdinal();
-        com.limelight.stream.RetainedStreamSessionCoordinator.Snapshot retained =
-                com.limelight.stream.RetainedStreamSessionCoordinator.snapshot();
+        com.limelight.session.SessionModel.Snapshot retained = model.snapshot();
         String transition = retained.hostId.equalsIgnoreCase(hostId)
                 && retained.executionProfileId.equals(actorContext.executionProfileId)
                 ? retained.transitionId : "";

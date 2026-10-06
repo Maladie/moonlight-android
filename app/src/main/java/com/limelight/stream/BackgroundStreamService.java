@@ -16,7 +16,9 @@ import android.os.Looper;
 import com.limelight.Game;
 import com.limelight.R;
 import com.limelight.diagnostics.MoonWakerDiagnostics;
-import com.limelight.utils.SessionResumeManager;
+import com.limelight.session.SessionEvent;
+import com.limelight.session.SessionModel;
+import com.limelight.session.SessionResumeManager;
 
 /**
  * mediaPlayback foreground service kept for the whole lifetime of one StreamRuntime generation.
@@ -137,7 +139,7 @@ public final class BackgroundStreamService extends Service {
         } else if (ACTION_TRANSPORT_LOST.equals(action)) {
             if (!correlation.transportLost(sessionId, generation)) return START_NOT_STICKY;
             cancelExpiry();
-            if (SessionResumeManager.pendingSession(this) == null) {
+            if (SessionModel.of(this).records().pending == null) {
                 correlation.end(sessionId, generation);
                 stopService();
             } else {
@@ -147,7 +149,7 @@ public final class BackgroundStreamService extends Service {
             if (correlation.end(sessionId, generation)) stopService();
         } else if (ACTION_END_REQUESTED.equals(action)) {
             if (!correlation.matches(sessionId, generation)) return START_NOT_STICKY;
-            SessionResumeManager.clearIfMatches(this, sessionId);
+            SessionModel.of(this).post(new SessionEvent.ReconnectCleared(sessionId));
             StreamRuntime.serviceEnded(sessionId, generation);
             correlation.end(sessionId, generation);
             stopService();
@@ -167,7 +169,7 @@ public final class BackgroundStreamService extends Service {
             if (!correlation.matches(sessionId, generation) || !correlation.parked()) return;
             MoonWakerDiagnostics.record("INFO", "android.background-stream",
                     "service.retention_expired", "stream_session_id", sessionId);
-            SessionResumeManager.clearIfMatches(this, sessionId);
+            SessionModel.of(this).post(new SessionEvent.ReconnectCleared(sessionId));
             StreamRuntime.serviceEnded(sessionId, generation);
             correlation.end(sessionId, generation);
             stopService();
@@ -189,7 +191,7 @@ public final class BackgroundStreamService extends Service {
         String sessionId = correlation.streamSessionId();
         long generation = correlation.generation();
         SessionResumeManager.PendingSession pending =
-                SessionResumeManager.pendingSession(this);
+                SessionModel.of(this).records().pending;
         Intent resume = pending != null && pending.matches(sessionId)
                 ? SessionResumeManager.buildResumeIntent(this, pending) : null;
         if (resume == null) {

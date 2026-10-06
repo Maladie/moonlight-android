@@ -19,11 +19,12 @@ import com.limelight.console.HostGatewayStore;
 import com.limelight.gateway.GatewayConnection;
 
 import com.limelight.diagnostics.MoonWakerDiagnostics;
+import com.limelight.session.SessionModel;
 
 import java.io.File;
 
 public final class MoonWakerApplication extends Application implements
-        Application.ActivityLifecycleCallbacks,
+        Application.ActivityLifecycleCallbacks, SessionModel.Owner,
         SharedPreferences.OnSharedPreferenceChangeListener {
     private static final java.util.concurrent.atomic.AtomicInteger STARTED_ACTIVITIES =
             new java.util.concurrent.atomic.AtomicInteger();
@@ -36,6 +37,11 @@ public final class MoonWakerApplication extends Application implements
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
     private final DiscordAudioDownlink discordAudio = new DiscordAudioDownlink();
     private final Runnable stopDiscordAudio = discordAudio::stop;
+    private SessionModel sessionModel;
+
+    @Override public SessionModel sessionModel() {
+        return sessionModel;
+    }
 
     @Override public void onCreate() {
         super.onCreate();
@@ -43,6 +49,7 @@ public final class MoonWakerApplication extends Application implements
         MoonWakerDiagnostics.installCrashHandler();
         MoonWakerDiagnostics.record("INFO", "app", "process.started");
         com.limelight.diagnostics.ExitReasonRecorder.recordAtStart(this);
+        sessionModel = SessionModel.create(this);
         if (BuildConfig.DEBUG) {
             android.os.StrictMode.setThreadPolicy(new android.os.StrictMode.ThreadPolicy.Builder()
                     .detectAll().penaltyLog().build());

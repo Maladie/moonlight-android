@@ -13,7 +13,7 @@ public class RetainedControlHandoffTest {
         long hostGeneration = 5, localGeneration = 4;
         void record(String stage) { calls.add(stage); if (fail.equals(stage)) throw new IllegalStateException(stage); }
         public boolean current() { record("current"); return current; }
-        public boolean commitBinding() { record("commit"); if (commit) localGeneration = hostGeneration; return commit; }
+        public void commitBinding(java.util.function.Consumer<Boolean> done) { record("commit"); if (commit) localGeneration = hostGeneration; done.accept(commit); }
         public void publishBinding() { record("publish"); }
         public boolean cancelled() { record("cancelled"); return cancelled; }
         public void retainNeutral() { record("neutral"); }

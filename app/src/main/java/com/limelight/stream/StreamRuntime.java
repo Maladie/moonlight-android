@@ -4,6 +4,8 @@ import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.nvstream.StreamInput;
 import com.limelight.nvstream.av.video.VideoDecoderRenderer;
 import com.limelight.nvstream.input.KeyboardPacket;
+import com.limelight.session.SessionEvent;
+import com.limelight.session.SessionModel;
 
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -21,7 +23,7 @@ import java.util.concurrent.locks.ReentrantReadWriteLock;
  * detaches; detaching never stops a transport that is allowed to survive.
  */
 public final class StreamRuntime implements NvConnectionListener,
-        RetainedStreamSessionCoordinator.Controller {
+        SessionModel.Controller {
 
     /** The native transport plus the renderers bound to it at start. */
     public interface Transport extends StreamInput {
@@ -52,24 +54,26 @@ public final class StreamRuntime implements NvConnectionListener,
         void clearReconnectRecord(String streamSessionId);
         void controlGenerationBound(String streamSessionId, long controlGeneration);
         /** Host-side whole-session termination for a runtime without a presentation. */
-        void terminateHost(StreamRuntime runtime, RetainedStreamSessionCoordinator.Snapshot session,
-                           RetainedStreamSessionCoordinator.TerminationCallback completion);
+        void terminateHost(StreamRuntime runtime, SessionModel.Snapshot session,
+                           SessionModel.TerminationCallback completion);
         /** The transport generation ended; release presentation-less host-side owners. */
         void runtimeEnded();
         Executor stopExecutor();
         Executor mainExecutor();
         Executor inputExecutor();
         void record(String level, String event, Object... fields);
+        /** The process session model this transport reports to. */
+        SessionModel sessionModel();
     }
 
     /** The Activity-side adapter. Callbacks arrive only while it is the current attachment. */
     public interface Presentation extends NvConnectionListener {
-        boolean parkPreparingTransport(RetainedStreamSessionCoordinator.Snapshot preparing);
-        boolean cancelPreparingTransport(RetainedStreamSessionCoordinator.Snapshot preparing);
-        boolean preparingHomeFrameSubmitted(RetainedStreamSessionCoordinator.Snapshot preparing);
-        void switchGame(RetainedStreamSessionCoordinator.SwitchRequest request,
-                        RetainedStreamSessionCoordinator.SwitchCallback completion);
-        void terminateRetainedSession(RetainedStreamSessionCoordinator.TerminationCallback completion);
+        boolean parkPreparingTransport(SessionModel.Snapshot preparing);
+        boolean cancelPreparingTransport(SessionModel.Snapshot preparing);
+        boolean preparingHomeFrameSubmitted(SessionModel.Snapshot preparing);
+        void switchGame(SessionModel.SwitchRequest request,
+                        SessionModel.SwitchCallback completion);
+        void terminateRetainedSession(SessionModel.TerminationCallback completion);
         /** The runtime parked the stream (decoder detached, audio muted); hide video and input. */
         void onTransportParked();
         /** The runtime finished an explicit disconnect; the presentation may finish itself. */
@@ -180,7 +184,7 @@ public final class StreamRuntime implements NvConnectionListener,
         }
         if (runtime == null || !runtime.streamSessionId.equals(streamSessionId)
                 || runtime.generation() != generation) return;
-        RetainedStreamSessionCoordinator.clearIfMatches(streamSessionId);
+        runtime.platform.sessionModel().post(new SessionEvent.Cleared(streamSessionId));
         runtime.platform.clearReconnectRecord(streamSessionId);
         runtime.stop(result -> {
             Presentation attached = runtime.attached();
@@ -449,16 +453,12 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     private void markReconnectRequired() {
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
+        SessionModel model = platform.sessionModel();
+        SessionModel.Snapshot retained = model.snapshot();
         if (!retained.streamSessionId.equals(streamSessionId)) return;
-        if (retained.state == RetainedStreamSessionCoordinator.State.PREPARING) {
-            RetainedStreamSessionCoordinator.markPreparingReconnectRequired(this,
-                    retained.streamSessionId, retained.hostId, retained.appId,
-                    retained.transitionId, retained.attempt);
-        } else {
-            RetainedStreamSessionCoordinator.markReconnectRequired(streamSessionId);
-        }
+        model.post(retained.state == SessionModel.State.PREPARING
+                ? new SessionEvent.PreparingTransportLost(this, retained)
+                : new SessionEvent.TransportLost(streamSessionId));
     }
 
     /**
@@ -487,21 +487,20 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     private boolean retainedByCoordinator() {
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
+        SessionModel.Snapshot retained = platform.sessionModel().snapshot();
         return retained.streamSessionId.equals(streamSessionId)
-                && retained.state != RetainedStreamSessionCoordinator.State.NONE
-                && retained.state != RetainedStreamSessionCoordinator.State.TERMINATING;
+                && retained.state != SessionModel.State.NONE
+                && retained.state != SessionModel.State.TERMINATING;
     }
 
     boolean canSurviveWithoutPresentation() {
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
+        SessionModel model = platform.sessionModel();
+        SessionModel.Snapshot retained = model.snapshot();
         boolean retainedState = retained.streamSessionId.equals(streamSessionId)
-                && (retained.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
-                || retained.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE
-                || (retained.state == RetainedStreamSessionCoordinator.State.PREPARING
-                && RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+                && (retained.state == SessionModel.State.HOME_LIVE
+                || retained.state == SessionModel.State.PARKED_LIVE
+                || (retained.state == SessionModel.State.PREPARING
+                && model.isPreparingHomeFrameAccepted(
                 retained.streamSessionId, retained.hostId, retained.appId,
                 retained.playniteGameId, retained.transitionId, retained.attempt)));
         synchronized (this) {
@@ -559,8 +558,8 @@ public final class StreamRuntime implements NvConnectionListener,
     @Override public void stageComplete(String stage) {
         long controlGeneration = transport.controlGeneration();
         if (controlGeneration > 0L && !isStopping()) {
-            RetainedStreamSessionCoordinator.bindControlGeneration(
-                    this, streamSessionId, controlGeneration);
+            platform.sessionModel().post(new SessionEvent.ControlGenerationBound(
+                    this, streamSessionId, controlGeneration));
             platform.controlGenerationBound(streamSessionId, controlGeneration);
         }
         Presentation p = attached();
@@ -645,7 +644,7 @@ public final class StreamRuntime implements NvConnectionListener,
         if (p != null) p.setControllerLED(controllerNumber, r, g, b);
     }
 
-    // ---- RetainedStreamSessionCoordinator.Controller ------------------------------------------
+    // ---- SessionModel.Controller ----------------------------------------------------------------
 
     @Override public boolean isRetainedTransportLive() {
         synchronized (this) {
@@ -660,7 +659,7 @@ public final class StreamRuntime implements NvConnectionListener,
     @Override public boolean parkRetainedTransport() { return park(); }
 
     @Override public boolean parkPreparingTransport(
-            RetainedStreamSessionCoordinator.Snapshot preparing) {
+            SessionModel.Snapshot preparing) {
         Presentation p = attached();
         if (p != null) return p.parkPreparingTransport(preparing);
         if (!canSurviveWithoutPresentation()) stopUnprotected("preparing_park_headless");
@@ -668,7 +667,7 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     @Override public boolean cancelPreparingTransport(
-            RetainedStreamSessionCoordinator.Snapshot preparing) {
+            SessionModel.Snapshot preparing) {
         Presentation p = attached();
         if (p != null) return p.cancelPreparingTransport(preparing);
         stopUnprotected("preparing_cancelled_headless");
@@ -676,13 +675,13 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     @Override public boolean preparingHomeFrameSubmitted(
-            RetainedStreamSessionCoordinator.Snapshot preparing) {
+            SessionModel.Snapshot preparing) {
         Presentation p = attached();
         return p != null && p.preparingHomeFrameSubmitted(preparing);
     }
 
     @Override public void disconnectRetainedStream(
-            RetainedStreamSessionCoordinator.TerminationCallback completion) {
+            SessionModel.TerminationCallback completion) {
         stop(result -> {
             boolean stopped = result == TransportStopCoordinator.Result.STOPPED;
             if (stopped) {
@@ -697,7 +696,7 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     @Override public void terminateRetainedSession(
-            RetainedStreamSessionCoordinator.TerminationCallback completion) {
+            SessionModel.TerminationCallback completion) {
         Presentation p = attached();
         if (p != null) {
             p.terminateRetainedSession(completion);
@@ -709,17 +708,17 @@ public final class StreamRuntime implements NvConnectionListener,
         }
         transport.setAudioVolume(0f);
         platform.clearReconnectRecord(streamSessionId);
-        platform.terminateHost(this, RetainedStreamSessionCoordinator.snapshot(), completion);
+        platform.terminateHost(this, platform.sessionModel().snapshot(), completion);
     }
 
-    @Override public void switchGame(RetainedStreamSessionCoordinator.SwitchRequest request,
-                                     RetainedStreamSessionCoordinator.SwitchCallback completion) {
+    @Override public void switchGame(SessionModel.SwitchRequest request,
+                                     SessionModel.SwitchCallback completion) {
         Presentation p = attached();
         if (p != null) {
             p.switchGame(request, completion);
             return;
         }
-        completion.complete(RetainedStreamSessionCoordinator.SwitchOutcome.FAILED,
+        completion.complete(SessionModel.SwitchOutcome.FAILED,
                 "presentation_detached");
     }
 

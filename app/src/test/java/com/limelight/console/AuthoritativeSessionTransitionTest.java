@@ -1,6 +1,8 @@
 package com.limelight.console;
 
-import com.limelight.stream.RetainedStreamSessionCoordinator;
+import com.limelight.session.SessionModel;
+import com.limelight.session.SessionModelDriver;
+
 
 import org.junit.Test;
 
@@ -9,6 +11,7 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class AuthoritativeSessionTransitionTest {
+    private final SessionModelDriver m = new SessionModelDriver();
     @Test public void cachedOrInitialZeroCannotEndSession() {
         assertFalse(AuthoritativeSessionTransition.ended(null, 0));
         assertFalse(AuthoritativeSessionTransition.ended(0, 0));
@@ -30,17 +33,17 @@ public class AuthoritativeSessionTransitionTest {
 
     @Test public void freshZeroClearsOnlyLostMatchingRetainedTransport() {
         assertTrue(AuthoritativeSessionTransition.lostRetainedTransport(
-                true, 0, true, RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED));
+                true, 0, true, SessionModel.State.RECONNECT_REQUIRED));
         assertFalse(AuthoritativeSessionTransition.lostRetainedTransport(
-                true, 0, true, RetainedStreamSessionCoordinator.State.HOME_LIVE));
+                true, 0, true, SessionModel.State.HOME_LIVE));
         assertFalse(AuthoritativeSessionTransition.lostRetainedTransport(
-                true, 0, true, RetainedStreamSessionCoordinator.State.PARKED_LIVE));
+                true, 0, true, SessionModel.State.PARKED_LIVE));
         assertFalse(AuthoritativeSessionTransition.lostRetainedTransport(
-                true, 0, false, RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED));
+                true, 0, false, SessionModel.State.RECONNECT_REQUIRED));
         assertFalse(AuthoritativeSessionTransition.lostRetainedTransport(
-                false, 0, true, RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED));
+                false, 0, true, SessionModel.State.RECONNECT_REQUIRED));
         assertFalse(AuthoritativeSessionTransition.lostRetainedTransport(
-                true, 7, true, RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED));
+                true, 7, true, SessionModel.State.RECONNECT_REQUIRED));
     }
 
     @Test public void freshSunshineStateOverridesStaleCapturedAppId() {

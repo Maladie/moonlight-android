@@ -4,7 +4,7 @@ import com.limelight.console.transition.LaunchTransitionType;
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.nvstream.http.NvApp;
 import com.limelight.nvstream.http.ComputerDetails;
-import com.limelight.stream.RetainedStreamSessionCoordinator;
+import com.limelight.session.SessionModel;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.atomic.AtomicLong;
@@ -106,12 +106,12 @@ final class SessionOrchestrator implements AutoCloseable {
     }
 
     static boolean shouldSendWarmUpWake(
-            RetainedStreamSessionCoordinator.State localState,
+            SessionModel.State localState,
             boolean bridgeResponded, ComputerDetails.State moonlightState) {
-        return localState != RetainedStreamSessionCoordinator.State.HOME_LIVE
-                && localState != RetainedStreamSessionCoordinator.State.PARKED_LIVE
-                && localState != RetainedStreamSessionCoordinator.State.PREPARING
-                && localState != RetainedStreamSessionCoordinator.State.TERMINATING
+        return localState != SessionModel.State.HOME_LIVE
+                && localState != SessionModel.State.PARKED_LIVE
+                && localState != SessionModel.State.PREPARING
+                && localState != SessionModel.State.TERMINATING
                 && !bridgeResponded
                 && moonlightState == ComputerDetails.State.OFFLINE;
     }

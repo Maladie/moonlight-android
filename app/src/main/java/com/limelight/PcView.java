@@ -27,7 +27,9 @@ import com.limelight.ui.QuickLaunchView;
 import com.limelight.utils.Dialog;
 import com.limelight.utils.HelpLauncher;
 import com.limelight.utils.ServerHelper;
-import com.limelight.utils.SessionResumeManager;
+import com.limelight.session.SessionEvent;
+import com.limelight.session.SessionModel;
+import com.limelight.session.SessionResumeManager;
 import com.limelight.utils.ShortcutHelper;
 import com.limelight.utils.UiHelper;
 
@@ -852,7 +854,7 @@ public class PcView extends Activity implements AdapterFragmentCallbacks, QuickL
         // and the update reflects a real network poll, not the initial stale cache dispatch.
         PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
         SessionResumeManager.PendingSession pending =
-                SessionResumeManager.pendingSession(this);
+                SessionModel.of(this).records().pending;
         if (isFreshPoll && pm.isInteractive() && inForeground && pending != null
                 && pending.autoResume) {
             android.util.Log.d("SessionResume", "updateComputer: pending appId="
@@ -865,12 +867,14 @@ public class PcView extends Activity implements AdapterFragmentCallbacks, QuickL
                     if (resume != null) startActivity(resume);
                 } else if (details.runningGameId != 0) {
                     autoResumeNoGamePollCount = 0;
-                    SessionResumeManager.clearIfMatches(this, pending.streamSessionId);
+                    SessionModel.of(this).post(
+                            new SessionEvent.ReconnectCleared(pending.streamSessionId));
                 } else if (details.state != ComputerDetails.State.OFFLINE) {
                     autoResumeNoGamePollCount++;
                     if (autoResumeNoGamePollCount >= 3) {
                         autoResumeNoGamePollCount = 0;
-                        SessionResumeManager.clearIfMatches(this, pending.streamSessionId);
+                        SessionModel.of(this).post(
+                            new SessionEvent.ReconnectCleared(pending.streamSessionId));
                     }
                 }
             }

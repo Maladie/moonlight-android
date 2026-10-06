@@ -1,8 +1,9 @@
 package com.limelight.console;
 
-import com.limelight.stream.RetainedStreamSessionCoordinator;
+import com.limelight.session.SessionModel;
+import com.limelight.session.SessionModelDriver;
 
-import org.junit.After;
+
 import org.junit.Test;
 
 import java.util.ArrayList;
@@ -13,34 +14,28 @@ import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertTrue;
 
 public class ConsoleSessionSubscriberTest {
+    private final SessionModelDriver m = new SessionModelDriver();
     private final List<Integer> renders = new ArrayList<>();
     private final ConsoleSessionSubscriber subscriber = new ConsoleSessionSubscriber(renders::add);
-    private final RetainedStreamSessionCoordinator.Controller owner =
-            new RetainedStreamSessionCoordinator.Controller() {
+    private final SessionModel.Controller owner =
+            new SessionModel.Controller() {
                 @Override public boolean isRetainedTransportLive() { return true; }
                 @Override public boolean parkRetainedTransport() { return true; }
                 @Override public void disconnectRetainedStream(
-                        RetainedStreamSessionCoordinator.TerminationCallback completion) { }
+                        SessionModel.TerminationCallback completion) { }
                 @Override public void terminateRetainedSession(
-                        RetainedStreamSessionCoordinator.TerminationCallback completion) { }
+                        SessionModel.TerminationCallback completion) { }
                 @Override public void switchGame(
-                        RetainedStreamSessionCoordinator.SwitchRequest request,
-                        RetainedStreamSessionCoordinator.SwitchCallback completion) { }
+                        SessionModel.SwitchRequest request,
+                        SessionModel.SwitchCallback completion) { }
             };
 
-    @After public void tearDown() throws ReflectiveOperationException {
-        java.lang.reflect.Method clear = RetainedStreamSessionCoordinator.class
-                .getDeclaredMethod("clear");
-        clear.setAccessible(true);
-        clear.invoke(null);
-    }
-
     private void deliverCurrent() {
-        subscriber.onSnapshot(RetainedStreamSessionCoordinator.snapshot());
+        subscriber.onSnapshot(m.snapshot());
     }
 
     @Test public void nothingIsHeldBeforeTheFirstDelivery() {
-        RetainedStreamSessionCoordinator.enterHome(owner, "session", "host", 7, "game-a");
+        m.enterHome(owner, "session", "host", 7, "game-a");
 
         assertFalse(subscriber.holdsTarget("host", 7, "game-a"));
         assertFalse(subscriber.reconnectRequired("host"));
@@ -48,13 +43,12 @@ public class ConsoleSessionSubscriberTest {
     }
 
     @Test public void retainedTargetFollowsTheDeliveredGameNotTheHomeLaunch() {
-        RetainedStreamSessionCoordinator.enterHome(owner, "session", "host", 7, "game-a");
+        m.enterHome(owner, "session", "host", 7, "game-a");
         deliverCurrent();
         assertTrue(subscriber.holdsTarget("host", 0, "game-a"));
 
         // The Home was launched for game-a; the stream now runs game-b.
-        assertTrue(RetainedStreamSessionCoordinator.updateGameIfMatches(
-                "session", "host", 7, "game-a", "game-b"));
+        m.enterHome(owner, "session", "host", 7, "game-b");
         deliverCurrent();
 
         assertTrue(subscriber.holdsTarget("HOST", 0, "game-b"));
@@ -65,9 +59,9 @@ public class ConsoleSessionSubscriberTest {
     }
 
     @Test public void endedRetainedStreamHoldsNoTarget() {
-        RetainedStreamSessionCoordinator.enterHome(owner, "session", "host", 7, "game-a");
+        m.enterHome(owner, "session", "host", 7, "game-a");
         deliverCurrent();
-        assertTrue(RetainedStreamSessionCoordinator.clearIfMatches("session"));
+        assertTrue(m.clearIfMatches("session"));
         deliverCurrent();
 
         assertFalse(subscriber.holdsTarget("host", 7, "game-a"));
@@ -75,8 +69,8 @@ public class ConsoleSessionSubscriberTest {
     }
 
     @Test public void sameSnapshotDeliveredAgainDoesNotRenderTwice() {
-        RetainedStreamSessionCoordinator.Snapshot current =
-                RetainedStreamSessionCoordinator.snapshot();
+        SessionModel.Snapshot current =
+                m.snapshot();
         subscriber.onSnapshot(current);
         subscriber.onSnapshot(current);
 

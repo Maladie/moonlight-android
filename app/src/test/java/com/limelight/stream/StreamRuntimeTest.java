@@ -1,5 +1,8 @@
 package com.limelight.stream;
 
+import com.limelight.session.SessionModel;
+import com.limelight.session.SessionModelDriver;
+
 import com.limelight.nvstream.NvConnectionListener;
 import com.limelight.nvstream.av.video.VideoDecoderRenderer;
 import com.limelight.nvstream.input.KeyboardPacket;
@@ -27,16 +30,16 @@ import static org.junit.Assert.assertTrue;
 
 public class StreamRuntimeTest {
     private FakePlatform platform;
+    private SessionModelDriver m;
 
     @Before public void reset() {
-        RetainedStreamSessionCoordinator.clear();
         StreamRuntime.resetForTests();
         TransportStopCoordinator.resetForTests();
         platform = new FakePlatform();
+        m = platform.driver;
     }
 
     @After public void tearDown() {
-        RetainedStreamSessionCoordinator.clear();
         StreamRuntime.resetForTests();
         TransportStopCoordinator.resetForTests();
     }
@@ -99,12 +102,12 @@ public class StreamRuntimeTest {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = connected("s1", transport);
         assertTrue(StreamRuntime.serviceEstablished("s1", runtime.generation()));
-        RetainedStreamSessionCoordinator.enterHome(runtime, "s1", "host", "p", 7, "g");
+        m.enterHome(runtime, "s1", "host", "p", 7, "g");
 
         runtime.connectionTerminated(-1);
 
-        assertEquals(RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
-                RetainedStreamSessionCoordinator.state());
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED,
+                m.state());
         assertEquals(Collections.singletonList("s1"), platform.reconnectSaved);
         assertEquals(1, transport.stops.get());
         assertEquals(1, platform.locksReleased.get());
@@ -144,13 +147,13 @@ public class StreamRuntimeTest {
         platform.serviceAccepted = false;
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = connected("s1", transport);
-        RetainedStreamSessionCoordinator.enterHome(runtime, "s1", "host", "p", 7, "g");
+        m.enterHome(runtime, "s1", "host", "p", 7, "g");
 
-        assertFalse(RetainedStreamSessionCoordinator.parkForBackground("s1"));
+        assertFalse(m.parkForBackground("s1"));
 
         assertEquals(1, transport.stops.get());
-        assertEquals(RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
-                RetainedStreamSessionCoordinator.state());
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED,
+                m.state());
         assertEquals(0, platform.parks.get());
         assertEquals(1, platform.locksReleased.get());
     }
@@ -161,9 +164,9 @@ public class StreamRuntimeTest {
         StreamRuntime runtime = connected("s1", transport);
         FakePresentation presentation = new FakePresentation();
         runtime.attach(presentation);
-        RetainedStreamSessionCoordinator.enterHome(runtime, "s1", "host", "p", 7, "g");
+        m.enterHome(runtime, "s1", "host", "p", 7, "g");
 
-        assertFalse(RetainedStreamSessionCoordinator.parkForBackground("s1"));
+        assertFalse(m.parkForBackground("s1"));
 
         assertEquals(1, transport.stops.get());
         assertEquals(1, presentation.disconnected.get());
@@ -173,24 +176,24 @@ public class StreamRuntimeTest {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = connected("s1", transport);
         assertTrue(StreamRuntime.serviceEstablished("s1", runtime.generation()));
-        RetainedStreamSessionCoordinator.enterHome(runtime, "s1", "host", "p", 7, "g");
+        m.enterHome(runtime, "s1", "host", "p", 7, "g");
 
-        assertTrue(RetainedStreamSessionCoordinator.parkForBackground("s1"));
+        assertTrue(m.parkForBackground("s1"));
 
         assertEquals(0, transport.stops.get());
         assertEquals(1, platform.parks.get());
         assertEquals(1, transport.decoderDetaches.get());
         assertEquals(0f, transport.volume, 0f);
         assertEquals(0, platform.serviceRequests.get() - 1);
-        assertEquals(RetainedStreamSessionCoordinator.State.PARKED_LIVE,
-                RetainedStreamSessionCoordinator.state());
+        assertEquals(SessionModel.State.PARKED_LIVE,
+                m.state());
     }
 
     @Test public void retainedTransportSurvivesPresentationLoss() {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = connected("s1", transport);
         assertTrue(StreamRuntime.serviceEstablished("s1", runtime.generation()));
-        RetainedStreamSessionCoordinator.enterHome(runtime, "s1", "host", "p", 7, "g");
+        m.enterHome(runtime, "s1", "host", "p", 7, "g");
         StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
         platform.input.runAll();
 
@@ -199,8 +202,8 @@ public class StreamRuntimeTest {
 
         assertEquals(0, transport.stops.get());
         assertFalse(runtime.hasPresentation());
-        assertFalse(RetainedStreamSessionCoordinator.hasAttachedPresentation());
-        assertTrue(RetainedStreamSessionCoordinator.canResumeInstantly());
+        assertFalse(m.hasAttachedPresentation());
+        assertTrue(m.canResumeInstantly());
         assertSame(runtime, StreamRuntime.forSession("s1"));
 
         StreamRuntime.Attachment next = runtime.attach(new FakePresentation());
@@ -323,14 +326,14 @@ public class StreamRuntimeTest {
     @Test public void preparingWithoutTransportIsStoppedHonestlyOnPresentationLoss() {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
-        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(runtime, "s1", "host", "p",
+        assertTrue(m.beginPreparing(runtime, "s1", "host", "p",
                 7, "", "t1", 1L));
         StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
 
         runtime.presentationLost(attachment, false);
 
-        assertEquals(RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED,
-                RetainedStreamSessionCoordinator.state());
+        assertEquals(SessionModel.State.RECONNECT_REQUIRED,
+                m.state());
         assertEquals(Collections.singletonList("s1"), platform.reconnectSaved);
         assertEquals("never started: no native stop effect", 0, transport.stops.get());
         assertEquals(0, transport.starts.get());
@@ -341,7 +344,7 @@ public class StreamRuntimeTest {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = connected("s1", transport);
         assertTrue(StreamRuntime.serviceEstablished("s1", runtime.generation()));
-        RetainedStreamSessionCoordinator.enterHome(runtime, "s1", "host", "p", 7, "g");
+        m.enterHome(runtime, "s1", "host", "p", 7, "g");
         StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
 
         runtime.presentationLost(attachment, true);
@@ -382,13 +385,13 @@ public class StreamRuntimeTest {
     @Test public void acceptedWarmUpSurvivesRepeatedRecreationWhileConnecting() {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
-        assertTrue(RetainedStreamSessionCoordinator.beginPreparing(runtime, "s1", "host", "p",
+        assertTrue(m.beginPreparing(runtime, "s1", "host", "p",
                 7, "", "t1", 1L));
         FakePresentation first = new FakePresentation();
         first.acceptHomeFrame = true;
         StreamRuntime.Attachment firstAttachment = runtime.attach(first);
-        assertTrue(RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(
-                RetainedStreamSessionCoordinator.snapshot()));
+        assertTrue(m.preparingHomeFrameSubmitted(
+                m.snapshot()));
         runtime.start();                                    // CONNECTING
 
         runtime.presentationLost(firstAttachment, false);   // recreation #1
@@ -405,9 +408,9 @@ public class StreamRuntimeTest {
         assertEquals(0, second.homeFrames.get() + third.homeFrames.get());
         assertEquals(1, third.started.get());
         assertEquals(0, first.started.get() + second.started.get());
-        assertEquals(RetainedStreamSessionCoordinator.State.PREPARING,
-                RetainedStreamSessionCoordinator.state());
-        assertTrue(RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+        assertEquals(SessionModel.State.PREPARING,
+                m.state());
+        assertTrue(m.isPreparingHomeFrameAccepted(
                 "s1", "host", 7, "", "t1", 1L));
     }
 
@@ -465,6 +468,8 @@ public class StreamRuntimeTest {
     }
 
     static final class FakePlatform implements StreamRuntime.Platform {
+        final SessionModelDriver driver = new SessionModelDriver();
+        @Override public SessionModel sessionModel() { return driver.model; }
         final AtomicInteger locksAcquired = new AtomicInteger();
         final AtomicInteger locksReleased = new AtomicInteger();
         final AtomicInteger serviceRequests = new AtomicInteger();
@@ -497,8 +502,8 @@ public class StreamRuntimeTest {
         @Override public void clearReconnectRecord(String id) { reconnectCleared.add(id); }
         @Override public void controlGenerationBound(String id, long generation) { }
         @Override public void terminateHost(StreamRuntime runtime,
-                                            RetainedStreamSessionCoordinator.Snapshot session,
-                                            RetainedStreamSessionCoordinator.TerminationCallback c) { }
+                                            SessionModel.Snapshot session,
+                                            SessionModel.TerminationCallback c) { }
         @Override public void runtimeEnded() { }
         @Override public Executor stopExecutor() { return stopExecutor; }
         @Override public Executor mainExecutor() { return Runnable::run; }
@@ -513,15 +518,15 @@ public class StreamRuntimeTest {
         final AtomicInteger homeFrames = new AtomicInteger();
         boolean acceptHomeFrame;
 
-        @Override public boolean parkPreparingTransport(RetainedStreamSessionCoordinator.Snapshot s) { return false; }
-        @Override public boolean cancelPreparingTransport(RetainedStreamSessionCoordinator.Snapshot s) { return false; }
-        @Override public boolean preparingHomeFrameSubmitted(RetainedStreamSessionCoordinator.Snapshot s) {
+        @Override public boolean parkPreparingTransport(SessionModel.Snapshot s) { return false; }
+        @Override public boolean cancelPreparingTransport(SessionModel.Snapshot s) { return false; }
+        @Override public boolean preparingHomeFrameSubmitted(SessionModel.Snapshot s) {
             homeFrames.incrementAndGet();
             return acceptHomeFrame;
         }
-        @Override public void switchGame(RetainedStreamSessionCoordinator.SwitchRequest r,
-                                         RetainedStreamSessionCoordinator.SwitchCallback c) { }
-        @Override public void terminateRetainedSession(RetainedStreamSessionCoordinator.TerminationCallback c) { }
+        @Override public void switchGame(SessionModel.SwitchRequest r,
+                                         SessionModel.SwitchCallback c) { }
+        @Override public void terminateRetainedSession(SessionModel.TerminationCallback c) { }
         @Override public void onTransportParked() { }
         @Override public void onRuntimeDisconnected() { disconnected.incrementAndGet(); }
         @Override public void onTransportStopping() { }

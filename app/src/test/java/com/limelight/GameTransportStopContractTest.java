@@ -33,7 +33,7 @@ public class GameTransportStopContractTest {
         assertFalse(game.contains("conn.stop()"));
         assertFalse(game.contains("conn.start("));
         assertFalse(game.contains("new TransportStopCoordinator("));
-        assertFalse(game.contains("RetainedStreamSessionCoordinator.Controller"));
+        assertFalse(game.contains("SessionModel.Controller"));
         assertTrue(game.contains("runtime.start();"));
         assertTrue(game.contains("@Override public void transportUnsafe()"));
         assertTrue(game.contains("completion.transportUnsafe()"));
@@ -66,12 +66,12 @@ public class GameTransportStopContractTest {
                 < finish.indexOf("local.complete(stopped)"));
         assertTrue(finish.contains("if (completion == null)"));
         assertTrue(finish.indexOf("if (completion == null)")
-                < finish.indexOf("RetainedStreamSessionCoordinator.completeDirectTermination("));
-        assertTrue(finish.indexOf("RetainedStreamSessionCoordinator.completeDirectTermination(")
+                < finish.indexOf("DirectTerminationCompleted.completed("));
+        assertTrue(finish.indexOf("DirectTerminationCompleted.completed(")
                 < finish.indexOf("completion.complete(success)"));
         assertTrue(finish.contains("wholeSessionTermination.run("));
         assertTrue(finish.contains("completion.transportUnsafe()"));
-        assertFalse(finish.contains("RetainedStreamSessionCoordinator.snapshot()"
+        assertFalse(finish.contains("sessionModel.snapshot()"
                 + ".streamSessionId"));
         assertTrue(retainedClose.contains("TerminationResult.IN_PROGRESS"));
         assertTrue(retainedClose.contains("completed.await("));
@@ -80,15 +80,15 @@ public class GameTransportStopContractTest {
     @Test public void retainedCoordinatorJoinsCallbacksWithoutStartingAnotherEffect()
             throws IOException {
         String coordinator = source(
-                "app/src/main/java/com/limelight/stream/RetainedStreamSessionCoordinator.java");
+                "app/src/main/java/com/limelight/session/SessionModel.java");
         String finish = between(coordinator,
-                "private static TerminationResult finish(",
-                "public static synchronized boolean clearIfMatches(");
+                "void terminate(String expectedStreamSessionId",
+                "boolean completeDirectTermination(");
 
         assertTrue(finish.contains("terminationOperation.completions.add(completion)"));
-        assertTrue(finish.contains("return TerminationResult.IN_PROGRESS"));
-        assertTrue(finish.contains("terminationOperation == capturedOperation"));
-        assertTrue(finish.contains("boolean result = current && success"));
+        assertTrue(finish.contains("reply.accept(TerminationResult.IN_PROGRESS)"));
+        assertTrue(finish.contains("terminationOperation == operation"));
+        assertTrue(finish.contains("complete(waiting, current && success)"));
     }
 
     @Test public void transportRegistryDoesNotKeepAStaticStrongOwnerChain()

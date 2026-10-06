@@ -1,4 +1,4 @@
-package com.limelight.utils;
+package com.limelight.session;
 
 import android.content.Context;
 import android.content.Intent;
@@ -9,13 +9,11 @@ import com.limelight.Game;
 import com.limelight.console.transition.LaunchTransitionType;
 import com.limelight.gateway.GatewayConnection;
 
-import java.nio.charset.StandardCharsets;
 import java.util.Collections;
 import java.util.HashMap;
 import java.util.Map;
-import java.util.UUID;
 
-/** Persistent reconnect material for exactly one stream lifecycle. */
+/** Persistent reconnect material for exactly one stream lifecycle; written only by the model. */
 public final class SessionResumeManager {
     private static final String PREFS_NAME = "SessionResume";
     private static final String KEY_PENDING = "pending";
@@ -69,14 +67,12 @@ public final class SessionResumeManager {
         public final long controlGeneration;
         public final boolean childProfile;
         public final String childSessionId;
-        public final boolean legacy;
         private final Values values;
 
         private PendingSession(String streamSessionId, String hostUuid, String profileId,
                                int appId,
                                String playniteGameId, boolean autoResume,
-                               long createdAt, long updatedAt, boolean legacy,
-                               SharedPreferences prefs) {
+                               long createdAt, long updatedAt, Values prefs) {
             this.streamSessionId = streamSessionId;
             this.hostUuid = hostUuid;
             this.profileId = GatewayConnection.normalizeProfileId(profileId);
@@ -94,8 +90,7 @@ public final class SessionResumeManager {
                     prefs.getString(Game.EXTRA_CHILD_SESSION_ID, null) != null);
             this.childSessionId = normalize(
                     prefs.getString(Game.EXTRA_CHILD_SESSION_ID, null));
-            this.legacy = legacy;
-            this.values = new Values(prefs.getAll());
+            this.values = prefs;
         }
 
         public boolean matches(String expectedStreamSessionId) {
@@ -133,23 +128,10 @@ public final class SessionResumeManager {
 
     private SessionResumeManager() { }
 
-    public static synchronized void save(Context context, Intent gameIntent,
-                                         String streamSessionId) {
-        save(context, gameIntent, streamSessionId, true);
-    }
-
-    /** Persist correlation for process-death recovery without forcing foreground resume. */
-    public static synchronized void saveActive(Context context, Intent gameIntent,
-                                               String streamSessionId) {
-        save(context, gameIntent, streamSessionId, false);
-    }
-
-    private static void save(Context context, Intent gameIntent,
-                             String streamSessionId, boolean autoResume) {
-        String sessionId = requireId(streamSessionId);
-        gameIntent.putExtra(Game.EXTRA_STREAM_SESSION_ID, sessionId);
-        SharedPreferences prefs = prefs(context);
-        PendingSession current = read(prefs);
+    /** Replaces the record; {@code autoResume} false keeps it for process-death recovery only. */
+    static void save(SharedPreferences prefs, Intent gameIntent, String sessionId,
+                     boolean autoResume) {
+        PendingSession current = read(prefs.getAll());
         long now = System.currentTimeMillis();
         long createdAt = current != null && current.matches(sessionId)
                 && current.createdAt > 0L ? current.createdAt : now;
@@ -232,33 +214,9 @@ public final class SessionResumeManager {
         editor.apply();
     }
 
-    public static synchronized PendingSession pendingSession(Context context) {
-        return read(prefs(context));
-    }
-
-    public static synchronized boolean hasPendingSession(Context context) {
-        return read(prefs(context)) != null;
-    }
-
-    public static synchronized String getPendingPcUuid(Context context) {
-        PendingSession pending = read(prefs(context));
-        return pending == null ? null : pending.hostUuid;
-    }
-
-    public static synchronized int getPendingAppId(Context context) {
-        PendingSession pending = read(prefs(context));
-        return pending == null ? 0 : pending.appId;
-    }
-
-    public static synchronized Intent buildResumeIntent(Context context) {
-        return buildResumeIntent(context, read(prefs(context)));
-    }
-
-    public static synchronized Intent buildResumeIntent(Context context,
-                                                        PendingSession expected) {
-        if (expected == null) return null;
-        PendingSession current = read(prefs(context));
-        if (current == null || !current.matches(expected.streamSessionId)) return null;
+    /** The Game intent that reconnects {@code current}, or null without a record. */
+    public static Intent buildResumeIntent(Context context, PendingSession current) {
+        if (current == null) return null;
         Values prefs = current.values;
         Intent intent = new Intent(context, Game.class);
         intent.putExtra(Game.EXTRA_STREAM_SESSION_ID, current.streamSessionId);
@@ -338,23 +296,11 @@ public final class SessionResumeManager {
         return intent;
     }
 
-    public static synchronized boolean clearIfMatches(Context context,
-                                                      String streamSessionId) {
-        PendingSession current = read(prefs(context));
+    static boolean clearIfMatches(SharedPreferences prefs, String streamSessionId) {
+        PendingSession current = read(prefs.getAll());
         if (current == null || !current.matches(streamSessionId)) return false;
-        prefs(context).edit().clear().apply();
+        prefs.edit().clear().apply();
         return true;
-    }
-
-    static String resolveStreamSessionId(String storedId, String hostUuid,
-                                         int appId, String uniqueId) {
-        String current = normalize(storedId);
-        return current.isEmpty() ? legacyStreamSessionId(hostUuid, appId, uniqueId) : current;
-    }
-
-    static String legacyStreamSessionId(String hostUuid, int appId, String uniqueId) {
-        String material = normalize(hostUuid) + '|' + appId + '|' + normalize(uniqueId);
-        return UUID.nameUUIDFromBytes(material.getBytes(StandardCharsets.UTF_8)).toString();
     }
 
     static String reconnectTransitionType(String transitionType) {
@@ -362,9 +308,11 @@ public final class SessionResumeManager {
                 ? LaunchTransitionType.GAME_CONNECTION.name() : transitionType;
     }
 
-    private static PendingSession read(SharedPreferences prefs) {
+    /** The stored record; one without a stream session id or profile is not a record. */
+    static PendingSession read(Map<String, ?> stored) {
+        Values prefs = new Values(stored);
         if (!prefs.getBoolean(KEY_PENDING, false)) return null;
-        if (!prefs.contains(KEY_PROFILE_ID)) return null;
+        if (prefs.getString(KEY_PROFILE_ID, null) == null) return null;
         String hostUuid = normalize(prefs.getString(KEY_PC_UUID, null));
         String profileId;
         try {
@@ -374,22 +322,19 @@ public final class SessionResumeManager {
             return null;
         }
         int appId = prefs.getInt(KEY_APP_ID, 0);
-        String storedId = normalize(prefs.getString(KEY_STREAM_SESSION_ID, null));
-        boolean legacy = storedId.isEmpty();
-        String streamSessionId = resolveStreamSessionId(storedId, hostUuid, appId,
-                prefs.getString(KEY_UNIQUE_ID, null));
+        String streamSessionId = normalize(prefs.getString(KEY_STREAM_SESSION_ID, null));
+        if (streamSessionId.isEmpty()) return null;
         return new PendingSession(streamSessionId, hostUuid, profileId, appId,
                 prefs.getString(KEY_TRANSITION_GAME_ID, null),
                 prefs.getBoolean(KEY_AUTO_RESUME, true),
-                prefs.getLong(KEY_CREATED_AT, 0L), prefs.getLong(KEY_UPDATED_AT, 0L),
-                legacy, prefs);
+                prefs.getLong(KEY_CREATED_AT, 0L), prefs.getLong(KEY_UPDATED_AT, 0L), prefs);
     }
 
-    private static SharedPreferences prefs(Context context) {
+    static SharedPreferences prefs(Context context) {
         return context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE);
     }
 
-    private static String requireId(String value) {
+    static String requireId(String value) {
         String normalized = normalize(value);
         if (normalized.isEmpty() || normalized.length() > 128) {
             throw new IllegalArgumentException("Invalid stream session ID");

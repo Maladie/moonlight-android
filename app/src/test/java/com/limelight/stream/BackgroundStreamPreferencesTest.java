@@ -64,12 +64,12 @@ public class BackgroundStreamPreferencesTest {
         String game = source("app/src/main/java/com/limelight/Game.java");
         String openHome = between(game, "private void openConsoleHome()",
                 "private void openPreparingConsoleHome()");
-        String retained = source("app/src/main/java/com/limelight/stream/RetainedStreamSessionCoordinator.java");
+        String retained = source("app/src/main/java/com/limelight/session/SessionModel.java");
         String console = source("app/src/main/java/com/limelight/console/ConsoleActivity.java");
         String hostPicker = between(console, "private void showHostSelection(String focusUuid)",
                 "private void renderHostSelection()");
 
-        assertTrue(openHome.contains("RetainedStreamSessionCoordinator.enterHome("));
+        assertTrue(openHome.contains("new SessionEvent.EnterHome("));
         assertFalse(openHome.contains("BackgroundStreamPreferences"));
         assertFalse(openHome.contains("BackgroundStreamService"));
         assertFalse(retained.contains("BackgroundStreamPreferences"));

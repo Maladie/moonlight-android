@@ -3,8 +3,9 @@ package com.limelight.console;
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
 import com.limelight.nvstream.http.ComputerDetails;
-import com.limelight.stream.RetainedStreamSessionCoordinator;
-import com.limelight.utils.SessionResumeManager;
+import com.limelight.session.SessionModel;
+import com.limelight.session.SessionResumeManager;
+import com.limelight.session.SuspendedSessionStore;
 
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
@@ -19,14 +20,14 @@ final class SessionStateResolver {
     static final long OBSERVATION_LIVENESS_MS = 15_000L;
     private static final Map<String, ProjectionOwner> OWNERS = new LinkedHashMap<>();
 
-    static synchronized ProjectionOwner owner(String hostId, String actorProfileId,
-                                              String executionProfileId) {
+    static synchronized ProjectionOwner owner(SessionModel model, String hostId,
+                                              String actorProfileId, String executionProfileId) {
         String key = SessionSnapshot.normalize(hostId) + "|"
                 + GatewayConnection.normalizeProfileId(actorProfileId) + "|"
                 + GatewayConnection.normalizeProfileId(executionProfileId);
         ProjectionOwner owner = OWNERS.get(key);
         if (owner == null) {
-            owner = new ProjectionOwner(hostId, actorProfileId, executionProfileId);
+            owner = new ProjectionOwner(model, hostId, actorProfileId, executionProfileId);
             OWNERS.put(key, owner);
         }
         return owner;
@@ -175,6 +176,7 @@ final class SessionStateResolver {
     }
 
     static final class ProjectionOwner {
+        private final SessionModel model;
         private final String hostId;
         private final String actorProfileId;
         private final String executionProfileId;
@@ -195,18 +197,18 @@ final class SessionStateResolver {
         private String diagnosticSignature = "";
         private long diagnosticEvents;
 
-        private ProjectionOwner(String hostId, String actorProfileId,
+        private ProjectionOwner(SessionModel model, String hostId, String actorProfileId,
                                 String executionProfileId) {
+            this.model = model;
             this.hostId = SessionSnapshot.normalize(hostId);
             this.actorProfileId = GatewayConnection.normalizeProfileId(actorProfileId);
             this.executionProfileId = GatewayConnection.normalizeProfileId(executionProfileId);
-            this.observedTerminationEpoch = RetainedStreamSessionCoordinator.snapshot().terminationEpoch;
+            this.observedTerminationEpoch = model.snapshot().terminationEpoch;
         }
 
         synchronized long nextRequestOrdinal() {
             // A boundary that passed before this dispatch must not reject this very request.
-            retireObservationAtTerminationBoundary(
-                    RetainedStreamSessionCoordinator.snapshot().terminationEpoch);
+            retireObservationAtTerminationBoundary(model.snapshot().terminationEpoch);
             if (nextRequestOrdinal == Long.MAX_VALUE) nextRequestOrdinal = 0L;
             return ++nextRequestOrdinal;
         }
@@ -234,19 +236,14 @@ final class SessionStateResolver {
                     || candidate.requestOrdinal <= lastAcceptedOrdinal);
         }
 
-        /** The projection published for this exact observation, or null when rejected. */
+        /**
+         * The projection published for this exact observation, or null when rejected. The
+         * boundary check reads one immutable model snapshot, so the result is the one a
+         * termination boundary published after that snapshot would retire on the next call.
+         */
         synchronized SessionSnapshot accept(HostGatewayClient.SessionObservation candidate,
-                                    RetainedStreamSessionCoordinator.Snapshot retained,
-                                    long nowMs) {
-            // Boundary check and publication are one step against coordinator transitions.
-            return RetainedStreamSessionCoordinator.underStateLock(
-                    () -> acceptLocked(candidate, retained, nowMs));
-        }
-
-        private SessionSnapshot acceptLocked(HostGatewayClient.SessionObservation candidate,
-                                             RetainedStreamSessionCoordinator.Snapshot caller,
-                                             long nowMs) {
-            RetainedStreamSessionCoordinator.Snapshot retained = liveSnapshot(caller);
+                                            SessionModel.Snapshot caller, long nowMs) {
+            SessionModel.Snapshot retained = liveSnapshot(caller);
             retireObservationAtTerminationBoundary(retained);
             if (candidate == null || candidate.requestOrdinal != nextRequestOrdinal
                     || candidate.requestOrdinal <= lastAcceptedOrdinal
@@ -288,16 +285,8 @@ final class SessionStateResolver {
         }
 
         synchronized SessionSnapshot unavailable(
-                long failedOrdinal, RetainedStreamSessionCoordinator.Snapshot retained,
-                long nowMs, String reason) {
-            return RetainedStreamSessionCoordinator.underStateLock(
-                    () -> unavailableLocked(failedOrdinal, retained, nowMs, reason));
-        }
-
-        private SessionSnapshot unavailableLocked(
-                long failedOrdinal, RetainedStreamSessionCoordinator.Snapshot caller,
-                long nowMs, String reason) {
-            RetainedStreamSessionCoordinator.Snapshot retained = liveSnapshot(caller);
+                long failedOrdinal, SessionModel.Snapshot caller, long nowMs, String reason) {
+            SessionModel.Snapshot retained = liveSnapshot(caller);
             retireObservationAtTerminationBoundary(retained);
             if (failedOrdinal != nextRequestOrdinal || failedOrdinal <= lastAcceptedOrdinal) {
                 return project(retained, LocalFacts.NONE, nowMs, "", false);
@@ -315,22 +304,13 @@ final class SessionStateResolver {
             return published;
         }
 
-        synchronized SessionSnapshot current(
-                RetainedStreamSessionCoordinator.Snapshot retained, long nowMs) {
+        synchronized SessionSnapshot current(SessionModel.Snapshot retained, long nowMs) {
             return current(retained, LocalFacts.NONE, nowMs);
         }
 
-        synchronized SessionSnapshot current(
-                RetainedStreamSessionCoordinator.Snapshot retained, LocalFacts local,
-                long nowMs) {
-            return RetainedStreamSessionCoordinator.underStateLock(
-                    () -> currentLocked(retained, local, nowMs));
-        }
-
-        private SessionSnapshot currentLocked(
-                RetainedStreamSessionCoordinator.Snapshot caller, LocalFacts local,
-                long nowMs) {
-            RetainedStreamSessionCoordinator.Snapshot retained = liveSnapshot(caller);
+        synchronized SessionSnapshot current(SessionModel.Snapshot caller, LocalFacts local,
+                                             long nowMs) {
+            SessionModel.Snapshot retained = liveSnapshot(caller);
             retireObservationAtTerminationBoundary(retained);
             published = publish(project(retained, local == null ? LocalFacts.NONE : local,
                     nowMs, "", false), nowMs);
@@ -338,11 +318,11 @@ final class SessionStateResolver {
         }
 
         /**
-         * Render-only projection of a delivered, possibly older, coordinator snapshot. It
+         * Render-only projection of a delivered, possibly older, model snapshot. It
          * publishes nothing and changes no owner state; an observation the owner holds across
          * a termination boundary from that snapshot is not shown.
          */
-        synchronized SessionSnapshot rendered(RetainedStreamSessionCoordinator.Snapshot retained,
+        synchronized SessionSnapshot rendered(SessionModel.Snapshot retained,
                                               LocalFacts local, long nowMs) {
             return project(retained, local, nowMs, "",
                     retained.terminationEpoch != observedTerminationEpoch);
@@ -351,25 +331,23 @@ final class SessionStateResolver {
         /**
          * A local session termination (for example the game stop this client verifies) is a
          * boundary for host observations: one gathered before it, or by a poll dispatched before
-         * it finished, describes a game that is going or gone. The coordinator's termination
+         * it finished, describes a game that is going or gone. The model's termination
          * epoch advances on entering and leaving TERMINATING even if no owner sampled the state in
          * between; on any change drop the observation and reject every request dispatched so
          * far, so only a later poll can publish READY or IDLE again.
          */
         /**
          * A caller's snapshot may predate blocking I/O; when a termination boundary passed
-         * meanwhile, project from the coordinator's current state instead.
+         * meanwhile, project from the model's current state instead.
          */
-        private static RetainedStreamSessionCoordinator.Snapshot liveSnapshot(
-                RetainedStreamSessionCoordinator.Snapshot retained) {
+        private SessionModel.Snapshot liveSnapshot(SessionModel.Snapshot retained) {
             if (retained == null) return null;
-            RetainedStreamSessionCoordinator.Snapshot live =
-                    RetainedStreamSessionCoordinator.snapshot();
+            SessionModel.Snapshot live = model.snapshot();
             return live.terminationEpoch != retained.terminationEpoch ? live : retained;
         }
 
         private void retireObservationAtTerminationBoundary(
-                RetainedStreamSessionCoordinator.Snapshot retained) {
+                SessionModel.Snapshot retained) {
             if (retained != null) retireObservationAtTerminationBoundary(retained.terminationEpoch);
         }
 
@@ -433,21 +411,21 @@ final class SessionStateResolver {
             return diagnosticSink.record("INFO", "android.session", "projection.sampled", fields);
         }
 
-        private SessionSnapshot project(RetainedStreamSessionCoordinator.Snapshot retained,
+        private SessionSnapshot project(SessionModel.Snapshot retained,
                                         LocalFacts local, long nowMs,
                                         String unavailableReason, boolean retired) {
             HostGatewayClient.SessionObservation observed = retired ? null : observation;
-            RetainedStreamSessionCoordinator.State retainedState = retained == null
-                    ? RetainedStreamSessionCoordinator.State.NONE : retained.state;
+            SessionModel.State retainedState = retained == null
+                    ? SessionModel.State.NONE : retained.state;
             boolean matchingTransport = retained != null
                     && hostId.equals(SessionSnapshot.normalize(retained.hostId))
                     && executionProfileId.equals(retained.executionProfileId);
             boolean knownLive = matchingTransport && (retainedState
-                    == RetainedStreamSessionCoordinator.State.HOME_LIVE
-                    || retainedState == RetainedStreamSessionCoordinator.State.PARKED_LIVE);
+                    == SessionModel.State.HOME_LIVE
+                    || retainedState == SessionModel.State.PARKED_LIVE);
             boolean localTransport = matchingTransport && retainedState
-                    != RetainedStreamSessionCoordinator.State.NONE
-                    && retainedState != RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED;
+                    != SessionModel.State.NONE
+                    && retainedState != SessionModel.State.RECONNECT_REQUIRED;
             boolean freshObservation = observed != null
                     && nowMs - observationAcceptedAtMs
                     <= Math.min(OBSERVATION_LIVENESS_MS, observed.freshForMs);
@@ -478,7 +456,7 @@ final class SessionStateResolver {
                     ? SessionSnapshot.ObservationState.READY
                     : idle ? SessionSnapshot.ObservationState.IDLE
                     : expired ? (matchingTransport && retainedState
-                    != RetainedStreamSessionCoordinator.State.NONE
+                    != SessionModel.State.NONE
                     ? SessionSnapshot.ObservationState.RECOVERY_REQUIRED
                     : SessionSnapshot.ObservationState.UNAVAILABLE)
                     : SessionSnapshot.ObservationState.PENDING;
@@ -492,10 +470,10 @@ final class SessionStateResolver {
                     && executionProfileId.equals(local.pending.executionProfileId);
             SessionSnapshot.State state;
             if (matchingTransport && retainedState
-                    == RetainedStreamSessionCoordinator.State.TERMINATING) {
+                    == SessionModel.State.TERMINATING) {
                 state = SessionSnapshot.State.TERMINATING;
             } else if (matchingTransport && retainedState
-                    == RetainedStreamSessionCoordinator.State.PREPARING) {
+                    == SessionModel.State.PREPARING) {
                 state = SessionSnapshot.State.PREPARING;
             } else if (knownLive) {
                 state = SessionSnapshot.State.ACTIVE;
@@ -504,7 +482,7 @@ final class SessionStateResolver {
             } else if (suspended) {
                 state = SessionSnapshot.State.SUSPENDED;
             } else if ((matchingTransport && retainedState
-                    == RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED) || pending) {
+                    == SessionModel.State.RECONNECT_REQUIRED) || pending) {
                 state = SessionSnapshot.State.RECONNECT_REQUIRED;
             } else if (idle || disposition == SessionSnapshot.ObservationState.UNAVAILABLE) {
                 state = SessionSnapshot.State.NONE;

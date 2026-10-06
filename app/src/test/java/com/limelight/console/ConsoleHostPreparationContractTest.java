@@ -81,7 +81,7 @@ public class ConsoleHostPreparationContractTest {
         String resume = section(console, "private boolean startResumeActivity(",
                 "private void failClosedActorHandoff(");
         assertTrue(resume.contains("pending.neutralStreamTarget"));
-        assertTrue(resume.contains("RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED"));
+        assertTrue(resume.contains("SessionModel.State.RECONNECT_REQUIRED"));
         assertTrue(resume.contains("retained.streamSessionId.equals(pending.streamSessionId)"));
         assertTrue(resume.contains(
                 "applyWarmUpIntent(resume, transition, intent, warmUpClientAttempt)"));

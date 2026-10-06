@@ -19,7 +19,8 @@ import com.limelight.nvstream.av.video.SwitchableVideoDecoderRenderer;
 import com.limelight.nvstream.av.video.VideoDecoderRenderer;
 import com.limelight.nvstream.http.NvHTTP;
 import com.limelight.nvstream.jni.BackgroundStreamBridge;
-import com.limelight.utils.SessionResumeManager;
+import com.limelight.session.SessionEvent;
+import com.limelight.session.SessionModel;
 
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -207,12 +208,14 @@ public final class AndroidStreamRuntime {
             return BackgroundStreamPreferences.readMinutes(app);
         }
 
+        @Override public SessionModel sessionModel() { return SessionModel.of(app); }
+
         @Override public void saveReconnectRecord(String id) {
-            SessionResumeManager.save(app, launchIntent(), id);
+            sessionModel().post(new SessionEvent.ReconnectSaved(launchIntent(), id, true));
         }
 
         @Override public void clearReconnectRecord(String id) {
-            SessionResumeManager.clearIfMatches(app, id);
+            sessionModel().post(new SessionEvent.ReconnectCleared(id));
         }
 
         @Override public void controlGenerationBound(String id, long controlGeneration) {
@@ -221,12 +224,12 @@ public final class AndroidStreamRuntime {
                 launchIntent.putExtra(Game.EXTRA_CONTROL_GENERATION, controlGeneration);
                 record = new Intent(launchIntent);
             }
-            SessionResumeManager.saveActive(app, record, id);
+            sessionModel().post(new SessionEvent.ReconnectSaved(record, id, false));
         }
 
         @Override public void terminateHost(StreamRuntime runtime,
-                                            RetainedStreamSessionCoordinator.Snapshot session,
-                                            RetainedStreamSessionCoordinator.TerminationCallback
+                                            SessionModel.Snapshot session,
+                                            SessionModel.TerminationCallback
                                                     completion) {
             Intent record = launchIntent();
             boolean child = record.getBooleanExtra(Game.EXTRA_CHILD_PROFILE, false);

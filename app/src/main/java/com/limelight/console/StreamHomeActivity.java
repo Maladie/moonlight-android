@@ -8,7 +8,8 @@ import android.view.View;
 import android.view.ViewTreeObserver;
 
 import com.limelight.nvstream.StreamConfiguration;
-import com.limelight.stream.RetainedStreamSessionCoordinator;
+import com.limelight.session.SessionEvent;
+import com.limelight.session.SessionModel;
 
 /** Translucent dashboard placed over Game so its stream surface remains alive. */
 public final class StreamHomeActivity extends ConsoleActivity {
@@ -16,7 +17,8 @@ public final class StreamHomeActivity extends ConsoleActivity {
     private boolean preparingHomeFramePending;
     private boolean preparingHomeFrameAccepted;
     private boolean preparingRelayOwned;
-    private RetainedStreamSessionCoordinator.Snapshot preparingSnapshot;
+    private boolean preparingHomeFrameSubmitting;
+    private SessionModel.Snapshot preparingSnapshot;
 
     @Override
     protected void onCreate(Bundle state) {
@@ -38,10 +40,8 @@ public final class StreamHomeActivity extends ConsoleActivity {
         }
 
         if (attempt > 0L && preparingSnapshot == null) {
-            RetainedStreamSessionCoordinator.State current =
-                    RetainedStreamSessionCoordinator.state();
-            if (current == RetainedStreamSessionCoordinator.State.NONE
-                    || current == RetainedStreamSessionCoordinator.State.PREPARING) {
+            SessionModel.State current = SessionModel.of(this).state();
+            if (current == SessionModel.State.NONE || current == SessionModel.State.PREPARING) {
                 initialCarouselFramePending = false;
                 finish();
                 return;
@@ -93,7 +93,7 @@ public final class StreamHomeActivity extends ConsoleActivity {
     }
 
     private boolean hasAcceptedPreparingHomeFrame() {
-        return RetainedStreamSessionCoordinator.isPreparingHomeFrameAccepted(
+        return SessionModel.of(this).isPreparingHomeFrameAccepted(
                 normalize(getIntent().getStringExtra(EXTRA_RETAINED_STREAM_SESSION_ID)),
                 normalize(getIntent().getStringExtra(EXTRA_RETAINED_STREAM_HOST_ID)),
                 getIntent().getIntExtra(EXTRA_RETAINED_STREAM_APP_ID,
@@ -105,7 +105,7 @@ public final class StreamHomeActivity extends ConsoleActivity {
     }
 
     private boolean hasOwnedPreparingRelay() {
-        return RetainedStreamSessionCoordinator.isPreparingSwitchOwned(
+        return SessionModel.of(this).isPreparingSwitchOwned(
                 normalize(getIntent().getStringExtra(EXTRA_RETAINED_STREAM_SESSION_ID)),
                 normalize(getIntent().getStringExtra(EXTRA_RETAINED_STREAM_HOST_ID)),
                 getIntent().getIntExtra(EXTRA_RETAINED_STREAM_APP_ID,
@@ -117,12 +117,11 @@ public final class StreamHomeActivity extends ConsoleActivity {
     private boolean hasCompletedPreparingRelay() {
         String gameId = normalize(getIntent().getStringExtra(
                 EXTRA_WARM_UP_PENDING_GAME_ID));
-        RetainedStreamSessionCoordinator.Snapshot retained =
-                RetainedStreamSessionCoordinator.snapshot();
+        SessionModel.Snapshot retained = SessionModel.of(this).snapshot();
         return !gameId.isEmpty()
-                && (retained.state == RetainedStreamSessionCoordinator.State.PREPARING
-                || retained.state == RetainedStreamSessionCoordinator.State.HOME_LIVE
-                || retained.state == RetainedStreamSessionCoordinator.State.PARKED_LIVE)
+                && (retained.state == SessionModel.State.PREPARING
+                || retained.state == SessionModel.State.HOME_LIVE
+                || retained.state == SessionModel.State.PARKED_LIVE)
                 && retained.streamSessionId.equals(normalize(getIntent().getStringExtra(
                 EXTRA_RETAINED_STREAM_SESSION_ID)))
                 && retained.hostId.equalsIgnoreCase(normalize(getIntent().getStringExtra(
@@ -132,10 +131,9 @@ public final class StreamHomeActivity extends ConsoleActivity {
                 && retained.playniteGameId.equalsIgnoreCase(gameId);
     }
 
-    private RetainedStreamSessionCoordinator.Snapshot exactPreparingSnapshot() {
-        RetainedStreamSessionCoordinator.Snapshot current =
-                RetainedStreamSessionCoordinator.snapshot();
-        if (current.state != RetainedStreamSessionCoordinator.State.PREPARING) return null;
+    private SessionModel.Snapshot exactPreparingSnapshot() {
+        SessionModel.Snapshot current = SessionModel.of(this).snapshot();
+        if (current.state != SessionModel.State.PREPARING) return null;
         long attempt = getIntent().getLongExtra(EXTRA_WARM_UP_ATTEMPT, 0L);
         String sessionId = normalize(getIntent().getStringExtra(
                 EXTRA_RETAINED_STREAM_SESSION_ID));
@@ -158,12 +156,11 @@ public final class StreamHomeActivity extends ConsoleActivity {
         return current;
     }
 
-    private RetainedStreamSessionCoordinator.Snapshot exactRetainedSnapshot() {
-        RetainedStreamSessionCoordinator.Snapshot current =
-                RetainedStreamSessionCoordinator.snapshot();
-        if (current.state != RetainedStreamSessionCoordinator.State.PREPARING
-                && current.state != RetainedStreamSessionCoordinator.State.HOME_LIVE
-                && current.state != RetainedStreamSessionCoordinator.State.PARKED_LIVE) {
+    private SessionModel.Snapshot exactRetainedSnapshot() {
+        SessionModel.Snapshot current = SessionModel.of(this).snapshot();
+        if (current.state != SessionModel.State.PREPARING
+                && current.state != SessionModel.State.HOME_LIVE
+                && current.state != SessionModel.State.PARKED_LIVE) {
             return null;
         }
         String sessionId = normalize(getIntent().getStringExtra(
@@ -181,13 +178,24 @@ public final class StreamHomeActivity extends ConsoleActivity {
     }
 
     private void onInitialCarouselFrameSubmitted() {
-        if (!initialCarouselFramePending || isFinishing() || isDestroyed()) return;
-        if (preparingHomeFramePending
-                && !RetainedStreamSessionCoordinator.preparingHomeFrameSubmitted(
-                preparingSnapshot)) {
-            finish();
+        if (!initialCarouselFramePending || isFinishing() || isDestroyed()
+                || preparingHomeFrameSubmitting) return;
+        if (preparingHomeFramePending) {
+            // The model answers on a later main-loop turn; input stays blocked until then.
+            preparingHomeFrameSubmitting = true;
+            SessionModel.of(this).dispatch(new SessionEvent.HomeFrameSubmitted(
+                    preparingSnapshot), accepted -> {
+                preparingHomeFrameSubmitting = false;
+                if (!initialCarouselFramePending || isFinishing() || isDestroyed()) return;
+                if (accepted) showInitialCarouselFrame();
+                else finish();
+            });
             return;
         }
+        showInitialCarouselFrame();
+    }
+
+    private void showInitialCarouselFrame() {
         initialCarouselFramePending = false;
         preparingHomeFramePending = false;
         completeInitialCarouselFrame();
@@ -223,7 +231,8 @@ public final class StreamHomeActivity extends ConsoleActivity {
         }
         initialCarouselFramePending = false;
         if (preparingHomeFramePending) {
-            RetainedStreamSessionCoordinator.cancelPreparing(preparingSnapshot);
+            SessionModel.of(this).post(
+                    new SessionEvent.CancelPreparingTransport(preparingSnapshot));
         }
         preparingHomeFramePending = false;
         finish();
@@ -232,26 +241,28 @@ public final class StreamHomeActivity extends ConsoleActivity {
     @Override
     public void onUserLeaveHint() {
         cancelUnsubmittedPreparingFrame();
-        RetainedStreamSessionCoordinator.parkForBackground(
-                RetainedStreamSessionCoordinator.snapshot().streamSessionId);
+        parkRetainedStream();
         super.onUserLeaveHint();
     }
 
     @Override
     protected void onStop() {
         cancelUnsubmittedPreparingFrame();
-        if (!isFinishing() && !isChangingConfigurations()) {
-            RetainedStreamSessionCoordinator.parkForBackground(
-                    RetainedStreamSessionCoordinator.snapshot().streamSessionId);
-        }
+        if (!isFinishing() && !isChangingConfigurations()) parkRetainedStream();
         super.onStop();
+    }
+
+    private void parkRetainedStream() {
+        SessionModel model = SessionModel.of(this);
+        model.post(new SessionEvent.ParkRequested(model.snapshot().streamSessionId));
     }
 
     private void cancelUnsubmittedPreparingFrame() {
         if (!initialCarouselFramePending || isChangingConfigurations()) return;
         initialCarouselFramePending = false;
         if (preparingHomeFramePending) {
-            RetainedStreamSessionCoordinator.cancelPreparing(preparingSnapshot);
+            SessionModel.of(this).post(
+                    new SessionEvent.CancelPreparingTransport(preparingSnapshot));
         }
         preparingHomeFramePending = false;
         finish();
