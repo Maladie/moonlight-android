@@ -345,12 +345,12 @@ public class StreamRuntimeTest {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
         StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
-        runtime.surfaceLost(attachment);
+        assertFalse(runtime.surfaceLost(attachment));
         assertEquals(0, transport.decoderDetaches.get());
 
         runtime.start();
         runtime.connectionStarted();
-        runtime.surfaceLost(attachment);
+        assertTrue(runtime.surfaceLost(attachment));
 
         assertEquals(1, transport.decoderDetaches.get());
         assertEquals(0f, transport.volume, 0f);

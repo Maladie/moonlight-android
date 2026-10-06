@@ -1050,4 +1050,26 @@ public class GameTransitionCancelContractTest {
         assertTrue(destroy.contains("runtime.presentationLost(attachment, isFinishing())"));
         assertFalse(destroy.contains("stopConnection"));
     }
+
+    @Test public void surfaceLossDetachIsReattachedWhetherOrNotTheParkHappened()
+            throws IOException {
+        String text = source();
+        String destroyed = text.substring(text.indexOf("public void surfaceDestroyed("),
+                text.indexOf("public void mouseMove("));
+        String created = text.substring(text.indexOf("public void surfaceCreated("),
+                text.indexOf("public void surfaceDestroyed("));
+        String restore = text.substring(text.indexOf("private void restoreParkedStream("),
+                text.indexOf("private void scheduleRetainedRestoreWatchdog("));
+
+        assertTrue(destroyed.indexOf("runtime.surfaceLost(attachment)")
+                < destroyed.indexOf("new SessionEvent.ParkRequested("));
+        assertTrue(destroyed.contains("decoderDetachedBySurfaceLoss = true"));
+        assertTrue(created.contains("backgroundStreamParked || decoderDetachedBySurfaceLoss"));
+        assertTrue(restore.contains("decoderDetachedBySurfaceLoss = false"));
+        assertTrue(restore.contains("new SessionEvent.PresentationRestored(streamSessionId)"));
+        String create = text.substring(text.indexOf("beginAutoWarmUpPreparing(begun -> {"));
+        create = create.substring(0, create.indexOf("});"));
+        assertTrue(create.indexOf("new SessionEvent.PreparingCancelled(")
+                < create.indexOf("openPreparingConsoleHome()"));
+    }
 }

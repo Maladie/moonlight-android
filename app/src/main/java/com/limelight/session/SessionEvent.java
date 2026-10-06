@@ -118,6 +118,20 @@ public abstract class SessionEvent<R> {
         }
     }
 
+    /** The presentation restored the parked stream into view: it is live, no longer parked. */
+    public static final class PresentationRestored extends SessionEvent<Void> {
+        private final String sessionId;
+
+        public PresentationRestored(String sessionId) {
+            this.sessionId = sessionId;
+        }
+
+        @Override void apply(SessionModel m, Reply<Void> reply) {
+            m.presentationRestored(sessionId);
+            reply.accept(null);
+        }
+    }
+
     /** Park for background: replies whether the transport was parked. */
     public static final class ParkRequested extends BooleanEvent {
         private final String sessionId;

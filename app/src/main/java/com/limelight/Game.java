@@ -234,6 +234,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean displayedFailureDialog = false;
     private boolean userInitiatedDisconnect = false;
     private boolean streamHomeVisible = false;
+    /** surfaceDestroyed detached the decoder; the next valid surface must reattach one. */
+    private boolean decoderDetachedBySurfaceLoss;
     private static final long RETAINED_RESTORE_IDR_RETRY_MS = 1_500L;
     private static final long RETAINED_RESTORE_TIMEOUT_MS = 10_000L;
     private boolean retainedRestoreAwaitingFrame;
@@ -996,7 +998,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                     }
                 } else {
                     beginAutoWarmUpPreparing(begun -> {
-                        if (isFinishing() || isDestroyed()) return;
+                        if (isFinishing() || isDestroyed()) {
+                            if (begun) sessionModel.post(new SessionEvent.PreparingCancelled(
+                                    runtime, sessionModel.snapshot()));
+                            return;
+                        }
                         if (begun) openPreparingConsoleHome();
                         else finish();
                     });
@@ -1986,7 +1992,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 streamView.post(streamView::requestFocus);
             }
         }
-        if (backgroundStreamParked && surfaceCreated) {
+        if ((backgroundStreamParked || decoderDetachedBySurfaceLoss) && surfaceCreated) {
             restoreParkedStream(streamView.getHolder());
         }
     }
@@ -4617,10 +4623,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     private void restoreParkedStream(SurfaceHolder holder) {
-        if (!backgroundStreamParked || holder == null || holder.getSurface() == null
+        boolean detached = backgroundStreamParked || decoderDetachedBySurfaceLoss;
+        if (!detached || holder == null || holder.getSurface() == null
                 || !holder.getSurface().isValid()) {
             MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.restore_skipped",
-                    "reason", backgroundStreamParked ? "surface_invalid" : "not_parked");
+                    "reason", detached ? "surface_invalid" : "not_parked");
             return;
         }
         MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.restoring");
@@ -4636,7 +4643,10 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         retainedRestoreAwaitingFrame = true;
         decoderRenderer = replacement;
         backgroundStreamParked = false;
+        decoderDetachedBySurfaceLoss = false;
         runtime.resumed(attachment);
+        // The presentation shows the stream again: a later park must really park it.
+        sessionModel.post(new SessionEvent.PresentationRestored(streamSessionId));
         if (!isOwnedHiddenAutoWarmUp() && !streamHomeVisible
                 && (transitionController == null || streamEverRevealed)) {
             runtime.setAudioVolume(attachment, 1f);
@@ -6421,7 +6431,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             holder.getSurface().setFrameRate(desiredFrameRate,
                     Surface.FRAME_RATE_COMPATIBILITY_FIXED_SOURCE);
         }
-        if (backgroundStreamParked) restoreParkedStream(holder);
+        if (backgroundStreamParked || decoderDetachedBySurfaceLoss) restoreParkedStream(holder);
     }
 
     @Override
@@ -6436,8 +6446,13 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         if (attemptedConnection && isTransportConnected()) {
             if (hasOwnRetainedSession()) {
                 // The surface is already gone: stop decoding into it before the model parks.
-                runtime.surfaceLost(attachment);
-                sessionModel.post(new SessionEvent.ParkRequested(streamSessionId));
+                if (runtime.surfaceLost(attachment)) decoderDetachedBySurfaceLoss = true;
+                // A rejected park keeps the live transport as before K3; the next surface
+                // reattaches the decoder through restoreParkedStream.
+                sessionModel.dispatch(new SessionEvent.ParkRequested(streamSessionId), parked -> {
+                    if (!parked) MoonWakerDiagnostics.record("INFO", "android.stream",
+                            "surface_loss.park_rejected", "stream_session_id", streamSessionId);
+                });
             } else if (canParkBackgroundStream()) {
                 parkBackgroundStream();
             } else if (!backgroundStreamParked) {

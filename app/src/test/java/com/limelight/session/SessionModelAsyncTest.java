@@ -293,4 +293,63 @@ public class SessionModelAsyncTest {
         assertFalse(driver.parkForBackground("s"));
         assertEquals(SessionModel.State.RECONNECT_REQUIRED, driver.state());
     }
+
+    @Test public void restoredParkedStreamIsParkedAgainOnTheNextBackgroundRequest() {
+        Owner owner = liveHome("s");
+        assertTrue(driver.parkForBackground("s"));
+        assertEquals(SessionModel.State.PARKED_LIVE, driver.state());
+        assertEquals(List.of("owner.park"), trace);
+
+        // The Game restored the decoder: the stream is shown again, not parked.
+        driver.post(new SessionEvent.PresentationRestored("s"));
+        assertEquals(SessionModel.State.HOME_LIVE, driver.state());
+
+        assertTrue(driver.parkForBackground("s"));
+        assertEquals(List.of("owner.park", "owner.park"), trace);
+        assertEquals(SessionModel.State.PARKED_LIVE, driver.state());
+    }
+
+    @Test public void parkedStateStillAsksItsOwnerToPark() {
+        liveHome("s");
+        driver.markParked("s");
+        assertTrue(driver.parkForBackground("s"));
+        assertEquals(List.of("owner.park"), trace);
+    }
+
+    @Test public void restoreForAnotherSessionDoesNotUnpark() {
+        liveHome("s");
+        driver.markParked("s");
+        driver.post(new SessionEvent.PresentationRestored("other"));
+        assertEquals(SessionModel.State.PARKED_LIVE, driver.state());
+    }
+
+    @Test public void lateBeginForAGoneGameIsCancelledSoTheHostIsNotBlocked() {
+        Owner stopped = new Owner() {
+            @Override public boolean isRetainedTransportLive() { return false; }
+        };
+        assertTrue(driver.beginPreparing(stopped, "s", "host", "parent", 7, "", "t", 1L));
+        // The Game was destroyed before the reply: it cancels its own begun attempt.
+        driver.post(new SessionEvent.PreparingCancelled(stopped, driver.snapshot()));
+        assertEquals(SessionModel.State.NONE, driver.state());
+        assertTrue(driver.beginPreparing(new Owner(), "s2", "host", "parent", 7, "", "t2", 1L));
+    }
+
+    @Test public void anErrorInATransitionReleasesTheCallerAndIsRethrown() {
+        Boolean[] answer = new Boolean[1];
+        model.dispatch(new SessionEvent.BooleanEvent() {
+            @Override void apply(SessionModel m, SessionModel.Reply<Boolean> reply) {
+                m.effect(() -> trace.add("dropped effect"));
+                throw new AssertionError("fatal");
+            }
+        }, result -> answer[0] = result);
+        try {
+            driver.drain();
+            fail("the Error must propagate after the caller was answered");
+        } catch (AssertionError expected) {
+            assertEquals("fatal", expected.getMessage());
+        }
+        driver.drain();
+        assertEquals(Boolean.FALSE, answer[0]);
+        assertFalse(trace.contains("dropped effect"));
+    }
 }

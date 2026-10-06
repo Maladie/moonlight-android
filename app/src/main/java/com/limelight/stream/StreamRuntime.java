@@ -501,13 +501,15 @@ public final class StreamRuntime implements NvConnectionListener,
     /**
      * The presentation's surface is gone: stop decoding into it and mute now, before any
      * asynchronous park decision. Changes no session state; park tolerates the detached decoder.
+     * Returns whether the decoder was detached: the presentation must then reattach one.
      */
-    public void surfaceLost(Attachment attachment) {
+    public boolean surfaceLost(Attachment attachment) {
         synchronized (this) {
-            if (!isCurrent(attachment) || state != State.CONNECTED) return;
+            if (!isCurrent(attachment) || state != State.CONNECTED) return false;
         }
         transport.detachDecoder();
         transport.setAudioVolume(0f);
+        return true;
     }
 
     private boolean retainedByCoordinator() {

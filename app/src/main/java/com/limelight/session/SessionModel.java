@@ -417,13 +417,16 @@ public final class SessionModel {
                 replyOn.execute(answer);
             }
         };
+        Error fatal = null;
         try {
             event.apply(this, once);
-        } catch (RuntimeException error) {
+        } catch (RuntimeException | Error error) {
+            afterCommit.clear();
             MoonWakerDiagnostics.record("ERROR", "android.session-model", "event.failed",
                     "event", event.getClass().getSimpleName(),
                     "error_type", error.getClass().getName());
             once.accept(event.failure());
+            if (error instanceof Error) fatal = (Error) error;
         } finally {
             publish();
             runningThread = null;
@@ -431,6 +434,7 @@ public final class SessionModel {
             afterCommit.clear();
             for (Runnable action : pending) action.run();
         }
+        if (fatal != null) throw fatal;
     }
 
     /** Runs {@code effect} on the main executor after the current transition commits. */
@@ -942,10 +946,6 @@ public final class SessionModel {
             reply.accept(false);
             return;
         }
-        if (state == State.PARKED_LIVE) {
-            reply.accept(true);
-            return;
-        }
         Controller owner = controller;
         if (state == State.PREPARING) {
             if (owner == null) {
@@ -956,7 +956,7 @@ public final class SessionModel {
             effect(() -> reply.accept(ownerAnswer(() -> owner.parkPreparingTransport(preparing))));
             return;
         }
-        if (state != State.HOME_LIVE) {
+        if (state != State.HOME_LIVE && state != State.PARKED_LIVE) {
             reply.accept(false);
             return;
         }
@@ -974,7 +974,7 @@ public final class SessionModel {
 
     void parkResult(long operation, String capturedId, boolean parked, Reply<Boolean> reply) {
         if (parkOperation != operation || !matches(streamSessionId, capturedId)
-                || state != State.HOME_LIVE) {
+                || (state != State.HOME_LIVE && state != State.PARKED_LIVE)) {
             if (parkOperation == operation) parkOperation = 0L;
             reply.accept(false);
             return;
@@ -983,6 +983,12 @@ public final class SessionModel {
         setState(parked ? State.PARKED_LIVE : State.RECONNECT_REQUIRED);
         if (!parked) controller = null;
         reply.accept(parked);
+    }
+
+    void presentationRestored(String expectedStreamSessionId) {
+        if (state == State.PARKED_LIVE && matches(streamSessionId, expectedStreamSessionId)) {
+            setState(State.HOME_LIVE);
+        }
     }
 
     void markParked(String expectedStreamSessionId) {
