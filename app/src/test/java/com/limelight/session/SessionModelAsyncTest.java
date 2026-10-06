@@ -25,9 +25,9 @@ public class SessionModelAsyncTest {
 
         @Override public String getExecutionProfileId() { return "parent"; }
         @Override public boolean isRetainedTransportLive() { return true; }
-        @Override public boolean parkRetainedTransport() {
+        @Override public SessionModel.ParkOutcome parkRetainedTransport() {
             trace.add("owner.park");
-            return parkResult;
+            return parkResult ? SessionModel.ParkOutcome.PARKED : SessionModel.ParkOutcome.STOPPED;
         }
         @Override public void disconnectRetainedStream(
                 SessionModel.TerminationCallback completion) { }
@@ -117,7 +117,7 @@ public class SessionModelAsyncTest {
     @Test public void parkResultAfterANewerSessionIsRejectedInTheTransition() {
         Owner owner = liveHome("s1");
         Boolean[] parked = new Boolean[1];
-        model.dispatch(new SessionEvent.ParkRequested("s1"), result -> parked[0] = result);
+        model.dispatch(new SessionEvent.ParkRequested("s1", 0L), result -> parked[0] = result);
         runModel();                                 // effect queued on main, not yet run
         driver.enterHome(new Owner(), "s2", "host", "parent", 7, "game-b");
 
@@ -285,7 +285,7 @@ public class SessionModelAsyncTest {
 
     @Test public void throwingOwnerEffectAnswersFalse() {
         Owner owner = new Owner() {
-            @Override public boolean parkRetainedTransport() {
+            @Override public SessionModel.ParkOutcome parkRetainedTransport() {
                 throw new IllegalStateException("owner bug");
             }
         };
@@ -301,7 +301,7 @@ public class SessionModelAsyncTest {
         assertEquals(List.of("owner.park"), trace);
 
         // The Game restored the decoder: the stream is shown again, not parked.
-        driver.post(new SessionEvent.PresentationRestored("s"));
+        driver.post(new SessionEvent.PresentationRestored(owner, "s"));
         assertEquals(SessionModel.State.HOME_LIVE, driver.state());
 
         assertTrue(driver.parkForBackground("s"));
@@ -316,11 +316,13 @@ public class SessionModelAsyncTest {
         assertEquals(List.of("owner.park"), trace);
     }
 
-    @Test public void restoreForAnotherSessionDoesNotUnpark() {
-        liveHome("s");
+    @Test public void restoreForAnotherSessionOrOwnerDoesNotUnpark() {
+        Owner owner = liveHome("s");
         driver.markParked("s");
-        driver.post(new SessionEvent.PresentationRestored("other"));
+        driver.post(new SessionEvent.PresentationRestored(owner, "other"));
+        driver.post(new SessionEvent.PresentationRestored(new Owner(), "s"));
         assertEquals(SessionModel.State.PARKED_LIVE, driver.state());
+        assertEquals(0L, driver.snapshot().presentationEpoch);
     }
 
     @Test public void lateBeginForAGoneGameIsCancelledSoTheHostIsNotBlocked() {
@@ -351,5 +353,33 @@ public class SessionModelAsyncTest {
         driver.drain();
         assertEquals(Boolean.FALSE, answer[0]);
         assertFalse(trace.contains("dropped effect"));
+    }
+
+    @Test public void homeStoppingAfterTheGameShowedTheStreamAgainDoesNotPark() {
+        Owner owner = liveHome("s");
+        long homeEpoch = driver.snapshot().presentationEpoch;   // Home visible
+        assertTrue(driver.parkForBackground("s"));              // TV Home from Home parks
+        driver.post(new SessionEvent.PresentationRestored(owner, "s"));   // back to the game
+        trace.clear();
+
+        assertFalse(driver.call(new SessionEvent.ParkRequested("s", homeEpoch)));  // Home.onStop
+        assertTrue(trace.isEmpty());
+        assertEquals(SessionModel.State.HOME_LIVE, driver.state());
+
+        assertTrue(driver.parkForBackground("s"));              // TV Home from the game
+        assertEquals(java.util.List.of("owner.park"), trace);
+    }
+
+    @Test public void ownerRefusalWhileShownKeepsTheLiveRetainedStream() {
+        Owner shown = new Owner() {
+            @Override public SessionModel.ParkOutcome parkRetainedTransport() {
+                trace.add("owner.park");
+                return SessionModel.ParkOutcome.REFUSED;
+            }
+        };
+        driver.enterHome(shown, "s", "host", "parent", 7, "game");
+        assertFalse(driver.parkForBackground("s"));
+        assertEquals(SessionModel.State.HOME_LIVE, driver.state());
+        assertTrue(driver.canResumeInstantly());
     }
 }

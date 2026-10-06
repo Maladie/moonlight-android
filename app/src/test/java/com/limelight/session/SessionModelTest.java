@@ -39,7 +39,9 @@ public class SessionModelTest {
         int switches;
 
         @Override public boolean isRetainedTransportLive() { return live; }
-        @Override public boolean parkRetainedTransport() { return parkResult; }
+        @Override public SessionModel.ParkOutcome parkRetainedTransport() {
+            return parkResult ? SessionModel.ParkOutcome.PARKED : SessionModel.ParkOutcome.STOPPED;
+        }
         @Override public boolean parkPreparingTransport(
                 SessionModel.Snapshot preparing) {
             preparingPark = preparing;
@@ -1196,10 +1198,10 @@ public class SessionModelTest {
 
     @Test public void staleParkResultCannotOverwriteNewSession() {
         FakeController old = new FakeController() {
-            @Override public boolean parkRetainedTransport() {
+            @Override public SessionModel.ParkOutcome parkRetainedTransport() {
                 m.enterHome(
                         new FakeController(), "session-b", "host", 8, "other");
-                return true;
+                return SessionModel.ParkOutcome.PARKED;
             }
         };
         m.enterHome(old, SESSION_A, "host", 7, "game");

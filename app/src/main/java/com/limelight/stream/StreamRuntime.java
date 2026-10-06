@@ -80,6 +80,8 @@ public final class StreamRuntime implements NvConnectionListener,
         void onRuntimeDisconnected();
         /** Presentation-owned effects that must run before the native stop. */
         void onTransportStopping();
+        /** False while this presentation shows the stream (resumed with a valid surface). */
+        boolean canPark();
     }
 
     /** Immutable identity of one presentation's attachment to one transport generation. */
@@ -387,13 +389,20 @@ public final class StreamRuntime implements NvConnectionListener,
 
     // ---- presentation-driven effects (identity fenced) ---------------------------------------
 
+    /** A stopping transport never gets a decoder (and so never a frame) again. */
     public boolean attachDecoder(Attachment attachment, VideoDecoderRenderer decoder) {
-        if (!isCurrent(attachment)) return false;
+        synchronized (this) {
+            if (!isCurrent(attachment) || stopRequested) return false;
+        }
         return transport.attachDecoder(decoder);
     }
 
+    /** Muting always applies; a stopping transport is never unmuted. */
     public void setAudioVolume(Attachment attachment, float volume) {
-        if (isCurrent(attachment)) transport.setAudioVolume(volume);
+        synchronized (this) {
+            if (!isCurrent(attachment) || (volume > 0f && stopRequested)) return;
+        }
+        transport.setAudioVolume(volume);
     }
 
     public void requestIdrFrame(Attachment attachment) {
@@ -406,21 +415,35 @@ public final class StreamRuntime implements NvConnectionListener,
                 && transport.reauthorizeControlGeneration(expected, generation);
     }
 
-    /** Parks the transport for background retention; false means the runtime is stopping it. */
+    /** Parks the transport for background retention; false means it was not parked. */
     public boolean park() {
+        return parkTransport() == SessionModel.ParkOutcome.PARKED;
+    }
+
+    /**
+     * The one park decision: a presentation that is showing the stream refuses it (the transport
+     * stays live and unchanged); a transport that cannot be protected is stopped instead.
+     */
+    private SessionModel.ParkOutcome parkTransport() {
+        Presentation shown = attached();
+        if (shown != null && !shown.canPark()) {
+            platform.record("INFO", "runtime.park_refused", "stream_session_id",
+                    streamSessionId, "generation", generation(), "reason", "presented");
+            return SessionModel.ParkOutcome.REFUSED;
+        }
         Presentation attached;
         boolean protectedPark;
         int minutes = platform.retentionMinutes();
         synchronized (this) {
-            if (state != State.CONNECTED || stopRequested) return false;
-            if (parked) return true;
+            if (state != State.CONNECTED || stopRequested) return SessionModel.ParkOutcome.STOPPED;
+            if (parked) return SessionModel.ParkOutcome.PARKED;
             protectedPark = foregroundService == ForegroundService.ESTABLISHED && minutes != 0;
             attached = presentation;
             if (protectedPark) parked = true;
         }
         if (!protectedPark) {
             stopUnprotected(minutes == 0 ? "retention_disabled" : "park_without_foreground_service");
-            return false;
+            return SessionModel.ParkOutcome.STOPPED;
         }
         transport.detachDecoder();
         transport.setAudioVolume(0f);
@@ -428,7 +451,7 @@ public final class StreamRuntime implements NvConnectionListener,
         platform.record("INFO", "runtime.parked", "stream_session_id", streamSessionId,
                 "generation", generation());
         if (attached != null) attached.onTransportParked();
-        return true;
+        return SessionModel.ParkOutcome.PARKED;
     }
 
     /** Presentation restored video: retention timer cancelled, service stays foreground. */
@@ -691,7 +714,7 @@ public final class StreamRuntime implements NvConnectionListener,
 
     @Override public boolean hasAttachedPresentation() { return hasPresentation(); }
 
-    @Override public boolean parkRetainedTransport() { return park(); }
+    @Override public SessionModel.ParkOutcome parkRetainedTransport() { return parkTransport(); }
 
     @Override public boolean parkPreparingTransport(
             SessionModel.Snapshot preparing) {

@@ -324,6 +324,40 @@ public class StreamRuntimeTest {
         assertEquals(Collections.singletonList("s1"), platform.reconnectCleared);
     }
 
+    @Test public void parkIsRefusedWhileThePresentationShowsTheStream() {
+        FakeTransport transport = new FakeTransport();
+        StreamRuntime runtime = connected("s1", transport);
+        assertTrue(StreamRuntime.serviceEstablished("s1", runtime.generation()));
+        FakePresentation game = new FakePresentation();
+        game.showing = true;
+        runtime.attach(game);
+        m.enterHome(runtime, "s1", "host", "p", 7, "g");
+
+        assertFalse(m.parkForBackground("s1"));             // Home.onStop over a shown game
+        assertEquals(0, platform.parks.get());
+        assertEquals(0, transport.decoderDetaches.get());
+        assertFalse(runtime.isStopping());
+        assertEquals(SessionModel.State.HOME_LIVE, m.state());
+
+        game.showing = false;                                // TV Home: the game left the screen
+        assertTrue(m.parkForBackground("s1"));
+        assertEquals(1, platform.parks.get());
+        assertEquals(SessionModel.State.PARKED_LIVE, m.state());
+    }
+
+    @Test public void stoppingTransportIsNeverReattachedOrUnmuted() {
+        FakeTransport transport = new FakeTransport();
+        platform.stopExecutor = action -> { };              // the stop stays in flight
+        StreamRuntime runtime = connected("s1", transport);
+        StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
+        assertTrue(runtime.surfaceLost(attachment));
+        runtime.stop(result -> { });                         // termination began
+
+        assertFalse(runtime.attachDecoder(attachment, null));
+        runtime.setAudioVolume(attachment, 1f);
+        assertEquals(0f, transport.volume, 0f);
+    }
+
     @Test public void abandonedPreparingStopsWithoutSavingReconnectMaterial() {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
@@ -551,6 +585,9 @@ public class StreamRuntimeTest {
         final AtomicInteger started = new AtomicInteger();
         final AtomicInteger homeFrames = new AtomicInteger();
         boolean acceptHomeFrame;
+        boolean showing;
+
+        @Override public boolean canPark() { return !showing; }
 
         @Override public boolean parkPreparingTransport(SessionModel.Snapshot s) { return false; }
         @Override public boolean cancelPreparingTransport(SessionModel.Snapshot s) { return false; }

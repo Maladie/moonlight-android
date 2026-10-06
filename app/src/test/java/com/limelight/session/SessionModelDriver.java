@@ -203,7 +203,9 @@ public final class SessionModelDriver {
                 previousGeneration, generation));
     }
     public boolean parkForBackground(String sessionId) {
-        return call(new SessionEvent.ParkRequested(sessionId));
+        drain();
+        return call(new SessionEvent.ParkRequested(sessionId,
+                model.snapshot().presentationEpoch));
     }
     public void markParked(String sessionId) { call(new SessionEvent.Parked(sessionId)); }
     public void markReconnectRequired(String sessionId) {

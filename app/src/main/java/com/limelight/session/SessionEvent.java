@@ -120,37 +120,44 @@ public abstract class SessionEvent<R> {
 
     /** The presentation restored the parked stream into view: it is live, no longer parked. */
     public static final class PresentationRestored extends SessionEvent<Void> {
+        private final Controller owner;
         private final String sessionId;
 
-        public PresentationRestored(String sessionId) {
+        public PresentationRestored(Controller owner, String sessionId) {
+            this.owner = owner;
             this.sessionId = sessionId;
         }
 
         @Override void apply(SessionModel m, Reply<Void> reply) {
-            m.presentationRestored(sessionId);
+            m.presentationRestored(owner, sessionId);
             reply.accept(null);
         }
     }
 
-    /** Park for background: replies whether the transport was parked. */
+    /**
+     * Park for background, asked by the presenter that saw {@code presentationEpoch}; ignored
+     * once another presenter has shown the stream. Replies whether the transport was parked.
+     */
     public static final class ParkRequested extends BooleanEvent {
         private final String sessionId;
+        private final long presentationEpoch;
 
-        public ParkRequested(String sessionId) {
+        public ParkRequested(String sessionId, long presentationEpoch) {
             this.sessionId = sessionId;
+            this.presentationEpoch = presentationEpoch;
         }
 
         @Override void apply(SessionModel m, Reply<Boolean> reply) {
-            m.parkForBackground(sessionId, reply);
+            m.parkForBackground(sessionId, presentationEpoch, reply);
         }
     }
 
     static final class ParkResult extends BooleanEvent {
         private final long operation;
         private final String sessionId;
-        private final boolean parked;
+        private final SessionModel.ParkOutcome parked;
 
-        ParkResult(long operation, String sessionId, boolean parked) {
+        ParkResult(long operation, String sessionId, SessionModel.ParkOutcome parked) {
             this.operation = operation;
             this.sessionId = sessionId;
             this.parked = parked;

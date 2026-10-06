@@ -15,7 +15,7 @@ public class SessionModelSubscriptionTest {
     private final SessionModel model = driver.model;
     private final SessionModel.Controller owner = new SessionModel.Controller() {
         @Override public boolean isRetainedTransportLive() { return true; }
-        @Override public boolean parkRetainedTransport() { return true; }
+        @Override public SessionModel.ParkOutcome parkRetainedTransport() { return SessionModel.ParkOutcome.PARKED; }
         @Override public void disconnectRetainedStream(
                 SessionModel.TerminationCallback completion) { }
         @Override public void terminateRetainedSession(

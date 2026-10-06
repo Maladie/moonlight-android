@@ -236,6 +236,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private boolean streamHomeVisible = false;
     /** surfaceDestroyed detached the decoder; the next valid surface must reattach one. */
     private boolean decoderDetachedBySurfaceLoss;
+    /** Between onResume and onPause: with a valid surface, this Game shows the stream. */
+    private boolean presentationResumed;
     private static final long RETAINED_RESTORE_IDR_RETRY_MS = 1_500L;
     private static final long RETAINED_RESTORE_TIMEOUT_MS = 10_000L;
     private boolean retainedRestoreAwaitingFrame;
@@ -1923,6 +1925,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     @Override
     protected void onPause() {
+        presentationResumed = false;
         MoonWakerDiagnostics.record("INFO", "android.stream", "activity.paused",
                 "status", backgroundStreamParked ? "parked" : "active");
         if (discordDmNotifications != null) {
@@ -1960,6 +1963,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     @Override
     protected void onResume() {
         super.onResume();
+        presentationResumed = true;
         MoonWakerDiagnostics.record("INFO", "android.stream", "activity.resumed",
                 "status", backgroundStreamParked ? "parked" : "active");
         if (discordDmNotifications != null) {
@@ -4598,6 +4602,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     private void applyImmediateTerminalPrivacy() {
         userInitiatedDisconnect = true;
         backgroundStreamParked = false;
+        decoderDetachedBySurfaceLoss = false;
         stopChildMonitoring();
         if (overlayMenuView != null) overlayMenuView.closeMenu();
         if (runtime != null) runtime.setAudioVolume(attachment, 0f);
@@ -4624,6 +4629,12 @@ public class Game extends Activity implements SurfaceHolder.Callback,
 
     private void restoreParkedStream(SurfaceHolder holder) {
         boolean detached = backgroundStreamParked || decoderDetachedBySurfaceLoss;
+        // A terminating or lost session is never shown or heard again.
+        if (!isTransportConnected() || userInitiatedDisconnect) {
+            MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.restore_skipped",
+                    "reason", "session_ending");
+            return;
+        }
         if (!detached || holder == null || holder.getSurface() == null
                 || !holder.getSurface().isValid()) {
             MoonWakerDiagnostics.record("INFO", "android.stream", "decoder.restore_skipped",
@@ -4646,7 +4657,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         decoderDetachedBySurfaceLoss = false;
         runtime.resumed(attachment);
         // The presentation shows the stream again: a later park must really park it.
-        sessionModel.post(new SessionEvent.PresentationRestored(streamSessionId));
+        sessionModel.post(new SessionEvent.PresentationRestored(runtime, streamSessionId));
         if (!isOwnedHiddenAutoWarmUp() && !streamHomeVisible
                 && (transitionController == null || streamEverRevealed)) {
             runtime.setAudioVolume(attachment, 1f);
@@ -4699,6 +4710,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
             retainedRestoreWatchdog = null;
         }
         backgroundStreamParked = false;
+        decoderDetachedBySurfaceLoss = false;
         userInitiatedDisconnect = true;
         sessionModel.dispatch(new SessionEvent.ReconnectSaved(getIntent(), streamSessionId, true),
                 pending -> {
@@ -4770,6 +4782,11 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
+    public boolean canPark() {
+        return !(presentationResumed && surfaceCreated && !isFinishing() && !isDestroyed());
+    }
+
+    @Override
     public void onTransportParked() {
         runOnUiThread(() -> {
             if (isFinishing() || isDestroyed()) return;
@@ -4790,6 +4807,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         runOnUiThread(() -> {
             userInitiatedDisconnect = true;
             backgroundStreamParked = false;
+            decoderDetachedBySurfaceLoss = false;
             finish();
         });
     }
@@ -4915,6 +4933,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 LimeLog.warning("Parked stream transport was lost; preserving reconnect state");
                 displayedFailureDialog = true;
                 backgroundStreamParked = false;
+                decoderDetachedBySurfaceLoss = false;
                 saveReconnect(true);
                 sessionModel.post(new SessionEvent.TransportLost(streamSessionId));
                 stopConnection(() -> finish());
@@ -5869,6 +5888,7 @@ public class Game extends Activity implements SurfaceHolder.Callback,
         cancelPendingAutomaticReveal();
         userInitiatedDisconnect = true;
         backgroundStreamParked = false;
+        decoderDetachedBySurfaceLoss = false;
         sessionModel.post(new SessionEvent.Cleared(streamSessionId));
         sessionModel.post(new SessionEvent.ReconnectCleared(streamSessionId));
         if (controllerHandler != null) controllerHandler.pendingApplicationQuit = false;
@@ -6449,7 +6469,8 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                 if (runtime.surfaceLost(attachment)) decoderDetachedBySurfaceLoss = true;
                 // A rejected park keeps the live transport as before K3; the next surface
                 // reattaches the decoder through restoreParkedStream.
-                sessionModel.dispatch(new SessionEvent.ParkRequested(streamSessionId), parked -> {
+                sessionModel.dispatch(new SessionEvent.ParkRequested(streamSessionId,
+                        sessionModel.snapshot().presentationEpoch), parked -> {
                     if (!parked) MoonWakerDiagnostics.record("INFO", "android.stream",
                             "surface_loss.park_rejected", "stream_session_id", streamSessionId);
                 });

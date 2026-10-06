@@ -45,7 +45,7 @@ public final class SessionModel {
         default String getExecutionProfileId() { return null; }
         /** Thread-safe probe: false while the transport runs without a presentation. */
         default boolean hasAttachedPresentation() { return true; }
-        boolean parkRetainedTransport();
+        ParkOutcome parkRetainedTransport();
         default boolean parkPreparingTransport(Snapshot preparing) { return false; }
         default boolean cancelPreparingTransport(Snapshot preparing) { return false; }
         default boolean preparingHomeFrameSubmitted(Snapshot preparing) { return false; }
@@ -74,6 +74,8 @@ public final class SessionModel {
     }
 
     public enum SwitchOutcome { REUSED, CANCELLED, FAILED }
+    /** PARKED; REFUSED while a presentation shows the stream (state kept); STOPPED otherwise. */
+    public enum ParkOutcome { PARKED, REFUSED, STOPPED }
     public enum SwitchResult { STARTED, NOT_ELIGIBLE }
     public enum TerminationResult { STARTED, IN_PROGRESS, NO_CONTROLLER }
 
@@ -146,6 +148,11 @@ public final class SessionModel {
         public final long transportGeneration;
         /** Advances each time the session enters or leaves TERMINATING, seen or not. */
         public final long terminationEpoch;
+        /**
+         * Advances each time a presentation shows the stream again. A park request carries the
+         * epoch its presenter saw; a newer one means another presenter took over.
+         */
+        public final long presentationEpoch;
         /** Persistent records, mirrored from the stores the model alone writes. */
         public final Records records;
         // Model-internal bindings: visible to the model's readers, not to listeners.
@@ -171,6 +178,7 @@ public final class SessionModel {
             this.controlGeneration = m.controlGeneration;
             this.transportGeneration = m.transportGeneration;
             this.terminationEpoch = m.terminationEpoch;
+            this.presentationEpoch = m.presentationEpoch;
             this.records = records;
             this.controller = m.controller;
             this.switchOwner = m.switchOwner;
@@ -271,6 +279,7 @@ public final class SessionModel {
     // ---- model-thread-confined state ----------------------------------------------------------
     State state = State.NONE;
     long terminationEpoch;
+    long presentationEpoch;
     Controller controller;
     String streamSessionId = "";
     String hostId = "";
@@ -941,8 +950,10 @@ public final class SessionModel {
         return true;
     }
 
-    void parkForBackground(String expectedStreamSessionId, Reply<Boolean> reply) {
-        if (!matches(streamSessionId, expectedStreamSessionId) || switchOwner != null) {
+    void parkForBackground(String expectedStreamSessionId, long expectedPresentationEpoch,
+                           Reply<Boolean> reply) {
+        if (!matches(streamSessionId, expectedStreamSessionId) || switchOwner != null
+                || expectedPresentationEpoch != presentationEpoch) {
             reply.accept(false);
             return;
         }
@@ -969,10 +980,22 @@ public final class SessionModel {
         parkOperation = operation;
         String capturedId = streamSessionId;
         effect(() -> dispatchFromEffect(new SessionEvent.ParkResult(
-                operation, capturedId, ownerAnswer(owner::parkRetainedTransport)), reply));
+                operation, capturedId, ownerPark(owner)), reply));
     }
 
-    void parkResult(long operation, String capturedId, boolean parked, Reply<Boolean> reply) {
+    /** An owner that throws while parking has not parked a usable transport. */
+    private static ParkOutcome ownerPark(Controller owner) {
+        try {
+            return owner.parkRetainedTransport();
+        } catch (RuntimeException error) {
+            MoonWakerDiagnostics.record("ERROR", "android.session-model", "effect.failed",
+                    "error_type", error.getClass().getName());
+            return ParkOutcome.STOPPED;
+        }
+    }
+
+    void parkResult(long operation, String capturedId, ParkOutcome outcome,
+                    Reply<Boolean> reply) {
         if (parkOperation != operation || !matches(streamSessionId, capturedId)
                 || (state != State.HOME_LIVE && state != State.PARKED_LIVE)) {
             if (parkOperation == operation) parkOperation = 0L;
@@ -980,15 +1003,23 @@ public final class SessionModel {
             return;
         }
         parkOperation = 0L;
+        if (outcome == ParkOutcome.REFUSED) {
+            // The stream is on screen: it stays live and retained exactly as it was.
+            reply.accept(false);
+            return;
+        }
+        boolean parked = outcome == ParkOutcome.PARKED;
         setState(parked ? State.PARKED_LIVE : State.RECONNECT_REQUIRED);
         if (!parked) controller = null;
         reply.accept(parked);
     }
 
-    void presentationRestored(String expectedStreamSessionId) {
-        if (state == State.PARKED_LIVE && matches(streamSessionId, expectedStreamSessionId)) {
-            setState(State.HOME_LIVE);
-        }
+    void presentationRestored(Controller owner, String expectedStreamSessionId) {
+        if (owner == null || controller != owner
+                || !matches(streamSessionId, expectedStreamSessionId)
+                || (state != State.HOME_LIVE && state != State.PARKED_LIVE)) return;
+        presentationEpoch++;
+        if (state == State.PARKED_LIVE) setState(State.HOME_LIVE);
     }
 
     void markParked(String expectedStreamSessionId) {

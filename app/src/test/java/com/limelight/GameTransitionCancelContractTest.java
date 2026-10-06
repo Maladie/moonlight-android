@@ -1066,7 +1066,12 @@ public class GameTransitionCancelContractTest {
         assertTrue(destroyed.contains("decoderDetachedBySurfaceLoss = true"));
         assertTrue(created.contains("backgroundStreamParked || decoderDetachedBySurfaceLoss"));
         assertTrue(restore.contains("decoderDetachedBySurfaceLoss = false"));
-        assertTrue(restore.contains("new SessionEvent.PresentationRestored(streamSessionId)"));
+        // A session that is ending is never reattached, and every end forgets the detach.
+        assertTrue(restore.indexOf("if (!isTransportConnected() || userInitiatedDisconnect)")
+                < restore.indexOf("runtime.attachDecoder("));
+        assertTrue(text.split("decoderDetachedBySurfaceLoss = false", -1).length - 1 >= 6);
+        assertTrue(text.contains("public boolean canPark()"));
+        assertTrue(restore.contains("new SessionEvent.PresentationRestored(runtime, streamSessionId)"));
         String create = text.substring(text.indexOf("beginAutoWarmUpPreparing(begun -> {"));
         create = create.substring(0, create.indexOf("});"));
         assertTrue(create.indexOf("new SessionEvent.PreparingCancelled(")

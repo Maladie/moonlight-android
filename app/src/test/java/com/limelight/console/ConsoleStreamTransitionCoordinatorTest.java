@@ -2163,7 +2163,7 @@ public class ConsoleStreamTransitionCoordinatorTest {
 
         @Override public boolean isRetainedTransportLive() { return true; }
         @Override public String getExecutionProfileId() { return executionProfileId; }
-        @Override public boolean parkRetainedTransport() { return true; }
+        @Override public SessionModel.ParkOutcome parkRetainedTransport() { return SessionModel.ParkOutcome.PARKED; }
         @Override public void disconnectRetainedStream(
                 SessionModel.TerminationCallback completion) {
             disconnectCalls++;
