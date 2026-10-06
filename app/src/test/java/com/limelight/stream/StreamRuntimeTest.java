@@ -405,6 +405,37 @@ public class StreamRuntimeTest {
         }
     }
 
+    @Test public void mainThreadCallsReturnAtOnceDuringASlowNativeStop() throws Exception {
+        FakeTransport transport = new FakeTransport();
+        transport.stopRelease = new CountDownLatch(1);
+        java.util.concurrent.ExecutorService stopThread =
+                java.util.concurrent.Executors.newSingleThreadExecutor();
+        platform.stopExecutor = stopThread::execute;
+        try {
+            StreamRuntime runtime = connected("s1", transport);
+            StreamRuntime.Attachment attachment = runtime.attach(new FakePresentation());
+            platform.input.runAll();
+            runtime.stop(result -> { });
+            long deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5);
+            while (transport.stops.get() == 0 && System.nanoTime() < deadline) Thread.yield();
+            assertEquals("the native stop is in flight", 1, transport.stops.get());
+
+            long started = System.nanoTime();
+            runtime.requestIdrFrame(attachment);
+            assertFalse(runtime.reauthorizeControlGeneration(attachment, 1L, 2L));
+            attachment.input.sendKeyboardInput((short) 4, KeyboardPacket.KEY_DOWN,
+                    (byte) 0, (byte) 0);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+
+            assertTrue("main-thread calls waited " + elapsedMs + " ms", elapsedMs < 200);
+            assertEquals(0, transport.idrRequests.get());
+            assertTrue(transport.packets().isEmpty());
+        } finally {
+            transport.stopRelease.countDown();
+            stopThread.shutdownNow();
+        }
+    }
+
     @Test public void abandonedPreparingStopsWithoutSavingReconnectMaterial() {
         FakeTransport transport = new FakeTransport();
         StreamRuntime runtime = StreamRuntime.create("s1", "p", transport, platform);
@@ -677,8 +708,14 @@ public class StreamRuntimeTest {
         private synchronized void add(String packet) { packets.add(packet); }
 
         @Override public void start(NvConnectionListener listener) { starts.incrementAndGet(); }
+        volatile CountDownLatch stopRelease;
         @Override public void stop() {
             stops.incrementAndGet();
+            try {
+                if (stopRelease != null) stopRelease.await(5, TimeUnit.SECONDS);
+            } catch (InterruptedException interrupted) {
+                Thread.currentThread().interrupt();
+            }
             if (failStop) throw new IllegalStateException("stop failed");
         }
         @Override public long controlGeneration() { return 0L; }

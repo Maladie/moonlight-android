@@ -141,8 +141,10 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     /**
-     * The native stop waits for every in-flight native call of this generation and runs alone:
-     * the core holds one connection per process and aborts on a call after its teardown.
+     * The native stop (on the stop executor, never the main thread) waits for every in-flight
+     * native call of this generation and runs alone: the core holds one connection per process
+     * and aborts on a call after its teardown. Callers never wait for it: they check the stop
+     * flag first and only try the lock, so a slow LiStopConnection cannot stall the main thread.
      */
     private void stopNative() {
         inputLock.writeLock().lock();
@@ -424,7 +426,7 @@ public final class StreamRuntime implements NvConnectionListener,
     }
 
     public void requestIdrFrame(Attachment attachment) {
-        inputLock.readLock().lock();
+        if (!controlAllowed(attachment) || !inputLock.readLock().tryLock()) return;
         try {
             if (controlAllowed(attachment)) transport.requestIdrFrame();
         } finally {
@@ -432,9 +434,10 @@ public final class StreamRuntime implements NvConnectionListener,
         }
     }
 
+    /** False, without waiting, while the native stop runs or the generation is not live. */
     public boolean reauthorizeControlGeneration(Attachment attachment, long expected,
                                                 long generation) {
-        inputLock.readLock().lock();
+        if (!controlAllowed(attachment) || !inputLock.readLock().tryLock()) return false;
         try {
             return controlAllowed(attachment)
                     && transport.reauthorizeControlGeneration(expected, generation);
@@ -811,9 +814,14 @@ public final class StreamRuntime implements NvConnectionListener,
     private static final byte TILT_UNKNOWN = (byte) 0xFF;
     private static final int LI_ERR_UNSUPPORTED = -5501;
 
+    /**
+     * Input runs on the main thread and never waits: while the native stop or the held-input
+     * release holds the write lock, the event is dropped (the gate is closing anyway).
+     */
     private boolean enter(long serial) {
-        inputLock.readLock().lock();
-        if (openInputSerial == serial && serial != 0L) return true;
+        if (openInputSerial != serial || serial == 0L) return false;
+        if (!inputLock.readLock().tryLock()) return false;
+        if (openInputSerial == serial) return true;
         inputLock.readLock().unlock();
         return false;
     }
