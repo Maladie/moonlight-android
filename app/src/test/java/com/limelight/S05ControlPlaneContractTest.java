@@ -74,6 +74,10 @@ public class S05ControlPlaneContractTest {
         String host = source("com/limelight/stream/HostSessionTermination.java");
 
         assertTrue(host.contains("String exact = providerIdle ? \"\""));
+        // An idle permit (no provider game) is the Gateway's proof: no racy provider re-read
+        // may reject the quit before /cancel (lab MW-05 D1: effect_rejected, Desktop kept running).
+        assertTrue(host.contains(
+                "if (!providerAlreadyStopped && !permit.providerGameId.isEmpty()) {"));
         assertTrue(host.contains(
                 "control.complete(gateway, permit, false, !effectResultUncertain)"));
         assertTrue(host.contains("\"control-full-quit-\" + UUID.randomUUID()"));
