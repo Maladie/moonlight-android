@@ -32,7 +32,7 @@ from datetime import date, datetime, time as datetime_time, timedelta, timezone
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from control_operation_policy import ControlOperationPolicy
 from child_terminal_operation import ChildTerminalOperation
@@ -680,6 +680,39 @@ class TimedRLock:
         self._lock._acquire_restore(native)
         self._depth, self._site = saved
         self._since = time.monotonic()
+
+
+class ControlProbes:
+    """The network reads one control decision needs, taken without the Gateway lock.
+
+    Under the lock, `read` returns the result of `probe` taken while the decision's state key
+    was what it is now. Otherwise it queues `probe` and returns PENDING: the caller leaves the
+    lock, `run`s the queued probe and re-validates the decision from the top. A result taken
+    against a state that has moved since is re-probed once within the request deadline; after
+    that `read` returns `failed`, so the decision fails closed.
+    """
+
+    PENDING = object()
+
+    def __init__(self, deadline: float) -> None:
+        self.deadline = deadline
+        self.results: dict[str, tuple[Any, Any, int]] = {}
+        self.queued: tuple[str, Any, Callable[[], Any], int] | None = None
+
+    def read(self, name: str, key: Any, probe: Callable[[], Any], failed: Any) -> Any:
+        taken = self.results.get(name)
+        if taken is not None and taken[0] == key:
+            return taken[1]
+        if taken is not None and (taken[2] >= 2 or time.monotonic() >= self.deadline):
+            return failed
+        self.queued = (name, key, probe, 1 if taken is None else taken[2] + 1)
+        return self.PENDING
+
+    def run(self) -> None:
+        if self.queued is not None:
+            name, key, probe, count = self.queued
+            self.queued = None
+            self.results[name] = (key, probe(), count)
 
 
 # Antivirus or indexing can briefly hold the registry without delete sharing (the Configurator hit
@@ -4594,34 +4627,11 @@ class GatewayState:
         if child_session_id and not CHILD_TIME_SESSION_ID_PATTERN.fullmatch(child_session_id):
             raise ValueError("A valid child session ID is required.")
         client_id, actor_id, execution_id, client_uuid = self._control_identity(client)
-        if child_session_id:
-            child = self.child_time_session
-            completed_child = self.child_time_completed.get(child_session_id)
-            stream = self.control_state.get("stream")
-            retained_terminal = intent == "child_terminal" and \
-                isinstance(completed_child, dict) and \
-                completed_child.get("reason") == "game_stopped" and \
-                all(completed_child.get(key) == value for key, value in (
-                    ("client_id", client_id),
-                    ("actor_profile_id", actor_id),
-                    ("execution_profile_id", execution_id))) and \
-                isinstance(stream, dict) and \
-                all(stream.get(key) == value for key, value in (
-                    ("child_session_id", child_session_id),
-                    ("client_id", client_id),
-                    ("actor_profile_id", actor_id),
-                    ("execution_profile_id", execution_id)))
-            if (not isinstance(child, dict) or
-                    child_session_id != child.get("session_id") or
-                    client_id != child.get("client_id") or
-                    actor_id != child.get("actor_profile_id") or
-                    execution_id != child.get("execution_profile_id")) and \
-                    not retained_terminal:
-                return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
-                                             "reason": "child_session_unmanaged"}
-        elif self.is_child_profile(actor_id) and intent not in {"full_quit", "hard_reset"}:
-            return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
-                                         "reason": "child_session_unmanaged"}
+        child_unmanaged = HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                                "reason": "child_session_unmanaged"}
+        if not self._control_child_entitled(intent, child_session_id, client_id, actor_id,
+                                            execution_id):
+            return child_unmanaged
         proposed = {
             "operation_id": operation_id, "client_id": client_id,
             "actor_profile_id": actor_id, "execution_profile_id": execution_id,
@@ -4654,226 +4664,296 @@ class GatewayState:
             return parent_cleanup
         deadline = time.monotonic() + max(0.0, min(float(wait_seconds), 25.0))
         preceding_stop = None
-        with self.control_condition:
-            completed = self.control_state.setdefault("completed", {}).get(operation_id)
-            if isinstance(completed, dict):
-                if self._control_signature(completed) != self._control_signature(proposed):
-                    return HTTPStatus.CONFLICT, {"ok": False,
-                                                 "state": "blocked",
-                                                 "reason": "operation_id_reused"}
-                return HTTPStatus.OK, self._control_result(completed)
-            self._control_recover_provider_locked()
-            while isinstance(self.control_state.get("active"), dict):
-                active = self.control_state["active"]
-                if str(active.get("operation_id")) == operation_id:
-                    if self._control_signature(active) != self._control_signature(proposed):
+        probes = ControlProbes(deadline)
+        while True:
+            probes.run()
+            with self.control_condition:
+                # The unlocked reads leave a window: the child session can end meanwhile.
+                if not self._control_child_entitled(intent, child_session_id, client_id,
+                                                    actor_id, execution_id):
+                    return child_unmanaged
+                completed = self.control_state.setdefault("completed", {}).get(operation_id)
+                if isinstance(completed, dict):
+                    if self._control_signature(completed) != self._control_signature(proposed):
                         return HTTPStatus.CONFLICT, {"ok": False,
                                                      "state": "blocked",
                                                      "reason": "operation_id_reused"}
+                    return HTTPStatus.OK, self._control_result(completed)
+                self._control_recover_provider_locked()
+                while isinstance(self.control_state.get("active"), dict):
+                    active = self.control_state["active"]
+                    if str(active.get("operation_id")) == operation_id:
+                        if self._control_signature(active) != self._control_signature(proposed):
+                            return HTTPStatus.CONFLICT, {"ok": False,
+                                                         "state": "blocked",
+                                                         "reason": "operation_id_reused"}
+                        if active.get("state") == "uncertain":
+                            return HTTPStatus.CONFLICT, {
+                                **self._control_result(active),
+                                "reason": str(active.get("reason") or "reconcile_required"),
+                            }
+                        remaining = deadline - time.monotonic()
+                        if remaining <= 0:
+                            active["state"] = "uncertain"
+                            active["reason"] = "terminal_result_timeout"
+                            self._control_save_locked()
+                            self.control_condition.notify_all()
+                            return HTTPStatus.CONFLICT, self._control_result(active)
+                        self.control_condition.wait(remaining)
+                        completed = self.control_state.setdefault(
+                            "completed", {}).get(operation_id)
+                        if isinstance(completed, dict):
+                            return HTTPStatus.OK, self._control_result(completed)
+                        continue
                     if active.get("state") == "uncertain":
-                        return HTTPStatus.CONFLICT, {
-                            **self._control_result(active),
-                            "reason": str(active.get("reason") or "reconcile_required"),
-                        }
+                        return HTTPStatus.CONFLICT, {"ok": False, "state": "uncertain",
+                                                     "reason": str(active.get("reason") or
+                                                                   "reconcile_required")}
+                    if direction == "start" and active.get("direction") == "stop":
+                        preceding_stop = active
                     remaining = deadline - time.monotonic()
                     if remaining <= 0:
                         active["state"] = "uncertain"
                         active["reason"] = "terminal_result_timeout"
                         self._control_save_locked()
                         self.control_condition.notify_all()
-                        return HTTPStatus.CONFLICT, self._control_result(active)
+                        return HTTPStatus.CONFLICT, {"ok": False, "state": "uncertain",
+                                                     "reason": "terminal_result_timeout"}
                     self.control_condition.wait(remaining)
-                    completed = self.control_state.setdefault(
-                        "completed", {}).get(operation_id)
-                    if isinstance(completed, dict):
-                        return HTTPStatus.OK, self._control_result(completed)
-                    continue
-                if active.get("state") == "uncertain":
-                    return HTTPStatus.CONFLICT, {"ok": False, "state": "uncertain",
-                                                 "reason": str(active.get("reason") or
-                                                               "reconcile_required")}
-                if direction == "start" and active.get("direction") == "stop":
-                    preceding_stop = active
-                remaining = deadline - time.monotonic()
-                if remaining <= 0:
-                    active["state"] = "uncertain"
-                    active["reason"] = "terminal_result_timeout"
-                    self._control_save_locked()
-                    self.control_condition.notify_all()
-                    return HTTPStatus.CONFLICT, {"ok": False, "state": "uncertain",
-                                                 "reason": "terminal_result_timeout"}
-                self.control_condition.wait(remaining)
-            stream = self.control_state.get("stream")
-            idle_restart = False
-            rebound = None
-            if direction == "start" and observed_app_id == 0 and intent != "reauthorize":
-                idle_restart = self._control_reconcile_idle_locked()
                 stream = self.control_state.get("stream")
-            if direction == "stop":
-                idle = self.control_state.get("idle_stream")
-                if stream is None and isinstance(idle, dict) and expected_generation == idle.get("generation") \
-                        and all(idle.get(key) == proposed.get(key) for key in (
-                            "client_id", "actor_profile_id", "execution_profile_id",
-                            "stream_session_id", "sunshine_app_id")):
-                    receipt = {**proposed, "generation": idle["generation"],
-                               "actor_lease_epoch": idle["actor_lease_epoch"]}
-                    return HTTPStatus.OK, self._control_finish_locked(
-                        receipt, "succeeded", "owned_stream_already_idle")
-                close_keys = ("client_id", "execution_profile_id",
-                              "stream_session_id", "sunshine_app_id") \
-                    if intent in {"full_quit", "hard_reset"} else \
-                    ("client_id", "actor_profile_id", "execution_profile_id",
-                     "stream_session_id", "sunshine_app_id")
-                if (not isinstance(stream, dict) or
-                        any(stream.get(key) != proposed.get(key) for key in close_keys) or
-                        expected_generation != int(stream.get("generation") or 0)):
-                    return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
-                                                 "reason": "unmanaged_stream"}
-                if observed_app_id not in {0, int(stream.get("sunshine_app_id") or 0)}:
-                    return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
-                                                 "reason": "unmanaged_stream"}
-                retained = self._control_retained_process(execution_id, stream, intent)
-                if retained is None:
-                    return HTTPStatus.CONFLICT, {
-                        "ok": False, "state": "blocked",
-                        "reason": "retained_process_unconfirmed",
-                    }
-                proposed.update(retained)
-            elif intent == "reauthorize":
-                exact = isinstance(stream, dict) and expected_generation == stream.get("generation") \
-                    and observed_app_id == stream.get("sunshine_app_id") \
-                    and all(stream.get(key) == proposed.get(key) for key in (
-                        "client_id", "execution_profile_id", "stream_session_id", "sunshine_app_id"))
-                previous_child = str((stream or {}).get("child_session_id") or "")
-                previous_ended = self.child_time_completed.get(previous_child, {})
-                if not exact or previous_child and previous_child != child_session_id \
-                        and previous_ended.get("reason") not in {
-                            "game_stopped", "actor_replaced", "replacement"}:
-                    return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
-                                                 "reason": "retained_owner_unconfirmed"}
-                current = self._child_time_current_game(
-                    execution_id, stream if self._child_time_process_token(stream)
-                    else self.child_time_session if child_session_id else None)
-                current_game_id = str(current.get("game_id") or "")
-                current_identity = current.get("identity")
-                current_token = self._child_time_process_token(current_identity)
-                target_time = self.child_time_session
-                child_game_matches = not child_session_id or (
-                    isinstance(target_time, dict)
-                    and target_time.get("session_id") == child_session_id
-                    and self._child_time_provider_game(target_time)
-                    == self._child_time_normalize_game_id(current_game_id))
-                provider_idle = current.get("kind") == "idle"
-                stream_token = self._child_time_process_token(stream)
-                target_token = self._child_time_process_token(target_time) \
-                    if child_session_id and isinstance(target_time, dict) else ""
-                expected_token = stream_token or target_token
-                expected_game = self._child_time_normalize_game_id(
-                    stream.get("provider_game_id") or
-                    (target_time or {}).get("game_id"))
-                provider_active = current.get("kind") == "active" \
-                    and bool(current_game_id) and child_game_matches \
-                    and bool(expected_token) and current_token == expected_token \
-                    and (not expected_game or self._child_time_normalize_game_id(
-                        current_game_id) == expected_game)
-                if not (provider_idle or provider_active):
-                    return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
-                                                 "reason": "retained_process_unconfirmed"}
-                proposed.update({
-                    "provider_game_id": self._child_time_normalize_game_id(
-                        current_game_id) if provider_active else "",
-                    "process_token": current_token if provider_active else "",
-                    "process_id": int((current_identity or {}).get(
-                        "process_id") or 0) if provider_active else 0,
-                })
-            elif isinstance(stream, dict):
-                same_owner = all(stream.get(key) == proposed.get(key) for key in (
-                    "client_id", "actor_profile_id", "execution_profile_id",
-                    "stream_session_id", "sunshine_app_id"))
-                # The owner's transport ended without a stop (client abort while connecting;
-                # the streamer keeps the app paused). Only the same TV, actor, execution
-                # profile, child attachment and app may rebind it to a new transport, and
-                # only while the streamer proves no transport is live. The new generation
-                # fences every effect still bound to the dead one.
-                # ponytail: snapshot read under the Gateway lock, like the idle reconcile
-                # above; move it outside the lock if this path ever becomes frequent.
-                if not same_owner and intent in {"resume", "reconnect", "warm_up"} \
-                        and all(stream.get(key) == proposed.get(key) for key in (
-                            "client_id", "actor_profile_id", "execution_profile_id",
-                            "sunshine_app_id", "child_session_id")) \
-                        and observed_app_id == int(stream.get("sunshine_app_id") or 0) \
-                        and self._control_stream_transport_gone(stream):
-                    same_owner = True
-                    rebound = {"generation": stream.get("generation"),
-                               "stream_session_id": stream.get("stream_session_id"),
-                               "operation_id": operation_id}
-                if intent not in {"resume", "reconnect", "warm_up",
-                                  "provider_transition"} or not same_owner:
-                    same_replacement_transport = intent == "replacement" and \
-                        expected_generation == int(stream.get("generation") or 0) and \
-                        all(stream.get(key) == proposed.get(key) for key in (
-                            "client_id", "execution_profile_id", "sunshine_app_id"))
-                    if not same_replacement_transport:
+                idle_restart = False
+                rebound = None
+                if direction == "start" and observed_app_id == 0 and intent != "reauthorize":
+                    candidate = self._control_reconcile_idle_candidate_locked()
+                    if candidate is not None:
+                        proven_idle = probes.read(
+                            "stream_idle", self._control_probe_key_locked(),
+                            lambda: self._control_stream_idle(candidate[0]), False)
+                        if proven_idle is probes.PENDING:
+                            continue
+                        idle_restart = proven_idle and \
+                            self._control_reconcile_idle_apply_locked(candidate)
+                    stream = self.control_state.get("stream")
+                if direction == "stop":
+                    idle = self.control_state.get("idle_stream")
+                    if stream is None and isinstance(idle, dict) and expected_generation == idle.get("generation") \
+                            and all(idle.get(key) == proposed.get(key) for key in (
+                                "client_id", "actor_profile_id", "execution_profile_id",
+                                "stream_session_id", "sunshine_app_id")):
+                        receipt = {**proposed, "generation": idle["generation"],
+                                   "actor_lease_epoch": idle["actor_lease_epoch"]}
+                        return HTTPStatus.OK, self._control_finish_locked(
+                            receipt, "succeeded", "owned_stream_already_idle")
+                    close_keys = ("client_id", "execution_profile_id",
+                                  "stream_session_id", "sunshine_app_id") \
+                        if intent in {"full_quit", "hard_reset"} else \
+                        ("client_id", "actor_profile_id", "execution_profile_id",
+                         "stream_session_id", "sunshine_app_id")
+                    if (not isinstance(stream, dict) or
+                            any(stream.get(key) != proposed.get(key) for key in close_keys) or
+                            expected_generation != int(stream.get("generation") or 0)):
                         return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
-                                                     "reason": "managed_stream_conflict"}
-                if observed_app_id != int(stream.get("sunshine_app_id") or 0):
-                    return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
-                                                 "reason": "unmanaged_stream"}
-                if intent in {"resume", "reconnect", "warm_up"}:
-                    retained = self._control_retained_process(execution_id, stream, intent)
+                                                     "reason": "unmanaged_stream"}
+                    if observed_app_id not in {0, int(stream.get("sunshine_app_id") or 0)}:
+                        return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                                     "reason": "unmanaged_stream"}
+                    current = probes.read(
+                        "observation", self._control_probe_key_locked(),
+                        lambda stream=dict(stream):
+                            self._child_time_current_game(execution_id, stream),
+                        {"kind": "unavailable"})
+                    if current is probes.PENDING:
+                        continue
+                    retained = self._control_retained_process(current, stream, intent)
                     if retained is None:
                         return HTTPStatus.CONFLICT, {
                             "ok": False, "state": "blocked",
                             "reason": "retained_process_unconfirmed",
                         }
-                    del retained["provider_idle_confirmed"]
                     proposed.update(retained)
-            elif intent in {"resume", "reconnect"} and not idle_restart:
-                return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
-                                             "reason": "unmanaged_stream"}
-            elif observed_app_id != 0 and not (
-                    isinstance(preceding_stop, dict) and
-                    preceding_stop.get("state") == "succeeded" and
-                    int(preceding_stop.get("sunshine_app_id") or 0)
-                    == observed_app_id):
-                return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
-                                             "reason": "unmanaged_stream"}
-            if direction == "transition":
-                generation = int(stream.get("generation") or 0)
-                actor_epoch = int(stream.get("actor_lease_epoch") or 0)
-                effect_sequence = int(self.control_state.get(
-                    "provider_sequence") or 0) + 1
-            else:
-                generation = int(self.control_state.get("generation") or 0) + 1
-                actor_epoch = int(self.control_state.get("actor_lease_epoch") or 0) + 1
-                effect_sequence = 0
-            operation = {**proposed, "generation": generation,
-                         "actor_lease_epoch": actor_epoch,
-                         "effect_sequence": effect_sequence,
-                         "state": "permitted", "reason": "none"}
-            if direction == "transition":
-                self.control_state["provider_sequence"] = effect_sequence
-            else:
-                self.control_state.update({"generation": generation,
-                                           "actor_lease_epoch": actor_epoch})
-            self.control_state["active"] = operation
-            self._control_save_locked()
-            DIAGNOSTICS.record("control-operation-permitted", **{
-                key: operation.get(key, "") for key in (
-                    "operation_id", "intent", "generation", "actor_lease_epoch",
-                    "effect_sequence", "stream_session_id", "child_session_id",
-                    "actor_profile_id", "execution_profile_id")})
-            if rebound:
-                DIAGNOSTICS.record("control-stream-transport-rebound", **rebound)
-            if intent == "reauthorize":
-                retired, _result = self.provider_control_operation.retire(operation)
-                if retired:
-                    return HTTPStatus.OK, self._control_finish_locked(
-                        operation, "succeeded", "retained_owner_authorized")
-                operation.update(state="uncertain", reason="reauthorization_fence_unconfirmed")
+                elif intent == "reauthorize":
+                    exact = isinstance(stream, dict) and expected_generation == stream.get("generation") \
+                        and observed_app_id == stream.get("sunshine_app_id") \
+                        and all(stream.get(key) == proposed.get(key) for key in (
+                            "client_id", "execution_profile_id", "stream_session_id", "sunshine_app_id"))
+                    previous_child = str((stream or {}).get("child_session_id") or "")
+                    previous_ended = self.child_time_completed.get(previous_child, {})
+                    if not exact or previous_child and previous_child != child_session_id \
+                            and previous_ended.get("reason") not in {
+                                "game_stopped", "actor_replaced", "replacement"}:
+                        return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                                     "reason": "retained_owner_unconfirmed"}
+                    target = stream if self._child_time_process_token(stream) \
+                        else self.child_time_session if child_session_id else None
+                    target = dict(target or {})
+                    current = probes.read(
+                        "observation", (self._control_probe_key_locked(),
+                                        self._child_time_process_token(target),
+                                        int(target.get("process_id") or 0)),
+                        lambda: self._child_time_current_game(execution_id, target),
+                        {"kind": "unavailable"})
+                    if current is probes.PENDING:
+                        continue
+                    current_game_id = str(current.get("game_id") or "")
+                    current_identity = current.get("identity")
+                    current_token = self._child_time_process_token(current_identity)
+                    target_time = self.child_time_session
+                    child_game_matches = not child_session_id or (
+                        isinstance(target_time, dict)
+                        and target_time.get("session_id") == child_session_id
+                        and self._child_time_provider_game(target_time)
+                        == self._child_time_normalize_game_id(current_game_id))
+                    provider_idle = current.get("kind") == "idle"
+                    stream_token = self._child_time_process_token(stream)
+                    target_token = self._child_time_process_token(target_time) \
+                        if child_session_id and isinstance(target_time, dict) else ""
+                    expected_token = stream_token or target_token
+                    expected_game = self._child_time_normalize_game_id(
+                        stream.get("provider_game_id") or
+                        (target_time or {}).get("game_id"))
+                    provider_active = current.get("kind") == "active" \
+                        and bool(current_game_id) and child_game_matches \
+                        and bool(expected_token) and current_token == expected_token \
+                        and (not expected_game or self._child_time_normalize_game_id(
+                            current_game_id) == expected_game)
+                    if not (provider_idle or provider_active):
+                        return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                                     "reason": "retained_process_unconfirmed"}
+                    proposed.update({
+                        "provider_game_id": self._child_time_normalize_game_id(
+                            current_game_id) if provider_active else "",
+                        "process_token": current_token if provider_active else "",
+                        "process_id": int((current_identity or {}).get(
+                            "process_id") or 0) if provider_active else 0,
+                    })
+                elif isinstance(stream, dict):
+                    same_owner = all(stream.get(key) == proposed.get(key) for key in (
+                        "client_id", "actor_profile_id", "execution_profile_id",
+                        "stream_session_id", "sunshine_app_id"))
+                    # The owner's transport ended without a stop (client abort while connecting;
+                    # the streamer keeps the app paused). Only the same TV, actor, execution
+                    # profile, child attachment and app may rebind it to a new transport, and
+                    # only while the streamer proves no transport is live. The new generation
+                    # fences every effect still bound to the dead one.
+                    if not same_owner and intent in {"resume", "reconnect", "warm_up"} \
+                            and all(stream.get(key) == proposed.get(key) for key in (
+                                "client_id", "actor_profile_id", "execution_profile_id",
+                                "sunshine_app_id", "child_session_id")) \
+                            and observed_app_id == int(stream.get("sunshine_app_id") or 0):
+                        gone = probes.read(
+                            "transport_gone", self._control_probe_key_locked(),
+                            lambda stream=dict(stream):
+                                self._control_stream_transport_gone(stream), False)
+                        if gone is probes.PENDING:
+                            continue
+                        if gone:
+                            same_owner = True
+                            rebound = {"generation": stream.get("generation"),
+                                       "stream_session_id": stream.get("stream_session_id"),
+                                       "operation_id": operation_id}
+                    if intent not in {"resume", "reconnect", "warm_up",
+                                      "provider_transition"} or not same_owner:
+                        same_replacement_transport = intent == "replacement" and \
+                            expected_generation == int(stream.get("generation") or 0) and \
+                            all(stream.get(key) == proposed.get(key) for key in (
+                                "client_id", "execution_profile_id", "sunshine_app_id"))
+                        if not same_replacement_transport:
+                            return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                                         "reason": "managed_stream_conflict"}
+                    if observed_app_id != int(stream.get("sunshine_app_id") or 0):
+                        return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                                     "reason": "unmanaged_stream"}
+                    if intent in {"resume", "reconnect", "warm_up"}:
+                        current = probes.read(
+                            "observation", self._control_probe_key_locked(),
+                            lambda stream=dict(stream):
+                                self._child_time_current_game(execution_id, stream),
+                            {"kind": "unavailable"})
+                        if current is probes.PENDING:
+                            continue
+                        retained = self._control_retained_process(current, stream, intent)
+                        if retained is None:
+                            return HTTPStatus.CONFLICT, {
+                                "ok": False, "state": "blocked",
+                                "reason": "retained_process_unconfirmed",
+                            }
+                        del retained["provider_idle_confirmed"]
+                        proposed.update(retained)
+                elif intent in {"resume", "reconnect"} and not idle_restart:
+                    return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                                 "reason": "unmanaged_stream"}
+                elif observed_app_id != 0 and not (
+                        isinstance(preceding_stop, dict) and
+                        preceding_stop.get("state") == "succeeded" and
+                        int(preceding_stop.get("sunshine_app_id") or 0)
+                        == observed_app_id):
+                    return HTTPStatus.CONFLICT, {"ok": False, "state": "blocked",
+                                                 "reason": "unmanaged_stream"}
+                if direction == "transition":
+                    generation = int(stream.get("generation") or 0)
+                    actor_epoch = int(stream.get("actor_lease_epoch") or 0)
+                    effect_sequence = int(self.control_state.get(
+                        "provider_sequence") or 0) + 1
+                else:
+                    generation = int(self.control_state.get("generation") or 0) + 1
+                    actor_epoch = int(self.control_state.get("actor_lease_epoch") or 0) + 1
+                    effect_sequence = 0
+                operation = {**proposed, "generation": generation,
+                             "actor_lease_epoch": actor_epoch,
+                             "effect_sequence": effect_sequence,
+                             "state": "permitted", "reason": "none"}
+                if direction == "transition":
+                    self.control_state["provider_sequence"] = effect_sequence
+                else:
+                    self.control_state.update({"generation": generation,
+                                               "actor_lease_epoch": actor_epoch})
+                self.control_state["active"] = operation
                 self._control_save_locked()
-                return HTTPStatus.CONFLICT, self._control_result(operation)
-            return HTTPStatus.OK, self._control_result(operation)
+                DIAGNOSTICS.record("control-operation-permitted", **{
+                    key: operation.get(key, "") for key in (
+                        "operation_id", "intent", "generation", "actor_lease_epoch",
+                        "effect_sequence", "stream_session_id", "child_session_id",
+                        "actor_profile_id", "execution_profile_id")})
+                if rebound:
+                    DIAGNOSTICS.record("control-stream-transport-rebound", **rebound)
+                if intent == "reauthorize":
+                    retired, _result = self.provider_control_operation.retire(operation)
+                    if retired:
+                        return HTTPStatus.OK, self._control_finish_locked(
+                            operation, "succeeded", "retained_owner_authorized")
+                    operation.update(state="uncertain", reason="reauthorization_fence_unconfirmed")
+                    self._control_save_locked()
+                    return HTTPStatus.CONFLICT, self._control_result(operation)
+                return HTTPStatus.OK, self._control_result(operation)
+
+    def _control_child_entitled(self, intent: str, child_session_id: str, client_id: str,
+                                actor_id: str, execution_id: str) -> bool:
+        """The child-session entitlement gate: a child-attached operation needs its live
+        session (or, for child_terminal, its exact game_stopped retained stream); a child
+        actor without one may only close."""
+        if child_session_id:
+            child = self.child_time_session
+            completed_child = self.child_time_completed.get(child_session_id)
+            stream = self.control_state.get("stream")
+            retained_terminal = intent == "child_terminal" and \
+                isinstance(completed_child, dict) and \
+                completed_child.get("reason") == "game_stopped" and \
+                all(completed_child.get(key) == value for key, value in (
+                    ("client_id", client_id),
+                    ("actor_profile_id", actor_id),
+                    ("execution_profile_id", execution_id))) and \
+                isinstance(stream, dict) and \
+                all(stream.get(key) == value for key, value in (
+                    ("child_session_id", child_session_id),
+                    ("client_id", client_id),
+                    ("actor_profile_id", actor_id),
+                    ("execution_profile_id", execution_id)))
+            return (isinstance(child, dict) and
+                    child_session_id == child.get("session_id") and
+                    client_id == child.get("client_id") and
+                    actor_id == child.get("actor_profile_id") and
+                    execution_id == child.get("execution_profile_id")) or retained_terminal
+        return not self.is_child_profile(actor_id) or intent in {"full_quit", "hard_reset"}
 
     def _control_finish_child_stream(self, client: dict[str, Any],
                                      proposed: dict[str, Any],
@@ -5218,12 +5298,27 @@ class GatewayState:
                                       profile_id=stream["execution_profile_id"])
             if not ok or not ControlOperationPolicy.streamer_idle(snapshot):
                 return False
-            return (self._control_retained_process(stream["execution_profile_id"], stream)
+            current = self._child_time_current_game(stream["execution_profile_id"], stream)
+            return (self._control_retained_process(current, stream)
                     or {}).get("provider_idle_confirmed") is True
         except (OSError, TypeError, ValueError):
             return False
 
-    def _control_retained_process(self, execution_id: str, stream: dict[str, Any],
+    def _control_probe_key_locked(self) -> tuple[Any, ...]:
+        """The state a control decision's network reads are valid for: the retained stream,
+        the counters every control operation or child-session change advances, the child
+        session and whether an operation is in flight."""
+        stream = self.control_state.get("stream")
+        session = self.child_time_session
+        return (dict(stream) if isinstance(stream, dict) else None,
+                int(self.control_state.get("generation") or 0),
+                int(self.control_state.get("actor_lease_epoch") or 0),
+                int(self.control_state.get("provider_sequence") or 0),
+                int(self.child_time_usage.get("usage_revision") or 0),
+                str(session.get("session_id") or "") if isinstance(session, dict) else "",
+                self.control_state.get("active") is not None)
+
+    def _control_retained_process(self, current: dict[str, Any], stream: dict[str, Any],
                                   intent: str = "") -> dict[str, Any] | None:
         """The process identity a retained stream may carry on, or None when unproven.
 
@@ -5232,7 +5327,6 @@ class GatewayState:
         no target to prove gone, so a scan that ran (complete or partial) with the provider's
         game absent and idle is enough for it.
         """
-        current = self._child_time_current_game(execution_id, stream)
         game_id = str(current.get("game_id") or "")
         identity = current.get("identity")
         token = self._child_time_process_token(identity)
@@ -5283,14 +5377,9 @@ class GatewayState:
                            stream_session_id=stream["stream_session_id"])
         return True
 
-    def _control_reconcile_idle_locked(self) -> bool:
-        """Recover a completed transport's stale ownership, never an in-flight permit."""
-        candidate = self._control_reconcile_idle_candidate_locked()
-        return candidate is not None and self._control_stream_idle(candidate[0]) \
-            and self._control_reconcile_idle_apply_locked(candidate)
-
     def _control_reconcile_idle(self) -> bool:
-        """The same reconcile without holding the Gateway lock across the network reads.
+        """Recover a completed transport's stale ownership, never an in-flight permit, without
+        holding the Gateway lock across the network reads.
 
         The housekeeping tick runs this every few seconds; probing under the lock stalled every
         request (authentication, observations) for the length of the streamer snapshot.

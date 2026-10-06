@@ -924,6 +924,95 @@ class ControlOperationTest(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("unmanaged_stream", stale["reason"])
 
+    def track_reads(self, during=None):
+        """Record each proxy read and whether it ran under the Gateway lock."""
+        reads = []
+        proxy = self.state.proxy
+
+        def tracked(name, path, **kwargs):
+            reads.append((name, self.state.lock._is_owned()))
+            if during is not None:
+                during(name)
+            return proxy(name, path, **kwargs)
+        self.state.proxy = tracked
+        return reads
+
+    def test_acquire_reads_streamer_and_provider_without_the_lock(self):
+        # Lab: lock-held-slow duration_ms=797 on a rebind acquire; every authenticated
+        # request waited behind the streamer snapshot and the provider observation.
+        a1 = self.launched_stream()
+        self.observe_paused_app()
+        reads = self.track_reads()
+        with patch.object(wakeplay_gateway.DIAGNOSTICS, "record") as record:
+            status, a2 = self.acquire(self.request("a2-resume", "resume", session="stream-2"))
+        self.assertEqual(200, status, a2)
+        self.assertEqual([("vibepollo", False), ("game_provider", False)], reads)
+        events = [call.args[0] for call in record.call_args_list]
+        self.assertIn("control-stream-transport-rebound", events)
+        self.complete(a2)
+
+        reads.clear()
+        status, close = self.acquire(self.request(
+            "a2-quit", "full_quit", session="stream-2", expected_generation=a2["generation"]))
+        self.assertEqual(200, status, close)
+        self.assertEqual([("game_provider", False)], reads)
+        self.assertGreater(close["generation"], a1["generation"])
+
+    def test_idle_reconcile_on_launch_reads_without_the_lock(self):
+        _, launch = self.acquire(self.request("old-parent"))
+        self.complete(launch)
+        self.state.proxy = target_aware(lambda name, path, **_kwargs: (
+            (True, {**control_evidence(), "clients": [], "apps": []})
+            if name == "vibepollo" else
+            (True, {"game": {"state": "idle", "id": "", "evidence": "ABSENT"},
+                    "process": {"evidence": "ABSENT", "running_games": [],
+                                "running_scan_status": "complete"}})))
+        reads = self.track_reads()
+        status, result = self.acquire(self.request("new-parent", session="stream-new"))
+        self.assertEqual(200, status, result)
+        self.assertEqual([("vibepollo", False), ("game_provider", False)], reads)
+        self.assertEqual(launch["generation"],
+                         self.state.control_state["idle_stream"]["generation"])
+
+    def test_state_change_during_a_read_yields_no_rebind_or_permit(self):
+        # Each read races a change the result was not taken against: one probe without
+        # time left, else one re-probe, then the rebind fails closed.
+        for change in ("generation", "stream"):
+            for wait in (0, 20.0):
+                with self.subTest(change=change, wait=wait):
+                    label = "%s-%d" % (change, wait)
+                    self.state.control_state.update({"active": None, "stream": None})
+                    self.observe_paused_app()
+                    _status, a1 = self.acquire(self.request("a1-" + label))
+                    self.complete(a1)
+                    bumps = []
+
+                    def during(_name, change=change):
+                        with self.state.lock:
+                            if change == "generation":
+                                bumps.append(1)
+                                self.state.control_state["generation"] += 1
+                            else:
+                                self.state.control_state["stream"] = {
+                                    **self.state.control_state["stream"],
+                                    "stream_session_id": "swapped-%d" % len(bumps)}
+                                bumps.append(0)
+                    reads = self.track_reads(during)
+                    generation = self.state.control_state["generation"]
+                    with patch.object(wakeplay_gateway.DIAGNOSTICS, "record") as record:
+                        status, result = self.acquire(self.request(
+                            "a2-" + label, "resume", session="stream-2"), wait)
+                    self.assertEqual(409, status, result)
+                    self.assertEqual("managed_stream_conflict", result["reason"])
+                    events = [call.args[0] for call in record.call_args_list]
+                    self.assertNotIn("control-operation-permitted", events)
+                    self.assertNotIn("control-stream-transport-rebound", events)
+                    self.assertIsNone(self.state.control_state["active"])
+                    self.assertEqual([("vibepollo", False)] * (1 if wait == 0 else 2), reads)
+                    # Only the injected change moved the generation, never the acquire.
+                    self.assertEqual(generation + sum(bumps),
+                                     self.state.control_state["generation"])
+
     def observe_partial_scan(self, connected_count=0, app_running=True, provider_ok=True,
                              scan="partial", game=None, running=()):
         """The Bridge while idle: game ABSENT, process PENDING, running scan partial."""
