@@ -376,7 +376,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private boolean hostSelectionVisible = true;
     private boolean initialHostSelectionResolved;
     private String pendingHostPreparation;
-    private boolean hostSelectionLongPressConsumed;
     private String autoLoginHostUuid;
     private String profileGateHostUuid;
     private final ConsolePinEntry pinEntry = new ConsolePinEntry();
@@ -612,25 +611,18 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         @Override public void run() {
             Date now = new Date();
             String clockText = DateFormat.getTimeInstance(DateFormat.SHORT).format(now);
-            if (hostSelectionClock != null) {
-                hostSelectionClock.setText(clockText);
-            }
+            if (entryShell != null) entryShell.setClock(clockText);
             if (profileGateView != null) profileGateView.setClockText(clockText);
             long delay = 60_000L - System.currentTimeMillis() % 60_000L;
             mainHandler.postDelayed(this, delay);
         }
     };
     private FrameLayout homeLayer;
-    private FrameLayout hostSelectionLayer;
+    private ConsoleEntryShell entryShell;
+    private ConsoleHostSelectView hostSelectView;
+    private boolean contentPanelOpen;
     private ConsoleProfileGateView profileGateView;
     private ConsolePinEntryView pinEntryView;
-    private HorizontalScrollView hostSelectionScroll;
-    private LinearLayout hostSelectionRow;
-    private LinearLayout hostSelectionLegend;
-    private TextView hostSelectionClock;
-    private String renderedHostSelectionSignature;
-    private String hostSelectionFocusUuid;
-    private final Map<String, HostSelectionTile> hostSelectionTiles = new LinkedHashMap<>();
     private final ConsoleHostStateController hostStateController =
             new ConsoleHostStateController(SystemClock::uptimeMillis);
     private LinearLayout homeContent;
@@ -1371,9 +1363,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (homeLayer != null) {
             homeLayer.setVisibility(hostSelectionVisible ? View.GONE : View.VISIBLE);
         }
-        if (hostSelectionLayer != null) {
-            hostSelectionLayer.setVisibility(hostSelectionVisible
-                    && profileGateHostUuid == null ? View.VISIBLE : View.GONE);
+        if (entryShell != null) {
+            // The shell's background also stays under the profile gate.
+            entryShell.setVisibility(hostSelectionVisible
+                    || profileGateHostUuid != null ? View.VISIBLE : View.GONE);
         }
         if (profileGateView != null && profileGateHostUuid != null) {
             profileGateView.setVisibility(pinProfileId == null ? View.VISIBLE : View.GONE);
@@ -1462,33 +1455,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return true;
         }
         handleConsoleAudioKey(event);
-        if (hostSelectionVisible && event != null && isHostSelectionConfirmKey(
-                event.getKeyCode())) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN
-                    && (event.getRepeatCount() > 0 || event.isLongPress())) {
-                ComputerDetails host = focusedHostSelection();
-                if (host != null && !hostSelectionLongPressConsumed) {
-                    hostSelectionLongPressConsumed = true;
-                    showHostSelectionOptions(host);
-                }
-                return host != null;
-            }
-            if (event.getAction() == KeyEvent.ACTION_UP && hostSelectionLongPressConsumed) {
-                hostSelectionLongPressConsumed = false;
-                return true;
-            }
-        }
-        if (hostSelectionVisible && event != null
-                && event.getAction() == KeyEvent.ACTION_UP
-                && (event.getKeyCode() == KeyEvent.KEYCODE_MENU
-                || event.getKeyCode() == KeyEvent.KEYCODE_BUTTON_START)) {
-            View focused = getCurrentFocus();
-            Object tag = focused != null ? focused.getTag() : null;
-            if (tag instanceof String && ((String) tag).startsWith("host.select:")) {
-                ComputerDetails host = hosts.get(((String) tag).substring("host.select:".length()));
-                if (host != null) showHostSelectionOptions(host);
-                return true;
-            }
+        if (hostSelectionVisible && event != null && hostSelectView != null
+                && hostSelectView.handleKey(event)) {
+            return true;
         }
         if (!hostSelectionVisible && event != null
                 && event.getAction() == KeyEvent.ACTION_UP
@@ -1637,7 +1606,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         if (event.getRepeatCount() != 0) return;
-        if (isHostSelectionConfirmKey(keyCode)) {
+        if (ConsoleHostSelectView.isConfirmKey(keyCode)) {
             consoleAudioEngine.playSystemConfirm();
         } else if (keyCode == KeyEvent.KEYCODE_BACK || keyCode == KeyEvent.KEYCODE_BUTTON_B) {
             consoleAudioEngine.playSystemBack();
@@ -1645,22 +1614,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 || keyCode == KeyEvent.KEYCODE_BUTTON_START) {
             consoleAudioEngine.playSystemConfirm();
         }
-    }
-
-    private static boolean isHostSelectionConfirmKey(int keyCode) {
-        return keyCode == KeyEvent.KEYCODE_DPAD_CENTER
-                || keyCode == KeyEvent.KEYCODE_ENTER
-                || keyCode == KeyEvent.KEYCODE_NUMPAD_ENTER
-                || keyCode == KeyEvent.KEYCODE_BUTTON_A;
-    }
-
-    private ComputerDetails focusedHostSelection() {
-        View focused = getCurrentFocus();
-        Object tag = focused != null ? focused.getTag() : null;
-        if (!(tag instanceof String) || !((String) tag).startsWith("host.select:")) {
-            return null;
-        }
-        return hosts.get(((String) tag).substring("host.select:".length()));
     }
 
     private PlayniteDashboardItem focusedPlayniteItem() {
@@ -1817,6 +1770,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         mainHandler.removeCallbacks(childEligibilityBoundary);
         pendingHostPreparation = null;
         cancelOfflinePinAttempt();
+        endPendingHostEntry();
         if (pinProfileId != null) {
             profileGateGeneration.incrementAndGet();
             pinEntry.clear();
@@ -2336,7 +2290,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                             if (isFinishing() || isDestroyed()) return;
                             buildSecondaryLayers(container);
                             homeLayer.setVisibility(View.VISIBLE);
-                            hostSelectionLayer.setVisibility(View.GONE);
+                            entryShell.setVisibility(View.GONE);
                         });
                     }
                 };
@@ -2395,89 +2349,29 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void buildHostSelectionLayer(FrameLayout container) {
-        hostSelectionLayer = new FrameLayout(this);
-        hostSelectionLayer.setVisibility(View.VISIBLE);
-        hostSelectionLayer.setBackground(new HostSelectionBackdropDrawable());
+        entryShell = new ConsoleEntryShell(this);
+        entryShell.setReducedMotion(reducedMotion);
+        entryShell.setClock(DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()));
+        hostSelectView = new ConsoleHostSelectView(this, entryShell, HOST_WAKING_TIMEOUT_MS,
+                new ConsoleHostSelectView.Listener() {
+                    @Override public void onHostSelected(String uuid) {
+                        activateHostFromSelection(uuid);
+                    }
 
-        TextView clock = text("", 11, 0xFFDDE3EB, false);
-        hostSelectionClock = clock;
-        clock.setGravity(Gravity.END);
-        FrameLayout.LayoutParams clockParams = new FrameLayout.LayoutParams(
-                dp(150), dp(40), Gravity.TOP | Gravity.END);
-        clockParams.topMargin = dp(28);
-        clockParams.rightMargin = dp(38);
-        hostSelectionLayer.addView(clock, clockParams);
+                    @Override public void onHostOptions(String uuid) {
+                        ComputerDetails host = hosts.get(uuid);
+                        if (host != null) showHostSelectionOptions(host);
+                    }
 
-        LinearLayout content = new LinearLayout(this);
-        content.setOrientation(LinearLayout.VERTICAL);
-        content.setGravity(Gravity.CENTER_HORIZONTAL);
-        content.setClipChildren(false);
-        content.setClipToPadding(false);
-
-        TextView title = text(getString(R.string.console_host_selection_title),
-                23, Color.WHITE, false);
-        title.setGravity(Gravity.CENTER);
-        content.addView(title, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-
-        TextView subtitle = text(getString(R.string.console_host_selection_subtitle),
-                15, 0xFFB8C0CD, false);
-        subtitle.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams subtitleParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        subtitleParams.topMargin = dp(5);
-        content.addView(subtitle, subtitleParams);
-
-        hostSelectionScroll = new HorizontalScrollView(this);
-        hostSelectionScroll.setFillViewport(true);
-        hostSelectionScroll.setHorizontalScrollBarEnabled(false);
-        hostSelectionScroll.setClipChildren(false);
-        hostSelectionScroll.setClipToPadding(false);
-        hostSelectionScroll.setPadding(dp(24), dp(10), dp(24), dp(10));
-        hostSelectionRow = new LinearLayout(this);
-        hostSelectionRow.setOrientation(LinearLayout.HORIZONTAL);
-        hostSelectionRow.setGravity(Gravity.CENTER);
-        hostSelectionRow.setClipChildren(false);
-        hostSelectionRow.setClipToPadding(false);
-        hostSelectionScroll.addView(hostSelectionRow, new HorizontalScrollView.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
-        LinearLayout.LayoutParams rowParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(236));
-        rowParams.topMargin = dp(18);
-        content.addView(hostSelectionScroll, rowParams);
-
-        FrameLayout.LayoutParams contentParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(330), Gravity.CENTER);
-        contentParams.leftMargin = dp(34);
-        contentParams.rightMargin = dp(34);
-        hostSelectionLayer.addView(content, contentParams);
-
-        hostSelectionLegend = new LinearLayout(this);
-        hostSelectionLegend.setOrientation(LinearLayout.HORIZONTAL);
-        hostSelectionLegend.setGravity(Gravity.CENTER_VERTICAL);
-        hostSelectionLegend.setPadding(dp(9), dp(5), dp(9), dp(5));
-        GradientDrawable hostLegendBackground = gradient(
-                0xB8161E25, 0xD00C1116, 14);
-        hostLegendBackground.setStroke(dp(1), 0x3D6E8291);
-        hostSelectionLegend.setBackground(hostLegendBackground);
-        rebuildHostSelectionLegend(Collections.emptyList());
-        FrameLayout.LayoutParams legendParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT,
-                ViewGroup.LayoutParams.WRAP_CONTENT, Gravity.BOTTOM | Gravity.END);
-        legendParams.rightMargin = dp(38);
-        legendParams.bottomMargin = dp(20);
-        hostSelectionLayer.addView(hostSelectionLegend, legendParams);
-
-        TextView version = text("v" + BuildConfig.VERSION_NAME, 8, 0x809DA8B6, false);
-        FrameLayout.LayoutParams versionParams = new FrameLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT,
-                Gravity.BOTTOM | Gravity.START);
-        versionParams.leftMargin = dp(20);
-        versionParams.bottomMargin = dp(14);
-        hostSelectionLayer.addView(version, versionParams);
-
+                    @Override public void onAddHost() {
+                        showAddHostPanel();
+                    }
+                });
+        hostSelectView.setReducedMotion(reducedMotion);
         homeLayer.setVisibility(View.GONE);
-        container.addView(hostSelectionLayer, match());
+        container.addView(entryShell, match());
+        entryShell.setOnVisibilityChange(this::updateContentLayerAccess);
+        updateContentLayerAccess();
         renderHostSelection();
     }
 
@@ -2507,12 +2401,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = null;
-        if (profileGateView != null) profileGateView.setVisibility(View.GONE);
         hostSelectionVisible = true;
         if (consoleAudioEngine != null) {
             consoleAudioEngine.setHostSelectionVisible(true);
         }
-        hostSelectionFocusUuid = focusUuid;
+        if (hostSelectView != null) {
+            hostSelectView.setFocusTarget(focusUuid);
+        }
+        endPendingHostEntry();
         stopAppListPoller();
         cancelPlayniteArtworkPrefetch();
         if (loadingLayer != null) loadingLayer.setVisibility(View.GONE);
@@ -2520,221 +2416,41 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             discordDmNotifications.setPresentationBlocked(discordDmHostToken, false);
         }
         if (homeLayer != null) homeLayer.setVisibility(View.GONE);
-        if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.VISIBLE);
+        // Back from the profile gate cross-fades it into the host row above the same shell.
+        if (entryShell != null) entryShell.show(null);
         renderHostSelection();
         refreshVisibleHostProfiles();
         requestHostSelectionFocus();
     }
 
     private void renderHostSelection() {
-        if (hostSelectionRow == null) return;
-        if (hostSelectionClock != null) {
-            hostSelectionClock.setText(DateFormat.getTimeInstance(DateFormat.SHORT).format(new Date()));
-        }
+        if (hostSelectView == null) return;
         List<ComputerDetails> sorted = new ArrayList<>(hosts.values());
         sorted.removeIf(host -> newlyDiscoveredHosts.contains(host.uuid));
         sorted.sort(Comparator.comparing(host -> host.name, String.CASE_INSENSITIVE_ORDER));
-        StringBuilder signature = new StringBuilder();
-        for (ComputerDetails host : sorted) {
-            signature.append(host.uuid).append(':').append(host.name).append('|');
+        List<ConsoleHostSelectView.Tile> tiles = new ArrayList<>();
+        for (ComputerDetails host : sorted) tiles.add(hostSelectionTile(host));
+        if (hostSelectView.render(tiles, polling) && hostSelectionVisible) {
+            requestHostSelectionFocus();
         }
-        if (signature.toString().equals(renderedHostSelectionSignature)) {
-            for (ComputerDetails host : sorted) updateHostSelectionTile(host);
-            return;
-        }
-
-        renderedHostSelectionSignature = signature.toString();
-        hostSelectionTiles.clear();
-        hostSelectionRow.removeAllViews();
-        hostSelectionRow.addView(createAddHostTile(), hostSelectionTileParams());
-        for (ComputerDetails host : sorted) {
-            View tile = createHostSelectionTile(host);
-            hostSelectionRow.addView(tile, hostSelectionTileParams());
-        }
-        wireHostSelectionFocus();
-        if (hostSelectionVisible) requestHostSelectionFocus();
     }
 
-    private LinearLayout.LayoutParams hostSelectionTileParams() {
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(dp(156), dp(220));
-        params.leftMargin = dp(7);
-        params.rightMargin = dp(7);
-        return params;
-    }
-
-    private View createAddHostTile() {
-        LinearLayout tile = hostSelectionTileBase();
-        tile.setTag("host.add");
-        FrameLayout avatar = new FrameLayout(this);
-        TextView plus = text("+", 31, Color.WHITE, false);
-        plus.setGravity(Gravity.CENTER);
-        avatar.addView(plus, match());
-        styleHostSelectionAvatar(avatar, false, true);
-        tile.addView(avatar, new LinearLayout.LayoutParams(dp(92), dp(92)));
-        TextView label = text(getString(R.string.console_add_host_short),
-                14, Color.WHITE, false);
-        label.setGravity(Gravity.CENTER);
-        LinearLayout.LayoutParams labelParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
-        labelParams.topMargin = dp(10);
-        tile.addView(label, labelParams);
-        TextView hint = text("", 12, 0xFFC8D0DB, false);
-        hint.setGravity(Gravity.CENTER);
-        tile.addView(hint, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
-        tile.setOnClickListener(view -> showAddHostPanel());
-        tile.setOnFocusChangeListener((view, focused) -> {
-            styleHostSelectionAvatar(avatar, focused, true);
-            hint.setText(focused ? getString(R.string.console_select_hint) : "");
-            animateScale(tile, focused ? 1.07f : 1f);
-            if (focused) smoothCenterOn(hostSelectionScroll, tile);
-        });
-        return tile;
-    }
-
-    private View createHostSelectionTile(ComputerDetails host) {
-        LinearLayout tile = hostSelectionTileBase();
-        tile.setTag("host.select:" + host.uuid);
-        FrameLayout avatar = new FrameLayout(this);
-        ImageView artwork = new ImageView(this);
-        artwork.setImageDrawable(new HostAvatarDrawable(host.uuid));
-        artwork.setScaleType(ImageView.ScaleType.CENTER_CROP);
-        artwork.setAlpha(.88f);
-        FrameLayout.LayoutParams artworkParams = new FrameLayout.LayoutParams(
-                dp(84), dp(84), Gravity.CENTER);
-        avatar.addView(artwork, artworkParams);
-        TextView initials = text(hostInitials(host.name), 14, Color.WHITE, true);
-        initials.setGravity(Gravity.CENTER);
-        initials.setShadowLayer(dp(3), 0f, dp(1), 0xE0000000);
-        avatar.addView(initials, match());
-        styleHostSelectionAvatar(avatar, false, false);
-        tile.addView(avatar, new LinearLayout.LayoutParams(dp(92), dp(92)));
-
-        TextView name = text(host.name, 14, Color.WHITE, false);
-        name.setGravity(Gravity.CENTER);
-        name.setSingleLine(true);
-        name.setEllipsize(TextUtils.TruncateAt.END);
-        LinearLayout.LayoutParams nameParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(44));
-        nameParams.topMargin = dp(10);
-        tile.addView(name, nameParams);
-
-        LinearLayout statusRow = new LinearLayout(this);
-        statusRow.setOrientation(LinearLayout.HORIZONTAL);
-        statusRow.setGravity(Gravity.CENTER);
-        statusRow.setTranslationY(-dp(4));
-        View dot = new View(this);
-        statusRow.addView(dot, new LinearLayout.LayoutParams(dp(6), dp(6)));
-        TextView status = text("", 12, 0xFFC7CED8, false);
-        LinearLayout.LayoutParams statusParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(30));
-        statusParams.leftMargin = dp(4);
-        statusRow.addView(status, statusParams);
-        tile.addView(statusRow, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(30)));
-
-        TextView options = text(getString(R.string.console_host_options_hint),
-                12, 0xFFDCE3ED, false);
-        options.setGravity(Gravity.CENTER);
-        options.setCompoundDrawablesWithIntrinsicBounds(
-                R.drawable.ic_overlay_window_menu, 0, 0, 0);
-        options.setCompoundDrawablePadding(dp(2));
-        options.setTranslationY(-dp(4));
-        options.setVisibility(View.INVISIBLE);
-        tile.addView(options, new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)));
-
-        HostSelectionTile views = new HostSelectionTile(tile, avatar, dot, status, options);
-        hostSelectionTiles.put(host.uuid, views);
-        updateHostSelectionTile(host);
-        tile.setOnClickListener(view -> activateHostFromSelection(host.uuid));
-        tile.setOnLongClickListener(view -> {
-            ComputerDetails current = hosts.get(host.uuid);
-            if (current != null) showHostSelectionOptions(current);
-            return true;
-        });
-        tile.setOnFocusChangeListener((view, focused) -> {
-            styleHostSelectionAvatar(avatar, focused, false);
-            options.setVisibility(focused ? View.VISIBLE : View.INVISIBLE);
-            animateScale(tile, focused ? 1.07f : 1f);
-            if (focused) {
-                hostSelectionFocusUuid = host.uuid;
-                smoothCenterOn(hostSelectionScroll, tile);
-            }
-        });
-        return tile;
-    }
-
-    private String hostInitials(String name) {
-        if (name == null || name.trim().isEmpty()) return "PC";
-        String[] words = name.trim().split("\\s+");
-        if (words.length > 1) {
-            return (words[0].substring(0, 1)
-                    + words[words.length - 1].substring(0, 1)).toUpperCase(Locale.ROOT);
-        }
-        String value = words[0];
-        return value.substring(0, Math.min(2, value.length())).toUpperCase(Locale.ROOT);
-    }
-
-    private LinearLayout hostSelectionTileBase() {
-        LinearLayout tile = new LinearLayout(this);
-        tile.setId(View.generateViewId());
-        tile.setOrientation(LinearLayout.VERTICAL);
-        tile.setGravity(Gravity.CENTER_HORIZONTAL);
-        tile.setPadding(dp(5), dp(5), dp(5), dp(2));
-        tile.setFocusable(true);
-        tile.setFocusableInTouchMode(true);
-        tile.setClickable(true);
-        tile.setSoundEffectsEnabled(false);
-        tile.setClipChildren(false);
-        tile.setClipToPadding(false);
-        return tile;
-    }
-
-    private void styleHostSelectionAvatar(View avatar, boolean focused, boolean add) {
-        GradientDrawable ring = new GradientDrawable();
-        ring.setShape(GradientDrawable.OVAL);
-        ring.setColor(add ? (focused ? 0x704D5968 : 0x45434A54) : 0x24000000);
-        ring.setStroke(dp(focused ? 2 : 1),
-                focused ? 0xFFF2F6FA : add ? 0x406E7782 : 0x507C8792);
-        avatar.setBackground(ring);
-        avatar.setElevation(dp(focused ? 8 : 1));
+    private ConsoleHostSelectView.Tile hostSelectionTile(ComputerDetails host) {
+        SessionSnapshot snapshot = renderedSessionSnapshot(host);
+        return new ConsoleHostSelectView.Tile(host.uuid, host.name,
+                consoleHostState(host, snapshot), consoleProfile(host).state,
+                hostStatus(host, snapshot), hostStateController.wakingSince(host.uuid));
     }
 
     private void updateHostSelectionTile(ComputerDetails host) {
-        HostSelectionTile tile = hostSelectionTiles.get(host.uuid);
-        if (tile == null) return;
-        SessionSnapshot snapshot = renderedSessionSnapshot(host);
-        ConsoleHostPresentation.State state = consoleHostState(host, snapshot);
-        String status = hostStatus(host, snapshot);
-        tile.status.setText(status);
-        GradientDrawable lamp = new GradientDrawable();
-        lamp.setShape(GradientDrawable.OVAL);
-        lamp.setColor(ConsoleHostPresentation.color(state));
-        tile.dot.setBackground(lamp);
-        tile.root.setContentDescription(getString(R.string.console_host_selection_description,
-                host.name, status));
+        if (host != null && hostSelectView != null && hostSelectView.shows(host.uuid)) {
+            hostSelectView.update(hostSelectionTile(host));
+        }
     }
 
     private void requestHostSelectionFocus() {
-        if (!hostSelectionVisible || hostSelectionRow == null) return;
-        View target = null;
-        String uuid = hostSelectionFocusUuid != null ? hostSelectionFocusUuid : selectedHostUuid;
-        if (uuid != null) target = hostSelectionRow.findViewWithTag("host.select:" + uuid);
-        if (target == null) target = hostSelectionRow.findViewWithTag("host.add");
-        if (target != null) target.post(target::requestFocus);
-    }
-
-    private void wireHostSelectionFocus() {
-        List<View> focusable = new ArrayList<>();
-        collectFocusable(hostSelectionRow, focusable);
-        for (int index = 0; index < focusable.size(); index++) {
-            View current = focusable.get(index);
-            current.setNextFocusLeftId(focusable.get(Math.max(0, index - 1)).getId());
-            current.setNextFocusRightId(
-                    focusable.get(Math.min(focusable.size() - 1, index + 1)).getId());
-            current.setNextFocusUpId(current.getId());
-            current.setNextFocusDownId(current.getId());
+        if (hostSelectionVisible && hostSelectView != null) {
+            hostSelectView.requestTargetFocus(selectedHostUuid);
         }
     }
 
@@ -2745,7 +2461,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             pairHost(host);
             return;
         }
+        // The gate may wait on the Gateway's profile list; the tile answers OK at once.
+        hostSelectView.setPending(uuid);
         resolveProfileGate(host, true, true);
+    }
+
+    /** Ends the tile's pressed state once the profile fetch it waits for is over. */
+    private void endPendingHostEntry() {
+        if (hostSelectView != null) hostSelectView.setPending(null);
     }
 
     private void resolveProfileGate(ComputerDetails host, boolean focusApps,
@@ -2771,6 +2494,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             }
             HostGatewayClient.IntegrationProfiles result = profiles;
             mainHandler.post(() -> {
+                // Every outcome of the fetch ends the tile's pressed state, stale or not.
+                endPendingHostEntry();
                 if (token != profileGateGeneration.get()) return;
                 ComputerDetails current = currentHost(host.uuid);
                 if (current == null) return;
@@ -2791,6 +2516,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void resolveProfileGate(ComputerDetails host, boolean focusApps,
                                     boolean prepareHost, int token) {
+        endPendingHostEntry();
         if (token != profileGateGeneration.get()) return;
         HostGatewayStore.ProfileGate gate = hostGatewayStore.profileGate(host.uuid);
         if (gate.clearAutomatic) {
@@ -2818,8 +2544,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 hostGatewayStore.profileSelection(host.uuid);
         profileGateHostUuid = host.uuid;
         hostSelectionVisible = false;
-        hostSelectionFocusUuid = host.uuid;
-        if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.GONE);
+        hostSelectView.setFocusTarget(host.uuid);
         if (homeLayer != null) homeLayer.setVisibility(View.GONE);
         List<ControllerInfo> controllers = loadControllers();
         profileGateView.setControllerState(usesPlayStationButtons(controllers),
@@ -2857,6 +2582,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         profileGateView.setClockText(DateFormat.getTimeInstance(DateFormat.SHORT)
                 .format(new Date()));
         profileGateView.bringToFront();
+        // The gate is drawn above the entry shell, whose background stays while the rows fade.
+        entryShell.show(profileGateView);
     }
 
     private HostGatewayClient.IntegrationProfile profileForGate(
@@ -4287,36 +4014,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         return false;
     }
 
-    private void rebuildHostSelectionLegend(List<ControllerInfo> controllers) {
-        if (hostSelectionLegend == null) return;
-        boolean playStation = usesPlayStationButtons(controllers);
-        hostSelectionLegend.removeAllViews();
-        if (controllers.isEmpty()) {
-            addHostSelectionLegendTextItem("OK", getString(R.string.console_select_hint));
-        } else {
-            addHostSelectionLegendItem(ControllerGlyphs.text(
-                    playStation, ControllerGlyphs.Button.CONFIRM),
-                    getString(R.string.console_select_hint));
-        }
-        addHostSelectionLegendItem(ControllerGlyphs.text(
-                        playStation, ControllerGlyphs.Button.MENU),
-                getString(R.string.console_host_options_label));
-    }
-
-    private void addHostSelectionLegendItem(String glyph, String label) {
-        addLegendSeparator(hostSelectionLegend, 18, 9);
-        TextView button = controllerGlyph(glyph, 23);
-        hostSelectionLegend.addView(button, new LinearLayout.LayoutParams(dp(23), dp(23)));
-        addLegendDescription(hostSelectionLegend, label, 13, 5);
-    }
-
-    private void addHostSelectionLegendTextItem(String glyph, String label) {
-        addLegendSeparator(hostSelectionLegend, 18, 9);
-        hostSelectionLegend.addView(legendTextButton(glyph),
-                new LinearLayout.LayoutParams(dp(23), dp(23)));
-        addLegendDescription(hostSelectionLegend, label, 13, 5);
-    }
-
     private void addNavigationLegendItem(String glyph, String label) {
         addLegendSeparator(expandedNavigationLegend, 20, 10);
         TextView button = controllerGlyph(glyph, 25);
@@ -4333,17 +4030,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             separatorParams.setMargins(dp(margin), 0, dp(margin), 0);
             container.addView(separator, separatorParams);
         }
-    }
-
-    private TextView legendTextButton(String glyph) {
-        TextView button = text(glyph, 12, Color.WHITE, true);
-        button.setGravity(Gravity.CENTER);
-        GradientDrawable background = new GradientDrawable();
-        background.setShape(GradientDrawable.OVAL);
-        background.setColor(0xFF26343E);
-        background.setStroke(dp(1), 0xBFE8F1F5);
-        button.setBackground(background);
-        return button;
     }
 
     private TextView controllerGlyph(String glyph, int size) {
@@ -7832,8 +7518,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             consoleAudioEngine.setHostSelectionVisible(false);
         }
         if (enteringHost || focusApps) pendingInitialGameFocus = true;
-        hostSelectionFocusUuid = host.uuid;
-        if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.GONE);
+        if (hostSelectView != null) hostSelectView.setFocusTarget(host.uuid);
+        if (entryShell != null) entryShell.setVisibility(View.GONE);
         if (homeLayer != null) homeLayer.setVisibility(View.VISIBLE);
         selectedHostUuid = host.uuid;
         ProfileAuthorization.grant(host.uuid);
@@ -14321,7 +14007,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 renderedControllerDevicesSignature);
         if (devicesChanged) {
             rebuildExpandedNavigationLegend(controllers);
-            rebuildHostSelectionLegend(controllers);
+            if (hostSelectView != null) {
+                hostSelectView.setControllers(!controllers.isEmpty(),
+                        usesPlayStationButtons(controllers));
+            }
         }
         if (profileGateView != null) {
             profileGateView.setControllerState(usesPlayStationButtons(controllers),
@@ -14860,6 +14549,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     if (discordDmToastView != null) discordDmToastView.setReducedMotion(reducedMotion);
                     consolePanel.setReducedMotion(reducedMotion);
                     settingsScreen.setReducedMotion(reducedMotion);
+                    entryShell.setReducedMotion(reducedMotion);
+                    hostSelectView.setReducedMotion(reducedMotion);
                     if (libraryTransitionCoordinator != null) {
                         libraryTransitionCoordinator.setReducedMotion(reducedMotion);
                     }
@@ -15366,13 +15057,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             lastContentFocus = getCurrentFocus();
             lastContentFocusTag = lastContentFocus != null ? lastContentFocus.getTag() : null;
             panelHistory.clear();
-            homeLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-            homeLayer.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-            if (hostSelectionLayer != null) {
-                hostSelectionLayer.setImportantForAccessibility(
-                        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-                hostSelectionLayer.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-            }
+            contentPanelOpen = true;
+            updateContentLayerAccess();
         }
         if (!sameCommunity) {
             communityPanelHost.removeAllViews();
@@ -15567,13 +15253,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             lastContentFocus = getCurrentFocus();
             lastContentFocusTag = lastContentFocus != null ? lastContentFocus.getTag() : null;
             panelHistory.clear();
-            homeLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-            homeLayer.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-            if (hostSelectionLayer != null) {
-                hostSelectionLayer.setImportantForAccessibility(
-                        View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
-                hostSelectionLayer.setDescendantFocusability(ViewGroup.FOCUS_BLOCK_DESCENDANTS);
-            }
+            contentPanelOpen = true;
+            updateContentLayerAccess();
         } else if (!sidePanelTransient && currentPanelKey != null
                 && !currentPanelKey.equals(nextKey)) {
             PanelSnapshot snapshot = capturePanelSnapshot();
@@ -15702,14 +15383,26 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         currentPanelKey = null;
         sidePanelBusyBanner = null;
         sidePanelTransient = false;
-        homeLayer.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
-        homeLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
-        if (hostSelectionLayer != null) {
-            hostSelectionLayer.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
-            hostSelectionLayer.setImportantForAccessibility(
-                    View.IMPORTANT_FOR_ACCESSIBILITY_AUTO);
-        }
+        contentPanelOpen = false;
+        updateContentLayerAccess();
         restoreContentFocus();
+    }
+
+    /**
+     * Only the top content layer takes focus and accessibility: an open panel covers both
+     * layers, and the entry shell covers the home layer beneath it.
+     */
+    private void updateContentLayerAccess() {
+        boolean entry = entryShell != null && entryShell.getVisibility() == View.VISIBLE;
+        setLayerAccess(homeLayer, !contentPanelOpen && !entry);
+        if (entryShell != null) setLayerAccess(entryShell, !contentPanelOpen);
+    }
+
+    private static void setLayerAccess(ViewGroup layer, boolean exposed) {
+        layer.setImportantForAccessibility(exposed ? View.IMPORTANT_FOR_ACCESSIBILITY_AUTO
+                : View.IMPORTANT_FOR_ACCESSIBILITY_NO_HIDE_DESCENDANTS);
+        layer.setDescendantFocusability(exposed ? ViewGroup.FOCUS_AFTER_DESCENDANTS
+                : ViewGroup.FOCUS_BLOCK_DESCENDANTS);
     }
 
     private PanelSnapshot capturePanelSnapshot() {
@@ -15834,8 +15527,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 && lastContentFocus.isShown() && lastContentFocus.isFocusable()
                 ? lastContentFocus : null;
         if (target == null && lastContentFocusTag != null) {
-            View tagged = (hostSelectionVisible && hostSelectionLayer != null
-                    ? hostSelectionLayer : homeLayer).findViewWithTag(lastContentFocusTag);
+            View tagged = (hostSelectionVisible && entryShell != null
+                    ? entryShell : homeLayer).findViewWithTag(lastContentFocusTag);
             if (tagged != null && tagged.isShown() && tagged.isFocusable()) target = tagged;
         }
         if (target == null && !hostSelectionVisible) target = firstFocusableChild(appRow);
@@ -16440,23 +16133,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
-    private static final class HostSelectionTile {
-        final View root;
-        final View avatar;
-        final View dot;
-        final TextView status;
-        final TextView options;
-
-        HostSelectionTile(View root, View avatar, View dot,
-                          TextView status, TextView options) {
-            this.root = root;
-            this.avatar = avatar;
-            this.dot = dot;
-            this.status = status;
-            this.options = options;
-        }
-    }
-
     static final class ProfileToolbarDrawable extends Drawable {
         private final HostAvatarDrawable avatar;
         private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -16525,100 +16201,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return words[0].substring(0, Math.min(2, words[0].length()))
                     .toUpperCase(Locale.ROOT);
         }
-    }
-
-    static final class HostAvatarDrawable extends Drawable {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-        private final int seed;
-
-        HostAvatarDrawable(String value) {
-            seed = value == null ? 0 : value.hashCode();
-        }
-
-        @Override public void draw(Canvas canvas) {
-            Rect bounds = getBounds();
-            float cx = bounds.exactCenterX();
-            float cy = bounds.exactCenterY();
-            float radius = Math.min(bounds.width(), bounds.height()) / 2f;
-            Path clip = new Path();
-            clip.addCircle(cx, cy, radius, Path.Direction.CW);
-            canvas.save();
-            canvas.clipPath(clip);
-
-            float hue = Math.abs(seed % 360);
-            paint.setColor(Color.HSVToColor(new float[]{hue, .58f, .62f}));
-            canvas.drawCircle(cx, cy, radius, paint);
-            for (int index = 0; index < 6; index++) {
-                int shifted = seed >> (index * 3);
-                float x = bounds.left + bounds.width() * (.12f + .17f * (index % 4));
-                float y = bounds.top + bounds.height() * (.12f + .21f * ((shifted & 3)));
-                float width = radius * (.75f + .12f * (index % 3));
-                float height = radius * (.35f + .1f * ((index + 1) % 3));
-                float blobHue = (hue + 48f + index * 43f) % 360f;
-                paint.setColor(Color.HSVToColor(185,
-                        new float[]{blobHue, .62f, .94f}));
-                canvas.save();
-                canvas.rotate((shifted & 63) - 31f, x, y);
-                canvas.drawOval(new RectF(x - width, y - height,
-                        x + width, y + height), paint);
-                canvas.restore();
-            }
-            paint.setStyle(Paint.Style.STROKE);
-            paint.setStrokeWidth(Math.max(2f, radius * .08f));
-            paint.setColor(0x55FFFFFF);
-            Path wave = new Path();
-            wave.moveTo(bounds.left - radius * .2f, cy + radius * .35f);
-            wave.cubicTo(cx - radius * .6f, cy - radius * .7f,
-                    cx + radius * .25f, cy + radius * .8f,
-                    bounds.right + radius * .2f, cy - radius * .2f);
-            canvas.drawPath(wave, paint);
-            paint.setStyle(Paint.Style.FILL);
-            canvas.restore();
-        }
-
-        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
-        @Override public void setColorFilter(android.graphics.ColorFilter filter) {
-            paint.setColorFilter(filter);
-        }
-        @Override public int getOpacity() { return PixelFormat.TRANSLUCENT; }
-    }
-
-    static final class HostSelectionBackdropDrawable extends Drawable {
-        private final Paint paint = new Paint(Paint.ANTI_ALIAS_FLAG);
-
-        @Override public void draw(Canvas canvas) {
-            Rect bounds = getBounds();
-            canvas.drawColor(0xFF070A10);
-            paint.setColor(0x342C4868);
-            canvas.drawOval(new RectF(bounds.left - bounds.width() * .1f,
-                    bounds.top - bounds.height() * .2f,
-                    bounds.left + bounds.width() * .58f,
-                    bounds.top + bounds.height() * 1.15f), paint);
-            paint.setColor(0x263E284B);
-            canvas.drawOval(new RectF(bounds.left + bounds.width() * .44f,
-                    bounds.top - bounds.height() * .08f,
-                    bounds.right + bounds.width() * .12f,
-                    bounds.bottom + bounds.height() * .18f), paint);
-            paint.setColor(0x1F9B6334);
-            for (int index = 0; index < 18; index++) {
-                float x = bounds.left + bounds.width() * ((index * 37 % 100) / 100f);
-                float y = bounds.top + bounds.height() * (.28f
-                        + ((index * 19 % 52) / 100f));
-                float radius = Math.max(2f, bounds.width() * (.0015f + (index % 3) * .0008f));
-                canvas.drawCircle(x, y, radius, paint);
-            }
-            paint.setColor(0x62000000);
-            canvas.drawRect(bounds.left, bounds.top, bounds.right,
-                    bounds.top + bounds.height() * .08f, paint);
-            canvas.drawRect(bounds.left, bounds.bottom - bounds.height() * .08f,
-                    bounds.right, bounds.bottom, paint);
-        }
-
-        @Override public void setAlpha(int alpha) { paint.setAlpha(alpha); }
-        @Override public void setColorFilter(android.graphics.ColorFilter filter) {
-            paint.setColorFilter(filter);
-        }
-        @Override public int getOpacity() { return PixelFormat.OPAQUE; }
     }
 
     private void wireDebugHomeFocusNavigation(View resume, View filter, View controller,

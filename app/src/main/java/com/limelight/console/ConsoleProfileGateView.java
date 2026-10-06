@@ -44,8 +44,7 @@ final class ConsoleProfileGateView extends FrameLayout {
         setClipChildren(false);
         setClipToPadding(false);
         setImportantForAccessibility(IMPORTANT_FOR_ACCESSIBILITY_YES);
-        // Keep the gate visually part of the same world as host selection.
-        setBackground(new ConsoleActivity.HostSelectionBackdropDrawable());
+        // No background: the gate sits above the entry shell, whose background stays.
     }
 
     void setClockText(CharSequence value) {
@@ -203,7 +202,7 @@ final class ConsoleProfileGateView extends FrameLayout {
 
         FrameLayout avatar = new FrameLayout(getContext());
         ImageView artwork = new ImageView(getContext());
-        artwork.setImageDrawable(new ConsoleActivity.HostAvatarDrawable(profileId));
+        artwork.setImageDrawable(new HostAvatarDrawable(profileId));
         if (profile.isChild() && ConsoleChildProfileEditor.isKnownAvatar(profile.avatarId)
                 && !"default".equals(profile.avatarId)) {
             artwork.setColorFilter(ConsoleChildProfileEditor.avatarColor(profile.avatarId),

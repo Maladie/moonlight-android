@@ -214,34 +214,6 @@ public class ConsoleActivityRequestedUiContractTest {
                 "android:scaleX=\"1.15\""));
     }
 
-    @Test public void hostSelectionUsesTheRequestedLargerTypeAndTiles()
-            throws IOException {
-        String source = consoleActivitySource();
-        String selection = source.substring(source.indexOf("private void buildHostSelectionLayer("),
-                source.indexOf("private void resolveInitialHostSelection("));
-        String tiles = source.substring(source.indexOf("private LinearLayout.LayoutParams hostSelectionTileParams("),
-                source.indexOf("private String hostInitials("));
-        String legend = source.substring(source.indexOf("private void rebuildHostSelectionLegend("),
-                source.indexOf("private void addNavigationLegendItem("));
-
-        assertTrue(selection.contains("15, 0xFFB8C0CD"));
-        assertTrue(selection.contains("ViewGroup.LayoutParams.MATCH_PARENT, dp(330)"));
-        assertTrue(tiles.contains("new LinearLayout.LayoutParams(dp(156), dp(220))"));
-        assertTrue(tiles.contains("R.string.console_add_host_short),\n                14"));
-        assertTrue(tiles.contains("TextView hint = text(\"\", 12"));
-        assertTrue(tiles.contains("TextView name = text(host.name, 14"));
-        assertTrue(tiles.contains("TextView status = text(\"\", 12"));
-        assertTrue(tiles.contains("statusRow.setTranslationY(-dp(4))"));
-        assertTrue(tiles.contains("R.string.console_host_options_hint),\n                12"));
-        assertTrue(tiles.contains("R.drawable.ic_overlay_window_menu"));
-        assertTrue(tiles.contains("options.setCompoundDrawablePadding(dp(2))"));
-        assertTrue(tiles.contains("options.setTranslationY(-dp(4))"));
-        assertTrue(tiles.contains("ViewGroup.LayoutParams.WRAP_CONTENT, dp(34)"));
-        assertTrue(tiles.contains("ViewGroup.LayoutParams.MATCH_PARENT, dp(44)"));
-        assertTrue(tiles.contains("nameParams.topMargin = dp(10)"));
-        assertTrue(legend.contains("addLegendDescription(hostSelectionLegend, label, 13, 5)"));
-    }
-
     @Test public void initialCarouselFocusAlwaysTargetsTheFirstCard() throws IOException {
         String source = consoleActivitySource();
         String prepared = source.substring(source.indexOf(
