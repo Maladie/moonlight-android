@@ -131,6 +131,14 @@ public final class HostGatewayStore {
         return connection == null ? null : connection.forProfile(profileId);
     }
 
+    /** Connection for background pollers: none until the profile gate was passed for the host. */
+    public GatewayConnection loadForPolling(String hostUuid, String activeHost,
+                                            String profileId) {
+        if (!ProfileAuthorization.allows(hostUuid)) return null;
+        return profileId == null ? loadForHost(hostUuid, activeHost)
+                : loadForHost(hostUuid, activeHost, profileId);
+    }
+
     void save(String hostUuid, GatewayConnection connection) {
         if (hostUuid == null || hostUuid.isEmpty() || connection == null) return;
         GatewayConnection previous = load(hostUuid);

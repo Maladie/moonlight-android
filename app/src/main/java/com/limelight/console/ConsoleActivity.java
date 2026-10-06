@@ -2615,6 +2615,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = null;
+        ProfileAuthorization.revoke();
         if (profileGateView != null) profileGateView.setVisibility(View.GONE);
         hostSelectionVisible = true;
         if (consoleAudioEngine != null) {
@@ -2925,6 +2926,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         HostGatewayStore.ProfileSelection selection =
                 hostGatewayStore.profileSelection(host.uuid);
         profileGateHostUuid = host.uuid;
+        ProfileAuthorization.revoke();
         hostSelectionVisible = false;
         hostSelectionFocusUuid = host.uuid;
         if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.GONE);
@@ -3741,6 +3743,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = host.uuid;
+        ProfileAuthorization.revoke();
         pinProfileId = profile.id;
         pinFocusApps = focusApps;
         pinPrepareHost = prepareHost;
@@ -4654,10 +4657,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 expected == null ? null : selectedProfileKey(expected.hostId));
     }
 
-    private String profileStateKey(String hostId) {
-        return selectedProfileKey(hostId).cacheKey();
-    }
-
     private void updateProfileSelector(ComputerDetails host) {
         if (profileSelector == null) return;
         HostGatewayStore.ProfileSelection selection = host == null ? null
@@ -4801,6 +4800,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void applySelectedProfile(ComputerDetails host, String profileId) {
+        ProfileAuthorization.grant(host.uuid);
         if (!changeSelectedProfile(host, profileId)) return;
         currentSunshineApps = loadApps(host);
         updateHostSelector();
@@ -5057,7 +5057,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         sessionProjectionRequestedAt.put(stateKey, now);
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         GatewayConnection connection =
-                hostGatewayStore.loadForHost(host.uuid, address, requestKey.profileId);
+                hostGatewayStore.loadForPolling(host.uuid, address, requestKey.profileId);
         if (connection == null) {
             sessionProjectionRefreshInFlight.remove(stateKey);
             if (completion != null) completion.accept(false);
@@ -6757,8 +6757,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             return;
         }
         ComputerDetails host = hosts.get(selectedHostUuid);
-        HostGatewayStore.ProfileSelection selection = host == null ? null
-                : hostGatewayStore.profileSelection(host.uuid);
         button.setVisibility(View.VISIBLE);
         if (host == null) {
             applyDiscordIndicator(button, 0xFFFF6B6B,
@@ -6767,7 +6765,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         GatewayConnection connection =
-                hostGatewayStore.loadForHost(host.uuid, address);
+                hostGatewayStore.loadForPolling(host.uuid, address, null);
         if (connection == null) {
             applyDiscordIndicator(button, 0xFFFF6B6B,
                     getString(R.string.console_discord_unconfigured));
@@ -8163,6 +8161,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.GONE);
         if (homeLayer != null) homeLayer.setVisibility(View.VISIBLE);
         selectedHostUuid = host.uuid;
+        ProfileAuthorization.grant(host.uuid);
         refreshDiscordAccess();
         if (requiresPreparedInitialCarouselFrame()) {
             initialLocalAppsHostId = "";

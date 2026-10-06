@@ -19,6 +19,7 @@ import com.limelight.binding.video.MediaCodecHelper;
 import com.limelight.binding.video.PerfOverlayListener;
 import com.limelight.nvstream.av.video.SwitchableVideoDecoderRenderer;
 import com.limelight.console.ConsoleStreamTransitionCoordinator;
+import com.limelight.console.SessionFailure;
 import com.limelight.console.DiscordOverlayController;
 import com.limelight.console.DiscordDmNotificationCoordinator;
 import com.limelight.console.DiscordDmToastView;
@@ -4708,9 +4709,22 @@ public class Game extends Activity implements SurfaceHolder.Callback,
     }
 
     @Override
+    public void controlRejected(String stage, String reason) {
+        stageFailed(stage, 0, 0, SessionFailure.fromControlRejection(reason),
+                SessionFailure.safeDetail(reason));
+    }
+
+    @Override
     public void stageFailed(final String stage, final int portFlags, final int errorCode) {
+        stageFailed(stage, portFlags, errorCode, null, "");
+    }
+
+    private void stageFailed(final String stage, final int portFlags, final int errorCode,
+                             final SessionFailure rejection, final String rejectionDetail) {
         MoonWakerDiagnostics.record("ERROR", "android.stream-transport",
-                "stream.stage_failed", "stage", streamStageCode(stage), "reason", Integer.toString(errorCode),
+                "stream.stage_failed", "stage", streamStageCode(stage),
+                "reason", rejection != null ? rejection.code : Integer.toString(errorCode),
+                "detail", rejectionDetail,
                 "transition_id", transitionSpec == null ? "" : transitionSpec.id,
                 "stream_session_id", streamSessionId);
 
@@ -4747,7 +4761,9 @@ public class Game extends Activity implements SurfaceHolder.Callback,
                         Toast.makeText(Game.this, getResources().getText(R.string.video_decoder_init_failed), Toast.LENGTH_LONG).show();
                     }
 
-                    String dialogText = getResources().getString(R.string.conn_error_msg) + " " + stage +" (error "+errorCode+")";
+                    String dialogText = rejection != null
+                            ? getString(rejection.details) + "\n\n" + rejection.code
+                            : getResources().getString(R.string.conn_error_msg) + " " + stage +" (error "+errorCode+")";
 
                     if (portFlags != 0) {
                         dialogText += "\n\n" + getResources().getString(R.string.check_ports_msg) + "\n" +
