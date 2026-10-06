@@ -101,6 +101,7 @@ final class EmbeddedTvKeyboardModel {
     private Page page = Page.ALPHA;
     private Shift shift = Shift.LOWER;
     private String selectedId = "text.q";
+    private boolean microphone = true;
 
     Page page() { return page; }
     Shift shift() { return shift; }
@@ -108,7 +109,13 @@ final class EmbeddedTvKeyboardModel {
 
     Key selectedKey() { return selected(); }
 
-    List<Key> keys() { return keysFor(page, shift); }
+    List<Key> keys() { return keysFor(page, shift, microphone); }
+
+    /** Without the microphone key the space bar takes its place. */
+    void setMicrophone(boolean microphone) {
+        this.microphone = microphone;
+        if (!microphone && "microphone".equals(selectedId)) selectedId = "space";
+    }
 
     void reset() {
         page = Page.ALPHA;
@@ -430,7 +437,7 @@ final class EmbeddedTvKeyboardModel {
                 && Character.isLowSurrogate(value.charAt(index));
     }
 
-    private static List<Key> keysFor(Page page, Shift shift) {
+    private static List<Key> keysFor(Page page, Shift shift, boolean microphone) {
         ArrayList<Key> keys = new ArrayList<>();
         if (page == Page.ALPHA) {
             row(keys, "qwertyuiop", 0, 0f, .9f);
@@ -451,8 +458,8 @@ final class EmbeddedTvKeyboardModel {
         }
         keys.add(key(page == Page.SYMBOLS ? "alpha" : "symbols", page == Page.SYMBOLS ? "ABC" : "123",
                 "", page == Page.SYMBOLS ? Type.ALPHA : Type.SYMBOLS, 0, 3, 2f));
-        keys.add(key("microphone", "MIC", "", Type.MICROPHONE, 2, 3, 2f));
-        keys.add(key("space", "SPACE", " ", Type.SPACE, 4, 3, 3f));
+        if (microphone) keys.add(key("microphone", "MIC", "", Type.MICROPHONE, 2, 3, 2f));
+        keys.add(key("space", "SPACE", " ", Type.SPACE, microphone ? 4 : 2, 3, microphone ? 3f : 5f));
         keys.add(key("send", "SEND", "", Type.SEND, 7, 3, 3f));
         return Collections.unmodifiableList(keys);
     }

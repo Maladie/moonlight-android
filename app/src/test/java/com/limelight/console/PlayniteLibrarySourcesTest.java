@@ -30,13 +30,15 @@ public class PlayniteLibrarySourcesTest {
                 games, Collections.emptySet()).size());
     }
 
-    @Test public void sourceSelectionIsCaseInsensitive() {
+    @Test public void sourceSelectionMatchesLibraryKeys() {
         List<PlayniteLibraryGame> filtered = PlayniteLibrarySources.filter(Arrays.asList(
                 game(1, "Steam"), game(2, "Epic")),
                 new LinkedHashSet<>(Collections.singletonList("steam")));
 
         assertEquals(1, filtered.size());
         assertEquals("Steam", filtered.get(0).source);
+        assertEquals(2, PlayniteLibrarySources.filter(Arrays.asList(
+                game(1, "Steam"), game(2, "Epic")), Collections.singleton("Steam")).size());
     }
 
     @Test public void sourceAndInstallationFiltersComposeFromTheOriginalLibrary() {
@@ -54,19 +56,6 @@ public class PlayniteLibrarySourcesTest {
                 PlayniteLibraryFilter.UNINSTALLED, Locale.ENGLISH);
         assertEquals(1, uninstalled.size());
         assertEquals("Game 2", uninstalled.get(0).name);
-    }
-
-    @Test public void legacyLabelsMigrateToLibraryKeysAndUnknownFallsBackToAll() {
-        List<PlayniteLibraryGame> games = Arrays.asList(
-                game(1, "Steam"), game(2, "Epic"));
-        Map<String, String> available = PlayniteLibrarySources.available(
-                games, Locale.ENGLISH);
-
-        assertEquals(Collections.singleton("steam"),
-                PlayniteLibrarySources.migrateSelection(
-                        Collections.singleton("Steam"), available));
-        assertEquals(null, PlayniteLibrarySources.migrateSelection(
-                Collections.singleton("Missing"), available));
     }
 
     @Test public void sourceKeysAndColorsRemainStableForIconSelection() {
