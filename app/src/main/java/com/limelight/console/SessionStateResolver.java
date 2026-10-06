@@ -2,6 +2,7 @@ package com.limelight.console;
 
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
+import com.limelight.nvstream.http.ComputerDetails;
 import com.limelight.stream.RetainedStreamSessionCoordinator;
 import com.limelight.utils.SessionResumeManager;
 
@@ -123,7 +124,7 @@ final class SessionStateResolver {
 
     static final class LocalFacts {
         static final LocalFacts NONE = new LocalFacts(null, false, false, null,
-                false, false, false);
+                false, false, false, 0);
 
         final SuspendedSessionStore.Session suspended;
         final boolean recentlyEnded;
@@ -132,11 +133,12 @@ final class SessionStateResolver {
         final boolean hostSleepRequested;
         final boolean hostSleepObserved;
         final boolean neutralStreamTarget;
+        final int hostRunningAppId;
 
         LocalFacts(SuspendedSessionStore.Session suspended, boolean recentlyEnded,
                    boolean pendingReconnect, SessionResumeManager.PendingSession pending,
                    boolean hostSleepRequested, boolean hostSleepObserved,
-                   boolean neutralStreamTarget) {
+                   boolean neutralStreamTarget, int hostRunningAppId) {
             this.suspended = suspended;
             this.recentlyEnded = recentlyEnded;
             this.pendingReconnect = pendingReconnect;
@@ -144,6 +146,31 @@ final class SessionStateResolver {
             this.hostSleepRequested = hostSleepRequested;
             this.hostSleepObserved = hostSleepObserved;
             this.neutralStreamTarget = neutralStreamTarget;
+            this.hostRunningAppId = hostRunningAppId;
+        }
+
+        /**
+         * Local facts beside {@code host}'s latest poll. A pending reconnect record counts when
+         * it auto-resumes or names the app that poll sees running for its execution profile.
+         */
+        static LocalFacts forHost(ComputerDetails host, String executionProfileId,
+                                  SuspendedSessionStore.Session suspended,
+                                  boolean recentlyEnded,
+                                  SessionResumeManager.PendingSession pending,
+                                  boolean hostSleepRequested, boolean hostSleepObserved,
+                                  boolean neutralStreamTarget) {
+            boolean pendingMatchesRunningSession = pending != null
+                    && host.uuid.equalsIgnoreCase(pending.hostUuid)
+                    && executionProfileId.equals(pending.executionProfileId)
+                    && host.runningGameId != 0
+                    && host.runningGameId == pending.appId;
+            boolean pendingReconnect = pending != null
+                    && (pending.autoResume || pendingMatchesRunningSession)
+                    && PlayniteIdentityResolutionPolicy.allowsPendingReconnect(
+                            "unknown", pending.playniteGameId);
+            return new LocalFacts(suspended, recentlyEnded, pendingReconnect, pending,
+                    hostSleepRequested, hostSleepObserved, neutralStreamTarget,
+                    host.runningGameId);
         }
     }
 
@@ -163,7 +190,6 @@ final class SessionStateResolver {
         private String episodeKey = "";
         private long episodeDeadlineMs;
         private SessionSnapshot published;
-        private HostGatewayClient.Evidence projectedGameEvidence;
         private HostGatewayClient.Evidence publishedGameEvidence;
         private long publishedAtMs;
         private String diagnosticSignature = "";
@@ -253,7 +279,7 @@ final class SessionStateResolver {
                     episodeDeadlineMs = nowMs + OBSERVATION_LIVENESS_MS;
                 }
             }
-            published = publish(project(retained, LocalFacts.NONE, nowMs, ""), nowMs);
+            published = publish(project(retained, LocalFacts.NONE, nowMs, "", false), nowMs);
             if (published.observationState == SessionSnapshot.ObservationState.READY
                     || published.observationState == SessionSnapshot.ObservationState.IDLE) {
                 lastResolvedAtMs = nowMs;
@@ -274,7 +300,7 @@ final class SessionStateResolver {
             RetainedStreamSessionCoordinator.Snapshot retained = liveSnapshot(caller);
             retireObservationAtTerminationBoundary(retained);
             if (failedOrdinal != nextRequestOrdinal || failedOrdinal <= lastAcceptedOrdinal) {
-                return project(retained, LocalFacts.NONE, nowMs, "");
+                return project(retained, LocalFacts.NONE, nowMs, "", false);
             }
             String unavailableEpisode = producerBootId + "|unavailable";
             boolean resolvedEpisode = published != null
@@ -285,7 +311,7 @@ final class SessionStateResolver {
                 episodeDeadlineMs = nowMs + OBSERVATION_LIVENESS_MS;
             }
             published = publish(project(retained, LocalFacts.NONE, nowMs,
-                    reason == null ? "observation_unavailable" : reason), nowMs);
+                    reason == null ? "observation_unavailable" : reason, false), nowMs);
             return published;
         }
 
@@ -307,8 +333,19 @@ final class SessionStateResolver {
             RetainedStreamSessionCoordinator.Snapshot retained = liveSnapshot(caller);
             retireObservationAtTerminationBoundary(retained);
             published = publish(project(retained, local == null ? LocalFacts.NONE : local,
-                    nowMs, ""), nowMs);
+                    nowMs, "", false), nowMs);
             return published;
+        }
+
+        /**
+         * Render-only projection of a delivered, possibly older, coordinator snapshot. It
+         * publishes nothing and changes no owner state; an observation the owner holds across
+         * a termination boundary from that snapshot is not shown.
+         */
+        synchronized SessionSnapshot rendered(RetainedStreamSessionCoordinator.Snapshot retained,
+                                              LocalFacts local, long nowMs) {
+            return project(retained, local, nowMs, "",
+                    retained.terminationEpoch != observedTerminationEpoch);
         }
 
         /**
@@ -353,7 +390,8 @@ final class SessionStateResolver {
          * retried on the next publication. Decisions are unaffected.
          */
         private SessionSnapshot publish(SessionSnapshot snapshot, long nowMs) {
-            publishedGameEvidence = projectedGameEvidence;
+            publishedGameEvidence = snapshot.observationCorrelated
+                    ? observation.gameEvidence : null;
             publishedAtMs = nowMs;
             Object[] fields = projectionDiagnostic(snapshot, publishedGameEvidence,
                     remainingEpisodeMs(nowMs));
@@ -397,7 +435,8 @@ final class SessionStateResolver {
 
         private SessionSnapshot project(RetainedStreamSessionCoordinator.Snapshot retained,
                                         LocalFacts local, long nowMs,
-                                        String unavailableReason) {
+                                        String unavailableReason, boolean retired) {
+            HostGatewayClient.SessionObservation observed = retired ? null : observation;
             RetainedStreamSessionCoordinator.State retainedState = retained == null
                     ? RetainedStreamSessionCoordinator.State.NONE : retained.state;
             boolean matchingTransport = retained != null
@@ -409,10 +448,10 @@ final class SessionStateResolver {
             boolean localTransport = matchingTransport && retainedState
                     != RetainedStreamSessionCoordinator.State.NONE
                     && retainedState != RetainedStreamSessionCoordinator.State.RECONNECT_REQUIRED;
-            boolean freshObservation = observation != null
+            boolean freshObservation = observed != null
                     && nowMs - observationAcceptedAtMs
-                    <= Math.min(OBSERVATION_LIVENESS_MS, observation.freshForMs);
-            HostGatewayClient.SessionObservation current = freshObservation ? observation : null;
+                    <= Math.min(OBSERVATION_LIVENESS_MS, observed.freshForMs);
+            HostGatewayClient.SessionObservation current = freshObservation ? observed : null;
             boolean correlationMatches = current != null && (!matchingTransport
                     || (!retained.streamSessionId.isEmpty()
                     && retained.streamSessionId.equals(current.streamSessionId)
@@ -421,7 +460,6 @@ final class SessionStateResolver {
                     && (retained.transitionId.isEmpty()
                     || retained.transitionId.equals(current.callerTransitionId))));
             HostGatewayClient.SessionObservation evidence = correlationMatches ? current : null;
-            projectedGameEvidence = evidence == null ? null : evidence.gameEvidence;
             boolean ready = unavailableReason.isEmpty() && evidence != null
                     && evidence.gameEvidence == HostGatewayClient.Evidence.VERIFIED
                     && evidence.processEvidence == HostGatewayClient.Evidence.VERIFIED
@@ -433,7 +471,8 @@ final class SessionStateResolver {
                     && (!matchingTransport || knownLive);
             // A resolved (READY/IDLE) projection that merely goes stale between polls gets a
             // fresh bounded window; an unresolved episode never extends its own deadline.
-            boolean expired = episodeDeadlineMs > 0L && nowMs >= Math.max(episodeDeadlineMs,
+            boolean expired = !retired && episodeDeadlineMs > 0L
+                    && nowMs >= Math.max(episodeDeadlineMs,
                     lastResolvedAtMs >= 0L ? lastResolvedAtMs + OBSERVATION_LIVENESS_MS : 0L);
             SessionSnapshot.ObservationState disposition = ready
                     ? SessionSnapshot.ObservationState.READY
@@ -483,7 +522,7 @@ final class SessionStateResolver {
             String reason = !unavailableReason.isEmpty() ? unavailableReason
                     : current != null && !correlationMatches
                     ? "observation_correlation_mismatch"
-                    : current == null ? observation == null
+                    : current == null ? observed == null
                     ? "observation_pending" : "observation_stale" : current.reason;
             return new SessionSnapshot(hostId, actorProfileId, executionProfileId,
                     state, appId, gameId, knownLive, suspended,
@@ -491,20 +530,20 @@ final class SessionStateResolver {
                     local.hostSleepRequested, local.hostSleepObserved,
                     suspended ? local.suspended.suspendId : "", local.neutralStreamTarget,
                     disposition, correlationMatches,
-                    observation == null ? "" : observation.producerBootId,
-                    observation == null ? 0L : observation.producerRevision,
-                    observation == null ? 0L : observation.requestOrdinal,
+                    observed == null ? "" : observed.producerBootId,
+                    observed == null ? 0L : observed.producerRevision,
+                    observed == null ? 0L : observed.requestOrdinal,
                     retained == null ? 0L : retained.transportGeneration,
-                    observation == null ? 0L : observation.controlGeneration,
-                    observation == null ? 0L : observation.actorLeaseEpoch,
-                    observation == null ? "" : observation.operationId,
-                    observation == null ? "" : observation.callerTransitionId,
+                    observed == null ? 0L : observed.controlGeneration,
+                    observed == null ? 0L : observed.actorLeaseEpoch,
+                    observed == null ? "" : observed.operationId,
+                    observed == null ? "" : observed.callerTransitionId,
                     retained == null ? "" : retained.streamSessionId,
                     evidence == null ? "UNAVAILABLE" : evidence.processEvidence.name(),
                     evidence == null ? 0 : evidence.processId,
                     evidence == null ? "" : evidence.processToken,
                     evidence == null ? "UNAVAILABLE" : evidence.windowEvidence.name(),
-                    reason);
+                    reason, local.hostRunningAppId);
         }
     }
 }

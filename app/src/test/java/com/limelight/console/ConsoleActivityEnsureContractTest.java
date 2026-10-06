@@ -124,12 +124,8 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(method.contains("AuthoritativeSessionTransition.lostRetainedTransport("));
         assertTrue(method.contains("clearIfMatches(\n                retained.streamSessionId)"));
         assertTrue(method.contains("pending.matches(retained.streamSessionId)"));
-        assertTrue(method.contains("retained.streamSessionId.equals(\n"
-                + "                    retainedStreamSessionId)"));
-        assertTrue(method.contains("retained.hostId.equalsIgnoreCase(retainedStreamHostId)"));
-        assertTrue(method.contains("retainedStreamSessionId = \"\""));
-        assertTrue(method.contains("retainedStreamHostId = \"\""));
-        assertTrue(method.contains("retainedStreamPlayniteGameId = \"\""));
+        assertTrue(method.contains("isStreamHome() && retained.streamSessionId.equals(\n"
+                + "                    launchedExtra(EXTRA_RETAINED_STREAM_SESSION_ID))"));
         assertTrue(method.contains("finish();"));
         assertFalse(method.contains("finishAffinity"));
         assertFalse(method.contains("!pending.autoResume"));
@@ -197,7 +193,7 @@ public class ConsoleActivityEnsureContractTest {
                 "requestEndPlayniteGame(host, item, confirmedKey)"));
         assertTrue(stop.contains("!confirmedKey.equals(selectedProfileKey(host.uuid))"));
         assertTrue(stop.contains("stopActiveProviderGame(host, expectedGameId, true"));
-        assertTrue(stop.contains("refreshSessionProjection(host, host.runningGameId != 0"));
+        assertTrue(stop.contains("refreshSessionProjection(host, ignored -> { })"));
         assertTrue(hardReset.contains("String stateKey = profileKey.cacheKey()"));
         assertTrue(hardReset.contains("publishedSessionSnapshots.remove(stateKey)"));
         assertFalse(source.contains("RunningGameObservation"));
@@ -338,7 +334,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(orchestration.contains("@Override public void refreshSession("));
         assertTrue(orchestration.contains("streamLoadingView.setStep(1,"));
         assertTrue(orchestration.contains(
-                "refreshSessionProjection(host, intent.profileKey, true, accepted ->"));
+                "refreshSessionProjection(host, intent.profileKey, accepted ->"));
         assertTrue(orchestration.contains("console_session_uncertain_title"));
         assertTrue(orchestration.contains("@Override public void sessionFailed("));
         assertTrue(resolver.contains("invalidateSessionProjectionRequest(host.uuid)"));
@@ -359,7 +355,7 @@ public class ConsoleActivityEnsureContractTest {
         String actions = source.substring(source.indexOf("private void showPlayniteGameActions("),
                 source.indexOf("private void confirmPlayniteUninstall("));
 
-        assertTrue(confirm.contains("host.runningGameId == 0"));
+        assertTrue(confirm.contains("session.hostRunningAppId == 0"));
         assertTrue(confirm.contains("SessionSnapshot.State.ACTIVE"));
         assertTrue(actions.contains("session.state == SessionSnapshot.State.ACTIVE"));
         assertTrue(actions.contains("session.playniteGameId"));
@@ -404,7 +400,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(method.indexOf("if (retained.playniteGameId.isEmpty())")
                 < method.indexOf("SessionSnapshot projection = resolveSessionSnapshot("));
         assertTrue(method.contains("\"VERIFIED\".equals(projection.processEvidence)"));
-        assertTrue(method.contains("host.runningGameId == retained.appId"));
+        assertTrue(method.contains(".hostRunningAppId == retained.appId"));
         assertTrue(method.contains("retained.hostId.equalsIgnoreCase(intent.hostId)"));
         assertTrue(method.contains("!retained.playniteGameId.equalsIgnoreCase("));
         assertTrue(method.contains("PlayniteTargetResolver.findById("));
@@ -485,7 +481,7 @@ public class ConsoleActivityEnsureContractTest {
         assertTrue(failure.contains("console_warm_up_fallback_details"));
         assertFalse(failure.contains("console_host_timeout"));
         assertFalse(failure.contains("Toast"));
-        assertTrue(status.contains("retained.hostId.equalsIgnoreCase(host.uuid)"));
+        assertTrue(status.contains("sessionSubscriber.reconnectRequired(host.uuid)"));
         assertTrue(status.contains("sessionOrchestrator.hasPreparationForHost(host.uuid)"));
         assertTrue(status.indexOf("SessionSnapshot.State.TERMINATING")
                 < status.indexOf("warmUpStatus == WARM_UP_ERROR"));

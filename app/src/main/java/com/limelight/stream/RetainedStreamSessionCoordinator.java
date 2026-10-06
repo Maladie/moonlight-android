@@ -1,10 +1,16 @@
 package com.limelight.stream;
 
+import android.os.Handler;
+import android.os.Looper;
+
 import com.limelight.diagnostics.MoonWakerDiagnostics;
 import com.limelight.gateway.GatewayConnection;
 
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.concurrent.Executor;
 
 /**
  * Single in-process source of truth for a stream retained behind MoonWaker Home.
@@ -32,6 +38,11 @@ public final class RetainedStreamSessionCoordinator {
         void disconnectRetainedStream(TerminationCallback completion);
         void terminateRetainedSession(TerminationCallback completion);
         void switchGame(SwitchRequest request, SwitchCallback completion);
+    }
+
+    /** Receives every published snapshot on the main thread, never an older one after a newer. */
+    public interface Listener {
+        void onSnapshot(Snapshot snapshot);
     }
 
     public interface TerminationCallback {
@@ -164,6 +175,18 @@ public final class RetainedStreamSessionCoordinator {
             this.transportGeneration = RetainedStreamSessionCoordinator.transportGeneration;
             this.terminationEpoch = RetainedStreamSessionCoordinator.terminationEpoch;
         }
+
+        private boolean sameAs(Snapshot other) {
+            return other != null && state == other.state
+                    && streamSessionId.equals(other.streamSessionId)
+                    && hostId.equals(other.hostId) && profileId.equals(other.profileId)
+                    && executionProfileId.equals(other.executionProfileId)
+                    && appId == other.appId && playniteGameId.equals(other.playniteGameId)
+                    && transitionId.equals(other.transitionId) && attempt == other.attempt
+                    && controlGeneration == other.controlGeneration
+                    && transportGeneration == other.transportGeneration
+                    && terminationEpoch == other.terminationEpoch;
+        }
     }
 
     /** One-shot proof that the host and retained transport accepted an exact actor handoff. */
@@ -231,6 +254,12 @@ public final class RetainedStreamSessionCoordinator {
     private static String switchTransitionId = "";
     private static long switchAttempt;
     private static TerminationOperation terminationOperation;
+    /** Subscriber to the sequence of the last snapshot it was given. */
+    private static final Map<Listener, Long> listeners = new LinkedHashMap<>();
+    private static Executor mainThread;
+    private static Snapshot published;
+    private static long publishedSequence;
+    private static boolean deliveryPosted;
 
     private static final class TerminationOperation {
         final String streamSessionId;
@@ -372,6 +401,7 @@ public final class RetainedStreamSessionCoordinator {
                 "attempt", attempt);
         transitionId = "";
         attempt = 0L;
+        publishLocked();
         return true;
     }
 
@@ -477,6 +507,7 @@ public final class RetainedStreamSessionCoordinator {
         preparingHomeFrameClaim = null;
         acceptedHomeTransitionId = "";
         acceptedHomeAttempt = 0L;
+        publishLocked();
         return true;
     }
 
@@ -490,6 +521,7 @@ public final class RetainedStreamSessionCoordinator {
         if (generation <= 0L || controller != expectedOwner
                 || !matches(expectedStreamSessionId)) return false;
         controlGeneration = generation;
+        publishLocked();
         return true;
     }
 
@@ -505,6 +537,7 @@ public final class RetainedStreamSessionCoordinator {
                 || generation <= expectedGeneration || !commitConnection.getAsBoolean()) return false;
         profileId = GatewayConnection.normalizeProfileId(actor);
         controlGeneration = generation;
+        publishLocked();
         return true;
     }
 
@@ -828,6 +861,7 @@ public final class RetainedStreamSessionCoordinator {
         if (controller != owner || !streamSessionId.equals(sessionId)
                 || !executionProfileId.equals(GatewayConnection.normalizeProfileId(origin))) return false;
         profileId = GatewayConnection.normalizeProfileId(actor);
+        publishLocked();
         return true;
     }
 
@@ -960,6 +994,7 @@ public final class RetainedStreamSessionCoordinator {
                     "game_id", playniteGameId, "from", currentTransition,
                     "transition_id", transitionId, "attempt", attempt);
         }
+        publishLocked();
         return true;
     }
 
@@ -1022,6 +1057,7 @@ public final class RetainedStreamSessionCoordinator {
                     "source_attempt", acceptedHomeAttempt,
                     "orchestration_id", request.orchestrationId);
         }
+        publishLocked();
         return true;
     }
 
@@ -1058,6 +1094,7 @@ public final class RetainedStreamSessionCoordinator {
             return false;
         }
         playniteGameId = normalize(newGameId);
+        publishLocked();
         return true;
     }
 
@@ -1085,6 +1122,7 @@ public final class RetainedStreamSessionCoordinator {
         if (!ownsLiveOrParkedSession(expectedOwner, expectedStreamSessionId,
                 expectedHostId, expectedAppId, expectedGameId)) return false;
         playniteGameId = "";
+        publishLocked();
         return true;
     }
 
@@ -1114,6 +1152,7 @@ public final class RetainedStreamSessionCoordinator {
             return false;
         }
         playniteGameId = "";
+        publishLocked();
         return true;
     }
 
@@ -1363,6 +1402,7 @@ public final class RetainedStreamSessionCoordinator {
         switchSessionId = "";
         switchTransitionId = "";
         switchAttempt = 0L;
+        publishLocked();
     }
 
     private static boolean matches(String expectedStreamSessionId) {
@@ -1419,7 +1459,10 @@ public final class RetainedStreamSessionCoordinator {
     }
 
     private static void setStateLocked(State next) {
-        if (state == next) return;
+        if (state == next) {
+            publishLocked();
+            return;
+        }
         State previous = state;
         state = next;
         if (previous == State.TERMINATING || next == State.TERMINATING) terminationEpoch++;
@@ -1435,5 +1478,60 @@ public final class RetainedStreamSessionCoordinator {
                 "game_id", playniteGameId,
                 "transition_id", transitionId,
                 "attempt", attempt);
+        publishLocked();
+    }
+
+    /** Registers {@code listener} for main-thread delivery; returns the current snapshot. */
+    public static synchronized Snapshot subscribe(Listener listener) {
+        publishLocked();
+        listeners.put(listener, publishedSequence);
+        return published;
+    }
+
+    public static synchronized void unsubscribe(Listener listener) {
+        listeners.remove(listener);
+    }
+
+    static synchronized void setMainThreadForTests(Executor poster) {
+        mainThread = poster;
+        deliveryPosted = false;
+        published = null;
+    }
+
+    /** Publishes after a change; one pending delivery carries the latest snapshot. */
+    private static void publishLocked() {
+        Snapshot current = snapshot();
+        if (current.sameAs(published)) return;
+        published = current;
+        publishedSequence++;
+        if (deliveryPosted || listeners.isEmpty()) return;
+        deliveryPosted = true;
+        if (mainThread == null) mainThread = new Handler(Looper.getMainLooper())::post;
+        mainThread.execute(RetainedStreamSessionCoordinator::deliver);
+    }
+
+    private static void deliver() {
+        Snapshot next;
+        long sequence;
+        List<Listener> targets;
+        synchronized (RetainedStreamSessionCoordinator.class) {
+            deliveryPosted = false;
+            next = published;
+            sequence = publishedSequence;
+            targets = new ArrayList<>(listeners.keySet());
+        }
+        for (Listener listener : targets) {
+            synchronized (RetainedStreamSessionCoordinator.class) {
+                Long seen = listeners.get(listener);
+                if (seen == null || seen >= sequence) continue;
+                listeners.put(listener, sequence);
+            }
+            try {
+                listener.onSnapshot(next);
+            } catch (RuntimeException error) {
+                MoonWakerDiagnostics.record("WARN", "android.retained-stream",
+                        "subscriber.failed", "error_type", error.getClass().getName());
+            }
+        }
     }
 }

@@ -87,7 +87,7 @@ public class ConsoleChildProfileUiContractTest {
         assertFalse(close.contains("endChildBinding"));
         assertFalse(close.contains("childProfile"));
         assertTrue(activity.contains(
-                "boolean runningSession = isFreshExactRunningManagedGame(host, item);"));
+                "boolean runningSession = playniteSessionProjection != null && isExactRunningManagedGame("));
         assertFalse(activity.contains("getPlayniteCurrentGame("));
     }
 

@@ -109,15 +109,18 @@
       "checkpoint_plan": "runs/S07/checkpoint-plan.json"
     },
     "S08": {
-      "status": "NOT_STARTED",
+      "status": "CLOSED_BY_OWNER",
       "assigned_run": null,
       "input_fingerprint": null,
       "output_fingerprint": null,
       "implementation_report": null,
       "review_report": null,
       "design_review_report": null,
-      "blockers": [],
-      "checkpoint_plan": null
+      "blockers": [
+        "Closed by the owner as superseded by step K4 of MW-05 (docs/MoonWaker/MW-04_MODEL_SESJI_PL.md section 8.1; amendment S08-20261005-SUPERSEDED-BY-SESSION-MODEL); S08 was never executed as written and no evidence is claimed. S09 must not start before K4 is accepted."
+      ],
+      "checkpoint_plan": null,
+      "closure_decision": "S08-20261005-SUPERSEDED-BY-SESSION-MODEL"
     },
     "S09": {
       "status": "NOT_STARTED",
@@ -191,6 +194,13 @@
       "status": "USER_AUTHORIZED",
       "value": "The owner closes S03, S04, S05 and S06 as CLOSED_BY_OWNER instead of pursuing formal CHECKPOINT_ACCEPTED on fingerprints of code that has since moved on. The recorded evidence stays as it is (S03 operator confirmation; S04 final-acceptance-20260914; S05 acceptance.json; S06 formal137 PASS 3/3 with review R048 READY, runs/S06/formal137-closure.json). It is not re-labelled as formal acceptance. S07 onward proceed on the current branch; S10 still requires the full release evidence on the exact final artifacts. Does not authorize push, publication, baseline promotion or real-device deployment.",
       "source": "User message 2026-09-29: \"Wybieram B. Zamykamy i zapominamy o tym\""
+    },
+    {
+      "id": "S08-20261005-SUPERSEDED-BY-SESSION-MODEL",
+      "decision": "CLOSE_S08_AS_SUPERSEDED",
+      "status": "USER_AUTHORIZED",
+      "value": "S08 is not executed as written. It is closed as CLOSED_BY_OWNER and replaced by step K4 of the session model in docs/MoonWaker/MW-04_MODEL_SESJI_PL.md (section 8.1), which carries every S08 requirement as an acceptance scenario. S09 must not start before K4 is accepted. S10 is unchanged.",
+      "source": "User message 2026-10-05: \"Zgoda na oba, wpisz do dokumentu i zaktualizuj plan\"; owner re-authorised the closure in chat on 2026-10-06."
     }
   ],
   "workspace": {

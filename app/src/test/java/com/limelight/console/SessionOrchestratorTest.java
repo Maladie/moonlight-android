@@ -1016,7 +1016,7 @@ public class SessionOrchestratorTest {
                 retained, suspended, false, false, false, suspendId, neutral,
                 observation, false,
                 "", 0L, 0L, 0L, 0L, 0L, "", "", "",
-                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test");
+                "UNAVAILABLE", 0, "", "UNAVAILABLE", "test", 0);
     }
 
     private static final class Fake implements SessionOrchestrator.Effects {

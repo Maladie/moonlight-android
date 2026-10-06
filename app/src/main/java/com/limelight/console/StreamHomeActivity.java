@@ -72,6 +72,11 @@ public final class StreamHomeActivity extends ConsoleActivity {
     }
 
     @Override
+    protected boolean isStreamHome() {
+        return true;
+    }
+
+    @Override
     protected boolean useTransparentWarmUpStartingWindow() {
         return preparingHomeFramePending;
     }
