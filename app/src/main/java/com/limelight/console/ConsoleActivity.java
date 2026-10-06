@@ -65,7 +65,6 @@ import android.view.WindowManager;
 import android.widget.FrameLayout;
 import android.widget.HorizontalScrollView;
 import android.widget.ImageView;
-import android.widget.ImageButton;
 import android.widget.LinearLayout;
 import android.widget.PopupWindow;
 import android.widget.ProgressBar;
@@ -628,7 +627,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private final ConsoleHostStateController hostStateController =
             new ConsoleHostStateController(SystemClock::uptimeMillis);
     private LinearLayout homeContent;
-    private LinearLayout dashboardHeader;
+    private ConsoleTopBar topBar;
     private FrameLayout loadingLayer;
     private ConsoleStreamLoadingView streamLoadingView;
     private long streamLoadingEpoch;
@@ -661,10 +660,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private String displayedArtworkKey;
     private TextView controllersLabel;
     private TextView appsLabel;
-    private TextView optionsButton;
-    private TextView hostSelector;
-    private ImageButton profileSelector;
-    private String profileSelectorHint = "";
     private TextView installedFilterButton;
     private TextView playniteLibraryStatus;
     private LinearLayout debugLibraryActions;
@@ -699,14 +694,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private boolean libraryTransitionRunning;
     private long lastDirectionalNavigationAt;
     private TextView quickResumeButton;
-    private LinearLayout quickActions;
-    private TextView quickActionHint;
-    private ImageButton discordActionButton;
-    private ImageButton usbMicrophoneActionButton;
-    private int discordIndicatorColor = 0xFFFF6B6B;
-    private int usbMicrophoneIndicatorColor = 0xFF697083;
-    private String discordIndicatorDescription = "";
-    private boolean discordNotificationPending;
     private LinearLayout controllerRow;
     private LinearLayout appRow;
     private HorizontalScrollView controllerScroll;
@@ -2047,96 +2034,22 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
         homeContent = new LinearLayout(this);
         homeContent.setOrientation(LinearLayout.VERTICAL);
-        homeContent.setPadding(dp(54), dp(14), dp(54), dp(24));
+        homeContent.setPadding(dp(54), dp(14), dp(54), dp(27));
         homeContent.setClipChildren(false);
         homeContent.setClipToPadding(false);
         homeLayer.addView(homeContent, match());
 
-        buildQuickActions();
-        LinearLayout header = new LinearLayout(this);
-        dashboardHeader = header;
-        header.setOrientation(portraitLayout ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
-        header.setGravity(portraitLayout ? Gravity.START : Gravity.CENTER_VERTICAL);
-        header.setClipChildren(false);
-        header.setClipToPadding(false);
-        if (!CONSOLE_UI_V2) {
-            LinearLayout titleBlock = new LinearLayout(this);
-            titleBlock.setOrientation(LinearLayout.VERTICAL);
-            TextView title = text(getString(R.string.console_title), 24, Color.WHITE, true);
-            TextView subtitle = text(getString(R.string.console_subtitle),
-                    14, 0xFFBCC3DD, false);
-            titleBlock.addView(title, wrapLinear());
-            titleBlock.addView(subtitle, wrapLinear());
-            header.addView(titleBlock, portraitLayout
-                    ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT)
-                    : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        }
-        hostSelector = compactButton(getString(R.string.console_no_hosts));
-        hostSelector.setOnClickListener(v -> {
-            ComputerDetails host = hosts.get(selectedHostUuid);
-            if (host != null) showHostSelectionOptions(host);
-        });
-        optionsButton = hostSelector;
-        hostSelector.setMaxLines(2);
-        hostSelector.setEllipsize(TextUtils.TruncateAt.END);
-        hostSelector.setMaxWidth(dp(CONSOLE_UI_V2 ? 260 : 430));
-        if (CONSOLE_UI_V2) {
-            hostSelector.setTextSize(11);
-            hostSelector.setMinHeight(dp(36));
-            hostSelector.setMinWidth(0);
-            hostSelector.setGravity(Gravity.START | Gravity.CENTER_VERTICAL);
-            hostSelector.setPadding(dp(10), dp(3), dp(10), dp(3));
-            hostSelector.setCompoundDrawablesWithIntrinsicBounds(
-                    R.drawable.ic_console_host_power, 0, 0, 0);
-            hostSelector.setCompoundDrawablePadding(dp(8));
-            hostSelector.setOnFocusChangeListener((view, focused) -> {
-                styleHostSelector(focused);
-                updateHostPowerLabel();
-            });
-            styleHostSelector(false);
-        }
-        LinearLayout.LayoutParams selectorParams = new LinearLayout.LayoutParams(
-                portraitLayout ? ViewGroup.LayoutParams.MATCH_PARENT
-                        : ViewGroup.LayoutParams.WRAP_CONTENT, dp(52));
-        if (portraitLayout) selectorParams.topMargin = dp(12);
-        if (CONSOLE_UI_V2) {
-            FrameLayout hostPowerSlot = new FrameLayout(this);
-            FrameLayout.LayoutParams hostPowerButtonParams = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    ViewGroup.LayoutParams.WRAP_CONTENT,
-                    Gravity.START | Gravity.CENTER_VERTICAL);
-            hostPowerSlot.addView(hostSelector, hostPowerButtonParams);
-            header.addView(hostPowerSlot, new LinearLayout.LayoutParams(
-                    dp(300), dp(56)));
-
-            quickActions.setGravity(Gravity.END | Gravity.CENTER_VERTICAL);
-            LinearLayout.LayoutParams toolsParams = portraitLayout
-                    ? new LinearLayout.LayoutParams(
-                            ViewGroup.LayoutParams.MATCH_PARENT, dp(56))
-                    : new LinearLayout.LayoutParams(
-                            0, dp(56), 1f);
-            toolsParams.leftMargin = dp(14);
-            header.addView(quickActions, toolsParams);
-        } else {
-            header.addView(hostSelector, selectorParams);
-        }
-        LinearLayout.LayoutParams headerParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT);
-        if (CONSOLE_UI_V2) headerParams.bottomMargin = 0;
-        homeContent.addView(header, headerParams);
-        if (CONSOLE_UI_V2) {
-            quickActionHint = text("", 12, Color.WHITE, false);
-            quickActionHint.setGravity(Gravity.CENTER);
-            quickActionHint.setSingleLine(true);
-            quickActionHint.setShadowLayer(dp(2), 0, dp(1), 0xE0000000);
-            quickActionHint.setVisibility(View.INVISIBLE);
-            FrameLayout.LayoutParams hintParams = new FrameLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(28),
-                    Gravity.TOP | Gravity.START);
-            hintParams.topMargin = dp(66);
-            homeLayer.addView(quickActionHint, hintParams);
-        }
+        topBar = new ConsoleTopBar(this, () -> reducedMotion || suppressInitialCarouselMotion,
+                () -> {
+                    ComputerDetails host = hosts.get(selectedHostUuid);
+                    if (host != null) showHostSelectionOptions(host);
+                }, this::showDiscordPanel, this::showUsbMicrophonePanel,
+                () -> {
+                    enterExpandedLibrary();
+                    showPlayniteSearchDialog();
+                }, () -> showProfileSelection(hosts.get(selectedHostUuid)), this::showSettings);
+        homeContent.addView(topBar, new LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, dp(ConsoleTopBar.HEIGHT_DP)));
 
         if (CONSOLE_UI_V2) {
             controllersLabel = sectionLabel("");
@@ -2148,12 +2061,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
         }
 
-        LinearLayout quickLine = new LinearLayout(this);
-        quickLine.setOrientation(portraitLayout ? LinearLayout.VERTICAL : LinearLayout.HORIZONTAL);
-        quickLine.setGravity(portraitLayout ? Gravity.START : Gravity.CENTER_VERTICAL);
-        LinearLayout discoveryAndSession = new LinearLayout(this);
-        discoveryAndSession.setOrientation(LinearLayout.HORIZONTAL);
-        discoveryAndSession.setGravity(Gravity.CENTER_VERTICAL);
         quickResumeButton = text(getString(R.string.console_quick_resume),
                 12, 0xFFE8F6FF, true);
         quickResumeButton.setId(View.generateViewId());
@@ -2168,32 +2075,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         quickResumeButton.setOnFocusChangeListener((view, focused) ->
                 styleCompactButton(quickResumeButton, focused));
         styleCompactButton(quickResumeButton, false);
-        LinearLayout.LayoutParams resumeParams = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.WRAP_CONTENT, dp(42));
-        if (!CONSOLE_UI_V2) {
-            discoveryAndSession.addView(quickResumeButton, resumeParams);
-        }
-        if (!CONSOLE_UI_V2) {
-            quickLine.addView(discoveryAndSession, portraitLayout
-                    ? new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT,
-                            ViewGroup.LayoutParams.WRAP_CONTENT)
-                    : new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-        }
-        if (!CONSOLE_UI_V2 && portraitLayout) {
-            HorizontalScrollView quickScroll = horizontalScroll();
-            quickScroll.addView(quickActions, new HorizontalScrollView.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(52)));
-            quickLine.addView(quickScroll, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.MATCH_PARENT, dp(52)));
-        } else if (!CONSOLE_UI_V2) {
-            quickLine.addView(quickActions, new LinearLayout.LayoutParams(
-                    ViewGroup.LayoutParams.WRAP_CONTENT, dp(52)));
-        }
-        if (!CONSOLE_UI_V2) {
-            LinearLayout.LayoutParams quickLineParams = sectionWithTop(10);
-            quickLineParams.width = ViewGroup.LayoutParams.MATCH_PARENT;
-            homeContent.addView(quickLine, quickLineParams);
-        }
 
         if (!CONSOLE_UI_V2) {
             controllersLabel = sectionLabel(getString(R.string.console_controllers_none));
@@ -4616,21 +4497,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void updateHostSelectorInBatch() {
-        if (hostSelector == null) return;
+        if (topBar == null) return;
         ComputerDetails host = hosts.get(selectedHostUuid);
-        if (host == null) {
-            hostSelector.setText(getString(R.string.console_no_hosts));
-            hostSelector.setContentDescription(getString(R.string.console_no_hosts));
-            hostSelector.setEnabled(false);
-            hostSelector.setAlpha(.45f);
-        } else {
-            updateHostPowerLabel();
-            hostSelector.setContentDescription(getString(
-                    R.string.console_host_status_description, host.name,
-                    compactHostStatus(host)));
-            hostSelector.setEnabled(true);
-            hostSelector.setAlpha(1f);
-        }
+        if (host == null) topBar.showNoHost(getString(R.string.console_no_hosts));
+        else updateHostStatus();
         updateProfileSelector(host);
         updateQuickResumeButton(host);
     }
@@ -4650,12 +4520,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void updateProfileSelector(ComputerDetails host) {
-        if (profileSelector == null) return;
+        if (topBar == null) return;
         HostGatewayStore.ProfileSelection selection = host == null ? null
                 : hostGatewayStore.profileSelection(host.uuid);
         if (selection == null || selection.selected == null) {
-            profileSelector.setVisibility(View.GONE);
-            profileSelectorHint = "";
+            topBar.showProfile(null, "", "");
             return;
         }
         if (!selection.showSelector && !selection.selected.pinRequired) {
@@ -4672,17 +4541,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         boolean switchable = !matches && gatewayAvailable
                 && canSwitchWindowsProfile(selected, active);
         int indicator = matches ? 0xFF36B96C : switchable ? 0xFFFFB74D : 0xFF8795A0;
-        profileSelector.setImageDrawable(new ProfileToolbarDrawable(
-                selected.id, name, indicator, dp(3), dp(10)));
-        profileSelectorHint = name;
-        profileSelector.setContentDescription(getString(
-                R.string.console_profile_selector_description, name));
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            profileSelector.setTooltipText(name);
-        }
-        profileSelector.setVisibility(View.VISIBLE);
-        profileSelector.setEnabled(true);
-        styleQuickAction(profileSelector, profileSelector.hasFocus());
+        topBar.showProfile(new ProfileToolbarDrawable(selected.id, name, indicator, dp(2), dp(6)),
+                name, getString(R.string.console_profile_selector_description, name));
         refreshDiscordAccess();
     }
 
@@ -4907,7 +4767,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         tryBindExistingVibepolloIdentity(hostId, selectedProfileId, false);
                     }
                     updateProfileSelector(currentHost(hostId));
-                    updateHostPowerLabel();
+                    updateHostStatus();
                     updateHostSelectionTile(currentHost(hostId));
                 }
             });
@@ -4957,21 +4817,14 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         });
     }
 
-    private void updateHostPowerLabel() {
-        if (hostSelector == null) return;
+    private void updateHostStatus() {
+        if (topBar == null) return;
         ComputerDetails host = hosts.get(selectedHostUuid);
         if (host == null) return;
-        SessionSnapshot snapshot = renderedSessionSnapshot(host);
-        ConsoleHostPresentation.State state = consoleHostState(host, snapshot);
-        int stateColor = ConsoleHostPresentation.color(state);
-        Drawable hostIcon = getResources().getDrawable(
-                R.drawable.ic_console_host_power).mutate();
-        hostIcon.setTint(stateColor);
-        hostIcon.setBounds(0, 0, dp(24), dp(24));
-        hostSelector.setCompoundDrawables(hostIcon, null, null, null);
-        String value = getString(R.string.console_host_status,
-                host.name, compactHostStatus(host));
-        hostSelector.setText(value);
+        String status = compactHostStatus(host);
+        topBar.showHost(host.name, status, ConsoleTopBar.statusDotColor(
+                consoleHostState(host, renderedSessionSnapshot(host))),
+                getString(R.string.console_host_status_description, host.name, status));
     }
 
     private String compactHostStatus(ComputerDetails host) {
@@ -5019,8 +4872,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     R.string.console_quick_resume_description,
                     appName == null ? getString(R.string.console_status_active_session) : appName));
         } else if (restoreFocus) {
-            View fallback = firstFocusableChild(quickActions);
-            View target = fallback != null ? fallback : hostSelector;
+            View target = topBar.hostStatus();
             target.post(target::requestFocus);
         }
         updateLibraryActionVisibility();
@@ -5407,7 +5259,8 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void showHostSelectionOptions(ComputerDetails host) {
-        SessionSnapshot session = renderedSessionSnapshot(host);
+        // Decision read: which rows exist depends on the session, so no cached render read.
+        SessionSnapshot session = resolveSessionSnapshot(host);
         boolean terminating = session.state == SessionSnapshot.State.TERMINATING;
         String address = host.activeAddress != null ? host.activeAddress.address : null;
         ConsoleHostPanel.Facts facts = new ConsoleHostPanel.Facts();
@@ -5419,9 +5272,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         facts.canWake = !terminating && ConsoleHostPresentation.canWake(host)
                 && !hostStateController.isWaking(host.uuid);
         facts.streamRunning = session.hostRunningAppId != 0;
+        facts.inHost = !hostSelectionVisible;
+        facts.sessionActive = facts.online && facts.paired && session.hasActiveSession();
+        facts.resumeAvailable = session.isResumeAvailable() && session.hostGameAppId != 0;
         HostGatewayClient.IntegrationProfile profile =
                 hostGatewayStore.profileSelection(host.uuid).selected;
-        String state = getString(terminating ? R.string.console_status_closing_stream
+        String state = facts.sessionActive ? hostStatus(host, session)
+                : getString(terminating ? R.string.console_status_closing_stream
                 : facts.reachable ? R.string.console_status_online
                 : R.string.console_status_offline);
         showSidePanel(getString(R.string.console_host_eyebrow), host.name, profile == null ? state
@@ -5429,11 +5286,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                         profileDisplayName(profile)),
                 ConsoleHostPanel.menu(facts).rows(this, consolePanel, a -> a.icon, action -> {
                     switch (action) {
+                        case RESUME: hideSidePanel(); resumeSession(host); break;
                         case DESKTOP: hideSidePanel(); launchDesktopSession(host); break;
                         case WAKE: hideSidePanel(); wakeHost(host); break;
                         case SLEEP: confirmSleepHost(host); break;
                         case CLOSE_STREAM: confirmCloseHostStream(host); break;
                         case TEST_CONNECTION: hideSidePanel(); ServerHelper.doNetworkTest(this); break;
+                        case CHANGE_HOST: hideSidePanel(); leaveHost(); break;
                         case HARD_TERMINATE: confirmHardTerminateSession(host); break;
                         case UNPAIR: unpairHost(host); break;
                     }
@@ -6312,7 +6171,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 updateHostSelectionTile(current);
                 if (hostId.equals(selectedHostUuid)) {
                     updateProfileSelector(current);
-                    updateHostPowerLabel();
+                    updateHostStatus();
                 }
             });
         });
@@ -6608,57 +6467,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 : R.string.console_hidden_filtered, Toast.LENGTH_SHORT).show();
     }
 
-    private ConsoleAction globalAction(String id, int label, int icon, Runnable handler) {
-        return ConsoleAction.enabled(id, getString(label), icon, ConsoleAction.Context.GLOBAL,
-                false, handler);
-    }
-
-    private void buildQuickActions() {
-        quickActions = horizontalRow();
-        addQuickAction(globalAction("global.refresh", R.string.console_action_refresh,
-                R.drawable.ic_console_refresh, this::refreshDashboard));
-        addQuickAction(globalAction("global.settings", R.string.console_action_stream_settings,
-                R.drawable.ic_console_settings, this::showSettings));
-        profileSelector = profileQuickAction();
-        discordActionButton = addQuickAction(globalAction("global.discord",
-                R.string.console_action_discord, R.drawable.ic_console_discord,
-                this::showDiscordPanel));
-        usbMicrophoneActionButton = addQuickAction(globalAction("global.usb_microphone",
-                R.string.console_action_usb_microphone, R.drawable.ic_overlay_microphone,
-                this::showUsbMicrophonePanel));
-        addQuickAction(globalAction("global.leave_host", R.string.console_action_leave_host,
-                R.drawable.ic_console_leave_host,
-                this::leaveHost));
-    }
-
-    private ImageButton profileQuickAction() {
-        ImageButton button = new ImageButton(this);
-        button.setId(View.generateViewId());
-        button.setTag("global.profile");
-        button.setImageDrawable(new ProfileToolbarDrawable(
-                "", "", 0xFF8795A0, dp(3), dp(10)));
-        button.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-        int target = getResources().getDimensionPixelSize(R.dimen.console_action_target);
-        button.setPadding(0, 0, 0, 0);
-        button.setFocusable(true);
-        button.setClickable(true);
-        button.setSoundEffectsEnabled(false);
-        button.setOnClickListener(view -> showProfileSelection(hosts.get(selectedHostUuid)));
-        button.setOnFocusChangeListener((view, focused) -> {
-            styleQuickAction(button, focused);
-            if (quickActionHint != null) {
-                quickActionHint.setText(focused ? profileSelectorHint : "");
-                quickActionHint.setVisibility(focused ? View.VISIBLE : View.INVISIBLE);
-                if (focused) positionQuickActionHint(button);
-            }
-        });
-        styleQuickAction(button, false);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(target, target);
-        params.leftMargin = getResources().getDimensionPixelSize(R.dimen.console_space_s);
-        quickActions.addView(button, params);
-        return button;
-    }
-
     private void leaveHost() {
         ComputerDetails host = hosts.get(selectedHostUuid);
         if (host != null && hostGatewayStore.profileSelection(host.uuid).showSelector) {
@@ -6668,108 +6476,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
-    private ImageButton addQuickAction(ConsoleAction resolved) {
-        boolean discord = "global.discord".equals(resolved.id);
-        ImageButton button = discord
-                ? new ImageButton(this) {
-                    private final Paint notificationPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                    private final Paint statusPaint = new Paint(Paint.ANTI_ALIAS_FLAG);
-                    {
-                        notificationPaint.setColor(0xFF3B82F6);
-                    }
-
-                    @Override protected void onDraw(Canvas canvas) {
-                        super.onDraw(canvas);
-                        statusPaint.setColor(discordIndicatorColor);
-                        canvas.drawCircle(getWidth() / 2f + dp(10),
-                                getHeight() / 2f + dp(10),
-                                dp(3), statusPaint);
-                        if (discordNotificationPending) {
-                            canvas.drawCircle(getWidth() - dp(10), dp(10), dp(4),
-                                    notificationPaint);
-                        }
-                    }
-                }
-                : new ImageButton(this);
-        button.setId(View.generateViewId());
-        button.setImageResource(resolved.icon);
-        button.setTag(resolved.id);
-        button.setScaleType(ImageView.ScaleType.CENTER_INSIDE);
-        int target = getResources().getDimensionPixelSize(R.dimen.console_action_target);
-        int icon = getResources().getDimensionPixelSize(R.dimen.console_icon_size)
-                + (discord ? dp(14) : 0);
-        int inset = Math.max(0, (target - icon) / 2);
-        button.setPadding(inset, inset, inset, inset);
-        button.setColorFilter(0xFF9FAAB2);
-        button.setFocusable(true);
-        button.setClickable(true);
-        button.setSoundEffectsEnabled(false);
-        button.setContentDescription(resolved.label);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            button.setTooltipText(resolved.label);
-        }
-        button.setOnClickListener(view -> resolved.handler.run());
-        button.setOnFocusChangeListener((view, focused) -> {
-            styleQuickAction(button, focused);
-            if (quickActionHint != null) {
-                quickActionHint.setText(focused ? resolved.label : "");
-                quickActionHint.setVisibility(focused ? View.VISIBLE : View.INVISIBLE);
-                if (focused) positionQuickActionHint(button);
-            }
-        });
-        styleQuickAction(button, false);
-        LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(target, target);
-        params.leftMargin = getResources().getDimensionPixelSize(R.dimen.console_space_s);
-        quickActions.addView(button, params);
-        return button;
-    }
-
-    private void positionQuickActionHint(View anchor) {
-        quickActionHint.post(() -> {
-            int[] anchorPosition = new int[2];
-            int[] layerPosition = new int[2];
-            anchor.getLocationInWindow(anchorPosition);
-            homeLayer.getLocationInWindow(layerPosition);
-            FrameLayout.LayoutParams params =
-                    (FrameLayout.LayoutParams) quickActionHint.getLayoutParams();
-            int centered = anchorPosition[0] - layerPosition[0]
-                    + anchor.getWidth() / 2 - quickActionHint.getWidth() / 2;
-            params.leftMargin = Math.max(dp(12), Math.min(centered,
-                    homeLayer.getWidth() - quickActionHint.getWidth() - dp(12)));
-            quickActionHint.setLayoutParams(params);
-        });
-    }
-
     private void refreshDiscordIndicator() {
-        ImageButton button = discordActionButton;
-        if (button == null) return;
+        if (topBar == null) return;
         int request = discordStatusGeneration.incrementAndGet();
-        if (!discordAllowedForSelectedProfile()) {
-            button.setVisibility(View.GONE);
-            return;
-        }
         ComputerDetails host = hosts.get(selectedHostUuid);
-        button.setVisibility(View.VISIBLE);
-        if (host == null) {
-            applyDiscordIndicator(button, 0xFFFF6B6B,
-                    getString(R.string.console_discord_no_host));
-            return;
-        }
-        String address = host.activeAddress != null ? host.activeAddress.address : null;
-        GatewayConnection connection =
-                hostGatewayStore.loadForPolling(host.uuid, address, null);
-        if (connection == null) {
-            applyDiscordIndicator(button, 0xFFFF6B6B,
-                    getString(R.string.console_discord_unconfigured));
-            return;
-        }
-        if (!hostGatewayStore.isDiscordEnabled(host.uuid, connection.profileId())) {
-            applyDiscordIndicator(button, 0xFFFF6B6B,
-                    getString(R.string.console_discord_disabled));
-            return;
-        }
-        applyDiscordIndicator(button, 0xFF73D7FF,
-                getString(R.string.console_discord_connecting));
+        String address = host == null || host.activeAddress == null ? null
+                : host.activeAddress.address;
+        GatewayConnection connection = host == null ? null
+                : hostGatewayStore.loadForPolling(host.uuid, address, null);
+        boolean configured = connection != null
+                && hostGatewayStore.isDiscordEnabled(host.uuid, connection.profileId());
+        boolean visible = ConsoleTopBar.discordVisible(
+                discordAllowedForSelectedProfile(), configured);
+        topBar.showDiscord(visible);
+        if (!visible) return;
+        applyDiscordIndicator(0xFF73D7FF, getString(R.string.console_discord_connecting));
         executor.execute(() -> {
             int color = 0xFFFF6B6B;
             String state;
@@ -6804,53 +6525,38 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             String finalState = state;
             mainHandler.post(() -> {
                 if (request == discordStatusGeneration.get()) {
-                    applyDiscordIndicator(button, finalColor, finalState);
+                    applyDiscordIndicator(finalColor, finalState);
                 }
             });
         });
     }
 
-    private void applyDiscordIndicator(ImageButton button, int color, String state) {
-        discordIndicatorColor = color;
-        discordIndicatorDescription = getString(R.string.console_discord_description, state);
-        updateDiscordActionDescription();
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) button.setTooltipText(state);
-        styleQuickAction(button, button.hasFocus());
-        button.setAlpha(1f);
+    private void applyDiscordIndicator(int color, String state) {
+        topBar.setDiscordStatus(color, getString(R.string.console_discord_description, state));
     }
 
     private void applyDiscordVoiceIndicator(HostGatewayClient.DiscordVoice voice) {
-        ImageButton button = discordActionButton;
-        if (button == null || voice == null || !discordAllowedForSelectedProfile()) return;
+        if (topBar == null || voice == null || !discordAllowedForSelectedProfile()) return;
         discordStatusGeneration.incrementAndGet();
         String state = voice.connected
                 ? getString(R.string.console_discord_voice_active, voice.channelName)
                 : getString(R.string.console_discord_connected);
-        applyDiscordIndicator(button, DiscordPanelController.discordIndicatorColor(
+        applyDiscordIndicator(DiscordPanelController.discordIndicatorColor(
                 true, true, true, voice.connected), state);
     }
 
     private void refreshUsbMicrophoneIndicator() {
-        ImageButton button = usbMicrophoneActionButton;
-        if (button == null) return;
-        if (!microphoneAllowedForSelectedProfile()) {
-            button.setVisibility(View.GONE);
-            if (PreferenceManager.getDefaultSharedPreferences(this)
-                    .getBoolean(UsbMicrophoneService.PREF_ENABLED, false)) {
-                UsbMicrophoneService.disableWithState(this, UsbMicrophoneService.STATE_OFF);
-            }
-            return;
+        if (topBar == null) return;
+        boolean allowed = microphoneAllowedForSelectedProfile();
+        boolean enabled = PreferenceManager.getDefaultSharedPreferences(this)
+                .getBoolean(UsbMicrophoneService.PREF_ENABLED, false);
+        if (!allowed && enabled) {
+            UsbMicrophoneService.disableWithState(this, UsbMicrophoneService.STATE_OFF);
         }
-        button.setVisibility(View.VISIBLE);
         String state = UsbMicrophoneService.state(this);
-        String description = getString(microphoneStateTextResource(state));
-        usbMicrophoneIndicatorColor = microphoneStateColor(state);
-        button.setContentDescription(getString(
-                R.string.console_usb_microphone_description, description));
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            button.setTooltipText(description);
-        }
-        styleQuickAction(button, button.hasFocus());
+        topBar.showMicrophone(ConsoleTopBar.microphoneVisible(allowed, enabled),
+                microphoneStateColor(state), getString(R.string.console_usb_microphone_description,
+                        getString(microphoneStateTextResource(state))));
     }
 
     static int microphoneStateTextResource(String state) {
@@ -6946,12 +6652,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void setDiscordNotificationPending(boolean pending) {
-        if (discordNotificationPending == pending) return;
-        discordNotificationPending = pending;
-        if (discordActionButton != null) {
-            updateDiscordActionDescription();
-            discordActionButton.invalidate();
-        }
+        if (topBar != null) topBar.setDiscordUnread(pending);
     }
 
     private void setWarmUpStatus(String hostId, long attempt, int status) {
@@ -6986,14 +6687,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
     }
 
-    private void updateDiscordActionDescription() {
-        if (discordActionButton == null || discordIndicatorDescription.isEmpty()) return;
-        String description = discordIndicatorDescription;
-        if (discordNotificationPending) {
-            description += ". " + getString(R.string.overlay_discord_unread);
-        }
-        discordActionButton.setContentDescription(description);
-    }
 
     private void resumeSession(ComputerDetails host) {
         if (host == null) return;
@@ -9638,7 +9331,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void setNormalLibraryVisibility(int visibility) {
-        dashboardHeader.setVisibility(visibility);
+        topBar.setVisibility(visibility);
         View carousel = carouselStage != null ? carouselStage
                 : appScroll != null ? appScroll : appVerticalScroll;
         if (carousel != null) carousel.setVisibility(visibility);
@@ -9651,7 +9344,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private List<View> normalLibraryViews() {
         List<View> views = new ArrayList<>();
-        views.add(dashboardHeader);
+        views.add(topBar);
         View carousel = carouselStage != null ? carouselStage
                 : appScroll != null ? appScroll : appVerticalScroll;
         if (carousel != null) views.add(carousel);
@@ -15118,8 +14811,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 new ConsoleSettingsScreen.Category(
                         getString(R.string.console_settings_appearance), this::appearanceSettings),
                 new ConsoleSettingsScreen.Category(getString(R.string.console_settings_library),
-                        panel -> new View[]{settingsToggle(panel, R.string.console_hidden_apps_label,
-                                () -> showHiddenApps, this::toggleHiddenApps)}),
+                        this::librarySettings),
                 new ConsoleSettingsScreen.Category(
                         getString(R.string.console_options_section_streaming),
                         this::streamingSettings),
@@ -15190,6 +14882,13 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     applyCarouselDescriptionVisibility();
                 }),
                 screenSaver};
+    }
+
+    private View[] librarySettings(ConsolePanel panel) {
+        TextView refresh = panel.action(getString(R.string.console_refresh_library));
+        refresh.setOnClickListener(v -> refreshDashboard());
+        return new View[]{refresh, settingsToggle(panel, R.string.console_hidden_apps_label,
+                () -> showHiddenApps, this::toggleHiddenApps)};
     }
 
     private View[] streamingSettings(ConsolePanel panel) {
@@ -16150,7 +15849,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             if (tagged != null && tagged.isShown() && tagged.isFocusable()) target = tagged;
         }
         if (target == null && !hostSelectionVisible) target = firstFocusableChild(appRow);
-        if (target == null && !hostSelectionVisible) target = hostSelector;
+        if (target == null && !hostSelectionVisible) target = topBar.hostStatus();
         if (target != null) target.post(target::requestFocus);
         else if (hostSelectionVisible) requestHostSelectionFocus();
     }
@@ -16340,49 +16039,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         button.setElevation(dp(focused ? 4 : 0));
     }
 
-    private void styleHostSelector(boolean focused) {
-        if (hostSelector == null) return;
-        GradientDrawable background = gradient(
-                focused ? 0xD9233038 : 0x00000000,
-                focused ? 0xD9182229 : 0x00000000, 10);
-        if (focused) background.setStroke(dp(1), 0xB873D7FF);
-        hostSelector.setBackground(background);
-        hostSelector.setElevation(dp(focused ? 2 : 0));
-        animateScale(hostSelector, focused ? 1.03f : 1f);
-    }
-
-    private void styleQuickAction(ImageButton button, boolean focused) {
-        boolean discord = button == discordActionButton
-                || "global.discord".equals(button.getTag());
-        boolean profile = button == profileSelector
-                || "global.profile".equals(button.getTag());
-        int tint = button == usbMicrophoneActionButton
-                ? usbMicrophoneIndicatorColor : 0xFFE8EDF1;
-        if (profile) button.setColorFilter(null);
-        else button.setColorFilter(focused ? 0xFF24313A
-                : discord ? 0xFFF4F6F7 : tint);
-        if (focused) {
-            GradientDrawable halo = new GradientDrawable();
-            halo.setShape(GradientDrawable.OVAL);
-            halo.setColor(0x12000000);
-            halo.setStroke(dp(1), 0xA8D9E9F4);
-            GradientDrawable disc = new GradientDrawable();
-            disc.setShape(GradientDrawable.OVAL);
-            disc.setColor(0xFFF4F6F7);
-            disc.setStroke(dp(1), 0xFF94A8B5);
-            android.graphics.drawable.LayerDrawable background =
-                    new android.graphics.drawable.LayerDrawable(
-                            new Drawable[]{halo, disc});
-            background.setLayerInset(1, dp(3), dp(3), dp(3), dp(3));
-            button.setBackground(background);
-        } else {
-            button.setBackgroundColor(Color.TRANSPARENT);
-        }
-        button.setElevation(dp(focused ? 8 : 0));
-        animateScale(button, focused ? 1.10f : 1f);
-        if (discord) button.invalidate();
-    }
-
     private void animateScale(View view, float scale) {
         view.animate().cancel();
         if (reducedMotion || suppressInitialCarouselMotion || !view.isLaidOut()) {
@@ -16416,67 +16072,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void wireHomeFocusNavigation() {
-        if (optionsButton == null) return;
+        if (topBar == null) return;
         View resume = quickResumeButton != null
                 && quickResumeButton.getVisibility() == View.VISIBLE
                 && quickResumeButton.isEnabled() ? quickResumeButton : null;
         View filter = installedFilterButton != null
                 && installedFilterButton.getVisibility() == View.VISIBLE
                 && installedFilterButton.isEnabled() ? installedFilterButton : null;
-        View quick = firstFocusableChild(quickActions);
-        View controller = firstFocusableChild(controllerRow);
-        View app = firstFocusableChild(appRow);
-
-        if (CONSOLE_UI_V2) {
-            wireDebugHomeFocusNavigation(resume, filter,
-                    quick, controller, app);
-            return;
-        }
-
-        View belowOptions = resume != null ? resume
-                : quick != null ? quick : controller != null ? controller : app;
-        if (belowOptions != null) optionsButton.setNextFocusDownId(belowOptions.getId());
-
-        int down = controller != null ? controller.getId()
-                : filter != null ? filter.getId() : app != null ? app.getId() : View.NO_ID;
-        if (resume != null) {
-            resume.setNextFocusUpId(optionsButton.getId());
-            if (quick != null) resume.setNextFocusRightId(quick.getId());
-            if (down != View.NO_ID) resume.setNextFocusDownId(down);
-        }
-
-        if (quickActions != null) {
-            for (int index = 0; index < quickActions.getChildCount(); index++) {
-                View child = quickActions.getChildAt(index);
-                if (!child.isFocusable()) continue;
-                child.setNextFocusUpId(optionsButton.getId());
-                if (down != View.NO_ID) child.setNextFocusDownId(down);
-                if (index == 0 && resume != null) child.setNextFocusLeftId(resume.getId());
-            }
-        }
-
-        if (controller != null) {
-            controller.setNextFocusUpId(quick != null ? quick.getId() : optionsButton.getId());
-            if (filter != null) controller.setNextFocusDownId(filter.getId());
-            else if (app != null) controller.setNextFocusDownId(app.getId());
-        }
-
-        if (filter != null) {
-            filter.setNextFocusUpId(controller != null ? controller.getId()
-                    : quick != null ? quick.getId() : optionsButton.getId());
-            if (app != null) filter.setNextFocusDownId(app.getId());
-        }
-
-        if (appRow != null) {
-            int up = filter != null ? filter.getId() : controller != null ? controller.getId()
-                    : quick != null ? quick.getId() : optionsButton.getId();
-            for (int index = 0; index < appRow.getChildCount(); index++) {
-                View child = appRow.getChildAt(index);
-                if (child.isFocusable()) child.setNextFocusUpId(up);
-            }
-        }
+        wireDebugHomeFocusNavigation(resume, filter, firstFocusableChild(controllerRow),
+                firstFocusableChild(appRow));
     }
-
     private View firstFocusableChild(ViewGroup row) {
         if (row == null) return null;
         for (int index = 0; index < row.getChildCount(); index++) {
@@ -17026,26 +16631,11 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         @Override public int getOpacity() { return PixelFormat.OPAQUE; }
     }
 
-    private void wireDebugHomeFocusNavigation(View resume, View filter,
-                                               View quick, View controller,
+    private void wireDebugHomeFocusNavigation(View resume, View filter, View controller,
                                                View app) {
         View belowHeader = app != null ? app
                 : filter != null ? filter : controller;
-        View lastQuick = null;
-        if (quickActions != null) {
-            for (int index = quickActions.getChildCount() - 1; index >= 0; index--) {
-                View child = quickActions.getChildAt(index);
-                if (child.isFocusable()) {
-                    lastQuick = child;
-                    break;
-                }
-            }
-        }
-        if (belowHeader != null) optionsButton.setNextFocusDownId(belowHeader.getId());
-        optionsButton.setNextFocusLeftId(optionsButton.getId());
-        optionsButton.setNextFocusRightId(quick != null ? quick.getId() : optionsButton.getId());
-        optionsButton.setNextFocusUpId(optionsButton.getId());
-
+        topBar.wireFocus(belowHeader);
         if (resume != null) {
             if (app != null) resume.setNextFocusUpId(app.getId());
             if (filter != null) resume.setNextFocusLeftId(filter.getId());
@@ -17062,18 +16652,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     : resume != null ? resume : app;
             if (aboveController != null) controller.setNextFocusUpId(aboveController.getId());
         }
-        if (quickActions != null) {
-            for (int index = 0; index < quickActions.getChildCount(); index++) {
-                View child = quickActions.getChildAt(index);
-                if (!child.isFocusable()) continue;
-                if (belowHeader != null) {
-                    child.setNextFocusDownId(belowHeader.getId());
-                }
-                if (index == 0) {
-                    child.setNextFocusLeftId(optionsButton.getId());
-                }
-            }
-        }
         View belowApps = filter != null ? filter : resume != null ? resume
                 : controller;
         if (appRow != null) {
@@ -17082,7 +16660,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 View child = appRow.getChildAt(index);
                 if (!child.isFocusable()) continue;
                 focusableApps.add(child);
-                child.setNextFocusUpId(quick != null ? quick.getId() : optionsButton.getId());
+                child.setNextFocusUpId(topBar.hostStatus().getId());
                 if (belowApps != null) child.setNextFocusDownId(belowApps.getId());
             }
             for (int index = 0; index < focusableApps.size(); index++) {

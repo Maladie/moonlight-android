@@ -522,7 +522,10 @@
     <string name="console_status_unreachable">Unreachable</string>
     <string name="console_status_unpaired">Online · not paired</string>
     <string name="console_status_active_session">Active session</string>
-    <string name="console_status_active_app">Active session · %1$s</string>
+    <string name="console_status_active_app">Stream · %1$s</string>
+    <string name="console_refresh_library">Refresh library</string>
+    <string name="console_change_host">Change host</string>
+    <string name="console_return_to_stream">Return to stream</string>
     <string name="console_apps">APPLICATIONS</string>
     <string name="console_controllers_none">CONTROLLERS · NONE</string>
     <plurals name="console_controller_count">
@@ -593,11 +596,9 @@
     <string name="console_app_stream_settings">App streaming settings</string>
     <string name="console_app_actions_details">Start, configure, hide, or inspect this application.</string>
     <string name="console_show_app">Show application</string>
-    <string name="console_action_refresh">Refresh status and library</string>
     <string name="console_pair_discovered_host">Pair discovered host</string>
     <string name="console_pair_discovered_host_named">Pair discovered host %1$s</string>
     <string name="console_action_quick_launch">Quick Launch</string>
-    <string name="console_action_stream_settings">Options</string>
     <string name="console_action_hidden_apps">Hidden applications</string>
     <string name="console_action_discord">Discord</string>
     <string name="console_refresh">Refresh status and library</string>
@@ -653,9 +654,6 @@
     <string name="console_remove_host_title">Remove %1$s?</string>
     <string name="console_remove_host_details">This removes the saved host, cached artwork, shortcuts, and paired Gateway data from this device.</string>
     <string name="console_host_removed">%1$s removed.</string>
-    <string name="console_discord_no_host">Discord · select a host</string>
-    <string name="console_discord_unconfigured">Discord · Gateway not paired</string>
-    <string name="console_discord_disabled">Discord · integration disabled</string>
     <string name="console_discord_connecting">Discord · checking connection</string>
     <string name="console_discord_disconnected">Discord · disconnected</string>
     <string name="console_discord_auth_required">Discord · authorization required</string>
@@ -1006,10 +1004,8 @@
     <string name="console_add_host_searching">Refreshing discovered hosts…</string>
     <string name="console_add_host_by_ip">Add by IP address</string>
     <string name="console_add_host_details">Nearby hosts are discovered automatically. You can also enter an IP address manually.</string>
-    <string name="console_action_leave_host">Leave host</string>
     <string name="console_wake_host">Wake host</string>
     <string name="console_unpair_host">Unpair host</string>
-    <string name="console_host_status">%1$s\n%2$s</string>
     <string name="console_host_status_description">%1$s. %2$s. Press Select to open host options.</string>
     <string name="console_host_power_wake_description">%1$s is offline. Press Select to wake the host.</string>
     <string name="console_host_waking_description">%1$s is waking. Please wait.</string>

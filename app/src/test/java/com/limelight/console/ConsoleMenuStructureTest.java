@@ -20,15 +20,38 @@ public class ConsoleMenuStructureTest {
         facts.paired = true;
         facts.gatewayAvailable = true;
         facts.streamRunning = true;
+        facts.inHost = true;
         ConsoleActionMenu<ConsoleHostPanel.Action> menu = ConsoleHostPanel.menu(facts);
 
         assertEquals(Arrays.asList(ConsoleHostPanel.Action.DESKTOP,
                 ConsoleHostPanel.Action.SLEEP, ConsoleHostPanel.Action.CLOSE_STREAM,
-                ConsoleHostPanel.Action.TEST_CONNECTION, ConsoleHostPanel.Action.HARD_TERMINATE,
-                ConsoleHostPanel.Action.UNPAIR), menu.actions());
+                ConsoleHostPanel.Action.TEST_CONNECTION, ConsoleHostPanel.Action.CHANGE_HOST,
+                ConsoleHostPanel.Action.HARD_TERMINATE, ConsoleHostPanel.Action.UNPAIR),
+                menu.actions());
         assertEquals(Arrays.asList(R.string.console_section_more), sections(menu));
         assertEquals(Arrays.asList(ConsoleHostPanel.Action.HARD_TERMINATE,
                 ConsoleHostPanel.Action.UNPAIR), destructive(menu));
+    }
+
+    @Test public void activeSessionLeadsWithReturnCloseAndSleep() {
+        ConsoleHostPanel.Facts facts = new ConsoleHostPanel.Facts();
+        facts.reachable = true;
+        facts.online = true;
+        facts.paired = true;
+        facts.gatewayAvailable = true;
+        facts.streamRunning = true;
+        facts.sessionActive = true;
+        facts.resumeAvailable = true;
+        ConsoleActionMenu<ConsoleHostPanel.Action> menu = ConsoleHostPanel.menu(facts);
+
+        assertEquals(Arrays.asList(ConsoleHostPanel.Action.RESUME,
+                ConsoleHostPanel.Action.CLOSE_STREAM, ConsoleHostPanel.Action.SLEEP,
+                ConsoleHostPanel.Action.TEST_CONNECTION, ConsoleHostPanel.Action.HARD_TERMINATE,
+                ConsoleHostPanel.Action.UNPAIR), menu.actions());
+        assertTrue(menu.items.get(0).enabled);
+
+        facts.resumeAvailable = false;
+        assertFalse(ConsoleHostPanel.menu(facts).items.get(0).enabled);
     }
 
     @Test public void offlineHostOffersWakeInsteadOfSleep() {
@@ -37,6 +60,8 @@ public class ConsoleMenuStructureTest {
         List<ConsoleHostPanel.Action> actions = ConsoleHostPanel.menu(facts).actions();
         assertTrue(actions.contains(ConsoleHostPanel.Action.WAKE));
         assertFalse(actions.contains(ConsoleHostPanel.Action.SLEEP));
+        // From host selection there is no host to leave.
+        assertFalse(actions.contains(ConsoleHostPanel.Action.CHANGE_HOST));
     }
 
     @Test public void idleInstalledGameShowsOnlyMeaningfulGroups() {

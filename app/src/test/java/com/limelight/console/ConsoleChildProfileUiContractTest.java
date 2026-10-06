@@ -123,8 +123,8 @@ public class ConsoleChildProfileUiContractTest {
         assertTrue(microphone.contains("return discordAllowedForSelectedProfile();"));
         String indicator = between(activity, "private void refreshUsbMicrophoneIndicator()",
                 "static int microphoneStateTextResource(");
-        assertTrue(indicator.contains("if (!microphoneAllowedForSelectedProfile())"));
-        assertTrue(indicator.contains("button.setVisibility(View.GONE)"));
+        assertTrue(indicator.contains("boolean allowed = microphoneAllowedForSelectedProfile();"));
+        assertTrue(indicator.contains("ConsoleTopBar.microphoneVisible(allowed, enabled)"));
     }
 
     @Test public void streamHandoffPreservesOnlyTransferredChildOnPause() throws Exception {
@@ -174,15 +174,13 @@ public class ConsoleChildProfileUiContractTest {
 
     @Test public void profileToolbarUsesAvatarAndChildDiscordHasNoSlot() throws Exception {
         String activity = source("src/main/java/com/limelight/console/ConsoleActivity.java");
-        assertTrue(activity.contains("profileSelector = profileQuickAction()"));
-        assertTrue(activity.contains("new ProfileToolbarDrawable("));
-        assertTrue(activity.contains("profileSelector.setTooltipText(name)"));
+        assertTrue(activity.contains("topBar.showProfile(new ProfileToolbarDrawable("));
 
         String discord = between(activity, "private void refreshDiscordIndicator()",
                 "private void applyDiscordIndicator(");
-        assertTrue(discord.contains("!discordAllowedForSelectedProfile()"));
-        assertTrue(discord.contains("button.setVisibility(View.GONE)"));
-        assertTrue(discord.contains("button.setVisibility(View.VISIBLE)"));
+        assertTrue(discord.contains("ConsoleTopBar.discordVisible("));
+        assertTrue(discord.contains("discordAllowedForSelectedProfile(), configured)"));
+        assertTrue(discord.contains("topBar.showDiscord(visible)"));
         String access = between(activity, "private boolean discordAllowedForSelectedProfile()",
                 "private boolean discordPanelVisible()");
         assertTrue(access.contains("selection.selected.isChild()"));
