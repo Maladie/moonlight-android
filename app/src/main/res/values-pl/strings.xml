@@ -1248,6 +1248,10 @@
     <string name="transition_game_ended">Gra zakończona</string>
     <string name="transition_returning_library">Powrót do biblioteki…</string>
     <string name="console_previous_session_close_failed">Nie udało się zamknąć poprzedniej sesji hosta. Spróbuj ponownie, gdy zniknie wskaźnik aktywnej sesji.</string>
+    <string name="control_stream_conflict">Na hoście trwa inna sesja streamu. Zakończ ją na hoście i spróbuj ponownie.</string>
+    <string name="control_previous_game_unconfirmed">Host nie potwierdził zakończenia poprzedniej gry. Poczekaj chwilę i spróbuj ponownie.</string>
+    <string name="control_state_changed">Stan sesji na hoście zmienił się podczas uruchamiania. Spróbuj ponownie.</string>
+    <string name="control_rejected">Host odrzucił uruchomienie tego streamu. Spróbuj ponownie za chwilę.</string>
     <string name="console_session_uncertain_title">Stan sesji jest jeszcze sprawdzany</string>
     <string name="console_session_uncertain_details">MoonWaker nie potwierdził jeszcze, która gra działa. Poczekaj chwilę i spróbuj ponownie. Żadna gra ani stream nie zostały uruchomione ani zatrzymane.</string>
     <string name="console_presentation_launch_failed_title">Nie udało się wyświetlić streamu</string>

@@ -529,6 +529,12 @@ public class NvConnection implements StreamInput {
                     return;
                 } catch (XmlPullParserException | IOException e) {
                     e.printStackTrace();
+                    if (e instanceof GatewayTransport.GatewayException
+                            && ((GatewayTransport.GatewayException) e).statusCode() == 409) {
+                        String reason = ((GatewayTransport.GatewayException) e).reason();
+                        context.connListener.controlRejected(appName, reason == null ? "" : reason);
+                        return;
+                    }
                     context.connListener.displayMessage(e.getMessage());
                     context.connListener.stageFailed(appName, MoonBridge.ML_PORT_FLAG_TCP_47984 | MoonBridge.ML_PORT_FLAG_TCP_47989, 0);
                     return;

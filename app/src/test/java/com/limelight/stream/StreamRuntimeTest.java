@@ -533,6 +533,7 @@ public class StreamRuntimeTest {
         @Override public void stageStarting(String stage) { }
         @Override public void stageComplete(String stage) { }
         @Override public void stageFailed(String stage, int portFlags, int errorCode) { }
+        @Override public void controlRejected(String stage, String reason) { }
         @Override public void connectionStarted() { started.incrementAndGet(); }
         @Override public void connectionTerminated(int errorCode) { terminated.incrementAndGet(); }
         @Override public void connectionStatusUpdate(int connectionStatus) { }
