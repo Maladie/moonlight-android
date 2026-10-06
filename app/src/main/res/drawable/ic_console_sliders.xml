@@ -1,3 +1,4 @@
-<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="20dp" android:height="20dp" android:viewportWidth="24" android:viewportHeight="24">
-    <path android:fillColor="@android:color/transparent" android:strokeColor="#FF9FAAB2" android:strokeWidth="1.7" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M4,7h7M15,7h5M4,17h3M11,17h9M11,4v6M7,14v6" />
+<!-- Panel line icon (UX_MENU_PL.md 4.7): 2.6 px stroke at 1080p, round caps; tinted in code. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android" android:width="15dp" android:height="15dp" android:viewportWidth="24" android:viewportHeight="24">
+    <path android:fillColor="@android:color/transparent" android:strokeColor="#FFFFFFFF" android:strokeWidth="2.08" android:strokeLineCap="round" android:strokeLineJoin="round" android:pathData="M4,7H11M15,7H20M4,17H7M11,17H20M13,4.5V9.5M9,14.5V19.5" />
 </vector>

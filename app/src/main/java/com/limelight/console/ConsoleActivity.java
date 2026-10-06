@@ -636,6 +636,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private LinearLayout sidePanel;
     private LockableScrollView sidePanelScroll;
     private ConsolePanel consolePanel;
+    private ConsoleMenuBackdrop menuBackdrop;
     private ConsoleSettingsScreen settingsScreen;
     private FrameLayout communityPanelHost;
     private android.app.Dialog sideDialog;
@@ -4494,30 +4495,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         modalLayer.setClickable(true);
         modalLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
         modalLayer.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
-        View dim = new View(this);
-        dim.setBackgroundColor(ConsolePanel.SCRIM);
-        dim.setClickable(true);
-        dim.setOnClickListener(v -> hideSidePanel());
-        modalLayer.addView(dim, match());
+        menuBackdrop = new ConsoleMenuBackdrop(this, isStreamHome());
+        menuBackdrop.setOnClickListener(v -> hideSidePanel());
+        modalLayer.addView(menuBackdrop, match());
         sidePanelScroll = new LockableScrollView(this);
         sidePanelScroll.setFillViewport(true);
         sidePanelScroll.setVerticalScrollBarEnabled(false);
         // Rows below the fold fade out instead of being cut by the panel edge.
         sidePanelScroll.setVerticalFadingEdgeEnabled(true);
         sidePanelScroll.setFadingEdgeLength(dp(32));
-        GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{0xFC1A2028, 0xFC12171E, 0xFF090C10});
-        background.setCornerRadii(new float[]{dp(24), dp(24), 0, 0, 0, 0, dp(24), dp(24)});
-        background.setStroke(dp(1), 0x704A6677);
-        sidePanelScroll.setBackground(background);
-        sidePanelScroll.setElevation(dp(18));
         sidePanel = new LinearLayout(this);
         sidePanel.setOrientation(LinearLayout.VERTICAL);
-        sidePanel.setPadding(dp(20), dp(16), dp(20), dp(24));
         sidePanelScroll.addView(sidePanel, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        consolePanel = new ConsolePanel(this, sidePanelScroll, reducedMotion);
-        settingsScreen = new ConsoleSettingsScreen(this, reducedMotion);
+        consolePanel = new ConsolePanel(this, sidePanelScroll, menuBackdrop, reducedMotion);
+        settingsScreen = new ConsoleSettingsScreen(this, reducedMotion, isStreamHome());
         modalLayer.addView(sidePanelScroll, new FrameLayout.LayoutParams(dp(ConsolePanel.WIDTH_DP),
                 ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
         // Community is a full-screen, bounded composition with its own feed/detail scrollers.
@@ -5435,7 +5427,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         showSidePanel(getString(R.string.console_host_eyebrow), host.name, profile == null ? state
                         : state + " \u00B7 " + getString(R.string.console_host_panel_profile,
                         profileDisplayName(profile)),
-                ConsoleHostPanel.menu(facts).rows(this, consolePanel, action -> {
+                ConsoleHostPanel.menu(facts).rows(this, consolePanel, a -> a.icon, action -> {
                     switch (action) {
                         case DESKTOP: hideSidePanel(); launchDesktopSession(host); break;
                         case WAKE: hideSidePanel(); wakeHost(host); break;
@@ -11867,7 +11859,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         String streamSettingsKey = playniteStreamSettingsKey(host.uuid, item.stableId());
         showSidePanel(getString(R.string.playnite_game_options), item.game.name, panelDetails,
-                ConsoleGameCard.menu(facts).rows(this, consolePanel, action -> {
+                ConsoleGameCard.menu(facts).rows(this, consolePanel, a -> a.icon, action -> {
                     switch (action) {
                         case LAUNCH:
                         case RESUME:
@@ -15709,6 +15701,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 new int[]{0xFF0C111A, 0xFE0D121D, 0xFE090C13});
         communityPanelHost.setBackground(background);
         if (!alreadyShowing) {
+            captureMenuBackdrop();
             sideDialog.show();
             Window window = sideDialog.getWindow();
             if (window != null) window.setLayout(
@@ -15882,6 +15875,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             previousPanelFocusIndex = previousFocusable.indexOf(previousPanelFocus);
         }
         if (!alreadyShowing) {
+            captureMenuBackdrop();
             lastContentFocus = getCurrentFocus();
             lastContentFocusTag = lastContentFocus != null ? lastContentFocus.getTag() : null;
             panelHistory.clear();
@@ -15944,39 +15938,28 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (sidePanelScroll == null || sidePanel == null) return;
         sidePanelScroll.setScrollLocked(communityShell);
         FrameLayout.LayoutParams frame = (FrameLayout.LayoutParams) sidePanelScroll.getLayoutParams();
-        if (communityShell) {
-            frame.width = ViewGroup.LayoutParams.MATCH_PARENT;
-            frame.height = ViewGroup.LayoutParams.MATCH_PARENT;
-            frame.gravity = Gravity.CENTER;
-            frame.leftMargin = 0;
-            frame.topMargin = 0;
-            frame.rightMargin = 0;
-            frame.bottomMargin = 0;
-            GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                    new int[]{0xFF0C111A, 0xFE0D121D, 0xFE090C13});
-            sidePanelScroll.setBackground(background);
-            sidePanel.setPadding(0, 0, 0, 0);
-            ViewGroup.LayoutParams content = sidePanel.getLayoutParams();
-            content.height = ViewGroup.LayoutParams.MATCH_PARENT;
-            sidePanel.setLayoutParams(content);
-            return;
-        }
-        frame.width = dp(ConsolePanel.WIDTH_DP);
+        int margin = communityShell ? 0 : dp(ConsolePanel.MARGIN_DP);
+        frame.width = communityShell ? ViewGroup.LayoutParams.MATCH_PARENT : dp(ConsolePanel.WIDTH_DP);
         frame.height = ViewGroup.LayoutParams.MATCH_PARENT;
-        frame.gravity = Gravity.END;
-        frame.leftMargin = 0;
-        frame.topMargin = 0;
-        frame.rightMargin = 0;
-        frame.bottomMargin = 0;
-        GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{0xFC1A2028, 0xFC12171E, 0xFF090C10});
-        background.setCornerRadii(new float[]{dp(24), dp(24), 0, 0, 0, 0, dp(24), dp(24)});
-        background.setStroke(dp(1), 0x704A6677);
-        sidePanelScroll.setBackground(background);
-        sidePanel.setPadding(dp(20), dp(16), dp(20), dp(24));
+        frame.gravity = communityShell ? Gravity.CENTER : Gravity.END;
+        frame.setMargins(margin, margin, margin, margin);
+        if (communityShell) {
+            sidePanelScroll.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                    new int[]{0xFF0C111A, 0xFE0D121D, 0xFE090C13}));
+            consolePanel.leaveGlass(sidePanel);
+        } else {
+            consolePanel.floatOnGlass(sidePanel);
+        }
         ViewGroup.LayoutParams content = sidePanel.getLayoutParams();
-        content.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+        content.height = communityShell ? ViewGroup.LayoutParams.MATCH_PARENT
+                : ViewGroup.LayoutParams.WRAP_CONTENT;
         sidePanel.setLayoutParams(content);
+    }
+
+    /** The side panel blurs whatever is directly below it: settings when open, else Home. */
+    private void captureMenuBackdrop() {
+        menuBackdrop.capture(settingsScreen.isShowing() ? settingsScreen.window() : getWindow(),
+                reducedMotion);
     }
 
     private void showSidePanelBusy(String eyebrow, String title, String details) {
@@ -16016,6 +15999,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (discordSocialPanelController != null) discordSocialPanelController.closePanel();
         if (discordPanelController != null) discordPanelController.closePanel();
         if (sideDialog != null) sideDialog.dismiss();
+        menuBackdrop.release();
         if (communityPanelHost != null) {
             communityPanelHost.removeAllViews();
             communityPanelHost.setVisibility(View.GONE);
@@ -16068,6 +16052,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     ((ConsoleChildGameSharingPanel) child).resumeAfterRestore();
                 }
             }
+            consolePanel.updateLegend(sidePanel);
             currentPanelKey = snapshot.key;
             if (!reducedMotion) {
                 sidePanelScroll.animate().cancel();

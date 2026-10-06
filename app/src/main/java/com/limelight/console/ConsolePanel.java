@@ -11,6 +11,7 @@ import android.graphics.Typeface;
 import android.graphics.drawable.ColorDrawable;
 import android.graphics.drawable.Drawable;
 import android.graphics.drawable.GradientDrawable;
+import android.graphics.drawable.InsetDrawable;
 import android.graphics.drawable.StateListDrawable;
 import android.text.SpannableString;
 import android.text.Spanned;
@@ -22,88 +23,179 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.view.ViewParent;
 import android.widget.LinearLayout;
-import android.widget.ScrollView;
 import android.widget.TextView;
 
 import com.limelight.R;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Locale;
 import java.util.function.IntConsumer;
 import java.util.function.Predicate;
 
 /**
- * The one console side-panel list (docs/MoonWaker/UX_MENU_PL.md section 4): an
- * eyebrow/title/details header, 72 dp rows with the label left and the value right, uppercase
- * section headers, destructive rows last behind a divider, and a footer legend. Rows are
- * plain views so callers keep their own click handlers and tags.
+ * The one console side-panel list (docs/MoonWaker/UX_MENU_PL.md section 4): a floating glass
+ * panel with an eyebrow/title/details header, rows with the label left and the value right,
+ * uppercase section headers, destructive rows last behind a hairline, and a footer legend held
+ * at the bottom. Focused rows get the light fill with dark text (section 4.2). Rows are plain
+ * views so callers keep their own click handlers and tags.
  */
 final class ConsolePanel {
-    static final int WIDTH_DP = 360;
-    static final int ROW_HEIGHT_DP = 44;
+    /** 700 px at 1080p, floating 24 px from the screen edges. */
+    static final int WIDTH_DP = 350;
+    static final int MARGIN_DP = 12;
+    static final int ROW_HEIGHT_DP = 38;
+    /** Section 4.6 at 2 px/dp: title 44 px, rows 30 px, subtitle 26 px, captions 24 px. */
     static final float TITLE_SP = 22f;
-    static final float LABEL_SP = 16f;
+    static final float LABEL_SP = 15f;
     static final float SECONDARY_SP = 13f;
-    static final int SECTION_TOP_DP = 14;
+    static final float CAPTION_SP = 12f;
+    static final int SECTION_TOP_DP = 16;
+    /** The focus fill spans 13 dp from the panel edge; text sits 14 dp inside it. */
+    static final int PAD_X_DP = 13;
     static final int ROW_INSET_DP = 14;
-    static final float FOCUS_SCALE = 1.03f;
+    static final int ICON_GAP_DP = 8;
+    /** Bottom padding of the scroll view kept for the pinned legend (1004 px baseline). */
+    static final int LEGEND_AREA_DP = 50;
+    static final int LEGEND_BOTTOM_DP = 22;
+    static final int SCROLL_TOP_DP = 18;
     static final int STEPS = 10;
-    /** One menu backdrop for side panels and settings: text and art underneath stay unreadable. */
-    static final int SCRIM = 0xF2000000;
+    static final int TEXT = 0xFFF5F6F9;
+    static final int HEADER = 0xFF949CAE;
+    static final int LEGEND = 0xFFA0A6B4;
+    /** Section 4.2 text focus: near-white fill, dark ink. */
+    static final int FOCUS_FILL = 0xFCF6F7FA;
+    static final int INK = 0xFF111319;
+    static final int INK_SECONDARY = 0xFF4E5462;
+    /** Destructive rows stay red on the light focus fill, deep enough to read on it. */
+    static final int DANGER_INK = 0xFFC62833;
 
     private enum Kind { DESTRUCTIVE, STEPPER }
 
     private final Context context;
-    private final ScrollView scroll;
+    private final LockableScrollView scroll;
+    private final ConsoleGlass glass;
+    /** Drawn by the scroll view, outside the scrolled rows. */
+    private final TextView legend;
+    private boolean legendStepper;
     private final int accent;
     private final int danger;
     private final int secondary;
+    private final Typeface medium = Typeface.create("sans-serif-medium", Typeface.NORMAL);
     private final Rect revealBounds = new Rect();
+    // Shared per panel so building a long card allocates no per-row colour lists or fills.
+    private final ColorStateList textColors;
+    private final ColorStateList dangerColors;
+    private final ColorStateList valueColors;
+    private final ColorStateList stepperColors;
+    private final Drawable.ConstantState focusFill;
+    /** Tinted icon states by tint list, then icon: rows share them instead of mutating a copy. */
+    private final Map<ColorStateList, Map<Integer, Drawable.ConstantState>> icons =
+            new IdentityHashMap<>();
     private boolean reducedMotion;
 
-    ConsolePanel(Context context, ScrollView scroll, boolean reducedMotion) {
+    ConsolePanel(Context context, LockableScrollView scroll, ConsoleMenuBackdrop backdrop,
+                 boolean reducedMotion) {
         this.context = context;
         this.scroll = scroll;
         this.reducedMotion = reducedMotion;
+        glass = new ConsoleGlass(scroll, backdrop);
         accent = context.getResources().getColor(R.color.console_accent);
         danger = context.getResources().getColor(R.color.console_state_error);
         secondary = context.getResources().getColor(R.color.console_text_secondary);
+        textColors = rowColors(TEXT);
+        dangerColors = stateColors(danger, DANGER_INK);
+        valueColors = stateColors(secondary, INK_SECONDARY);
+        stepperColors = stateColors(accent, INK);
+        focusFill = focusFill().getConstantState();
+        // Parse the row icons once off the main thread; the first card then hits the cache.
+        ConsoleMenuBackdrop.inBackground(() -> {
+            context.getDrawable(R.drawable.ic_console_chevron);
+            for (ConsoleHostPanel.Action action : ConsoleHostPanel.Action.values()) {
+                context.getDrawable(action.icon);
+            }
+            for (ConsoleGameCard.Action action : ConsoleGameCard.Action.values()) {
+                context.getDrawable(action.icon);
+            }
+        });
+        legend = text("", CAPTION_SP, LEGEND);
+        // The legend is drawn detached from any parent; TextView.setText reads its layout params.
+        legend.setLayoutParams(new ViewGroup.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
+        legend.setSingleLine(true);
+        legend.setPadding(dp(PAD_X_DP + ROW_INSET_DP), 0, dp(PAD_X_DP + ROW_INSET_DP), 0);
     }
 
     void setReducedMotion(boolean reducedMotion) {
         this.reducedMotion = reducedMotion;
     }
 
-    /** Replaces the container content with header, rows (destructive ones last) and legend. */
+    /**
+     * Gives the panel's scroll view the glass surface and the legend pinned in its bottom
+     * padding, so rows scroll above the legend and never push it out of the panel.
+     */
+    void floatOnGlass(LinearLayout content) {
+        scroll.setBackground(glass);
+        scroll.setClipToOutline(true);
+        // The top inset keeps scrolled-away header text fading out inside the glass instead of
+        // being cut by its rounded top edge.
+        scroll.setPadding(0, dp(SCROLL_TOP_DP), 0, dp(LEGEND_AREA_DP));
+        scroll.setFooter(legend, dp(LEGEND_BOTTOM_DP));
+        content.setPadding(dp(PAD_X_DP), dp(25 - SCROLL_TOP_DP), dp(PAD_X_DP), dp(4));
+    }
+
+    /** Undoes {@link #floatOnGlass} for a full-screen composition that brings its own surface. */
+    void leaveGlass(LinearLayout content) {
+        scroll.setPadding(0, 0, 0, 0);
+        scroll.setFooter(null, 0);
+        content.setPadding(0, 0, 0, 0);
+    }
+
+    /**
+     * Picks the legend for the rows now in {@code container}; {@link #render} calls it once, and
+     * callers that put saved rows back without rendering call it after restoring them.
+     */
+    void updateLegend(ViewGroup container) {
+        boolean stepper = false;
+        for (int index = 0; index < container.getChildCount(); index++) {
+            stepper |= container.getChildAt(index).getTag(R.id.console_panel_row_kind)
+                    == Kind.STEPPER;
+        }
+        if (stepper == legendStepper && legend.getText().length() > 0) return;
+        legendStepper = stepper;
+        legend.setText(stepper ? R.string.console_panel_legend_stepper
+                : R.string.console_panel_legend);
+        scroll.requestLayout();
+    }
+
+    /** Replaces the container content with header and rows (destructive ones last). */
     void render(LinearLayout container, String eyebrow, String title, CharSequence details,
                 boolean scrollableDetails, View... rows) {
         container.removeAllViews();
-        // The 1.03 focus scale must not be clipped by the panel's side padding.
-        container.setClipToPadding(false);
         // Header text shares the rows' inner inset so every left edge lines up.
-        container.addView(inset(text(eyebrow, SECONDARY_SP, secondary, true)), wrap(0, 0));
-        container.addView(inset(text(title, TITLE_SP, Color.WHITE, true)), wrap(dp(6), 0));
-        TextView detailView = inset(text(details, SECONDARY_SP, secondary, false));
+        container.addView(inset(header(eyebrow)), wrap(0, 0));
+        TextView titleView = inset(text(title, TITLE_SP, TEXT));
+        titleView.setTypeface(medium);
+        container.addView(titleView, wrap(dp(4), 0));
+        TextView detailView = inset(text(details, SECONDARY_SP, secondary));
         detailView.setVisibility(TextUtils.isEmpty(details) ? View.GONE : View.VISIBLE);
         if (scrollableDetails) makeScrollable(detailView);
-        container.addView(detailView, wrap(dp(6), dp(12)));
+        container.addView(detailView, wrap(dp(3), dp(12)));
 
         List<View> ordered = destructiveLast(Arrays.asList(rows), ConsolePanel::isDestructive);
         int firstDestructive = 0;
         while (firstDestructive < ordered.size()
                 && !isDestructive(ordered.get(firstDestructive))) firstDestructive++;
-        boolean stepper = false;
         for (int index = 0; index < ordered.size(); index++) {
             View row = ordered.get(index);
             if (index == firstDestructive && index > 0) container.addView(divider(), dividerParams());
-            container.addView(row, wrap(0, dp(2)));
-            stepper |= row.getTag(R.id.console_panel_row_kind) == Kind.STEPPER;
+            container.addView(row, wrap(0, 0));
         }
-        TextView legend = text(context.getString(stepper ? R.string.console_panel_legend_stepper
-                : R.string.console_panel_legend), SECONDARY_SP, 0x99FFFFFF, false);
-        container.addView(inset(legend), wrap(dp(20), 0));
+        updateLegend(container);
     }
 
     private TextView inset(TextView view) {
@@ -113,12 +205,13 @@ final class ConsolePanel {
 
     /** An action row; {@link #navigation} adds a chevron for rows that open another panel. */
     TextView action(CharSequence label) {
-        TextView row = text(label, LABEL_SP, Color.WHITE, false);
-        row.setTextColor(stateColors(Color.WHITE));
+        TextView row = text(label, LABEL_SP, TEXT);
+        row.setTextColor(textColors);
         row.setTag("panel.action:" + label);
         row.setMinHeight(dp(ROW_HEIGHT_DP));
         row.setGravity(Gravity.CENTER_VERTICAL | Gravity.START);
         styleRow(row);
+        ConsoleText.centreOnGlyphs(row);
         return row;
     }
 
@@ -131,15 +224,41 @@ final class ConsolePanel {
     TextView navigation(CharSequence label) {
         TextView row = action(label);
         row.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null,
-                chevron(stateColors(Color.WHITE)), null);
+                tinted(R.drawable.ic_console_chevron, row.getTextColors()), null);
         return row;
     }
 
-    /** Marks a row destructive: red text, rendered after all other rows behind a divider. */
+    /** Puts a line icon before the label, tinted like the label in every state. */
+    <T extends TextView> T icon(T row, int icon) {
+        Drawable[] current = row.getCompoundDrawablesRelative();
+        row.setCompoundDrawablesRelativeWithIntrinsicBounds(tinted(icon, row.getTextColors()),
+                current[1], current[2], current[3]);
+        row.setCompoundDrawablePadding(dp(ICON_GAP_DP));
+        return row;
+    }
+
+    /**
+     * Marks a row destructive: red text and icon, also on the light focus fill, rendered after
+     * all other rows behind a hairline.
+     */
     <T extends TextView> T destructive(T row) {
         row.setTag(R.id.console_panel_row_kind, Kind.DESTRUCTIVE);
-        row.setTextColor(stateColors(danger));
+        row.setTextColor(dangerColors);
         return row;
+    }
+
+    /** A fresh drawable per row (each row has its own state) over one shared tinted state. */
+    private Drawable tinted(int icon, ColorStateList tint) {
+        Map<Integer, Drawable.ConstantState> byIcon = icons.get(tint);
+        if (byIcon == null) icons.put(tint, byIcon = new HashMap<>());
+        Drawable.ConstantState state = byIcon.get(icon);
+        if (state == null) {
+            Drawable drawable = context.getDrawable(icon).mutate();
+            drawable.setTintList(tint);
+            state = drawable.getConstantState();
+            byIcon.put(icon, state);
+        }
+        return state.newDrawable(context.getResources());
     }
 
     /** A label with a smaller secondary line, e.g. why an action is unavailable. */
@@ -169,12 +288,14 @@ final class ConsolePanel {
     /** A value picker row: label, current value and a chevron to the choice panel. */
     LinearLayout value(String label, CharSequence value) {
         LinearLayout row = labelledRow(label);
-        TextView valueView = text(value, SECONDARY_SP, secondary, false);
+        TextView valueView = text(value, SECONDARY_SP, secondary);
+        valueView.setTextColor(valueColors);
+        valueView.setDuplicateParentStateEnabled(true);
         valueView.setSingleLine(true);
         valueView.setEllipsize(TextUtils.TruncateAt.END);
         valueView.setMaxWidth(dp(WIDTH_DP / 2));
         valueView.setCompoundDrawablesRelativeWithIntrinsicBounds(null, null,
-                chevron(ColorStateList.valueOf(secondary)), null);
+                tinted(R.drawable.ic_console_chevron, valueColors), null);
         valueView.setCompoundDrawablePadding(dp(8));
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT);
@@ -194,7 +315,10 @@ final class ConsolePanel {
     LinearLayout stepper(String label, int percent, IntConsumer onPercentChanged) {
         LinearLayout row = labelledRow(label);
         row.setTag(R.id.console_panel_row_kind, Kind.STEPPER);
-        TextView valueView = text("", SECONDARY_SP, accent, true);
+        TextView valueView = text("", SECONDARY_SP, accent);
+        valueView.setTypeface(medium);
+        valueView.setTextColor(stepperColors);
+        valueView.setDuplicateParentStateEnabled(true);
         row.addView(valueView, new LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.WRAP_CONTENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         int[] step = {stepFromPercent(percent)};
@@ -225,7 +349,7 @@ final class ConsolePanel {
     }
 
     TextView section(String label) {
-        TextView header = text(label.toUpperCase(Locale.ROOT), SECONDARY_SP, accent, true);
+        TextView header = header(label);
         header.setPadding(dp(ROW_INSET_DP), dp(SECTION_TOP_DP), dp(ROW_INSET_DP), dp(6));
         header.setFocusable(false);
         return header;
@@ -233,7 +357,7 @@ final class ConsolePanel {
 
     /** Non-focusable secondary text inside the row list. */
     TextView note(String value) {
-        TextView note = text(value, SECONDARY_SP, secondary, false);
+        TextView note = text(value, SECONDARY_SP, secondary);
         note.setPadding(dp(ROW_INSET_DP), dp(8), dp(ROW_INSET_DP), dp(8));
         note.setFocusable(false);
         return note;
@@ -275,11 +399,12 @@ final class ConsolePanel {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setMinimumHeight(dp(ROW_HEIGHT_DP));
-        TextView title = text(label, LABEL_SP, Color.WHITE, false);
-        title.setTextColor(stateColors(Color.WHITE));
+        TextView title = text(label, LABEL_SP, TEXT);
+        title.setTextColor(textColors);
         title.setDuplicateParentStateEnabled(true);
         title.setMaxLines(2);
         title.setEllipsize(TextUtils.TruncateAt.END);
+        ConsoleText.centreOnGlyphs(title);
         row.addView(title, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         styleRow(row);
@@ -291,25 +416,26 @@ final class ConsolePanel {
         row.setFocusable(true);
         row.setClickable(true);
         row.setSoundEffectsEnabled(false);
+        // Background first: the inset fill would otherwise replace the row padding with its own.
+        row.setBackground(focusFill.newDrawable(context.getResources()));
         row.setPadding(dp(ROW_INSET_DP), dp(4), dp(ROW_INSET_DP), dp(4));
-        GradientDrawable focused = new GradientDrawable();
-        focused.setCornerRadius(dp(8));
-        focused.setColor(0x1FFFFFFF);
-        focused.setStroke(context.getResources().getDimensionPixelSize(
-                R.dimen.console_focus_stroke_width), accent);
-        StateListDrawable background = new StateListDrawable();
-        background.addState(new int[]{android.R.attr.state_focused}, focused);
-        background.addState(new int[0], new ColorDrawable(Color.TRANSPARENT));
-        row.setBackground(background);
         row.setOnFocusChangeListener((view, hasFocus) -> {
-            if (DiscordPanelViews.isTile(view)) {
-                DiscordPanelViews.styleTile(view, hasFocus);
-            } else {
-                view.setScaleX(hasFocus ? FOCUS_SCALE : 1f);
-                view.setScaleY(hasFocus ? FOCUS_SCALE : 1f);
-            }
+            if (DiscordPanelViews.isTile(view)) DiscordPanelViews.styleTile(view, hasFocus);
             if (hasFocus) reveal(view);
         });
+    }
+
+    /** Section 4.2 text-row focus: a near-white pill, 1.5 dp inside the row's top and bottom. */
+    private Drawable focusFill() {
+        GradientDrawable fill = new GradientDrawable();
+        fill.setCornerRadius(dp(10));
+        fill.setColor(FOCUS_FILL);
+        int inset = Math.round(1.5f * context.getResources().getDisplayMetrics().density);
+        StateListDrawable background = new StateListDrawable();
+        background.addState(new int[]{android.R.attr.state_focused},
+                new InsetDrawable(fill, 0, inset, 0, inset));
+        background.addState(new int[0], new ColorDrawable(Color.TRANSPARENT));
+        return background;
     }
 
     private void makeScrollable(TextView detailView) {
@@ -339,8 +465,10 @@ final class ConsolePanel {
             view.getDrawingRect(revealBounds);
             scroll.offsetDescendantRectToMyCoords(view, revealBounds);
             int margin = dp(16);
-            int top = scroll.getScrollY() + margin;
-            int bottom = scroll.getScrollY() + scroll.getHeight() - margin;
+            // The padding holds the pinned legend; rows must stay above it.
+            int top = scroll.getScrollY() + scroll.getPaddingTop() + margin;
+            int bottom = scroll.getScrollY() + scroll.getHeight() - scroll.getPaddingBottom()
+                    - margin;
             int target = scroll.getScrollY();
             if (revealBounds.bottom > bottom) target += revealBounds.bottom - bottom;
             else if (revealBounds.top < top) target -= top - revealBounds.top;
@@ -362,31 +490,49 @@ final class ConsolePanel {
 
     private View divider() {
         View divider = new View(context);
-        divider.setBackgroundColor(0x33FFFFFF);
+        divider.setBackgroundColor(0x1EFFFFFF);
         divider.setFocusable(false);
         return divider;
     }
 
     private LinearLayout.LayoutParams dividerParams() {
         LinearLayout.LayoutParams params = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1)));
-        params.topMargin = dp(8);
-        params.bottomMargin = dp(8);
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.max(1, dp(1) / 2));
+        params.setMargins(dp(ROW_INSET_DP), dp(6), dp(ROW_INSET_DP), dp(6));
         return params;
     }
 
-    private Drawable chevron(ColorStateList tint) {
-        Drawable chevron = context.getDrawable(R.drawable.ic_console_chevron).mutate();
-        chevron.setTintList(tint);
-        return chevron;
+    /** Row text: {@code color} at rest, dark ink on the focus fill, dimmed when disabled. */
+    static ColorStateList rowColors(int color) {
+        return stateColors(color, INK);
     }
 
-    private static ColorStateList stateColors(int color) {
-        return new ColorStateList(new int[][]{{-android.R.attr.state_enabled}, {}},
-                new int[]{(color & 0x00FFFFFF) | 0x73000000, color});
+    /**
+     * Discord tiles (activated rows) keep their own dark focus surface, so only plain rows
+     * switch to {@code focused} ink.
+     */
+    private static ColorStateList stateColors(int color, int focused) {
+        int disabled = (color & 0x00FFFFFF) | 0x73000000;
+        return new ColorStateList(new int[][]{
+                {android.R.attr.state_activated, -android.R.attr.state_enabled},
+                {android.R.attr.state_activated},
+                {-android.R.attr.state_enabled, android.R.attr.state_focused},
+                {-android.R.attr.state_enabled},
+                {android.R.attr.state_focused},
+                {}}, new int[]{disabled, color, (focused & 0x00FFFFFF) | 0x73000000,
+                disabled, focused, color});
     }
 
-    private TextView text(CharSequence value, float size, int color, boolean bold) {
+    /** Uppercase, tracked, grey: eyebrow and section headers. */
+    private TextView header(CharSequence label) {
+        TextView header = text(label == null ? "" : label.toString().toUpperCase(Locale.ROOT),
+                CAPTION_SP, HEADER);
+        header.setTypeface(medium);
+        header.setLetterSpacing(.08f);
+        return header;
+    }
+
+    private TextView text(CharSequence value, float size, int color) {
         TextView view = new TextView(context);
         view.setText(value);
         view.setTextSize(size);
@@ -394,7 +540,6 @@ final class ConsolePanel {
         view.setGravity(Gravity.CENTER_VERTICAL);
         view.setIncludeFontPadding(false);
         view.setSoundEffectsEnabled(false);
-        if (bold) view.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
         return view;
     }
 
