@@ -992,14 +992,21 @@
     <string name="console_auto_login_none">None — always show host selection</string>
     <string name="console_auto_login_title">Automatic host sign-in</string>
     <string name="console_auto_login_details">Choose a host to open automatically when MoonWaker starts. Select None to always show host selection.</string>
-    <string name="console_host_selection_title">Welcome back to MoonWaker</string>
+    <string name="console_entry_eyebrow" translatable="false">MOONWAKER</string>
+    <string name="console_host_selection_title">Choose a computer</string>
     <string name="console_host_selection_subtitle">Which host do you want to use?</string>
-    <string name="console_host_selection_legend">OK  Select     OPTIONS  Host options</string>
+    <string name="console_host_selection_searching">Searching for hosts on the network…</string>
+    <string name="console_host_tile_live">LIVE</string>
+    <string name="console_host_tile_waking">Waking… %1$d s</string>
+    <string name="console_host_tile_unavailable">Unavailable</string>
+    <string name="console_host_tile_pair">Pair</string>
+    <string name="console_host_tile_connecting">Connecting…</string>
+    <string name="console_host_tile_sign_in">Sign in on Windows</string>
     <string name="console_add_host_short">Add Host</string>
     <string name="console_select_hint">Select</string>
     <string name="console_host_options_hint">Options</string>
     <string name="console_host_options_label">Host options</string>
-    <string name="console_host_selection_description">%1$s. %2$s. Press Select to open or Options to manage.</string>
+    <string name="console_host_selection_description">%1$s, %2$s</string>
     <string name="console_add_host_none_found">No new hosts found yet. Discovery continues in the background.</string>
     <string name="console_add_discovered_host">%1$s · %2$s</string>
     <string name="console_add_host_refresh_results">Refresh discovered hosts</string>
