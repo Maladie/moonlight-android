@@ -1,7 +1,7 @@
 package com.limelight.console;
 
+import android.app.Activity;
 import android.app.Dialog;
-import android.content.Context;
 import android.graphics.Color;
 import android.graphics.PixelFormat;
 import android.graphics.Typeface;
@@ -43,16 +43,17 @@ final class ConsoleSettingsScreen {
         }
     }
 
-    private final Context context;
+    private final Activity activity;
     private final Dialog dialog;
     private final FrameLayout root;
+    private final ConsoleMenuBackdrop backdrop;
     private final LinearLayout columns;
     private final LinearLayout categoryColumn;
-    private final ScrollView contentScroll;
+    private final LockableScrollView contentScroll;
     private final LinearLayout content;
     private final ConsolePanel panel;
     private final int accent;
-    /** Opaque base tone: settings fully replace the home screen instead of dimming it. */
+    /** Opaque base tone under the blurred Home until its copy is ready. */
     private final int background;
     private final List<TextView> categoryRows = new ArrayList<>();
     private List<Category> categories = new ArrayList<>();
@@ -61,57 +62,56 @@ final class ConsoleSettingsScreen {
     private int choiceOrigin = -1;
     private boolean reducedMotion;
 
-    ConsoleSettingsScreen(Context context, boolean reducedMotion) {
-        this.context = context;
+    ConsoleSettingsScreen(Activity activity, boolean reducedMotion, boolean overStream) {
+        this.activity = activity;
         this.reducedMotion = reducedMotion;
-        accent = context.getResources().getColor(R.color.console_accent);
-        background = 0xFF000000 | context.getResources().getColor(R.color.console_background);
-        root = new FrameLayout(context);
+        accent = activity.getResources().getColor(R.color.console_accent);
+        background = 0xFF000000 | activity.getResources().getColor(R.color.console_background);
+        root = new FrameLayout(activity);
         root.setBackgroundColor(background);
-        columns = new LinearLayout(context);
+        backdrop = new ConsoleMenuBackdrop(activity, overStream);
+        root.addView(backdrop, new FrameLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
+        columns = new LinearLayout(activity);
         columns.setOrientation(LinearLayout.HORIZONTAL);
-        columns.setPadding(dp(48), dp(36), dp(48), dp(24));
+        // Section 4.1 safe area: 96 px at the sides, 54 px at the top and bottom.
+        columns.setPadding(dp(48), dp(27), dp(48), dp(27));
         root.addView(columns, new FrameLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
-        categoryColumn = new LinearLayout(context);
+        categoryColumn = new LinearLayout(activity);
         categoryColumn.setOrientation(LinearLayout.VERTICAL);
-        categoryColumn.setClipToPadding(false);
-        TextView title = new TextView(context);
+        categoryColumn.setPadding(0, dp(25), dp(24), 0);
+        TextView title = new TextView(activity);
         title.setText(R.string.console_settings_title);
         title.setTextSize(ConsolePanel.TITLE_SP);
-        title.setTextColor(Color.WHITE);
-        title.setTypeface(Typeface.DEFAULT, Typeface.BOLD);
+        title.setTextColor(ConsolePanel.TEXT);
+        title.setTypeface(Typeface.create("sans-serif-medium", Typeface.NORMAL));
+        title.setIncludeFontPadding(false);
         title.setPadding(dp(ConsolePanel.ROW_INSET_DP), 0, 0, dp(18));
         categoryColumn.addView(title);
         columns.addView(categoryColumn, new LinearLayout.LayoutParams(
                 dp(CATEGORY_WIDTH_DP), ViewGroup.LayoutParams.MATCH_PARENT));
 
-        View rule = new View(context);
-        rule.setBackgroundColor(0x22FFFFFF);
-        LinearLayout.LayoutParams ruleParams = new LinearLayout.LayoutParams(
-                Math.max(1, dp(1)), ViewGroup.LayoutParams.MATCH_PARENT);
-        ruleParams.leftMargin = dp(20);
-        ruleParams.rightMargin = dp(20);
-        columns.addView(rule, ruleParams);
-
-        contentScroll = new ScrollView(context);
+        contentScroll = new LockableScrollView(activity);
         contentScroll.setVerticalScrollBarEnabled(false);
+        contentScroll.setFillViewport(true);
         contentScroll.setVerticalFadingEdgeEnabled(true);
         contentScroll.setFadingEdgeLength(dp(32));
-        content = new LinearLayout(context);
+        content = new LinearLayout(activity);
         content.setOrientation(LinearLayout.VERTICAL);
-        content.setPadding(dp(8), 0, dp(8), dp(24));
         contentScroll.addView(content, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
         columns.addView(contentScroll, new LinearLayout.LayoutParams(
                 0, ViewGroup.LayoutParams.MATCH_PARENT, 1f));
-        panel = new ConsolePanel(context, contentScroll, reducedMotion);
+        panel = new ConsolePanel(activity, contentScroll, backdrop, reducedMotion);
+        panel.floatOnGlass(content);
 
-        dialog = new Dialog(context);
+        dialog = new Dialog(activity);
         dialog.requestWindowFeature(Window.FEATURE_NO_TITLE);
         dialog.setContentView(root);
         dialog.setCanceledOnTouchOutside(false);
+        dialog.setOnDismissListener(owner -> backdrop.release());
         dialog.setOnKeyListener((owner, keyCode, event) -> {
             if (keyCode != KeyEvent.KEYCODE_BACK) return false;
             if (event.getAction() == KeyEvent.ACTION_UP) back();
@@ -141,6 +141,11 @@ final class ConsoleSettingsScreen {
 
     boolean isShowing() {
         return dialog.isShowing();
+    }
+
+    /** The settings window, for menus that open over it and blur it. */
+    Window window() {
+        return dialog.getWindow();
     }
 
     void dismiss() {
@@ -174,9 +179,11 @@ final class ConsoleSettingsScreen {
         selected = -1;
         select(0);
         if (!dialog.isShowing()) {
+            backdrop.capture(activity.getWindow(), reducedMotion);
             dialog.show();
             makeOpaque();
-            // Only the lists fade in; the background is opaque from the first frame.
+            // Only the lists fade in; the background is opaque from the first frame and the
+            // blurred Home fades in over it once its copy is ready.
             columns.setAlpha(reducedMotion ? 1f : 0f);
             if (!reducedMotion) columns.animate().alpha(1f).setDuration(150L).start();
         }
@@ -220,7 +227,7 @@ final class ConsoleSettingsScreen {
 
     private void renderCategory() {
         Category category = categories.get(selected);
-        panel.render(content, context.getString(R.string.console_settings_title), category.title,
+        panel.render(content, activity.getString(R.string.console_settings_title), category.title,
                 "", false, category.rows.apply(panel));
         contentScroll.scrollTo(0, 0);
         wireContent();
@@ -288,19 +295,20 @@ final class ConsoleSettingsScreen {
         }
     }
 
-    /** Selected entries use the accent text colour and a 3 dp accent bar on their left. */
+    /**
+     * Selected entries use the accent text colour and a 3 dp accent bar in the icon column, so
+     * the focus fill keeps its inner padding on both sides.
+     */
     private void mark(TextView row, boolean selected) {
         GradientDrawable bar = new GradientDrawable();
         bar.setColor(selected ? accent : Color.TRANSPARENT);
         bar.setSize(dp(SELECTION_BAR_DP), dp(18));
         row.setCompoundDrawablesRelativeWithIntrinsicBounds(bar, null, null, null);
         row.setCompoundDrawablePadding(dp(10));
-        row.setPaddingRelative(dp(4), row.getPaddingTop(), row.getPaddingEnd(),
-                row.getPaddingBottom());
-        row.setTextColor(selected ? accent : Color.WHITE);
+        row.setTextColor(ConsolePanel.rowColors(selected ? accent : ConsolePanel.TEXT));
     }
 
     private int dp(int value) {
-        return Math.round(value * context.getResources().getDisplayMetrics().density);
+        return Math.round(value * activity.getResources().getDisplayMetrics().density);
     }
 }

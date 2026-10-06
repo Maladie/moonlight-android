@@ -1,18 +1,52 @@
 package com.limelight.console;
 
 import android.content.Context;
+import android.graphics.Canvas;
 import android.graphics.Rect;
 import android.util.AttributeSet;
 import android.view.View;
 import android.view.MotionEvent;
 import android.widget.ScrollView;
 
-/** Scroll host that can stay visually fixed while one of its descendants owns scrolling. */
+/**
+ * Scroll host that can stay visually fixed while one of its descendants owns scrolling, and can
+ * pin a footer (the panel legend) inside the bottom padding where the content never scrolls.
+ */
 final class LockableScrollView extends ScrollView {
     private boolean scrollLocked;
+    private View footer;
+    private int footerBottom;
 
     LockableScrollView(Context context) { super(context); }
     LockableScrollView(Context context, AttributeSet attributes) { super(context, attributes); }
+
+    /** {@code footer} is drawn {@code bottomMargin} above the bottom edge; null removes it. */
+    void setFooter(View footer, int bottomMargin) {
+        if (this.footer == footer && footerBottom == bottomMargin) return;
+        this.footer = footer;
+        footerBottom = bottomMargin;
+        requestLayout();
+        invalidate();
+    }
+
+    @Override protected void onLayout(boolean changed, int left, int top, int right, int bottom) {
+        super.onLayout(changed, left, top, right, bottom);
+        if (footer == null) return;
+        footer.measure(MeasureSpec.makeMeasureSpec(right - left, MeasureSpec.EXACTLY),
+                MeasureSpec.makeMeasureSpec(0, MeasureSpec.UNSPECIFIED));
+        footer.layout(0, 0, footer.getMeasuredWidth(), footer.getMeasuredHeight());
+    }
+
+    @Override public void draw(Canvas canvas) {
+        super.draw(canvas);
+        if (footer == null) return;
+        // The canvas follows the scroll offset; undo it so the footer stays put.
+        canvas.save();
+        canvas.translate(getScrollX(),
+                getScrollY() + getHeight() - footerBottom - footer.getHeight());
+        footer.draw(canvas);
+        canvas.restore();
+    }
 
     void setScrollLocked(boolean value) {
         scrollLocked = value;

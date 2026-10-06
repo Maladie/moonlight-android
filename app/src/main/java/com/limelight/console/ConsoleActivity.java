@@ -159,7 +159,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -250,10 +251,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final int SCREEN_SAVER_DEFAULT_SECONDS = 5 * 60;
     private static final long SCREEN_SAVER_SLIDE_MS = 30_000L;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final ExecutorService executor = Executors.newFixedThreadPool(3);
-    private final ExecutorService playniteExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService executor = lifecycleExecutor(3);
+    private final ExecutorService playniteExecutor = lifecycleExecutor(1);
     private final ExecutorService playniteArtworkExecutor =
-            Executors.newFixedThreadPool(PLAYNITE_ARTWORK_PREFETCH_WORKERS);
+            lifecycleExecutor(PLAYNITE_ARTWORK_PREFETCH_WORKERS);
+
+    /** Work submitted after onDestroy shut the pool down belongs to a dead Activity: drop it. */
+    private static ExecutorService lifecycleExecutor(int threads) {
+        return new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(), new ThreadPoolExecutor.DiscardPolicy());
+    }
     private final AtomicInteger hostPreparationGeneration = new AtomicInteger();
     private final AtomicInteger artworkGeneration = new AtomicInteger();
     private final AtomicInteger discordStatusGeneration = new AtomicInteger();
@@ -639,6 +646,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private LinearLayout sidePanel;
     private LockableScrollView sidePanelScroll;
     private ConsolePanel consolePanel;
+    private ConsoleMenuBackdrop menuBackdrop;
     private ConsoleSettingsScreen settingsScreen;
     private FrameLayout communityPanelHost;
     private android.app.Dialog sideDialog;
@@ -1340,7 +1348,9 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         // away from that host's carousel.
         if (!isStreamHome()) {
             sessionModel.dispatch(new SessionEvent.HostSelectionConsumed(), returnToHosts -> {
-                if (!returnToHosts.isEmpty() && !isFinishing()) showHostSelection(returnToHosts);
+                if (returnToHosts.isEmpty() || isFinishing()) return;
+                ProfileAuthorization.revoke();
+                showHostSelection(returnToHosts);
             });
         }
         if (consoleAudioEngine != null) {
@@ -2619,7 +2629,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = null;
-        ProfileAuthorization.revoke();
         if (profileGateView != null) profileGateView.setVisibility(View.GONE);
         hostSelectionVisible = true;
         if (consoleAudioEngine != null) {
@@ -2930,7 +2939,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         HostGatewayStore.ProfileSelection selection =
                 hostGatewayStore.profileSelection(host.uuid);
         profileGateHostUuid = host.uuid;
-        ProfileAuthorization.revoke();
         hostSelectionVisible = false;
         hostSelectionFocusUuid = host.uuid;
         if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.GONE);
@@ -3747,7 +3755,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = host.uuid;
-        ProfileAuthorization.revoke();
         pinProfileId = profile.id;
         pinFocusApps = focusApps;
         pinPrepareHost = prepareHost;
@@ -4040,6 +4047,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void closeProfileGate() {
         String hostId = profileGateHostUuid;
+        ProfileAuthorization.revoke();
         clearPinEntry();
         showHostSelection(hostId);
     }
@@ -4501,30 +4509,21 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         modalLayer.setClickable(true);
         modalLayer.setImportantForAccessibility(View.IMPORTANT_FOR_ACCESSIBILITY_YES);
         modalLayer.setDescendantFocusability(ViewGroup.FOCUS_AFTER_DESCENDANTS);
-        View dim = new View(this);
-        dim.setBackgroundColor(ConsolePanel.SCRIM);
-        dim.setClickable(true);
-        dim.setOnClickListener(v -> hideSidePanel());
-        modalLayer.addView(dim, match());
+        menuBackdrop = new ConsoleMenuBackdrop(this, isStreamHome());
+        menuBackdrop.setOnClickListener(v -> hideSidePanel());
+        modalLayer.addView(menuBackdrop, match());
         sidePanelScroll = new LockableScrollView(this);
         sidePanelScroll.setFillViewport(true);
         sidePanelScroll.setVerticalScrollBarEnabled(false);
         // Rows below the fold fade out instead of being cut by the panel edge.
         sidePanelScroll.setVerticalFadingEdgeEnabled(true);
         sidePanelScroll.setFadingEdgeLength(dp(32));
-        GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{0xFC1A2028, 0xFC12171E, 0xFF090C10});
-        background.setCornerRadii(new float[]{dp(24), dp(24), 0, 0, 0, 0, dp(24), dp(24)});
-        background.setStroke(dp(1), 0x704A6677);
-        sidePanelScroll.setBackground(background);
-        sidePanelScroll.setElevation(dp(18));
         sidePanel = new LinearLayout(this);
         sidePanel.setOrientation(LinearLayout.VERTICAL);
-        sidePanel.setPadding(dp(20), dp(16), dp(20), dp(24));
         sidePanelScroll.addView(sidePanel, new ScrollView.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.WRAP_CONTENT));
-        consolePanel = new ConsolePanel(this, sidePanelScroll, reducedMotion);
-        settingsScreen = new ConsoleSettingsScreen(this, reducedMotion);
+        consolePanel = new ConsolePanel(this, sidePanelScroll, menuBackdrop, reducedMotion);
+        settingsScreen = new ConsoleSettingsScreen(this, reducedMotion, isStreamHome());
         modalLayer.addView(sidePanelScroll, new FrameLayout.LayoutParams(dp(ConsolePanel.WIDTH_DP),
                 ViewGroup.LayoutParams.MATCH_PARENT, Gravity.END));
         // Community is a full-screen, bounded composition with its own feed/detail scrollers.
@@ -4788,7 +4787,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 profileForGate(host == null ? null : host.uuid, profileId);
         if (profile == null) return;
         if (profile.pinRequired) {
-            profileGateHostUuid = host.uuid;
+            ProfileAuthorization.revoke();
             showPinEntry(host, profile, true, false, false);
             return;
         }
@@ -4901,6 +4900,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (childWasInvalidated) {
                     hostGatewayStore.setAutomaticIntegrationProfileId(hostId, "");
                     ComputerDetails current = currentHost(hostId);
+                    ProfileAuthorization.revoke();
                     if (current != null) showProfileGate(current, true, false);
                     return;
                 }
@@ -5440,7 +5440,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         showSidePanel(getString(R.string.console_host_eyebrow), host.name, profile == null ? state
                         : state + " \u00B7 " + getString(R.string.console_host_panel_profile,
                         profileDisplayName(profile)),
-                ConsoleHostPanel.menu(facts).rows(this, consolePanel, action -> {
+                ConsoleHostPanel.menu(facts).rows(this, consolePanel, a -> a.icon, action -> {
                     switch (action) {
                         case DESKTOP: hideSidePanel(); launchDesktopSession(host); break;
                         case WAKE: hideSidePanel(); wakeHost(host); break;
@@ -6356,25 +6356,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void refreshSessionState(String hostUuid) {
-        if (managerBinder == null || hostUuid == null || hostUuid.isEmpty()
-                || executor.isShutdown()) return;
+        if (managerBinder == null || hostUuid == null || hostUuid.isEmpty()) return;
         boolean refreshSelected = hostUuid.equalsIgnoreCase(selectedHostUuid);
-        try {
-            executor.execute(() -> {
-                ComputerManagerService.ComputerManagerBinder binder = managerBinder;
-                if (binder == null) return;
-                binder.invalidateStateForComputer(hostUuid);
-                if (refreshSelected) {
-                    mainHandler.post(() -> {
-                        if (!active || !hostUuid.equalsIgnoreCase(selectedHostUuid)) return;
-                        refreshSelectedApplications();
-                        refreshSelectedPlayniteLibrary();
-                    });
-                }
-            });
-        } catch (RejectedExecutionException ignored) {
-            // A termination callback can arrive after Activity teardown has shut down the pool.
-        }
+        executor.execute(() -> {
+            ComputerManagerService.ComputerManagerBinder binder = managerBinder;
+            if (binder == null) return;
+            binder.invalidateStateForComputer(hostUuid);
+            if (refreshSelected) {
+                mainHandler.post(() -> {
+                    if (!active || !hostUuid.equalsIgnoreCase(selectedHostUuid)) return;
+                    refreshSelectedApplications();
+                    refreshSelectedPlayniteLibrary();
+                });
+            }
+        });
     }
 
     private void invalidateHostStateAsync(String hostUuid) {
@@ -6673,6 +6668,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void leaveHost() {
+        ProfileAuthorization.revoke();
         ComputerDetails host = hosts.get(selectedHostUuid);
         if (host != null && hostGatewayStore.profileSelection(host.uuid).showSelector) {
             showProfileGate(host, true, false);
@@ -8080,21 +8076,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (!hostStateController.finishWaking(hostUuid, token)) return;
         renderHostSelection();
         if (hostUuid.equals(selectedHostUuid)) updateHostSelector();
-    }
-
-    private void confirmRemoveHost(ComputerDetails host) {
-        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
-        TextView remove = consolePanel.action(getString(R.string.console_remove));
-        consolePanel.destructive(remove);
-        cancel.setOnClickListener(view -> handlePanelBack());
-        remove.setOnClickListener(view -> {
-            hideSidePanel();
-            removeHost(host);
-        });
-        showSidePanel(getString(R.string.console_host_eyebrow),
-                getString(R.string.console_remove_host_title, host.name),
-                getString(R.string.console_remove_host_details),
-                cancel, remove);
     }
 
     private void removeHost(ComputerDetails host) {
@@ -11870,7 +11851,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         }
         String streamSettingsKey = playniteStreamSettingsKey(host.uuid, item.stableId());
         showSidePanel(getString(R.string.playnite_game_options), item.game.name, panelDetails,
-                ConsoleGameCard.menu(facts).rows(this, consolePanel, action -> {
+                ConsoleGameCard.menu(facts).rows(this, consolePanel, a -> a.icon, action -> {
                     switch (action) {
                         case LAUNCH:
                         case RESUME:
@@ -15701,6 +15682,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 new int[]{0xFF0C111A, 0xFE0D121D, 0xFE090C13});
         communityPanelHost.setBackground(background);
         if (!alreadyShowing) {
+            captureMenuBackdrop();
             sideDialog.show();
             Window window = sideDialog.getWindow();
             if (window != null) window.setLayout(
@@ -15873,6 +15855,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
             previousPanelFocusIndex = previousFocusable.indexOf(previousPanelFocus);
         }
         if (!alreadyShowing) {
+            captureMenuBackdrop();
             lastContentFocus = getCurrentFocus();
             lastContentFocusTag = lastContentFocus != null ? lastContentFocus.getTag() : null;
             panelHistory.clear();
@@ -15935,39 +15918,28 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (sidePanelScroll == null || sidePanel == null) return;
         sidePanelScroll.setScrollLocked(communityShell);
         FrameLayout.LayoutParams frame = (FrameLayout.LayoutParams) sidePanelScroll.getLayoutParams();
-        if (communityShell) {
-            frame.width = ViewGroup.LayoutParams.MATCH_PARENT;
-            frame.height = ViewGroup.LayoutParams.MATCH_PARENT;
-            frame.gravity = Gravity.CENTER;
-            frame.leftMargin = 0;
-            frame.topMargin = 0;
-            frame.rightMargin = 0;
-            frame.bottomMargin = 0;
-            GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                    new int[]{0xFF0C111A, 0xFE0D121D, 0xFE090C13});
-            sidePanelScroll.setBackground(background);
-            sidePanel.setPadding(0, 0, 0, 0);
-            ViewGroup.LayoutParams content = sidePanel.getLayoutParams();
-            content.height = ViewGroup.LayoutParams.MATCH_PARENT;
-            sidePanel.setLayoutParams(content);
-            return;
-        }
-        frame.width = dp(ConsolePanel.WIDTH_DP);
+        int margin = communityShell ? 0 : dp(ConsolePanel.MARGIN_DP);
+        frame.width = communityShell ? ViewGroup.LayoutParams.MATCH_PARENT : dp(ConsolePanel.WIDTH_DP);
         frame.height = ViewGroup.LayoutParams.MATCH_PARENT;
-        frame.gravity = Gravity.END;
-        frame.leftMargin = 0;
-        frame.topMargin = 0;
-        frame.rightMargin = 0;
-        frame.bottomMargin = 0;
-        GradientDrawable background = new GradientDrawable(GradientDrawable.Orientation.TL_BR,
-                new int[]{0xFC1A2028, 0xFC12171E, 0xFF090C10});
-        background.setCornerRadii(new float[]{dp(24), dp(24), 0, 0, 0, 0, dp(24), dp(24)});
-        background.setStroke(dp(1), 0x704A6677);
-        sidePanelScroll.setBackground(background);
-        sidePanel.setPadding(dp(20), dp(16), dp(20), dp(24));
+        frame.gravity = communityShell ? Gravity.CENTER : Gravity.END;
+        frame.setMargins(margin, margin, margin, margin);
+        if (communityShell) {
+            sidePanelScroll.setBackground(new GradientDrawable(GradientDrawable.Orientation.TL_BR,
+                    new int[]{0xFF0C111A, 0xFE0D121D, 0xFE090C13}));
+            consolePanel.leaveGlass(sidePanel);
+        } else {
+            consolePanel.floatOnGlass(sidePanel);
+        }
         ViewGroup.LayoutParams content = sidePanel.getLayoutParams();
-        content.height = ViewGroup.LayoutParams.WRAP_CONTENT;
+        content.height = communityShell ? ViewGroup.LayoutParams.MATCH_PARENT
+                : ViewGroup.LayoutParams.WRAP_CONTENT;
         sidePanel.setLayoutParams(content);
+    }
+
+    /** The side panel blurs whatever is directly below it: settings when open, else Home. */
+    private void captureMenuBackdrop() {
+        menuBackdrop.capture(settingsScreen.isShowing() ? settingsScreen.window() : getWindow(),
+                reducedMotion);
     }
 
     private void showSidePanelBusy(String eyebrow, String title, String details) {
@@ -16007,6 +15979,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (discordSocialPanelController != null) discordSocialPanelController.closePanel();
         if (discordPanelController != null) discordPanelController.closePanel();
         if (sideDialog != null) sideDialog.dismiss();
+        menuBackdrop.release();
         if (communityPanelHost != null) {
             communityPanelHost.removeAllViews();
             communityPanelHost.setVisibility(View.GONE);
@@ -16059,6 +16032,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                     ((ConsoleChildGameSharingPanel) child).resumeAfterRestore();
                 }
             }
+            consolePanel.updateLegend(sidePanel);
             currentPanelKey = snapshot.key;
             if (!reducedMotion) {
                 sidePanelScroll.animate().cancel();

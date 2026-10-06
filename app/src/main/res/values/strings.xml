@@ -1084,8 +1084,8 @@
     <string name="console_leave_with_stream_details">The game stream will remain ready in the background for the configured time. You can return to it by opening MoonWaker again.</string>
     <string name="console_close_title">Close MoonWaker?</string>
     <string name="console_close_details">The active host session will not be stopped.</string>
-    <string name="console_panel_legend">OK  Select     Back  Close</string>
-    <string name="console_panel_legend_stepper">OK  Select     ◀ ▶  Change     Back  Close</string>
+    <string name="console_panel_legend">"OK Select  ·  Back Close"</string>
+    <string name="console_panel_legend_stepper">"OK Select  ·  ◀ ▶ Change  ·  Back Close"</string>
     <string name="console_select_host_first">Select a host first.</string>
     <string name="console_back_close">BACK · CLOSE</string>
     <string-array name="console_loading_messages">

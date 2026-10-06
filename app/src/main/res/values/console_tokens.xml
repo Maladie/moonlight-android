@@ -24,7 +24,6 @@
     <dimen name="console_radius_panel">24dp</dimen>
     <dimen name="console_icon_size">20dp</dimen>
     <dimen name="console_action_target">48dp</dimen>
-    <dimen name="console_focus_stroke_width">2dp</dimen>
 
     <!-- Motion and opacity tokens -->
     <integer name="console_motion_focus_ms">125</integer>
