@@ -54,4 +54,30 @@ public class ProfileAuthorizationTest {
         assertTrue(from >= 0 && to > from);
         assertFalse(source.substring(from, to).contains("ProfileAuthorization"));
     }
+
+    /**
+     * A Console recreated in the same process resolves its entry automatically (host picker, gate
+     * or PIN screen). That must not drop the process-wide host grant; only the user's own return
+     * to the gate or host selection does.
+     */
+    @Test public void onlyUserInitiatedReturnsRevokeTheGrant() throws Exception {
+        String source = new String(Files.readAllBytes(Paths.get(
+                "src/main/java/com/limelight/console/ConsoleActivity.java")),
+                StandardCharsets.UTF_8).replace("\r\n", "\n");
+        for (String automatic : new String[] {
+                "private void resolveInitialHostSelection()", "private void showHostSelection(",
+                "private void resolveProfileGate(", "private void showProfileGate(",
+                "private void showPinEntry("}) {
+            assertFalse(automatic, body(source, automatic).contains("ProfileAuthorization.revoke()"));
+        }
+        for (String user : new String[] {"private void leaveHost()", "private void closeProfileGate()"}) {
+            assertTrue(user, body(source, user).contains("ProfileAuthorization.revoke()"));
+        }
+    }
+
+    private static String body(String source, String signature) {
+        int from = source.indexOf(signature);
+        assertTrue(signature, from >= 0);
+        return source.substring(from, source.indexOf("\n    private ", from + signature.length()));
+    }
 }

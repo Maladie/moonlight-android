@@ -156,7 +156,8 @@ import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
-import java.util.concurrent.RejectedExecutionException;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.ThreadPoolExecutor;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
@@ -247,10 +248,16 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     private static final int SCREEN_SAVER_DEFAULT_SECONDS = 5 * 60;
     private static final long SCREEN_SAVER_SLIDE_MS = 30_000L;
     private final Handler mainHandler = new Handler(Looper.getMainLooper());
-    private final ExecutorService executor = Executors.newFixedThreadPool(3);
-    private final ExecutorService playniteExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService executor = lifecycleExecutor(3);
+    private final ExecutorService playniteExecutor = lifecycleExecutor(1);
     private final ExecutorService playniteArtworkExecutor =
-            Executors.newFixedThreadPool(PLAYNITE_ARTWORK_PREFETCH_WORKERS);
+            lifecycleExecutor(PLAYNITE_ARTWORK_PREFETCH_WORKERS);
+
+    /** Work submitted after onDestroy shut the pool down belongs to a dead Activity: drop it. */
+    private static ExecutorService lifecycleExecutor(int threads) {
+        return new ThreadPoolExecutor(threads, threads, 0L, TimeUnit.MILLISECONDS,
+                new LinkedBlockingQueue<>(), new ThreadPoolExecutor.DiscardPolicy());
+    }
     private final AtomicInteger hostPreparationGeneration = new AtomicInteger();
     private final AtomicInteger artworkGeneration = new AtomicInteger();
     private final AtomicInteger discordStatusGeneration = new AtomicInteger();
@@ -1337,7 +1344,10 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         // away from that host's carousel.
         if (!isStreamHome()) {
             String returnToHosts = SuspendedSessionStore.consumeHostSelectionRequest(this);
-            if (!returnToHosts.isEmpty()) showHostSelection(returnToHosts);
+            if (!returnToHosts.isEmpty()) {
+                ProfileAuthorization.revoke();
+                showHostSelection(returnToHosts);
+            }
         }
         if (consoleAudioEngine != null) {
             consoleAudioEngine.setMenuVisible(loadingLayer == null
@@ -2616,7 +2626,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = null;
-        ProfileAuthorization.revoke();
         if (profileGateView != null) profileGateView.setVisibility(View.GONE);
         hostSelectionVisible = true;
         if (consoleAudioEngine != null) {
@@ -2927,7 +2936,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         HostGatewayStore.ProfileSelection selection =
                 hostGatewayStore.profileSelection(host.uuid);
         profileGateHostUuid = host.uuid;
-        ProfileAuthorization.revoke();
         hostSelectionVisible = false;
         hostSelectionFocusUuid = host.uuid;
         if (hostSelectionLayer != null) hostSelectionLayer.setVisibility(View.GONE);
@@ -3744,7 +3752,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         profileGateGeneration.incrementAndGet();
         clearPinEntry();
         profileGateHostUuid = host.uuid;
-        ProfileAuthorization.revoke();
         pinProfileId = profile.id;
         pinFocusApps = focusApps;
         pinPrepareHost = prepareHost;
@@ -4037,6 +4044,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
 
     private void closeProfileGate() {
         String hostId = profileGateHostUuid;
+        ProfileAuthorization.revoke();
         clearPinEntry();
         showHostSelection(hostId);
     }
@@ -4776,7 +4784,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 profileForGate(host == null ? null : host.uuid, profileId);
         if (profile == null) return;
         if (profile.pinRequired) {
-            profileGateHostUuid = host.uuid;
+            ProfileAuthorization.revoke();
             showPinEntry(host, profile, true, false, false);
             return;
         }
@@ -4889,6 +4897,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
                 if (childWasInvalidated) {
                     hostGatewayStore.setAutomaticIntegrationProfileId(hostId, "");
                     ComputerDetails current = currentHost(hostId);
+                    ProfileAuthorization.revoke();
                     if (current != null) showProfileGate(current, true, false);
                     return;
                 }
@@ -6343,25 +6352,20 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void refreshSessionState(String hostUuid) {
-        if (managerBinder == null || hostUuid == null || hostUuid.isEmpty()
-                || executor.isShutdown()) return;
+        if (managerBinder == null || hostUuid == null || hostUuid.isEmpty()) return;
         boolean refreshSelected = hostUuid.equalsIgnoreCase(selectedHostUuid);
-        try {
-            executor.execute(() -> {
-                ComputerManagerService.ComputerManagerBinder binder = managerBinder;
-                if (binder == null) return;
-                binder.invalidateStateForComputer(hostUuid);
-                if (refreshSelected) {
-                    mainHandler.post(() -> {
-                        if (!active || !hostUuid.equalsIgnoreCase(selectedHostUuid)) return;
-                        refreshSelectedApplications();
-                        refreshSelectedPlayniteLibrary();
-                    });
-                }
-            });
-        } catch (RejectedExecutionException ignored) {
-            // A termination callback can arrive after Activity teardown has shut down the pool.
-        }
+        executor.execute(() -> {
+            ComputerManagerService.ComputerManagerBinder binder = managerBinder;
+            if (binder == null) return;
+            binder.invalidateStateForComputer(hostUuid);
+            if (refreshSelected) {
+                mainHandler.post(() -> {
+                    if (!active || !hostUuid.equalsIgnoreCase(selectedHostUuid)) return;
+                    refreshSelectedApplications();
+                    refreshSelectedPlayniteLibrary();
+                });
+            }
+        });
     }
 
     private void invalidateHostStateAsync(String hostUuid) {
@@ -6660,6 +6664,7 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
     }
 
     private void leaveHost() {
+        ProfileAuthorization.revoke();
         ComputerDetails host = hosts.get(selectedHostUuid);
         if (host != null && hostGatewayStore.profileSelection(host.uuid).showSelector) {
             showProfileGate(host, true, false);
@@ -8061,21 +8066,6 @@ public class ConsoleActivity extends Activity implements InputManager.InputDevic
         if (!hostStateController.finishWaking(hostUuid, token)) return;
         renderHostSelection();
         if (hostUuid.equals(selectedHostUuid)) updateHostSelector();
-    }
-
-    private void confirmRemoveHost(ComputerDetails host) {
-        TextView cancel = consolePanel.action(getString(R.string.console_cancel));
-        TextView remove = consolePanel.action(getString(R.string.console_remove));
-        consolePanel.destructive(remove);
-        cancel.setOnClickListener(view -> handlePanelBack());
-        remove.setOnClickListener(view -> {
-            hideSidePanel();
-            removeHost(host);
-        });
-        showSidePanel(getString(R.string.console_host_eyebrow),
-                getString(R.string.console_remove_host_title, host.name),
-                getString(R.string.console_remove_host_details),
-                cancel, remove);
     }
 
     private void removeHost(ComputerDetails host) {
