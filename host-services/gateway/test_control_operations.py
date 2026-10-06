@@ -1014,8 +1014,8 @@ class ControlOperationTest(unittest.TestCase):
                                      self.state.control_state["generation"])
 
     def observe_partial_scan(self, connected_count=0, app_running=True, provider_ok=True,
-                             scan="partial", game=None, running=()):
-        """The Bridge while idle: game ABSENT, process PENDING, running scan partial."""
+                             scan="partial", game=None, running=(), process="PENDING"):
+        """The Bridge while idle: game ABSENT, by default process PENDING and scan partial."""
         def proxy(name, path, **_kwargs):
             if name == "vibepollo" and path == "/snapshot?force=1":
                 return True, {**control_evidence(connected_count, app_running=app_running),
@@ -1025,7 +1025,7 @@ class ControlOperationTest(unittest.TestCase):
             if name == "game_provider" and path == "/observation" and provider_ok:
                 return True, {"game": dict(game or {"state": "idle", "id": "",
                                                     "evidence": "ABSENT"}),
-                              "process": {"evidence": "PENDING",
+                              "process": {"evidence": process,
                                           "running_games": [dict(item) for item in running],
                                           "running_scan_status": scan}}
             return False, {"error": "fixture_offline"}
@@ -1049,9 +1049,9 @@ class ControlOperationTest(unittest.TestCase):
                 "provider_game_id": "steam:7", "process_token": token, "process_id": 77})
         return launch
 
-    def test_tokenless_stream_rebinds_when_running_scan_partial(self):
+    def test_tokenless_stream_rebinds_when_running_scan_complete_and_idle(self):
         a1 = self.launched_stream()
-        self.observe_partial_scan()
+        self.observe_partial_scan(scan="complete", process="ABSENT")
         with patch.object(wakeplay_gateway.DIAGNOSTICS, "record") as record:
             status, a2 = self.acquire(self.request(
                 "a2-resume", "resume", session="stream-2"), 0)
@@ -1066,9 +1066,9 @@ class ControlOperationTest(unittest.TestCase):
         self.assertEqual(("stream-2", "", 0), (
             stream["stream_session_id"], stream["process_token"], stream["process_id"]))
 
-    def test_tokenless_stream_full_quit_permitted_when_running_scan_partial(self):
+    def test_tokenless_stream_full_quit_permitted_when_running_scan_complete_and_idle(self):
         a1 = self.launched_stream()
-        self.observe_partial_scan()
+        self.observe_partial_scan(scan="complete", process="ABSENT")
         status, close = self.acquire(self.request(
             "a1-quit", "full_quit", expected_generation=a1["generation"]), 0)
         self.assertEqual(200, status, close)
@@ -1076,6 +1076,17 @@ class ControlOperationTest(unittest.TestCase):
         self.assertEqual(("", ""), (close["provider_game_id"], close["process_token"]))
         self.assertEqual(200, self.complete(close)[0])
         self.assertIsNone(self.state.control_state["stream"])
+
+    def test_tokenless_stream_unconfirmed_when_scan_partial(self):
+        # Owner decision: idle needs a complete scan for every stream, with or without a
+        # retained process identity (the HOST-GW1 follow-up relaxation is reverted).
+        a1 = self.launched_stream()
+        self.observe_partial_scan()
+        status, result = self.acquire(self.request("a2-resume", "resume", session="stream-2"), 0)
+        self.assertEqual(409, status)
+        self.assertEqual("retained_process_unconfirmed", result["reason"])
+        self.observe_partial_scan(app_running=False)
+        self.assert_unconfirmed(a1["generation"])
 
     def test_token_bearing_stream_still_unconfirmed_when_scan_partial(self):
         a1 = self.launched_stream(token="a" * 64)
@@ -1121,9 +1132,9 @@ class ControlOperationTest(unittest.TestCase):
         self.assertEqual(409, status)
         self.assertEqual("retained_process_unconfirmed", result["reason"])
 
-    def test_idle_reconcile_retires_tokenless_stream_when_scan_partial_and_streamer_idle(self):
+    def test_idle_reconcile_retires_tokenless_stream_when_scan_complete_and_streamer_idle(self):
         a1 = self.launched_stream()
-        self.observe_partial_scan(app_running=False)
+        self.observe_partial_scan(app_running=False, scan="complete", process="ABSENT")
         self.assertTrue(self.state._control_reconcile_idle())
         self.assertIsNone(self.state.control_state["stream"])
         self.assertEqual(a1["generation"],

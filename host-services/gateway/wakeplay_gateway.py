@@ -4284,9 +4284,7 @@ class GatewayState:
             return {"kind": "idle", "game_id": "", "identity": None,
                     "running_games": [], "running_scan_status": running_scan_status,
                     **exact, "snapshot": result}
-        return {"kind": "unavailable", **exact, "snapshot": result,
-                "game_absent": game_evidence == "ABSENT" and current_state == "idle"
-                and not current_id and running_scan_status in {"complete", "partial"}}
+        return {"kind": "unavailable", **exact, "snapshot": result}
 
     @staticmethod
     def _child_time_session_matches(session: dict[str, Any], actor_id: str,
@@ -5322,18 +5320,16 @@ class GatewayState:
                                   intent: str = "") -> dict[str, Any] | None:
         """The process identity a retained stream may carry on, or None when unproven.
 
-        A stream that retains an identity needs the provider's exact proof (complete scan,
-        target status). One that retains neither a process token nor a provider game id has
-        no target to prove gone, so a scan that ran (complete or partial) with the provider's
-        game absent and idle is enough for it.
+        Every stream needs the provider's exact proof from `current`: a matching active game,
+        or idle (game and process absent, state idle, complete scan, retained target gone),
+        whether or not the stream retains a process token or provider game id.
         """
         game_id = str(current.get("game_id") or "")
         identity = current.get("identity")
         token = self._child_time_process_token(identity)
         expected_token = self._child_time_process_token(stream)
         expected_game = self._child_time_normalize_game_id(stream.get("provider_game_id"))
-        idle = current.get("kind") == "idle" or (
-            not expected_token and not expected_game and current.get("game_absent") is True)
+        idle = current.get("kind") == "idle"
         if current.get("kind") == "active" and game_id and token \
                 and (not expected_token or token == expected_token) \
                 and (not expected_game
