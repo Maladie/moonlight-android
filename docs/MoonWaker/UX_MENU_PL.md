@@ -144,6 +144,114 @@ Steam/Xbox), więc szybkie menu dotyczy tylko konsoli.
   koliduje z tym skrótem; trzeba ją usunąć albo ograniczyć do streamu.
 - Karta Stream czyta migawkę sesji, więc implementacja po MW-05 K3.
 
+### 3.7 Ekrany wejścia: wybór hosta, profil, PIN
+
+Odniesienie wizualne: makiety `10-host-select-v4.png` … `17-intro-4-v4.png` oraz przejście
+`flow-host-to-carousel-v4.webp` w niewersjonowanym folderze makiet (patrz nagłówek).
+Zawartość, stany i reguły ekranów się nie zmieniają; zmienia się wygląd, kolejność kafli
+i przejścia.
+
+**Wspólna oprawa trzech ekranów:**
+
+- **Tło:** ciemna baza z dwiema powolnymi poświatami otoczenia; na wyborze hosta w kolorze
+  hosta, po wyborze profilu przechodzą w kolor profilu. To samo tło zostaje przez
+  wszystkie trzy ekrany.
+- **Nagłówek wyśrodkowany:** eyebrow 24 px (wersaliki z rozstrzeleniem, szary), tytuł
+  44 Semibold, podtytuł 26; rząd elementów wyśrodkowany w okolicy y ≈ 520 przy 1080p.
+- **Zegar** w prawym górnym rogu (44 Light); numer wersji przenosi się do Ustawienia →
+  Informacje.
+- **Jedna legenda** wyśrodkowana u dołu w stylu z 4.1 (np. „OK Wybierz · ☰ Opcje ·
+  ↩ Wstecz"); pokazuje tylko akcje, które na danym elemencie coś robią.
+- **Przejścia bez czarnej klatki:** tło zostaje, a rząd elementów przenika się w nowy
+  w 220 ms; Wstecz odtwarza to samo w odwrotną stronę.
+
+**Wybór hosta („Wybierz komputer"):**
+
+- Eyebrow „MOONWAKER", tytuł „Wybierz komputer", podtytuł „Wyszukiwanie hostów w sieci…",
+  gdy wykrywanie jest aktywne (nowe hosty nadal nie przejmują fokusu).
+- **Kafle 240 × 240 px**, promień 32 px: wygenerowana grafika hosta (jak dzisiejszy
+  `HostAvatarDrawable`) z liniowym glifem monitora; pod kaflem nazwa (30 Semibold) i jedna
+  linia stanu (24) z kolorową kropką.
+- **Stany kafla:**
+
+  | Stan | Wygląd |
+  | --- | --- |
+  | Online | zielona kropka, „Online" |
+  | Sesja aktywna | znacznik „NA ŻYWO" na kaflu, czerwona kropka, „Stream · Pulpit · 12 min" |
+  | Budzenie | bursztynowy pierścień postępu wokół kafla, „Budzenie… 12 s" (sekundy liczone na żywo) |
+  | Uśpiony | plakietka z księżycem w rogu kafla, szaroniebieska kropka, „Uśpiony" |
+  | Offline / niedostępny | kafel odbarwiony i z 60 % krycia, czerwona kropka, „Niedostępny" |
+  | Niesparowany | bursztynowa plakietka, „Sparuj"; OK otwiera parowanie |
+  | Profil wymaga uwagi | bursztynowa plakietka „!", np. „Zaloguj się w Windows" |
+
+- **„Dodaj hosta" na końcu rzędu** (dziś jest pierwszy): szklany kafel z plusem.
+- **Fokus:** jak dla kart (4.2): pierścień, poświata w kolorze hosta, skala 1,08;
+  „☰ Opcje" pod kaflem z fokusem.
+- **Opcje** otwierają panel hosta v4 (3.3) nad rozmytym tłem (4.3).
+
+**Wybór profilu („Kto gra?"):**
+
+- Eyebrow = nazwa hosta z kropką stanu, tytuł „Kto gra?".
+- **Awatary okrągłe 176 px**, pod nimi imię (30 Semibold) i najwyżej dwie linie stanu
+  (24) zamiast dzisiejszych stosów plakietek.
+- **Plakietki wycięte na krawędzi awatara:** kłódka dla profilu z PIN-em, „A" dla
+  logowania automatycznego; „Aktywny na PC" jako zielona kropka w linii stanu.
+- **Profil dziecka:** dwie linie, „Dziecko · <rodzic>" i „zostało 1 godz. 20 min".
+- **Fokus:** pierścień z odstępem, poświata w kolorze awatara, skala 1,1; imiona bez
+  fokusu przygaszone do ok. 70 %.
+- **„☰ Opcje" tylko tam, gdzie coś robi.** Opcje otwierają małe pływające menu (jak
+  w 3.6): „Logowanie automatyczne" (przełącznik, tylko dla profili, które dziś mogą je
+  mieć) i „Zmień komputer".
+- Reguły dziecka, PIN-u i logowania automatycznego bez zmian; Wstecz wraca do wyboru
+  hosta.
+
+**PIN:**
+
+- Ekran profili zostaje **rozmyty w tle** (4.3); awatar wybranego profilu przesuwa się
+  na górę ekranu w 240 ms, pod nim „Wprowadź PIN" i „<profil> · <host>".
+- **Cztery kropki**, kontur → wypełnienie, bieżąca pozycja podświetlona;
+  **automatyczne zatwierdzenie po czwartej cyfrze bez zmian.**
+- **Sposób wpisywania wg ostatniego urządzenia wejścia:**
+  - pilot: klawiatura 3 × 4 ze szklanymi klawiszami, „⌫" w lewym dolnym polu, fokus jako
+    jasne wypełnienie z ciemną cyfrą;
+  - pad: pasek 2 × 5 „cyfra ↔ przycisk" (glify PlayStation albo Xbox, mapowanie
+    przycisków bez zmian).
+- **Błąd:** kropki drgają ±12 px trzy razy w 360 ms (przy ograniczeniu animacji zamiast
+  tego jeden czerwony błysk) i czerwony komunikat „Nieprawidłowy PIN".
+- **Odliczanie blokady:** pierścień wokół awatara odlicza czas („Spróbuj ponownie za 25 s"),
+  klawisze przygaszone do 40 %.
+- **Sprawdzanie i budzenie offline:** cienki pierścień postępu wokół awatara
+  z istniejącymi komunikatami („Sprawdzanie PIN-u…", „Wybudzanie komputera…" itd.).
+- **`FLAG_SECURE` zostaje.** Zrzuty tego ekranu są z założenia niemożliwe, więc ekran
+  PIN sprawdza się okiem na telewizorze; makiety 14–16 powstały z kodu.
+
+### 3.8 Animacja wejścia
+
+Animacja zasłania pierwsze ładowanie karuzeli po wybraniu profilu albo po poprawnym
+PIN-ie. Odniesienie: makiety `17-intro-1-v4.png` … `17-intro-4-v4.png` i końcówka
+przejścia `flow-host-to-carousel-v4.webp` (osobno `intro-v4.webp`).
+
+| Czas | Co się dzieje |
+| --- | --- |
+| 0–150 ms | wybrany awatar rośnie do 1,25, reszta ekranu znika |
+| 150–750 ms | awatar przechodzi w miękką kulę światła; jedna szeroka smuga światła przesuwa się z lewej na prawo; 24–40 rozmytych drobin unosi się powoli (krycie ≤ 40 %); poświata otoczenia rośnie |
+| 400–1000 ms | pojawia się znak półksiężyca i „Witaj, <profil>" (32 px); trzymają się do gotowości |
+| wyjście, ok. 450 ms | ekran główny wchodzi z przybliżenia 1,04 → 1,0; widoczne okładki podnoszą się o 24 px z opóźnieniem 30 ms jedna po drugiej; poświata przechodzi w grafikę gry z fokusem |
+
+- **Warunek gotowości:** `prepareInitialCarouselFrame()` (dane lokalne i pierwsze okładki
+  zdekodowane) oraz odświeżenie profili.
+- **Czas:** co najmniej 900 ms. Po 2,5 s animacja przestaje czekać i pokazuje ekran
+  główny ze szklanymi zaślepkami okładek.
+- **Pominięcie:** dowolny klawisz po 300 ms, jeśli ekran jest gotowy.
+- **Kiedy się nie pokazuje:** po powrocie ze streamu (ta ścieżka już jest natychmiastowa)
+  ani po zamknięciu szybkiego menu. Przy zmianie hosta wersja skrócona do 600 ms.
+- **Ograniczenie animacji:** bez drobin, smugi i przybliżenia; statyczny znak i przenikanie
+  200 ms, nadal z czekaniem na warunek gotowości.
+- **Koszt na API 31 (BRAVIA):** tylko przesunięcia, skala i alfa na GPU; smuga to gotowa
+  bitmapa (ok. 512 × 1080) przesuwana po ekranie; drobiny rysuje jeden widok z jednym
+  sprite'em z cache; poświata to wcześniej rozmyta bitmapa 480 × 270; żadnego rozmycia
+  co klatkę.
+
 ## 4. Język wizualny (v4)
 
 Źródła: wytyczne Android TV / Compose for TV (układ, system fokusu, kolory, immersive
@@ -266,8 +374,25 @@ Dalej:
 - **6b. Szybkie menu pod Guide (3.6):** najpierw weryfikacja kodu klawisza na
   telewizorze, rozstrzygnięcie opcji „guide" w `DiscordDmShortcutHandler`; po MW-05 K3,
   bo karta Stream czyta migawkę sesji.
+- **7. Ekrany wejścia (3.7) i animacja wejścia (3.8).** Opiera się na wspólnej warstwie
+  wizualnej z 5a (tło z rozmyciem, szkło, sposoby fokusu, centrowanie tekstu, ikony),
+  więc zaczyna się dopiero po akceptacji i scaleniu 5a. Jest niezależny od MW-05 K3/K4
+  z jednym wyjątkiem: reguła „nie po powrocie ze streamu" czyta migawkę sesji
+  (`SessionModel` z K3), więc 7d wchodzi po K3.
+  - **7a. Wspólna oprawa ekranów wejścia i wybór hosta.** Warstwa wyboru hosta budowana
+    dziś w `ConsoleActivity.buildHostSelectionLayer` / `createHostSelectionTile`
+    przechodzi do własnej klasy widoku.
+  - **7b. Wybór profilu i jego menu Opcje.**
+  - **7c. Ekran PIN.**
+  - **7d. Animacja wejścia.** Najpierw pomiar rzeczywistego czasu do gotowości
+    `prepareInitialCarouselFrame()` na telewizorze lub w laboratorium, przy zimnym i ciepłym
+    starcie; dopiero potem strojenie minimum (900 ms) i limitu (2,5 s).
+
+  Każdy podkrok: build → zrzuty (emulator laboratorium, gdzie się da; ekran PIN okiem na
+  telewizorze, bo `FLAG_SECURE`) → akceptacja właściciela → commit. Nowe ekrany są
+  osobnymi klasami widoków.
 
 Każdy krok: build → zrzuty z telewizora → akceptacja właściciela → commit. Każdy jest
 niezależnie używalny i nie dotyka kodu sesji, więc może iść równolegle z hardeningiem
-(6b czeka na K3); ryzykiem są tylko konflikty w `ConsoleActivity`, dlatego nowe
+(6b i 7d czekają na K3); ryzykiem są tylko konflikty w `ConsoleActivity`, dlatego nowe
 komponenty powstają jako osobne klasy, a Activity tylko je podpina i nie może urosnąć netto.
